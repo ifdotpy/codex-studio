@@ -244,7 +244,6 @@ describe("shared resource event transport", () => {
           ? {
               resourceVersions: [
                 {
-                  resource: state,
                   revision: resourceRevision,
                   entitySequences,
                 },

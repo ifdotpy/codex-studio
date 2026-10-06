@@ -8441,6 +8441,7 @@ export interface components {
       | components["schemas"]["RoomResource"]
       | components["schemas"]["StateResource"]
       | components["schemas"]["DraftsResource"]
+      | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["TranscriptResource"];
     /**
      * ResourceRevisionEntry
@@ -8451,7 +8452,7 @@ export interface components {
       entitySequenceReset?: boolean | null;
       /** Entitysequences */
       entitySequences?: number[] | null;
-      resource: components["schemas"]["ResourceRef"];
+      resource?: components["schemas"]["ResourceRef"] | null;
       /** Revision */
       revision: number;
     };
@@ -11753,6 +11754,17 @@ export interface components {
       text: string;
       /** Turnid */
       turnId?: string | null;
+    };
+    /**
+     * TranscriptsResource
+     * @description Legacy collection-wide transcript subscription retained for clients.
+     */
+    TranscriptsResource: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      kind: "transcripts";
     };
     /**
      * TransferAction

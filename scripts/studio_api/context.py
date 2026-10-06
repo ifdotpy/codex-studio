@@ -428,7 +428,7 @@ class ApiContext:
                 register_resource_hub(self.canvas.root, self._resource_hub)
                 latest_sequence = self.entity_sequence() or 0
                 if latest_sequence > entity_sequence:
-                    self._resource_hub.publish_entity_sequence(latest_sequence)
+                    self._resource_hub.publish_entity_sequence(latest_sequence, reset=True)
             return self._resource_hub
 
     def initialize(self) -> None:

@@ -20,6 +20,7 @@ import {
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
+import { EntitySequenceCheckpoint } from "./entitySequence";
 import {
   acknowledgeEntitySequences,
   watchResourceChanges,
@@ -194,6 +195,9 @@ if (typeof window !== "undefined")
     try {
       for (const document of entities)
         await persistProjection(db.projections, document);
+      await scopes
+        .get("state")
+        ?.acknowledgeEntitySequences(entities.map((document) => document.seq));
     } catch (error) {
       await refreshProjection("state:entities:v1").catch(() => {});
       throw error;
@@ -585,6 +589,7 @@ type ProjectionState = {
   stop: () => Promise<unknown>;
   refresh: (signal?: AbortSignal) => Promise<void>;
   activateInvalidation: () => void;
+  acknowledgeEntitySequences: (sequences: number[]) => Promise<void>;
   listeners: Set<(error: unknown | null) => void>;
 };
 const scopes = new Map<string, ProjectionState>();
@@ -615,7 +620,15 @@ async function acquireProjection(
     let requiredEntitySequence: number | undefined;
     // Sequence zero is a valid initial baseline. Keep a sentinel until the
     // first pull establishes that the local projection already has that row.
-    let latestEntitySequence = -1;
+    const latestEntitySequence = new EntitySequenceCheckpoint();
+    if (remoteScope === "state:entities:v1") {
+      const [checkpoint] =
+        await db.projections.storageInstance.findDocumentsById(
+          ["state:entities:checkpoint"],
+          true,
+        );
+      if (checkpoint) latestEntitySequence.assign(checkpoint.seq);
+    }
     let resetReadySeq: number | undefined;
     let invalidationBlocked = false;
     let readFailed = false;
@@ -722,17 +735,6 @@ async function acquireProjection(
             remoteScope === "state:entities:v1" && !complete
               ? (initialMarker?.seq ?? 0)
               : undefined;
-          if (complete && remoteScope === "state:entities:v1") {
-            const [checkpoint] =
-              await db.projections.storageInstance.findDocumentsById(
-                [checkpointId],
-                true,
-              );
-            latestEntitySequence = Math.max(
-              latestEntitySequence,
-              checkpoint?.seq ?? 0,
-            );
-          }
           while (more && !stopped) {
             const [previous] =
               await db.projections.storageInstance.findDocumentsById(
@@ -757,6 +759,7 @@ async function acquireProjection(
               signal && scopes.get(scope)?.foreground === 0
                 ? signal
                 : undefined;
+            const pullResetVersion = latestEntitySequence.resetVersion;
             const result = await retryRead(
               () =>
                 pull(
@@ -777,7 +780,18 @@ async function acquireProjection(
               requestSignal,
             );
             if (stopped) return;
+            // An epoch/reset during this request invalidates the old server
+            // checkpoint. Same-epoch responses remain usable and cannot move
+            // the local checkpoint backwards.
+            if (
+              remoteScope === "state:entities:v1" &&
+              !latestEntitySequence.isSameResetVersion(pullResetVersion)
+            ) {
+              more = true;
+              continue;
+            }
             if (isEntityResetResponse(result, remoteScope)) {
+              latestEntitySequence.reset();
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
@@ -879,15 +893,16 @@ async function acquireProjection(
             }
             if (remoteScope === "state:entities:v1") {
               await persistProjectionBatch(db.projections, entityBatch);
+              if (!latestEntitySequence.isSameResetVersion(pullResetVersion)) {
+                more = true;
+                continue;
+              }
+              latestEntitySequence.assignWithinEpoch(result.checkpoint.seq);
               await persistProjection(db.projections, {
                 id: checkpointId,
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),
-                seq: result.checkpoint.seq,
+                seq: latestEntitySequence.value,
               });
-              latestEntitySequence = Math.max(
-                latestEntitySequence,
-                result.checkpoint.seq,
-              );
               if (!readyPublished) {
                 await persistProjection(db.projections, {
                   id: "state:entities:ready",
@@ -912,7 +927,7 @@ async function acquireProjection(
             invalidated &&
             !unversionedInvalidation &&
             requiredEntitySequence !== undefined &&
-            latestEntitySequence >= requiredEntitySequence
+            latestEntitySequence.covers(requiredEntitySequence)
           ) {
             invalidated = false;
             requiredEntitySequence = undefined;
@@ -938,6 +953,10 @@ async function acquireProjection(
         })
         .finally(() => {
           pending = undefined;
+          // An invalidation can land between the final loop condition and
+          // clearing `pending`; make that edge schedule one more projection.
+          if (invalidated && !stopped)
+            queueMicrotask(() => void refresh().catch(() => {}));
         });
       return pending;
     };
@@ -949,11 +968,15 @@ async function acquireProjection(
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
       if (invalidationBlocked) return;
+      if (remoteScope === "state:entities:v1" && version) {
+        latestEntitySequence.observeEpoch(version.epoch);
+        if (version.entitySequenceReset) latestEntitySequence.reset();
+      }
       if (
         remoteScope === "state:entities:v1" &&
         version?.entitySequence !== undefined
       ) {
-        if (version.entitySequence <= latestEntitySequence) return;
+        if (latestEntitySequence.covers(version.entitySequence)) return;
         requiredEntitySequence = Math.max(
           requiredEntitySequence ?? 0,
           version.entitySequence,
@@ -989,6 +1012,23 @@ async function acquireProjection(
       listeners,
       refresh,
       activateInvalidation,
+      acknowledgeEntitySequences: async (sequences) => {
+        // Mutation response rows are part of the local projection. Advance
+        // the server cursor only when they exactly fill the next sequence span;
+        // otherwise the next pull must retrieve the gap before skipping ahead.
+        const advanced = latestEntitySequence.advanceContiguous(sequences);
+        if (!advanced) return;
+        const [checkpoint] =
+          await db.projections.storageInstance.findDocumentsById(
+            [checkpointId],
+            true,
+          );
+        await persistProjection(db.projections, {
+          id: checkpointId,
+          payload: checkpoint?.payload ?? JSON.stringify({ initialHigh: 0 }),
+          seq: latestEntitySequence.value,
+        });
+      },
       stop: async () => {
         stopped = true;
         stopInvalidation?.();

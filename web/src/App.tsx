@@ -5,6 +5,7 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
+import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
 import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
@@ -911,6 +912,10 @@ export default function App() {
   ]);
   // Only accounts that take part in this chat team get a dot and a cache read.
   const usageAccountKeys = usageAccounts.map((item) => item.key).join("\n");
+  const usageAccountConnectionKey = usageConnectionKey(
+    usageAccountKeys,
+    accounts.data.accounts,
+  );
   useEffect(() => {
     if (!data?.stateDir || !usageAccountKeys) return;
     for (const key of usageAccountKeys.split("\n")) {
@@ -942,7 +947,7 @@ export default function App() {
     // Account metadata validates this key through the ref above; the request
     // identity depends only on workspace + usageAccountKeys. Replacing the
     // accounts array during its initial load must not repeat the same read.
-  }, [data?.stateDir, usageAccountKeys]);
+  }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
   useEffect(() => {
     if (!data?.stateDir) return;
     const keys = new Set([

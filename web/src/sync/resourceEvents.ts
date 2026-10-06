@@ -31,6 +31,8 @@ export type ResourceVersion = {
   revision: number;
   /** Highest entity row represented by this StateResource revision, when present. */
   entitySequence?: number;
+  /** The server cannot enumerate the exact changed rows; clients must reconcile. */
+  entitySequenceReset?: boolean;
 };
 type Version = ResourceVersion;
 export type ResourceConnectionState =
@@ -112,6 +114,7 @@ const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
 const COORDINATOR_IDLE_STOP_MS = 1_000;
+const RESOURCE_FLUSH_MS = 20;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
 const subscribers = new Map<string, Set<Listener>>();
@@ -145,8 +148,8 @@ let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
 let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
-let flushScheduled = false;
 let flushGeneration = 0;
+let flushTimer: ReturnType<typeof setTimeout> | undefined;
 let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
@@ -338,21 +341,29 @@ function dispatchEvent(event: ResourceChangeEvent) {
   const active = new Set(aggregateResources().map(resourceKey));
   const versions = event.resourceVersions?.length
     ? new Map(
-        event.resourceVersions.map((entry) => [
-          resourceKey(entry.resource),
-          { epoch: event.epoch, revision: entry.revision },
-        ]),
+        event.resourceVersions.flatMap((entry, index) => {
+          const resource = entry.resource ?? event.resources[index];
+          return resource
+            ? [
+                [
+                  resourceKey(resource),
+                  { epoch: event.epoch, revision: entry.revision },
+                ] as const,
+              ]
+            : [];
+        }),
       )
     : undefined;
-  for (const resource of event.resources) {
+  for (const [resourceIndex, resource] of event.resources.entries()) {
     const key = resourceKey(resource);
     const version: Version = versions?.get(key) ?? {
       epoch: event.epoch,
       revision: event.revision,
     };
-    const revisionEntry = event.resourceVersions?.find(
-      (entry) => resourceKey(entry.resource) === key,
-    );
+    const revisionEntry =
+      event.resourceVersions?.find(
+        (entry) => entry.resource && resourceKey(entry.resource) === key,
+      ) ?? event.resourceVersions?.[resourceIndex];
     const entitySequences =
       resource.kind === "state" ? revisionEntry?.entitySequences : undefined;
     if (
@@ -363,6 +374,8 @@ function dispatchEvent(event: ResourceChangeEvent) {
       version.entitySequence = entitySequences?.length
         ? Math.max(...entitySequences)
         : revisionEntry.revision;
+    if (resource.kind === "state" && revisionEntry?.entitySequenceReset)
+      version.entitySequenceReset = true;
     if (
       !revisionEntry?.entitySequenceReset &&
       entitySequences?.length &&
@@ -428,12 +441,11 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
 }
 
 function scheduleFlush() {
-  if (flushScheduled) return;
-  flushScheduled = true;
+  if (flushTimer !== undefined) return;
   const generation = ++flushGeneration;
-  queueMicrotask(function flushResourceChanges() {
+  flushTimer = setTimeout(function flushResourceChanges() {
     if (generation !== flushGeneration) return;
-    flushScheduled = false;
+    flushTimer = undefined;
     try {
       if (pendingReset) {
         pendingReset = false;
@@ -457,7 +469,7 @@ function scheduleFlush() {
     } catch (error) {
       frameFailed(error);
     }
-  });
+  }, RESOURCE_FLUSH_MS);
 }
 
 function receiveResourceEvent(value: unknown, fromPeer = false) {
@@ -623,9 +635,7 @@ function replayResourceBaseline(resources: ResourceRef[]) {
   for (const { version, resources: known } of groups.values()) {
     const resourceVersions = known.flatMap((resource) => {
       const resourceVersion = resourceValues.get(resourceKey(resource));
-      return resourceVersion
-        ? [{ resource, revision: resourceVersion.revision }]
-        : [];
+      return resourceVersion ? [{ revision: resourceVersion.revision }] : [];
     });
     broadcast({
       kind: "resource-event",
@@ -1063,7 +1073,8 @@ function stopCoordinator() {
   streamUpdateGeneration++;
   releaseStream();
   flushGeneration += 1;
-  flushScheduled = false;
+  if (flushTimer !== undefined) clearTimeout(flushTimer);
+  flushTimer = undefined;
   clearTimeout(heartbeatTimeout);
   clearTimeout(reconnectTimer);
   stopChannel();

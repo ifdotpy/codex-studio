@@ -139,8 +139,8 @@ const deliver = (event: ReturnType<Hub["event"]> | null) => {
     source.emit("resources", {
       ...event,
       resources,
-      resourceVersions: event.resourceVersions.filter((entry) =>
-        source.subscribed(entry.resource),
+      resourceVersions: event.resourceVersions.filter((entry, index) =>
+        source.subscribed(entry.resource ?? event.resources[index]!),
       ),
     });
     delivered++;

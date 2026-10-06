@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Iterable, Sequence
+from contextlib import closing
 import logging
 from pathlib import Path
 import sqlite3
@@ -32,6 +33,7 @@ from studio_api.sync.resources.models import (
     ResourceTokenRatesEvent,
     SessionCostResource,
     StateResource,
+    TranscriptsResource,
     TaskResource,
     TasksResource,
     TerminalResource,
@@ -50,6 +52,10 @@ ENTITY_SEQUENCE_THROTTLE_SECONDS = 0.1
 # Bound the trailing quiet window so continuous entity writes still reach peers.
 MAX_ENTITY_SEQUENCE_DELAY_SECONDS = 0.5
 MAX_ENTITY_SEQUENCE_IDS = 512
+NON_TRANSCRIPT_ENTITY_COLLECTIONS = (
+    "agent", "room", "task", "monitor", "complaint", "request",
+    "rule", "project", "peerTeam", "chat", "edge", "event", "work", "workspace",
+)
 _LOGGER = logging.getLogger(__name__)
 
 ResourceKey = tuple[str, str | None]
@@ -105,7 +111,7 @@ def _key(resource: ResourceRef) -> ResourceKey:
         case RoomResource(roomId=identity):
             return "room", identity
         case (TerminalsResource() | AccountsResource() | ModelsResource() | CostsResource()
-              | DesktopResource() | StateResource() | DraftsResource()):
+              | DesktopResource() | StateResource() | DraftsResource() | TranscriptsResource()):
             return value.kind, None
         case TranscriptResource(agentId=identity):
             return "transcript", identity
@@ -298,6 +304,8 @@ class ResourceHub:
                 subscription.initial_token_rates = self._token_rates_event(self._token_rates)
                 # Watch callbacks during registration are covered by this full baseline.
                 subscription._pending.clear()
+                subscription._pending_entity_sequences.clear()
+                subscription._pending_entity_sequence_reset = False
                 subscription._overflow = False
                 subscription._wake.clear()
         if subscription._closed:
@@ -324,7 +332,7 @@ class ResourceHub:
         reset: bool = False,
     ) -> int:
         """Publish a bounded state invalidation for committed entity changes."""
-        if sequence <= 0:
+        if sequence <= 0 and not reset:
             return self._revision
         with self._lock:
             unpublished = {
@@ -335,8 +343,6 @@ class ResourceHub:
             if sequence <= self._published_entity_sequence and not unpublished and not reset:
                 return self._revision
             self._entity_sequence = max(self._entity_sequence, sequence)
-            if not unpublished and sequence > self._published_entity_sequence:
-                unpublished.add(sequence)
             if not unpublished and not reset:
                 return self._revision
             self._published_entity_sequence = max(
@@ -493,7 +499,6 @@ class ResourceHub:
             resources=resources,
             resourceVersions=[
                 ResourceRevisionEntry(
-                    resource=resource,
                     revision=self._resource_revision(resource),
                     entitySequences=(
                         list(entity_sequences)
@@ -661,6 +666,25 @@ class EntityPublicationScheduler:
                 self._publish(root, *pending)
             except Exception:
                 _LOGGER.exception("Unable to publish committed entity sequence")
+                # Keep the final commit observable even when the scan/handoff
+                # fails once. Backoff is bounded and reuses this worker.
+                database_path, _, _deadline, sequence, ids, reset = pending
+                now = self._clock()
+                retry_at = now + 0.25
+                with self._condition:
+                    current = self._pending.get(root)
+                    pending_sequence = max(sequence, current[3] if current else 0)
+                    pending_ids = set(ids) | (set(current[4]) if current else set())
+                    pending_reset = reset or bool(current and current[5])
+                    self._pending[root] = (
+                        database_path,
+                        retry_at,
+                        now + MAX_ENTITY_SEQUENCE_DELAY_SECONDS,
+                        pending_sequence,
+                        pending_ids,
+                        pending_reset,
+                    )
+                    self._condition.notify()
 
     @staticmethod
     def _publish(
@@ -681,23 +705,28 @@ class EntityPublicationScheduler:
         sequence = explicit_sequence
         try:
             database_uri = database_path.resolve().as_uri() + "?mode=ro"
-            with sqlite3.connect(database_uri, uri=True, timeout=0.2) as database:
+            with closing(sqlite3.connect(database_uri, uri=True, timeout=0.2)) as database:
+                # Collection-leading index ranges exclude transcript snapshots
+                # without scanning their often very large trailing sequence.
+                non_transcript = NON_TRANSCRIPT_ENTITY_COLLECTIONS
+                placeholders = ",".join("?" for _ in non_transcript)
                 row = database.execute(
-                    "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
-                    "WHERE collection NOT LIKE 'transcript:%'"
+                    f"SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection IN ({placeholders})",
+                    non_transcript,
                 ).fetchone()
                 sequence = max(sequence, int(row[0]) if row else 0)
                 rows = database.execute(
-                    "SELECT seq FROM sync_entities "
-                    "WHERE collection NOT LIKE 'transcript:%' AND seq>? AND seq<=? "
-                    "ORDER BY seq LIMIT ?",
-                    (watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
+                    f"SELECT seq FROM sync_entities WHERE collection IN ({placeholders}) "
+                    "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
+                    (*non_transcript, watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
                 ).fetchall()
         except sqlite3.Error:
             if sequence <= watermark and not explicit_reset:
                 raise
         sequences = explicit_sequences | {int(item[0]) for item in rows}
         sequences = {value for value in sequences if value > watermark}
+        if not sequences and not explicit_reset:
+            return
         reset = explicit_reset or len(rows) > MAX_ENTITY_SEQUENCE_IDS
         reset = reset or len(sequences) > MAX_ENTITY_SEQUENCE_IDS
         if sequence <= watermark and not reset:
@@ -723,23 +752,15 @@ def publish_resources(state_dir: str | Path, *resources: ResourceRef) -> None:
             _LOGGER.exception("Unable to publish committed resource changes")
 
 
-def publish_entity_sequence(
-    state_dir: str | Path,
-    sequence: int,
-    entity_sequences: Sequence[int] = (),
-) -> None:
-    """Hand off an entity invalidation to the shared coalescing worker."""
-    _entity_publication_scheduler.schedule(
-        state_dir,
-        Path(state_dir) / "canvas.sqlite3",
-        sequence,
-        entity_sequences,
-    )
-
-
 def schedule_entity_publication(state_dir: str | Path, database_path: str | Path) -> None:
     """Queue an instrumented commit for asynchronous sequence inspection."""
     _entity_publication_scheduler.schedule(state_dir, database_path)
+
+
+def has_resource_hub(state_dir: str | Path) -> bool:
+    """Avoid importing/starting publication machinery in standalone writers."""
+    with _registry_lock:
+        return _root_key(state_dir) in _hub_registry
 
 
 def publish_resource_overflow(state_dir: str | Path) -> None:

@@ -104,6 +104,12 @@ class DraftsResource(ContractModel):
     kind: Literal["drafts"]
 
 
+class TranscriptsResource(ContractModel):
+    """Legacy collection-wide transcript subscription retained for clients."""
+
+    kind: Literal["transcripts"]
+
+
 class TranscriptResource(ContractModel):
     kind: Literal["transcript"]
     agentId: NonEmptyIdentifier
@@ -129,6 +135,7 @@ ResourceRefValue = Annotated[
     | RoomResource
     | StateResource
     | DraftsResource
+    | TranscriptsResource
     | TranscriptResource,
     Field(discriminator="kind"),
 ]
@@ -141,7 +148,9 @@ class ResourceRef(RootModel[ResourceRefValue]):
 class ResourceRevisionEntry(ContractModel):
     """Per-resource revision; StateResource uses the entity sequence."""
 
-    resource: ResourceRef
+    # Omitted on the wire: entries align positionally with event.resources.
+    # Optional decode support keeps older or hand-written protocol-3 frames valid.
+    resource: ResourceRef | None = None
     revision: ResourceRevision
     entitySequences: list[ResourceRevision] | None = None
     entitySequenceReset: bool | None = None

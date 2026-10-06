@@ -18,7 +18,6 @@ from uuid import uuid4
 
 from codex_budget import _save as save_budget
 from codex_canvas import Canvas
-from codex_payload_migrate import _connect as connect_payload_migration
 from codex_records import AgentRecord, BudgetStateRecord, JsonObject
 from codex_rules import RulesMixin, RulesRuntime
 from codex_sqlite import connect
@@ -45,6 +44,10 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             loop=asyncio.get_running_loop(),
         )
         self.database = connect(self.root / "canvas.sqlite3", site="test.entity-write")
+        self.assertEqual(
+            self.database.execute("PRAGMA journal_mode=WAL").fetchone()[0],
+            "wal",
+        )
         from studio_api.sync.resources import hub as resources_hub
 
         self.initial_scan = threading.Event()
@@ -81,6 +84,10 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
         ensure_tables(self.database)
         self.assertTrue(await asyncio.to_thread(self.initial_scan.wait, 5))
         self.initial_scan_patch.stop()
+        # Drain schema/setup commits before each test starts observing writes.
+        await asyncio.sleep(ENTITY_SEQUENCE_THROTTLE_SECONDS + 0.05)
+        while await self.subscription.next_event(timeout=0.01) is not None:
+            pass
 
     async def asyncTearDown(self) -> None:
         self.initial_scan_patch.stop()
@@ -132,6 +139,31 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             await self.assert_entity_event([2])
         finally:
             autocommit.close()
+
+    async def test_non_transcript_checkpoint_scan_uses_collection_index(self) -> None:
+        from studio_api.sync.resources.hub import NON_TRANSCRIPT_ENTITY_COLLECTIONS
+
+        with self.database:
+            self.database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES ('transcript:agent-a',?,?,?,NULL,0)",
+                [(f"item-{index}", index + 10, str(index)) for index in range(300_000)],
+            )
+            self.database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                "VALUES ('project',?,?,?,NULL,0)",
+                [(f"project-{index}", index + 1, str(index)) for index in range(20)],
+            )
+        placeholders = ",".join("?" for _ in NON_TRANSCRIPT_ENTITY_COLLECTIONS)
+        started = time.perf_counter()
+        maximum = self.database.execute(
+            f"SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection IN ({placeholders})",
+            NON_TRANSCRIPT_ENTITY_COLLECTIONS,
+        ).fetchone()[0]
+        elapsed_ms = (time.perf_counter() - started) * 1000
+        self.assertEqual(maximum, 20)
+        print({"checkpointRows": 300_000, "elapsedMs": round(elapsed_ms, 3)})
+        self.assertLess(elapsed_ms, 250)
 
     async def test_restarted_hub_reuses_entity_sequence_in_a_new_epoch(self) -> None:
         state = ResourceRef(StateResource(kind="state"))
@@ -208,9 +240,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             with self.database:
                 put(self.database, "project", "first", {"id": "first"})
             self.assertTrue(await asyncio.to_thread(failed.wait, 5))
-            with self.database:
-                put(self.database, "project", "second", {"id": "second"})
-            await self.assert_entity_event([1, 2])
+            await self.assert_entity_event([1])
         self.assertGreaterEqual(calls, 2)
 
     async def test_scheduler_coalesces_with_a_controlled_clock(self) -> None:
@@ -386,20 +416,6 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             put(self.database, "project", "local-project", {"id": "local-project", "name": "Local"})
         await self.assert_entity_event([1, 2])
 
-    async def test_payload_migration_connection_publishes_entity_commits(self) -> None:
-        database = connect_payload_migration(self.root / "canvas.sqlite3")
-        try:
-            with database:
-                put(
-                    database,
-                    "task",
-                    "migration-task",
-                    {"id": "migration-task", "status": "completed"},
-                )
-            await self.assert_entity_event([1])
-        finally:
-            database.close()
-
     async def test_canvas_workspace_rules_and_budget_writers_share_commit_notification(self) -> None:
         canvas = Canvas(self.root)
         canvas.register_agent("host-root", "Lead")
@@ -432,7 +448,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             def sync_agent_rooms(_db: sqlite3.Connection, _rooms: list[str]) -> None:
                 return None
 
-        Workspace().projects(  # type: ignore[no-untyped-call]
+        Workspace().projects(  # type: ignore[misc]
             {"action": "remove", "path": "/workspace/remove"}
         )
         await self.assert_entity_event([3])

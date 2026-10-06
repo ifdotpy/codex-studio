@@ -4,6 +4,7 @@ import logging
 import math
 import os
 import sqlite3
+import sys
 import threading
 import time
 from pathlib import Path
@@ -111,6 +112,9 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
+                # Production commit paths use connection.commit(), context exit,
+                # or explicit BEGIN/COMMIT; unusual cursor/autocommit spellings
+                # are reconciled by the next supported commit (no callers today).
                 operation = words[0].upper() if words else ""
                 outcome = (
                     "committed"
@@ -192,9 +196,12 @@ class InstrumentedConnection(sqlite3.Connection):
             return
         state_dir = Path(self._codex_database_path).parent
         try:
-            from studio_api.sync.resources.hub import schedule_entity_publication
-
-            schedule_entity_publication(state_dir, self._codex_database_path)
+            hub_module = sys.modules.get("studio_api.sync.resources.hub")
+            if hub_module is not None:
+                registered = getattr(hub_module, "has_resource_hub", None)
+                schedule = getattr(hub_module, "schedule_entity_publication", None)
+                if callable(registered) and registered(state_dir) and callable(schedule):
+                    schedule(state_dir, self._codex_database_path)
         except Exception as error:
             logging.getLogger("codex.sync").warning(
                 "Could not hand off committed entity change: %s",

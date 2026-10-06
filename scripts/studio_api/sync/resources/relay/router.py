@@ -45,7 +45,7 @@ def create_router(context: ApiContext) -> APIRouter:
                 if other_resources:
                     hub.publish_many(other_resources)
                 if state_change:
-                    hub.publish_entity_sequence(context.entity_sequence() or 0)
+                    hub.publish_entity_sequence(context.entity_sequence() or 0, reset=True)
 
             notify_receipts.publish_once(
                 hub.workspace_id,

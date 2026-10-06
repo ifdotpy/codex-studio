@@ -215,7 +215,6 @@ if os.environ.get('PROGRESS_PUSH_UI_FIXTURE'):
 import json
 import threading
 def fixture_events():
-    global server
     for line in sys.stdin:
         message = json.loads(line)
         if message.get('method') == 'fixture/account-key':
@@ -332,9 +331,9 @@ def fixture_events():
             c.runtime.request(message)
         else:
             account_key = message.get('accountKey', 'default')
-            server = c.runtime.servers.get(account_key)
-            if server is not None:
-                server.notify(message)
+            native_server = c.runtime.servers.get(account_key)
+            if native_server is not None:
+                native_server.notify(message)
             else:
                 c.runtime.notification(message, account_key, c.runtime.connection_ids.get(account_key))
 threading.Thread(target=fixture_events, daemon=True).start()

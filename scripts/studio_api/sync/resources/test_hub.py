@@ -110,7 +110,14 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         watched_panel = panel("agent-state-test")
         hub = ResourceHub("workspace-state", entity_sequence=4)
         subscription = hub.subscribe([state, watched_panel], loop=loop)
-        initial = {entry.resource.root.kind: entry.revision for entry in subscription.initial.resourceVersions}
+        initial = {
+            resource.root.kind: version.revision
+            for resource, version in zip(
+                subscription.initial.resources,
+                subscription.initial.resourceVersions,
+                strict=True,
+            )
+        }
         self.assertEqual(initial["state"], 4)
         self.assertEqual(initial["panel"], 0)
 
@@ -118,7 +125,10 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         typed = await subscription.next_event(timeout=1)
         self.assertIsNotNone(typed)
         assert typed is not None
-        typed_versions = {entry.resource.root.kind: entry.revision for entry in typed.resourceVersions}
+        typed_versions = {
+            resource.root.kind: version.revision
+            for resource, version in zip(typed.resources, typed.resourceVersions, strict=True)
+        }
         self.assertEqual(typed_versions["panel"], 1)
 
         hub.publish_entity_sequence(5, [5])
@@ -136,9 +146,11 @@ class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(overflow)
         assert overflow is not None
         state_version = next(
-            item.revision
-            for item in overflow.resourceVersions
-            if item.resource.root.kind == "state"
+            version.revision
+            for resource, version in zip(
+                overflow.resources, overflow.resourceVersions, strict=True
+            )
+            if resource.root.kind == "state"
         )
         self.assertEqual(state_version, 6)
         subscription.close()

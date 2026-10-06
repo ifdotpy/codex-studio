@@ -137,20 +137,6 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         const competingUpdate = await response.json();
         assert.equal(competingUpdate.concurrency, 8);
         assert.ok(competingUpdate._syncEntities?.length);
-        // Stand-in for the entity commit notification this base server does
-        // not publish; deliver the competing server mutation's real envelope.
-        await page.evaluate(
-          ({ workspaceId, documents }) =>
-            window.dispatchEvent(
-              new CustomEvent("codex-sync-entities", {
-                detail: { workspaceId, documents },
-              }),
-            ),
-          {
-            workspaceId: syncWorkspaceId,
-            documents: competingUpdate._syncEntities,
-          },
-        );
       }
       if (loseNextReply) {
         loseNextReply = false;

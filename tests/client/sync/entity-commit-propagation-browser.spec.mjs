@@ -176,17 +176,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
       const state = await response.json();
       return state.threads.find((agent) => agent.name === "Release lead").id;
     });
-    const workspaceId = await pages[0].evaluate(() =>
-      fetch("/api/sync/identity")
-        .then((response) => response.json())
-        .then((value) => value.workspaceId),
-    );
     const results = [];
     const operations = [
       {
         operation: "chat",
-        id: crypto.randomUUID(),
-        name: "Cross-tab new chat",
         collection: "agent",
         entityId: null,
         deleted: false,
@@ -225,48 +218,39 @@ test("committed entities propagate between renderer tabs @sync", async ({
       const startedAt = Date.now();
       let reply;
       if (params.operation === "chat") {
-        reply = await pages[0].evaluate(
-          async ({ chat, workspaceId, cwd }) => {
-            const { token } = await fetch("/api/session").then((response) =>
-              response.json(),
-            );
-            window.dispatchEvent(new Event("codex-api-mutation-start"));
-            const dispatchEntities = (body) => {
-              if (body._syncEntities?.length) {
-                window.dispatchEvent(
-                  new CustomEvent("codex-sync-entities", {
-                    detail: { workspaceId, documents: body._syncEntities },
-                  }),
-                );
-              }
-            };
-            const created = await fetch("/api/leads", {
-              method: "POST",
-              headers: {
-                "content-type": "application/json",
-                "X-Canvas-Token": token,
-              },
-              body: JSON.stringify({ id: chat.id, cwd }),
-            });
-            const createdBody = await created.json();
-            dispatchEntities(createdBody);
-            window.dispatchEvent(new Event("codex-api-mutation-end"));
-            return {
-              ok: created.ok,
-              entityId: chat.id,
-              seq: Math.max(
-                ...createdBody._syncEntities.map((document) => document.seq),
-              ),
-              deliveredSequences: createdBody._syncEntities.map(
-                (document) => document.seq,
-              ),
-              acknowledgedAt: Date.now(),
-              collection: "agent",
-              deleted: false,
-            };
-          },
-          { chat: params, workspaceId },
+        await pages[0].locator(".project-tree-heading").first().hover();
+        const creationResponse = pages[0].waitForResponse(
+          (response) =>
+            response.request().method() === "POST" &&
+            new URL(response.url()).pathname === "/api/leads",
         );
+        await pages[0]
+          .getByRole("button", { name: /^New chat in / })
+          .first()
+          .click();
+        const created = await creationResponse;
+        const responseReceivedAt = Date.now();
+        const createdBody = await created.json();
+        assert.equal(created.status(), 200);
+        assert.ok(createdBody._syncEntities?.length);
+        await pages[0]
+          .locator("#conversation-title")
+          .getByText("New chat", { exact: true })
+          .waitFor();
+        // Selection follows post()'s awaited syncDocuments; this is an upper
+        // bound on persistence completion, avoiding response/persister races.
+        const persisterDoneAt = Date.now();
+        reply = {
+          ok: true,
+          entityId: createdBody.id,
+          seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
+          deliveredSequences: createdBody._syncEntities.map((doc) => doc.seq),
+          // S3's post() resolves only after the renderer persister finishes.
+          responseReceivedAt,
+          persisterDoneAt,
+          collection: "agent",
+          deleted: false,
+        };
       } else {
         reply = await command(commandId, params);
       }
@@ -299,6 +283,19 @@ test("committed entities propagate between renderer tabs @sync", async ({
           seq: reply.seq,
           elapsedMs: null,
           staleAfterMs,
+          pulls: pulls.map((rows, tab) =>
+            rows
+              .slice(previousPulls[tab])
+              .map((pull) => pull.documents.map((row) => row.seq)),
+          ),
+          stateFrames: await Promise.all(
+            pages.map((page, tab) =>
+              page.evaluate(
+                (from) => window.__entityFrames.slice(from),
+                previousFrames[tab],
+              ),
+            ),
+          ),
         });
         continue;
       }
@@ -309,15 +306,49 @@ test("committed entities propagate between renderer tabs @sync", async ({
       const document = matchingDocument(observed);
       if (params.operation === "chat") {
         const responseSequences = new Set(reply.deliveredSequences);
-        const actorRowsAfterResponse = pulls[0]
+        const actorFramesAfterMutation = await pages[0].evaluate(
+          (from) => window.__entityFrames.slice(from).map(({ at }) => at),
+          previousFrames[0],
+        );
+        const actorPullTimings = pulls[0]
           .slice(previousPulls[0])
-          .filter((pull) => pull.startedAt >= reply.acknowledgedAt)
+          .map(({ startedAt, at, documents }) => ({
+            startedAt,
+            completedAt: at,
+            sequences: documents.map((row) => row.seq),
+          }));
+        console.log(
+          `ENTITY_MUTATION_ORDER ${JSON.stringify({
+            responseReceivedAt: reply.responseReceivedAt,
+            persisterDoneAt: reply.persisterDoneAt,
+            frameArrivals: actorFramesAfterMutation,
+            actorPulls: actorPullTimings,
+          })}`,
+        );
+        const actorRowsAfterPersister = pulls[0]
+          .slice(previousPulls[0])
+          .filter((pull) => pull.startedAt >= reply.persisterDoneAt)
           .flatMap((pull) => pull.documents);
         assert.ok(
-          actorRowsAfterResponse.every(
+          actorRowsAfterPersister.every(
             (row) => !responseSequences.has(row.seq),
           ),
-          "the acting tab must not pull entity rows already in its mutation response",
+          `the acting tab must not pull entity rows already in its mutation response after persisting the response: ${JSON.stringify(
+            {
+              operation: params.operation,
+              responseReceivedAt: reply.responseReceivedAt,
+              persisterDoneAt: reply.persisterDoneAt,
+              responseSequences: [...responseSequences],
+              pullStarts: pulls[0]
+                .slice(previousPulls[0])
+                .map(({ startedAt, documents }) => ({
+                  startedAt,
+                  sequences: documents.map((row) => row.seq),
+                })),
+              frameArrivals: actorFramesAfterMutation,
+              pulledSequences: actorRowsAfterPersister.map((row) => row.seq),
+            },
+          )}`,
         );
       }
       if (params.operation === "chat") {
@@ -348,6 +379,18 @@ test("committed entities propagate between renderer tabs @sync", async ({
         operation: params.operation,
         entityId,
         seq: reply.seq,
+        ...(params.operation === "chat"
+          ? {
+              responseReceivedAt: reply.responseReceivedAt,
+              persisterDoneAt: reply.persisterDoneAt,
+              frameArrivals: changedFrames[0].map(
+                ({ elapsedMs }) => startedAt + elapsedMs,
+              ),
+              actorPullStarts: pulls[0]
+                .slice(previousPulls[0])
+                .map(({ startedAt: pullStartedAt }) => pullStartedAt),
+            }
+          : {}),
         ...(params.operation === "chat"
           ? {
               deliveredSequences: reply.deliveredSequences,

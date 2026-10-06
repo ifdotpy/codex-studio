@@ -416,11 +416,27 @@ class ExternalCliSseTests(unittest.TestCase):
 
                     posted = run_cli("codex-chat", "post", chat_id, "Native report", "--agent", "host-root")
                     self.assertEqual(posted.returncode, 0, posted.stderr)
-                    posted_event = self._read_frame(stream)
-                    posted_payload = json.loads(
-                        next(line[6:] for line in posted_event if line.startswith("data: "))
-                    )
-                    self.assertIn({"kind": "room", "roomId": chat_id}, posted_payload["resources"])
+                    # The external notification publishes the room and its
+                    # unknown entity sequence separately; accept both frames.
+                    posted_payloads = []
+                    for _ in range(2):
+                        posted_event = self._read_frame(stream)
+                        posted_payloads.append(
+                            json.loads(
+                                next(
+                                    line[6:]
+                                    for line in posted_event
+                                    if line.startswith("data: ")
+                                )
+                            )
+                        )
+                    posted_resources = [
+                        resource
+                        for payload in posted_payloads
+                        for resource in payload["resources"]
+                    ]
+                    self.assertIn({"kind": "state"}, posted_resources)
+                    self.assertIn({"kind": "room", "roomId": chat_id}, posted_resources)
                     message = canvas.messages(chat_id)[0]
                     self.assertEqual(message["author"], "host-root")
                     self.assertEqual(message["deliveries"], {})
