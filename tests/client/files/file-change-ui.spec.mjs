@@ -1,15 +1,15 @@
+import {
+  readTestState,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("File change", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -130,7 +130,7 @@ test("File change", async () => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Other project");
     const transcript = {
       items,

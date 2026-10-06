@@ -224,6 +224,7 @@ class ApiContext:
         """Return the attached runtime, which may not exist during startup."""
         runtime = cast("Runtime | None", self.canvas.runtime)
         if runtime is not None and self._sync_store is not None:
+            self._sync_store.runtime = runtime
             setattr(runtime, "sync_store", self._sync_store)
         return runtime
 
@@ -388,11 +389,15 @@ class ApiContext:
                     self.canvas.connect,
                     self.snapshot,
                     self.canvas.transcript,
-                    chat_snapshot=lambda: self.snapshot(include_work=False),
+                    chat_snapshot=self.chat_snapshot,
                     state_signature=state_signature,
+                    runtime=self.runtime,
                 )
                 if self.runtime is not None:
                     setattr(self.runtime, "sync_store", self._sync_store)
+            runtime = self.runtime
+            if runtime is not None:
+                self._sync_store.runtime = runtime
             return self._sync_store
 
     def resource_hub(self) -> ResourceHub:
@@ -441,6 +446,9 @@ class ApiContext:
                     "runtime": runtime_value,
                 })
         return cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None})
+
+    def chat_snapshot(self) -> dict[str, JsonValue]:
+        return self.snapshot(include_work=False)
 
     def entity_sequence(self) -> int | None:
         """Read the sync cursor without constructing services or mutating state."""

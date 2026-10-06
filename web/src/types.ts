@@ -1,24 +1,70 @@
 import { nativeErrorView } from "./nativeErrors";
 import type { GetResult } from "./api";
-import type { components } from "./generated/api";
+import type {
+  AgentEntityDto,
+  ChatEntityDto,
+  ComplaintEntityDto,
+  EdgeEntityDto,
+  EventEntityDto,
+  MonitorEntityDto,
+  PeerTeamEntityDto,
+  ProjectEntityDto,
+  RequestEntityDto,
+  RoomEntityDto,
+  RuleEntityDto,
+  TaskEntityDto,
+  WorkEntityDto,
+  WorkspaceEntityDto,
+  components,
+} from "./generated/api";
 
 // Provider and extensible app-server payloads are JSON objects, not untyped maps.
 export type JsonValue = components["schemas"]["JsonValue"];
 export type Json = Record<string, JsonValue>;
-export type Agent = components["schemas"]["SnapshotAgentDto"];
-export type Snapshot = GetResult<"/api/state">;
-export type PeerTeam = components["schemas"]["PeerTeamEntityDto"];
-export type Room = NonNullable<Snapshot["runtime"]>["rooms"][number];
-export type Complaint = NonNullable<Snapshot["runtime"]>["complaints"][number];
-export type BackgroundTask = NonNullable<Snapshot["runtime"]>["tasks"][number];
+export type Agent = AgentEntityDto;
+export type Chat = ChatEntityDto;
+export type PeerTeam = PeerTeamEntityDto;
+export type Room = RoomEntityDto;
+export type Complaint = ComplaintEntityDto;
+export type BackgroundTask = TaskEntityDto;
+export type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
+export type Monitor = MonitorEntityDto;
+export type Request = RequestEntityDto;
+export type Rule = RuleEntityDto;
+export type Project = ProjectEntityDto;
+export type Event = EventEntityDto;
+export type Work = WorkEntityDto;
+export type Edge = EdgeEntityDto;
+
+type SnapshotRuntime = WorkspaceEntityDto & {
+  agents: Agent[];
+  rooms: Room[];
+  tasks: BackgroundTask[];
+  monitors: Monitor[];
+  complaints: Complaint[];
+  requests: Request[];
+  rules: Rule[];
+  projects: Project[];
+  peerTeams: PeerTeam[];
+  events: Event[];
+  work: Work[];
+};
+
+/** Fields assembled for renderer consumers from entity collections. */
+type ProjectionSnapshotFields = {
+  token: string;
+  stateDir: string;
+  threads: Agent[];
+  chats: Chat[];
+  nodes: Array<Agent | Chat>;
+  edges: Edge[];
+};
+
+export type Snapshot = ProjectionSnapshotFields & { runtime: SnapshotRuntime };
+export type LegacySnapshot = GetResult<"/api/state">;
 export type FederationPeer = components["schemas"]["FederationPeer"];
 export type FederationRoom = components["schemas"]["FederationRoom"];
 export type FederationSnapshot = components["schemas"]["FederationSnapshot"];
-
-export const complaintNeedsUserResponse = (complaint: Complaint) =>
-  complaint.recipient
-    ? complaint.recipient === "user" && complaint.needsResponse
-    : complaint.author === complaint.leadId;
 
 type TranscriptWireItem = GetResult<"/api/transcript">["items"][number];
 type TranscriptAsset = NonNullable<TranscriptWireItem["assets"]>[number];

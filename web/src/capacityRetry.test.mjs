@@ -15,20 +15,13 @@ const agent = {
   },
 };
 
-it("returns generated retry data after validating its identity", () => {
+it("returns generated retry data after validating its thread and epoch", () => {
   assert.equal(currentCapacityRetry(agent), agent.capacityRetry);
   assert.equal(currentCapacityRetry({ ...agent, threadId: "other" }), null);
   assert.equal(
     currentCapacityRetry({
       ...agent,
       capacityRetry: { ...agent.capacityRetry, epoch: 6 },
-    }),
-    null,
-  );
-  assert.equal(
-    currentCapacityRetry({
-      ...agent,
-      capacityRetry: { ...agent.capacityRetry, id: null },
     }),
     null,
   );

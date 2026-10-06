@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Real runtime, HTTP API and browser, with deterministic app-server events.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("background-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -37,7 +40,7 @@ test("background-ui", async ({ page: fixturePage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () => (await fetch(origin + "/api/state")).json();
+    const state = async () => readTestState(origin);
     const initial = await state();
     const manual = await fetch(origin + "/api/monitor", {
       method: "POST",

@@ -1,10 +1,18 @@
+import {
+  readTestState,
+  readLegacySnapshotForS2Assertions,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI with an isolated backend and a recorded native bridge. No OS alerts.
 import { mkdtemp } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Desktop Notifications Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -53,7 +61,9 @@ test("Desktop Notifications Ui", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    let snapshot = await (await fetch(origin + "/api/state?view=chat")).json();
+    const initialEntityState = await readTestState(origin);
+    let snapshot = await readLegacySnapshotForS2Assertions(origin);
+    snapshot.token = initialEntityState.token;
     const response = await fetch(origin + "/api/leads", {
       method: "POST",
       headers: {
@@ -61,13 +71,14 @@ test("Desktop Notifications Ui", async ({
         "X-Canvas-Token": snapshot.token,
       },
       body: JSON.stringify({
-        name: "Other project",
+        id: randomUUID(),
         cwd: evidence,
-        request_id: "notification-fixture-lead",
       }),
     });
     assert.equal(response.ok, true, await response.text());
-    snapshot = await (await fetch(origin + "/api/state?view=chat")).json();
+    const refreshedEntityState = await readTestState(origin);
+    snapshot = await readLegacySnapshotForS2Assertions(origin);
+    snapshot.token = refreshedEntityState.token;
     const lead = snapshot.threads.find((a) => a.name === "Release lead");
     const other = snapshot.threads.find((a) => a.name === "Other project");
     assert.ok(other);
@@ -107,13 +118,23 @@ test("Desktop Notifications Ui", async ({
     );
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: identityResponse }),
     );
     let reads = 0;
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) => {
+    await page.route("**/api/sync/pull?*", (route) => {
       reads++;
-      return route.fulfill({ json: snapshot });
+      return route.fulfill({
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(snapshot, route.request().url()),
+        },
+      });
     });
     await page.goto(origin);
     await page
@@ -126,7 +147,7 @@ test("Desktop Notifications Ui", async ({
       const deadline = Date.now() + 12000;
       while (reads <= before && Date.now() < deadline)
         await page.waitForTimeout(100);
-      assert.ok(reads > before, "a new snapshot arrived");
+      assert.ok(reads > before, "a new entity pull arrived");
       await page.waitForTimeout(250);
     };
     assert.equal(
@@ -150,7 +171,7 @@ test("Desktop Notifications Ui", async ({
     assert.equal(
       await page.evaluate(() => window.alerts.length),
       1,
-      "no duplicate snapshot alert",
+      "no duplicate completion alert",
     );
     await page.evaluate(() => window.navigateAlert(window.alerts[0].target));
     await page

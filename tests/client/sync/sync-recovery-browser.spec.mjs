@@ -45,43 +45,6 @@ test("Sync recovery browser", async ({
             : { error: "Connection unavailable" },
       }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({
-        status: identityStatus,
-        json:
-          identityStatus === 200
-            ? {
-                token: "fixture",
-                stateDir: "fixture-workspace",
-                threads: [],
-                chats: [],
-                nodes: [],
-                edges: [],
-                at: 1,
-                runtime: {
-                  agents: [],
-                  complaints: [],
-                  connected: false,
-                  events: [],
-                  monitors: [],
-                  nativeNotices: [],
-                  peerTeams: [],
-                  peerTeamsVersion: 1,
-                  projectOrganizationVersion: 1,
-                  projects: [],
-                  rateLimits: { accountKey: "default", at: null, data: {} },
-                  rateLimitsByAccount: {},
-                  requests: [],
-                  rooms: [],
-                  rules: [],
-                  tasks: [],
-                  tasksHistoryLimit: 100,
-                  marker: "http",
-                },
-              }
-            : { error: "Connection unavailable" },
-      }),
-    );
     await page.route("**/api/session", (route) =>
       hangSession ? undefined : route.fulfill({ json: { token: "fixture" } }),
     );

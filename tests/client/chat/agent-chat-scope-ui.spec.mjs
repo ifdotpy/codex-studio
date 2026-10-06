@@ -1,7 +1,6 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Two lead conversations share a folder. Real room records and headless UI.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,7 +33,7 @@ test("Agent chat scope ui", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((a) => a.name === "Release lead");
     const other = state.threads.find((a) => a.name === "Other project");
     assert.equal(lead.cwd, other.cwd);

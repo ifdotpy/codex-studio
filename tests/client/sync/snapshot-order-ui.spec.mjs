@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI and isolated HTTP fixture. Requests deliberately finish out of order.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("snapshot-order-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -36,7 +39,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     fixture.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await (await fetch(`${origin}/api/state`)).json();
+  const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const worker = initial.threads.find(
     (agent) => agent.rootId === lead.id && agent.name === "Worker 00",
@@ -45,7 +48,8 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
   const errors = [],
-    requests = [];
+    requests = [],
+    entityPulls = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let revision = 0,
     holdNext = false,
@@ -53,7 +57,8 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     currentFailure = false,
     pendingAnswer,
     answered = false,
-    stateSeq = 1;
+    stateSeq = 1,
+    answerTombstone;
   const snapshot = () => {
     const data = structuredClone(initial);
     if (answered) data.runtime.requests = [];
@@ -65,6 +70,22 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
         }
     return data;
   };
+  const entityCollections = [
+    "requests",
+    "tasks",
+    "monitors",
+    "complaints",
+    "userTasks",
+    "projects",
+    "peerTeams",
+    "rooms",
+  ];
+  const entityCount = (data) =>
+    data.threads.length +
+    entityCollections.reduce(
+      (count, collection) => count + (data.runtime[collection]?.length ?? 0),
+      0,
+    );
   const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
@@ -85,16 +106,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
         });
     };
     add("agent", data.threads);
-    for (const collection of [
-      "requests",
-      "tasks",
-      "monitors",
-      "complaints",
-      "userTasks",
-      "projects",
-      "peerTeams",
-      "rooms",
-    ]) {
+    for (const collection of entityCollections) {
       const collectionName = {
         requests: "request",
         tasks: "task",
@@ -107,20 +119,16 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
       }[collection];
       add(collectionName, data.runtime[collection]);
     }
-    if (answered) {
-      for (const request of initial.runtime.requests || [])
-        rows.set(`request:${request.id}`, {
-          id: `entity:request:${request.id}`,
-          seq: sequence++,
-          _deleted: true,
-          payload: "{}",
-        });
-    }
-    const checkpoint = sequence - 1;
+    // The answer response delivers its tombstone immediately, as the real
+    // /api/answer route does. Keep that sequence in the pull cursor, without
+    // delivering the same deletion again from a later pull.
+    const checkpoint = Math.max(sequence - 1, answerTombstone?.seq ?? 0);
+    const documents = after < checkpoint ? [...rows.values()] : [];
+    entityPulls.push({ after, checkpoint, documents });
     await route.fulfill({
       json: {
         ...identity,
-        documents: after < checkpoint ? [...rows.values()] : [],
+        documents,
         checkpoint: { seq: Math.max(after, checkpoint) },
         initialHigh: checkpoint,
         maxSeq: checkpoint,
@@ -146,7 +154,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
       json: { id: route.request().postDataJSON().id, status: "sent" },
     }),
   );
-  await page.route("**/api/answer", (route) => {
+  await page.route("**/api/answer", async (route) => {
     pendingAnswer = route;
   });
   await page.goto(origin);
@@ -190,8 +198,48 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     );
   answered = true;
   stateSeq++;
-  await pendingAnswer.continue();
+  const requestId = pendingAnswer.request().postDataJSON().id;
+  const serverAnswer = await pendingAnswer.fetch();
+  const answerResponse = await serverAnswer.json();
+  assert.equal(serverAnswer.status(), 200);
+  assert.equal(answerResponse.status, "answered");
+  const serverTombstone = answerResponse._syncEntities?.find(
+    (document) => document.id === `entity:request:${requestId}`,
+  );
+  assert.ok(
+    serverTombstone?._deleted,
+    "The server answer returns the request tombstone",
+  );
+  assert.equal(
+    serverTombstone.payload,
+    JSON.stringify({ collection: "request", id: requestId, value: {} }),
+  );
+  const answerData = snapshot();
+  const answerSequence = stateSeq * 1000 + entityCount(answerData);
+  answerTombstone = {
+    ...serverTombstone,
+    seq: answerSequence,
+  };
+  answerResponse._syncEntities = answerResponse._syncEntities.map((document) =>
+    document.id === answerTombstone.id ? answerTombstone : document,
+  );
+  await pendingAnswer.fulfill({ response: serverAnswer, json: answerResponse });
   await card.waitFor({ state: "hidden" });
+  assert.equal(answerTombstone.seq, answerSequence);
+  assert.ok(
+    answerResponse._syncEntities.some(
+      (document) => document.id === answerTombstone.id && document._deleted,
+    ),
+  );
+  assert.equal(
+    entityPulls.some((pull) =>
+      pull.documents.some(
+        (document) => document.id === answerTombstone.id && document._deleted,
+      ),
+    ),
+    false,
+    "The answer tombstone is applied once from the mutation response, not redelivered by a pull",
+  );
 
   for (const oldFailure of [false, true]) {
     oldRequest = null;

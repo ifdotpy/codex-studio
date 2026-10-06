@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Isolated server and hidden browser. No model calls or user data.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("messages-unified-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -51,7 +54,7 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     fixture.once("exit", () => reject(new Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const data = await (await fetch(origin + "/api/state")).json();
+  const data = await readTestState(origin);
   const lead = data.threads.find((agent) => agent.name === "Release lead");
   const message = data.runtime.complaints.find(
     (item) => item.recipient === "user" && item.leadId === lead.id,

@@ -11,6 +11,7 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from entity_test_support import context_repair_wait
 
 spec = importlib.util.spec_from_file_location('connection_fixture', Path(__file__).with_name('connection-recovery-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -38,8 +39,9 @@ class QueuedActiveRecovery(unittest.TestCase):
             attempt = {'id': 'unsent-attempt', 'epoch': agent['epoch'], 'accountKey': agent['accountKey'],
                        'events': ['pending-0'], 'submitted': False, 'activeAtReservation': False}
             source = {field: agent[field] for field in ('id', 'epoch', 'accountKey', 'threadId')}
-            wait = {'source': {**source, 'attemptId': attempt['id']}, 'events': attempt['events'],
-                    'action': None, 'scope': 'local', 'error': 'Context repair waits for the current agent operation'}
+            wait = context_repair_wait(
+                'Context repair waits for the current agent operation', scope='local',
+                source={**source, 'attemptId': attempt['id']}, events=attempt['events'])
             agent.update(startAttempt=attempt, contextRepairWait=wait, error=wait['error'],
                 contextRepair={'id': 'unchanged-repair', 'agent': self.key, 'source': source, 'phase': 'unchanged'},
                 restartRecovery={**source, 'turnId': 'live-turn', 'stage': 'continued',

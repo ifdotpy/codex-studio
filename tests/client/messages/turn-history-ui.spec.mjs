@@ -1,12 +1,11 @@
 #!/usr/bin/env node
+import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
 // Production UI with isolated files and recorded transcript fixtures. No model calls.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Turn History Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -43,7 +42,7 @@ test("Turn History Ui", async ({
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(url + "/api/state")).json();
+    const state = await readTestState(url);
     const lead = state.runtime.agents.find((a) => a.name === "Release lead");
     const initial = await (
       await fetch(url + "/api/transcript?id=" + lead.id)

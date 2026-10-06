@@ -8,16 +8,23 @@ import {
   type RefObject,
 } from "react";
 import { get, post, ApiError, errorText } from "../api";
-import type { Agent, Message, Snapshot } from "../types";
+import type { Agent, LegacySnapshot, Message, Snapshot } from "../types";
 
-export type ChatReadState = {
-  threadId: string;
-  turnId: string;
-  read: boolean;
-  revision: number;
-};
+export type ChatReadState = NonNullable<Agent["readState"]>;
 export type ChatReadProof = { id: string; threadId: string; turnId: string };
 const completed = (agent: Agent): ChatReadProof | null =>
+  agent.threadId &&
+  agent.lastCompletedTurn &&
+  agent.lastCompletedTurnStatus === "completed"
+    ? {
+        id: agent.id,
+        threadId: agent.threadId,
+        turnId: agent.lastCompletedTurn,
+      }
+    : null;
+const legacyCompleted = (
+  agent: LegacySnapshot["threads"][number],
+): ChatReadProof | null =>
   agent.threadId &&
   agent.lastCompletedTurn &&
   agent.lastCompletedTurnStatus === "completed"
@@ -46,8 +53,6 @@ const parseReadState = (value: unknown): ChatReadState | null =>
         revision: value.revision,
       }
     : null;
-const storedState = (agent: Pick<Agent, "readState">): ChatReadState | null =>
-  parseReadState(agent.readState);
 
 export function useChatReadState(
   data: Snapshot | null,
@@ -94,7 +99,7 @@ export function useChatReadState(
   latest.current = { data, opened, notify, refresh, workspaceId };
   const readStateFor = useCallback(
     (agent: Agent): ChatReadState | null => {
-      const saved = storedState(agent);
+      const saved = agent.readState ?? null;
       const known = scope.current.states.get(agent.id);
       if (saved && (!known || saved.revision > known.revision)) {
         scope.current.states.set(agent.id, saved);
@@ -217,13 +222,13 @@ export function useChatReadState(
             const canonical = snapshot.threads.find(
               (value) => value.id === proof.id,
             );
-            const result = canonical && completed(canonical);
+            const result = canonical && legacyCompleted(canonical);
             if (
               snapshot.stateDir === latest.current.data?.stateDir &&
               result &&
               sameResult(result, proof)
             ) {
-              const state = canonical ? storedState(canonical) : null;
+              const state = canonical?.readState ?? null;
               const known = current.states.get(proof.id);
               if (state && (!known || state.revision >= known.revision))
                 current.states.set(proof.id, state);

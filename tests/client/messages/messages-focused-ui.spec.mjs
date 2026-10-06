@@ -1,3 +1,10 @@
+import {
+  readTestState,
+  stubEntityState,
+  readFixtureSyncContract,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Real runtime records, lost HTTP response, and responsive message navigation.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -5,8 +12,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -50,7 +55,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((a) => a.name === "Release lead");
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);
@@ -244,11 +249,10 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     const quietState = structuredClone(state);
     quietState.runtime.requests = [];
     quietState.runtime.complaints = [];
-    await stable.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture uses polling" } }),
-    );
-    await stable.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: quietState }),
+    await stubEntityState(
+      stable,
+      quietState,
+      await readFixtureSyncContract(origin),
     );
     quietState.runtime.userTasks = [];
     quietState.runtime.work = [];
@@ -316,6 +320,12 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
         },
       },
     ];
+    fixture.stdin.write(
+      JSON.stringify({
+        method: "fixture/request",
+        params: quietState.runtime.requests[0],
+      }) + "\n",
+    );
     await stableDrawer
       .getByRole("button", { name: "Refresh messages" })
       .click();

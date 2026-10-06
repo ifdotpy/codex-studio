@@ -1,3 +1,9 @@
+import {
+  readTestState,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { execFileSync } from "node:child_process";
@@ -7,12 +13,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("Sync stream measure @performance", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -79,9 +79,7 @@ test("Sync stream measure @performance", async () => {
   try {
     await waitFor(() => fixturePort, "private fixture startup");
     const fixtureOrigin = `http://127.0.0.1:${fixturePort}`;
-    const snapshot = await (
-      await fetch(fixtureOrigin + "/api/state?view=chat")
-    ).json();
+    const snapshot = await readTestState(fixtureOrigin);
     const lead = snapshot.threads.find((row) => row.name === "Release lead");
     assert.ok(lead?.id);
     const oldClient =

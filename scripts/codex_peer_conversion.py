@@ -194,7 +194,7 @@ def convert(runtime: "Runtime", data: Any) -> Any:
         at = time.time()
         project['peerTeams'] = [dict(id=t['id'], name=t['name'], members=[m for m in t['members'] if m != source_id])
                                 for t in teams if len([m for m in t['members'] if m != source_id]) >= 2]
-        project.update(peerTeamsRevision=revision + 1, updated=at)
+        project.update(peerTeamsRevision=revision + 1, updated=at)  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'projects', project)
         for agent in moving:
             agent.update(rootId=target_id, updated=at)
@@ -241,11 +241,10 @@ def convert(runtime: "Runtime", data: Any) -> Any:
                 room.update(kind='private', members=[a['id'] for a in moving if not a.get('deletedAt')],
                             customName=(source.get('name') or source_id) + ' (previous broadcast)')
             runtime.put(db, 'rooms', room)
-        # Project membership and dynamic room projections need explicit tombstones.
+        # Keep peer-team entities aligned with the same filtered view used by snapshots.
+        from codex_peer_teams import sync_entities as sync_peer_team_entities
+        sync_peer_team_entities(runtime, db, {path})
         from codex_sync_entities import put as sync_put
-        for team in teams:
-            updated = next((t for t in project['peerTeams'] if t['id'] == team['id']), None)
-            sync_put(db, 'peerTeam', team['id'], dict(updated, projectPath=path) if updated else {}, updated is None)
         for room in affected_rooms:
             visible = next(iter(runtime.chat_rooms(db, room_id=room['id'])), None)
             sync_put(db, 'room', room['id'], visible or {}, visible is None)

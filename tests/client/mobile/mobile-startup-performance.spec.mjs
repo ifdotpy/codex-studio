@@ -1,7 +1,12 @@
-import { test, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  readTestState,
+  browserExecutablePath,
+  legacySnapshotRoute,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production renderer and Runtime with generated history, no live user data.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import {
   cp,
   mkdtemp,
@@ -115,14 +120,14 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     const fixture = JSON.parse(
       await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
     );
-    const full = await (await fetch(origin + "/api/state")).text();
-    const compact = await (await fetch(origin + "/api/state?view=chat")).text();
-    const compactState = JSON.parse(compact);
-    const selected = compactState.threads.find(
+    const entityState = await readTestState(origin);
+    const fullState = entityState;
+    const full = JSON.stringify(fullState);
+    const selected = entityState.threads.find(
       (agent) => agent.id === fixture.lead,
     );
     const root = selected?.isLead ? selected.id : selected?.rootId;
-    const backgroundHistoryTargets = compactState.threads.filter(
+    const backgroundHistoryTargets = entityState.threads.filter(
       (agent) =>
         agent.source === "managed" &&
         agent.id !== fixture.lead &&
@@ -135,17 +140,17 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       backgroundHistoryTargets,
       fullStateBytes: Buffer.byteLength(full),
       fullStateGzipBytes: gzipSync(full, { level: 3 }).length,
-      compactStateBytes: Buffer.byteLength(compact),
-      compactStateGzipBytes: gzipSync(compact, { level: 3 }).length,
     });
     assert.ok(
-      measurements.fullStateGzipBytes > 4_000_000,
-      "Fixture history must remain large after compression",
+      measurements.fullStateGzipBytes > 180_000,
+      "Entity projection keeps at least 60 KB of compressed fixture history",
     );
     assert.ok(
-      !compactState.runtime.work,
-      "The chat snapshot excludes retained work history",
+      fullState.runtime.work.length > 0,
+      "Fixture has retained work history",
     );
+    // Measure the full state view assembled from the entity pull, not a
+    // compact object reconstructed from the same in-memory value.
     browser = await browserType.launch({
       headless: true,
       ...(browserType === chromium
@@ -274,10 +279,10 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       .waitFor({ state: "visible" });
     measurements.coldUsableChatListMs = Date.now() - started;
     if (expectCurrentBudgets) {
-      assert.equal(
-        requests.filter((request) => request.path === "/api/state").length,
-        0,
-        "Startup does not download full state",
+      assert.ok(
+        requests.filter((request) => request.path.startsWith("/api/sync/pull"))
+          .length <= maxIdlePulls,
+        `Startup stays within the ${maxIdlePulls}-pull budget`,
       );
       assert.ok(
         requests.some((request) =>
@@ -293,6 +298,12 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         ).length,
         0,
         "Startup never pulls the full state projection",
+      );
+      assert.equal(
+        requests.filter((request) => legacySnapshotRoute.test(request.path))
+          .length,
+        0,
+        "Startup never requests the legacy snapshot endpoint",
       );
     }
     await page.evaluate(() => navigator.serviceWorker.ready);
@@ -332,13 +343,17 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       );
     measurements.openEntitySyncStreams = await page.evaluate(
       () =>
-        window.performanceStreams.filter(
-          (stream) =>
+        window.performanceStreams.filter((stream) => {
+          const url = new URL(stream.url);
+          const resources = JSON.parse(
+            url.searchParams.get("resources") || "[]",
+          );
+          return (
             stream.testOpen &&
-            new URL(stream.url).pathname === "/api/sync/stream" &&
-            new URL(stream.url).searchParams.get("scope") ===
-              "state:entities:v1",
-        ).length,
+            url.pathname === "/api/sync/stream" &&
+            resources.some((resource) => resource.kind === "state")
+          );
+        }).length,
     );
     if (expectCurrentBudgets) {
       assert.equal(
@@ -427,8 +442,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         .filter((entry) => {
           const url = new URL(entry.name);
           return (
-            url.origin === location.origin &&
-            (url.pathname === "/api/state" || url.pathname === "/api/sync/pull")
+            url.origin === location.origin && url.pathname === "/api/sync/pull"
           );
         })
         .map((entry) => {
@@ -722,7 +736,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       JSON.stringify(measurements, null, 2),
     );
     console.log(
-      `PASS: mobile startup ${measurements.coldComposerMs} ms, cached draft ${measurements.warmDraftMs} ms, full state ${measurements.fullStateGzipBytes} bytes gzip, compact state ${measurements.compactStateGzipBytes} bytes gzip, one sync stream. Evidence: ${dir}`,
+      `PASS: mobile startup ${measurements.coldComposerMs} ms, cached draft ${measurements.warmDraftMs} ms, assembled state ${measurements.fullStateGzipBytes} bytes gzip, one sync stream. Evidence: ${dir}`,
     );
   } catch (error) {
     try {

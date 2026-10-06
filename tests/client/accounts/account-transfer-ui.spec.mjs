@@ -1,12 +1,16 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
-
 test("Account Transfer Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -145,6 +149,7 @@ test("Account Transfer Ui", async ({
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -158,24 +163,31 @@ test("Account Transfer Ui", async ({
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
-    if (url.pathname === "/api/state")
-      return json({
-        token: "fixture",
-        stateDir: evidence,
-        threads: agents,
-        chats: [],
-        runtime: {
-          agents,
-          rooms: [],
-          complaints: [],
-          requests: [],
-          monitors: [],
-          tasks: [],
-          work: [],
-          userTasks: [],
-          rateLimitsByAccount: snapshotLimits,
-        },
-      });
+    const stateForEntities = {
+      stateDir: evidence,
+      threads: agents,
+      chats: [],
+      runtime: {
+        agents,
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        work: [],
+        userTasks: [],
+        rateLimitsByAccount: snapshotLimits,
+      },
+    };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+      })
+    )
+      return;
+    if (url.pathname === "/api/session") return json({ token: "fixture" });
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -314,10 +326,7 @@ test("Account Transfer Ui", async ({
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
-    if (url.pathname.startsWith("/api/sync/")) {
-      res.statusCode = 404;
-      return json({ error: "Fixture uses HTTP snapshots" });
-    }
+
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {
@@ -570,21 +579,6 @@ test("Account Transfer Ui", async ({
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
     assert.deepEqual(errors, []);
-    console.log(
-      JSON.stringify({
-        ok: true,
-        evidence,
-        cases: [
-          "same chat",
-          "team progress",
-          "cancel remaining",
-          "receipt after reload",
-          "retry",
-          "automatic history without extra controls",
-          "destination account",
-        ],
-      }),
-    );
   } finally {
     server.closeAllConnections();
     server.close();

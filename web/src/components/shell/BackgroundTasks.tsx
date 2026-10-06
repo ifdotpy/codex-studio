@@ -34,16 +34,19 @@ import {
   apiDownload,
   errorText,
   type ApiPostPath,
-  type GetResult,
   type PostBody,
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
-import type { Agent, BackgroundTask, JsonValue, Snapshot } from "../../types";
+import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { watchResourceReads } from "../watchResourceReads";
 import { copyText } from "../../clipboard/clipboard";
-import { activeTask } from "../backgroundTaskModel";
+import {
+  activeTask,
+  projectTaskForRenderer,
+  type DisplayBackgroundTask,
+} from "../backgroundTaskModel";
 
 type BackgroundAction = <Path extends ApiPostPath>(
   path: Path,
@@ -51,45 +54,13 @@ type BackgroundAction = <Path extends ApiPostPath>(
 ) => Promise<boolean>;
 type TaskDetailResponse =
   paths["/api/task"]["get"]["responses"][200]["content"]["application/json"];
-type MonitorTask = NonNullable<Snapshot["runtime"]>["monitors"][number];
-type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
-type PendingRequest = NonNullable<Snapshot["runtime"]>["requests"][number];
+type MonitorTask = Monitor;
+type PendingRequest = Request;
 
-const taskStatuses: readonly BackgroundTask["status"][] = [
-  "running",
-  "starting",
-  "approval",
-  "queued",
-  "waiting",
-  "completed",
-  "failed",
-  "cancelled",
-  "interrupted",
-  "lost",
-];
-
-function isTaskStatus(value: unknown): value is BackgroundTask["status"] {
-  return taskStatuses.some((status) => status === value);
-}
-
-export function monitorTask(monitor: MonitorTask): BackgroundTask | null {
-  if (
-    typeof monitor.agent !== "string" ||
-    typeof monitor.created !== "number" ||
-    !isTaskStatus(monitor.status)
-  )
-    return null;
-  return {
-    ...monitor,
-    agent: monitor.agent,
-    created: monitor.created,
-    kind: "monitor",
-    status: monitor.status,
-  };
-}
-
-function workspaceTask(task: WorkspaceTask | BackgroundTask): BackgroundTask {
-  return { ...task };
+export function monitorTask(
+  monitor: MonitorTask,
+): DisplayBackgroundTask | null {
+  return projectTaskForRenderer(monitor, "monitor");
 }
 
 function isJsonObject(
@@ -119,9 +90,9 @@ const names: Record<string, string> = {
   contextCompaction: "Context compaction",
   fileChange: "File changes",
 };
-const taskName = (task: BackgroundTask) =>
+const taskName = (task: DisplayBackgroundTask) =>
   task.command ||
-  task.query ||
+  ("query" in task ? task.query : undefined) ||
   names[task.name || ""] ||
   task.name?.replaceAll("_", " ") ||
   "Tool call";
@@ -131,12 +102,12 @@ const duration = (seconds: number) =>
     : seconds < 3600
       ? `${Math.floor(seconds / 60)}m ${Math.floor(seconds % 60)}s`
       : `${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m`;
-const elapsed = (task: BackgroundTask, now: number) => {
+const elapsed = (task: DisplayBackgroundTask, now: number) => {
   if (task.durationMs != null) return duration(task.durationMs / 1000);
   if (!activeTask(task) && !task.finished) return "";
   return duration(Math.max(0, (task.finished || now) - task.created));
 };
-function TaskStatus({ task }: { task: BackgroundTask }) {
+function TaskStatus({ task }: { task: DisplayBackgroundTask }) {
   return (
     <Badge
       size="xs"
@@ -157,16 +128,17 @@ function TaskStatus({ task }: { task: BackgroundTask }) {
     </Badge>
   );
 }
-const iconFor = (task: BackgroundTask) =>
+const iconFor = (task: DisplayBackgroundTask) =>
   task.kind === "monitor"
     ? Activity
     : task.kind === "command"
       ? Terminal
       : Wrench;
-const taskKindLabel = (task: BackgroundTask, owner?: Agent) => {
+const taskKindLabel = (task: DisplayBackgroundTask, owner?: Agent) => {
   if (task.kind === "monitor") return "Monitor";
   if (task.kind !== "command") return "Tool";
   const outsideTurn =
+    "turnId" in task &&
     task.turnId &&
     owner &&
     (owner.inFlight === false ||
@@ -214,10 +186,12 @@ export default function BackgroundTasks({
   }, [opened]);
   const agents = data.threads,
     tasks = [
-      ...(data.runtime?.monitors ?? [])
+      ...data.runtime.monitors
         .map(monitorTask)
-        .filter((task): task is BackgroundTask => task !== null),
-      ...(taskFeed?.tasks ?? data.runtime?.tasks ?? []).map(workspaceTask),
+        .filter((task): task is DisplayBackgroundTask => task !== null),
+      ...(taskFeed?.tasks ?? data.runtime.tasks)
+        .map((task) => projectTaskForRenderer(task, "task"))
+        .filter((task): task is DisplayBackgroundTask => task !== null),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
   const scoped = tasks.filter(
@@ -427,7 +401,7 @@ export default function BackgroundTasks({
             opened={opened}
             owner={owner(selectedTask.agent)}
             now={now}
-            requests={data.runtime?.requests ?? []}
+            requests={data.runtime.requests}
             back={() => setMobileDetail(false)}
             openAgent={() => {
               close();
@@ -467,7 +441,7 @@ function TaskDetail({
   refresh,
   notify,
 }: {
-  task: BackgroundTask;
+  task: DisplayBackgroundTask;
   opened: boolean;
   owner?: Agent;
   now: number;
@@ -500,8 +474,11 @@ function TaskDetail({
       stop();
     };
   }, [opened, summary.id, summary.kind]);
-  const task =
-    detail && detail.id === summary.id ? { ...detail, ...summary } : summary;
+  const resolvedDetail = detail?.id === summary.id ? detail : null;
+  const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
+  const monitor = task.kind === "monitor" && "tail" in task ? task : null;
+  const outputTail = resolvedDetail?.tail ?? monitor?.tail;
+  const outputError = resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
     [follow, setFollow] = useState(true),
     [copied, setCopied] = useState(false);
@@ -509,7 +486,7 @@ function TaskDetail({
   useEffect(() => {
     if (follow && output.current)
       output.current.scrollTop = output.current.scrollHeight;
-  }, [task.tail, follow]);
+  }, [outputTail, follow]);
   const act: BackgroundAction = async <Path extends ApiPostPath>(
     path: Path,
     body: PostBody<Path>,
@@ -599,10 +576,10 @@ function TaskDetail({
               : "The agent receives the result when this command exits."}
           </p>
         )}
-        {task.arguments && (
+        {resolvedDetail?.arguments && (
           <details className="task-input">
             <summary>Tool input</summary>
-            <pre>{task.arguments}</pre>
+            <pre>{resolvedDetail.arguments}</pre>
           </details>
         )}
         {loadError && (
@@ -610,9 +587,9 @@ function TaskDetail({
             Output unavailable: {loadError}
           </p>
         )}
-        {task.error && (
+        {outputError && (
           <p role="alert" className="task-error">
-            <ErrorDescription value={task.error} />
+            <ErrorDescription value={outputError} />
           </p>
         )}
         {task.stdinError && (
@@ -644,16 +621,16 @@ function TaskDetail({
                 size="sm"
                 aria-label="Download task log"
                 disabled={pending}
-                onClick={() => void downloadLog(task, notify)}
+                onClick={() => void downloadLog(task, resolvedDetail, notify)}
               >
                 <Download size={13} />
               </ActionIcon>
               <ActionIcon
                 size="sm"
                 aria-label="Copy task output"
-                disabled={!task.tail}
+                disabled={!outputTail}
                 onClick={() => {
-                  void copyText(task.tail || "")
+                  void copyText(outputTail || "")
                     .then(() => setCopied(true))
                     .catch(() => notify("Could not copy output"));
                 }}
@@ -664,21 +641,21 @@ function TaskDetail({
           </div>
           <pre
             ref={output}
-            className={`task-output ${!task.tail ? "empty" : ""}`}
+            className={`task-output ${!outputTail ? "empty" : ""}`}
             onScroll={(e) => {
               const el = e.currentTarget;
               if (el.scrollHeight - el.scrollTop - el.clientHeight > 35)
                 setFollow(false);
             }}
           >
-            {task.tail ||
+            {outputTail ||
               (activeTask(task)
                 ? "Waiting for output…"
                 : "No output recorded.")}
           </pre>
           {(task.outputTruncated ||
             (task.bytes || 0) >
-              new TextEncoder().encode(task.tail || "").length) && (
+              new TextEncoder().encode(outputTail || "").length) && (
             <p className="task-output-limit">
               Latest output shown
               {task.log ? ". The saved log is available below." : "."}
@@ -751,7 +728,7 @@ function ProcessInput({
   pending,
   act,
 }: {
-  task: BackgroundTask;
+  task: DisplayBackgroundTask;
   pending: boolean;
   act: BackgroundAction;
 }) {
@@ -887,7 +864,11 @@ function ProcessInput({
   );
 }
 
-async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
+async function downloadLog(
+  task: DisplayBackgroundTask,
+  detail: TaskDetailResponse | null,
+  notify: (s: string) => void,
+) {
   try {
     let blob: Blob, name: string;
     if (task.kind === "monitor") {
@@ -897,7 +878,7 @@ async function downloadLog(task: BackgroundTask, notify: (s: string) => void) {
       if (result.truncated)
         notify("The download contains the retained part of the log.");
     } else {
-      blob = new Blob([task.tail || ""], { type: "text/plain" });
+      blob = new Blob([detail?.tail || ""], { type: "text/plain" });
       name = `command-${task.id}.log`;
       if (task.outputTruncated)
         notify("The download contains the retained output.");

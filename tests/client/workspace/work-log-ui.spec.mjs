@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Final answers, work disclosure, manual choice, and scroll intent. No model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -44,7 +43,7 @@ test("work log ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((a) => a.name === "Other project");
     let turn = "first",
       turnDone = false,

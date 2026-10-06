@@ -1,3 +1,4 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -5,8 +6,6 @@ import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { createRequire } from "node:module";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Mobile usability", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -112,7 +111,7 @@ test("Mobile usability", async () => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const lead = snapshot.threads.find(
       (agent) => agent.name === "Release lead",
     );

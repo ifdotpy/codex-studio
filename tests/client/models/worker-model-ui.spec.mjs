@@ -1,3 +1,9 @@
+import {
+  readTestState,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
@@ -5,12 +11,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
 import { modelOptions, modelValue, selectModel } from "../../model-picker.mjs";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("Worker model", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -60,6 +60,7 @@ test("Worker model", async () => {
       });
       page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     }
+    await page.exposeFunction("__readTestState", () => readTestState(url));
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     if (process.env.CODEX_TEST_DESKTOP) {
@@ -131,7 +132,7 @@ test("Worker model", async () => {
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })
       .click();
-    const initialState = await (await fetch(url + "/api/state")).json();
+    const initialState = await readTestState(url);
     const worker = initialState.runtime.agents.find(
       (agent) => agent.name === "Worker 07",
     );
@@ -154,7 +155,7 @@ test("Worker model", async () => {
         !document.querySelector("#model").disabled &&
         document.querySelector("#model").dataset.value === "test-model",
     );
-    const state = await (await fetch(url + "/api/state")).json();
+    const state = await readTestState(url);
     assert.equal(
       state.runtime.agents.find((agent) => agent.id === worker.id).model,
       "test-model",
@@ -216,15 +217,13 @@ test("Worker model", async () => {
       .waitFor();
     await selectModel(page.locator("#model"), "test-model");
     await page.waitForFunction(async (id) => {
-      const snapshot = await fetch("/api/state").then((response) =>
-        response.json(),
-      );
+      const snapshot = await window.__readTestState();
       return (
         snapshot.runtime.agents.find((agent) => agent.id === id)
           ?.pendingSettings?.model === "test-model"
       );
     }, busyWorker.id);
-    const queuedState = await (await fetch(url + "/api/state")).json();
+    const queuedState = await readTestState(url);
     assert.equal(
       queuedState.runtime.agents.find((agent) => agent.id === busyWorker.id)
         .model,
@@ -247,7 +246,7 @@ test("Worker model", async () => {
         !document.querySelector("#model").disabled &&
         document.querySelector("#model").dataset.value === "test-model",
     );
-    const leadState = await (await fetch(url + "/api/state")).json();
+    const leadState = await readTestState(url);
     const selectedLead = leadState.runtime.agents.find(
       (row) => row.name === "Release lead",
     );

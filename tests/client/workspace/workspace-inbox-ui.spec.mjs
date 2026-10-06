@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Desktop alerts use the existing snapshot and do not request workspace histories.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
@@ -34,9 +37,7 @@ test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (
-      await fetch(origin + "/api/state?view=chat")
-    ).json();
+    const snapshot = await readTestState(origin);
     const lead = snapshot.threads.find((row) => row.name === "Release lead");
     browser = fixtureBrowser;
     context = await browser.newContext({

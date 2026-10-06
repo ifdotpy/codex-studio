@@ -315,6 +315,12 @@ def fixture_events():
                     streaming=True, index_search=False,
                 )
             print(json.dumps({'id': message['id'], 'ok': True}), flush=True)
+        elif message.get('method') == 'fixture/request':
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.put(db, 'requests', message['params'])
+                agent = c.runtime.agent(message['params']['agent'], db)
+                agent.update(status='completed', inFlight=False, turnId=None)
+                c.runtime.put(db, 'agents', agent)
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])

@@ -17,6 +17,7 @@ spec = importlib.util.spec_from_file_location('actions', Path(__file__).with_nam
 f = importlib.util.module_from_spec(spec); spec.loader.exec_module(f)
 repair, eventually = f.f.repair, f.f.f.eventually
 from codex_account_transfer import transfer_store
+from entity_test_support import context_repair_wait
 
 
 class ContextWait(f.NativeActionRepair):
@@ -47,6 +48,11 @@ class ContextWait(f.NativeActionRepair):
             self.assertEqual(len(rows), 1)
             self.assertIn('"checks": 5', rows[0]['text'])
             self.assertEqual(rows[0]['status'], 'pending')
+            entity = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (worker['id'],)).fetchone()[0])['value']
+            self.assertEqual(entity['contextRepairWait'], {
+                'error': wait['error'], 'scope': wait['scope']})
 
     def test_transfer_retires_cancelled_wait_after_user_pause_without_replay(self):
         rt = self.runtime
@@ -58,9 +64,9 @@ class ContextWait(f.NativeActionRepair):
                        'epoch':agent['epoch'],'accountKey':'default','submitted':False}
             identity = repair._identity({**agent, 'startAttempt':attempt})
             agent.update(status='paused', autoWake=False, inFlight=False,
-                         accountTransferId='cancelled-transfer', contextRepairWait={
-                'source':identity, 'events':attempt['events'],
-                'error':'Context repair waits for native notification delivery'})
+                         accountTransferId='cancelled-transfer', contextRepairWait=context_repair_wait(
+                'Context repair waits for native notification delivery', source=identity,
+                events=attempt['events']))
             agent.pop('startAttempt', None)
             # The live pause also advanced the epoch past the wait's events.
             agent['epoch'] += 1
@@ -131,8 +137,9 @@ class ContextWait(f.NativeActionRepair):
         attempt = {'id':'uncertain-attempt', 'epoch':self.a['epoch'], 'threadId':self.tid,
                    'accountKey':'default', 'events':[message_id], 'submitted':False}
         self.agent_update(self.a, status='queued', inFlight=False, startAttempt=attempt,
-            contextRepairWait={'source':repair._identity({**self.a,'startAttempt':attempt}), 'events':[message_id],
-                'error':'Context repair waits for a confirmed input receipt: ' + message_id})
+            contextRepairWait=context_repair_wait(
+                'Context repair waits for a confirmed input receipt: ' + message_id,
+                source=repair._identity({**self.a,'startAttempt':attempt}), events=[message_id]))
         original = self.server.call
         def call(method, params, timeout=10):
             if method == 'thread/read':
@@ -275,9 +282,9 @@ class ContextWait(f.NativeActionRepair):
                        'attemptId':'older-wait-attempt'}
         self.agent_update(self.a, status='queued', autoWake=True, inFlight=False,
             startAttempt=newer_attempt, error='Context repair waits for the existing native recovery receipt',
-            contextRepairWait={'source':wait_source,
-                'events':['newer-input'], 'error':'Context repair waits for the existing native recovery receipt',
-                'checks':1},
+            contextRepairWait=context_repair_wait(
+                'Context repair waits for the existing native recovery receipt',
+                source=wait_source, events=['newer-input'], checks=1),
             restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
                 'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
                 'autoWake':True, 'startAttempt':None})
@@ -353,9 +360,10 @@ class ContextWait(f.NativeActionRepair):
                    'events':['held-pending'], 'submitted':False}
         error = 'Context repair waits for the existing native recovery receipt'
         self.agent_update(self.a, status='queued', autoWake=True, inFlight=False, startAttempt=attempt,
-            contextRepairWait={'source':{**repair._identity(self.a), 'attemptId':'held-attempt'},
-                'events':['held-pending'], 'error':error, 'checks':9,
-                'lastHistoryCheck':'The unconfirmed input is outside the current start attempt'},
+            contextRepairWait=context_repair_wait(error,
+                source={**repair._identity(self.a), 'attemptId':'held-attempt'},
+                events=['held-pending'], checks=9,
+                lastHistoryCheck='The unconfirmed input is outside the current start attempt'),
             restartRecovery={'epoch':self.a['epoch'], 'accountKey':'default', 'threadId':self.tid,
                 'turnId':None, 'stage':'held', 'reason':'Native input submission has no confirmed turn identity.',
                 'autoWake':True, 'startAttempt':None})

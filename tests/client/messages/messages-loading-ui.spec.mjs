@@ -1,15 +1,18 @@
+import {
+  readTestState,
+  entityPullFixtureForRequest,
+  entityPullFixture,
+  syncIdentityFixture,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("Messages loading", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -47,7 +50,7 @@ test("Messages loading", async () => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     const complaint = state.runtime.complaints.find(
@@ -166,15 +169,49 @@ test("Messages loading", async () => {
       });
       next.setDefaultTimeout(12000);
       next.on("pageerror", (error) => errors.push(error.message));
-      await next.route("**/api/sync/**", (route) =>
-        route.fulfill({ status: 404, json: { error: "Use fixture polling" } }),
+      const backendIdentity = await (
+        await fetch(`${origin}/api/sync/identity`)
+      ).json();
+      const identity = syncIdentityFixture(backendIdentity.workspaceId);
+      await next.route("**/api/sync/identity", (route) =>
+        route.fulfill({ json: identity }),
       );
-      await next.route("**/api/state*", (route) => {
+      await next.route("**/api/sync/pull?*", (route) => {
         stateReads++;
         const current = structuredClone(state);
         current.fixtureRevision = stateReads;
-        current.threads[0].updated = 100 + stateReads;
-        return route.fulfill({ json: current });
+        const leadEntity = current.runtime.agents.find(
+          (agent) => agent.id === lead.id,
+        );
+        if (leadEntity) leadEntity.updated = 100 + stateReads;
+        const requestUrl = route.request().url();
+        const projection = entityPullFixtureForRequest(current, requestUrl);
+        const parsedUrl = new URL(requestUrl);
+        if (
+          parsedUrl.searchParams.get("scope") === "state:entities:v1" &&
+          projection.documents.length === 0 &&
+          Number(parsedUrl.searchParams.get("after") || 0) >= projection.maxSeq
+        ) {
+          const initial = entityPullFixture(current, {
+            scope: "state:entities:v1",
+            fresh: true,
+          });
+          const update = initial.documents.find(
+            (document) => document.id === `entity:agent:${lead.id}`,
+          );
+          if (update) {
+            const seq = projection.maxSeq + 1;
+            projection.documents.push({ ...update, seq });
+            projection.checkpoint.seq = seq;
+            projection.maxSeq = seq;
+          }
+        }
+        return route.fulfill({
+          json: {
+            workspaceId: identity.workspaceId,
+            ...projection,
+          },
+        });
       });
       await next.route("**/api/workspace/tasks?*", async (route) => {
         workspaceReads++;

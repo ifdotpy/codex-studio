@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("account limit dots ui", async ({ browser: runnerBrowser }) => {
   // Four viewport and color scheme passes share one fixture backend.
   test.setTimeout(420_000);
@@ -30,9 +34,7 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await fetch(`${origin}/api/state`).then((response) =>
-      response.json(),
-    );
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const now = Math.floor(Date.now() / 1000);
     const teamKeys = [
@@ -220,15 +222,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       await page.route("**/api/accounts", (route) =>
         route.fulfill({ json: { defaultAccountKey: "default", accounts } }),
       );
-      await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-        const response = await route.fetch();
-        const state = await response.json();
-        state.runtime.rateLimits = snapshots.default;
-        state.runtime.rateLimitsByAccount = snapshots;
-        withTeamAccounts(state.threads);
-        withTeamAccounts(state.runtime.agents);
-        await route.fulfill({ response, json: state });
-      });
       await page.route("**/api/sync/pull?*", async (route) => {
         // A closing page can dispose a pending long poll; nothing to patch then.
         let response, data;

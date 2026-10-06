@@ -1,7 +1,12 @@
+import {
+  apiSchemaHandshakeSse,
+  legacySnapshotRoute,
+  syncIdentityFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 // Replicated state uses the current credential endpoint and reports failures.
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
-
 test("Session Poll Browser", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -40,21 +45,23 @@ test("Session Poll Browser", async ({
     const page = testPage;
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    let snapshots = 0,
+    let pulls = 0,
+      snapshotReads = 0,
       sessions = 0,
       status = 200,
       token = "first";
-    const workspaceId = "a".repeat(32);
+    const identity = syncIdentityFixture();
+    const workspaceId = identity.workspaceId;
+    await page.route(legacySnapshotRoute, (route) => {
+      snapshotReads++;
+      return route.continue();
+    });
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
         body: "<!doctype html><title>Session refresh</title>",
       }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) => {
-      snapshots++;
-      return route.fulfill({ json: { token, marker: "http" } });
-    });
     await page.route("**/api/session", (route) => {
       sessions++;
       return route.fulfill({
@@ -63,7 +70,7 @@ test("Session Poll Browser", async ({
       });
     });
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identity }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -72,6 +79,7 @@ test("Session Poll Browser", async ({
       }),
     );
     await page.route("**/api/sync/pull?*", (route) => {
+      pulls++;
       const after = Number(
         new URL(route.request().url()).searchParams.get("after"),
       );
@@ -122,10 +130,11 @@ test("Session Poll Browser", async ({
     await page.evaluate(() => window.snapshot.refresh());
     assert.ok(sessions >= 2);
     assert.equal(
-      snapshots,
+      snapshotReads,
       0,
       "Replicated startup and refresh never download the full state",
     );
+    assert.ok(pulls > 0, "Startup and refresh use the entity pull");
     token = "rotated";
     await page.evaluate(() => window.snapshot.refresh());
     assert.equal(
@@ -144,13 +153,13 @@ test("Session Poll Browser", async ({
         "Session unavailable",
       );
       assert.equal(
-        snapshots,
-        0,
-        "A missing endpoint or server failure never invokes the old snapshot fallback",
-      );
-      assert.equal(
         await page.evaluate(() => window.snapshot.data.token),
         "rotated",
+      );
+      assert.equal(
+        snapshotReads,
+        0,
+        "A missing endpoint or server failure never invokes the old snapshot fallback",
       );
     }
     status = 200;
@@ -161,9 +170,11 @@ test("Session Poll Browser", async ({
       "recovered",
     );
     assert.equal(await page.evaluate(() => window.snapshot.error), "");
+    assert.equal(snapshotReads, 0, "Never download the full state");
+    assert.equal(snapshotReads, 0, "Never invoke the old snapshot fallback");
     assert.deepEqual(errors, []);
     console.log(
-      "session polling PASS: no repeated full snapshot, rotated token, visible error, missing endpoint rejection",
+      "session polling PASS: entity pull, rotated token, visible error, missing endpoint rejection",
     );
   } finally {
     await server.close();

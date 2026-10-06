@@ -12,6 +12,7 @@ import threading
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+from entity_test_support import context_repair_wait
 
 spec = importlib.util.spec_from_file_location(
     'connection_fixture', Path(__file__).with_name('connection-recovery-contract.py'))
@@ -102,7 +103,7 @@ class WorkerConnectionStability(unittest.TestCase):
             {'nativeFailureHold': True}, {'status': 'approval'},
             {'accountTransferId': 'transfer'}, {'workspaceOperation': 'operation'},
             {'contextRepair': {'id': 'unknown-fork', 'phase': 'unknown'}},
-            {'contextRepairWait': {'error': 'Waiting for receipt'}},
+            {'contextRepairWait': context_repair_wait('Waiting for receipt')},
             {'status': 'paused', 'epoch': initial['epoch'] + 1, 'error': 'Stopped by user'},
             {'startAttempt': {'id': 'unknown-start', 'submitted': True}},
         ]

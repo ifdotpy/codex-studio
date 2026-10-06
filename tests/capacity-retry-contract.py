@@ -233,6 +233,18 @@ class CapacityContract(unittest.TestCase):
             self.assertIsNone(self.fail(info))
             self.assertEqual(len(self.starts()), 1)
 
+    def test_failed_turn_projects_capacity_retry_renderer_fields(self):
+        retry = self.fail()
+        with self.runtime.db() as db:
+            value = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.key,)).fetchone()[0])["value"]["capacityRetry"]
+        self.assertEqual(value["id"], retry["id"])
+        self.assertEqual(value["status"], retry["status"])
+        self.assertEqual(value["threadId"], retry["threadId"])
+        self.assertNotIn("cwd", value)
+        self.assertNotIn("settings", value)
+
     def test_cancel_and_stale_timer_do_not_claim_but_manual_retry_can(self):
         retry = self.fail()
         result = self.retry(retry, 'cancel')

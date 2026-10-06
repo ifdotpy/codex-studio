@@ -1,3 +1,9 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Real App, Conversation, and RxDB. Only an isolated fixture receives writes.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -6,9 +12,6 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("mobile-send-reliability-ui", async ({ browser }) => {
   test.setTimeout(120_000);
@@ -337,8 +340,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     );
     // An old browser receipt can still refer to a message already rejected by
     // the outbox. A reload must not trap every explicit retry on that failed ID.
-    const stateDir = (await (await fetch(target + "/api/state")).json())
-      .stateDir;
+    const stateDir = (await readTestState(target)).stateDir;
     const failedBody = {
       id: "old-failed-after-reload",
       room: posts[0].room,
@@ -346,9 +348,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
       assets: [],
       delivery: "queue",
     };
-    const snapshotBeforeRetry = await (
-      await fetch(target + "/api/state")
-    ).json();
+    const snapshotBeforeRetry = await readTestState(target);
     const failedChatName = snapshotBeforeRetry.runtime.agents.find(
       (agent) => agent.id === failedBody.room,
     )?.name;
@@ -395,7 +395,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
 
     // A second tab can retry while the first tab has a committed but stalled
     // response. The real HTTP handler and SQLite retain one logical message.
-    const snapshot = await (await fetch(target + "/api/state")).json();
+    const snapshot = await readTestState(target);
     const other = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );

@@ -1,8 +1,8 @@
 import { Button, Textarea } from "@mantine/core";
 import { useEffect, useMemo, useState } from "react";
 import { get, post, ApiError, errorText, save, saved } from "../../../api";
-import type { Snapshot } from "../../../types";
-import type { components, paths } from "../../../generated/api";
+import type { Complaint, Snapshot } from "../../../types";
+import type { paths } from "../../../generated/api";
 import "./complaint-book.css";
 import ErrorDescription from "../../ErrorDescription";
 import MessageDate from "../../conversation/transcript/MessageDate";
@@ -18,7 +18,6 @@ import {
 // Preserve confirmed replies while a cached snapshot catches up.
 type ComplaintDetailResponse =
   paths["/api/complaint"]["get"]["responses"][200]["content"]["application/json"];
-type Complaint = components["schemas"]["SnapshotComplaintDto"];
 type ComplaintSummary = Complaint;
 
 const confirmedMessages = new Map<string, ComplaintDetailResponse>();
@@ -209,7 +208,7 @@ export default function UserMessages({
       ),
     [pendingKey],
   );
-  const records = (data.runtime?.complaints ?? []).filter(
+  const records = data.runtime.complaints.filter(
     (message) =>
       recipient(message) === target &&
       (!onlyComplaintId || message.id === onlyComplaintId),
@@ -271,7 +270,7 @@ function UserMessage({
     if (focused) setReply(true);
   }, [focused, focusRequestId]);
   useEffect(() => {
-    if (typeof message.text === "string" && Array.isArray(message.responses)) {
+    if (isComplaintDetail(message)) {
       setDetail((current) =>
         (current.version || 0) > (message.version || 0) ? current : message,
       );
@@ -296,7 +295,8 @@ function UserMessage({
     return () => {
       live = false;
     };
-  }, [message.id, message.version, message.text, message.responses, attempt]);
+  }, [message.id, message.version, attempt]);
+  const detailView = isComplaintDetail(detail) ? detail : null;
   const authorName = (id: string) =>
     id === "user"
       ? "You"
@@ -312,14 +312,12 @@ function UserMessage({
           <span>to {message.leadName || "Main agent"}</span>
         )}
       </div>
-      <MessageDate at={detail.created || message.created} />
+      <MessageDate at={detailView?.created ?? message.created} />
       <StreamingText
-        text={detail.text || ""}
+        text={detailView?.text ?? ""}
         agentId={message.author || undefined}
       />
-      {typeof detail.text !== "string" && !error && (
-        <p role="status">Loading message…</p>
-      )}
+      {!detailView && !error && <p role="status">Loading message…</p>}
       {!!error && (
         <p role="alert">
           <ErrorDescription value={error} role="status" />{" "}
@@ -328,9 +326,11 @@ function UserMessage({
           </Button>
         </p>
       )}
-      {(detail.responses || []).map((response) => (
+      {detailView?.responses.map((response) => (
         <article className="complaint-response" key={response.id}>
-          <strong>{authorName(response.author || detail.leadId || "")}</strong>
+          <strong>
+            {authorName(response.author || detailView.leadId || "")}
+          </strong>
           <MessageDate at={response.at} />
           <StreamingText
             text={response.text || ""}
@@ -377,9 +377,5 @@ function UserMessage({
 function isComplaintDetail(
   complaint: ComplaintSummary | ComplaintDetailResponse,
 ): complaint is ComplaintDetailResponse {
-  return (
-    typeof complaint.text === "string" &&
-    Array.isArray(complaint.responses) &&
-    Number.isInteger(complaint.version)
-  );
+  return "text" in complaint;
 }

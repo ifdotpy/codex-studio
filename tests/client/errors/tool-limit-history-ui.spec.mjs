@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Render recorded worker and native failures in the production UI. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -39,7 +38,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await fetch(origin + "/api/state").then((r) => r.json());
+    const state = await readTestState(origin);
     const lead = state.runtime.agents.find((a) => a.name === "Release lead");
     const initial = await fetch(origin + "/api/transcript?id=" + lead.id).then(
       (r) => r.json(),

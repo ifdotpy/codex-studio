@@ -42,8 +42,35 @@ if TYPE_CHECKING:
 
 
 class FakeRuntime:
+    closed = False
+
     def __init__(self) -> None:
         self.calls: list[tuple[str, object]] = []
+        self.lock = threading.RLock()
+        self.branch_record: dict[str, object] = {}
+
+    @contextmanager
+    def db(self) -> Iterator[sqlite3.Connection]:
+        db = sqlite3.connect(":memory:")
+        try:
+            yield db
+        finally:
+            db.close()
+
+    def agent(self, _key: str, _db: sqlite3.Connection) -> dict[str, object]:
+        return self.branch_record
+
+    @staticmethod
+    def empty_lead(_db: object, _record: dict[str, object]) -> bool:
+        return False
+
+    def agent_entity_view(
+        self, db: sqlite3.Connection, record: dict[str, object]
+    ) -> dict[str, object]:
+        from codex_runtime import Runtime
+
+        view = cast(Callable[..., dict[str, object]], Runtime.agent_entity_view)
+        return view(self, db, record)
 
     def transcript(self, key: str | None, **kwargs: object) -> dict[str, object]:
         self.calls.append(("transcript", {"key": key, **kwargs}))
@@ -90,6 +117,7 @@ class FakeRuntime:
         agent_view = cast(Callable[..., dict[str, object]], Runtime.agent_entity_view)
         result = agent_view(EntityProducer(), None, record)
         result["draft"] = {"text": "hello", "prefixText": "", "assets": []}
+        self.branch_record = result
         return result
 
     def checkpoint_capture(self, agent: str, label: str) -> dict[str, object]:

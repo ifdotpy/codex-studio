@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Exercise production components against isolated HTTP and SQLite, with one transport failure.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -53,8 +52,7 @@ test("installed queue display ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = () =>
-      fetch(`${origin}/api/state`).then((response) => response.json());
+    const state = () => readTestState(origin);
     const initial = await state();
     const lead = initial.threads.find(
       (agent) => agent.name === "Other project",

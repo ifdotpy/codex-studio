@@ -1,9 +1,14 @@
+import {
+  readTestState,
+  readLegacySnapshotForS2Assertions,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("sidebar drag browser", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
@@ -21,7 +26,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
-    const state = async () => await (await fetch(url + "/api/state")).json();
+    const state = async () => await readTestState(url);
     const initial = await state();
     const agents = Object.fromEntries(
       initial.runtime.agents.map((a) => [a.name, a]),
@@ -294,8 +299,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     assert.equal(await row("Team source").count(), 0);
     const repeated = await post(conversionBodies[0]);
     assert.equal(repeated.status, 200);
+    const finalLegacy = await readLegacySnapshotForS2Assertions(url);
     assert.equal(
-      (await state()).runtime.agents.find((a) => a.id === moved.id).epoch,
+      finalLegacy.runtime.agents.find((a) => a.id === moved.id).epoch,
       moved.epoch,
     );
     expect(errors).toEqual([]);

@@ -1,9 +1,13 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Reasoning History Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -43,7 +47,7 @@ test("Reasoning History Ui", async ({
       child.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.runtime.agents.find((a) => a.name === "Release lead");
     const base = await (
       await fetch(origin + "/api/transcript?id=" + lead.id)
