@@ -392,6 +392,7 @@ class ApiContext:
                     chat_snapshot=self.chat_snapshot,
                     state_signature=state_signature,
                     runtime=self.runtime,
+                    canvas=self.canvas,
                 )
                 if self.runtime is not None:
                     setattr(self.runtime, "sync_store", self._sync_store)

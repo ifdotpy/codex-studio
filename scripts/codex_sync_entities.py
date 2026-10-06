@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import sqlite3
-from typing import Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import AfterValidator, TypeAdapter
 
@@ -27,7 +27,12 @@ from studio_api.sync.models import (
     WorkspaceEntityDto,
     SyncEntityPayload,
 )
+from codex_records import AgentRecord, JsonObject, RoomRecord
 from studio_api.models import JsonValue, _validate_finite_json
+
+if TYPE_CHECKING:
+    from codex_canvas import Canvas
+    from codex_runtime import Runtime
 
 ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
@@ -95,7 +100,26 @@ _AGENT_FIELD_ALLOWLISTS = {
     "contextRepairWait": ("scope", "error"),
 }
 _AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))
-_OMITTED_PROMOTED_AGENT_FIELDS: set[tuple[str, str]] = set()
+_REPORTED_BAD_ENTITIES: set[tuple[str, str, str]] = set()
+_REPORTED_BAD_FIELDS: set[tuple[str, str, str, str]] = set()
+
+
+def _report_bad_entity(collection: str, key: str, error: BaseException) -> None:
+    identity = (collection, key, type(error).__name__)
+    if identity not in _REPORTED_BAD_ENTITIES:
+        _REPORTED_BAD_ENTITIES.add(identity)
+        logging.getLogger(__name__).warning(
+            "Skipping malformed sync entity collection=%s id=%s error=%s",
+            collection, key, identity[2])
+
+
+def _report_bad_field(collection: str, key: str, field: str, error: BaseException) -> None:
+    identity = (collection, key, field, type(error).__name__)
+    if identity not in _REPORTED_BAD_FIELDS:
+        _REPORTED_BAD_FIELDS.add(identity)
+        logging.getLogger(__name__).warning(
+            "Omitting invalid display field collection=%s id=%s field=%s error=%s",
+            collection, key, field, identity[3])
 
 
 def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValue:
@@ -123,9 +147,11 @@ def _contains_nonfinite(value: JsonValue) -> bool:
 def project(collection: str, record: JsonValue) -> JsonValue | None:
     """Return only renderer-owned fields; never expose a raw runtime record."""
     if not isinstance(record, dict):
+        _report_bad_entity(collection, "", TypeError("record is not an object"))
         return None
     model = _DTO_MODELS.get(collection)
     if model is None:
+        _report_bad_entity(collection, str(record.get("id", "")), ValueError("unknown entity collection"))
         return None
     fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
     result = {
@@ -137,6 +163,11 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             and isinstance(value, dict)
         )
     }
+    for field, value in tuple(result.items()):
+        if _contains_nonfinite(value):
+            result.pop(field, None)
+            _report_bad_field(collection, str(record.get("id", "")), field,
+                              ValueError("display field contains a non-finite number"))
     if collection == "agent":
         for field, allowed in _AGENT_FIELD_ALLOWLISTS.items():
             value = record.get(field)
@@ -164,46 +195,43 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 for key, value in overview.items()
                 if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId", "resultFile"}
             }
-        promoted = ("capacityRetry", "usageResume", "contextRepairWait", "epoch",
-                    "lastCompletedTurnStatus", "lastEvent", "accountTransferId",
-                    "workspaceOperation", "overview")
-        for field in promoted:
-            if field in result and _contains_nonfinite(result[field]):
-                result.pop(field)
-                identity = (str(record.get("id", "")), field)
-                if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
-                    _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
-                    logging.getLogger(__name__).warning(
-                        "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
-                        identity[0], field, "NonFiniteNumber")
-    try:
-        validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
-    except Exception as error:
-        if collection != "agent" or not hasattr(error, "errors"):
-            raise
-        failures = error.errors()
-        promoted = {"epoch", "lastCompletedTurnStatus", "capacityRetry", "usageResume",  # type: ignore[assignment]  # typed-narrowing: this local is reused for the promoted field-name set
-                    "contextRepairWait", "lastEvent", "accountTransferId", "workspaceOperation"}
-        bad_fields = {str(item["loc"][0]) for item in failures
-                      if item.get("loc") and str(item["loc"][0]) in promoted}
-        if not bad_fields or any(not item.get("loc") or str(item["loc"][0]) not in promoted
-                                 for item in failures):
-            raise
-        for field in bad_fields:
-            result.pop(field, None)
-            identity = (str(record.get("id", "")), field)
-            if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
-                _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
-                logging.getLogger(__name__).warning(
-                    "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
-                    identity[0], field, type(error).__name__)
-        validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
+    while True:
+        try:
+            validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
+            break
+        except Exception as error:
+            error_reader = getattr(error, "errors", None)
+            failures = error_reader() if callable(error_reader) else []
+            bad_fields = {
+                str(item["loc"][0]) for item in failures
+                if item.get("loc") and isinstance(item["loc"][0], str)
+                and item["loc"][0] in result and item["loc"][0] != "id"
+            }
+            if not bad_fields:
+                _report_bad_entity(collection, str(record.get("id", "")), error)
+                return None
+            for field in bad_fields:
+                result.pop(field, None)
+                _report_bad_field(collection, str(record.get("id", "")), field, error)
     return cast(JsonValue, validated.model_dump(mode="json", exclude_unset=True))
 
 
 def validate_entity_payload(payload: str) -> SyncEntityPayload:
     """Validate a canonical sync entity JSON envelope without changing its bytes."""
     return _SYNC_ENTITY_PAYLOAD_ADAPTER.validate_json(payload)
+
+
+def validate_stored_entity_payload(payload: str, collection: str, key: str, deleted: bool) -> None:
+    """Validate persisted live DTOs and the deliberately empty tombstone envelope."""
+    if not deleted:
+        entity = validate_entity_payload(payload)
+        if entity.collection != collection or entity.id != key:
+            raise ValueError("entity identity does not match its row")
+        return
+    value = json.loads(payload)
+    if (not isinstance(value, dict) or value.get("collection") != collection
+            or value.get("id") != key or not isinstance(value.get("value"), dict)):
+        raise ValueError("invalid entity tombstone")
 
 
 def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:
@@ -309,6 +337,8 @@ def install_bypass_triggers(db: sqlite3.Connection) -> None:
 
 def put(db: sqlite3.Connection, collection: str, key: str, record: Any, deleted: bool = False) -> bool:
     dto = project(collection, record) if not deleted else {}
+    if dto is None:
+        return False
     payload, digest, deleted = encoded(collection, key, dto, deleted)
     old = db.execute("SELECT hash,deleted FROM sync_entities WHERE collection=? AND id=?",
                      (collection, key)).fetchone()
@@ -331,7 +361,14 @@ def patch(db: sqlite3.Connection, collection: str, key: str, changes: Any) -> bo
         return False  # The entity store has not been created on this database yet.
     if not row or row[1] or not row[0]:
         return False
-    value = json.loads(row[0]).get("value") or {}
+    try:
+        entity = json.loads(row[0])
+        value = entity.get("value") if isinstance(entity, dict) else None
+        if not isinstance(value, dict):
+            raise TypeError("entity value is not an object")
+    except (TypeError, ValueError) as error:
+        _report_bad_entity(collection, key, error)
+        return False
     return put(db, collection, key, {**value, **changes})
 
 
@@ -344,142 +381,264 @@ def retire_closed_requests(db: sqlite3.Connection) -> int:
     return len(rows)
 
 
-def _snapshot_runtime_present(snapshot: Any) -> bool:
-    return isinstance(snapshot, dict) and isinstance(snapshot.get("runtime"), dict)
+def _rows(db: sqlite3.Connection, table: str) -> list[tuple[str, str]]:
+    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone():
+        return []
+    return [(str(key), str(raw)) for key, raw in
+            db.execute(f"SELECT id,record FROM {table}").fetchall()]
 
 
-def upgrade_agent_organization(db: sqlite3.Connection, snapshot: Any = None, runtime_owner: Any = None) -> int:
-    """Restore sidebar metadata and reproject widened entities by migration version."""
+def _stored_record(collection: str, key: str, raw: str) -> JsonObject | None:
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError) as error:
+        _report_bad_entity(collection, key, error)
+        return None
+    if not isinstance(value, dict):
+        _report_bad_entity(collection, key, TypeError("record is not an object"))
+        return None
+    return cast(JsonObject, value)
+
+
+def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | None",
+                              canvas_owner: "Canvas | None") -> int:
+    """Project stored records through the same views used by Runtime.put."""
+    changed = 0
+    agent_rows = _rows(db, "runtime_agents")
+    managed_views: list[dict[str, object]] = []
+    for key, raw in agent_rows:
+        record = _stored_record("agent", key, raw)
+        if record is None:
+            continue
+        try:
+            agent_view = (runtime_owner.agent_entity_view(db, cast(AgentRecord, record))
+                          if runtime_owner is not None else cast(dict[str, object], record))
+        except Exception as error:
+            _report_bad_entity("agent", key, error)
+            continue
+        if not record.get("deletedAt"):
+            managed_views.append(agent_view)
+        if record.get("deletedAt"):
+            exists = db.execute("SELECT 1 FROM sync_entities WHERE collection='agent' AND id=? AND deleted=0",
+                                (key,)).fetchone()
+            if exists:
+                changed += bool(put(db, "agent", key, {}, True))
+        else:
+            changed += bool(put(db, "agent", key, agent_view))
+
+    # Wave and registered threads are stored by Canvas/file sources, not in
+    # runtime_agents. Refresh their current views on seed and versioned upgrade.
+    current_canvas_agents: set[str] = set()
+    canvas_agents_ok = False
+    if canvas_owner is not None:
+        try:
+            canvas_threads = canvas_owner.threads(runtime_agents=managed_views)
+            canvas_agents_ok = True
+        except Exception as error:
+            _report_bad_entity("agent", "canvas", error)
+            canvas_threads = []
+        for value in canvas_threads:
+            if value.get("source") == "managed":
+                continue
+            key = value.get("id")
+            if isinstance(key, str) and key:
+                current_canvas_agents.add(key)
+                changed += bool(put(db, "agent", key, value))
+    if canvas_owner is not None and canvas_agents_ok:
+        for key, payload in db.execute(
+            "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0").fetchall():
+            try:
+                source = json.loads(payload).get("value", {}).get("source")
+            except (TypeError, ValueError, AttributeError):
+                source = None
+            if source in {"app-server", "orchestrator-reference", "registered"} and key not in current_canvas_agents:
+                changed += bool(put(db, "agent", str(key), {}, deleted=True))
+
+    # Runtime.put resolves a stored room through this exact targeted room view.
+    current_rooms: set[str] = set()
+    for key, _raw in _rows(db, "runtime_rooms"):
+        record = _stored_record("room", key, _raw)
+        if record is None:
+            current_rooms.add(key)
+            continue
+        view: dict[str, object] | None
+        if runtime_owner is None:
+            view = cast(dict[str, object], record)
+        else:
+            try:
+                room = runtime_owner.room_entity_view(db, key)
+            except Exception as error:
+                _report_bad_entity("room", key, error)
+                current_rooms.add(key)
+                continue
+            view = cast(dict[str, object], room) if room is not None else None
+        if view is None:
+            continue
+        current_rooms.add(key)
+        changed += bool(put(db, "room", key, view))
+    for (key,) in db.execute(
+            "SELECT id FROM sync_entities WHERE collection='room' AND deleted=0").fetchall():
+        if key not in current_rooms:
+            changed += bool(put(db, "room", str(key), {}, deleted=True))
+
+    for key, raw in _rows(db, "runtime_complaints"):
+        record = _stored_record("complaint", key, raw)
+        if record is not None:
+            try:
+                complaint_view = (runtime_owner.complaint_entity_view(db, record)
+                                  if runtime_owner is not None else cast(dict[str, object], record))
+            except Exception as error:
+                _report_bad_entity("complaint", key, error)
+                continue
+            changed += bool(put(db, "complaint", key, complaint_view))
+    for key, raw in _rows(db, "runtime_projects"):
+        record = _stored_record("project", key, raw)
+        if record is not None:
+            changed += bool(put(db, "project", key, cast(dict[str, object], record)))
+    for key, raw in _rows(db, "runtime_requests"):
+        record = _stored_record("request", key, raw)
+        if record is not None:
+            if record.get("status") != "pending":
+                exists = db.execute("SELECT 1 FROM sync_entities WHERE collection='request' AND id=? AND deleted=0",
+                                    (key,)).fetchone()
+                if exists:
+                    changed += bool(put(db, "request", key, {}, True))
+            else:
+                changed += bool(put(db, "request", key, record))
+    for key, raw in _rows(db, "runtime_rules"):
+        record = _stored_record("rule", key, raw)
+        if record is not None:
+            changed += bool(put(db, "rule", key, record))
+    for key, raw in _rows(db, "runtime_work"):
+        record = _stored_record("work", key, raw)
+        if record is not None:
+            changed += bool(put(db, "work", key, record))
+
+    sync_task_window(db)
+    sync_monitor_window(db)
+    sync_event_window(db)
+
+    if runtime_owner is not None:
+        from codex_peer_teams import sync_entities as sync_peer_team_entities
+        changed += sync_peer_team_entities(runtime_owner, db)
+    if canvas_owner is not None:
+        try:
+            chats = canvas_owner.chats(db=db)
+            chats_ok = True
+        except Exception as error:
+            _report_bad_entity("chat", "canvas", error)
+            chats = []
+            chats_ok = False
+        current_chats = {str(value["id"]) for value in chats if value.get("id")}
+        for value in chats:
+            if value.get("id"):
+                changed += bool(put(db, "chat", str(value["id"]), value))
+        if chats_ok:
+            for (key,) in db.execute(
+                    "SELECT id FROM sync_entities WHERE collection='chat' AND deleted=0").fetchall():
+                if key not in current_chats:
+                    changed += bool(put(db, "chat", str(key), {}, deleted=True))
+        try:
+            agents = canvas_owner.threads(runtime_agents=managed_views)
+            edges = canvas_owner.edges(agents, db=db)
+            edges_ok = True
+        except Exception as error:
+            _report_bad_entity("edge", "canvas", error)
+            edges = []
+            edges_ok = False
+        current_edges = {str(value["id"]) for value in edges if value.get("id")}
+        for value in edges:
+            if value.get("id"):
+                changed += bool(put(db, "edge", str(value["id"]), value))
+        if edges_ok:
+            for (key,) in db.execute(
+                    "SELECT id FROM sync_entities WHERE collection='edge' AND deleted=0").fetchall():
+                if key not in current_edges:
+                    changed += bool(put(db, "edge", str(key), {}, deleted=True))
+
+    prior_workspace: dict[str, JsonValue] = {}
+    prior_row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
+    if prior_row and prior_row[0]:
+        try:
+            parsed_workspace = json.loads(prior_row[0]).get("value", {})
+            if isinstance(parsed_workspace, dict):
+                prior_workspace = parsed_workspace
+        except (TypeError, ValueError, AttributeError):
+            _report_bad_entity("workspace", "current", ValueError("invalid stored workspace payload"))
+    workspace_value = dict(prior_workspace)
+    if runtime_owner is not None:
+        try:
+            workspace_value = runtime_owner.workspace_entity_view(db, workspace_value)
+        except Exception as error:
+            _report_bad_entity("workspace", "current", error)
+            workspace_value = prior_workspace
+    elif canvas_owner is not None:
+        workspace_value["stateDir"] = str(canvas_owner.root)
+    workspace_value.setdefault("connected", False)
+    workspace_value.setdefault("projectOrganizationVersion", 1)
+    workspace_value.setdefault("peerTeamsVersion", 1)
+    workspace_value.setdefault("tasksHistoryLimit", 100)
+    changed += bool(put(db, "workspace", "current", workspace_value))
+    return changed
+
+
+def upgrade_agent_organization(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
+                               canvas_owner: "Canvas | None" = None) -> int:
+    """Restore organization metadata and refresh renderer entities once, by marker."""
     marker = db.execute(
         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
     original_marker = marker[0] if marker else None
     version = int(marker[0]) if marker else 0
-    if version >= 2:
-        return 0
-    if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
+    if version >= 3:
         return 0
     changed = 0
     if version < 1:
-        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
-            record = json.loads(raw)
+        for key, raw in _rows(db, "runtime_agents"):
+            record = _stored_record("agent", key, raw)
+            if record is None:
+                continue
             values = {field: record.get(field, default) for field, default in (
                 ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
             changed += bool(patch(db, 'agent', key, values))
         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1') "
                    "ON CONFLICT(key) DO UPDATE SET value='1'")
-    if snapshot is not None:
-        if callable(snapshot):
-            snapshot = snapshot()
-        if runtime_owner is None or not _snapshot_runtime_present(snapshot):
-            if original_marker is None:
-                db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
-            else:
-                db.execute("UPDATE sync_entity_meta SET value=? WHERE key='agent_organization_fields'",
-                           (original_marker,))
-            return changed
-        changed += upgrade_renderer_fields(db, snapshot, runtime_owner)
-        db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
+    if runtime_owner is None:
+        if original_marker is None:
+            db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
+        else:
+            db.execute("UPDATE sync_entity_meta SET value=? WHERE key='agent_organization_fields'",
+                       (original_marker,))
+        return changed
+    changed += _refresh_runtime_entities(db, runtime_owner, canvas_owner)
+    if runtime_owner is not None and canvas_owner is not None:
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3') "
+                   "ON CONFLICT(key) DO UPDATE SET value='3'")
+    elif runtime_owner is not None:
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','2') "
+                   "ON CONFLICT(key) DO UPDATE SET value='2'")
     return changed
 
 
-def upgrade_renderer_fields(db: sqlite3.Connection, snapshot: Any, runtime_owner: Any = None) -> int:
-    """Reproject current rows as part of the existing entity upgrade."""
-    runtime_data = snapshot.get("runtime") or {}
-    if not runtime_data:
-        return 0
-    if runtime_owner is not None:
-        changed = 0
-        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
-            record = json.loads(raw)
-            changed += bool(put(db, "agent", key, runtime_owner.agent_entity_view(db, record),
-                                bool(record.get("deletedAt"))))
-        for key, raw in db.execute("SELECT id,record FROM runtime_rooms").fetchall():
-            record = json.loads(raw)
-            # Only federated rooms gained promoted entity fields in this
-            # migration. Rebuilding every private/broadcast room from a roster
-            # view would tombstone unrelated stale rows and can drop a
-            # lastMessage produced by the richer room write path.
-            if record.get("kind") != "federated":
-                continue
-            view = next(iter(runtime_owner.chat_rooms(db, room_id=key, include_last_message=True)), None)
-            changed += bool(put(db, "room", key, view or record, view is None))
-        for key, raw in db.execute("SELECT id,record FROM runtime_complaints").fetchall():
-            changed += bool(put(db, "complaint", key,
-                                runtime_owner.complaint_entity_view(db, json.loads(raw))))
-        for key, raw in db.execute("SELECT id,record FROM runtime_projects").fetchall():
-            changed += bool(put(db, "project", key, json.loads(raw)))
-        from codex_peer_teams import sync_entities as sync_peer_team_entities
-        changed += sync_peer_team_entities(runtime_owner, db)
-        meta = {field: runtime_data[field] for field in
-                ("connected", "nativeNotices", "projectOrganizationVersion", "peerTeamsVersion",
-                 "tasksHistoryLimit", "rateLimits", "rateLimitsByAccount", "sidebarOrder")
-                if field in runtime_data}
-        meta["stateDir"] = snapshot.get("stateDir", "")
-        row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
-        prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
-        changed += bool(put(db, "workspace", "current", {**prior, **meta}))
-        return changed
-    return 0
-
-
-def seed(db: sqlite3.Connection, snapshot: Any, runtime_owner: Any = None) -> None:
-    """Seed once from the compatible view while the caller holds a write lock."""
+def seed(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
+         canvas_owner: "Canvas | None" = None) -> None:
+    """Seed or upgrade entity rows from stored runtime records under the write lock."""
     seeded = bool(db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone())
     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
-    if seeded and marker and int(marker[0]) >= 2:
+    if seeded and marker and int(marker[0]) >= 3:
         return
-    if seeded and (not marker or int(marker[0]) < 2) and runtime_owner is None:
+    if seeded and runtime_owner is None:
         return
-    if callable(snapshot):
-        snapshot = snapshot()
     if seeded:
-        upgrade_agent_organization(db, snapshot, runtime_owner)
+        upgrade_agent_organization(db, runtime_owner, canvas_owner)
         return
-    # Callers pass a builder: the full snapshot is costly and seeding runs once.
-    runtime = snapshot.get("runtime") or {}
-    has_runtime_agents = bool(db.execute(
-        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone())
-    threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
-    for agent in runtime.get("agents", []):
-        threads[agent["id"]] = {**threads.get(agent["id"], {}), **agent}
-    if runtime_owner is not None and has_runtime_agents:
-        # Seed live runtime records through the same projection as Runtime.put.
-        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
-            record = json.loads(raw)
-            threads[str(key)] = runtime_owner.agent_entity_view(db, record)
-    for value in threads.values():
-        put(db, "agent", value["id"], value, bool(value.get("deletedAt")))
-    for name, collection in (("rooms", "room"), ("tasks", "task"), ("monitors", "monitor"),
-                             ("complaints", "complaint"), ("requests", "request"),
-                             ("rules", "rule"), ("projects", "project"),
-                             ("peerTeams", "peerTeam"), ("events", "event"),
-                             ("work", "work")):
-        for value in runtime.get(name, []) or []:
-            if value.get("id"):
-                if collection == "complaint" and runtime_owner is not None:
-                    value = runtime_owner.complaint_entity_view(db, value)
-                put(db, collection, str(value["id"]), value)
-    chats = snapshot.get("chats", [])
-    chat_ids = {value["id"] for value in chats if value.get("id")}
-    for value in chats:
-        if value.get("id"):
-            put(db, "chat", str(value["id"]), value)
-    for value in snapshot.get("edges", []):
-        if value.get("id"):
-            put(db, "edge", str(value["id"]), value)
-    for item in snapshot.get("nodes", []):
-        if item.get("id") and item.get("id") not in threads and item.get("id") not in chat_ids:
-            put(db, "agent", item["id"], item)
-    # Mutable aggregate values are small and independently versioned.
-    meta = {key: runtime.get(key) for key in ("connected", "rateLimits", "rateLimitsByAccount", "nativeNotices",
-                                                  "projectOrganizationVersion", "sidebarOrder", "peerTeamsVersion",
-                                                  "tasksHistoryLimit") if key in runtime}
-    meta["stateDir"] = snapshot.get("stateDir", "")
-    put(db, "workspace", "current", meta)
-    if runtime_owner is not None and has_runtime_agents and _snapshot_runtime_present(snapshot):
+    _refresh_runtime_entities(db, runtime_owner, canvas_owner)
+    db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
+    if runtime_owner is not None and canvas_owner is not None:
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3') "
+                   "ON CONFLICT(key) DO UPDATE SET value='3'")
+    elif runtime_owner is not None:
         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','2') "
                    "ON CONFLICT(key) DO UPDATE SET value='2'")
-    db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
 
 
 def sync_event_window(db: sqlite3.Connection) -> int:
@@ -491,9 +650,14 @@ def sync_event_window(db: sqlite3.Connection) -> int:
     if marker and int(marker[0]) == changed:
         return 0
     recent = event_records(db)
-    selected = [record["id"] for record in recent]
+    selected: list[str] = []
     for record in recent:
-        put(db, "event", str(record["id"]), record)
+        key = record.get("id")
+        if not isinstance(key, str) or not key:
+            _report_bad_entity("event", "", ValueError("event record has no valid id"))
+            continue
+        selected.append(key)
+        put(db, "event", key, record)
     placeholders = ",".join("?" for _ in selected)
     exclusion = f" AND id NOT IN ({placeholders})" if selected else ""
     stale = db.execute("SELECT id FROM sync_entities WHERE collection='event' AND deleted=0" + exclusion,
@@ -515,9 +679,14 @@ def sync_monitor_window(db: sqlite3.Connection) -> int:
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors'").fetchone():
         return 0
     recent = _recent_monitor_records(db)
-    kept = {str(row["id"]) for row in recent}
+    kept: set[str] = set()
     for row in recent:
-        put(db, "monitor", str(row["id"]), row)
+        key = row.get("id")
+        if not isinstance(key, str) or not key:
+            _report_bad_entity("monitor", "", ValueError("monitor record has no valid id"))
+            continue
+        kept.add(key)
+        put(db, "monitor", key, row)
     stale = db.execute("SELECT id FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchall()
     retired = 0
     for (key,) in stale:
@@ -546,10 +715,14 @@ def sync_task_window(db: sqlite3.Connection, batch_size: int = 100, force: bool 
     if migrated and not force:
         return 0
     eligible = task_records(db)
-    eligible_ids = {str(record["id"]) for record in eligible if record.get("id")}
+    eligible_ids: set[str] = set()
     for record in eligible:
-        if record.get("id"):
-            put(db, "task", str(record["id"]), record)
+        key = record.get("id")
+        if not isinstance(key, str) or not key:
+            _report_bad_entity("task", "", ValueError("task record has no valid id"))
+            continue
+        eligible_ids.add(key)
+        put(db, "task", key, record)
     candidates = db.execute("SELECT id FROM sync_entities WHERE collection='task' AND deleted=0").fetchall()
     stale = [(key,) for (key,) in candidates if key not in eligible_ids][:max(1, int(batch_size))]
     for (key,) in stale:

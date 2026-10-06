@@ -1223,15 +1223,9 @@ class FederationService:
                     deliveries = json.loads(row[0]); deliveries["remote:" + peer["stateId"]] = "delivered"
                     db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), message_id))
 
-    def _sync_room_entity(self, db: sqlite3.Connection, room_id: str) -> None:
+    def _sync_room_entity(self, db: sqlite3.Connection, room_id: str) -> bool:
         """Refresh the durable room view after a federation source update."""
-        row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
-        if not row:
-            return False
-        room = json.loads(row[0])
-        view = next(iter(self.runtime.chat_rooms(db, room_id=room_id, include_last_message=True)), None)
-        from codex_sync_entities import put as sync_entity_put
-        return sync_entity_put(db, "room", room_id, view or {}, view is None)
+        return self.runtime.sync_room_entity(db, room_id, tombstone_unavailable=True)
 
     def _sync_peer_rooms(self, db: sqlite3.Connection, peer_id: str) -> None:
         ids = [row[0] for row in db.execute(
