@@ -293,11 +293,11 @@ def recover_rejected_start(
         if db.execute("SELECT 1 FROM runtime_items WHERE agent=? AND created>=? "
                 "AND json_extract(record,'$.turnId')=? "
                 "AND json_extract(record,'$.role') IN ('assistant','tool') LIMIT 1",
-                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # The guard above accepts only int or float timestamps.
+                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # typed-narrowing: Timestamp guard proves numeric values
             return None
         if db.execute("SELECT 1 FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
                 "AND json_extract(record,'$.created')>=? AND json_extract(record,'$.turnId')=? LIMIT 1",
-                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # The guard above accepts only int or float timestamps.
+                (agent['id'], since - 60, turn_id)).fetchone():  # type: ignore[operator]  # typed-narrowing: Timestamp guard proves numeric values
             return None
     rows, metadata = [], []
     for key in events:
@@ -338,7 +338,7 @@ def recover_rejected_start(
     stage = getattr(runtime, '_stage_event_resources', None)
     if stage is not None:
         stage(db, str(agent['id']))
-    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (  # type: ignore[misc]  # Dynamic key access erases selected start-attempt field types.
+    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (  # type: ignore[misc]  # typed-narrowing: Fixed fields are string keys
         'id', 'epoch', 'accountKey', 'threadId', 'connectionId', 'nativeOperationId',
         'events', 'submitted', 'supervisorIdentity')}
     agent.pop('startAttempt', None)
