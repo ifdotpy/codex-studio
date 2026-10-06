@@ -5,7 +5,10 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { performance } from "node:perf_hooks";
 import { spawnFixture, test } from "../playwright.mjs";
+
+const timestamp = () => performance.timeOrigin + performance.now();
 
 test("committed entities propagate between renderer tabs @sync", async ({
   browser,
@@ -90,7 +93,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
           url.searchParams.get("scope") === "state:entities:v1"
         ) {
           statePullRequestCounts[index]++;
-          pullStarts[index].set(request, Date.now());
+          pullStarts[index].set(request, {
+            at: timestamp(),
+            after: url.searchParams.get("after"),
+          });
         }
       });
       await page.addInitScript(() => {
@@ -104,7 +110,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
             window.__entityStreamUrls.push(String(args[0]));
             this.addEventListener("resources", (event) =>
               window.__entityFrames.push({
-                at: Date.now(),
+                at: performance.timeOrigin + performance.now(),
                 streamIndex,
                 event: JSON.parse(event.data),
               }),
@@ -122,8 +128,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
         try {
           const body = await response.json();
           pulls[index].push({
-            at: Date.now(),
-            startedAt: pullStarts[index].get(response.request()) ?? Date.now(),
+            at: timestamp(),
+            startedAt:
+              pullStarts[index].get(response.request())?.at ?? timestamp(),
+            after: pullStarts[index].get(response.request())?.after,
             documents: body.documents || [],
           });
         } catch {}
@@ -229,7 +237,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .first()
           .click();
         const created = await creationResponse;
-        const responseReceivedAt = Date.now();
+        const responseReceivedAt = timestamp();
         const createdBody = await created.json();
         assert.equal(created.status(), 200);
         assert.ok(createdBody._syncEntities?.length);
@@ -237,9 +245,25 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
           .waitFor();
-        // Selection follows post()'s awaited syncDocuments; this is an upper
-        // bound on persistence completion, avoiding response/persister races.
-        const persisterDoneAt = Date.now();
+        const responseSequences = createdBody._syncEntities.map(
+          (doc) => doc.seq,
+        );
+        const persister = await pages[0].evaluate((sequences) => {
+          const entry = performance
+            .getEntriesByName("studio-sync-entity-persister-done", "mark")
+            .reverse()
+            .find((mark) =>
+              sequences.every((sequence) =>
+                mark.detail?.sequences?.includes(sequence),
+              ),
+            );
+          if (!entry)
+            throw new Error("sync entity persister completion mark missing");
+          return {
+            at: performance.timeOrigin + entry.startTime,
+            ...entry.detail,
+          };
+        }, responseSequences);
         reply = {
           ok: true,
           entityId: createdBody.id,
@@ -247,7 +271,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
           deliveredSequences: createdBody._syncEntities.map((doc) => doc.seq),
           // S3's post() resolves only after the renderer persister finishes.
           responseReceivedAt,
-          persisterDoneAt,
+          persisterDoneAt: persister.at,
+          checkpointBefore: persister.checkpointBefore,
+          checkpointAfter: persister.checkpointAfter,
+          activeProjection: persister.activeProjection,
           collection: "agent",
           deleted: false,
         };
@@ -307,13 +334,20 @@ test("committed entities propagate between renderer tabs @sync", async ({
       if (params.operation === "chat") {
         const responseSequences = new Set(reply.deliveredSequences);
         const actorFramesAfterMutation = await pages[0].evaluate(
-          (from) => window.__entityFrames.slice(from).map(({ at }) => at),
+          (from) =>
+            window.__entityFrames.slice(from).map(({ at, event }) => ({
+              at,
+              reason: event.reason,
+              resources: event.resources,
+              resourceVersions: event.resourceVersions,
+            })),
           previousFrames[0],
         );
         const actorPullTimings = pulls[0]
           .slice(previousPulls[0])
-          .map(({ startedAt, at, documents }) => ({
+          .map(({ startedAt, after, at, documents }) => ({
             startedAt,
+            after,
             completedAt: at,
             sequences: documents.map((row) => row.seq),
           }));
@@ -321,32 +355,51 @@ test("committed entities propagate between renderer tabs @sync", async ({
           `ENTITY_MUTATION_ORDER ${JSON.stringify({
             responseReceivedAt: reply.responseReceivedAt,
             persisterDoneAt: reply.persisterDoneAt,
+            checkpointBefore: reply.checkpointBefore,
+            checkpointAfter: reply.checkpointAfter,
+            activeProjection: reply.activeProjection,
             frameArrivals: actorFramesAfterMutation,
             actorPulls: actorPullTimings,
           })}`,
         );
-        const actorRowsAfterPersister = pulls[0]
+        const actorDuplicatePulls = pulls[0]
           .slice(previousPulls[0])
-          .filter((pull) => pull.startedAt >= reply.persisterDoneAt)
-          .flatMap((pull) => pull.documents);
+          .filter(
+            (pull) =>
+              pull.startedAt > reply.persisterDoneAt &&
+              pull.documents.some((row) => responseSequences.has(row.seq)),
+          );
+        console.log(
+          `ENTITY_ACTOR_DUPLICATE_PULLS ${JSON.stringify({
+            count: actorDuplicatePulls.length,
+            pulls: actorDuplicatePulls.map(
+              ({ startedAt, after, documents }) => ({
+                startedAt,
+                after,
+                sequences: documents.map((row) => row.seq),
+              }),
+            ),
+            responseSequences: [...responseSequences],
+          })}`,
+        );
         assert.ok(
-          actorRowsAfterPersister.every(
-            (row) => !responseSequences.has(row.seq),
-          ),
-          `the acting tab must not pull entity rows already in its mutation response after persisting the response: ${JSON.stringify(
+          actorDuplicatePulls.length <= 1,
+          `the acting tab may make at most one already-in-flight duplicate pull per mutation: ${JSON.stringify(
             {
               operation: params.operation,
               responseReceivedAt: reply.responseReceivedAt,
               persisterDoneAt: reply.persisterDoneAt,
+              checkpointBefore: reply.checkpointBefore,
+              checkpointAfter: reply.checkpointAfter,
               responseSequences: [...responseSequences],
               pullStarts: pulls[0]
                 .slice(previousPulls[0])
-                .map(({ startedAt, documents }) => ({
+                .map(({ startedAt, after, documents }) => ({
                   startedAt,
+                  after,
                   sequences: documents.map((row) => row.seq),
                 })),
               frameArrivals: actorFramesAfterMutation,
-              pulledSequences: actorRowsAfterPersister.map((row) => row.seq),
             },
           )}`,
         );

@@ -195,9 +195,29 @@ if (typeof window !== "undefined")
     try {
       for (const document of entities)
         await persistProjection(db.projections, document);
-      await scopes
-        .get("state")
-        ?.acknowledgeEntitySequences(entities.map((document) => document.seq));
+      const stateProjection = scopes.get("state");
+      const sequences = entities.map((document) => document.seq);
+      const [checkpointBefore] =
+        await db.projections.storageInstance.findDocumentsById(
+          ["state:entities:checkpoint"],
+          true,
+        );
+      await stateProjection?.acknowledgeEntitySequences(sequences);
+      const [checkpointAfter] =
+        await db.projections.storageInstance.findDocumentsById(
+          ["state:entities:checkpoint"],
+          true,
+        );
+      // Precise browser-test diagnostic: distinguishes the completed renderer
+      // persister from the earlier HTTP response and UI selection transition.
+      performance.mark("studio-sync-entity-persister-done", {
+        detail: {
+          sequences,
+          checkpointBefore: checkpointBefore?.seq ?? null,
+          checkpointAfter: checkpointAfter?.seq ?? null,
+          activeProjection: !!stateProjection,
+        },
+      });
     } catch (error) {
       await refreshProjection("state:entities:v1").catch(() => {});
       throw error;
