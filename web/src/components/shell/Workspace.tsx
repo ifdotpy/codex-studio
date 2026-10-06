@@ -245,9 +245,8 @@ export function Workspace(props: Props) {
   ].includes(section);
   const title = sections.find(([id]) => id === section)?.[1];
   return (
-    <Drawer
+    <Drawer.Root
       opened={props.opened}
-      closeButtonProps={{ "aria-label": "Close" }}
       onClose={props.onClose}
       position="right"
       size={
@@ -255,44 +254,22 @@ export function Workspace(props: Props) {
           ? "min(1040px, 100vw)"
           : "min(840px, 100vw)"
       }
-      title={
-        <span className="workspace-drawer-title">
-          {section === "messages" ? <Inbox size={19} /> : <Layers3 size={19} />}{" "}
-          {section === "messages" ? "Messages" : "Workspace"}
-        </span>
-      }
       className={`workspace-drawer ${section === "messages" ? "workspace-messages-drawer" : ""}`}
     >
-      <div
-        className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
-      >
-        {section !== "messages" && (
-          <nav
-            ref={navRef}
-            className="workspace-nav"
-            aria-label="Workspace sections"
-          >
-            {sections.map(([id, label, Icon]) => (
-              <UnstyledButton
-                key={id}
-                className={`workspace-nav-item ${section === id ? "selected" : ""}`}
-                onClick={() => setSection(id)}
-                aria-current={section === id ? "page" : undefined}
-              >
-                <Icon size={17} />
-                <span>{label}</span>
-                {id === "messages" && messageAttentionCount(props.data) > 0 && (
-                  <span className="workspace-count">
-                    {messageAttentionCount(props.data)}
-                  </span>
-                )}
-              </UnstyledButton>
-            ))}
-          </nav>
-        )}
-        <main
-          className={`workspace-content ${section === "messages" ? "workspace-messages" : ""}`}
-        >
+      <Drawer.Overlay />
+      <Drawer.Content>
+        <Drawer.Header>
+          <Drawer.Title>
+            {" "}
+            <span className="workspace-drawer-title">
+              {section === "messages" ? (
+                <Inbox size={19} />
+              ) : (
+                <Layers3 size={19} />
+              )}{" "}
+              {section === "messages" ? "Messages" : "Workspace"}
+            </span>
+          </Drawer.Title>
           {section === "messages" && (
             <Button
               variant="subtle"
@@ -309,127 +286,167 @@ export function Workspace(props: Props) {
               <RefreshCw size={16} />
             </Button>
           )}
-          {section !== "messages" && (
-            <div className="workspace-heading">
-              <div>
-                <PanelHeader title={title} help={descriptions[section]} />
-              </div>
-              {section === "plan" && (
-                <Button
-                  variant="subtle"
-                  size="compact-sm"
-                  disabled={!selected}
-                  onClick={() => {
-                    if (selected) {
-                      props.onSelect(selected.id);
-                      props.onClose();
-                    }
-                  }}
-                >
-                  Change plan in chat
-                </Button>
-              )}
-              {section === "changes" && selected && (
-                <TextInput
-                  aria-label="Open a file"
-                  placeholder="File path"
-                  value={filePath}
-                  onChange={(e) => setFilePath(e.target.value)}
-                  rightSection={
-                    <UnstyledButton
-                      aria-label="Preview file"
-                      disabled={!filePath.trim()}
-                      onClick={() =>
-                        setPreview({ agent: selected.id, path: filePath })
-                      }
-                    >
-                      <ChevronRight size={16} />
-                    </UnstyledButton>
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && filePath.trim())
-                      setPreview({ agent: selected.id, path: filePath });
-                  }}
-                />
-              )}
-              <Button
-                variant="subtle"
-                size="compact-sm"
-                aria-label="Refresh workspace"
-                onClick={reload}
+          <Drawer.CloseButton aria-label="Close" />
+        </Drawer.Header>
+        <Drawer.Body>
+          <div
+            className={`workspace-shell ${section === "messages" ? "workspace-focused-messages" : ""}`}
+          >
+            {section !== "messages" && (
+              <nav
+                ref={navRef}
+                className="workspace-nav"
+                aria-label="Workspace sections"
               >
-                <RefreshCw size={16} />
-              </Button>
-            </div>
-          )}
-          {section !== "messages" && section !== "profiles" && (
-            <div className="workspace-scope">
-              <NativeSelect
-                label="Agent"
-                value={agentId}
-                onChange={(e) => setAgentId(e.target.value)}
-              >
-                <option value="">Select an agent</option>
-                {props.data.threads
-                  .filter((a) => a.source === "managed")
-                  .map((a) => (
-                    <option key={a.id} value={a.id}>
-                      {a.isLead ? "Main agent · " : ""}
-                      {a.name}
-                    </option>
-                  ))}
-              </NativeSelect>
-              {selected && (
-                <Button
-                  variant="subtle"
-                  size="xs"
-                  onClick={() => {
-                    props.onSelect(selected.id);
-                    props.onClose();
-                  }}
-                >
-                  Open chat <ChevronRight size={14} />
-                </Button>
-              )}
-              {pending > 0 && <Loader size={16} />}
-            </div>
-          )}
-          {needAgent && !selected ? (
-            <Empty>Select an agent to view its {title?.toLowerCase()}.</Empty>
-          ) : (
-            <div
-              className={
-                section === "messages" ? "workspace-message-body" : undefined
-              }
-              key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
+                {sections.map(([id, label, Icon]) => (
+                  <UnstyledButton
+                    key={id}
+                    className={`workspace-nav-item ${section === id ? "selected" : ""}`}
+                    onClick={() => setSection(id)}
+                    aria-current={section === id ? "page" : undefined}
+                  >
+                    <Icon size={17} />
+                    <span>{label}</span>
+                    {id === "messages" &&
+                      messageAttentionCount(props.data) > 0 && (
+                        <span className="workspace-count">
+                          {messageAttentionCount(props.data)}
+                        </span>
+                      )}
+                  </UnstyledButton>
+                ))}
+              </nav>
+            )}
+            <main
+              className={`workspace-content ${section === "messages" ? "workspace-messages" : ""}`}
             >
-              {section === "changes" && <Changes {...context} />}
-              {section === "messages" && (
-                <TeamChats
-                  refresh={props.refresh}
-                  notify={props.notify}
-                  data={props.data}
-                  focusItemId={props.initialFocus?.id}
-                  focusRequestId={props.initialFocus?.requestId}
-                  focusRoomId={props.initialFocus?.roomId}
-                  leadId={
-                    props.agent?.rootId ||
-                    (props.agent?.isLead ? props.agent.id : undefined)
-                  }
-                />
+              {section !== "messages" && (
+                <div className="workspace-heading">
+                  <div>
+                    <PanelHeader title={title} help={descriptions[section]} />
+                  </div>
+                  {section === "plan" && (
+                    <Button
+                      variant="subtle"
+                      size="compact-sm"
+                      disabled={!selected}
+                      onClick={() => {
+                        if (selected) {
+                          props.onSelect(selected.id);
+                          props.onClose();
+                        }
+                      }}
+                    >
+                      Change plan in chat
+                    </Button>
+                  )}
+                  {section === "changes" && selected && (
+                    <TextInput
+                      aria-label="Open a file"
+                      placeholder="File path"
+                      value={filePath}
+                      onChange={(e) => setFilePath(e.target.value)}
+                      rightSection={
+                        <UnstyledButton
+                          aria-label="Preview file"
+                          disabled={!filePath.trim()}
+                          onClick={() =>
+                            setPreview({ agent: selected.id, path: filePath })
+                          }
+                        >
+                          <ChevronRight size={16} />
+                        </UnstyledButton>
+                      }
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && filePath.trim())
+                          setPreview({ agent: selected.id, path: filePath });
+                      }}
+                    />
+                  )}
+                  <Button
+                    variant="subtle"
+                    size="compact-sm"
+                    aria-label="Refresh workspace"
+                    onClick={reload}
+                  >
+                    <RefreshCw size={16} />
+                  </Button>
+                </div>
               )}
-              {section === "search" && <Find {...context} />}
-              {section === "plan" && <Plan {...context} />}
-              {section === "checkpoints" && <Checkpoints {...context} />}
-              {section === "tools" && <Tools {...context} />}
-              {section === "profiles" && <Profiles {...context} />}
-              {section === "rules" && <Rules {...context} />}
-            </div>
-          )}
-        </main>
-      </div>
-      <FilePreview target={preview} onClose={() => setPreview(null)} />
-    </Drawer>
+              {section !== "messages" && section !== "profiles" && (
+                <div className="workspace-scope">
+                  <NativeSelect
+                    label="Agent"
+                    value={agentId}
+                    onChange={(e) => setAgentId(e.target.value)}
+                  >
+                    <option value="">Select an agent</option>
+                    {props.data.threads
+                      .filter((a) => a.source === "managed")
+                      .map((a) => (
+                        <option key={a.id} value={a.id}>
+                          {a.isLead ? "Main agent · " : ""}
+                          {a.name}
+                        </option>
+                      ))}
+                  </NativeSelect>
+                  {selected && (
+                    <Button
+                      variant="subtle"
+                      size="xs"
+                      onClick={() => {
+                        props.onSelect(selected.id);
+                        props.onClose();
+                      }}
+                    >
+                      Open chat <ChevronRight size={14} />
+                    </Button>
+                  )}
+                  {pending > 0 && <Loader size={16} />}
+                </div>
+              )}
+              {needAgent && !selected ? (
+                <Empty>
+                  Select an agent to view its {title?.toLowerCase()}.
+                </Empty>
+              ) : (
+                <div
+                  className={
+                    section === "messages"
+                      ? "workspace-message-body"
+                      : undefined
+                  }
+                  key={`${section}:${section === "messages" ? "team" : selected?.id || "all"}`}
+                >
+                  {section === "changes" && <Changes {...context} />}
+                  {section === "messages" && (
+                    <TeamChats
+                      refresh={props.refresh}
+                      notify={props.notify}
+                      data={props.data}
+                      focusItemId={props.initialFocus?.id}
+                      focusRequestId={props.initialFocus?.requestId}
+                      focusRoomId={props.initialFocus?.roomId}
+                      leadId={
+                        props.agent?.rootId ||
+                        (props.agent?.isLead ? props.agent.id : undefined)
+                      }
+                    />
+                  )}
+                  {section === "search" && <Find {...context} />}
+                  {section === "plan" && <Plan {...context} />}
+                  {section === "checkpoints" && <Checkpoints {...context} />}
+                  {section === "tools" && <Tools {...context} />}
+                  {section === "profiles" && <Profiles {...context} />}
+                  {section === "rules" && <Rules {...context} />}
+                </div>
+              )}
+            </main>
+          </div>
+          <FilePreview target={preview} onClose={() => setPreview(null)} />
+        </Drawer.Body>
+      </Drawer.Content>
+    </Drawer.Root>
   );
 }
 export default Workspace;
