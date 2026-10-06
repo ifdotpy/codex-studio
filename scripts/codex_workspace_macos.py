@@ -1,6 +1,6 @@
 """ASIF image backend for macOS workspaces."""
-
 from __future__ import annotations
+from typing import Any
 
 import ctypes
 import os
@@ -33,21 +33,21 @@ class _AttrList(ctypes.Structure):
                 ('forkattr', ctypes.c_uint32)]
 
 
-def _run(args, *, timeout=120, check=True, **kwargs):
+def _run(args: Any, *, timeout: Any=120, check: Any=True, **kwargs: Any) -> Any:
     return subprocess.run([str(x) for x in args], timeout=timeout, check=check,
                           capture_output=True, **kwargs)
 
 
-def _diskutil_plist(args):
+def _diskutil_plist(args: Any) -> Any:
     result = _run(['diskutil', *args, '--plist'], timeout=300)
     return plistlib.loads(result.stdout)
 
 
-def _mounted(path):
+def _mounted(path: Any) -> Any:
     return Path(path).is_mount()
 
 
-def _device_for_mount(mount):
+def _device_for_mount(mount: Any) -> Any:
     mount = Path(mount).resolve()
     info = plistlib.loads(_run(['hdiutil', 'info', '-plist'], timeout=30).stdout)
     for image in info.get('images', []):
@@ -63,7 +63,7 @@ def _device_for_mount(mount):
     return None
 
 
-def _copy_tar(source, dest, excludes):
+def _copy_tar(source: Any, dest: Any, excludes: Any) -> Any:
     """Copy one tree shard through system tar, omitting repository objects."""
     source, dest = Path(source), Path(dest)
     dest.mkdir(parents=True, exist_ok=True)
@@ -75,21 +75,21 @@ def _copy_tar(source, dest, excludes):
     producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
                               capture_output=True, timeout=900)
-    producer.stdout.close()
+    producer.stdout.close()  # type: ignore[union-attr]  # typed-narrowing: Popen uses stdout=PIPE above
     stderr = producer.communicate(timeout=900)[1]
     if producer.returncode or consumer.returncode:
         raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
 
 
-def _copy_tree_parallel(source, dest, excludes=()):
+def _copy_tree_parallel(source: Any, dest: Any, excludes: Any=()) -> Any:
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
     top = sorted(source.iterdir(), key=lambda p: p.name)
-    shards = [[] for _ in range(min(16, max(1, len(top))))]
+    shards: list[list[str]] = [[] for _ in range(min(16, max(1, len(top))))]
     for index, entry in enumerate(top):
         shards[index % len(shards)].append(entry.name)
 
-    def copy_shard(names):
+    def copy_shard(names):  # type: (Any) -> Any
         if not names:
             return
         shard = source.parent / ('.tar-shard-' + str(threading.get_ident()))
@@ -105,7 +105,7 @@ def _copy_tree_parallel(source, dest, excludes=()):
             producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
                                       capture_output=True, timeout=1800)
-            producer.stdout.close()
+            producer.stdout.close()  # type: ignore[union-attr]  # typed-narrowing: Popen uses stdout=PIPE above
             stderr = producer.communicate(timeout=1800)[1]
             if producer.returncode or consumer.returncode:
                 raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
@@ -118,7 +118,7 @@ def _copy_tree_parallel(source, dest, excludes=()):
             future.result()
 
 
-def _fsevent_api():
+def _fsevent_api() -> Any:
     global _FSEVENT_API
     if _FSEVENT_API is not None:
         return _FSEVENT_API
@@ -154,7 +154,7 @@ def _fsevent_api():
     return _FSEVENT_API
 
 
-def _read_events(root, since):
+def _read_events(root: Any, since: Any) -> Any:
     """Return (paths, flags, newest id); event history loss is explicit."""
     core, foundation, dispatch = _fsevent_api()
     current = int(core.FSEventsGetCurrentEventId())
@@ -172,7 +172,7 @@ def _read_events(root, since):
                                      ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_uint32),
                                      ctypes.POINTER(ctypes.c_uint64))
 
-    def callback(_stream, _info, count, cfpaths, flags_ptr, ids_ptr):
+    def callback(_stream, _info, count, cfpaths, flags_ptr, ids_ptr):  # type: (Any, Any, Any, Any, Any, Any) -> Any
         try:
             flags = ctypes.cast(flags_ptr, ctypes.POINTER(ctypes.c_uint32))
             ids = ctypes.cast(ids_ptr, ctypes.POINTER(ctypes.c_uint64))
@@ -214,12 +214,12 @@ def _read_events(root, since):
     return collected, latest
 
 
-def current_event_id(_root):
+def current_event_id(_root: Any) -> Any:
     core, _foundation, _dispatch = _fsevent_api()
     return int(core.FSEventsGetCurrentEventId())
 
 
-def _rsync_folder(source, target, excludes=()):
+def _rsync_folder(source: Any, target: Any, excludes: Any=()) -> Any:
     source, target = Path(source), Path(target)
     target.mkdir(parents=True, exist_ok=True)
     args = ['rsync', '-a', '--delete', '--exclude=**/.git/objects/***']
@@ -229,7 +229,7 @@ def _rsync_folder(source, target, excludes=()):
         raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
 
 
-def _same_delta_entry(source, target):
+def _same_delta_entry(source: Any, target: Any) -> Any:
     try:
         source_info = source.lstat()
     except FileNotFoundError:
@@ -247,7 +247,7 @@ def _same_delta_entry(source, target):
     return target.is_dir() and not target.is_symlink()
 
 
-def _copy_delta_entry(source, target):
+def _copy_delta_entry(source: Any, target: Any) -> Any:
     if not source.exists() and not source.is_symlink():
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
@@ -270,13 +270,13 @@ def _copy_delta_entry(source, target):
     if target.is_dir() and not target.is_symlink():
         shutil.rmtree(target)
     try:
-        os.clonefile(source, target)
+        os.clonefile(source, target)  # type: ignore[attr-defined]  # typed-narrowing: clonefile is supplied by macOS at runtime
     except (AttributeError, OSError):
         shutil.copy2(source, target)
 
 
 class Backend:
-    def supported(self, repo_root):
+    def supported(self: Any, repo_root: Any) -> Any:
         if sys.platform != 'darwin':
             return False, 'macOS image workspaces require Darwin'
         if not Path(repo_root).is_dir():
@@ -285,7 +285,7 @@ class Backend:
             return False, 'diskutil is unavailable'
         return True, ''
 
-    def exclude_store(self, store):
+    def exclude_store(self: Any, store: Any) -> Any:
         store = Path(store)
         store.mkdir(parents=True, exist_ok=True)
         marker = store / '.time-machine-excluded'
@@ -293,10 +293,10 @@ class Backend:
             _run(['tmutil', 'addexclusion', str(store)], timeout=30)
             marker.touch()
 
-    def current_event_id(self, repo_root):
+    def current_event_id(self: Any, repo_root: Any) -> Any:
         return current_event_id(repo_root)
 
-    def base_needs_refresh(self, repo_root, base_state):
+    def base_needs_refresh(self: Any, repo_root: Any, base_state: Any) -> Any:
         if not base_state or not base_state.get('token'):
             return False
         try:
@@ -318,7 +318,7 @@ class Backend:
         base_bytes = self.private_bytes(Path(base_state.get('image', ''))) or 0
         return changed_bytes >= max(16 * 1024**2, int(base_bytes * .35))
 
-    def open_base_refresh(self, repo_root, repo_key, version, old_state):
+    def open_base_refresh(self: Any, repo_root: Any, repo_key: Any, version: Any, old_state: Any) -> Any:
         store = Path(os.environ.get('CODEX_WORKSPACE_STORE') or
                      Path.home() / '.local/state/codex-agents/workspaces')
         version_path = store / 'bases' / repo_key / 'versions' / version
@@ -337,7 +337,7 @@ class Backend:
                 'versionPath': version_path, 'token': old_state.get('token'), 'version': version,
                 'refresh': True}
 
-    def open_base_staging(self, repo_root, repo_key, version):
+    def open_base_staging(self: Any, repo_root: Any, repo_key: Any, version: Any) -> Any:
         root = Path(os.environ.get('CODEX_WORKSPACE_STORE') or
                     Path.home() / '.local/state/codex-agents/workspaces')
         version_path = root / 'bases' / repo_key / 'versions' / version
@@ -360,16 +360,16 @@ class Backend:
         return {'root': mount / 'repo', 'image': image, 'mount': mount,
                 'versionPath': version_path, 'token': token, 'version': version}
 
-    def copy_base_tree(self, repo_root, destination, *, excludes=()):
+    def copy_base_tree(self: Any, repo_root: Any, destination: Any, *, excludes: Any=()) -> Any:
         _copy_tree_parallel(Path(repo_root).resolve(), Path(destination), excludes)
 
-    def seal_base(self, staging):
+    def seal_base(self: Any, staging: Any) -> Any:
         mount = Path(staging['mount'])
         self.unmount_workspace(mount)
         return {'image': Path(staging['image']), 'versionPath': Path(staging['versionPath']),
                 'token': staging.get('token')}
 
-    def clone_workspace(self, base_image, agent_dir):
+    def clone_workspace(self: Any, base_image: Any, agent_dir: Any) -> Any:
         base_image, agent_dir = Path(base_image), Path(agent_dir)
         agent_dir.mkdir(parents=True, exist_ok=True)
         image = agent_dir / 'workspace.asif'
@@ -380,7 +380,7 @@ class Backend:
                 shutil.copy2(base_image, image)
         return image
 
-    def mount_workspace(self, layer, mount, *, base_image=None):
+    def mount_workspace(self: Any, layer: Any, mount: Any, *, base_image: Any=None) -> Any:
         layer, mount = Path(layer), Path(mount)
         mount.mkdir(parents=True, exist_ok=True)
         if _mounted(mount):
@@ -388,7 +388,7 @@ class Backend:
         _diskutil_plist(['image', 'attach', '--nobrowse', '--mountPoint', str(mount), str(layer)])
         return {'mount': str(mount)}
 
-    def sync_delta(self, repo_root, target_repo, token, *, excludes=()):
+    def sync_delta(self: Any, repo_root: Any, target_repo: Any, token: Any, *, excludes: Any=()) -> Any:
         current = token.get('token') if isinstance(token, dict) else token
         excluded = {Path(value) for value in excludes}
         root = Path(repo_root).resolve()
@@ -396,7 +396,7 @@ class Backend:
         changed_paths = set()
         scan_paths = set()
 
-        def apply(events):
+        def apply(events):  # type: (Any) -> Any
             did_copy = False
             scans = []
             paths = set()
@@ -486,7 +486,7 @@ class Backend:
         return {'token': current, 'changedPaths': sorted(changed_paths),
                 'scanPaths': sorted(scan_paths), 'historyLost': False}
 
-    def unmount_workspace(self, mount, *, force=False):
+    def unmount_workspace(self: Any, mount: Any, *, force: Any=False) -> Any:
         mount = Path(mount)
         if not _mounted(mount):
             return
@@ -514,10 +514,10 @@ class Backend:
         if result.returncode and _mounted(mount):
             raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
 
-    def remove_layer(self, agent_dir):
+    def remove_layer(self: Any, agent_dir: Any) -> Any:
         shutil.rmtree(agent_dir, ignore_errors=False)
 
-    def remove_base_version(self, path):
+    def remove_base_version(self: Any, path: Any) -> Any:
         path = Path(path)
         mount = path / 'mount' if path.is_dir() else path.parent / 'mount'
         if mount.exists() and _mounted(mount):
@@ -528,14 +528,14 @@ class Backend:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 
-    def private_bytes(self, path):
+    def private_bytes(self: Any, path: Any) -> Any:
         return _apfs_private_bytes(Path(path))
 
-    def exec_prefix(self):
+    def exec_prefix(self: Any) -> Any:
         return []
 
 
-def _pid_exists(pid):
+def _pid_exists(pid: Any) -> Any:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -545,7 +545,7 @@ def _pid_exists(pid):
     return True
 
 
-def _apfs_private_bytes(path):
+def _apfs_private_bytes(path: Any) -> Any:
     try:
         function = ctypes.CDLL(None, use_errno=True).getattrlist
         function.argtypes = [ctypes.c_char_p, ctypes.POINTER(_AttrList), ctypes.c_void_p,

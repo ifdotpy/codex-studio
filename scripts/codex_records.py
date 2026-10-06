@@ -1464,10 +1464,18 @@ class ProjectRecord(TypedDict):
     accountKeys: NotRequired[list[str]]
     folders: NotRequired[list[JsonValue]]
     organizationRevision: NotRequired[int]
-    peerTeams: NotRequired[list[JsonValue]]
+    peerTeams: NotRequired[list["PeerTeamRecord"]]
     peerTeamsRevision: NotRequired[int]
     workerBaseRef: NotRequired[str]
     workerBaseRevision: NotRequired[int]
+
+
+class PeerTeamRecord(TypedDict):
+    id: str
+    name: str
+    members: list[str]
+    projectPath: NotRequired[str]
+    revision: NotRequired[int]
 
 
 class AccountTransferRequestRecord(TypedDict):

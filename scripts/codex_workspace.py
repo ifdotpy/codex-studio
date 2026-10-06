@@ -1,4 +1,5 @@
 """Workspace files, checkpoints, conversation forks, and capability discovery."""
+from typing import Any
 
 import base64
 import codecs
@@ -20,8 +21,7 @@ from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
 
-
-def active_task_records(db, statuses=("running",), *, agent=None):
+def active_task_records(db: Any, statuses: Any=("running",), *, agent: Any=None) -> Any:
     """Use the status index before loading task payloads under the runtime lock."""
     if not statuses:
         return []
@@ -38,7 +38,7 @@ def active_task_records(db, statuses=("running",), *, agent=None):
 SKILL_CATALOG_TIMEOUT_SECONDS = 5
 
 
-def active_monitors(db):
+def active_monitors(db: Any) -> Any:
     """Monitors that can still run. The status index skips finished history."""
     return [json.loads(r[0]) for r in db.execute(
         "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN (?,?,?) ORDER BY rowid",
@@ -54,7 +54,7 @@ class WorkspaceMixin:
         "capture_running",
     }
 
-    def setup_workspace(self, db):
+    def setup_workspace(self: Any, db: Any) -> Any:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -125,10 +125,10 @@ class WorkspaceMixin:
                     db, a, "workspace:" + str(a.get("workspaceOperation")),
                     "restart-held", a["error"],
                 )
-        self.capability_cache = {}
+        self.capability_cache: dict[str, dict[str, Any]] = {}
 
     @staticmethod
-    def _workspace_operation_id(kind, agent_id, data):
+    def _workspace_operation_id(kind: Any, agent_id: Any, data: Any) -> Any:
         if kind == "branch" and data.get("id"):
             return "branch:" + str(data["id"])
         value = data.get("checkpoint_id") or data.get("checkpoint")
@@ -139,11 +139,11 @@ class WorkspaceMixin:
         return "branch:" + str(agent_id) + ":" + str(data.get("message_id"))
 
     @staticmethod
-    def _workspace_operation_signature(body):
+    def _workspace_operation_signature(body: Any) -> Any:
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
     @classmethod
-    def _workspace_restore_signature(cls, agent_id, data):
+    def _workspace_restore_signature(cls: Any, agent_id: Any, data: Any) -> Any:
         return cls._workspace_operation_signature(
             {
                 "agent": agent_id,
@@ -153,7 +153,7 @@ class WorkspaceMixin:
         )
 
     @staticmethod
-    def _workspace_provider_result(response):
+    def _workspace_provider_result(response: Any) -> Any:
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
         if not isinstance(thread_id, str) or not thread_id:
@@ -165,28 +165,28 @@ class WorkspaceMixin:
         return result
 
     @staticmethod
-    def _workspace_source(a):
+    def _workspace_source(a: Any) -> Any:
         return {
             "accountKey": a.get("accountKey", "default"),
             "threadId": a.get("threadId"),
             "cwd": a["cwd"],
         }
 
-    def _assert_workspace_source(self, operation, agent):
+    def _assert_workspace_source(self: Any, operation: Any, agent: Any) -> Any:
         expected = operation.get("source")
         if expected and expected != self._workspace_source(agent):
             raise ValueError(
                 "Workspace operation source changed. Inspect the operation before retrying"
             )
 
-    def _workspace_operation(self, db, operation_id):
+    def _workspace_operation(self: Any, db: Any, operation_id: Any) -> Any:
         row = db.execute(
             "SELECT record FROM runtime_workspace_operations WHERE id=?",
             (operation_id,),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _workspace_operations(self, db, agent_id=None):
+    def _workspace_operations(self: Any, db: Any, agent_id: Any=None) -> Any:
         phases = tuple(sorted(self.WORKSPACE_OPERATION_ACTIVE))
         query = ("SELECT record FROM runtime_workspace_operations "
                  "WHERE json_extract(record,'$.phase') IN ("
@@ -197,10 +197,10 @@ class WorkspaceMixin:
             params += (agent_id,)
         return [json.loads(row[0]) for row in db.execute(query, params)]
 
-    def _put_workspace_operation(self, db, operation):
+    def _put_workspace_operation(self: Any, db: Any, operation: Any) -> Any:
         self.put(db, "workspace_operations", operation)
 
-    def _update_workspace_operation(self, operation_id, **changes):
+    def _update_workspace_operation(self: Any, operation_id: Any, **changes: Any) -> Any:
         with self.lock, self.db() as db:
             operation = self._workspace_operation(db, operation_id)
             if operation is None:
@@ -209,10 +209,10 @@ class WorkspaceMixin:
             self._put_workspace_operation(db, operation)
             return operation
 
-    def _workspace_provider_rejected(self, error):
+    def _workspace_provider_rejected(self: Any, error: Any) -> Any:
         return isinstance(error, NativeRpcError)
 
-    def _finish_workspace_operation(self, operation_id, agent_id, *, result=None, error=None):
+    def _finish_workspace_operation(self: Any, operation_id: Any, agent_id: Any, *, result: Any=None, error: Any=None) -> Any:
         with self.lock, self.db() as db:
             operation = self._workspace_operation(db, operation_id)
             if operation is not None:
@@ -235,7 +235,7 @@ class WorkspaceMixin:
                 # Finishing a fork must not restore an older running state.
                 self.put(db, "agents", agent)
 
-    def _require_workspace_recovery(self, operation_id, agent_id, error):
+    def _require_workspace_recovery(self: Any, operation_id: Any, agent_id: Any, error: Any) -> Any:
         message = "Workspace operation outcome is unknown. Inspect the workspace before retrying."
         try:
             with self.lock, self.db() as db:
@@ -268,7 +268,7 @@ class WorkspaceMixin:
             # agent marker already provide a durable hold if this write fails.
             pass
 
-    def _workspace_operation_busy(self, db, cwd, exclude_operation=None):
+    def _workspace_operation_busy(self: Any, db: Any, cwd: Any, exclude_operation: Any=None) -> Any:
         return any(
             Path(agent["cwd"]).resolve() == Path(cwd).resolve()
             for operation in self._workspace_operations(db)
@@ -277,7 +277,7 @@ class WorkspaceMixin:
         )
 
     @staticmethod
-    def project_directory(value, require_existing=True):
+    def project_directory(value: Any, require_existing: Any=True) -> Any:
         if isinstance(value, Path):
             value = str(value)
         text_field(value, "a project path", 4096)
@@ -286,7 +286,7 @@ class WorkspaceMixin:
             raise ValueError("Select an existing project directory")
         return str(path)
 
-    def project_account(self, cwd, db=None):
+    def project_account(self: Any, cwd: Any, db: Any=None) -> Any:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_account(cwd, db=connection)
@@ -297,7 +297,7 @@ class WorkspaceMixin:
             return max(matches, key=lambda p: len(Path(p["path"]).parts))["accountKey"]
         return self.accounts.default()
 
-    def project_worker_base(self, cwd, db=None):
+    def project_worker_base(self: Any, cwd: Any, db: Any=None) -> Any:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_worker_base(cwd, db=connection)
@@ -309,7 +309,7 @@ class WorkspaceMixin:
             return max(matches, key=lambda p: len(Path(p["path"]).parts))["workerBaseRef"]
         return None
 
-    def ensure_project(self, path, account_key, db):
+    def ensure_project(self: Any, path: Any, account_key: Any, db: Any) -> Any:
         """Register a chat project in its transaction; preserve an existing choice."""
         path = self.project_directory(path, require_existing=False)
         existing = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
@@ -321,7 +321,7 @@ class WorkspaceMixin:
         self.put(db, "projects", project)
         return project
 
-    def projects(self, data=None, db=None):
+    def projects(self: Any, data: Any=None, db: Any=None) -> Any:
         if data is None:
             if db is None:
                 with self.lock, self.db() as connection:
@@ -399,14 +399,14 @@ class WorkspaceMixin:
             self.put(connection, "projects", project)
             return project
 
-    def workspace_path(self, agent_id, path):
+    def workspace_path(self: Any, agent_id: Any, path: Any) -> Any:
         a = self.agent(agent_id)
         root = Path(a["cwd"]).resolve()
         supplied = Path(text_field(path, "a path", 4096)).expanduser()
         resolved = (supplied if supplied.is_absolute() else root / supplied).resolve()
         return resolved
 
-    def upload_asset(self, data):
+    def upload_asset(self: Any, data: Any) -> Any:
         agent = self.checked_actor_in_own_db(data.get("agent"))
         name = Path(text_field(data.get("name"), "a filename", 255)).name
         if name in {".", ".."}:
@@ -462,15 +462,15 @@ class WorkspaceMixin:
             self.put(db, "assets", asset)
             return self.asset_view(asset)
 
-    def checked_actor_in_own_db(self, key, actor=None):
+    def checked_actor_in_own_db(self: Any, key: Any, actor: Any=None) -> Any:
         with self.lock, self.db() as db:
             return self.checked_actor(db, key, actor)
 
     @staticmethod
-    def asset_view(asset):
+    def asset_view(asset: Any) -> Any:
         return {k: v for k, v in asset.items() if k != "path"}
 
-    def asset_record(self, key, db=None):
+    def asset_record(self: Any, key: Any, db: Any=None) -> Any:
         if db is None:
             with self.lock, self.db() as own:
                 return self.asset_record(key, own)
@@ -483,7 +483,7 @@ class WorkspaceMixin:
         self.checked_actor(db, asset["agent"])
         return asset
 
-    def message_inputs(self, agent_id, text, asset_ids):
+    def message_inputs(self: Any, agent_id: Any, text: Any, asset_ids: Any) -> Any:
         inputs = [{"type": "text", "text": text}]
         if not isinstance(asset_ids, list) or len(asset_ids) > 8:
             raise ValueError("Attach up to eight files")
@@ -505,7 +505,7 @@ class WorkspaceMixin:
                 )
         return inputs
 
-    def file_info(self, agent_id=None, path=None, asset_id=None):
+    def file_info(self: Any, agent_id: Any=None, path: Any=None, asset_id: Any=None) -> Any:
         if asset_id:
             asset = self.asset_record(asset_id)
             file = Path(asset["path"]).resolve()
@@ -524,8 +524,8 @@ class WorkspaceMixin:
         return {"path": str(file), "name": file.name, "mime": mime, "size": size}
 
     def file_content(
-        self, agent_id=None, path=None, asset_id=None, limit=20 * 1024 * 1024
-    ):
+        self: Any, agent_id: Any=None, path: Any=None, asset_id: Any=None, limit: Any=20 * 1024 * 1024
+    ) -> Any:
         if asset_id:
             asset = self.asset_record(asset_id)
             file = Path(asset["path"])
@@ -546,7 +546,7 @@ class WorkspaceMixin:
         return content, mime, file.name
 
     @staticmethod
-    def _image_file_size(file):
+    def _image_file_size(file: Any) -> Any:
         from codex_workspace_images import exec_prefix
         script = "import os,sys; p=sys.argv[1]; assert os.path.isfile(p); print(os.stat(p).st_size)"
         result = subprocess.run([*exec_prefix(), sys.executable, "-c", script, str(file)],
@@ -556,7 +556,7 @@ class WorkspaceMixin:
         return int(result.stdout.strip())
 
     @staticmethod
-    def _read_image_file(file, limit):
+    def _read_image_file(file: Any, limit: Any) -> Any:
         from codex_workspace_images import exec_prefix
         script = ("import os,sys; p=sys.argv[1]; assert os.path.isfile(p); n=os.stat(p).st_size; "
                   "n > int(sys.argv[2]) and sys.exit(23); "
@@ -571,7 +571,7 @@ class WorkspaceMixin:
             raise ValueError("This file exceeds the 20 MiB preview limit")
         return result.stdout
 
-    def git(self, a, args, env=None, input=None):
+    def git(self: Any, a: Any, args: Any, env: Any=None, input: Any=None) -> Any:
         prefix = []
         if a.get("imageWorkspaceReady"):
             from codex_workspace_images import exec_prefix
@@ -591,8 +591,8 @@ class WorkspaceMixin:
         return result.stdout
 
     @staticmethod
-    def reported_change_files(patch):
-        def header_path(value):
+    def reported_change_files(patch: Any) -> Any:
+        def header_path(value):  # type: (Any) -> Any
             if value.startswith('"'):
                 if not re.fullmatch(r'"(?:[^"\\]|\\(?:[abfnrtv\\"]|[0-3][0-7]{2}))*"', value):
                     return None
@@ -635,7 +635,7 @@ class WorkspaceMixin:
                 previous = None
         return list(files.values())
 
-    def reported_changes(self, agent_id):
+    def reported_changes(self: Any, agent_id: Any) -> Any:
         with self.lock, self.db() as db:
             self.checked_actor(db, agent_id)
             row = db.execute(
@@ -666,7 +666,7 @@ class WorkspaceMixin:
             )
             return result
 
-    def changes(self, agent_id, scope=None):
+    def changes(self: Any, agent_id: Any, scope: Any=None) -> Any:
         if scope == "chat":
             return self.reported_changes(agent_id)
         if scope is not None:
@@ -702,7 +702,7 @@ class WorkspaceMixin:
         except ValueError as error:
             return {"files": [], "patch": "", "git": False, "error": str(error)}
 
-    def snapshot_tree(self, a):
+    def snapshot_tree(self: Any, a: Any) -> Any:
         # An independent index preserves the user's staging area.
         with tempfile.TemporaryDirectory(
             prefix="checkpoint-", dir=self.root
@@ -720,7 +720,7 @@ class WorkspaceMixin:
             self.git(a, ["add", "-A", "--", "."], env)
             return self.git(a, ["write-tree"], env).decode().strip()
 
-    def _reserve_checkpoint(self, db, agent, kind, turn_id=None):
+    def _reserve_checkpoint(self: Any, db: Any, agent: Any, kind: Any, turn_id: Any=None) -> Any:
         operation = {
             "id": kind + ":" + str(uuid.uuid4()),
             "kind": kind, "agent": agent["id"], "cwd": agent["cwd"],
@@ -733,7 +733,7 @@ class WorkspaceMixin:
         self.put(db, "agents", agent)
         return operation["id"]
 
-    def queue_checkpoint_after_turn(self, db, agent, turn_id):
+    def queue_checkpoint_after_turn(self: Any, db: Any, agent: Any, turn_id: Any) -> Any:
         if agent.get("workspaceOperation"):
             agent["checkpointError"] = "Checkpoint skipped: An agent is using this workspace"
             return
@@ -747,7 +747,7 @@ class WorkspaceMixin:
         except Exception as error:
             agent["checkpointError"] = str(error)
 
-    def _checkpoint_completed_agent(self, db, request):
+    def _checkpoint_completed_agent(self: Any, db: Any, request: Any) -> Any:
         key, epoch, cwd, account, thread, turn_id, attempt = request
         if self.closed:
             return None
@@ -765,7 +765,7 @@ class WorkspaceMixin:
             return None
         return agent
 
-    def _checkpoint_after_committed_turn(self, request):
+    def _checkpoint_after_committed_turn(self: Any, request: Any) -> Any:
         with self.lock, self.db() as db:
             agent = self._checkpoint_completed_agent(db, request)
             if agent is None:
@@ -793,7 +793,7 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, agent, "checkpoint", request[5])
         self.checkpoint_after_turn(request[0], request[5], operation_id)
 
-    def _settle_checkpoint(self, db, agent, operation_id, error=None):
+    def _settle_checkpoint(self: Any, db: Any, agent: Any, operation_id: Any, error: Any=None) -> Any:
         operation = self._workspace_operation(db, operation_id)
         if not operation or operation.get("kind") not in {"checkpoint", "capture"}:
             return
@@ -808,7 +808,7 @@ class WorkspaceMixin:
             agent.pop("workspaceReservationId", None)
             self.put(db, "agents", agent)
 
-    def _capture_reserved_checkpoint(self, key, label, turn_id, operation_id):
+    def _capture_reserved_checkpoint(self: Any, key: Any, label: Any, turn_id: Any, operation_id: Any) -> Any:
         with self.lock, self.db() as db:
             agent = self.agent(key, db)
             operation = self._workspace_operation(db, operation_id)
@@ -849,11 +849,11 @@ class WorkspaceMixin:
                 return None
             operation.update(phase="capture_running", updated=time.time())
             self._put_workspace_operation(db, operation)
-        error = None
+        error = None  # type: ignore[misc]  # typed-narrowing: preserve the idle check result for later capture cleanup
         try:
             return self.capture_checkpoint(key, label, turn_id)
         except Exception as cause:
-            error = cause
+            error = cause  # type: ignore[misc]  # typed-narrowing: preserve the capture failure for finalization
             raise
         finally:
             with self.lock, self.db() as db:
@@ -861,8 +861,8 @@ class WorkspaceMixin:
             self.changed.set()
 
     def checkpoint_capture(
-        self, agent_id, label="Checkpoint", turn_id=None, internal=False
-    ):
+        self: Any, agent_id: Any, label: Any="Checkpoint", turn_id: Any=None, internal: Any=False
+    ) -> Any:
         if internal:
             return self.capture_checkpoint(agent_id, label, turn_id)
         with self.lock, self.db() as db:
@@ -880,7 +880,7 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
         return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
-    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None, tree=None):
+    def capture_checkpoint(self: Any, agent_id: Any, label: Any="Checkpoint", turn_id: Any=None, tree: Any=None) -> Any:
         a = self.checked_actor_in_own_db(agent_id)
         tree = tree if tree is not None else self.snapshot_tree(a)
         key = str(uuid.uuid4())
@@ -949,7 +949,7 @@ class WorkspaceMixin:
             self.put(db, "agents", current)
             return record
 
-    def _checkpoint_history_ids(self, db, checkpoint):
+    def _checkpoint_history_ids(self: Any, db: Any, checkpoint: Any) -> Any:
         ids = set()
         seen = set()
         current = checkpoint
@@ -983,11 +983,11 @@ class WorkspaceMixin:
         return ids
 
     @staticmethod
-    def checkpoint_summary(checkpoint):
+    def checkpoint_summary(checkpoint: Any) -> Any:
         return {k: v for k, v in checkpoint.items()
                 if k not in {"items", "historyDelta"}}
 
-    def checkpoint_after_turn(self, key, turn_id, operation_id):
+    def checkpoint_after_turn(self: Any, key: Any, turn_id: Any, operation_id: Any) -> Any:
         try:
             if self._capture_reserved_checkpoint(key, "After turn", turn_id, operation_id) is None:
                 return
@@ -997,7 +997,7 @@ class WorkspaceMixin:
             return
         scope = None
 
-        def current(agent):
+        def current(agent):  # type: (Any) -> Any
             return (scope == (agent.get("epoch"), self._workspace_source(agent))
                     and agent.get("autoWake") and agent.get("status") not in {"paused", "starting"}
                     and not agent.get("inFlight") and not agent.get("turnId")
@@ -1040,7 +1040,7 @@ class WorkspaceMixin:
                 self.put(db, "agents", agent)
                 self.changed.set()
 
-    def checkpoint_preview(self, key, checkpoint_id):
+    def checkpoint_preview(self: Any, key: Any, checkpoint_id: Any) -> Any:
         a = self.checked_actor_in_own_db(key)
         recovery_expected = None
         with self.lock, self.db() as db:
@@ -1077,7 +1077,7 @@ class WorkspaceMixin:
             "canRestore": can_restore,
         }
 
-    def restore_checkpoint(self, key, data):
+    def restore_checkpoint(self: Any, key: Any, data: Any) -> Any:
         with self.lock:
             guard = self.prepare_locks.setdefault(
                 "restore:" + key, __import__("threading").Lock()
@@ -1085,7 +1085,7 @@ class WorkspaceMixin:
         with guard:
             return self._restore_checkpoint_locked(key, data)
 
-    def _restore_checkpoint_locked(self, key, data):
+    def _restore_checkpoint_locked(self: Any, key: Any, data: Any) -> Any:
         operation_id = self._workspace_operation_id("restore", key, data)
         resume_operation = None
         files_already_restored = False
@@ -1342,11 +1342,11 @@ class WorkspaceMixin:
                 self._require_workspace_recovery(operation_id, key, error)
             raise
 
-    def assert_workspace_idle(self, a):
+    def assert_workspace_idle(self: Any, a: Any) -> Any:
         with self.db() as db:
             self._assert_workspace_idle(db, a)
 
-    def _workspace_idle_snapshot(self, db, a, *, current_state=False):
+    def _workspace_idle_snapshot(self: Any, db: Any, a: Any, *, current_state: Any=False) -> Any:
         agents = [tuple(row) for row in db.execute(
             "SELECT id,json_extract(record,'$.cwd'),json_extract(record,'$.inFlight'),"
             "json_extract(record,'$.workspaceOperation'),json_extract(record,'$.workspaceReservationId') "
@@ -1368,15 +1368,15 @@ class WorkspaceMixin:
             "WHERE json_extract(record,'$.status')='running' ORDER BY id")]
         return agents, operations, monitors, tasks
 
-    def _resolve_workspace_idle(self, snapshot, a):
+    def _resolve_workspace_idle(self: Any, snapshot: Any, a: Any) -> Any:
         agents, operations, monitors, tasks = snapshot
         busy_ids = {row[1] for row in operations} | {row[1] for row in tasks}
         paths = {a["cwd"]} | {row[1] for row in monitors}
         paths.update(row[1] for row in agents if row[2] or row[3] or row[0] in busy_ids)
         return {cwd: Path(cwd).resolve() for cwd in sorted(paths)}
 
-    def _assert_workspace_idle(self, db, a, reservation_id=None, *, current_state=False,
-                               snapshot=None, resolved=None):
+    def _assert_workspace_idle(self: Any, db: Any, a: Any, reservation_id: Any=None, *, current_state: Any=False,
+                               snapshot: Any=None, resolved: Any=None) -> Any:
         snapshot = snapshot if snapshot is not None else self._workspace_idle_snapshot(db, a, current_state=current_state)
         resolved = resolved if resolved is not None else self._resolve_workspace_idle(snapshot, a)
         agents, operations, monitors, tasks = snapshot
@@ -1396,7 +1396,7 @@ class WorkspaceMixin:
         if any(row[1] in by_id and resolved[by_id[row[1]][1]] == cwd for row in tasks):
             raise ValueError("A command or tool is still active")
 
-    def branch_conversation(self, key, data):
+    def branch_conversation(self: Any, key: Any, data: Any) -> Any:
         with self.lock:
             guard = self.prepare_locks.setdefault(
                 "fork:" + key, __import__("threading").Lock()
@@ -1404,7 +1404,7 @@ class WorkspaceMixin:
         with guard:
             return self.branch_locked(key, data)
 
-    def branch_locked(self, key, data):
+    def branch_locked(self: Any, key: Any, data: Any) -> Any:
         if "before" in data and type(data["before"]) is not bool:
             raise ValueError("before must be a boolean")
         operation_id = self._workspace_operation_id("branch", key, data)
@@ -1589,7 +1589,7 @@ class WorkspaceMixin:
                     if json.loads(r["record"]).get("turnId") == fork_turn), default=float("-inf"))
                 assets = {}
 
-                def copy_assets(records):
+                def copy_assets(records):  # type: (Any) -> Any
                     copied = []
                     for view in records:
                         old_id = view["id"]
@@ -1671,7 +1671,7 @@ class WorkspaceMixin:
                     self._require_workspace_recovery(operation_id, key, error)
             raise
 
-    def profiles(self, data=None):
+    def profiles(self: Any, data: Any=None) -> Any:
         with self.lock, self.db() as db:
             if data is None:
                 return {"profiles": self.records(db, "profiles")}
@@ -1705,10 +1705,10 @@ class WorkspaceMixin:
             self.put(db, "profiles", profile)
             return profile
 
-    def skill_catalog(self, key):
+    def skill_catalog(self: Any, key: Any) -> Any:
         """Read only the selected account/project's native skill inventory."""
         a = self.checked_actor_in_own_db(key)
-        result = {"skills": [], "errors": []}
+        result: dict[str, Any] = {"skills": [], "errors": []}
         try:
             response = self.connect(a.get("accountKey", "default")).call(
                 "skills/list", {"cwds": [a["cwd"]], "forceReload": False},
@@ -1745,7 +1745,7 @@ class WorkspaceMixin:
             result["errors"].append(str(error))
         return result
 
-    def capabilities(self, key):
+    def capabilities(self: Any, key: Any) -> Any:
         a = self.checked_actor_in_own_db(key)
         cache = self.capability_cache.get(key)
         if cache and time.time() - cache["at"] < 30:
@@ -1784,7 +1784,7 @@ class WorkspaceMixin:
             ("skills", "skills/list", {"cwds": [a["cwd"]], "forceReload": True}),
             ("servers", "mcpServerStatus/list", {"threadId": a.get("threadId"), "limit": 100}),
         ]
-        def discover(method, params):
+        def discover(method, params):  # type: (Any, Any) -> Any
             return self.connect(a.get("accountKey", "default")).call(method, params, timeout=5)
         # Independent provider reads share a five-second wait instead of two
         # sequential waits that can exceed the client's request deadline.
@@ -1801,7 +1801,7 @@ class WorkspaceMixin:
         self.capability_cache[key] = result
         return result
 
-    def workspace_snapshot(self, key=None, *, view="full"):
+    def workspace_snapshot(self: Any, key: Any=None, *, view: Any="full") -> Any:
         if view not in {"full", "inbox"}:
             raise ValueError("Unknown workspace view")
         with self.read_db() as db:
@@ -1910,7 +1910,7 @@ class WorkspaceMixin:
                 "monitors": [m for m in monitors if m["agent"] in ids],
             }
 
-    def _workspace_records(self, db, table, ids, field):
+    def _workspace_records(self: Any, db: Any, table: Any, ids: Any, field: Any) -> Any:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1924,7 +1924,7 @@ class WorkspaceMixin:
             f"SELECT {field_sql} FROM runtime_{table} WHERE {clause}", tuple(ids))]
 
     @staticmethod
-    def _workspace_requests(db, ids):
+    def _workspace_requests(db: Any, ids: Any) -> Any:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1935,14 +1935,14 @@ class WorkspaceMixin:
             "OR json_extract(record,'$.deferred')='')", tuple(ids))]
 
     @staticmethod
-    def _workspace_work(db, root):
+    def _workspace_work(db: Any, root: Any) -> Any:
         if root is None:
             return [json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_work")]
         return [json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root,))]
 
     @staticmethod
-    def _workspace_rules(db, ids):
+    def _workspace_rules(db: Any, ids: Any) -> Any:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1950,7 +1950,7 @@ class WorkspaceMixin:
             "SELECT record FROM runtime_rules WHERE json_extract(record,'$.agent') IN (" + placeholders + ")",
             tuple(ids))]
 
-    def _workspace_complaints(self, db, lead_ids):
+    def _workspace_complaints(self: Any, db: Any, lead_ids: Any) -> Any:
         if lead_ids is None:
             complaints = self.records(db, "complaints")
         elif not lead_ids:
@@ -1976,7 +1976,7 @@ class WorkspaceMixin:
                            "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
         return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
-    def monitor_log(self, key):
+    def monitor_log(self: Any, key: Any) -> Any:
         with self.lock, self.db() as db:
             row = db.execute(
                 "SELECT record FROM runtime_monitors WHERE id=?", (key,)
@@ -2005,7 +2005,7 @@ class WorkspaceMixin:
                 "truncated": m.get("bytes", 0) > (size if fallback is None else len(fallback)),
             }
 
-    def native_command_action(self, data):
+    def native_command_action(self: Any, data: Any) -> Any:
         task = self.task_detail(data.get("id"))
         if (
             task.get("kind") != "command"
@@ -2041,7 +2041,7 @@ class WorkspaceMixin:
         )
         return self.send(a["id"], instruction)
 
-    def workspace_blockers(self, db, a):
+    def workspace_blockers(self: Any, db: Any, a: Any) -> Any:
         cwd = Path(a["cwd"]).resolve()
         blockers = []
         # Called under the runtime lock on every start. Decoding every agent
@@ -2062,7 +2062,7 @@ class WorkspaceMixin:
             blockers.append(blocker)
         return blockers
 
-    def assert_workspace_available(self, db, a):
+    def assert_workspace_available(self: Any, db: Any, a: Any) -> Any:
         from codex_context_repair import assert_context_available
         assert_context_available(a)
         from codex_native_tools import account_reserved
@@ -2077,10 +2077,10 @@ class WorkspaceMixin:
             from codex_workspace_delivery import WorkspaceBusyError
             raise WorkspaceBusyError(blockers)
 
-    def recent_tasks(self, db, root=None):
+    def recent_tasks(self: Any, db: Any, root: Any=None) -> Any:
         from codex_sync_entities import project
         return [project("task", record) for record in task_records(db, root)]
 
-    def recent_monitors(self, db, root=None):
+    def recent_monitors(self: Any, db: Any, root: Any=None) -> Any:
         from codex_sync_entities import project
         return [project("monitor", record) for record in monitor_records(db, root)]
