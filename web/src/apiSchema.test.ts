@@ -72,9 +72,9 @@ it("sends the generated schema hash and raises mismatch state from an API respon
   );
   expect(api.isApiSchemaMismatch()).toBe(true);
   expect(mismatch).toHaveBeenCalledTimes(1);
-  await expect(api.syncGet("/api/state")).rejects.toMatchObject({
-    status: 426,
-  });
+  await expect(
+    api.syncGet("/api/limits", { query: { account_key: "default" } }),
+  ).rejects.toMatchObject({ status: 426 });
   await expect(api.get("/api/session")).rejects.toMatchObject({
     name: "ApiSchemaMismatchError",
   });

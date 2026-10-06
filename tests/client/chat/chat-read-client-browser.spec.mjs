@@ -34,6 +34,7 @@ test("chat read client browser", async ({ browser: _browser }) => {
     optimizeDeps: {
       noDiscovery: true,
       include: [
+        "dexie",
         "react",
         "react/jsx-runtime",
         "react/jsx-dev-runtime",

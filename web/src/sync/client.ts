@@ -31,6 +31,8 @@ import {
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
+import { readRetryDelay, retryableReadError } from "./readRetry";
+import { refreshAfterCurrentPull } from "./refreshAfterCurrentPull";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
   cacheTranscriptValue,
@@ -608,6 +610,7 @@ type ProjectionState = {
   foreground: number;
   stop: () => Promise<unknown>;
   refresh: (signal?: AbortSignal) => Promise<void>;
+  refreshAfterCurrent: () => Promise<void>;
   activateInvalidation: () => void;
   acknowledgeEntitySequences: (sequences: number[]) => Promise<void>;
   listeners: Set<(error: unknown | null) => void>;
@@ -980,6 +983,7 @@ async function acquireProjection(
         });
       return pending;
     };
+    const refreshAfterCurrent = () => refreshAfterCurrentPull(pending, refresh);
     const transcriptId = scope.startsWith("transcript:")
       ? scope.slice(11)
       : null;
@@ -1031,6 +1035,7 @@ async function acquireProjection(
       foreground: 0,
       listeners,
       refresh,
+      refreshAfterCurrent,
       activateInvalidation,
       acknowledgeEntitySequences: async (sequences) => {
         // Mutation response rows are part of the local projection. Advance
@@ -1091,66 +1096,63 @@ async function acquireProjection(
   }
 }
 
-type ProjectionPayload = Snapshot | GetResult<"/api/transcript"> | null;
-export async function watchProjection(
-  scope: string,
-  accept: (payload: ProjectionPayload) => void,
+type StateProjectionPayload = Snapshot | null;
+type TranscriptProjectionPayload = GetResult<"/api/transcript"> | null;
+
+async function watchStateProjection(
+  accept: (payload: StateProjectionPayload) => void,
+  fail: (e: unknown) => void,
+) {
+  const { db, state, release } = await acquireProjection("state");
+  state.listeners.add(fail);
+  const projection = emptyEntityProjection();
+  let ready = false;
+  let entitiesLoaded = false;
+  let latestRows: EntityRow[] = [];
+  const publishCurrent = () => {
+    if (!ready || !entitiesLoaded) return;
+    const next = applyEntityRows(projection, latestRows, true);
+    if (next) accept(next);
+  };
+  const publish = (documents: RxDocument<SyncDocument>[]) => {
+    entitiesLoaded = true;
+    latestRows = documents.map((document) => document.toJSON());
+    publishCurrent();
+  };
+  const entities = db.projections
+    .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+    .$.subscribe(publish);
+  const marker = db.projections
+    .findOne("state:entities:ready")
+    .$.subscribe((document) => {
+      const row = document?.toJSON();
+      ready = row?.payload === "ready" && !row?._deleted;
+      publishCurrent();
+    });
+  return () => {
+    entities.unsubscribe();
+    marker.unsubscribe();
+    state.listeners.delete(fail);
+    void release();
+  };
+}
+
+async function watchTranscriptProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: TranscriptProjectionPayload) => void,
   fail: (e: unknown) => void,
 ) {
   const { db, workspaceId, state, release } = await acquireProjection(scope);
   state.listeners.add(fail);
-  const id = scope.startsWith("transcript:") ? scope.slice(11) : null;
-  const stopCache = id
-    ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
-    : () => {};
-  const subscription =
-    scope === "state"
-      ? (() => {
-          const projection = emptyEntityProjection();
-          let ready = false;
-          let entitiesLoaded = false;
-          let latestRows: EntityRow[] = [];
-          const publishCurrent = () => {
-            if (!ready || !entitiesLoaded) return;
-            const next = applyEntityRows(projection, latestRows, true);
-            if (next) accept(next);
-          };
-          const publish = (documents: RxDocument<SyncDocument>[]) => {
-            entitiesLoaded = true;
-            latestRows = documents.map((document) => document.toJSON());
-            publishCurrent();
-          };
-          const entities = db.projections
-            .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
-            .$.subscribe(publish);
-          const marker = db.projections
-            .findOne("state:entities:ready")
-            .$.subscribe((document) => {
-              const row = document?.toJSON();
-              ready = row?.payload === "ready" && !row?._deleted;
-              publishCurrent();
-            });
-          return {
-            unsubscribe() {
-              entities.unsubscribe();
-              marker.unsubscribe();
-            },
-          };
-        })()
-      : db.projections.findOne(scope).$.subscribe((doc) => {
-          if (!id) {
-            accept(doc ? JSON.parse(doc.payload) : null);
-            return;
-          }
-          if (doc)
-            void cacheStoredTranscript(
-              db.projections,
-              workspaceId,
-              `transcript:${id}`,
-              doc,
-            );
-          else if (!peekTranscript(workspaceId, id)) accept(null);
-        });
+  const id = scope.slice("transcript:".length);
+  const stopCache = subscribeTranscript(workspaceId, id, (entry) =>
+    accept(entry.payload),
+  );
+  const subscription = db.projections.findOne(scope).$.subscribe((doc) => {
+    if (doc)
+      void cacheStoredTranscript(db.projections, workspaceId, scope, doc);
+    else if (!peekTranscript(workspaceId, id)) accept(null);
+  });
   return () => {
     subscription.unsubscribe();
     stopCache();
@@ -1159,11 +1161,29 @@ export async function watchProjection(
   };
 }
 
-/** Reconcile the entity projection after an action without fetching /api/state. */
-export async function refreshProjection(scope: string) {
-  const handle = await acquireProjection(scope);
+/** Pull and return the current entity projection for state reconciliation. */
+export async function refreshProjection(
+  options: { afterCurrentPull?: boolean } = {},
+): Promise<Snapshot> {
+  const handle = await acquireProjection("state");
   try {
-    await handle.state.refresh();
+    if (options.afterCurrentPull) await handle.state.refreshAfterCurrent();
+    else await handle.state.refresh();
+    const [ready, documents] = await Promise.all([
+      handle.db.projections.findOne("state:entities:ready").exec(),
+      handle.db.projections
+        .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+        .exec(),
+    ]);
+    if (!ready || ready.payload !== "ready" || ready._deleted)
+      throw new Error("The entity projection is not ready yet.");
+    const snapshot = applyEntityRows(
+      emptyEntityProjection(),
+      documents.map((document) => document.toJSON()),
+      true,
+    );
+    if (!snapshot) throw new Error("The entity projection is unavailable.");
+    return snapshot;
   } finally {
     await handle.release();
   }
@@ -1598,28 +1618,66 @@ export async function startDraftReplication(
 }
 
 // Reopen a subscription after an initial connection failure, without a page reload.
-export function subscribeProjection(
-  scope: string,
-  accept: (payload: ProjectionPayload) => void,
+function subscribeProjection<T>(
+  watch: (
+    accept: (payload: T) => void,
+    fail: (error: unknown) => void,
+  ) => Promise<() => void>,
+  accept: (payload: T) => void,
   report: (error: unknown | null) => void,
+  retryBeforeData?: () => Promise<unknown>,
 ) {
   let stopped = false,
     connecting = false,
     attached = false;
   let dispose = () => {};
+  let hasData = false;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearRetry = () => {
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+  const onFailure = (error: unknown | null) => {
+    if (stopped) return;
+    report(error);
+    if (error === null) {
+      retryCount = 0;
+      clearRetry();
+      return;
+    }
+    if (
+      !retryBeforeData ||
+      hasData ||
+      retryTimer !== undefined ||
+      !retryableReadError(error) ||
+      document.hidden ||
+      navigator.onLine === false
+    )
+      return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (stopped || hasData) return;
+      if (attached) void retryBeforeData().catch(onFailure);
+      else void connect();
+    }, readRetryDelay(retryCount++));
+  };
   const connect = async () => {
     if (stopped || connecting || attached) return;
+    clearRetry();
     connecting = true;
     try {
-      const stop = await watchProjection(
-        scope,
-        (value) => {
-          if (!stopped) accept(value);
-        },
-        (error) => {
-          if (!stopped) report(error);
-        },
-      );
+      const stop = await watch((value) => {
+        if (!stopped) {
+          if (value !== null) {
+            hasData = true;
+            clearRetry();
+            retryCount = 0;
+            onFailure(null);
+          }
+          accept(value);
+        }
+      }, onFailure);
       if (stopped) stop();
       else {
         dispose = stop;
@@ -1627,7 +1685,7 @@ export function subscribeProjection(
       }
     } catch (error) {
       if (!stopped) {
-        report(error);
+        onFailure(error);
       }
     } finally {
       connecting = false;
@@ -1643,5 +1701,27 @@ export function subscribeProjection(
     stopResume();
     stopConnection();
     dispose();
+    clearRetry();
   };
+}
+
+export function subscribeStateProjection(
+  accept: (payload: StateProjectionPayload) => void,
+  report: (error: unknown | null) => void,
+) {
+  return subscribeProjection(watchStateProjection, accept, report, () =>
+    refreshProjection(),
+  );
+}
+
+export function subscribeTranscriptProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: TranscriptProjectionPayload) => void,
+  report: (error: unknown | null) => void,
+) {
+  return subscribeProjection(
+    (next, fail) => watchTranscriptProjection(scope, next, fail),
+    accept,
+    report,
+  );
 }

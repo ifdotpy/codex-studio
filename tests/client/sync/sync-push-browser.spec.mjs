@@ -93,8 +93,7 @@ test("Sync push", async ({ context: testContext }) => {
     );
     await page.evaluate(async () => {
       window.client = await import("/src/sync/client.ts");
-      window.stopPush = window.client.subscribeProjection(
-        "state",
+      window.stopPush = window.client.subscribeStateProjection(
         (value) => {
           window.pushState = value?.threads?.find(
             (row) => row.id === "lead",

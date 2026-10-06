@@ -92,6 +92,14 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
         )
         .allTextContents();
     assert.deepEqual(await projects(), ["Project A", "Project B", "Project C"]);
+    const reorderResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      return (
+        new URL(response.url()).pathname === "/api/projects" &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.action === "reorder"
+      );
+    });
     await drag(
       project("Project C").locator(
         "> .project-tree-heading > .project-tree-toggle",
@@ -108,6 +116,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     );
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);
     console.log("Project pointer drag passed");
+    await reorderResponse;
     await page.reload();
     await row("Destination").waitFor();
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);
