@@ -38,6 +38,10 @@ test("Account settings errors", async () => {
       revision: resourceRevision,
       reason,
       resources,
+      resourceVersions: resources.map((resource) => ({
+        resource,
+        revision: resourceRevision,
+      })),
     };
     assert.ok(
       Array.isArray(event.resources) && Number.isFinite(event.revision),

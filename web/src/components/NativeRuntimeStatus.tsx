@@ -1,9 +1,8 @@
 import { localDateTime } from "../local-time";
 import { useEffect, useState } from "react";
-import { type GetResult, errorText } from "../api";
+import { get, type GetResult, errorText } from "../api";
 import type { Account } from "./Accounts";
 import { watchResourceReads } from "./watchResourceReads";
-import { getShared } from "../sharedRead";
 import "./native-runtime-status.css";
 
 type DesktopStatus = GetResult<"/api/desktop">;
@@ -45,12 +44,13 @@ export default function NativeRuntimeStatus({
     setError("");
     if (!opened) return;
     let live = true;
-    let forceInitial = true;
+    const controller = new AbortController();
     const stop = watchResourceReads(
       { kind: "desktop" },
       async () => {
-        const result = await getShared("/api/desktop", {}, forceInitial);
-        forceInitial = false;
+        const result = await get("/api/desktop", {
+          signal: controller.signal,
+        });
         if (live) {
           setData(result.nativeRuntime ?? null);
           setProviders(
@@ -69,6 +69,7 @@ export default function NativeRuntimeStatus({
     );
     return () => {
       live = false;
+      controller.abort();
       stop();
     };
   }, [opened]);

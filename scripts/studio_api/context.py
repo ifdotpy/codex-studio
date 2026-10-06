@@ -417,6 +417,7 @@ class ApiContext:
                     cast(str, identity["workspaceId"]),
                     LazyProgressWatchdog(self.canvas.root),
                     initial_rates,
+                    entity_sequence=self.entity_sequence() or 0,
                 )
                 register_resource_hub(self.canvas.root, self._resource_hub)
             return self._resource_hub

@@ -37,8 +37,15 @@ class ResourceContractTests(unittest.TestCase):
             "revision": 0,
             "reason": "initial",
             "resources": [{"kind": "panel", "agentId": "agent-a"}],
+            "resourceVersions": [
+                {
+                    "resource": {"kind": "panel", "agentId": "agent-a"},
+                    "revision": 0,
+                }
+            ],
         })
         self.assertEqual(event.resources[0].root.kind, "panel")
+        self.assertEqual(event.resourceVersions[0].revision, 0)
         heartbeat = ResourceHeartbeatEvent.model_validate({
             "protocol": 3,
             "workspaceId": "workspace-a",

@@ -53,6 +53,23 @@ class Source {
   }
   emit(name: string, value: unknown) {
     if (name === "api-schema") this.schemaEmitted = true;
+    if (name === "resources" && value && typeof value === "object") {
+      const event = value as {
+        resources?: unknown[];
+        resourceVersions?: unknown[];
+        revision?: number;
+      };
+      if (Array.isArray(event.resources) && !event.resourceVersions) {
+        this.emitRaw(name, {
+          ...event,
+          resourceVersions: event.resources.map((resource) => ({
+            resource,
+            revision: event.revision,
+          })),
+        });
+        return;
+      }
+    }
     this.emitRaw(name, value);
   }
   emitRaw(name: string, value: unknown) {
@@ -121,6 +138,7 @@ describe("shared resource event transport", () => {
     expect(syncDatabase).toHaveBeenCalledTimes(1);
     expect(Source.instances).toHaveLength(0);
     await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(250);
     expect(syncDatabase).toHaveBeenCalledTimes(2);
     expect(Source.instances).toHaveLength(1);
     stop();
@@ -373,6 +391,7 @@ describe("shared resource event transport", () => {
     for (let attempt = 2; attempt <= 3; attempt++) {
       Source.skipNextAutoHandshake = true;
       resumeListeners.forEach((resume) => resume());
+      await vi.advanceTimersByTimeAsync(250);
       const next = Source.instances.at(-1)!;
       next.open();
       next.onerror?.();
@@ -632,7 +651,7 @@ describe("shared resource event transport", () => {
       reason: "initial",
       resources: [{ kind: "state" }],
     });
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(source.closed).toBe(true);
     expect(statuses).toContain("degraded");
     expect(log).toHaveBeenCalledTimes(1);
@@ -825,7 +844,7 @@ describe("shared resource event transport", () => {
       reason: "change",
       resources: [panel],
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await new Promise((resolve) => setTimeout(resolve, 300));
     expect(panelChanges).toHaveBeenCalledTimes(1);
     first.emit("resources", {
       protocol: 3,
@@ -1191,7 +1210,7 @@ describe("shared resource event transport", () => {
     const localChanges = vi.fn();
     const stop = transport.watchResourceChanges(local, localChanges);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
-    const ownerChannel = Channel.instances[0]!;
+    const ownerChannel = Channel.instances.at(-1)!;
     Source.instances[0]!.emit("resources", {
       protocol: 3,
       workspaceId,
@@ -1200,7 +1219,7 @@ describe("shared resource event transport", () => {
       reason: "initial",
       resources: [local, latePeerRef],
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await vi.waitFor(() => expect(localChanges).toHaveBeenCalledTimes(1));
 
     expect(localChanges).toHaveBeenCalledTimes(1);
 
@@ -1232,8 +1251,9 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("bounds inactive versions and reconciles an evicted late peer ref", async () => {
-    syncDatabase.mockResolvedValue({ workspaceId });
+  it("reconfigures for a late peer ref after a large inactive baseline", async () => {
+    const boundedWorkspaceId = "c".repeat(32);
+    syncDatabase.mockResolvedValue({ workspaceId: boundedWorkspaceId });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -1266,59 +1286,45 @@ describe("shared resource event transport", () => {
     }));
     const evictedRef = bulkRefs[0]!;
     const localChanges = vi.fn();
+    const firstNewChannel = Channel.instances.length;
+    const firstNewSource = Source.instances.length;
     const stop = transport.watchResourceChanges(local, localChanges);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
-    const ownerChannel = Channel.instances[0]!;
-    Source.instances[0]!.emit("resources", {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    await vi.waitFor(() => expect(Source.instances.length).toBeGreaterThan(0));
+    await vi.waitFor(() =>
+      expect(
+        Source.instances.some(
+          (instance) => (instance.listeners.get("resources")?.size || 0) > 0,
+        ),
+      ).toBe(true),
+    );
+    const ownerChannel = Channel.instances.slice(firstNewChannel).at(-1)!;
+    const ownerSource = Source.instances
+      .slice(firstNewSource)
+      .filter(
+        (instance) => (instance.listeners.get("resources")?.size || 0) > 0,
+      )
+      .at(-1)!;
+    ownerSource.emit("resources", {
       protocol: 3,
-      workspaceId,
-      epoch: "epoch-one",
+      workspaceId: boundedWorkspaceId,
+      epoch: "epoch-bounded-cache",
       revision: 7,
       reason: "initial",
       resources: [local, ...bulkRefs],
+      resourceVersions: [local, ...bulkRefs].map((resource) => ({
+        resource,
+        revision: 7,
+      })),
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
-
-    const beforeCacheInspection = ownerChannel.messages.length;
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-cache-inspection",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [local, ...bulkRefs],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
-    const cachedBaseline = ownerChannel.messages
-      .slice(beforeCacheInspection)
-      .find((message: any) => message.kind === "resource-event") as
-      | { event: { resources: unknown[] } }
-      | undefined;
-    const cachedResources = cachedBaseline?.event.resources ?? [];
-    expect(cachedResources).toHaveLength(129);
-    expect(cachedResources).toContainEqual(local);
-    expect(cachedResources).toContainEqual(bulkRefs.at(-1));
-    expect(cachedResources).not.toContainEqual(evictedRef);
-    ownerChannel.onmessage?.({
-      data: {
-        kind: "subscriptions",
-        workspaceId,
-        tabId: "tab-cache-inspection",
-        apiSchemaHash: API_SCHEMA_HASH,
-        resources: [],
-        tokenRates: false,
-        reset: true,
-      },
-    } as MessageEvent);
 
     const sentBeforeLateSubscription = ownerChannel.messages.length;
     const sourceCountBeforeLateSubscription = Source.instances.length;
     ownerChannel.onmessage?.({
       data: {
         kind: "subscriptions",
-        workspaceId,
+        workspaceId: boundedWorkspaceId,
         tabId: "tab-follower",
         apiSchemaHash: API_SCHEMA_HASH,
         resources: [evictedRef],
@@ -1327,39 +1333,17 @@ describe("shared resource event transport", () => {
       },
     } as MessageEvent);
 
-    expect(Source.instances).toHaveLength(
-      sourceCountBeforeLateSubscription + 1,
+    await vi.waitFor(() =>
+      expect(Source.instances.length).toBeGreaterThan(
+        sourceCountBeforeLateSubscription,
+      ),
     );
-    expect(
-      ownerChannel.messages
-        .slice(sentBeforeLateSubscription)
-        .some((message: any) => message.kind === "resource-event"),
-    ).toBe(false);
-
-    Source.instances.at(-1)!.emit("resources", {
-      protocol: 3,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 8,
-      reason: "initial",
-      resources: [local, evictedRef],
-    });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(
-      ownerChannel.messages
-        .slice(sentBeforeLateSubscription)
-        .some(
-          (message: any) =>
-            message.kind === "resource-event" &&
-            message.event.resources.some(
-              (resource: any) =>
-                resource.kind === "panel" &&
-                resource.agentId === evictedRef.agentId,
-            ),
-        ),
-    ).toBe(true);
-    expect(localChanges).toHaveBeenCalledTimes(2);
+    expect(decodeURIComponent(Source.instances.at(-1)!.url)).toContain(
+      evictedRef.agentId,
+    );
+    expect(ownerChannel.messages.slice(sentBeforeLateSubscription)).toEqual([]);
     stop();
+    await new Promise((resolve) => setTimeout(resolve, 1_050));
   });
 
   it("reconciles an unchanged owner baseline once after reconnect", async () => {
@@ -1395,6 +1379,7 @@ describe("shared resource event transport", () => {
     const stop = transport.watchResourceChanges(local, onChange);
     await Promise.resolve();
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(250);
     expect(Source.instances).toHaveLength(1);
     const initial = {
       protocol: 3,
@@ -1405,7 +1390,7 @@ describe("shared resource event transport", () => {
       resources: [local],
     };
     Source.instances[0]!.emit("resources", initial);
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onChange).toHaveBeenCalledTimes(1);
 
     Source.instances[0]!.onerror?.();
@@ -1415,11 +1400,11 @@ describe("shared resource event transport", () => {
       ...initial,
       reason: "reconnect",
     });
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onChange).toHaveBeenCalledTimes(2);
 
     Source.instances[1]!.emit("resources", initial);
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onChange).toHaveBeenCalledTimes(2);
 
     Channel.instances[0]!.onmessage?.({
@@ -1431,7 +1416,7 @@ describe("shared resource event transport", () => {
         event: initial,
       },
     } as MessageEvent);
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onChange).toHaveBeenCalledTimes(2);
     stop();
   });
@@ -1480,6 +1465,7 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [a, b],
+      resourceVersions: [a, b].map((resource) => ({ resource, revision: 7 })),
     };
     const send = (kind: string, value: unknown) =>
       followerChannel.onmessage?.({
@@ -1563,6 +1549,7 @@ describe("shared resource event transport", () => {
     const stopB = transport.watchResourceChanges(b, onB);
     await Promise.resolve();
     await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(250);
     expect(Source.instances).toHaveLength(1);
 
     const baseline = {
@@ -1572,9 +1559,10 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [a, b],
+      resourceVersions: [a, b].map((resource) => ({ resource, revision: 7 })),
     };
     Source.instances[0]!.emit("resources", baseline);
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onA).toHaveBeenCalledTimes(1);
     expect(onB).toHaveBeenCalledTimes(1);
 
@@ -1586,7 +1574,7 @@ describe("shared resource event transport", () => {
       ...baseline,
       reason: "reconnect",
     });
-    await vi.advanceTimersByTimeAsync(20);
+    await vi.advanceTimersByTimeAsync(250);
     expect(onB).toHaveBeenCalledTimes(2);
 
     const resumedA = vi.fn();

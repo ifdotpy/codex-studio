@@ -18,7 +18,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
     {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
     },
   );
@@ -141,11 +141,14 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
         : { json: { token: initial.token } },
     );
   });
-  await page.route("**/api/messages", (route) =>
-    route.fulfill({
+  await page.route("**/api/messages", (route) => {
+    fixture.stdin.write(
+      `${JSON.stringify({ method: "fixture/resource-change", resource: { kind: "state" } })}\n`,
+    );
+    return route.fulfill({
       json: { id: route.request().postDataJSON().id, status: "sent" },
-    }),
-  );
+    });
+  });
   await page.route("**/api/answer", (route) => {
     pendingAnswer = route;
   });
@@ -191,6 +194,9 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   answered = true;
   stateSeq++;
   await pendingAnswer.continue();
+  fixture.stdin.write(
+    `${JSON.stringify({ method: "fixture/resource-change", resource: { kind: "state" } })}\n`,
+  );
   await card.waitFor({ state: "hidden" });
 
   for (const oldFailure of [false, true]) {

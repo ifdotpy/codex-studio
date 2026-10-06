@@ -3,7 +3,6 @@ import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
-import { getShared } from "./sharedRead";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
@@ -61,6 +60,7 @@ import {
   type ReactNode,
 } from "react";
 import {
+  get,
   post,
   ApiError,
   errorText,
@@ -624,6 +624,7 @@ export default function App() {
     true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
+  const cachedLimitsReads = useRef(new Set<string>());
   const selectedAccount =
     accounts.data.accounts.find((a) => a.id === accountKey) ||
     accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
@@ -784,14 +785,10 @@ export default function App() {
       )
         return Promise.resolve();
       setLimitsLoading((old) => ({ ...old, [key]: true }));
-      const request = getShared(
-        "/api/limits",
-        {
-          query: key === "default" ? undefined : { account_key: key },
-          timeoutMs: 25000,
-        },
-        force,
-      )
+      const request = get("/api/limits", {
+        query: key === "default" ? undefined : { account_key: key },
+        timeoutMs: 25000,
+      })
         .then((result) => {
           if (!accountLimits(result, key, selectedId))
             throw new Error("Codex returned limits for another account.");
@@ -818,7 +815,13 @@ export default function App() {
       limitsRequests.current.set(key, request);
       return request;
     },
-    [accounts.data.accounts, data?.stateDir],
+    [accounts.data.accounts],
+  );
+  const reloadLimitsForCurrent = useRef(reloadLimitsFor);
+  reloadLimitsForCurrent.current = reloadLimitsFor;
+  const reloadLimitsForStable = useCallback(
+    (key: string, force = false) => reloadLimitsForCurrent.current(key, force),
+    [],
   );
   const reloadLimits = useCallback(
     (force = false) => reloadLimitsFor(accountKey, force),
@@ -909,9 +912,10 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accounts.data.accounts.find((item) => item.id === key);
       if (account?.disconnected) continue;
-      void getShared("/api/limits", {
-        query: { account_key: key, cached: "1" },
-      })
+      const requestKey = JSON.stringify([data.stateDir, key]);
+      if (cachedLimitsReads.current.has(requestKey)) continue;
+      cachedLimitsReads.current.add(requestKey);
+      void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
           if (!accountLimits(result, key, account?.accountId) || !result.data)
             return;
@@ -921,7 +925,9 @@ export default function App() {
             return { ...old, [key]: result };
           });
         })
-        .catch(() => {});
+        .catch(() => {
+          cachedLimitsReads.current.delete(requestKey);
+        });
     }
   }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
   useEffect(() => {
@@ -934,7 +940,7 @@ export default function App() {
       watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsFor(key);
+          await reloadLimitsForStable(key, true);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.
@@ -944,7 +950,7 @@ export default function App() {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsFor]);
+  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsForStable]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

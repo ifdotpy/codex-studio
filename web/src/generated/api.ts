@@ -7992,6 +7992,8 @@ export interface components {
       reason: "initial" | "change" | "reconnect" | "overflow" | "workspace";
       /** Resources */
       resources: components["schemas"]["ResourceRef"][];
+      /** Resourceversions */
+      resourceVersions: components["schemas"]["ResourceRevisionEntry"][];
       /** Revision */
       revision: number;
       /** Workspaceid */
@@ -8063,6 +8065,15 @@ export interface components {
       | components["schemas"]["DraftsResource"]
       | components["schemas"]["TranscriptsResource"]
       | components["schemas"]["TranscriptResource"];
+    /**
+     * ResourceRevisionEntry
+     * @description Committed version for one subscribed resource (entity sequence for state).
+     */
+    ResourceRevisionEntry: {
+      resource: components["schemas"]["ResourceRef"];
+      /** Revision */
+      revision: number;
+    };
     /**
      * ResourceTokenRatesEvent
      * @description Named `token-rates` SSE payload; values come from workspace_snapshot().

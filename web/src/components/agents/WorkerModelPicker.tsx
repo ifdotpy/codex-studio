@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState } from "react";
-import { ApiError, errorText } from "../../api";
+import { ApiError, get, errorText } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
 import { watchResourceReads } from "../watchResourceReads";
-import { getShared } from "../../sharedRead";
 
 export type WorkerModelInfo = {
   model: string;
@@ -152,6 +151,7 @@ export function useWorkerModels(
       catalogKey,
       attempt,
     );
+    const controller = new AbortController();
     setResult((previous) =>
       previous?.key === catalogKey ? { ...previous, error: "" } : null,
     );
@@ -160,17 +160,14 @@ export function useWorkerModels(
       const retry = explicitRetry;
       explicitRetry = false;
       try {
-        const data = await getShared(
-          "/api/models",
-          {
-            query: {
-              account_key: accountKey,
-              workers: workers ? "1" : undefined,
-              retry: retry ? "1" : undefined,
-            },
+        const data = await get("/api/models", {
+          query: {
+            account_key: accountKey,
+            workers: workers ? "1" : undefined,
+            retry: retry ? "1" : undefined,
           },
-          retry,
-        );
+          signal: controller.signal,
+        });
         if (!active) return;
         pending =
           data.catalogPending === true &&
@@ -229,6 +226,7 @@ export function useWorkerModels(
     });
     return () => {
       active = false;
+      controller.abort();
       stop();
     };
   }, [accountKey, catalogKey, workers, enabled, attempt]);

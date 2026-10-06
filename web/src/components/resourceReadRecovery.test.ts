@@ -9,7 +9,6 @@ const {
   refs,
   cursor,
   watchers,
-  resourceObservers,
   get,
   post,
   syncPost,
@@ -21,9 +20,6 @@ const {
   refs: [] as Array<{ current: unknown }>,
   cursor: { state: 0, ref: 0 },
   watchers: new Map<string, () => void>(),
-  resourceObservers: new Set<
-    (event: { reason: string; resources: readonly unknown[] }) => void
-  >(),
   get: vi.fn(),
   post: vi.fn(),
   syncPost: vi.fn(),
@@ -77,15 +73,6 @@ vi.mock("../sync/localDraft", () => ({
 vi.mock("../sync/send", () => ({ reconcileOutboxReceipts: reconcile }));
 vi.mock("../sync/resume", () => ({ onResume: () => () => {} }));
 vi.mock("../sync/resourceEvents", () => ({
-  observeResourceEvents: (
-    observer: (event: {
-      reason: string;
-      resources: readonly unknown[];
-    }) => void,
-  ) => {
-    resourceObservers.add(observer);
-    return () => resourceObservers.delete(observer);
-  },
   watchResourceChanges: (resource: unknown, callback: () => void) => {
     const key = JSON.stringify(resource);
     watchers.set(key, callback);
@@ -98,7 +85,6 @@ import { useMessageQueue } from "./useMessageQueue";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import Usage from "./Usage";
 import { ApiError } from "../api";
-import { clearSharedReads } from "../sharedRead";
 
 function mount(action: () => void) {
   cursor.state = 0;
@@ -111,8 +97,6 @@ function mount(action: () => void) {
 }
 
 function notify(resource: unknown) {
-  for (const observer of resourceObservers)
-    observer({ reason: "change", resources: [resource] });
   const callback = watchers.get(JSON.stringify(resource));
   if (!callback) throw new Error("The read callback was not registered");
   callback();
@@ -131,7 +115,6 @@ describe("resource read callers", () => {
     cursor.state = 0;
     cursor.ref = 0;
     watchers.clear();
-    clearSharedReads();
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {
       getItem: (key: string) => storage.get(key) ?? null,
@@ -265,41 +248,28 @@ describe("resource read callers", () => {
     });
   });
 
-  it("shows the catalog for the current account after an account switch", async () => {
+  it("loads only the current account catalog after an account switch", async () => {
     get.mockImplementation(
-      async (_path: string, options: { query?: { account_key?: string } }) => ({
-        data: [
-          {
-            model:
-              options.query?.account_key === "account-b"
-                ? "model-b"
-                : "model-a",
-          },
-        ],
-      }),
-    );
-    mount(() => useWorkerModels("account-a", true));
-    notify({ kind: "models" });
-    await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenCalledWith(
-      "/api/models",
-      expect.objectContaining({
-        query: expect.objectContaining({ account_key: "account-a" }),
+      async (_path: string, options: { query: { account_key: string } }) => ({
+        data: [{ model: options.query.account_key }],
       }),
     );
 
-    mount(() => useWorkerModels("account-b", true));
+    mount(() => useWorkerModels("account-a", true, true));
     notify({ kind: "models" });
     await vi.advanceTimersByTimeAsync(0);
-    expect(get).toHaveBeenLastCalledWith(
-      "/api/models",
-      expect.objectContaining({
-        query: expect.objectContaining({ account_key: "account-b" }),
-      }),
-    );
+    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
+
+    mount(() => useWorkerModels("account-b", true, true));
+    notify({ kind: "models" });
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(
+      get.mock.calls.map(([, options]) => options.query.account_key),
+    ).toEqual(["account-a", "account-b"]);
     expect(states[0]!.value).toMatchObject({
-      key: "account-b:false",
-      models: [{ model: "model-b" }],
+      key: "account-b:true",
+      models: [{ model: "account-b" }],
     });
   });
 

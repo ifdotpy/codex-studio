@@ -22,13 +22,12 @@ import {
   useState,
   type SetStateAction,
 } from "react";
-import { errorText, post, type GetResult } from "../api";
+import { errorText, get, post, type GetResult } from "../api";
 import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
 import { readBuckets, formatPercent } from "./Usage";
-import { getShared } from "../sharedRead";
 
 const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
 
@@ -91,24 +90,21 @@ export function useAccounts(stateDir?: string) {
     setAccountsData(value);
     setError("");
   }, []);
-  const refresh = useCallback(
-    async (force = false) => {
-      const read = ++latestRead.current;
-      try {
-        const result = await getShared("/api/accounts", {}, force);
-        if (read !== latestRead.current || scope.current !== stateDir)
-          return null;
-        setAccountsData(result);
-        setError("");
-        return result;
-      } catch (e) {
-        if (read === latestRead.current && scope.current === stateDir)
-          setError(errorText(e));
+  const refresh = useCallback(async () => {
+    const read = ++latestRead.current;
+    try {
+      const result = await get("/api/accounts");
+      if (read !== latestRead.current || scope.current !== stateDir)
         return null;
-      }
-    },
-    [stateDir],
-  );
+      setAccountsData(result);
+      setError("");
+      return result;
+    } catch (e) {
+      if (read === latestRead.current && scope.current === stateDir)
+        setError(errorText(e));
+      return null;
+    }
+  }, [stateDir]);
   useEffect(() => {
     if (!stateDir) return;
     const stop = watchResourceReads(
@@ -145,14 +141,10 @@ function AccountCapacity({
     const stop = watchResourceReads(
       { kind: "limits", accountKey: account.id },
       async () => {
-        const result = await getShared(
-          "/api/limits",
-          {
-            query: { account_key: account.id },
-            timeoutMs: 25000,
-          },
-          true,
-        );
+        const result = await get("/api/limits", {
+          query: { account_key: account.id },
+          timeoutMs: 25000,
+        });
         if (!accountLimits(result, account.id, account.accountId))
           throw new Error("Limits belong to another account.");
         if (live) {
@@ -521,7 +513,7 @@ export default function Accounts({
   };
   useEffect(() => {
     if (!opened && !managerOnly) return;
-    void state.refresh(true);
+    void state.refresh();
   }, [opened, managerOnly, state.refresh]);
   return (
     <>

@@ -110,7 +110,6 @@ const pendingSessions = new Set<number>();
 let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
-let workspaceGeneration = 0;
 const schemaMismatchListeners = new Set<() => void>();
 let schemaMismatch = false;
 let matchingSchemaResponseGeneration = 0;
@@ -274,12 +273,7 @@ const requestDownload = client.GET as <Path extends PathsFor<"get">>(
 >;
 
 export function setWorkspace(value: string) {
-  if (workspace !== value) workspaceGeneration++;
   workspace = value;
-}
-
-export function getWorkspaceReadScope() {
-  return JSON.stringify([workspace, workspaceGeneration]);
 }
 
 export class ApiError extends Error {
@@ -447,6 +441,8 @@ export async function post<Path extends PathsFor<"post">>(
   if (schemaMismatch) throw new ApiSchemaMismatchError();
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
+  if (typeof window !== "undefined")
+    window.dispatchEvent(new Event("codex-api-mutation-start"));
   try {
     const fetchOptions = {
       parseAs: "json" as const,
@@ -478,6 +474,8 @@ export async function post<Path extends PathsFor<"post">>(
     throw error;
   } finally {
     controller.finish();
+    if (typeof window !== "undefined")
+      window.dispatchEvent(new Event("codex-api-mutation-end"));
   }
 }
 

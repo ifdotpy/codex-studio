@@ -9,6 +9,7 @@ import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
 import {
   watchResourceChanges,
   watchResourceConnection,
+  acknowledgeEntitySequence,
   type ResourceConnectionState,
   type ResourceRef,
 } from "./resourceEvents";
@@ -166,15 +167,26 @@ if (typeof window !== "undefined")
   window.addEventListener("codex-sync-entities", (event: Event) => {
     const detail = (event as CustomEvent).detail;
     if (!detail || !Array.isArray(detail.documents)) return;
+    const documents = detail.documents as SyncDocument[];
+    const sequence = documents.reduce(
+      (highest, document) => Math.max(highest, document.seq),
+      0,
+    );
+    // The response envelope carries these committed rows already. Advance the
+    // stream watermark synchronously so its matching invalidation cannot start
+    // a duplicate entity pull before IndexedDB finishes persisting the rows.
+    acknowledgeEntitySequence(sequence, detail.workspaceId);
     void syncDatabase()
       .then(async ({ db, workspaceId }) => {
         if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents as SyncDocument[]) {
+        for (const document of documents) {
           if (!document.id.startsWith("entity:")) continue;
           await persistProjection(db.projections, document);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        void refreshProjection("state").catch(() => {});
+      });
   });
 
 async function pull(

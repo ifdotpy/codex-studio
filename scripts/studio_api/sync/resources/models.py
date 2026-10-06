@@ -143,6 +143,13 @@ class ResourceRef(RootModel[ResourceRefValue]):
     """Closed discriminated union of all typed UI resource identities."""
 
 
+class ResourceRevisionEntry(ContractModel):
+    """Committed version for one subscribed resource (entity sequence for state)."""
+
+    resource: ResourceRef
+    revision: ResourceRevision
+
+
 class ResourceChangeEvent(ContractModel):
     """Named `resources` SSE payload. A change invalidates the listed refs."""
 
@@ -152,6 +159,7 @@ class ResourceChangeEvent(ContractModel):
     revision: ResourceRevision
     reason: Literal["initial", "change", "reconnect", "overflow", "workspace"]
     resources: list[ResourceRef]
+    resourceVersions: list[ResourceRevisionEntry]
 
 
 class ResourceHeartbeatEvent(ContractModel):

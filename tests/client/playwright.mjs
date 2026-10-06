@@ -46,6 +46,22 @@ export function apiSchemaHandshakeEvent(overrides = {}) {
 }
 
 export function protocol3SseEvent(name, value) {
+  if (
+    name === "resources" &&
+    value &&
+    typeof value === "object" &&
+    "resources" in value &&
+    !("resourceVersions" in value)
+  ) {
+    const event = value;
+    value = {
+      ...event,
+      resourceVersions: event.resources.map((resource) => ({
+        resource,
+        revision: event.revision,
+      })),
+    };
+  }
   return `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
 }
 

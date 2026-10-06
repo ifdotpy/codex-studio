@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
-import { type GetResult } from "../api";
-import { getShared } from "../sharedRead";
+import { get, type GetResult } from "../api";
 import "./browser-access-notice.css";
 
 type BrowserStatus = NonNullable<GetResult<"/api/desktop">["browser"]>;
@@ -17,17 +16,14 @@ export default function BrowserAccessNotice({
   useEffect(() => {
     setStatus(null);
     if (!active) return;
-    let live = true;
-    void getShared("/api/desktop", {
+    const controller = new AbortController();
+    void get("/api/desktop", {
       query: { account_key: accountKey },
+      signal: controller.signal,
     })
-      .then((data) => {
-        if (live) setStatus(data.browser || null);
-      })
+      .then((data) => setStatus(data.browser || null))
       .catch(() => {});
-    return () => {
-      live = false;
-    };
+    return () => controller.abort();
   }, [accountKey, active]);
 
   if (!active || !status || status.enabled) return null;
