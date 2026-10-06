@@ -4,6 +4,12 @@ import threading
 import time
 import uuid
 from datetime import datetime
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord, NativeReleaseRecord
+    from codex_runtime import Runtime
 
 
 IDLE_SECONDS = 15 * 60
@@ -13,7 +19,7 @@ MAX_SCAN_PER_TICK = 32
 ACTIVE = {"queued", "starting", "running", "approval"}
 
 
-def _idle_since(agent):
+def _idle_since(agent: "AgentRecord") -> float:
     value = agent.get("lastEvent")
     if value:
         try:
@@ -23,7 +29,7 @@ def _idle_since(agent):
     return agent.get("created", time.time())
 
 
-def _local_blocker(rt, db, agent):
+def _local_blocker(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> str | None:
     from codex_workspace import active_task_records
 
     key = agent["id"]
@@ -54,12 +60,13 @@ def _local_blocker(rt, db, agent):
     return None
 
 
-def _same(rt, agent, identity):
+def _same(rt: "Runtime", agent: "AgentRecord", identity: tuple[Any, ...]) -> bool:
     return (agent["epoch"], agent.get("threadId"), agent.get("accountKey", "default"),
             rt.connection_ids.get(agent.get("accountKey", "default"))) == identity
 
 
-def _mark(rt, agent_id, identity, phase, **details):
+def _mark(rt: "Runtime", agent_id: str, identity: tuple[Any, ...], phase: str,
+          **details: Any) -> bool:
     release_id = details.pop("_release_id", None)
     inspection_only = details.pop("_inspection_only", False)
     with rt.lock, rt.db() as db:
@@ -71,7 +78,7 @@ def _mark(rt, agent_id, identity, phase, **details):
             return False
         if inspection_only and (release.get("submittedAt") or release.get("phase") != "checking"):
             return False
-        release.update(phase=phase, **details)
+        release.update(phase=phase, **details)  # type: ignore[call-arg]  # typed-update
         agent["nativeRelease"] = release
         rt.put(db, "agents", agent)
         if phase == "released":
@@ -79,14 +86,15 @@ def _mark(rt, agent_id, identity, phase, **details):
         return True
 
 
-def _actor_scope(rt, actor):
+def _actor_scope(rt: "Runtime", actor: "AgentRecord") -> dict[str, Any]:
     account = actor.get("accountKey", "default")
     return {"id": actor["id"], "epoch": actor["epoch"], "rootId": actor["rootId"],
             "threadId": actor.get("threadId"), "accountKey": account,
             "connectionId": rt.connection_ids.get(account)}
 
 
-def _retire_unsubmitted_inspection(rt, agent, phase, now):
+def _retire_unsubmitted_inspection(rt: "Runtime", agent: "AgentRecord", phase: str,
+                                  now: float) -> bool:
     """Retire a failed read inspection without claiming native closure."""
     saved = agent.get("nativeRelease") or {}
     account = agent.get("accountKey", "default")
@@ -113,14 +121,15 @@ def _retire_unsubmitted_inspection(rt, agent, phase, now):
         return False
     if saved.get("error") is not None:
         saved.setdefault("inspectionError", saved["error"])
-    saved.update(phase="resumed" if phase == "resumed" else None, error=None, resetPending=False)
+    saved.update(phase="resumed" if phase == "resumed" else None, error=None, resetPending=False)  # type: ignore[call-arg]  # typed-update
     if phase == "superseded":
         saved["inspectionPhase"] = "superseded"
     saved["supersededAt" if phase == "superseded" else "resumedAt"] = now
     return True
 
 
-def _inspection_current(rt, db, agent, release):
+def _inspection_current(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+                        release: "NativeReleaseRecord") -> tuple[Any, ...]:
     saved = agent.get("nativeRelease") or {}
     identity = (release["targetEpoch"], release["threadId"], release["accountKey"],
                 release["connectionId"])
@@ -138,18 +147,20 @@ def _inspection_current(rt, db, agent, release):
     return identity
 
 
-def _cancel_inspection(rt, agent_id, release, error):
+def _cancel_inspection(rt: "Runtime", agent_id: str, release: "NativeReleaseRecord",
+                       error: BaseException | str) -> None:
     # Revoke only this request's unsubmitted inspection, even after Stop.
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
         saved = agent.get("nativeRelease") or {}
         if (saved.get("id") == release["id"] and not saved.get("submittedAt")
                 and saved.get("phase") == "checking"):
-            saved.update(phase="blocked", resetPending=False, error=str(error)[:300])
+            saved.update(phase="blocked", resetPending=False, error=str(error)[:300])  # type: ignore[call-arg]  # typed-update
             rt.put(db, "agents", agent)
 
 
-def _release_checked(rt, agent_id, identity, server, release):
+def _release_checked(rt: "Runtime", agent_id: str, identity: tuple[Any, ...], server: Any,
+                     release: "NativeReleaseRecord") -> dict[str, Any]:
     from codex_runtime import ResponseTimeout
 
     try:
@@ -191,7 +202,7 @@ def _release_checked(rt, agent_id, identity, server, release):
             blocker = _local_blocker(rt, db, agent)
             if blocker:
                 raise ValueError(blocker)
-            agent["nativeRelease"].update(phase="unsubscribing", submittedAt=time.time())
+            agent["nativeRelease"].update(phase="unsubscribing", submittedAt=time.time())  # type: ignore[call-arg]  # typed-update
             agent["nativeRelease"].pop("inspectionPhase", None)
             rt.put(db, "agents", agent)
     except ValueError as error:
@@ -214,7 +225,9 @@ def _release_checked(rt, agent_id, identity, server, release):
                      else "Codex can keep this idle session and its tool processes until its configured idle window ends (60 seconds by default).")}
 
 
-def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None, now=None):
+def release_agent(rt: "Runtime", agent_id: str, *, reason: str | None = None,
+                  actor_id: str | None = None, actor_epoch: int | None = None,
+                  now: float | None = None) -> dict[str, Any]:
     """Check both Studio and native work, then unsubscribe on the owning connection."""
     now = time.time() if now is None else now
     with rt.lock:
@@ -259,7 +272,7 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
                     if previous.get("error") is not None:
                         previous.setdefault("inspectionError", previous["error"])
                     previous.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at,
-                                    resetPending=False, error=None)
+                                    resetPending=False, error=None)  # type: ignore[call-arg]  # typed-update
                     rt.put(db, "agents", agent)
                 elif (reason is not None and agent_id not in rt.loaded
                         and not _local_blocker(rt, db, agent)
@@ -274,12 +287,12 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
             server = rt.servers.get(account)
             if server is None:
                 return {"status": "blocked", "reason": "owning account is offline"}
-            release = {"id": uuid.uuid4().hex, "phase": "checking",
+            release: "NativeReleaseRecord" = {"id": uuid.uuid4().hex, "phase": "checking",
                        "threadId": identity[1], "accountKey": account, "connectionId": identity[3], "at": now,
                        "targetEpoch": identity[0], "targetRootId": agent.get("rootId"),
                        "targetParentId": agent.get("parentId")}
             if reason is not None:
-                release.update(resetReason=reason, resetBy=actor_id, resetPending=True,
+                release.update(resetReason=reason, resetBy=actor_id, resetPending=True,  # type: ignore[call-arg]  # typed-update
                                inspectionPhase="inspecting",
                                resetActorEpoch=actor["epoch"] if actor else None,
                                resetActorScope=_actor_scope(rt, actor) if actor else None)
@@ -290,7 +303,7 @@ def release_agent(rt, agent_id, *, reason=None, actor_id=None, actor_epoch=None,
         guard.release()
 
 
-def reconcile_unknown(rt, agent):
+def reconcile_unknown(rt: "Runtime", agent: "AgentRecord") -> None:
     """Settle captured resets from closure proof; retain legacy unsubscribe retries."""
     release = agent.get("nativeRelease") or {}
     if release.get("phase") not in {"unknown", "checking", "unsubscribing"}:
@@ -313,7 +326,7 @@ def reconcile_unknown(rt, agent):
                         and not saved.get("resetPending")
                         and isinstance(closed_at, (int, float)) and not isinstance(closed_at, bool)
                         and closed_at >= max(saved.get("at", 0), saved.get("submittedAt", 0))):
-                    saved.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at, error=None)
+                    saved.update(phase="released", nativeStatus="notLoaded", releasedAt=closed_at, error=None)  # type: ignore[call-arg]  # typed-update
                     rt.put(db, "agents", current)
                     rt.loaded.discard(agent["id"])
                     return
@@ -332,7 +345,7 @@ def reconcile_unknown(rt, agent):
           nativeStatus=result["status"], error=None)
 
 
-def _probe_reset(rt, agent_id):
+def _probe_reset(rt: "Runtime", agent_id: str) -> None:
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
         release = agent.get("nativeRelease") or {}
@@ -353,12 +366,12 @@ def _probe_reset(rt, agent_id):
                 current = rt.agent(agent_id, db)
                 saved = current.get("nativeRelease") or {}
                 if (current["epoch"], current.get("threadId"), current.get("accountKey", "default")) == identity[:3] and saved.get("resetPending"):
-                    saved.update(resetPending=False, closedAt=time.time(), nativeStatus="notLoaded")
+                    saved.update(resetPending=False, closedAt=time.time(), nativeStatus="notLoaded")  # type: ignore[call-arg]  # typed-update
                     rt.put(db, "agents", current)
         rt.changed.set()
 
 
-def _retry_reset(rt, agent_id):
+def _retry_reset(rt: "Runtime", agent_id: str) -> None:
     with rt.lock:
         guard = rt.prepare_locks.setdefault(agent_id, threading.Lock())
     if not guard.acquire(blocking=False):
@@ -385,7 +398,7 @@ def _retry_reset(rt, agent_id):
                     if server is None or agent_id not in rt.loaded or agent.get("deletedAt"):
                         raise ValueError("owning native session is no longer available")
                 except ValueError as error:
-                    release.update(phase="blocked", resetPending=False, error=str(error)[:300])
+                    release.update(phase="blocked", resetPending=False, error=str(error)[:300])  # type: ignore[call-arg]  # typed-update
                     rt.put(db, "agents", agent)
                     return
             elif release.get("phase") not in {"unknown", "checking", "unsubscribing"}:
@@ -401,16 +414,16 @@ def _retry_reset(rt, agent_id):
         guard.release()
 
 
-def tick(rt, now=None):
+def tick(rt: "Runtime", now: float | None = None) -> None:
     now = time.time() if now is None else now
     if now - getattr(rt, "_native_release_last_scan", 0) < SCAN_SECONDS:
         return
-    rt._native_release_last_scan = now
+    rt._native_release_last_scan = now  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
     from codex_native_sweep import tick as native_sweep_tick
     native_sweep_tick(rt, now)
     with rt.lock, rt.db() as db:
-        pending = getattr(rt, "_native_release_pending", set())
-        rt._native_release_pending = pending
+        pending: set[str] = getattr(rt, "_native_release_pending", set())
+        rt._native_release_pending = pending  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
         candidates = []
         reset_filter = "json_extract(record,'$.nativeRelease.resetPending')=1"
         reset_count = db.execute(f"SELECT COUNT(*) FROM runtime_agents WHERE {reset_filter}").fetchone()[0]
@@ -420,13 +433,13 @@ def tick(rt, now=None):
         if len(reset_rows) < min(MAX_PER_TICK, reset_count):
             reset_rows += db.execute(f"SELECT id FROM runtime_agents WHERE {reset_filter} ORDER BY id "
                                      "LIMIT ?", (MAX_PER_TICK - len(reset_rows),)).fetchall()
-        rt._native_reset_cursor = reset_position + len(reset_rows)
+        rt._native_reset_cursor = reset_position + len(reset_rows)  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
         resets = [row[0] for row in reset_rows if row[0] not in pending]
         loaded = sorted(rt.loaded)
         position = getattr(rt, "_native_release_cursor", 0) % max(1, len(loaded))
         keys = [loaded[(position + offset) % len(loaded)]
                 for offset in range(min(MAX_SCAN_PER_TICK, len(loaded)))]
-        rt._native_release_cursor = position + len(keys)
+        rt._native_release_cursor = position + len(keys)  # type: ignore[attr-defined]  # typed-narrowing: Module owns scan cursor state
         for key in keys:
             if key in pending:
                 continue
@@ -446,12 +459,12 @@ def tick(rt, now=None):
                 future = rt.recovery_pool.submit(
                     _probe_reset if release.get("phase") == "released" else _retry_reset, rt, key)
             else:
-                future = rt.recovery_pool.submit(release_agent, rt, key, now=now)
+                future = rt.recovery_pool.submit(release_agent, rt, key, now=now)  # type: ignore[arg-type]  # typed-narrowing: Callback result is intentionally discarded
         except RuntimeError:
             with rt.lock:
                 pending.discard(key)
             continue
-        def done(_future, agent_id=key):
+        def done(_future, agent_id=key):  # type: (Any, str) -> None
             with rt.lock:
                 pending.discard(agent_id)
             rt.changed.set()

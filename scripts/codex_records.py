@@ -232,7 +232,7 @@ class ContextRepairWaitRecord(TypedDict):
 
 class NativeReleaseRecord(TypedDict):
     id: NotRequired[str]
-    phase: NotRequired[NativeReleasePhaseValue]
+    phase: NotRequired[NativeReleasePhaseValue | None]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     connectionId: NotRequired[str]
@@ -244,12 +244,17 @@ class NativeReleaseRecord(TypedDict):
     error: NotRequired[JsonValue]
     nativeStatus: NotRequired[str]
     resetPending: NotRequired[bool]
-    resetActorEpoch: NotRequired[int]
+    resetReason: NotRequired[str]
+    resetActorEpoch: NotRequired[int | None]
+    resetBy: NotRequired[str | None]
+    resetActorScope: NotRequired[JsonObject | None]
+    inspectionFailures: NotRequired[int]
+    supersededAt: NotRequired[float]
     nextAttemptAt: NotRequired[float]
     inspectionPhase: NotRequired[str]
     inspectionError: NotRequired[JsonValue]
     targetEpoch: NotRequired[int]
-    targetParentId: NotRequired[str]
+    targetParentId: NotRequired[str | None]
     targetRootId: NotRequired[str]
 
 
@@ -799,7 +804,7 @@ class AgentRecord(TypedDict):
     nativeLimitErrorAt: NotRequired[float]
     nativeNameSynced: NotRequired[NativeNameSyncedRecord | None]
     nativeNameFailure: NotRequired[NativeNameFailureRecord]
-    nativeRelease: NotRequired[NativeReleaseRecord | None]
+    nativeRelease: NotRequired[NativeReleaseRecord]
     startAttempt: NotRequired[StartAttemptRecord]
     startOutcomeHold: NotRequired[JsonObject]
     restartRecovery: NotRequired[RestartRecoveryRecord]
