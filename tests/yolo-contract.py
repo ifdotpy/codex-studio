@@ -49,7 +49,7 @@ class Yolo(f.WorkerDefaults):
         self.assertEqual(command['sandboxPolicy'], {'type':'dangerFullAccess'})
         self.assertNotIn('permissionProfile', command)
         self.runtime.server.gate.set()
-        f.f.eventually(lambda: self.runtime.snapshot()['monitors'][0]['status'] not in {'running','starting'})
+        f.f.eventually(lambda: self.runtime.team(lead['id'])['monitors'][0]['status'] not in {'running','starting'})
 
     def test_rule_rechecks_permission_after_mode_change(self):
         rule = self.runtime.rules({'agent':self.lead['id'], 'name':'Check', 'command':'echo ready'})

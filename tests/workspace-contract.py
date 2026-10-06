@@ -1564,7 +1564,7 @@ class WorkspaceContract(unittest.TestCase):
         eventually(
             lambda: next(
                 m
-                for m in self.runtime.snapshot()["monitors"]
+                for m in self.runtime.team(lead["id"])["monitors"]
                 if m["id"] == monitor["id"]
             )["status"]
             == "running"
@@ -1707,17 +1707,17 @@ class WorkspaceContract(unittest.TestCase):
         eventually(
             lambda: any(
                 m.get("ruleId") == rule["id"] and m["status"] == "running"
-                for m in self.runtime.snapshot()["monitors"]
+                for m in self.runtime.team(lead["id"])["monitors"]
             )
         )
         self.runtime.rules({"action": "pause", "agent": lead["id"], "id": rule["id"]})
         eventually(lambda: any(
             m.get("ruleId") == rule["id"] and m["status"] == "cancelled"
-            for m in self.runtime.snapshot()["monitors"]
+            for m in self.runtime.team(lead["id"])["monitors"]
         ))
         monitor = next(
             m
-            for m in self.runtime.snapshot()["monitors"]
+            for m in self.runtime.team(lead["id"])["monitors"]
             if m.get("ruleId") == rule["id"]
         )
         self.assertEqual(monitor["status"], "cancelled")

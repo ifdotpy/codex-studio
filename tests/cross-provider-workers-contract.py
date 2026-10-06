@@ -66,7 +66,7 @@ class CrossProviderWorkers(unittest.TestCase):
             "role": "reviewer", **values}, parent=self.lead["id"], defer=True)
 
     def workers(self):
-        return [a for a in self.rt.snapshot()["agents"] if a.get("parentId")]
+        return [a for a in self.rt.team(self.lead["id"])["agents"] if a.get("parentId")]
 
     def spawn(self, workers, call_id=None):
         self.lead = self.rt.prepare(self.rt.agent(self.lead["id"]))

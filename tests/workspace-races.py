@@ -117,7 +117,7 @@ class WorkspaceRaces(unittest.TestCase):
                     any(
                         m.get("ruleId") == rule["id"]
                         and m["status"] in {"starting", "running", "approval"}
-                        for m in t.runtime.snapshot()["monitors"]
+                        for m in t.runtime.team(lead["id"])["monitors"]
                     )
                 )
                 self.assertFalse(

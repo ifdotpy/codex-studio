@@ -382,7 +382,7 @@ class PrepareSteerContract(unittest.TestCase):
             self.runtime.conversation_settings(a["id"], {"model": "gpt-5.6-sol"})
         self.accept_prepare(self.server.delayed[0])
         eventually(lambda: self.count("command/exec") == 1)
-        self.assertEqual(next(v for v in self.runtime.snapshot()["monitors"] if v["id"] == m["id"])["status"], "running")
+        self.assertEqual(next(v for v in self.runtime.team(a["id"])["monitors"] if v["id"] == m["id"])["status"], "running")
 
     def delayed_busy_input(self, a, message_id='busy-1'):
         self.server.hold.add('turn/start')

@@ -1123,8 +1123,8 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.server.request({'id': 101, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'spawn-one', 'tool': 'orchestration_spawn',
             'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
-        eventually(lambda: len(self.runtime.snapshot()['agents']) == 2)
-        child = next(a for a in self.runtime.snapshot()['agents'] if a['id'] != lead['id'])
+        eventually(lambda: len(self.runtime.team(lead['id'])['agents']) == 2)
+        child = next(a for a in self.runtime.team(lead['id'])['agents'] if a['id'] != lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running'
                    and self.runtime.agent(child['id']).get('turnId'))
         child = self.runtime.agent(child['id'])
@@ -1183,12 +1183,12 @@ class RuntimeContract(unittest.TestCase):
         self.complete(lead)
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: bool(self.snapshot()['monitors'][0]['tail']))
+        eventually(lambda: bool(self.runtime.team(lead['id'])['monitors'][0]['tail']))
         time.sleep(.12)
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
-        watch = self.snapshot()['monitors'][0]
+        watch = self.runtime.team(lead['id'])['monitors'][0]
         self.assertEqual(watch['exitCode'], 7)
         self.assertEqual(watch['status'], 'failed')
         self.assertEqual(Path(watch['log']).read_text(), 'early output\n')
@@ -1216,7 +1216,8 @@ class RuntimeContract(unittest.TestCase):
         self.complete(child)
         time.sleep(.15)
         self.assertEqual(before, len([m for m,p in self.runtime.server.calls if m == 'turn/start']))
-        self.assertTrue(all(not a['autoWake'] for a in self.snapshot()['agents']))
+        self.assertTrue(all(not self.runtime.agent(a['id'])['autoWake']
+                            for a in self.runtime.team(lead['id'])['agents']))
         self.runtime.send(lead['id'], 'Resume only the lead')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         self.assertFalse(self.runtime.agent(child['id'])['autoWake'])
@@ -1370,10 +1371,10 @@ class RuntimeContract(unittest.TestCase):
     def test_monitor_cancel_preserves_exit_history_and_prevents_wake(self):
         lead = self.lead(); self.complete(lead)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: self.snapshot()['monitors'][0]['status'] == 'running')
+        eventually(lambda: self.runtime.team(lead['id'])['monitors'][0]['status'] == 'running')
         self.runtime.cancel_monitor(m['id'])
         time.sleep(.1)
-        self.assertEqual(self.snapshot()['monitors'][0]['status'], 'cancelled')
+        self.assertEqual(self.runtime.team(lead['id'])['monitors'][0]['status'], 'cancelled')
         exits = [e for e in self.snapshot()['events'] if e['kind'] == 'monitor_exit']
         self.assertEqual(len(exits), 1)
 
@@ -1493,7 +1494,7 @@ class RuntimeContract(unittest.TestCase):
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
         child = self.runtime.agent(child['id'])
         self.runtime.monitor(child['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: self.snapshot()['monitors'][0]['status'] == 'running')
+        eventually(lambda: self.runtime.team(lead['id'])['monitors'][0]['status'] == 'running')
         self.complete(child)
         self.assertEqual(self.runtime.agent(child['id'])['status'], 'waiting')
         self.assertFalse(any(e['kind'] == 'child_result' for e in self.snapshot()['events']))
@@ -1603,7 +1604,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len(self.snapshot()['requests']), 1)
         self.runtime.cancel_monitor(monitor['id'])
         self.assertEqual(self.snapshot()['requests'], [])
-        record = self.snapshot()['monitors'][0]
+        record = self.runtime.team(a['id'])['monitors'][0]
         self.assertEqual(record['status'], 'cancelled')
         self.assertGreaterEqual(record['finished'], record['created'])
 
