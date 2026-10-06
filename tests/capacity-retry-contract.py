@@ -46,12 +46,14 @@ class CapacityContract(unittest.TestCase):
         self.assertFalse(current.get('claimedAt'))
         original_submit = self.runtime.pool.submit
         retry_futures = []
+        retry_submitted = threading.Event()
 
         def track_retry(function, *args, **kwargs):
             future = original_submit(function, *args, **kwargs)
             if (getattr(function, '__name__', None) == 'capacity_run'
                     and args and args[0] == self.key):
                 retry_futures.append(future)
+                retry_submitted.set()
             return future
 
         with patch.object(self.runtime.pool, 'submit', side_effect=track_retry):
@@ -64,6 +66,7 @@ class CapacityContract(unittest.TestCase):
                 self.runtime.capacity_save(db, agent, agent['capacityRetry'])
                 self.runtime.put(db, 'agents', agent)
             self.runtime.capacity_tick()
+            retry_submitted.wait()
         self.assertEqual(len(retry_futures), 1)
         retry_futures[0].result()
         self.assertTrue(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId'))
@@ -207,14 +210,23 @@ class CapacityContract(unittest.TestCase):
         self.assertEqual(self.fail()['status'], 'exhausted')
 
     def test_connection_failures_retry_longer_with_the_same_continuation(self):
-        retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
-        self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
-        self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
-        self.expire()
-        self.assertEqual(self.starts()[-1]['input'], [])
-        retry = self.fail('responseStreamDisconnected')
-        self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
-        self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
+        capacity_tick = self.runtime.capacity_tick
+
+        def manual_capacity_tick():
+            if threading.current_thread() is not self.runtime.scheduler:
+                capacity_tick()
+
+        # Keep the scheduled deadlines stable while this contract checks their
+        # exact values; expiration remains driven explicitly by expire().
+        with patch.object(self.runtime, 'capacity_tick', side_effect=manual_capacity_tick):
+            retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
+            self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
+            self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
+            self.expire()
+            self.assertEqual(self.starts()[-1]['input'], [])
+            retry = self.fail('responseStreamDisconnected')
+            self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
+            self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
 
     def test_request_and_context_errors_are_not_retried(self):
         for info in ('badRequest', 'contextWindowExceeded', {'other': {}}):
