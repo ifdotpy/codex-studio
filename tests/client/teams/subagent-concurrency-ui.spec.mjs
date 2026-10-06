@@ -122,8 +122,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           headers: {
             "Content-Type": "application/json",
             "X-Canvas-Token": initial.token,
-            ...(initial.workspaceId
-              ? { "X-Canvas-Workspace": initial.workspaceId }
+            ...(syncWorkspaceId
+              ? { "X-Canvas-Workspace": syncWorkspaceId }
               : {}),
           },
           body: JSON.stringify({
@@ -134,7 +134,23 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           }),
         });
         assert.equal(response.status, 200);
-        assert.equal((await response.json()).concurrency, 8);
+        const competingUpdate = await response.json();
+        assert.equal(competingUpdate.concurrency, 8);
+        assert.ok(competingUpdate._syncEntities?.length);
+        // Stand-in for the entity commit notification this base server does
+        // not publish; deliver the competing server mutation's real envelope.
+        await page.evaluate(
+          ({ workspaceId, documents }) =>
+            window.dispatchEvent(
+              new CustomEvent("codex-sync-entities", {
+                detail: { workspaceId, documents },
+              }),
+            ),
+          {
+            workspaceId: syncWorkspaceId,
+            documents: competingUpdate._syncEntities,
+          },
+        );
       }
       if (loseNextReply) {
         loseNextReply = false;
@@ -385,9 +401,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         headers: {
           "Content-Type": "application/json",
           "X-Canvas-Token": initial.token,
-          ...(initial.workspaceId
-            ? { "X-Canvas-Workspace": initial.workspaceId }
-            : {}),
+          ...(syncWorkspaceId ? { "X-Canvas-Workspace": syncWorkspaceId } : {}),
         },
         body: JSON.stringify({
           id: lead.id,

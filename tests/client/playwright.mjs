@@ -684,6 +684,89 @@ export async function readFixtureSyncContract(origin) {
   return { identity, protocol };
 }
 
+/** @typedef {{ documents: Map<string, SyncEntity>, maxSeq: number }} MutableEntityPullState */
+
+/** @type {WeakMap<StateSnapshot, MutableEntityPullState>} */
+const nodeEntityPullStates = new WeakMap();
+
+/** @returns {MutableEntityPullState} */
+function createMutableEntityPullState() {
+  return { documents: new Map(), maxSeq: 0 };
+}
+
+/**
+ * Version changed entities and tombstones so clients that have advanced their
+ * cursor can observe fixture state changes on a later pull.
+ * @param {MutableEntityPullState} pullState
+ * @param {StateSnapshot} snapshot
+ */
+function reconcileMutableEntityPullState(pullState, snapshot) {
+  const nextById = new Map(
+    entityValuesFromSnapshot(snapshot).map((entity) => [
+      `entity:${entity.collection}:${entity.id}`,
+      entity,
+    ]),
+  );
+  for (const [id, previous] of pullState.documents) {
+    if (previous._deleted) continue;
+    const next = nextById.get(id);
+    if (!next) {
+      pullState.documents.set(
+        id,
+        generatedSyncEntity({
+          ...previous,
+          seq: ++pullState.maxSeq,
+          _deleted: true,
+        }),
+      );
+      continue;
+    }
+    const payload = JSON.stringify(next);
+    if (payload !== previous.payload)
+      pullState.documents.set(
+        id,
+        generatedSyncEntity({
+          ...previous,
+          seq: ++pullState.maxSeq,
+          payload,
+          _deleted: false,
+        }),
+      );
+  }
+  for (const [id, entity] of nextById) {
+    const previous = pullState.documents.get(id);
+    if (!previous || previous._deleted)
+      pullState.documents.set(
+        id,
+        generatedSyncEntity({
+          id,
+          seq: ++pullState.maxSeq,
+          payload: JSON.stringify(entity),
+          _deleted: false,
+        }),
+      );
+  }
+}
+
+/**
+ * Commit a fixture state change and return the entity documents its mutation
+ * response should carry. This mirrors the server's `_syncEntities` envelope.
+ * @param {StateSnapshot} snapshot
+ * @returns {SyncEntity[]}
+ */
+export function updateEntitySyncFixture(snapshot) {
+  let pullState = nodeEntityPullStates.get(snapshot);
+  if (!pullState) {
+    pullState = createMutableEntityPullState();
+    nodeEntityPullStates.set(snapshot, pullState);
+  }
+  const previousMaxSeq = pullState.maxSeq;
+  reconcileMutableEntityPullState(pullState, snapshot);
+  return [...pullState.documents.values()].filter(
+    (document) => document.seq > previousMaxSeq,
+  );
+}
+
 /**
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
@@ -715,9 +798,24 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       json(validation.body);
       return true;
     }
+    /** @type {EntityPullFixtureOptions} */
+    let pullOptions = validation.params;
+    if (validation.params.scope === "state:entities:v1") {
+      let pullState = nodeEntityPullStates.get(fixture.snapshot);
+      if (!pullState) {
+        pullState = createMutableEntityPullState();
+        nodeEntityPullStates.set(fixture.snapshot, pullState);
+      }
+      reconcileMutableEntityPullState(pullState, fixture.snapshot);
+      pullOptions = {
+        ...validation.params,
+        documents: [...pullState.documents.values()],
+        maxSeq: pullState.maxSeq,
+      };
+    }
     const pullResponse = generatedSyncPullResponse({
       workspaceId: identity.workspaceId,
-      ...entityPullFixture(fixture.snapshot, validation.params),
+      ...entityPullFixture(fixture.snapshot, pullOptions),
     });
     json(pullResponse);
     return true;
@@ -1045,21 +1143,8 @@ export async function stubEntityState(page, snapshot, contract) {
   let generation = 1;
   /** @type {StateSnapshot} */
   let currentSnapshot = snapshot;
-  /** @type {Map<string, SyncEntity>} */
-  const documents = new Map();
-  let maxSeq = 0;
-  const nextDocument = (collection, id, value, deleted = false) =>
-    generatedSyncEntity({
-      id: `entity:${collection}:${id}`,
-      seq: ++maxSeq,
-      payload: JSON.stringify({ collection, id, value }),
-      _deleted: deleted,
-    });
-  for (const entity of entityValuesFromSnapshot(snapshot))
-    documents.set(
-      `entity:${entity.collection}:${entity.id}`,
-      nextDocument(entity.collection, entity.id, entity.value),
-    );
+  const pullState = createMutableEntityPullState();
+  reconcileMutableEntityPullState(pullState, currentSnapshot);
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ json: identityResponse }),
   );
@@ -1078,11 +1163,12 @@ export async function stubEntityState(page, snapshot, contract) {
         status: validation.status,
         json: validation.body,
       });
+    reconcileMutableEntityPullState(pullState, currentSnapshot);
     const pageData = entityPullFixture(currentSnapshot, {
       ...validation.params,
       generation,
-      documents: [...documents.values()],
-      maxSeq,
+      documents: [...pullState.documents.values()],
+      maxSeq: pullState.maxSeq,
     });
     return route.fulfill({
       json: generatedSyncPullResponse({
@@ -1101,49 +1187,8 @@ export async function stubEntityState(page, snapshot, contract) {
    * @returns {Promise<ResourceNotifyAck | undefined>}
    */
   const update = async (nextSnapshot, publish) => {
-    const nextById = new Map(
-      entityValuesFromSnapshot(nextSnapshot).map((entity) => [
-        `entity:${entity.collection}:${entity.id}`,
-        entity,
-      ]),
-    );
-    for (const [id, previous] of documents) {
-      if (previous._deleted) continue;
-      const next = nextById.get(id);
-      if (!next) {
-        documents.set(
-          id,
-          generatedSyncEntity({ ...previous, seq: ++maxSeq, _deleted: true }),
-        );
-        continue;
-      }
-      const payload = JSON.stringify(next);
-      if (payload !== previous.payload)
-        documents.set(
-          id,
-          generatedSyncEntity({
-            ...previous,
-            seq: ++maxSeq,
-            payload,
-            _deleted: false,
-          }),
-        );
-    }
-    for (const [id, next] of nextById) {
-      const previous = documents.get(id);
-      const payload = JSON.stringify(next);
-      if (!previous || previous._deleted)
-        documents.set(
-          id,
-          generatedSyncEntity({
-            id,
-            seq: ++maxSeq,
-            payload,
-            _deleted: false,
-          }),
-        );
-    }
     currentSnapshot = nextSnapshot;
+    reconcileMutableEntityPullState(pullState, currentSnapshot);
     generation++;
     if (!publish) return undefined;
     const body = /** @type {ResourceNotifyRequest} */ ({

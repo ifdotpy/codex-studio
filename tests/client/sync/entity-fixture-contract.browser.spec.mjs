@@ -244,9 +244,10 @@ test("entity fixture contract matches the real sync backend", async () => {
   );
   await reader.cancel();
 
+  const nodeSnapshot = structuredClone(snapshot);
   const streamServer = createServer((request, response) => {
     handleEntitySyncFixtureRequest(request, response, {
-      snapshot,
+      snapshot: nodeSnapshot,
       workspaceId: identity.workspaceId,
     });
   });
@@ -256,6 +257,35 @@ test("entity fixture contract matches the real sync backend", async () => {
   );
   assert.equal(stubStream.status, 200);
   const stubOrigin = `http://127.0.0.1:${streamServer.address().port}`;
+  const nodeInitial = await fetch(
+    new URL("/api/sync/pull?scope=state%3Aentities%3Av1&fresh=1", stubOrigin),
+  ).then((response) => response.json());
+  const removedNodeProject = nodeSnapshot.runtime.projects[0];
+  nodeSnapshot.runtime.tasksHistoryLimit++;
+  nodeSnapshot.runtime.projects = nodeSnapshot.runtime.projects.slice(1);
+  const nodeChanged = await fetch(
+    new URL(
+      `/api/sync/pull?scope=state%3Aentities%3Av1&after=${nodeInitial.maxSeq}`,
+      stubOrigin,
+    ),
+  ).then((response) => response.json());
+  assert.ok(
+    nodeChanged.documents.some(
+      (document) =>
+        document.id === "entity:workspace:current" &&
+        document.seq > nodeInitial.maxSeq,
+    ),
+    "Node fixture assigns a new sequence to an in-place entity change",
+  );
+  assert.ok(
+    nodeChanged.documents.some(
+      (document) =>
+        document.id === `entity:project:${removedNodeProject.id}` &&
+        document._deleted === true &&
+        document.seq > nodeInitial.maxSeq,
+    ),
+    "Node fixture emits a sequenced tombstone for an in-place removal",
+  );
   for (const path of [
     "/api/sync/pull?after=-1",
     "/api/sync/pull?after=abc",
@@ -487,15 +517,11 @@ test("shared entity stub converges on one matching stream", async ({
     );
     assert.ok(snapshot.runtime.projects.length > 0, "fixture has a project");
     const removedProject = snapshot.runtime.projects[0];
-    const updatedSnapshot = {
-      ...snapshot,
-      runtime: {
-        ...snapshot.runtime,
-        tasksHistoryLimit: snapshot.runtime.tasksHistoryLimit + 1,
-        projects: snapshot.runtime.projects.slice(1),
-      },
-    };
-    const notification = await stub.update(updatedSnapshot, {
+    // Mutate the fixture snapshot directly, as the request fixtures do, then
+    // publish the base-server stand-in resource notification.
+    snapshot.runtime.tasksHistoryLimit++;
+    snapshot.runtime.projects = snapshot.runtime.projects.slice(1);
+    const notification = await stub.update(snapshot, {
       origin,
       token: snapshot.token,
       resources: [{ kind: "state" }],

@@ -4,6 +4,7 @@ import {
   syncIdentityFixture,
   stubEntityState,
   test,
+  updateEntitySyncFixture,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -17,7 +18,7 @@ test("Background controls", async ({ context }) => {
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
-  let syncFixture, notifySync;
+  let syncFixture;
   const server = createServer(async (req, res) => {
     try {
       const url = new URL(req.url, "http://localhost");
@@ -27,9 +28,9 @@ test("Background controls", async ({ context }) => {
         }
         monitor.cancelRequested = true;
         monitor.error = "Stop requested; waiting for the command to exit";
-        notifySync?.([{ kind: "state" }]);
+        const syncEntities = updateEntitySyncFixture(state);
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify(monitor));
+        res.end(JSON.stringify({ ...monitor, _syncEntities: syncEntities }));
         return;
       }
       if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
@@ -98,10 +99,10 @@ test("Background controls", async ({ context }) => {
     },
   };
   const workspaceId = syncIdentityFixture().workspaceId;
+  updateEntitySyncFixture(state);
   syncFixture = {
     snapshot: state,
     workspaceId,
-    onStreamReady: (notify) => (notifySync = notify),
   };
   const writes = [];
   let failInput = false;
