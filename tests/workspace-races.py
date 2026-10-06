@@ -15,6 +15,7 @@ spec = importlib.util.spec_from_file_location(
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from studio_api.testing import read_runtime_state
 
 
 class WorkspaceRaces(unittest.TestCase):
@@ -117,7 +118,7 @@ class WorkspaceRaces(unittest.TestCase):
                     any(
                         m.get("ruleId") == rule["id"]
                         and m["status"] in {"starting", "running", "approval"}
-                        for m in t.runtime.snapshot()["monitors"]
+                        for m in read_runtime_state(t.runtime)["monitors"]
                     )
                 )
                 self.assertFalse(
@@ -248,16 +249,16 @@ class WorkspaceRaces(unittest.TestCase):
             {"agent": lead["id"], "name": "Approval", "command": "fixture-rule-command"}
         )
         t.due(rule)
-        fixture.eventually(lambda: bool(t.runtime.snapshot()["requests"]))
-        request = t.runtime.snapshot()["requests"][0]
+        fixture.eventually(lambda: bool(read_runtime_state(t.runtime)["requests"]))
+        request = read_runtime_state(t.runtime)["requests"][0]
         t.runtime.answer(request["id"], {"decision": "decline"})
         self.assertFalse(t.rule_record(rule["id"])["inFlight"])
         self.assertEqual(t.events(lead, "rule"), [])
         self.assertEqual(t.events(lead, "monitor_cancelled"), [])
         t.due(rule)
         fixture.eventually(lambda: t.rule_record(rule["id"])["checks"] == 2)
-        fixture.eventually(lambda: bool(t.runtime.snapshot()["requests"]))
-        self.assertNotEqual(t.runtime.snapshot()["requests"][0]["id"], request["id"])
+        fixture.eventually(lambda: bool(read_runtime_state(t.runtime)["requests"]))
+        self.assertNotEqual(read_runtime_state(t.runtime)["requests"][0]["id"], request["id"])
         self.assertFalse(
             any(method == "turn/start" for method, _ in t.runtime.server.calls)
         )

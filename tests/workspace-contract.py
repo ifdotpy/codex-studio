@@ -26,6 +26,7 @@ spec = importlib.util.spec_from_file_location(
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
+from studio_api.testing import read_runtime_state
 Runtime, eventually = fixture.Runtime, fixture.eventually
 from codex_runtime import PreparationPending
 from codex_native_errors import NativeRpcError
@@ -267,7 +268,7 @@ class WorkspaceContract(unittest.TestCase):
                     "command": "watch",
                 },
             )
-        records = self.runtime.snapshot()["monitors"]
+        records = read_runtime_state(self.runtime)["monitors"]
         self.assertEqual(len(records), 101)
         self.assertIn("old-active", {r["id"] for r in records})
         self.assertNotIn("history-0", {r["id"] for r in records})
@@ -373,7 +374,7 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(scoped["tasksHistoryLimit"], 100)
         self.assertFalse(any({"tail", "arguments", "error"} & item.keys() for item in scoped["tasks"]))
         global_state = self.runtime.workspace_snapshot()
-        runtime_state = self.runtime.snapshot()
+        runtime_state = read_runtime_state(self.runtime)
         for field in ["tasks", "monitors"]:
             self.assertEqual(global_state[field], runtime_state[field])
             self.assertEqual(len(global_state[field]), 102)
@@ -1564,7 +1565,7 @@ class WorkspaceContract(unittest.TestCase):
         eventually(
             lambda: next(
                 m
-                for m in self.runtime.snapshot()["monitors"]
+                for m in read_runtime_state(self.runtime)["monitors"]
                 if m["id"] == monitor["id"]
             )["status"]
             == "running"
@@ -1707,17 +1708,17 @@ class WorkspaceContract(unittest.TestCase):
         eventually(
             lambda: any(
                 m.get("ruleId") == rule["id"] and m["status"] == "running"
-                for m in self.runtime.snapshot()["monitors"]
+                for m in read_runtime_state(self.runtime)["monitors"]
             )
         )
         self.runtime.rules({"action": "pause", "agent": lead["id"], "id": rule["id"]})
         eventually(lambda: any(
             m.get("ruleId") == rule["id"] and m["status"] == "cancelled"
-            for m in self.runtime.snapshot()["monitors"]
+            for m in read_runtime_state(self.runtime)["monitors"]
         ))
         monitor = next(
             m
-            for m in self.runtime.snapshot()["monitors"]
+            for m in read_runtime_state(self.runtime)["monitors"]
             if m.get("ruleId") == rule["id"]
         )
         self.assertEqual(monitor["status"], "cancelled")

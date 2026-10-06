@@ -8,10 +8,14 @@ import copy
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import threading
 import unittest
 import uuid
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_runtime_state
 
 spec = importlib.util.spec_from_file_location(
     "runtime_fixture", Path(__file__).with_name("runtime-contract.py")
@@ -351,13 +355,13 @@ class WorkerDefaults(unittest.TestCase):
             "invalid-batch", [valid, {**valid, "name": "Bad", "fast_mode": "true"}]
         )
         self.assertFalse(result["success"])
-        self.assertEqual(len(self.runtime.snapshot()["agents"]), 1)
+        self.assertEqual(len(read_runtime_state(self.runtime)["agents"]), 1)
         result = call(
             "valid-batch",
             [valid, {**valid, "name": "Standard", "fast_mode": False, "effort": None}],
         )
         self.assertTrue(result["success"], result)
-        workers = [a for a in self.runtime.snapshot()["agents"] if a["parentId"]]
+        workers = [a for a in read_runtime_state(self.runtime)["agents"] if a["parentId"]]
         self.assertEqual(len(workers), 2)
         self.assertEqual({a["fastMode"] for a in workers}, {True, False})
         self.assertEqual({a["effort"] for a in workers}, {"high", None})

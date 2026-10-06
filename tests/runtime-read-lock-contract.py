@@ -17,6 +17,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas
 from codex_native_sweep import _account_busy
 from codex_runtime import Runtime
@@ -108,14 +109,14 @@ class RuntimeReadLock(unittest.TestCase):
 
     def test_read_transaction_keeps_one_generation(self):
         with self.runtime.read_db() as db:
-            before = self.runtime.snapshot(include_work=False, db=db)
+            before = read_runtime_state(self.runtime, include_work=False, db=db)
             with self.runtime.lock, self.runtime.db() as writer:
                 agent = self.runtime.agent(self.lead["id"], writer)
                 agent["name"] = "After snapshot"
                 self.runtime.put(writer, "agents", agent)
-            again = self.runtime.snapshot(include_work=False, db=db)
+            again = read_runtime_state(self.runtime, include_work=False, db=db)
             self.assertEqual(before["agents"][0]["name"], again["agents"][0]["name"])
-        self.assertEqual(self.runtime.snapshot(include_work=False)["agents"][0]["name"],
+        self.assertEqual(read_runtime_state(self.runtime, include_work=False)["agents"][0]["name"],
                          "After snapshot")
 
     def test_old_read_snapshot_cannot_poison_current_agent_cache(self):

@@ -17,6 +17,7 @@ import uuid
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_runtime import AppServer, Runtime
 from codex_lock_metrics import MeasuredRLock
 
@@ -178,7 +179,7 @@ def measure(count=320, agents=24, storm=False, legacy_checkpoint=False,
                 "arguments": {}}} for i in range(12)]
             workloads = [
                 threading.Thread(target=workload, args=("snapshot", [
-                    lambda: runtime.snapshot(include_work=False) for _ in range(12)])),
+                    lambda: read_runtime_state(runtime, include_work=False) for _ in range(12)])),
                 threading.Thread(target=workload, args=("tool", [
                     lambda message=message: runtime.reserve_tool_request(message) for message in tools])),
                 threading.Thread(target=workload, args=("scheduler", [

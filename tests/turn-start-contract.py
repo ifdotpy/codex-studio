@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_runtime import AppServer, ResponseTimeout, Runtime, SubmissionUnknown
 
 spec = importlib.util.spec_from_file_location("runtime_fixture", Path(__file__).with_name("runtime-contract.py"))
@@ -96,7 +97,7 @@ class TurnStartContract(unittest.TestCase):
         return self.server.deferred[index]
 
     def events(self):
-        return self.runtime.snapshot()["events"]
+        return read_runtime_state(self.runtime)["events"]
 
     def accept(self, index=0):
         e = self.server.deferred[index]

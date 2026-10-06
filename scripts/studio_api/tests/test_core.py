@@ -501,7 +501,7 @@ class CoreResponseTests(unittest.TestCase):
             context.start_api_schema_hash().result(timeout=2)
         client = TestClient(app)
         for method, path, request_headers in (
-            ("GET", "/api/state", {"Origin": "http://test"}),
+            ("GET", "/api/session", {"Origin": "http://test"}),
             ("POST", "/api/messages", {
                 "Origin": "http://test", "X-Canvas-Token": context.token,
                 "Content-Type": "application/json",
@@ -512,7 +512,7 @@ class CoreResponseTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), response.headers)
         response = client.get(
-            "/api/state",
+            "/api/session",
             headers={"Origin": "http://test", API_SCHEMA_HASH_HEADER: "renderer-hash"},
         )
         self.assertEqual(response.status_code, 503)
@@ -550,7 +550,7 @@ class CoreResponseTests(unittest.TestCase):
             ) as client:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
                 hashless = await client.get(
-                    "/api/state",
+                    "/api/session",
                     headers={"Origin": "http://test"},
                 )
                 self.assertEqual(hashless.status_code, 200)
@@ -727,7 +727,7 @@ class CoreResponseTests(unittest.TestCase):
             ) as client:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
                 before = time.perf_counter()
-                early_get = await client.get("/api/state")
+                early_get = await client.get("/api/session")
                 early_latency = time.perf_counter() - before
                 self.assertEqual(early_get.status_code, 200)
                 self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), early_get.headers)
@@ -752,7 +752,7 @@ class CoreResponseTests(unittest.TestCase):
                 self.assertFalse(stream_request.done())
                 release.set()
                 await asyncio.to_thread(hash_future.result, 2)
-                api_response = await client.get("/api/state")
+                api_response = await client.get("/api/session")
                 self.assertEqual(api_response.headers[API_SCHEMA_HASH_HEADER.lower()], "server-schema")
                 self.assertEqual(api_response.status_code, 200)
                 post_response, stream_response = await asyncio.gather(
@@ -1202,7 +1202,7 @@ class CoreResponseTests(unittest.TestCase):
                 with patch.object(codex_canvas, "WEB", web_root):
                     with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
                         session = client.get("/api/session")
-                        state = client.get("/api/state")
+                        identity = session
                         static = client.get("/")
                         unknown = client.get("/api/unknown")
                         mismatch = client.post(
@@ -1222,7 +1222,7 @@ class CoreResponseTests(unittest.TestCase):
                         headers={"X-Canvas-Token": unix_session.json()["token"]},
                     )
                 self.assertEqual(session.status_code, 200)
-                self.assertEqual(state.status_code, 200)
+                self.assertEqual(identity.status_code, 200)
                 self.assertEqual(static.status_code, 200)
                 self.assertEqual(static.content, b"<html>fixture</html>")
                 self.assertEqual(unknown.status_code, 404)
