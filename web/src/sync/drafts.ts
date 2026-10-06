@@ -7,6 +7,11 @@ import {
 } from "react";
 import { isApiSchemaMismatch, onApiSchemaMismatch, saved, save } from "../api";
 import { startDraftReplication, syncDatabase } from "./client";
+import {
+  draftSyncNoticeText,
+  hasDraftSyncFailure,
+  scheduleDraftSyncNotice,
+} from "./draftSyncNotice";
 
 import { encodeDraftPayload } from "./draftPayload";
 import {
@@ -129,28 +134,20 @@ export function useSyncedDrafts() {
     },
     [],
   );
-  const [syncNotice, setSyncNotice] = useState("");
+  const [syncNoticeVisible, setSyncNoticeVisible] = useState(false);
   const [bootstrapPaused, setBootstrapPaused] = useState(false);
+  const syncFailureActive = hasDraftSyncFailure(syncFailureDirection);
   useEffect(() => {
-    if (!syncFailureDirection) {
-      setSyncNotice("");
-      return;
-    }
-    if (bootstrapPaused) {
-      setSyncNotice("Draft sync paused. Edit a draft or reconnect to retry.");
-      return;
-    }
-    // Brief network interruptions recover without moving the conversation.
-    setSyncNotice("");
-    const timer = setTimeout(() => {
-      setSyncNotice(
-        syncFailureDirection === "pull"
-          ? "Draft sync paused. Resumes when reconnected or drafts change."
-          : "Draft sync paused. Retrying automatically.",
-      );
-    }, 8000);
-    return () => clearTimeout(timer);
-  }, [syncFailureDirection, bootstrapPaused]);
+    return scheduleDraftSyncNotice(
+      syncFailureActive,
+      bootstrapPaused,
+      setSyncNoticeVisible,
+    );
+  }, [syncFailureActive, bootstrapPaused]);
+  const syncNotice =
+    syncFailureDirection && syncNoticeVisible
+      ? draftSyncNoticeText(syncFailureDirection, bootstrapPaused)
+      : "";
   const versions = useRef<DraftVersion[]>([]);
   const decoded = useRef(new WeakMap<object, DraftVersion>());
   const decodeDrafts = useCallback(
