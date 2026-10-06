@@ -1,6 +1,8 @@
 """Typed renderer DTO projections and bounded per-entity sync versions."""
 import hashlib
 import json
+import logging
+import math
 import sqlite3
 from typing import Annotated, cast
 
@@ -87,8 +89,13 @@ _AGENT_FIELD_ALLOWLISTS = {
     ),
     "readState": ("threadId", "turnId", "read", "revision"),
     "startAttempt": ("prepareError", "responseError", "retiredEvents"),
+    "capacityRetry": ("id", "threadId", "epoch", "accountKey", "status",
+                      "acceptedTurnId", "updatedAt", "dueAt", "claimedAt", "reason"),
+    "usageResume": ("id", "status", "cause", "reason", "updatedAt", "plannedAt", "dueAt"),
+    "contextRepairWait": ("scope", "error"),
 }
 _AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))
+_OMITTED_PROMOTED_AGENT_FIELDS: set[tuple[str, str]] = set()
 
 
 def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValue:
@@ -101,6 +108,16 @@ def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValu
         limit = 10000 if key == "sidebarOrder" else list_limit
         return {name: _bounded(item, name, limit) for name, item in value.items()}
     return value
+
+
+def _contains_nonfinite(value):
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_nonfinite(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_nonfinite(item) for item in value)
+    return False
 
 
 def project(collection: str, record: JsonValue) -> JsonValue | None:
@@ -145,9 +162,43 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             result["overview"] = {
                 key: _bounded(value, key)
                 for key, value in overview.items()
-                if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId"}
+                if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId", "resultFile"}
             }
-    return cast(JsonValue, model.model_validate(result).model_dump(mode="json", exclude_unset=True))
+        promoted = ("capacityRetry", "usageResume", "contextRepairWait", "epoch",
+                    "lastCompletedTurnStatus", "lastEvent", "accountTransferId",
+                    "workspaceOperation", "overview")
+        for field in promoted:
+            if field in result and _contains_nonfinite(result[field]):
+                result.pop(field)
+                identity = (str(record.get("id", "")), field)
+                if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
+                    _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
+                    logging.getLogger(__name__).warning(
+                        "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
+                        identity[0], field, "NonFiniteNumber")
+    try:
+        validated = model.model_validate(result)
+    except Exception as error:
+        if collection != "agent" or not hasattr(error, "errors"):
+            raise
+        failures = error.errors()
+        promoted = {"epoch", "lastCompletedTurnStatus", "capacityRetry", "usageResume",
+                    "contextRepairWait", "lastEvent", "accountTransferId", "workspaceOperation"}
+        bad_fields = {str(item["loc"][0]) for item in failures
+                      if item.get("loc") and str(item["loc"][0]) in promoted}
+        if not bad_fields or any(not item.get("loc") or str(item["loc"][0]) not in promoted
+                                 for item in failures):
+            raise
+        for field in bad_fields:
+            result.pop(field, None)
+            identity = (str(record.get("id", "")), field)
+            if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
+                _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
+                logging.getLogger(__name__).warning(
+                    "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
+                    identity[0], field, type(error).__name__)
+        validated = model.model_validate(result)
+    return cast(JsonValue, validated.model_dump(mode="json", exclude_unset=True))
 
 
 def validate_entity_payload(payload: str) -> SyncEntityPayload:
@@ -292,34 +343,109 @@ def retire_closed_requests(db):
     return len(rows)
 
 
-def upgrade_agent_organization(db):
-    """Restore existing sidebar metadata without replacing derived agent fields."""
-    if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone():
+def _snapshot_runtime_present(snapshot):
+    return isinstance(snapshot, dict) and isinstance(snapshot.get("runtime"), dict)
+
+
+def upgrade_agent_organization(db, snapshot=None, runtime_owner=None):
+    """Restore sidebar metadata and reproject widened entities by migration version."""
+    marker = db.execute(
+        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
+    original_marker = marker[0] if marker else None
+    version = int(marker[0]) if marker else 0
+    if version >= 2:
         return 0
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone():
         return 0
     changed = 0
-    for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
-        record = json.loads(raw)
-        values = {field: record.get(field, default) for field, default in (
-            ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
-        changed += bool(patch(db, 'agent', key, values))
-    db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1')")
+    if version < 1:
+        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+            record = json.loads(raw)
+            values = {field: record.get(field, default) for field, default in (
+                ('pinned', False), ('archived', False), ('projectFolder', None), ('projectFolderRevision', 0))}
+            changed += bool(patch(db, 'agent', key, values))
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1') "
+                   "ON CONFLICT(key) DO UPDATE SET value='1'")
+    if snapshot is not None:
+        if callable(snapshot):
+            snapshot = snapshot()
+        if runtime_owner is None or not _snapshot_runtime_present(snapshot):
+            if original_marker is None:
+                db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
+            else:
+                db.execute("UPDATE sync_entity_meta SET value=? WHERE key='agent_organization_fields'",
+                           (original_marker,))
+            return changed
+        changed += upgrade_renderer_fields(db, snapshot, runtime_owner)
+        db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
     return changed
 
 
-def seed(db, snapshot):
+def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
+    """Reproject current rows as part of the existing entity upgrade."""
+    runtime_data = snapshot.get("runtime") or {}
+    if not runtime_data:
+        return 0
+    if runtime_owner is not None:
+        changed = 0
+        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+            record = json.loads(raw)
+            changed += bool(put(db, "agent", key, runtime_owner.agent_entity_view(db, record),
+                                bool(record.get("deletedAt"))))
+        for key, raw in db.execute("SELECT id,record FROM runtime_rooms").fetchall():
+            record = json.loads(raw)
+            # Only federated rooms gained promoted entity fields in this
+            # migration. Rebuilding every private/broadcast room from a roster
+            # view would tombstone unrelated stale rows and can drop a
+            # lastMessage produced by the richer room write path.
+            if record.get("kind") != "federated":
+                continue
+            view = next(iter(runtime_owner.chat_rooms(db, room_id=key, include_last_message=True)), None)
+            changed += bool(put(db, "room", key, view or record, view is None))
+        for key, raw in db.execute("SELECT id,record FROM runtime_complaints").fetchall():
+            changed += bool(put(db, "complaint", key,
+                                runtime_owner.complaint_entity_view(db, json.loads(raw))))
+        for key, raw in db.execute("SELECT id,record FROM runtime_projects").fetchall():
+            changed += bool(put(db, "project", key, json.loads(raw)))
+        from codex_peer_teams import sync_entities as sync_peer_team_entities
+        changed += sync_peer_team_entities(runtime_owner, db)
+        meta = {field: runtime_data[field] for field in
+                ("connected", "nativeNotices", "projectOrganizationVersion", "peerTeamsVersion",
+                 "tasksHistoryLimit", "rateLimits", "rateLimitsByAccount", "sidebarOrder")
+                if field in runtime_data}
+        meta["stateDir"] = snapshot.get("stateDir", "")
+        row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
+        prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
+        changed += bool(put(db, "workspace", "current", {**prior, **meta}))
+        return changed
+    return 0
+
+
+def seed(db, snapshot, runtime_owner=None):
     """Seed once from the compatible view while the caller holds a write lock."""
-    upgrade_agent_organization(db)
-    if db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone():
+    seeded = bool(db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone())
+    marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
+    if seeded and marker and int(marker[0]) >= 2:
         return
-    # Callers pass a builder: the full snapshot is costly and seeding runs once.
+    if seeded and (not marker or int(marker[0]) < 2) and runtime_owner is None:
+        return
     if callable(snapshot):
         snapshot = snapshot()
+    if seeded:
+        upgrade_agent_organization(db, snapshot, runtime_owner)
+        return
+    # Callers pass a builder: the full snapshot is costly and seeding runs once.
     runtime = snapshot.get("runtime") or {}
+    has_runtime_agents = bool(db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone())
     threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
     for agent in runtime.get("agents", []):
         threads[agent["id"]] = {**threads.get(agent["id"], {}), **agent}
+    if runtime_owner is not None and has_runtime_agents:
+        # Seed live runtime records through the same projection as Runtime.put.
+        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+            record = json.loads(raw)
+            threads[str(key)] = runtime_owner.agent_entity_view(db, record)
     for value in threads.values():
         put(db, "agent", value["id"], value, bool(value.get("deletedAt")))
     for name, collection in (("rooms", "room"), ("tasks", "task"), ("monitors", "monitor"),
@@ -329,6 +455,8 @@ def seed(db, snapshot):
                              ("work", "work")):
         for value in runtime.get(name, []) or []:
             if value.get("id"):
+                if collection == "complaint" and runtime_owner is not None:
+                    value = runtime_owner.complaint_entity_view(db, value)
                 put(db, collection, str(value["id"]), value)
     chats = snapshot.get("chats", [])
     chat_ids = {value["id"] for value in chats if value.get("id")}
@@ -347,6 +475,9 @@ def seed(db, snapshot):
                                                   "tasksHistoryLimit") if key in runtime}
     meta["stateDir"] = snapshot.get("stateDir", "")
     put(db, "workspace", "current", meta)
+    if runtime_owner is not None and has_runtime_agents and _snapshot_runtime_present(snapshot):
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','2') "
+                   "ON CONFLICT(key) DO UPDATE SET value='2'")
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
 
 

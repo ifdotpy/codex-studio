@@ -2,11 +2,7 @@ import ErrorDescription from "./ErrorDescription";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@mantine/core";
 import { errorText, post, type PostResult } from "../api";
-import type { Agent } from "../types";
-
-type CapacityRetryRecord = NonNullable<Agent["capacityRetry"]> & {
-  id: string;
-};
+import type { CapacityRetry as CapacityRetryRecord } from "../capacityRetry";
 
 export default function CapacityRetry({
   agentId,
@@ -40,7 +36,6 @@ export default function CapacityRetry({
       : 0;
   const available =
     !current.claimedAt &&
-    typeof current.status === "string" &&
     ["scheduled", "cancelled", "exhausted"].includes(current.status);
   const action = async (choice: "retry" | "cancel") => {
     if (lock.current) return;

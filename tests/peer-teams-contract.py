@@ -19,6 +19,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_accounts import AccountStore
 from codex_peer_teams import manage, peer_pair_allowed, peers_for, snapshot
+from codex_sync_entities import ensure_tables as ensure_sync_entity_tables
 from codex_work import WorkMixin
 from codex_workspace import WorkspaceMixin
 
@@ -30,8 +31,10 @@ class Store(WorkMixin, WorkspaceMixin):
         self.accounts = AccountStore(root)
         with self.db() as db:
             for table in ('agents', 'projects', 'events', 'tasks', 'messages'):
-                db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
+                columns = ", created REAL" if table == 'events' else ""
+                db.execute(f'CREATE TABLE runtime_{table} (id TEXT PRIMARY KEY, record TEXT NOT NULL{columns})')
             db.execute('CREATE TABLE runtime_operation_receipts (id TEXT PRIMARY KEY, signature TEXT, result TEXT)')
+            ensure_sync_entity_tables(db)
 
     @contextmanager
     def db(self):

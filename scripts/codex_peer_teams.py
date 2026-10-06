@@ -56,6 +56,41 @@ def snapshot(runtime, db):
     return [team for project in projects for team in _teams(project, agents)]
 
 
+def sync_entities(runtime, db, project_paths=None):
+    """Keep durable peer-team rows equal to the live snapshot projection."""
+    from codex_sync_entities import put as sync_entity_put
+
+    paths = {_path(value) for value in project_paths or ()} if project_paths is not None else None
+    if paths is None:
+        current = {team['id']: team for team in snapshot(runtime, db)}
+        rows = db.execute("SELECT id,deleted,payload FROM sync_entities WHERE collection='peerTeam'").fetchall()
+    else:
+        current = {}
+        for path in paths - {None}:
+            row = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+            if not row:
+                continue
+            project = json.loads(row[0])
+            agents = _members(db, (member for team in project.get('peerTeams', [])
+                                   for member in team.get('members', [])))
+            for team in _teams(project, agents):
+                current[team['id']] = team
+        rows = db.execute("SELECT id,deleted,payload FROM sync_entities WHERE collection='peerTeam' "
+                          "AND json_extract(payload,'$.value.projectPath') IN (" +
+                          (','.join('?' for _ in paths - {None}) or "NULL") + ")",
+                          tuple(sorted(paths - {None}))).fetchall() if paths - {None} else []
+    existing = {row[0]: (bool(row[1]), json.loads(row[2]).get('value', {}).get('projectPath')
+                          if row[2] else None) for row in rows}
+    for team_id, team in current.items():
+        sync_entity_put(db, 'peerTeam', team_id, team)
+    target_paths = paths if paths is not None else None
+    for team_id, (deleted, project_path) in existing.items():
+        if team_id not in current and not deleted and (
+                target_paths is None or _path(project_path) in target_paths):
+            sync_entity_put(db, 'peerTeam', team_id, {}, deleted=True)
+    return len(current)
+
+
 def peer_pair_allowed(db, left_id, right_id):
     if left_id == right_id:
         return False
@@ -119,6 +154,7 @@ def manage(runtime, data):
             return previous
         project = runtime.ensure_project(path, runtime.project_account(path, db=db), db)
         current = project.get('peerTeamsRevision', 0)
+        previous_team_ids = {team.get('id') for team in project.get('peerTeams', []) if team.get('id')}
         if revision != current:
             raise ValueError('Peer teams changed. Reload before saving')
         agents = _agents(db)
@@ -154,4 +190,5 @@ def manage(runtime, data):
             teams = [team for team in teams if team['id'] != team_id]
         project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())
         runtime.put(db, 'projects', project)
+        sync_entities(runtime, db, {path})
         return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)

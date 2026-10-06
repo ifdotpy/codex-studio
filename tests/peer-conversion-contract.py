@@ -157,6 +157,7 @@ class Conversion(unittest.TestCase):
             self.assertEqual(self.rt.records(db, 'complaints')[0]['leadId'], self.c['id'])
             payload = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='peerTeam' AND id=?", (self.team,)).fetchone()[0])['value']
             self.assertEqual(payload['members'], [self.b['id'], self.c['id']])
+            self.assertEqual(payload['revision'], 3)
 
 
     def test_retry_saved_identity_after_lost_response_and_changed_body(self):
@@ -173,7 +174,11 @@ class Conversion(unittest.TestCase):
     def test_saved_room_with_source_in_third_position_is_refreshed(self):
         with self.rt.db() as db:
             self.rt.put(db, 'rooms', {'id': 'long-room', 'kind': 'private', 'updated': 1,
-                'members': [self.b['id'], self.c['id'], self.a['id']], 'radio': {'active': True}})
+                'members': [self.b['id'], self.c['id'], self.a['id']], 'radio': {
+                    'teamId': 'radio-team', 'revision': 0, 'status': 'idle', 'speaker': None,
+                    'next': [], 'active': {'identity': [None, None, 1], 'eventId': 'radio-event',
+                        'agentId': self.b['id'], 'epoch': 0, 'threadId': 'thread', 'through': 0},
+                    'error': None}})
         with self.assertRaisesRegex(ValueError, 'shared chat exchange'):
             manage(self.rt, self.body)
         with self.rt.db() as db:

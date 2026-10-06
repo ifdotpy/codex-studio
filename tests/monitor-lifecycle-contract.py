@@ -63,13 +63,14 @@ class MonitorServer(fixture.FakeServer):
         return future
 
     def wait(self, submitted, timeout=60):
-        if submitted in self.writes and self.timeout_writes:
+        future = submitted[2] if isinstance(submitted, tuple) else submitted
+        if future in self.writes and self.timeout_writes:
             raise ResponseTimeout("command/exec/write response timed out; outcome unknown")
-        if submitted in self.commands.values():
+        if future in self.commands.values():
             self.command_wait_entered.set()
             if self.timeout_commands:
                 raise ResponseTimeout("command/exec response timed out; outcome unknown")
-        return super().wait(submitted, timeout)
+        return super().wait(future, timeout)
 
     def call(self, method, params, timeout=60):
         if method == "command/exec/terminate":

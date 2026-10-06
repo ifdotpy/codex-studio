@@ -107,6 +107,30 @@ class NativeErrorContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(self.key)['error'], error)
         self.assertTrue(any(m.get('nativeError') == error for m in self.messages()))
 
+    def test_unknown_provider_turn_status_is_stored_without_blocking_agent_write(self):
+        self.send('turn/completed', turn={'id': self.turn, 'status': 'inProgress'})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['lastCompletedTurnStatus'], 'inProgress')
+        self.assertEqual(agent['status'], 'failed')
+        self.assertIsNone(agent.get('turnId'))
+        with self.runtime.db() as db:
+            payload = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                 (self.key,)).fetchone()[0]
+        self.assertEqual(json.loads(payload)['value']['lastCompletedTurnStatus'], 'inProgress')
+
+    def test_notification_last_event_is_projected_to_agent_entity(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['lastEvent'] = '2000-01-01T00:00:00Z'
+            self.runtime.put(db, 'agents', agent)
+        self.send('error', error={'message': 'event refresh'}, willRetry=False)
+        agent = self.runtime.agent(self.key)
+        with self.runtime.db() as db:
+            payload = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                 (self.key,)).fetchone()[0]
+        self.assertNotEqual(agent['lastEvent'], '2000-01-01T00:00:00Z')
+        self.assertEqual(json.loads(payload)['value']['lastEvent'], agent['lastEvent'])
+
     def test_guardian_denial_is_failure_not_user_interruption(self):
         error = {'message': 'Native Guardian limit', 'codexErrorInfo': 'tooManyDenials'}
         self.send('turn/completed', turn={'id': self.turn, 'status': 'interrupted', 'error': error})

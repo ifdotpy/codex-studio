@@ -22,10 +22,12 @@ TRANSCRIPT_REVISION_ID = '@revision'
 
 
 class SyncStore:
-    def __init__(self, connect, snapshot, transcript, chat_snapshot=None, state_signature=None):
+    def __init__(self, connect, snapshot, transcript, chat_snapshot=None, state_signature=None,
+                 runtime=None):
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
         self.chat_snapshot = chat_snapshot
         self.state_signature = state_signature
+        self.runtime = runtime
         self._observed_state_signature = None
         self._signature_lock = threading.Lock()
         self._entity_prune_lock = threading.Lock()
@@ -440,7 +442,8 @@ class SyncStore:
         markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
             "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
         if ('seeded' not in markers
-                or ('runtime_agents' in tables and 'agent_organization_fields' not in markers)
+                or (self.runtime is not None and 'runtime_agents' in tables and
+                    int(markers.get('agent_organization_fields', '0')) < 2)
                 or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
             return True
         if 'runtime_events' in tables:
@@ -474,7 +477,7 @@ class SyncStore:
                 # The existing maintenance functions read again under the writer.
                 db.rollback()
                 db.execute('BEGIN IMMEDIATE')
-                seed(db, self.chat_snapshot or self.snapshot)
+                seed(db, self.chat_snapshot or self.snapshot, runtime_owner=self.runtime)
                 startup_memory_mark("entity-seed")
                 # Retire old task DTOs gradually so existing checkpoints
                 # consume the resulting tombstones through ordinary deltas.

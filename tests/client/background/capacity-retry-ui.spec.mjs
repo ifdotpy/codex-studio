@@ -32,7 +32,10 @@ test("capacity retry ui", async ({ browser: _browser }) => {
     ["-B", join(rootDir, "tests/simple-ui-fixture.py"), root],
     {
       stdio: ["pipe", "pipe", "pipe"],
-      env: { ...process.env, CAPACITY_UI_FIXTURE: "1" },
+      env: {
+        ...process.env,
+        CAPACITY_UI_FIXTURE: "1",
+      },
     },
   );
   let log = "",
@@ -106,9 +109,44 @@ test("capacity retry ui", async ({ browser: _browser }) => {
         }) + "\n",
       );
     notifyFailure(first);
+    let projectedAgent;
+    await until(
+      async () => {
+        const entityPull = await fetch(
+          `${origin}/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=500`,
+        );
+        assert.equal(entityPull.status, 200);
+        const entityRows = (await entityPull.json()).documents;
+        projectedAgent = entityRows
+          .map((row) => JSON.parse(row.payload))
+          .find(
+            (payload) => payload.collection === "agent" && payload.id === id,
+          );
+        return projectedAgent?.value.capacityRetry?.status === "scheduled";
+      },
+      "Runtime.put did not publish the scheduled retry in the agent entity",
+      8000,
+    );
+    assert.equal(projectedAgent.value.capacityRetry.status, "scheduled");
     await page
       .locator('.capacity-retry[data-retry-status="scheduled"]')
       .waitFor();
+    await until(
+      async () => (await agent()).lastCompletedTurn === first.turnId,
+      "failure event was not recorded",
+      8000,
+    );
+    await until(
+      async () => (await agent()).capacityRetry?.status === "scheduled",
+      "scheduled retry missing",
+      8000,
+    );
+    const updateDialog = page.locator('[aria-label="Studio update required"]');
+    assert.equal(
+      await updateDialog.isVisible(),
+      false,
+      "a matching schema must not open the update dialog",
+    );
     await page.locator("#message").fill("Keep this draft while retrying.");
     await page.setViewportSize({ width: 320, height: 740 });
     await page

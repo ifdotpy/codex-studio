@@ -2,10 +2,24 @@ import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
-import type { RxCollection, RxDocumentData } from "rxdb";
+import type { RxCollection, RxDocument, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
-import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
+import {
+  applyEntityRows,
+  emptyEntityProjection,
+  type EntityRow,
+} from "./entityProjection";
+import {
+  syncGet,
+  syncPost,
+  ApiError,
+  saved,
+  save,
+  setWorkspace,
+  registerSyncEntityPersister,
+  type GetResult,
+} from "../api";
+import type { Snapshot } from "../types";
 import {
   watchResourceChanges,
   watchResourceConnection,
@@ -156,25 +170,18 @@ async function open() {
   return { db, workspaceId, verifyWorkspace };
 }
 export function syncDatabase() {
-  return (pending ??= open().catch((error) => {
-    pending = undefined;
-    throw error;
-  }));
+  // Keep a failed open memoized so each mutation does not retry a broken DB.
+  // Reloading is the recovery path after a permanent open failure.
+  return (pending ??= open());
 }
 
 if (typeof window !== "undefined")
-  window.addEventListener("codex-sync-entities", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    if (!detail || !Array.isArray(detail.documents)) return;
-    void syncDatabase()
-      .then(async ({ db, workspaceId }) => {
-        if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents as SyncDocument[]) {
-          if (!document.id.startsWith("entity:")) continue;
-          await persistProjection(db.projections, document);
-        }
-      })
-      .catch(() => {});
+  registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
+    const { db, workspaceId } = await syncDatabase();
+    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
+    for (const document of documents)
+      if (document.id.startsWith("entity:"))
+        await persistProjection(db.projections, document);
   });
 
 async function pull(
@@ -371,7 +378,7 @@ async function resetEntityProjection(collection: RxCollection<SyncDocument>) {
     })
     .exec();
   const stored = await collection.storageInstance.findDocumentsById(
-    docs.map((doc: any) => doc.id),
+    docs.map((doc) => doc.id),
     true,
   );
   const rows = stored.map((previous) => {
@@ -966,9 +973,10 @@ async function acquireProjection(
   }
 }
 
+type ProjectionPayload = Snapshot | GetResult<"/api/transcript"> | null;
 export async function watchProjection(
   scope: string,
-  accept: (payload: any | null) => void,
+  accept: (payload: ProjectionPayload) => void,
   fail: (e: unknown) => void,
 ) {
   const { db, workspaceId, state, release } = await acquireProjection(scope);
@@ -983,17 +991,15 @@ export async function watchProjection(
           const projection = emptyEntityProjection();
           let ready = false;
           let entitiesLoaded = false;
-          let latestRows: any[] = [];
+          let latestRows: EntityRow[] = [];
           const publishCurrent = () => {
             if (!ready || !entitiesLoaded) return;
             const next = applyEntityRows(projection, latestRows, true);
             if (next) accept(next);
           };
-          const publish = (documents: any[]) => {
+          const publish = (documents: RxDocument<SyncDocument>[]) => {
             entitiesLoaded = true;
-            latestRows = documents.map((document) =>
-              document.toJSON ? document.toJSON() : document,
-            );
+            latestRows = documents.map((document) => document.toJSON());
             publishCurrent();
           };
           const entities = db.projections
@@ -1001,8 +1007,8 @@ export async function watchProjection(
             .$.subscribe(publish);
           const marker = db.projections
             .findOne("state:entities:ready")
-            .$.subscribe((document: any) => {
-              const row = document?.toJSON ? document.toJSON() : document;
+            .$.subscribe((document) => {
+              const row = document?.toJSON();
               ready = row?.payload === "ready" && !row?._deleted;
               publishCurrent();
             });
@@ -1013,7 +1019,7 @@ export async function watchProjection(
             },
           };
         })()
-      : db.projections.findOne(scope).$.subscribe((doc: any) => {
+      : db.projections.findOne(scope).$.subscribe((doc) => {
           if (!id) {
             accept(doc ? JSON.parse(doc.payload) : null);
             return;
@@ -1074,7 +1080,7 @@ export function prefetchTranscript(
       // Query the same persisted document used by the foreground view.
       const subscription = handle.db.projections
         .findOne(`transcript:${id}`)
-        .$.subscribe((doc: any) => {
+        .$.subscribe((doc) => {
           if (doc)
             void cacheStoredTranscript(
               handle.db.projections,
@@ -1476,7 +1482,7 @@ export async function startDraftReplication(
 // Reopen a subscription after an initial connection failure, without a page reload.
 export function subscribeProjection(
   scope: string,
-  accept: (payload: any | null) => void,
+  accept: (payload: ProjectionPayload) => void,
   report: (error: unknown | null) => void,
 ) {
   let stopped = false,

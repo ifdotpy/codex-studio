@@ -14,8 +14,25 @@ const lead = {
 };
 
 const snapshot = (threads = [lead], requests = [], complaints = []) => ({
+  token: "",
+  stateDir: "/fixture",
   threads,
-  runtime: { requests, complaints },
+  chats: [],
+  nodes: threads,
+  edges: [],
+  runtime: {
+    agents: threads,
+    rooms: [],
+    tasks: [],
+    monitors: [],
+    requests,
+    complaints,
+    rules: [],
+    projects: [],
+    peerTeams: [],
+    events: [],
+    work: [],
+  },
 });
 
 it("builds completed reply notifications with a bounded title and body", () => {
@@ -230,14 +247,14 @@ it("turns active requests into question or approval notifications", () => {
   );
 });
 
-it("notifies only user-directed complaints and supports legacy lead-authored messages", () => {
+it("uses the server's user-response flag for complaint alerts", () => {
   const complaints = [
     {
       id: "for-user",
       leadId: "lead",
       recipient: "user",
       author: "worker",
-      needsResponse: true,
+      needsUserResponse: true,
       title: "Please check.",
       version: 2,
     },
@@ -245,14 +262,15 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       id: "legacy",
       leadId: "lead",
       author: "lead",
-      needsResponse: true,
+      recipient: "user",
+      needsUserResponse: true,
       title: "Legacy message.",
     },
     {
       id: "version-zero",
       leadId: "lead",
       recipient: "user",
-      needsResponse: true,
+      needsUserResponse: true,
       title: "Zero version.",
       version: 0,
     },
@@ -260,7 +278,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       id: "empty-title",
       leadId: "lead",
       recipient: "user",
-      needsResponse: true,
+      needsUserResponse: true,
       title: "",
       version: 3,
     },
@@ -268,7 +286,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       id: "other-author",
       leadId: "lead",
       author: "worker",
-      needsResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
@@ -276,7 +294,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       leadId: "lead",
       author: "lead",
       recipient: "lead",
-      needsResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
@@ -284,21 +302,21 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       leadId: "lead",
       author: "lead",
       recipient: "team",
-      needsResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
       id: "no-response",
       leadId: "lead",
       recipient: "user",
-      needsResponse: false,
+      needsUserResponse: false,
       title: "Already handled.",
     },
     {
       id: "missing-lead",
       leadId: "missing",
       recipient: "user",
-      needsResponse: true,
+      needsUserResponse: true,
       title: "No target.",
     },
   ];
@@ -334,9 +352,8 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
   ]);
 });
 
-it("keeps completed-thread alerts when the optional runtime snapshot is absent", () => {
+it("keeps completed-thread alerts with empty entity collections", () => {
   const data = snapshot();
-  data.runtime = null;
   assert.deepEqual(desktopAlerts(data), [
     {
       id: "completed:lead:turn-1",

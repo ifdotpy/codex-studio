@@ -24,13 +24,172 @@ import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
-import { snapshotAgentFromMutation } from "./hooks/snapshotAgentFromMutation";
 import type { GetResult } from "./api";
-import type { Message, Agent, Json } from "./types";
-type StateSnapshot = GetResult<"/api/state">;
+import type {
+  Agent,
+  Json,
+  LegacySnapshot,
+  Message,
+  Room,
+  Snapshot,
+} from "./types";
 type TranscriptPageData = GetResult<"/api/transcript">;
+type LegacyAgent = LegacySnapshot["threads"][number];
+type LegacyRoom = NonNullable<LegacySnapshot["runtime"]>["rooms"][number];
+type LegacyComplaint = NonNullable<
+  LegacySnapshot["runtime"]
+>["complaints"][number];
+type RendererRoomRadio = NonNullable<Room["radio"]>;
+type RoomRadioActive = NonNullable<RendererRoomRadio["active"]>;
+
+export function legacyComplaintNeedsUserResponse(
+  complaint: Pick<LegacyComplaint, "recipient" | "needsResponse">,
+): boolean {
+  return complaint.recipient === "user" && complaint.needsResponse === true;
+}
+
+function legacyRoomRadioIdentity(
+  identity: Array<string | number | null>,
+): RoomRadioActive["identity"] | null {
+  const [roomId, revision, sequence] = identity;
+  if (
+    identity.length !== 3 ||
+    (roomId !== null && typeof roomId !== "string") ||
+    (revision !== null && typeof revision !== "number") ||
+    typeof sequence !== "number"
+  )
+    return null;
+  return [roomId, revision, sequence];
+}
+
+function legacyRoomForRenderer(room: LegacyRoom): Room {
+  const radio = room.radio;
+  if (!radio) return { ...room, radio };
+
+  const active = radio.active;
+  const activeIdentity = active && legacyRoomRadioIdentity(active.identity);
+  const seen: NonNullable<RendererRoomRadio["seen"]> = {};
+  for (const [member, cursor] of Object.entries(radio.seen ?? {})) {
+    const identity = legacyRoomRadioIdentity(cursor.identity);
+    if (identity) seen[member] = { ...cursor, identity };
+  }
+  return {
+    ...room,
+    radio: {
+      ...radio,
+      active:
+        active && activeIdentity
+          ? { ...active, identity: activeIdentity }
+          : null,
+      seen,
+    },
+  };
+}
+
+function legacyCapacityRetryForRenderer(
+  retry: LegacyAgent["capacityRetry"],
+): Agent["capacityRetry"] {
+  if (!retry) return null;
+  if (retry.id == null || retry.status == null || retry.updatedAt == null)
+    return null;
+  return {
+    id: retry.id,
+    threadId: retry.threadId ?? null,
+    epoch: retry.epoch ?? null,
+    accountKey: retry.accountKey ?? null,
+    status: retry.status,
+    updatedAt: retry.updatedAt,
+    dueAt: retry.dueAt ?? null,
+    acceptedTurnId: retry.acceptedTurnId,
+    claimedAt: retry.claimedAt,
+    reason: retry.reason,
+  };
+}
+
+function legacyUsageResumeForRenderer(
+  resume: LegacyAgent["usageResume"],
+): Agent["usageResume"] {
+  if (!resume) return null;
+  if (
+    resume.id == null ||
+    resume.cause == null ||
+    resume.status == null ||
+    resume.updatedAt == null
+  )
+    return null;
+  return {
+    id: resume.id,
+    cause: resume.cause,
+    status: resume.status,
+    reason: resume.reason ?? null,
+    updatedAt: resume.updatedAt,
+    plannedAt: resume.plannedAt ?? null,
+    dueAt: resume.dueAt ?? null,
+  };
+}
+
+function legacyAgentForRenderer(agent: LegacyAgent): Agent {
+  const {
+    workspaceOperation,
+    capacityRetry,
+    usageResume,
+    contextRepairWait,
+    ...fields
+  } = agent;
+  return {
+    ...fields,
+    capacityRetry: legacyCapacityRetryForRenderer(capacityRetry),
+    usageResume: legacyUsageResumeForRenderer(usageResume),
+    contextRepairWait: contextRepairWait
+      ? { error: contextRepairWait.error, scope: contextRepairWait.scope }
+      : null,
+    workspaceOperation:
+      typeof workspaceOperation === "string" ? workspaceOperation : null,
+  };
+}
+
+/**
+ * Normalize the temporary, cached /api/state fallback until that fallback is
+ * removed; older cached snapshots may omit collection arrays.
+ */
+function legacyStateSnapshot(data: LegacySnapshot): Snapshot {
+  const runtime = data.runtime;
+  const threads = (data.threads ?? []).map(legacyAgentForRenderer);
+  const chats = data.chats ?? [];
+  const nodes = (data.nodes ?? []).map((node) =>
+    node.kind === "chat" ? node : legacyAgentForRenderer(node),
+  );
+  return {
+    token: data.token,
+    stateDir: data.stateDir,
+    threads,
+    chats,
+    nodes,
+    edges: data.edges ?? [],
+    runtime: {
+      ...runtime,
+      agents: (runtime?.agents ?? data.threads ?? []).map(
+        legacyAgentForRenderer,
+      ),
+      rooms: runtime?.rooms?.map(legacyRoomForRenderer) ?? [],
+      tasks: runtime?.tasks ?? [],
+      monitors: runtime?.monitors ?? [],
+      complaints: (runtime?.complaints ?? []).map((complaint) => ({
+        ...complaint,
+        needsUserResponse: legacyComplaintNeedsUserResponse(complaint),
+      })),
+      requests: runtime?.requests ?? [],
+      rules: runtime?.rules ?? [],
+      projects: runtime?.projects ?? [],
+      peerTeams: runtime?.peerTeams ?? [],
+      events: runtime?.events ?? [],
+      work: runtime?.work ?? [],
+    },
+  };
+}
+
 export function useSnapshot() {
-  const [data, setData] = useState<StateSnapshot | null>(null),
+  const [data, setData] = useState<Snapshot | null>(null),
     [error, setError] = useState("");
   const [syncError, setSyncError] = useState("");
   const [transportError, setTransportError] = useState("");
@@ -57,14 +216,13 @@ export function useSnapshot() {
       if (currentScope.current !== expectedScope)
         throw new Error("The workspace changed before the new chat opened.");
       // A fresh draft has no native thread. Existing-thread retries await its projection.
-      const confirmed = snapshotAgentFromMutation(agent);
       setCreated((old) => ({
         scope: expectedScope,
         agents: [
           ...(old.scope === expectedScope ? old.agents : []).filter(
             (a) => a.id !== agent.id,
           ),
-          confirmed,
+          agent,
         ],
       }));
     },
@@ -102,19 +260,15 @@ export function useSnapshot() {
     return {
       ...data,
       threads: [...data.threads, ...missing],
-      ...(runtime
-        ? {
-            runtime: {
-              ...runtime,
-              agents: [
-                ...runtime.agents.filter(
-                  (a) => !missing.some((row) => row.id === a.id),
-                ),
-                ...missing,
-              ],
-            },
-          }
-        : {}),
+      runtime: {
+        ...runtime,
+        agents: [
+          ...runtime.agents.filter(
+            (a) => !missing.some((row) => row.id === a.id),
+          ),
+          ...missing,
+        ],
+      },
     };
   }, [data, created, scope]);
   const generation = useRef(0);
@@ -150,7 +304,12 @@ export function useSnapshot() {
               query: { view: "chat" },
             });
             if (request !== generation.current) return;
-            setData({ ...legacy, token: session.token });
+            setData(
+              legacyStateSnapshot({
+                ...legacy,
+                token: session.token,
+              }),
+            );
           }
         }
         if (request !== generation.current) return;
@@ -232,7 +391,7 @@ export function useSnapshot() {
       subscribeProjection(
         "state",
         (next) => {
-          if (next) {
+          if (next && "runtime" in next) {
             replicated.current = true;
             setSyncError("");
             setData({ ...next, token: sessionToken.current });
@@ -249,7 +408,12 @@ export function useSnapshot() {
             void syncGet("/api/state", { query: { view: "chat" } })
               .then((legacy) => {
                 sessionToken.current = legacy.token || sessionToken.current;
-                setData({ ...legacy, token: sessionToken.current });
+                setData(
+                  legacyStateSnapshot({
+                    ...legacy,
+                    token: sessionToken.current,
+                  }),
+                );
               })
               .catch((fallbackError) => setError(errorText(fallbackError)));
           }
@@ -812,7 +976,7 @@ export function useMessages(
       `transcript:${id}`,
       (next) => {
         if (active.current !== scope) return;
-        if (next) {
+        if (next && "items" in next) {
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);

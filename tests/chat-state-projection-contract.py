@@ -7,6 +7,7 @@ import importlib.util
 import json
 from pathlib import Path
 import unittest
+from entity_test_support import context_repair_wait
 
 spec = importlib.util.spec_from_file_location('projection_fixture', Path(__file__).with_name('runtime-contract.py'))
 f = importlib.util.module_from_spec(spec)
@@ -24,7 +25,8 @@ class Projection(f.RuntimeContract):
             with self.runtime.lock, self.runtime.db() as db:
                 a = self.runtime.agent(a['id'], db)
                 a.update(status='queued', error='Wait for the exact saved receipt.',
-                         contextRepairWait={'phase':'waiting','reason':'native receipt'},
+                         contextRepairWait=context_repair_wait(
+                             scope='local', phase='waiting', reason='native receipt'),
                          startAttempt={'id':'exact-start','prepareError':'Wait for the native response.'})
                 self.runtime.put(db, 'agents', a)
             baseline = read_runtime_state(self.runtime, include_work=False)
