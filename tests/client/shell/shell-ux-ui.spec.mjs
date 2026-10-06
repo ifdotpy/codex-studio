@@ -1,7 +1,11 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +37,7 @@ test("Shell ux ui", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
@@ -176,47 +180,52 @@ test("Shell ux ui", async ({
     });
     let warningNoticesEnabled = false;
     compactPage.on("pageerror", (error) => errors.push(error.message));
-    await compactPage.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await compactPage.route("**/api/state*", async (route) => {
-      const state = await route.fetch().then((response) => response.json());
+    await compactPage.route("**/api/sync/pull?*", async (route) => {
+      const response = await route.fetch();
+      const projection = await response.json();
       const usageError = {
         codexErrorInfo: "usageLimitExceeded",
         message: "Usage limit reached",
       };
-      const addError = (agent) =>
-        agent.name === "Release lead" ? { ...agent, error: usageError } : agent;
-      state.threads = state.threads.map(addError);
-      state.runtime.agents = state.runtime.agents.map(addError);
-      state.runtime.nativeNotices = warningNoticesEnabled
-        ? [
-            {
-              id: "fixture-current-account-warning",
-              accountKey: "default",
-              nativeNotice: "warning",
-              message: "Account configuration needs review",
-              details: {
-                code: "fixture_configuration",
-                files: ["first.toml", "second.toml"],
-                retryAllowed: false,
-              },
-            },
-            {
-              id: "fixture-other-account-warning",
-              accountKey: "other-account",
-              nativeNotice: "warning",
-              message: "Account configuration needs review",
-              details: {
-                code: "fixture_configuration",
-                files: ["first.toml", "second.toml"],
-                retryAllowed: false,
-              },
-            },
-          ]
-        : [];
-      if (state.nodes) state.nodes = [...state.threads, ...(state.chats || [])];
-      return route.fulfill({ json: state });
+      projection.documents = projection.documents.map((document) => {
+        if (document._deleted) return document;
+        const entity = JSON.parse(document.payload);
+        if (
+          entity.collection === "agent" &&
+          entity.value.name === "Release lead"
+        )
+          entity.value.error = usageError;
+        if (entity.collection === "workspace")
+          entity.value.nativeNotices = warningNoticesEnabled
+            ? [
+                {
+                  id: "fixture-current-account-warning",
+                  accountKey: "default",
+                  nativeNotice: "warning",
+                  message: "Account configuration needs review",
+                  details: {
+                    code: "fixture_configuration",
+                    files: ["first.toml", "second.toml"],
+                    retryAllowed: false,
+                  },
+                },
+                {
+                  id: "fixture-other-account-warning",
+                  accountKey: "other-account",
+                  nativeNotice: "warning",
+                  message: "Account configuration needs review",
+                  details: {
+                    code: "fixture_configuration",
+                    files: ["first.toml", "second.toml"],
+                    retryAllowed: false,
+                  },
+                },
+              ]
+            : [];
+        document.payload = JSON.stringify(entity);
+        return document;
+      });
+      return route.fulfill({ response, json: projection });
     });
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
@@ -497,12 +506,7 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     };
-    await firstUse.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await firstUse.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: emptyState }),
-    );
+    await stubEntityState(firstUse, emptyState, "shell-first-use-fixture");
     await firstUse.route("**/api/directories*", (route) =>
       route.fulfill({
         json: { path: "/workspace/phone-first", directories: [] },
@@ -573,12 +577,7 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     });
-    await branchPage.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await branchPage.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: branchState() }),
-    );
+    await stubEntityState(branchPage, branchState(), "shell-branch-fixture");
     await branchPage.route("**/api/transcript/stream*", (route) =>
       route.fulfill({ status: 503, json: { error: "Use fixture polling" } }),
     );

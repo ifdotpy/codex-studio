@@ -1,3 +1,9 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Lose a real committed HTTP response, reload, and retry the same stored intention.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -5,8 +11,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("message retry http browser", async ({ page: runnerPage }) => {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -37,7 +41,7 @@ test("message retry http browser", async ({ page: runnerPage }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const target = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(target + "/api/state")).json();
+    const snapshot = await readTestState(target);
     const lead = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     );

@@ -1,11 +1,10 @@
+import { test, expect } from "../playwright.mjs";
 // Real RxDB, with controlled HTTP failures. No live server writes.
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
-
 test("Mobile Send Reliability Browser", async ({
   browser: testBrowser,
   context: _testContext,
@@ -79,7 +78,7 @@ test("Mobile Send Reliability Browser", async ({
     const pending = new Map();
     let holdSession = false;
     let missingSession = false;
-    const stateReads = [];
+    let sessionReads = 0;
     const sessions = [];
     await context.route("**/check", (route) =>
       route.fulfill({
@@ -93,14 +92,11 @@ test("Mobile Send Reliability Browser", async ({
       }),
     );
     await context.route("**/api/session", (route) => {
+      sessionReads++;
       if (missingSession)
         return route.fulfill({ status: 404, json: { error: "Not found" } });
       if (holdSession) sessions.push(route);
       else return route.fulfill({ json: { token: "fixture" } });
-    });
-    await context.route(/\/api\/state(?:\?.*)?$/, (route) => {
-      stateReads.push(new URL(route.request().url()).searchParams.get("view"));
-      return route.fulfill({ json: { token: "fixture" } });
     });
     await context.route("**/api/messages", (route) => {
       const body = route.request().postDataJSON();
@@ -422,7 +418,7 @@ test("Mobile Send Reliability Browser", async ({
       (await stored(first, "missing-session-send")).status,
       "failed",
     );
-    assert.deepEqual(stateReads, []);
+    assert.ok(sessionReads > 0);
     assert.deepEqual(
       posts.filter((post) => post.id === "missing-session-send"),
       [],

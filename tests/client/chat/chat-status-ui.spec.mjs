@@ -1,11 +1,16 @@
+import {
+  readTestState,
+  readLegacySnapshotForS2Assertions,
+  entityPullFixture,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production renderer with isolated HTTP fixtures. No model calls or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("chat-status-ui", async ({ browser }) => {
   test.setTimeout(120_000);
@@ -58,7 +63,9 @@ test("chat-status-ui", async ({ browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const entityState = await readTestState(origin);
+    const state = await readLegacySnapshotForS2Assertions(origin);
+    state.token = entityState.token;
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     const worker = (index) =>
@@ -153,15 +160,18 @@ test("chat-status-ui", async ({ browser }) => {
     const errors = [],
       writes = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({
-        status: 404,
-        json: { error: "Fixture uses HTTP snapshots" },
-      }),
+    const workspaceId = "chat-status-fixture";
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: { workspaceId } }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: state }),
-    );
+    await page.route("**/api/sync/pull?*", (route) => {
+      const after = Number(
+        new URL(route.request().url()).searchParams.get("after") || 0,
+      );
+      return route.fulfill({
+        json: { workspaceId, ...entityPullFixture(state, after) },
+      });
+    });
     await page.route("**/api/transcript/stream?*", (route) =>
       route.fulfill({
         status: 404,

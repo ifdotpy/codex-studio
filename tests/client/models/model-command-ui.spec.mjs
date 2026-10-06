@@ -1,3 +1,9 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production renderer, isolated runtime, real settings and message endpoints.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -5,9 +11,6 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelValue, selectModel } from "../../model-picker.mjs";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("model-command-ui", async ({ browser }) => {
   test.setTimeout(120_000);
@@ -58,8 +61,7 @@ test("model-command-ui", async ({ browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = () =>
-      fetch(origin + "/api/state").then((response) => response.json());
+    const snapshot = () => readTestState(origin);
     const initial = await snapshot();
     const main = initial.threads.find(
       (agent) => agent.name === "Other project",

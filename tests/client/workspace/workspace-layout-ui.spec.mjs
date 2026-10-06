@@ -1,8 +1,7 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Production workspace geometry with long labels and an active agent panel.
 // The fixture uses an isolated runtime. No model service or user state is used.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -47,7 +46,7 @@ test("Workspace layout ui", async ({
     fixture.once("exit", () => reject(Error(log || "Fixture exited early")));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await (await fetch(origin + "/api/state")).json();
+  const initial = await readTestState(origin);
   const fixtureAccounts = await (await fetch(origin + "/api/accounts")).json();
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   assert.ok(lead, "fixture has a lead chat");
@@ -106,33 +105,6 @@ test("Workspace layout ui", async ({
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
 
-    const labels = (data) => {
-      const target =
-        data.threads?.find((agent) => agent.id === lead.id) ||
-        data.threads?.find((agent) => agent.name === "Release lead");
-      const targetId = target?.id || lead.id;
-      for (const agent of data.threads || []) {
-        if (agent.id === targetId) {
-          agent.name = longTitle;
-          agent.cwd = longProject;
-        } else if (agent.rootId === targetId) {
-          agent.cwd = longProject;
-        }
-      }
-      for (const agent of data.runtime?.agents || []) {
-        if (agent.id === targetId) {
-          agent.name = longTitle;
-          agent.cwd = longProject;
-        } else if (agent.rootId === targetId) {
-          agent.cwd = longProject;
-        }
-      }
-      return data;
-    };
-    await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
-      const response = await route.fetch();
-      await route.fulfill({ response, json: labels(await response.json()) });
-    });
     await page.route("**/api/sync/pull?**", async (route) => {
       try {
         const response = await route.fetch();
@@ -149,12 +121,6 @@ test("Workspace layout ui", async ({
               entity.value.cwd = longProject;
             }
             document.payload = JSON.stringify(entity);
-          }
-        } else if (scope === "state" || scope === "state:chat") {
-          for (const document of data.documents || []) {
-            document.payload = JSON.stringify(
-              labels(JSON.parse(document.payload)),
-            );
           }
         }
         await route.fulfill({ response, json: data });

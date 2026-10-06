@@ -1,15 +1,16 @@
+import {
+  readTestState,
+  stubEntityState,
+  apiSchemaHandshakeEvent,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Production renderer, isolated fixture, and controlled delivery acknowledgements.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import {
-  apiSchemaHandshakeEvent,
-  spawnFixture as spawn,
-  test,
-} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -59,7 +60,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const original = await (await fetch(`${origin}/api/state`)).json();
+    const original = await readTestState(origin);
     const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
     const state = {
       ...original,
@@ -186,9 +187,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
         [a.id, 100],
         [b.id, 100],
       ]);
-      await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-        route.fulfill({ json: state }),
-      );
+      await stubEntityState(page, state, "message-delivery-fixture");
       const queuedItems = new Map();
       await page.route("**/api/queue?*", (route) => {
         const id = new URL(route.request().url()).searchParams.get("agent");

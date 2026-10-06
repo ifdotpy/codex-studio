@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI and isolated HTTP fixture. Requests deliberately finish out of order.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("snapshot-order-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -36,7 +39,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     fixture.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await (await fetch(`${origin}/api/state`)).json();
+  const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const worker = initial.threads.find(
     (agent) => agent.rootId === lead.id && agent.name === "Worker 00",

@@ -1,11 +1,10 @@
+import { stubEntityState, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-import { test } from "../playwright.mjs";
-
 test("Background controls", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -94,13 +93,7 @@ test("Background controls", async ({ context }) => {
         writes.push({ path, body });
       }
       let value = {};
-      if (path === "/api/sync/identity")
-        return route.fulfill({
-          status: 404,
-          json: { error: "Fixture uses HTTP snapshots" },
-        });
       if (path === "/api/session") value = { token: "fixture-token" };
-      else if (path === "/api/state") value = state;
       else if (path === "/api/accounts")
         value = { accounts: [], defaultAccountKey: "default" };
       else if (path === "/api/voice/records")
@@ -142,6 +135,7 @@ test("Background controls", async ({ context }) => {
       }
       await route.fulfill({ json: value });
     });
+    await stubEntityState(page, state);
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page
       .getByRole("button", { name: "Chat actions", exact: true })

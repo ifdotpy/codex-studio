@@ -1,7 +1,6 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Two browser profiles, real SQLite/RxDB replication, no live model calls.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -36,7 +35,7 @@ test("Draft sync ui", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const session = snapshot.runtime.agents.find(
       (agent) => agent.name === "Other project",
     ).id;
@@ -822,7 +821,7 @@ test("Draft sync resume preserves a pending conflict", async ({ page }) => {
       );
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(`${origin}/api/state`)).json();
+    const snapshot = await readTestState(origin);
     const { workspaceId } = await (
       await fetch(`${origin}/api/sync/identity`)
     ).json();

@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Production renderer, real progress files, isolated backend. No model calls.
 
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Progress Cache Ui", async ({
   browser: testBrowser,
   context: _testContext,
@@ -84,7 +88,7 @@ test("Progress Cache Ui", async ({
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const other = initial.threads.find(
       (agent) => agent.name === "Other project",

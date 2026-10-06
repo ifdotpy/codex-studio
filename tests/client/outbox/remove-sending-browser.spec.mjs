@@ -1,11 +1,14 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("remove-sending-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -26,7 +29,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     fixture.once("exit", () => reject(new Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await (await fetch(origin + "/api/state")).json();
+  const initial = await readTestState(origin);
   const lead = initial.threads.find((a) => a.name === "Release lead");
   const other = initial.threads.find((a) => a.name === "Other project");
   const post = async (path, body) => {

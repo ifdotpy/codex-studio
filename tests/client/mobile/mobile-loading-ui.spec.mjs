@@ -1,3 +1,4 @@
+import { spawnFixture as spawn, test } from "../playwright.mjs";
 // Real production renderer, service worker, browser cache and isolated backend.
 import assert from "node:assert/strict";
 import { createServer, request as httpRequest } from "node:http";
@@ -6,8 +7,6 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -413,7 +412,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     assert.equal(
       await page.evaluate(async () => {
         try {
-          await fetch("/api/state");
+          await fetch("/api/sync/pull?scope=state%3Aentities%3Av1");
           return "network returned data";
         } catch {
           return "offline";

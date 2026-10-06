@@ -1,7 +1,10 @@
-import { test, browserExecutablePath } from "../playwright.mjs";
+import {
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production renderer and Runtime with generated history, no live user data.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import {
   cp,
   mkdtemp,
@@ -115,9 +118,24 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     const fixture = JSON.parse(
       await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
     );
-    const full = await (await fetch(origin + "/api/state")).text();
-    const compact = await (await fetch(origin + "/api/state?view=chat")).text();
-    const compactState = JSON.parse(compact);
+    const entityState = await readTestState(origin);
+    const compactState = {
+      threads: entityState.threads,
+      chats: entityState.chats,
+      runtime: {
+        agents: entityState.runtime.agents,
+        rooms: entityState.runtime.rooms,
+        tasks: entityState.runtime.tasks,
+        monitors: entityState.runtime.monitors,
+        complaints: entityState.runtime.complaints,
+        requests: entityState.runtime.requests,
+        projects: entityState.runtime.projects,
+        peerTeams: entityState.runtime.peerTeams,
+        events: entityState.runtime.events,
+      },
+    };
+    const full = JSON.stringify(entityState);
+    const compact = JSON.stringify(compactState);
     const selected = compactState.threads.find(
       (agent) => agent.id === fixture.lead,
     );
@@ -144,7 +162,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     );
     assert.ok(
       !compactState.runtime.work,
-      "The chat snapshot excludes retained work history",
+      "The chat projection excludes retained work history",
     );
     browser = await browserType.launch({
       headless: true,
@@ -275,9 +293,9 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
     measurements.coldUsableChatListMs = Date.now() - started;
     if (expectCurrentBudgets) {
       assert.equal(
-        requests.filter((request) => request.path === "/api/state").length,
+        requests.filter((request) => request.path === "/api/sync/pull").length,
         0,
-        "Startup does not download full state",
+        "Startup does not download a full snapshot",
       );
       assert.ok(
         requests.some((request) =>
@@ -427,8 +445,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         .filter((entry) => {
           const url = new URL(entry.name);
           return (
-            url.origin === location.origin &&
-            (url.pathname === "/api/state" || url.pathname === "/api/sync/pull")
+            url.origin === location.origin && url.pathname === "/api/sync/pull"
           );
         })
         .map((entry) => {

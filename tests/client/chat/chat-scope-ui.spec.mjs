@@ -1,10 +1,9 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Chat scope", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -51,7 +50,7 @@ test("Chat scope", async ({ context }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );

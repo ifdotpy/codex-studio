@@ -1,8 +1,12 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  entityPullFixture,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production App at 4x CPU. Timings are evidence, correctness is asserted.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +58,7 @@ test(
         fixture.once("exit", () => reject(new Error(fixtureLog)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      const original = await (await fetch(origin + "/api/state")).json();
+      const original = await readTestState(origin);
       const a = original.threads.find(
         (agent) => agent.name === "Other project",
       );
@@ -331,13 +335,19 @@ test(
               .fulfill({ path: join(staticDir, path), contentType: type })
               .catch(() => route.fallback());
           }
-          if (url.pathname.startsWith("/api/sync/"))
+          if (url.pathname === "/api/sync/identity")
             return route.fulfill({
-              status: 404,
-              json: { error: "Controlled legacy transcript fixture" },
+              json: { workspaceId: "ui-responsiveness-fixture" },
             });
-          if (url.pathname === "/api/state")
-            return route.fulfill({ json: state });
+          if (url.pathname === "/api/sync/pull") {
+            const after = Number(url.searchParams.get("after") || 0);
+            return route.fulfill({
+              json: {
+                workspaceId: "ui-responsiveness-fixture",
+                ...entityPullFixture(state, after),
+              },
+            });
+          }
           if (url.pathname === "/api/transcript") {
             const id = url.searchParams.get("id");
             return route.fulfill({

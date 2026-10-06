@@ -1,9 +1,8 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -67,8 +66,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = async () =>
-      (await fetch(origin + "/api/state?view=chat")).json();
+    const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
     const syncWorkspaceId = (
       await (await fetch(origin + "/api/sync/identity")).json()

@@ -1,3 +1,4 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Browser checks against the production React build, real HTTP and isolated SQLite.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -5,8 +6,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelOptions, selectModel } from "../../model-picker.mjs";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -195,7 +194,7 @@ test("product ui", async ({ browser: _browser }) => {
       "bounded initial room list",
     );
     await page.getByRole("textbox", { name: "Search chats" }).fill("Worker 39");
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const privateRoom = snapshot.runtime.rooms.find(
       (r) =>
         r.kind === "private" &&
@@ -262,7 +261,7 @@ test("product ui", async ({ browser: _browser }) => {
         "New chat",
       "creation retry",
     );
-    const afterRetry = await (await fetch(origin + "/api/state")).json();
+    const afterRetry = await readTestState(origin);
     const retryLeads = afterRetry.runtime.agents.filter((a) => a.quickCreate);
     assert.equal(retryLeads.length, 1, "creation retry retains one chat");
     const newLead = retryLeads[0];
@@ -276,7 +275,7 @@ test("product ui", async ({ browser: _browser }) => {
       async () => (await page.locator("#message").inputValue()) === "",
       "new chat has a separate draft",
     );
-    const afterCreate = await (await fetch(origin + "/api/state")).json();
+    const afterCreate = await readTestState(origin);
     assert.equal(
       afterCreate.runtime.agents.filter((a) => a.quickCreate).length,
       2,
@@ -345,9 +344,7 @@ test("product ui", async ({ browser: _browser }) => {
     );
     await poll(
       async () =>
-        (
-          await (await fetch(origin + "/api/state")).json()
-        ).runtime.monitors.some(
+        (await readTestState(origin)).runtime.monitors.some(
           (monitor) =>
             monitor.agent === newLead.id &&
             monitor.command === "fixture-command" &&
@@ -428,9 +425,9 @@ test("product ui", async ({ browser: _browser }) => {
     await page.locator("[data-delete-chat]").click();
     await poll(
       async () =>
-        !(
-          await (await fetch(origin + "/api/state")).json()
-        ).runtime.agents.some((a) => a.id === newLead.id),
+        !(await readTestState(origin)).runtime.agents.some(
+          (a) => a.id === newLead.id,
+        ),
       "lead deletion",
     );
     // Read long message content at a wide viewport, then check an empty lead.

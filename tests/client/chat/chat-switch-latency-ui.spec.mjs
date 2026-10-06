@@ -1,7 +1,11 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Real renderer and isolated server. Delayed streams must not delay navigation.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +35,7 @@ test(
         proc.once("exit", () => reject(Error(log)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      const state = await (await fetch(origin + "/api/state")).json();
+      const state = await readTestState(origin);
       const a = state.threads.find((x) => x.name === "Other project");
       const b = state.threads.find((x) => x.name === "Release lead");
       page = runnerPage;
@@ -77,9 +81,7 @@ test(
         })),
         runtime: { ...state.runtime, requests: [] },
       };
-      await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
-        r.fulfill({ json: snapshot }),
-      );
+      await stubEntityState(page, snapshot, "chat-switch-fixture");
       const payload = (agent, tag) => ({
         agent: { ...agent, status: "completed", inFlight: false, turnId: null },
         items: Array.from({ length: 30 }, (_, i) => ({

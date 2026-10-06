@@ -1,3 +1,4 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Exercise workspace actions through the real runtime and HTTP server.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -5,8 +6,6 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -77,7 +76,7 @@ test("workspace ui", async ({ browser: _browser }) => {
     });
     const origin = `http://127.0.0.1:${port}`;
     const get = async (path) => (await fetch(origin + path)).json();
-    const initial = await get("/api/state");
+    const initial = await readTestState(origin);
     const lead = initial.runtime.agents.find((a) => a.name === "Release lead");
     const post = async (path, body) => {
       const r = await fetch(origin + path, {
@@ -177,7 +176,7 @@ test("workspace ui", async ({ browser: _browser }) => {
     assert.equal(await drawer.getByText(legacyPlan.text).count(), 0);
     let planAgent;
     await poll(async () => {
-      planAgent = (await get("/api/state")).runtime.agents.find(
+      planAgent = (await readTestState(origin)).runtime.agents.find(
         (agent) => agent.id === lead.id,
       );
       return !!planAgent.threadId;
@@ -413,7 +412,7 @@ test("workspace ui", async ({ browser: _browser }) => {
       .click();
     await poll(
       async () =>
-        (await get("/api/state")).runtime.agents.some(
+        (await readTestState(origin)).runtime.agents.some(
           (a) =>
             a.name === "Evidence reviewer" &&
             a.parentId === lead.id &&
@@ -428,7 +427,7 @@ test("workspace ui", async ({ browser: _browser }) => {
       0,
       "resource reservations are not available in the workspace",
     );
-    const changedLead = (await get("/api/state")).runtime.agents.find(
+    const changedLead = (await readTestState(origin)).runtime.agents.find(
       (agent) => agent.id === lead.id,
     );
     assert.ok(changedLead.threadId, "fixture lead has a native thread");

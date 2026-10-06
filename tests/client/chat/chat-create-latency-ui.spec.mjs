@@ -1,11 +1,16 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+  entityPullFixture,
+} from "../playwright.mjs";
 // Confirmed creation opens before the full chat projection arrives. No model calls.
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Chat Create Latency Ui @performance", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -50,7 +55,7 @@ test("Chat Create Latency Ui @performance", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state?view=chat")).json();
+    const initial = await readTestState(origin);
     const otherHome = join(evidence, "alternate-account");
     await mkdir(otherHome);
     await writeFile(
@@ -78,8 +83,9 @@ test("Chat Create Latency Ui @performance", async ({
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const workspaceId = "chat-create-latency-fixture";
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: { workspaceId } }),
     );
     const accountChanges = [];
     const transfers = [];
@@ -95,12 +101,19 @@ test("Chat Create Latency Ui @performance", async ({
       request,
       repliedAt;
     const pending = [];
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) => {
+    await page.route("**/api/sync/pull?*", (route) => {
+      const after = Number(
+        new URL(route.request().url()).searchParams.get("after") || 0,
+      );
       if (hold) {
         pending.push(route);
         return;
       }
-      return stale ? route.fulfill({ json: initial }) : route.continue();
+      return stale
+        ? route.fulfill({
+            json: { workspaceId, ...entityPullFixture(initial, after) },
+          })
+        : route.continue();
     });
     await page.route("**/api/leads", async (route) => {
       request = route.request().postDataJSON();
@@ -116,7 +129,7 @@ test("Chat Create Latency Ui @performance", async ({
       assert.equal(
         confirmed.empty,
         true,
-        "creation receipt includes account eligibility before the snapshot",
+        "creation receipt includes account eligibility before the entity pull",
       );
       assert.equal(
         confirmed.threadId,
@@ -192,8 +205,14 @@ test("Chat Create Latency Ui @performance", async ({
     );
     await page.keyboard.press("Escape");
     hold = false;
-    for (const route of pending.splice(0))
-      await route.fulfill({ json: initial });
+    for (const route of pending.splice(0)) {
+      const after = Number(
+        new URL(route.request().url()).searchParams.get("after") || 0,
+      );
+      await route.fulfill({
+        json: { workspaceId, ...entityPullFixture(initial, after) },
+      });
+    }
     await page.waitForTimeout(1800);
     assert.equal(
       await page.locator("#conversation-title").innerText(),
@@ -206,7 +225,7 @@ test("Chat Create Latency Ui @performance", async ({
     assert.equal(
       await page.locator(`[data-chat="${confirmed.id}"]`).count(),
       1,
-      "stale projections retain one confirmed chat",
+      "stale entity pulls retain one confirmed chat",
     );
     // A reload can read the same old snapshot before replication reaches this chat.
     await page.reload();
@@ -230,7 +249,7 @@ test("Chat Create Latency Ui @performance", async ({
       await page.locator("#message").inputValue(),
       "New draft before the projection",
     );
-    const final = await (await fetch(origin + "/api/state?view=chat")).json();
+    const final = await readTestState(origin);
     assert.equal(
       final.runtime.agents.filter((a) => a.id === request.id).length,
       1,
@@ -253,8 +272,14 @@ test("Chat Create Latency Ui @performance", async ({
     );
     const deletedId = confirmed.id;
     hold = false;
-    for (const route of pending.splice(0))
-      await route.fulfill({ json: initial });
+    for (const route of pending.splice(0)) {
+      const after = Number(
+        new URL(route.request().url()).searchParams.get("after") || 0,
+      );
+      await route.fulfill({
+        json: { workspaceId, ...entityPullFixture(initial, after) },
+      });
+    }
     const row = page.locator(".sidebar-row").filter({
       has: page.locator(`[data-chat="${deletedId}"]`),
     });

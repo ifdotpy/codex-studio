@@ -1,17 +1,17 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  apiSchemaHandshakeSse,
+  readTestState,
+} from "../playwright.mjs";
 // Production App and real RxDB. Only the isolated fixture receives requests.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import {
-  test,
-  expect,
-  spawnFixture as spawn,
-  apiSchemaHandshakeSse,
-} from "../playwright.mjs";
-
 test("chat prefetch ui @performance", async ({ browser }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -55,7 +55,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const original = await (await fetch(origin + "/api/state")).json();
+    const original = await readTestState(origin);
     const identity = await (await fetch(origin + "/api/sync/identity")).json();
     let workspaceId = identity.workspaceId;
     const entityDocuments = new Map();
@@ -81,26 +81,6 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       inFlight: false,
       turnId: null,
     }));
-    const state = {
-      ...original,
-      threads: agents,
-      nodes: agents,
-      chats: [],
-      edges: [],
-      runtime: {
-        ...original.runtime,
-        agents,
-        rooms: [],
-        requests: [],
-        complaints: [],
-        monitors: [],
-        tasks: [],
-        userTasks: [],
-        rules: [],
-        events: [],
-        work: [],
-      },
-    };
     const payload = (agent, tag) => ({
       agent: { ...agent, status: "completed", inFlight: false, turnId: null },
       items: Array.from({ length: 40 }, (_, index) => ({
@@ -273,7 +253,6 @@ test("chat prefetch ui @performance", async ({ browser }) => {
           json: { workspaceId, ...(legacySync ? {} : { chatState: true }) },
         });
       }
-      if (url.pathname === "/api/state") return route.fulfill({ json: state });
       if (url.pathname === "/api/transcript/stream") {
         streams.push(url.searchParams.get("id"));
         return route.fulfill({ status: 204, body: "" });

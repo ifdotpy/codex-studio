@@ -1,7 +1,11 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +35,7 @@ test("Team panel ui", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const diskApi = await (await fetch(origin + "/api/worktree-disk")).json();
     assert.equal(typeof diskApi.limitBytes, "number");
     assert.equal(typeof diskApi.totalBytes, "number");
@@ -115,15 +119,7 @@ test("Team panel ui", async ({
         },
       }),
     );
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({
-        status: 503,
-        json: { error: "Fixture uses HTTP snapshots" },
-      }),
-    );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: snapshot }),
-    );
+    await stubEntityState(page, snapshot, "team-panel-fixture");
     await page.goto(origin);
     await page.locator("#message").waitFor();
     for (const width of [1440, 320]) {

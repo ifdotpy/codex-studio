@@ -1,15 +1,16 @@
+import {
+  readTestState,
+  entityPullFixture,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("Messages loading", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -47,7 +48,7 @@ test("Messages loading", async () => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     const complaint = state.runtime.complaints.find(
@@ -166,15 +167,23 @@ test("Messages loading", async () => {
       });
       next.setDefaultTimeout(12000);
       next.on("pageerror", (error) => errors.push(error.message));
-      await next.route("**/api/sync/**", (route) =>
-        route.fulfill({ status: 404, json: { error: "Use fixture polling" } }),
+      await next.route("**/api/sync/identity", (route) =>
+        route.fulfill({ json: { workspaceId: "messages-loading-fixture" } }),
       );
-      await next.route("**/api/state*", (route) => {
+      await next.route("**/api/sync/pull?*", (route) => {
         stateReads++;
         const current = structuredClone(state);
         current.fixtureRevision = stateReads;
         current.threads[0].updated = 100 + stateReads;
-        return route.fulfill({ json: current });
+        const after = Number(
+          new URL(route.request().url()).searchParams.get("after") || 0,
+        );
+        return route.fulfill({
+          json: {
+            workspaceId: "messages-loading-fixture",
+            ...entityPullFixture(current, after),
+          },
+        });
       });
       await next.route("**/api/workspace/tasks?*", async (route) => {
         workspaceReads++;

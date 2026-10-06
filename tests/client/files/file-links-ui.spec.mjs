@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Markdown links through the real file API and isolated SQLite. No model requests.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("File Links Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -85,9 +89,9 @@ test("File Links Ui", async ({
     await page.locator("#send").click();
     let agent;
     await poll(async () => {
-      agent = (
-        await (await fetch(origin + "/api/state")).json()
-      ).runtime.agents.find((a) => a.name === "Other project");
+      agent = (await readTestState(origin)).runtime.agents.find(
+        (a) => a.name === "Other project",
+      );
       return agent.status === "running" && agent.turnId;
     });
     const links = [

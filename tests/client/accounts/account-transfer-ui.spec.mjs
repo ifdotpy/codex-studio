@@ -1,12 +1,11 @@
 #!/usr/bin/env node
+import { test, expect, entityPullFixture } from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
-
 test("Account Transfer Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -158,24 +157,32 @@ test("Account Transfer Ui", async ({
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
-    if (url.pathname === "/api/state")
+    const stateForEntities = {
+      stateDir: evidence,
+      threads: agents,
+      chats: [],
+      runtime: {
+        agents,
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        work: [],
+        userTasks: [],
+        rateLimitsByAccount: snapshotLimits,
+      },
+    };
+    if (url.pathname === "/api/session") return json({ token: "fixture" });
+    if (url.pathname === "/api/sync/pull") {
       return json({
-        token: "fixture",
-        stateDir: evidence,
-        threads: agents,
-        chats: [],
-        runtime: {
-          agents,
-          rooms: [],
-          complaints: [],
-          requests: [],
-          monitors: [],
-          tasks: [],
-          work: [],
-          userTasks: [],
-          rateLimitsByAccount: snapshotLimits,
-        },
+        workspaceId: "account-fixture",
+        ...entityPullFixture(
+          stateForEntities,
+          Number(url.searchParams.get("after") || 0),
+        ),
       });
+    }
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||

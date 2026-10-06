@@ -1,3 +1,4 @@
+import { entityPullFixture, test } from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -5,8 +6,6 @@ import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -163,26 +162,33 @@ test("account project ui", async ({ browser: _browser }) => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
-    if (url.pathname === "/api/state")
+    const stateForEntities = {
+      stateDir: evidence,
+      threads: agents,
+      chats: [],
+      runtime: {
+        agents,
+        projects,
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        work: [],
+        userTasks: [],
+        rateLimitsByAccount: snapshotLimits,
+      },
+    };
+    if (url.pathname === "/api/session") return json({ token: "fixture" });
+    if (url.pathname === "/api/sync/pull") {
       return json({
-        token: "fixture",
-        stateDir: evidence,
-        threads: agents,
-        chats: [],
-        runtime: {
-          agents,
-          projects,
-          projectOrganizationVersion: 1,
-          rooms: [],
-          complaints: [],
-          requests: [],
-          monitors: [],
-          tasks: [],
-          work: [],
-          userTasks: [],
-          rateLimitsByAccount: snapshotLimits,
-        },
+        workspaceId: "account-fixture",
+        ...entityPullFixture(
+          stateForEntities,
+          Number(url.searchParams.get("after") || 0),
+        ),
       });
+    }
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||

@@ -1,12 +1,17 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+  stubEntityState,
+} from "../playwright.mjs";
 // Production renderer with controlled transcript timing and isolated server state.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("conversation motion ui @performance", async ({ page: runnerPage }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -53,7 +58,7 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const syncIdentity = await (
       await fetch(origin + "/api/sync/identity")
     ).json();
@@ -122,18 +127,14 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
               s.onmessage?.({ data: JSON.stringify(data) });
         };
       });
-      // These controlled snapshots use the HTTP path, not fixture replication.
-      await page.route("**/api/sync/**", (route) =>
-        route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
-      );
-      await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
-        r.fulfill({
-          json: {
-            ...state,
-            threads: state.threads.map((a) => (a.id === lead.id ? agent : a)),
-            runtime: { ...state.runtime, requests: [] },
-          },
-        }),
+      await stubEntityState(
+        page,
+        {
+          ...state,
+          threads: state.threads.map((a) => (a.id === lead.id ? agent : a)),
+          runtime: { ...state.runtime, requests: [] },
+        },
+        "conversation-motion-fixture",
       );
       await page.route("**/api/transcript?*", (r) =>
         r.fulfill({
