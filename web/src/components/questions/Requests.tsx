@@ -291,7 +291,32 @@ function RequestCard({
     [sending, setSending] = useState(false);
   const card = useRef<HTMLDivElement>(null);
   useEffect(() => {
-    if (open) card.current?.scrollIntoView({ block: "start" });
+    if (!open || !card.current) return;
+    const node = card.current;
+    node.scrollIntoView({ block: "start" });
+    const form = node.querySelector<HTMLElement>(".request-answer-form");
+    const transcript = node.closest("#messages");
+    if (!form || !transcript) return;
+    const fit = () => {
+      const available =
+        transcript.clientHeight -
+        (form.getBoundingClientRect().top - node.getBoundingClientRect().top) -
+        24;
+      form.style.setProperty(
+        "--request-answer-height",
+        `${Math.max(120, available)}px`,
+      );
+    };
+    fit();
+    const observer = new ResizeObserver(fit);
+    observer.observe(transcript);
+    const frame = requestAnimationFrame(() => {
+      node.scrollIntoView({ block: "start" });
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [open]);
   const pending = useRef(false),
     mounted = useRef(true),

@@ -192,13 +192,18 @@
   flex-wrap: wrap;
 }
 .request-answer-form {
-  max-height: min(420px, 55dvh);
+  max-height: min(420px, 55dvh, var(--request-answer-height, 420px));
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.request-answer-form > .request-answer-fields {
   overflow: auto;
-  scroll-padding-bottom: 60px;
+  min-height: 0;
+  flex: 1 1 auto;
 }
 .request-answer-actions {
-  position: sticky;
-  bottom: 0;
+  flex: 0 0 auto;
   padding-block: 8px;
   background: var(--surface);
   z-index: 1;
