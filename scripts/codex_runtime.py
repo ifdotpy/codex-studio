@@ -62,6 +62,7 @@ if TYPE_CHECKING:
         CheckpointRecord,
         ComplaintRecord,
         JsonValue,
+        NativeSafetyRetryRecord,
         ProjectRecord,
         RoomRecord,
         WorkRecord,
@@ -2887,7 +2888,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | NativeSafetyRetryRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
         if table in {"checkpoints", "tool_requests"}:

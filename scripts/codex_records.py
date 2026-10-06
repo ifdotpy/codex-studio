@@ -459,15 +459,24 @@ class NativeSafetyBufferingRecord(TypedDict):
 
 
 class NativeSafetyRetryRecord(TypedDict):
-    id: NotRequired[str]
+    agent: NotRequired[str]
+    id: NotRequired[str | None]
     stage: NotRequired[Literal[
         "turns", "items", "interrupt", "verify_turns", "verify_items", "fork",
         "start", "unknown", "running", "failed", "cancelled",
     ]]
     model: NotRequired[str]
     turnId: NotRequired[str]
+    threadId: NotRequired[str]
+    sourceThreadId: NotRequired[str]
+    connectionId: NotRequired[str]
+    attemptId: NotRequired[str]
+    input: NotRequired[list[JsonValue]]
+    responses: NotRequired[dict[str, JsonValue]]
+    terminalHold: NotRequired[bool]
     created: NotRequired[float]
     updated: NotRequired[float]
+    finished: NotRequired[float]
     epoch: NotRequired[int]
     accountKey: NotRequired[str]
     error: NotRequired[str | None]
