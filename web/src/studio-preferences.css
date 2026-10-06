@@ -5,8 +5,8 @@
 :root:not([data-studio-typography="original"]) {
   --studio-font-family:
     system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --studio-sidebar-font-size: 14px;
-  --studio-main-font-size: 14px;
+  --studio-sidebar-font-size: var(--studio-text-body);
+  --studio-main-font-size: var(--studio-text-body);
 }
 
 .workspace #conversation {

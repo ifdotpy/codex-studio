@@ -1,3 +1,4 @@
+import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
@@ -2308,6 +2309,7 @@ export default function App() {
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
         onClose={() => setStudioSettingsOpen(false)}
+        size={modalSizes.settings}
         title="Studio settings"
       >
         <div className="studio-settings-panel" data-testid="studio-settings">

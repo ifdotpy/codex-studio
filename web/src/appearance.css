@@ -7,7 +7,9 @@
 :root[data-mantine-color-scheme="light"] {
   color-scheme: light;
   --surface: #ffffff;
-  --sidebar: #f4f5f8;
+  --sidebar: #eef0f5;
+  --studio-warning: #9c4b00;
+  --studio-warning-hover: #783900;
   --raised: #eef0f5;
   --inset: #f7f8fa;
   --hover: #18244708;
@@ -345,7 +347,7 @@
     right: 1px;
     min-width: 14px;
     padding-inline: 3px;
-    font-size: 10px;
+    font-size: var(--studio-text-meta);
   }
   .simple-workspace-header #team-toggle {
     width: 44px;
@@ -482,5 +484,15 @@
   }
   .workspace-messages .workspace-heading {
     padding-inline: 14px;
+  }
+}
+
+@media (min-width: 761px) {
+  .simple-workspace-header :is(.mantine-ActionIcon-root, .mantine-Button-root) {
+    height: var(--studio-action-size);
+    min-height: var(--studio-action-size);
+  }
+  .simple-workspace-header .mantine-ActionIcon-root {
+    width: var(--studio-action-size);
   }
 }

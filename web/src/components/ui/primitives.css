@@ -1,0 +1,69 @@
+.ui-settings-section {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.ui-panel-header,
+.ui-empty-state,
+.ui-settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  min-width: 0;
+  font-size: var(--studio-text-body);
+}
+.ui-panel-header {
+  align-items: flex-start;
+}
+.ui-panel-header h3 {
+  margin: 0;
+  font-size: var(--studio-text-body);
+  font-weight: 600;
+}
+.ui-label {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.ui-row-label {
+  font-weight: 500;
+}
+.ui-help {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  line-height: 1.5;
+}
+.ui-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.ui-section-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.ui-settings-row {
+  padding-block: 8px;
+}
+.ui-row-control {
+  flex: 0 0 auto;
+  max-width: 55%;
+}
+.ui-empty-state {
+  padding-block: 12px;
+}
+@media (max-width: 760px) {
+  .ui-settings-row,
+  .ui-empty-state {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 8px;
+  }
+  .ui-row-control {
+    max-width: none;
+    width: 100%;
+  }
+}
