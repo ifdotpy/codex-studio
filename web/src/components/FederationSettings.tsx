@@ -100,10 +100,7 @@ export function FederationSettings({
       aria-label="Peer federation"
     >
       <h2>Peer federation</h2>
-      <p>
-        Share approved rooms with another Studio server. Both users must enable
-        federation and approve the pairing and each room.
-      </p>
+      <p>Share rooms with another Studio.</p>
       <Switch
         label="Enable federation traffic on this server"
         checked={state?.enabled === true}
@@ -121,49 +118,58 @@ export function FederationSettings({
           {state.identity.fingerprint}
         </p>
       )}
-      <TextInput
-        label="This server's label"
-        value={serverLabel}
-        onChange={(event) => setServerLabel(event.currentTarget.value)}
-        maxLength={80}
-      />
-      <TextInput
-        label="Expected Tailscale user (optional)"
-        description="A mismatch rejects pairing. A missing identity requires explicit acceptance."
-        value={expectedUser}
-        onChange={(event) => setExpectedUser(event.currentTarget.value)}
-        maxLength={254}
-      />
-      <Button
-        variant="light"
-        disabled={busy || !state?.enabled}
-        onClick={async () => {
-          const result = await run({
-            action: "create_invite",
-            label: serverLabel,
-            expected_user: expectedUser || undefined,
-          });
-          if (result && "invitation" in result)
-            setInviteText(JSON.stringify(result.invitation, null, 2));
-        }}
-      >
-        Create pairing invitation
-      </Button>
-      <Textarea
-        label="Exchange invitation JSON privately"
-        description="Create your invitation, exchange it with the other user, then paste theirs here. The invitation expires after 15 minutes."
-        value={inviteText}
-        onChange={(event) => setInviteText(event.currentTarget.value)}
-        minRows={4}
-        autosize
-        maxRows={12}
-      />
-      <Button
-        disabled={busy || !state?.enabled || !inviteText.trim()}
-        onClick={() => void pair()}
-      >
-        Approve invitation and request pairing
-      </Button>
+      <section className="federation-invitation">
+        <h3>Create an invitation</h3>
+        <TextInput
+          label="This server's label"
+          value={serverLabel}
+          onChange={(event) => setServerLabel(event.currentTarget.value)}
+          maxLength={80}
+        />
+        <TextInput
+          label="Expected Tailscale user (optional)"
+          description="A mismatch rejects pairing. A missing identity requires explicit acceptance."
+          value={expectedUser}
+          onChange={(event) => setExpectedUser(event.currentTarget.value)}
+          maxLength={254}
+        />
+        <Button
+          variant="light"
+          disabled={busy || !state?.enabled}
+          onClick={async () => {
+            const result = await run({
+              action: "create_invite",
+              label: serverLabel,
+              expected_user: expectedUser || undefined,
+            });
+            if (result && "invitation" in result)
+              setInviteText(JSON.stringify(result.invitation, null, 2));
+          }}
+        >
+          Create pairing invitation
+        </Button>
+      </section>
+      <section className="federation-invitation">
+        <h3>Accept an invitation</h3>
+        <p>
+          Create your invitation and exchange it privately with the other user.
+          Paste their invitation below. It expires after 15 minutes.
+        </p>
+        <Textarea
+          label="Exchange invitation JSON privately"
+          value={inviteText}
+          onChange={(event) => setInviteText(event.currentTarget.value)}
+          minRows={4}
+          autosize
+          maxRows={12}
+        />
+        <Button
+          disabled={busy || !state?.enabled || !inviteText.trim()}
+          onClick={() => void pair()}
+        >
+          Approve pairing
+        </Button>
+      </section>
       {state?.peers.map((peer) => (
         <div className="federation-peer" key={peer.stateId}>
           <strong>{peer.label}</strong>

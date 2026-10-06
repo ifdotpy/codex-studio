@@ -290,9 +290,15 @@ test("Shell ux ui", async ({
       name: "Warnings",
       exact: true,
     });
-    await warningsDialog.getByText("Account notice", { exact: true }).waitFor();
+    await warningsDialog
+      .getByRole("heading", {
+        name: "Account configuration needs review",
+        exact: true,
+      })
+      .waitFor();
     assert.equal(
       await warningsDialog
+        .locator("p")
         .getByText("Account configuration needs review", {
           exact: true,
         })
@@ -305,6 +311,14 @@ test("Shell ux ui", async ({
       0,
       "Notices for other accounts are excluded",
     );
+    const rawDetails = warningsDialog.locator("details");
+    assert.equal(
+      await rawDetails.getAttribute("open"),
+      null,
+      "Raw warning details start closed",
+    );
+    await rawDetails.getByText("Details", { exact: true }).click();
+    assert.equal(await rawDetails.locator("pre").isVisible(), true);
     assert.equal(
       await warningsDialog
         .getByText('"fixture_configuration"', {
