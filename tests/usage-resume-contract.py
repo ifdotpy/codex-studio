@@ -341,6 +341,12 @@ class UsageResumeContract(unittest.TestCase):
         reset = self.runtime.rate_limits_for('default')['data']['rateLimits']['primary']['resetsAt']
         before = self.runtime.agent(self.key)['usageResume']
         self.assertEqual(before['status'], 'scheduled')
+        with self.runtime.db() as db:
+            projected = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.key,)).fetchone()[0])["value"]["usageResume"]
+        self.assertEqual(set(projected), {"id", "status", "cause", "reason", "updatedAt", "plannedAt", "dueAt"})
+        self.assertNotIn("authRefreshMarker", projected)
         self.runtime.notification({'method': 'turn/completed', 'params': {
             'threadId': before['threadId'], 'turn': {'id': self.failed_turn_id, 'status': 'failed',
                 'error': {'message': 'Usage limit reached', 'codexErrorInfo': 'usageLimitExceeded'}}}},

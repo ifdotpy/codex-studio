@@ -48,6 +48,11 @@ class ContextWait(f.NativeActionRepair):
             self.assertEqual(len(rows), 1)
             self.assertIn('"checks": 5', rows[0]['text'])
             self.assertEqual(rows[0]['status'], 'pending')
+            entity = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (worker['id'],)).fetchone()[0])['value']
+            self.assertEqual(entity['contextRepairWait'], {
+                'error': wait['error'], 'scope': wait['scope']})
 
     def test_transfer_retires_cancelled_wait_after_user_pause_without_replay(self):
         rt = self.runtime

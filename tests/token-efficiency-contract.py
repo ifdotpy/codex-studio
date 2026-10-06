@@ -83,7 +83,9 @@ class EfficiencyContract(unittest.TestCase):
         target = agents[-1]
         expected = {key: target.get(key) for key in ('id', 'name', 'role', 'rootId', 'parentId')}
         for agent in agents:
-            self.agent_update(agent, status='running', inFlight=True, error='Current state', lastEvent=time.time())
+            # Runtime.notification timestamps lastEvent as an ISO UTC string.
+            self.agent_update(agent, status='running', inFlight=True, error='Current state',
+                              lastEvent='2026-10-06T00:00:00Z')
         for status in ('running', 'approval', 'waiting'):
             with self.subTest(status=status):
                 self.agent_update(target, status=status)

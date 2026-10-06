@@ -27,6 +27,34 @@ def runtime_fixture():
 
 
 class CanvasChatSeedContract(unittest.TestCase):
+    def test_completed_seed_does_not_resolve_full_snapshot_builder_again(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-seed-builder-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                               draft=True, defer=True)
+                from codex_sync_entities import seed
+                calls = []
+
+                def builder():
+                    calls.append(None)
+                    with runtime.read_db() as db:
+                        value = runtime.snapshot(include_work=False, db=db)
+                    return {"runtime": value, "stateDir": str(root)}
+
+                with runtime.lock, runtime.db() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    seed(db, builder)
+                self.assertEqual(len(calls), 1)
+                with runtime.lock, runtime.db() as db:
+                    db.execute("BEGIN IMMEDIATE")
+                    seed(db, builder)
+                self.assertEqual(len(calls), 1)
+            finally:
+                runtime.close()
+
     def test_snapshot_chat_node_is_not_also_seeded_as_agent(self):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-") as directory:

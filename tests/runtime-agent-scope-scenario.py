@@ -117,7 +117,25 @@ try:
                 runtime.put(db, "agents", paused_owner)
                 runtime.put(db, "agents", queued_owner)
             runtime.send(queued_owner["id"], "Continue after snapshot", "legacy-recovery-input")
+            with runtime.db() as db:
+                close_before = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                close_values_before = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
             runtime.close()
+            with runtime.db() as db:
+                close_after = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                close_advanced = sorted(agent_id for agent_id, seq in close_after.items()
+                                        if seq > close_before.get(agent_id, -1))
+                close_values_after = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
+                close_fields_changed = {agent_id: sorted(
+                    key for key in set(close_values_before.get(agent_id, {}))
+                    | set(close_values_after.get(agent_id, {}))
+                    if close_values_before.get(agent_id, {}).get(key)
+                    != close_values_after.get(agent_id, {}).get(key))
+                    for agent_id in close_advanced}
             # Close may persist ordinary shutdown state; take the baseline
             # immediately before the simulated restart recovery begins.
             with runtime.db() as db:
@@ -167,6 +185,8 @@ try:
                     for agent_id in recovered},
                 "syncedAgents": synced,
                 "agentEntityRowsAdvanced": sorted(advanced),
+                "closeEntityRowsAdvanced": close_advanced,
+                "closeEntityFieldsChanged": close_fields_changed,
                 "pendingInput": dict(pending) if pending else None,
                 "workspaceOperationRows": operation_count,
                 "legacyRecordsBeforeRestart": legacy_records,

@@ -2352,6 +2352,62 @@ export interface components {
       tools?: components["schemas"]["ActiveToolDto"][] | null;
     };
     /**
+     * AgentEntityCapacityRetryDto
+     * @description Capacity retry state consumed by the entity-backed renderer.
+     */
+    AgentEntityCapacityRetryDto: {
+      /** Acceptedturnid */
+      acceptedTurnId?: string | null;
+      /** Accountkey */
+      accountKey: string | null;
+      /** Claimedat */
+      claimedAt?: number | null;
+      /** Dueat */
+      dueAt: number | null;
+      /** Epoch */
+      epoch: number | null;
+      /** Id */
+      id: string;
+      /** Reason */
+      reason?: string | null;
+      /** Status */
+      status: string;
+      /** Threadid */
+      threadId: string | null;
+      /** Updatedat */
+      updatedAt: number;
+    };
+    /**
+     * AgentEntityContextRepairWaitDto
+     * @description Context repair wait fields rendered in native notices.
+     */
+    AgentEntityContextRepairWaitDto: {
+      /** Error */
+      error: string;
+      /** Scope */
+      scope: string;
+    };
+    /**
+     * AgentEntityUsageResumeDto
+     * @description Usage resume fields rendered in notices and recovery controls.
+     */
+    AgentEntityUsageResumeDto: {
+      /** Cause */
+      cause: string;
+      /** Dueat */
+      dueAt: number | null;
+      /** Id */
+      id: string;
+      /** Plannedat */
+      plannedAt: number | null;
+      /** Reason */
+      reason: string | null;
+      /** Status */
+      status: string;
+      /** Updatedat */
+      updatedAt: number;
+    };
+    /**
      * AgentMode
      * @enum {string}
      */
@@ -2474,13 +2530,17 @@ export interface components {
       autoWake?: boolean | null;
       /** Cansend */
       canSend?: boolean | null;
-      capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
+      capacityRetry?:
+        | components["schemas"]["AgentEntityCapacityRetryDto"]
+        | null;
       /** Compactions */
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
-      contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
+      contextRepairWait?:
+        | components["schemas"]["AgentEntityContextRepairWaitDto"]
+        | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
@@ -2535,7 +2595,8 @@ export interface components {
       lastAnswer?: string | null;
       /** Lastcompletedturn */
       lastCompletedTurn?: string | null;
-      lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
+      /** Lastcompletedturnstatus */
+      lastCompletedTurnStatus?: string | null;
       /** Lastevent */
       lastEvent?: string | null;
       /** Lastreadat */
@@ -2626,7 +2687,7 @@ export interface components {
       unreadCount?: number | null;
       /** Updated */
       updated?: number | null;
-      usageResume?: components["schemas"]["UsageResumeDto"] | null;
+      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
       /** Workspaceoperation */
@@ -3817,13 +3878,17 @@ export interface components {
       autoWake?: boolean | null;
       /** Cansend */
       canSend?: boolean | null;
-      capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
+      capacityRetry?:
+        | components["schemas"]["AgentEntityCapacityRetryDto"]
+        | null;
       /** Compactions */
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
-      contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
+      contextRepairWait?:
+        | components["schemas"]["AgentEntityContextRepairWaitDto"]
+        | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
@@ -3879,7 +3944,8 @@ export interface components {
       lastAnswer?: string | null;
       /** Lastcompletedturn */
       lastCompletedTurn?: string | null;
-      lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
+      /** Lastcompletedturnstatus */
+      lastCompletedTurnStatus?: string | null;
       /** Lastevent */
       lastEvent?: string | null;
       /** Lastreadat */
@@ -3970,7 +4036,7 @@ export interface components {
       unreadCount?: number | null;
       /** Updated */
       updated?: number | null;
-      usageResume?: components["schemas"]["UsageResumeDto"] | null;
+      usageResume?: components["schemas"]["AgentEntityUsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
       /** Workspaceoperation */
@@ -4692,8 +4758,6 @@ export interface components {
       leadStopped?: boolean | null;
       /** Needsresponse */
       needsResponse?: boolean | null;
-      /** Needsuserresponse */
-      needsUserResponse?: boolean | null;
       /** Readat */
       readAt?: number | null;
       /** Recipient */
@@ -4813,18 +4877,10 @@ export interface components {
       at?: number | null;
       /** Error */
       error: string;
-      /** Events */
-      events: string[];
-      /** Nextcheckat */
-      nextCheckAt: number;
       /** Readonly */
       readOnly?: boolean | null;
       /** Scope */
       scope: string;
-      /** Source */
-      source: {
-        [key: string]: components["schemas"]["JsonValue"];
-      };
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -9666,8 +9722,6 @@ export interface components {
       leadStopped?: boolean | null;
       /** Needsresponse */
       needsResponse?: boolean | null;
-      /** Needsuserresponse */
-      needsUserResponse?: boolean | null;
       /** Readat */
       readAt?: number | null;
       /** Recipient */

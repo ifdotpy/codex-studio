@@ -190,7 +190,7 @@ class SchedulerAgentScope(unittest.TestCase):
         owner.update(id="archived-work-owner", name="Work owner")
         repair = dict(archived)
         repair.update(id="archived-repair-owner", name="Repair owner",
-                      contextRepairWait=context_repair_wait(stage="pending"))
+                      contextRepairWait={"stage": "pending"})
         stale = dict(archived)
         stale.update(id="archived-stale", name="Archived stale", restartRecovery={"stage": "finished"})
         with self.runtime.lock, self.runtime.db() as db:
@@ -221,8 +221,8 @@ class SchedulerAgentScope(unittest.TestCase):
             "disconnect-marker": {"disconnectRecovery": {"stage": "reconciling"}},
             "context-repair": {"contextRepair": {"phase": "unknown-provider-phase"}},
             "browser-recovery": {"browserRecovery": {"stage": "failed"}},
-            "capacity-retry": {"capacityRetry": capacity_retry(status="failed", attempt=7, due_at=None)},
-            "usage-resume": {"usageResume": usage_resume(status="scheduled", auth_attempt=4)},
+            "capacity-retry": {"capacityRetry": {"status": "failed", "attempt": 7}},
+            "usage-resume": {"usageResume": {"status": "waiting", "attempt": 4}},
             "old-safety-retry": {"nativeSafetyRetry": {"stage": "unknown-provider-stage",
                 "epoch": -1, "accountKey": "old-account"}},
             "last-context-wait": {"lastContextRepairWait": {"stage": "retired"}},

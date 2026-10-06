@@ -166,9 +166,6 @@ class ContextRepairWaitDto(ContractModel):
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     error: str
     scope: str
-    source: dict[str, JsonValue]
-    events: list[str]
-    nextCheckAt: int | float
     at: float | None = None
     readOnly: bool | None = None
     action: str | None = None
@@ -261,6 +258,37 @@ class UsageResumeDto(ContractModel):
     reason: str | None = None
     updatedAt: float | None = None
     taskClaims: list[str] | None = None
+
+
+class AgentEntityCapacityRetryDto(ContractModel):
+    """Capacity retry state consumed by the entity-backed renderer."""
+    id: str
+    threadId: str | None
+    epoch: int | None
+    accountKey: str | None
+    status: str
+    updatedAt: float
+    dueAt: float | None
+    acceptedTurnId: str | None = None
+    claimedAt: float | None = None
+    reason: str | None = None
+
+
+class AgentEntityUsageResumeDto(ContractModel):
+    """Usage resume fields rendered in notices and recovery controls."""
+    id: str
+    status: str
+    cause: str
+    reason: str | None
+    updatedAt: float
+    plannedAt: float | None
+    dueAt: float | None
+
+
+class AgentEntityContextRepairWaitDto(ContractModel):
+    """Context repair wait fields rendered in native notices."""
+    scope: str
+    error: str
 
 
 class RequestQuestionOptionDto(ContractModel):
@@ -667,10 +695,10 @@ class AgentEntityDto(ContractModel):
     projectFolderRevision: int | None = None
     project: str | None = None
     epoch: int | None = None
-    lastCompletedTurnStatus: AgentStatus | None = None
-    capacityRetry: CapacityRetryDto | None = None
-    usageResume: UsageResumeDto | None = None
-    contextRepairWait: ContextRepairWaitDto | None = None
+    lastCompletedTurnStatus: str | None = None
+    capacityRetry: AgentEntityCapacityRetryDto | None = None
+    usageResume: AgentEntityUsageResumeDto | None = None
+    contextRepairWait: AgentEntityContextRepairWaitDto | None = None
     lastEvent: str | None = None
     accountTransferId: str | None = None
     workspaceOperation: str | None = None
@@ -696,6 +724,14 @@ class TurnRecoveryDto(ContractModel):
 
 class SnapshotAgentDto(AgentEntityDto):
     """Full renderer snapshot agent, including named runtime/native metadata."""
+
+    # The snapshot preserves the historical closed enum; entity sync accepts
+    # provider supplied terminal statuses without making the runtime write fail.
+    lastCompletedTurnStatus: AgentStatus | None = None
+    # Snapshot routes retain their historical full nested payload contracts.
+    capacityRetry: CapacityRetryDto | None = None
+    usageResume: UsageResumeDto | None = None
+    contextRepairWait: ContextRepairWaitDto | None = None
 
     imageWorkspaceRelative: str | None = None
     imageWorkspaceStartCommit: str | None = None
@@ -1042,10 +1078,21 @@ class ComplaintResponseDto(ContractModel):
     at: float
 
 
-class SnapshotComplaintDto(ComplaintEntityDto):
+class SnapshotComplaintDto(ContractModel):
+    id: str
+    leadId: str | None = None
+    author: str | None = None
+    authorName: str | None = None
+    leadName: str | None = None
+    title: str | None = None
+    status: ComplaintStatus | None = None
+    needsResponse: bool | None = None
+    created: float | None = None
+    readAt: float | None = None
     leadStopped: bool | None = None
     leadDeleted: bool | None = None
-    needsResponse: bool | None = None
+    recipient: Literal["user", "lead"] | None = None
+    version: int | None = None
     updated: float | None = None
     text: str | None = None
     responses: list[ComplaintResponseDto] | None = None

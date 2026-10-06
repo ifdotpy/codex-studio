@@ -440,6 +440,7 @@ class FederationService:
                         db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), row[0]))
             db.execute("UPDATE runtime_federation_rooms SET record=json_set(record,'$.status','revoked') "
                        "WHERE json_extract(record,'$.peerId')=?", (state_id,))
+            self._sync_peer_rooms(db, state_id)
         return self.snapshot()
 
     def _request(self, origin, path, body, identity, *, expected_key, expected_state=None, method="POST"):
@@ -958,6 +959,7 @@ class FederationService:
                     raise PermissionError("Room is not awaiting this peer's approval")
                 room.update(remoteMembers=participants, remoteApproved=True, status="approved", updated=time.time())
                 db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?", (_json(room), room_id))
+                self._sync_room_entity(db, room_id)
             else:
                 receipt = self._receive_chat_locked(db, peer, room_id, envelope, payload)
                 db.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?,?,?)",
@@ -1216,8 +1218,23 @@ class FederationService:
                     deliveries = json.loads(row[0]); deliveries["remote:" + peer["stateId"]] = "delivered"
                     db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), message_id))
 
-    @staticmethod
-    def _confirm_room_accept_locked(db, outbox):
+    def _sync_room_entity(self, db, room_id):
+        """Refresh the durable room view after a federation source update."""
+        row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+        if not row:
+            return False
+        room = json.loads(row[0])
+        view = next(iter(self.runtime.chat_rooms(db, room_id=room_id)), None)
+        from codex_sync_entities import put as sync_entity_put
+        return sync_entity_put(db, "room", room_id, view or {}, view is None)
+
+    def _sync_peer_rooms(self, db, peer_id):
+        ids = [row[0] for row in db.execute(
+            "SELECT id FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?", (peer_id,))]
+        for room_id in ids:
+            self._sync_room_entity(db, room_id)
+
+    def _confirm_room_accept_locked(self, db, outbox):
         if outbox.get("kind") != "room-accept":
             return
         row = db.execute("SELECT record FROM runtime_federation_rooms WHERE id=?",
@@ -1227,6 +1244,7 @@ class FederationService:
             room.update(remoteApproved=True, status="approved", updated=time.time())
             db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?",
                        (_json(room), room["id"]))
+            self._sync_room_entity(db, room["id"])
 
     def _confirm_inbox_ack(self, peer_id, message_id, message_hash):
         with self.runtime.lock, self.runtime.db() as db:
@@ -1270,3 +1288,4 @@ class FederationService:
                 db.execute("DELETE FROM runtime_federation_outbox WHERE peer_id=?", (peer_id,))
                 db.execute("UPDATE runtime_federation_rooms SET record=json_set(record,'$.status','revoked') "
                            "WHERE json_extract(record,'$.peerId')=?", (peer_id,))
+                self._sync_peer_rooms(db, peer_id)
