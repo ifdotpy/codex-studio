@@ -723,13 +723,21 @@ class AgentDraftRecord(TypedDict):
 
 class AccountHistoryRecord(TypedDict):
     transferId: NotRequired[str]
+    contextRepairId: NotRequired[str]
+    toolRefreshId: NotRequired[str]
     accountKey: NotRequired[str]
     threadId: NotRequired[str | None]
     targetAccountKey: NotRequired[str]
     targetThreadId: NotRequired[str]
     at: NotRequired[float]
-    targetProvider: NotRequired[str]
+    provider: NotRequired[str | None]
+    targetProvider: NotRequired[str | None]
     recoveryId: NotRequired[str]
+    reason: NotRequired[str]
+    settingsDiscarded: NotRequired[JsonObject]
+    providerOptionsDiscarded: NotRequired[JsonObject]
+    portableHistory: NotRequired[PortableHistoryRecord]
+    sourceHistoryMissing: NotRequired[JsonObject]
 
 
 class AgentRecord(TypedDict):
