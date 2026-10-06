@@ -639,10 +639,10 @@ details.workspace-error > summary {
 }
 
 .workspace-messages-refresh {
-  position: absolute;
+  position: fixed;
   top: 12px;
   right: 56px;
-  z-index: 1;
+  z-index: 101;
 }
 
 @media (max-width: 760px) {
