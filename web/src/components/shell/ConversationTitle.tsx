@@ -43,10 +43,10 @@ export default function ConversationTitle({
           model={agent?.model ?? undefined}
           status={indicator}
         />
-        {title}
+        <span className="conversation-title-text">{title}</span>
       </h1>
       <div className="conversation-meta">
-        <span id="conversation-status">
+        <span id="conversation-status" title={`${projectPrefix}${statusText}`}>
           {projectPrefix}
           {statusText}
         </span>

@@ -1081,7 +1081,8 @@ export default function Sidebar(p: Props) {
         </div>
         {p.newSharedChat && (
           <Button
-            className="sidebar-nav-button"
+            className="sidebar-nav-button sidebar-shared-chat"
+            title="New shared chat"
             leftSection={<Users size={15} />}
             onClick={() => p.newSharedChat?.()}
           >

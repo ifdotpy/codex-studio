@@ -42,6 +42,7 @@ export const theme = createTheme({
   components: {
     Button: Button.extend({
       styles: {
+        label: { textBoxTrim: "none", height: "auto", lineHeight: 1.4 },
         inner: { transform: "none", transition: "opacity 100ms ease" },
       },
       defaultProps: { size: "sm", variant: "subtle", color: "gray", fw: 500 },
