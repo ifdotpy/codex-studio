@@ -243,7 +243,68 @@ function checkAccount(account) {
       "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
     );
 }
+async function verifiedAccount(q, deadline, onTimeout) {
+  const account = await boundedPreparation(
+    () => q.accountInfo(),
+    deadline,
+    onTimeout,
+  );
+  try {
+    checkAccount(account);
+    return account;
+  } catch (error) {
+    if (
+      ![
+        "account_metadata",
+        "email_metadata",
+        "provider_metadata",
+        "subscription_metadata",
+      ].includes(error?.data?.claudeAccountFailure) ||
+      typeof q.reinitialize !== "function" ||
+      (account?.apiProvider && account.apiProvider !== "firstParty") ||
+      (account?.apiKeySource && account.apiKeySource !== "none")
+    )
+      throw error;
+    let fresh;
+    try {
+      // accountInfo keeps the first SDK initialization snapshot. Read once
+      // from this same unsubmitted query, without extending its deadline.
+      fresh = await boundedPreparation(
+        () => q.reinitialize(),
+        deadline,
+        onTimeout,
+      );
+    } catch (refreshError) {
+      if (refreshError?.preparationTimedOut === true) throw refreshError;
+      throw error;
+    }
+    checkAccount(fresh?.account);
+    if (
+      account?.apiKeySource &&
+      fresh.account.apiKeySource !== account.apiKeySource
+    )
+      throw error;
+    if (
+      typeof account?.subscriptionType === "string" &&
+      account.subscriptionType.trim() &&
+      fresh.account.subscriptionType !== account.subscriptionType
+    )
+      throw Object.assign(
+        new Error("Claude Code subscription changed. No input was submitted."),
+        {
+          claudeAccountValidationFailed: true,
+          data: {
+            turnStartOutcome: "not_applied",
+            claudePreparationFailure: "account_validation",
+            claudeAccountFailure: "subscription_mismatch",
+          },
+        },
+      );
+    return fresh.account;
+  }
+}
 async function probe(cwd, read) {
+  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
   let release;
   const hold = new Promise((r) => (release = r));
   // Keep an idle async iterable open until the account probe completes.
@@ -273,10 +334,12 @@ async function probe(cwd, read) {
   try {
     return await boundedPreparation(
       async () => {
-        checkAccount(await q.accountInfo());
-        return read(q);
+        const account = await verifiedAccount(q, deadline, () =>
+          controller.abort(),
+        );
+        return read(q, account);
       },
-      Date.now() + INITIALIZATION_TIMEOUT_MS,
+      deadline,
       () => controller.abort(),
     );
   } finally {
@@ -290,9 +353,9 @@ let metadata,
 async function catalog() {
   if (metadata && Date.now() - metadataAt < 300000) return metadata;
   metadataAt = Date.now();
-  metadata = probe(null, async (q) => ({
+  metadata = probe(null, async (q, account) => ({
     models: await q.supportedModels(),
-    account: await q.accountInfo(),
+    account,
   }));
   try {
     return await metadata;
@@ -664,6 +727,19 @@ async function finishTurn(s, active, result, error) {
 async function startSession(s, active, p) {
   const initial = active.turn;
   const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
+  const source = () =>
+    JSON.stringify([
+      s.cwd,
+      s.nativeId,
+      s.started,
+      s.model,
+      s.approvalPolicy,
+      s.sandbox,
+      s.claude,
+      s.developerInstructions,
+      s.dynamicTools,
+    ]);
+  const initialSource = source();
   let admit;
   const admitted = new Promise((r) => (admit = r));
   let allowed = false;
@@ -769,20 +845,29 @@ async function startSession(s, active, p) {
     });
     active.q = q;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
-    checkAccount(
-      await boundedPreparation(
-        () => q.accountInfo(),
-        deadline,
-        () => q.close(),
-      ),
-    );
+    await verifiedAccount(q, deadline, () => q.close());
+    if (
+      initial?.interrupted ||
+      active.input.closed ||
+      active.turn !== initial ||
+      queries.get(s.id) !== active ||
+      active.q !== q ||
+      source() !== initialSource
+    )
+      throw Object.assign(
+        new Error("Claude preparation source changed. No input was submitted."),
+        {
+          claudeAccountValidationFailed: true,
+          data: {
+            turnStartOutcome: "not_applied",
+            claudePreparationFailure: "account_validation",
+            claudeAccountFailure: "query_source",
+          },
+        },
+      );
     allowed = true;
     admit();
     active.readyResolve();
-    if (initial?.interrupted) {
-      q.close();
-      throw new Error("Claude interrupted before start");
-    }
     for await (const m of q) {
       if (m.type === "system" && m.subtype === "init") {
         s.started = true;
