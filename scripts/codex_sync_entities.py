@@ -94,6 +94,7 @@ _AGENT_FIELD_ALLOWLISTS = {
     "contextRepairWait": ("scope", "error"),
 }
 _AGENT_REPROJECT_FIELDS = frozenset((*_AGENT_FIELD_ALLOWLISTS, "nativeRelease", "overview"))
+_OMITTED_PROMOTED_AGENT_FIELDS: set[tuple[str, str]] = set()
 
 
 def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValue:
@@ -167,9 +168,12 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
             raise
         for field in bad_fields:
             result.pop(field, None)
-            logging.getLogger(__name__).warning(
-                "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
-                record.get("id", ""), field, type(error).__name__)
+            identity = (str(record.get("id", "")), field)
+            if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
+                _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
+                logging.getLogger(__name__).warning(
+                    "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
+                    identity[0], field, type(error).__name__)
         validated = model.model_validate(result)
     return cast(JsonValue, validated.model_dump(mode="json", exclude_unset=True))
 
@@ -344,7 +348,7 @@ def upgrade_agent_organization(db, snapshot=None, runtime_owner=None):
         runtime_owner = runtime_owner or getattr(owner, "runtime", None)
         if callable(snapshot):
             snapshot = snapshot()
-        if not _snapshot_runtime_present(snapshot):
+        if runtime_owner is None or not _snapshot_runtime_present(snapshot):
             if original_marker is None:
                 db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
             else:
@@ -375,7 +379,7 @@ def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
             # lastMessage produced by the richer room write path.
             if record.get("kind") != "federated":
                 continue
-            view = next(iter(runtime_owner.chat_rooms(db, room_id=key)), None)
+            view = next(iter(runtime_owner.chat_rooms(db, room_id=key, include_last_message=True)), None)
             changed += bool(put(db, "room", key, view or record, view is None))
         for key, raw in db.execute("SELECT id,record FROM runtime_complaints").fetchall():
             changed += bool(put(db, "complaint", key,
@@ -393,26 +397,7 @@ def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
         prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
         changed += bool(put(db, "workspace", "current", {**prior, **meta}))
         return changed
-    threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
-    for item in runtime_data.get("agents", []) or []:
-        if item.get("id"):
-            threads[item["id"]] = {**threads.get(item["id"], {}), **item}
-    changed = sum(bool(put(db, "agent", key, value, bool(value.get("deletedAt"))))
-                  for key, value in threads.items())
-    for name, collection in (("rooms", "room"), ("complaints", "complaint"),
-                             ("projects", "project"), ("peerTeams", "peerTeam")):
-        for value in runtime_data.get(name, []) or []:
-            if value.get("id"):
-                changed += bool(put(db, collection, str(value["id"]), value))
-    meta = {field: runtime_data[field] for field in
-            ("connected", "nativeNotices", "projectOrganizationVersion", "peerTeamsVersion",
-             "tasksHistoryLimit", "rateLimits", "rateLimitsByAccount", "sidebarOrder")
-            if field in runtime_data}
-    meta["stateDir"] = snapshot.get("stateDir", "")
-    row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
-    prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
-    changed += bool(put(db, "workspace", "current", {**prior, **meta}))
-    return changed
+    return 0
 
 
 def seed(db, snapshot):
@@ -423,6 +408,8 @@ def seed(db, snapshot):
         return
     owner = getattr(snapshot, "__self__", None)
     runtime_owner = getattr(owner, "runtime", None)
+    if seeded and (not marker or int(marker[0]) < 2) and runtime_owner is None:
+        return
     if callable(snapshot):
         snapshot = snapshot()
     upgrade_agent_organization(db, snapshot, runtime_owner)
@@ -442,6 +429,8 @@ def seed(db, snapshot):
                              ("work", "work")):
         for value in runtime.get(name, []) or []:
             if value.get("id"):
+                if collection == "complaint" and runtime_owner is not None:
+                    value = runtime_owner.complaint_entity_view(db, value)
                 put(db, collection, str(value["id"]), value)
     chats = snapshot.get("chats", [])
     chat_ids = {value["id"] for value in chats if value.get("id")}

@@ -18,6 +18,7 @@ from codex_canvas import Canvas
 from codex_runtime import Runtime
 from codex_sync import SyncStore
 from studio_api.testing import read_legacy_snapshot_field
+from codex_sync_entities import seed
 
 
 def runtime_fixture():
@@ -54,6 +55,74 @@ class CanvasChatSeedContract(unittest.TestCase):
                     db.execute("BEGIN IMMEDIATE")
                     seed(db, builder)
                 self.assertEqual(len(calls), 1)
+            finally:
+                runtime.close()
+
+    def test_first_seed_and_reseed_use_the_complaint_entity_view(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-complaint-seed-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                                      draft=True, defer=True)
+                complaint = {"id": "seed-complaint", "leadId": lead["id"], "author": "user",
+                             "status": "open", "created": 1.0, "updated": 1.0, "readAt": None,
+                             "text": "Review this", "responses": [], "recipient": "user",
+                             "version": 1, "sourceType": "user_task"}
+                with runtime.lock, runtime.db() as db:
+                    runtime.put(db, "complaints", complaint)
+
+                    class Builder:
+                        def __init__(self, owner):
+                            self.runtime = owner
+
+                        def build(self):
+                            return {"runtime": self.runtime.snapshot(db=db),
+                                    "stateDir": str(self.runtime.root)}
+
+                    builder = Builder(runtime)
+                    seed(db, builder.build)
+                    value = json.loads(db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
+                        (complaint["id"],)).fetchone()[0])["value"]
+                    self.assertTrue(value["needsUserResponse"])
+
+                    # Simulate an older marker and payload before the same upgrade runs again.
+                    db.execute("UPDATE sync_entity_meta SET value='1' WHERE key='agent_organization_fields'")
+                    from codex_sync_entities import put as entity_put
+                    entity_put(db, "complaint", complaint["id"], {
+                        key: field for key, field in value.items() if key != "needsUserResponse"})
+                    seed(db, builder.build)
+                    value = json.loads(db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
+                        (complaint["id"],)).fetchone()[0])["value"]
+                    self.assertTrue(value["needsUserResponse"])
+            finally:
+                runtime.close()
+
+    def test_marker_one_without_runtime_owner_does_not_build_snapshots(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-seed-no-owner-") as directory:
+            runtime = Runtime(Path(directory), fixture.FakeServer)
+            try:
+                calls = []
+                def builder():
+                    calls.append(None)
+                    return {"runtime": runtime.snapshot(include_work=False),
+                            "stateDir": str(runtime.root)}
+
+                with runtime.lock, runtime.db() as db:
+                    from codex_sync_entities import ensure_tables
+                    ensure_tables(db)
+                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
+                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
+                               "VALUES('agent_organization_fields','1')")
+                with runtime.lock:
+                    store = SyncStore(runtime.db, builder, lambda _key: {})
+                for _ in range(5):
+                    store.pull("state:entities:v1", fresh=True, reset_support=True)
+                self.assertEqual(calls, [])
             finally:
                 runtime.close()
 

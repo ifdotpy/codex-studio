@@ -95,6 +95,7 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
     "imageWorkspaceRepo", "imageWorkspaceBaseRepo",
 )
+_WORKSPACE_REFRESH_DIAGNOSTICS_SEEN: set[str] = set()
 WORKTREE_DISK_AGENT_RESOURCE_FIELDS = (
     "cwd", "worktree", "worktreeReady", "deletedAt", "imageWorkspace",
     "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceRepo",
@@ -3179,6 +3180,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_claude_controls import retire_idle_bridge
                     if retire_idle_bridge(self, account_key, account, server):
                         server = None
+                        # The pinned control module retires the bridge by
+                        # mutating servers directly; publish that source change
+                        # before attempting the replacement connection.
+                        self.refresh_workspace_volatile()
                 if (self.factory is AppServer and provider == "codex" and selected is None
                         and (server is None or account_key in self.offline_accounts)):
                     needs_executable = True
@@ -3188,6 +3193,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         server.close()
                         self.servers.pop(account_key, None)
                         server = None
+                        self.refresh_workspace_volatile()
                     if server is None:
                         desktop_changed = True
                         connection_id = uid()
@@ -3271,17 +3277,51 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
             value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
             return sync_entity_put(db, "workspace", "current", value)
-        except sqlite3.OperationalError:
-            # Workspace state is volatile and can be refreshed on the next write.
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
+                if getattr(error, "sqlite_errorcode", None) is not None else ("locked" in message or "busy" in message)
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
             return False
+        except Exception as error:
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+
+    @staticmethod
+    def _workspace_refresh_diagnostic(error_kind):
+        if error_kind in _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN:
+            return
+        _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN.add(error_kind)
+        print("workspace entity refresh skipped (" + error_kind + ")", file=sys.stderr)
 
     def refresh_workspace_volatile(self):
         """Refresh volatile workspace state after an asynchronous source update."""
-        try:
-            with self.lock, self.db(busy_timeout=0) as db:
-                return self.sync_workspace_volatile(db)
-        except sqlite3.OperationalError:
+        if not self.lock.acquire(blocking=False):
+            self._workspace_refresh_diagnostic("runtime-lock-busy")
             return False
+        try:
+            with self.db(busy_timeout=0) as db:
+                return self.sync_workspace_volatile(db)
+        except sqlite3.OperationalError as error:
+            message = str(error).lower()
+            code = getattr(error, "sqlite_errorcode", None)
+            busy = ((code & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
+                    if code is not None else ("locked" in message or "busy" in message))
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        except Exception as error:
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        finally:
+            self.lock.release()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -7995,9 +8035,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             lead = agents.get(source.get("leadId"), {})
             summary["leadStopped"] = not lead.get("autoWake", False)
             summary["leadDeleted"] = bool(lead.get("deletedAt"))
-        source_types = {c["id"]: c.get("sourceType") or "" for c in complaints}
-        return sorted(result, key=lambda c: (not self.complaint_needs_response(c),
-                                             source_types.get(c["id"], ""), -c["updated"]))
+        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
     def complaint_entity_view(self, db, complaint, agents=None):
         """Build viewer-independent complaint entity fields from their named sources."""

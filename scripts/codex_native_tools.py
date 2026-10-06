@@ -501,6 +501,7 @@ def refresh_account(rt: "Runtime", account_key: str = "default",
                     rt._native_tools_retiring[account_key] = {"server": server, "attempt": operation["id"]}  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
                     rt.connection_ids[account_key] = "retired:" + operation["id"]
                     rt.servers.pop(account_key, None)
+                    rt.sync_workspace_volatile(db)
                     rt.loaded.difference_update(a["id"] for a in agents)  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                     if account_key == "default":
                         rt.server = None

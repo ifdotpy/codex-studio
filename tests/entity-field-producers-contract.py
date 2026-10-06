@@ -77,7 +77,14 @@ class EntityFieldProducers(unittest.TestCase):
                          self.runtime.agent(self.lead["id"])["epoch"])
 
     def test_agent_last_completed_turn_status(self):
-        self.write_agent_field("lastCompletedTurnStatus", "completed")
+        thread_id, turn_id = "entity-field-thread", "entity-field-turn"
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.lead["id"], db)
+            agent.update(threadId=thread_id, turnId=turn_id, inFlight=True, status="running")
+            self.runtime.put(db, "agents", agent)
+        self.runtime.notification({"method": "turn/completed", "params": {
+            "threadId": thread_id, "turn": {"id": turn_id, "status": "aborted"}}})
+        self.assertEqual(self.entity("agent", self.lead["id"])["lastCompletedTurnStatus"], "aborted")
 
     def test_agent_capacity_retry(self):
         self.write_agent_field("capacityRetry", capacity_retry())
@@ -224,7 +231,17 @@ class EntityFieldProducers(unittest.TestCase):
             self.assertEqual(tuple(after), tuple(before))
 
     def test_agent_last_event(self):
-        self.write_agent_field("lastEvent", "2026-10-06T00:00:00Z")
+        thread_id, turn_id = "entity-field-event-thread", "entity-field-event-turn"
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.lead["id"], db)
+            agent.update(threadId=thread_id, turnId=turn_id, inFlight=True, status="running")
+            self.runtime.put(db, "agents", agent)
+        self.runtime.notification({"method": "item/started", "params": {
+            "threadId": thread_id, "turnId": turn_id,
+            "item": {"id": "event-item", "type": "reasoning"}}})
+        value = self.entity("agent", self.lead["id"])["lastEvent"]
+        self.assertIsInstance(value, str)
+        self.assertRegex(value, r"^\d{4}-\d\d-\d\dT")
 
     def test_agent_account_transfer_id(self):
         self.write_agent_field("accountTransferId", str(uuid.uuid4()))
@@ -385,6 +402,13 @@ class EntityFieldProducers(unittest.TestCase):
             self.assertFalse(self.runtime.chat_rooms(db, room_id=private_missing))
             self.assertFalse(self.runtime.chat_rooms(db, room_id=broadcast_missing))
         federated_id, members = self.write_federated_room()
+        with self.runtime.lock, self.runtime.db() as db:
+            room_record = json.loads(db.execute(
+                "SELECT record FROM runtime_rooms WHERE id=?", (federated_id,)).fetchone()[0])
+            db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) "
+                       "VALUES(?,?,?,?,?,?)", ("federated-last-message", federated_id,
+                       self.lead["id"], "federated preview", 3.0, "{}"))
+            self.runtime.put(db, "rooms", room_record, include_last_message=True)
         complaint = self.submit_complaint(key="upgrade-promoted-complaint")
         self.write_project_worker_base()
         worker = self.runtime.create({"name": "Upgrade worker", "cwd": self.path,
@@ -432,6 +456,15 @@ class EntityFieldProducers(unittest.TestCase):
                 "SELECT seq FROM sync_entities WHERE collection='room' AND id=?", (federated_id,)).fetchone()[0]
             upgrade_agent_organization(db,
                 {"runtime": self.runtime.snapshot(db=db), "stateDir": str(self.runtime.root)}, self.runtime)
+            upgraded_room = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
+                (federated_id,)).fetchone()[0])["value"]
+            self.assertEqual(upgraded_room["lastMessage"]["text"], "federated preview")
+            self.runtime.federation()._sync_room_entity(db, federated_id)
+            reconfirmed_room = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
+                (federated_id,)).fetchone()[0])["value"]
+            self.assertEqual(reconfirmed_room["lastMessage"]["text"], "federated preview")
             after = {(row[0], row[1]): (row[2], row[3]) for row in db.execute(
                 "SELECT collection,id,seq,payload FROM sync_entities")}
             after_federated = db.execute(
@@ -541,6 +574,85 @@ class EntityFieldProducers(unittest.TestCase):
         finally:
             conn.rollback()
             conn.close()
+
+    def test_workspace_refresh_does_not_break_primary_write_on_source_error(self):
+        from unittest.mock import patch
+
+        self.runtime._strict_workspace_refresh_errors = True
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.lead["id"], db)
+            agent["name"] = "Persist despite refresh error"
+            with patch("codex_runtime.account_notices", side_effect=KeyError("fixture")):
+                with self.assertRaises(KeyError):
+                    self.runtime.put(db, "agents", agent)
+        self.runtime._strict_workspace_refresh_errors = False
+        self.assertEqual(self.runtime.agent(self.lead["id"])["name"], "Persist despite refresh error")
+
+    def test_workspace_refresh_logs_nonbusy_sqlite_errors(self):
+        from contextlib import redirect_stderr
+        from io import StringIO
+        import sqlite3
+        from unittest.mock import patch
+
+        diagnostic = StringIO()
+        with self.runtime.lock, self.runtime.db() as db:
+            with patch("codex_sync_entities.put", side_effect=sqlite3.OperationalError("no such column: value")):
+                with redirect_stderr(diagnostic):
+                    self.assertFalse(self.runtime.sync_workspace_volatile(db))
+        self.assertIn("OperationalError", diagnostic.getvalue())
+
+    def test_workspace_async_refresh_skips_a_contended_runtime_lock(self):
+        import threading
+        import time
+
+        locked = threading.Event()
+        release = threading.Event()
+        def hold_lock():
+            with self.runtime.lock:
+                locked.set()
+                release.wait(2)
+        thread = threading.Thread(target=hold_lock)
+        thread.start()
+        self.assertTrue(locked.wait(1))
+        started = time.monotonic()
+        try:
+            self.assertFalse(self.runtime.refresh_workspace_volatile())
+            self.assertLess(time.monotonic() - started, 0.5)
+        finally:
+            release.set()
+            thread.join(2)
+
+    def test_legacy_complaint_snapshot_order_stays_stable(self):
+        base = {"leadId": self.lead["id"], "author": self.lead["id"], "status": "open",
+                "created": 1.0, "readAt": None, "text": "T", "responses": [],
+                "recipient": "user", "version": 1}
+        records = [
+            {**base, "id": "A-plain-open", "updated": 10.0},
+            {**base, "id": "B-usertask-open-user-responded", "updated": 20.0,
+             "sourceType": "user_task", "responses": [{"id": "r", "author": "user", "text": "t",
+             "status": "in_progress", "at": 1.0}]},
+            {**base, "id": "C-plain-open", "updated": 30.0},
+            {**base, "id": "D-usertask-open", "updated": 5.0, "sourceType": "user_task"},
+            {**base, "id": "E-plain-responded", "updated": 40.0, "status": "in_progress",
+             "responses": [{"id": "r", "author": "user", "text": "t",
+                            "status": "in_progress", "at": 1.0}]},
+            {**base, "id": "F-to-lead-open", "updated": 15.0, "recipient": "lead"},
+        ]
+        with self.runtime.lock, self.runtime.db() as db:
+            for record in records:
+                self.runtime.put(db, "complaints", record)
+            summaries = self.runtime.complaint_summaries(db)
+            self.assertEqual([value["id"][0] for value in summaries], ["C", "B", "F", "A", "D", "E"])
+
+    def test_workspace_notice_trim_refreshes_the_entity_after_the_trim(self):
+        connection_id = "notice-trim-connection"
+        self.runtime.connection_ids["default"] = connection_id
+        for index in range(51):
+            self.runtime.notification({"method": "configWarning", "params": {
+                "summary": "warning-" + str(index)}}, "default", connection_id)
+        notices = self.entity("workspace", "current")["nativeNotices"]
+        self.assertEqual(len(notices), 50)
+        self.assertNotIn("warning-0", " ".join(notice["message"] for notice in notices))
 
     def test_workspace_native_notices_update_on_desktop_change(self):
         connection_id = "native-notice-connection"

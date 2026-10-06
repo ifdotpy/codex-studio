@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
 from codex_records import AgentRecord
+from studio_api.models import JsonValue
 from studio_api.context import ApiContext
 from studio_api.request_helpers import body_data, first_nonempty_query
 from codex_sync_entities import project
@@ -138,21 +139,21 @@ def create_router(context: ApiContext) -> APIRouter:
         """Return the exact canonical projection used by entity sync."""
         with runtime.lock, runtime.db() as db:
             record = runtime.agent(agent_id, db)
-            return project("agent", runtime.agent_entity_view(db, record))
+            return project("agent", cast(JsonValue, runtime.agent_entity_view(db, record)))
 
     @router.post("/api/leads", response_model=AgentResponse)
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         created = runtime.new_lead(request)
-        return context.send(http_request, agent_entity(runtime, cast(str, created["id"])))
+        return context.send(http_request, agent_entity(runtime, created["id"]))
 
     @router.post("/api/agents", response_model=AgentResponse)
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         created = runtime.create(request, parent=body.parent)
-        return context.send(http_request, agent_entity(runtime, cast(str, created["id"])))
+        return context.send(http_request, agent_entity(runtime, created["id"]))
 
     @router.post("/api/conversation", response_model=AgentResponse)
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:

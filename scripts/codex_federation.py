@@ -1224,7 +1224,7 @@ class FederationService:
         if not row:
             return False
         room = json.loads(row[0])
-        view = next(iter(self.runtime.chat_rooms(db, room_id=room_id)), None)
+        view = next(iter(self.runtime.chat_rooms(db, room_id=room_id, include_last_message=True)), None)
         from codex_sync_entities import put as sync_entity_put
         return sync_entity_put(db, "room", room_id, view or {}, view is None)
 
