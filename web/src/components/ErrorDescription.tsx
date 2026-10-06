@@ -25,6 +25,7 @@ export default function ErrorDescription({
           {" "}
           <button
             type="button"
+            className="error-details-toggle"
             aria-expanded={expanded}
             onClick={() => setExpanded(!expanded)}
           >

@@ -2241,3 +2241,18 @@ html body #root {
 #sidebar .sidebar-row:has(.inline-rename) > .chat-row {
   display: none;
 }
+
+/* Inline error detail toggles read as quiet text actions. */
+.error-details-toggle {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mantine-color-dimmed);
+  font: inherit;
+  font-size: var(--studio-text-meta);
+  cursor: pointer;
+}
+.error-details-toggle:hover,
+.error-details-toggle:focus-visible {
+  color: var(--mantine-color-text);
+}

@@ -2484,7 +2484,7 @@ export default function App() {
                 </section>
                 <section className="settings-group" aria-label="Chat layout">
                   <h2>Chat layout</h2>
-                  <SettingsRow label="Chat width">
+                  <SettingsRow label="Width">
                     <NativeSelect
                       aria-label="Chat width layout"
                       value={studioPreferences.contentLayout}
@@ -2505,7 +2505,7 @@ export default function App() {
                   <SettingsRow
                     label={
                       <span className="studio-range-label">
-                        Chat width{" "}
+                        Custom width{" "}
                         <output>{studioPreferences.contentWidth}%</output>
                       </span>
                     }
