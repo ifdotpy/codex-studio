@@ -2,24 +2,43 @@
 import copy
 import json
 import time
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
+
+
+class NativeTurnItem(TypedDict, total=False):
+    type: str
+    status: str
+    command: str
+    id: str
+
+
+class NativeTurn(TypedDict):
+    id: str
+    status: NotRequired[str]
+    items: NotRequired[list[NativeTurnItem]]
 
 RESTART_ERROR = 'Server restarted during a turn. Review history, then send a new instruction.'
-SCOPE = ('epoch', 'accountKey', 'threadId')
+SCOPE: tuple[Literal['epoch'], Literal['accountKey'], Literal['threadId']] = ('epoch', 'accountKey', 'threadId')
 
 
-def capture(agent):
+def capture(agent: "AgentRecord") -> None:
     if (agent.get('deletedAt') or not agent.get('autoWake')
             or agent.get('nativeFailureHold') or agent.get('status') == 'paused'
             or not (agent.get('inFlight') or agent.get('status') in {'running', 'starting', 'approval'})):
         return
     agent['restartRecovery'] = {
-        **{key: agent.get(key) for key in (*SCOPE, 'turnId')},
+        **{key: agent.get(key) for key in (*SCOPE, 'turnId')},  # type: ignore[typeddict-item]  # typed-narrowing: scope copied from agent record
         'autoWake': True, 'at': time.time(), 'stage': 'pending',
         'startAttempt': copy.deepcopy(agent.get('startAttempt')),
     }
 
 
-def restore(db, agent):
+def restore(db: "sqlite3.Connection", agent: "AgentRecord") -> bool:
     settle_reconciled(agent)
     old = agent.get('restartRecovery') or {}
     # A native connection can die before graceful Runtime.close() captures the
@@ -33,7 +52,7 @@ def restore(db, agent):
             and disconnected.get('threadId') == agent.get('threadId')
             and agent.get('status') == 'interrupted'):
         agent['restartRecovery'] = {
-            **{key: disconnected.get(key) for key in (*SCOPE, 'turnId')},
+            **{key: disconnected.get(key) for key in (*SCOPE, 'turnId')},  # type: ignore[typeddict-item]  # typed-narrowing: scope copied from receipt fields
             'autoWake': True, 'at': disconnected.get('at', time.time()),
             'stage': 'pending', 'startAttempt': copy.deepcopy(
                 agent.get('startAttempt') or disconnected.get('startAttempt')),
@@ -71,7 +90,7 @@ def restore(db, agent):
             db.execute("UPDATE runtime_events SET status='pending',error=NULL WHERE id=? "
                        "AND agent=? AND epoch=? AND status IN ('reserved','dispatching','uncertain')",
                        (key, agent['id'], agent['epoch']))
-        agent.update(status='queued', autoWake=True, inFlight=False, error=None)
+        agent.update(status='queued', autoWake=True, inFlight=False, error=None)  # type: ignore[call-arg]  # typed-update
         marker['stage'] = 'input_restored'
         agent['connectionRecovery'] = {'source': 'restart_unsent_attempt', 'at': time.time(),
             'attemptId': attempt.get('id'), 'eventIds': list(attempt.get('events', [])),
@@ -84,8 +103,8 @@ def restore(db, agent):
         return True
     if turn:
         agent.update(turnId=turn, status='interrupted', autoWake=False,
-                     inFlight=False, error=RESTART_ERROR)
-        agent['disconnectRecovery'] = {**{key: marker.get(key) for key in (*SCOPE, 'turnId')},
+                     inFlight=False, error=RESTART_ERROR)  # type: ignore[call-arg]  # typed-update
+        agent['disconnectRecovery'] = {**{key: marker.get(key) for key in (*SCOPE, 'turnId')},  # type: ignore[typeddict-item]  # typed-narrowing: scope copied from restart marker
                                        'autoWake': True, 'at': marker['at'], 'source': 'restart'}
         return True
     # No native turn identity means an accepted input cannot be reconciled yet.
@@ -102,11 +121,11 @@ def restore(db, agent):
                      contextRepairWait={'error': error, 'scope': 'native',
                          'source': {'id': agent['id'], 'accountKey': agent.get('accountKey', 'default'),
                                     'epoch': agent['epoch'], 'threadId': agent['threadId'],
-                                    'attemptId': None}, 'events': event_ids, 'nextCheckAt': 0})
+                                    'attemptId': None}, 'events': event_ids, 'nextCheckAt': 0})  # type: ignore[call-arg]  # typed-update
     return False
 
 
-def can_continue(db, agent, turn):
+def can_continue(db: "sqlite3.Connection", agent: "AgentRecord", turn: NativeTurn) -> bool:
     # A restart interrupts running commands by design. The agent continues and
     # checks them itself; only an input with an unknown delivery blocks it.
     marker = agent.get('restartRecovery') or {}
@@ -120,7 +139,7 @@ def can_continue(db, agent, turn):
                                    (agent['id'], agent['epoch'])).fetchone())
 
 
-def _interrupted_work(db, agent, turn):
+def _interrupted_work(db: "sqlite3.Connection", agent: "AgentRecord", turn: NativeTurn) -> list[str]:
     names = []
     for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
                           "AND json_extract(record,'$.status') IN ('lost','running','starting','approval') "
@@ -134,7 +153,7 @@ def _interrupted_work(db, agent, turn):
     return names
 
 
-def settle_reconciled(agent):
+def settle_reconciled(agent: "AgentRecord") -> bool:
     """Close a verified restart receipt without granting continuation authority."""
     marker = agent.get('restartRecovery') or {}
     receipt = agent.get('connectionRecovery') or {}
@@ -153,16 +172,17 @@ def settle_reconciled(agent):
         return False
     # Later turns can replace lastCompletedTurn. The exact recovery receipt
     # still proves that this older restart turn has been reconciled.
-    marker.update(stage='finished', reconciledAt=receipt['at'])
+    marker.update(stage='finished', reconciledAt=receipt['at'])  # type: ignore[call-arg]  # typed-update
     return True
 
 
-def continue_interrupted(runtime, db, agent, turn):
+def continue_interrupted(runtime: "Runtime", db: "sqlite3.Connection",
+                          agent: "AgentRecord", turn: NativeTurn) -> str:
     marker = agent['restartRecovery']
     key = 'restart:' + agent['id'] + ':' + str(agent['epoch']) + ':' + turn['id']
     agent.update(autoWake=True, error=None, inFlight=False, turnId=None,
-                 activity=None, activeTools=[])
-    marker.update(stage='continued', eventId=key, reconciledAt=time.time())
+                 activity=None, activeTools=[])  # type: ignore[call-arg]  # typed-update
+    marker.update(stage='continued', eventId=key, reconciledAt=time.time())  # type: ignore[call-arg]  # typed-update
     runtime.put(db, 'agents', agent)
     work = _interrupted_work(db, agent, turn)
     runtime.enqueue(db, agent, 'followup',

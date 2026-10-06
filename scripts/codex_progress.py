@@ -69,7 +69,7 @@ def _revision(info):
                     (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size))
 
 
-def read_progress(state_dir, agent_id):
+def read_progress(state_dir: str | os.PathLike[str], agent_id: str) -> dict[str, object]:
     path = progress_path(state_dir, agent_id)
     result = {"id": agent_id, "agent": agent_id, "format": "markdown", "markdown": "",
               "path": str(path), "revision": None, "updated": None, "exists": False, "error": None}

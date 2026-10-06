@@ -22,13 +22,26 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
+from studio_api.testing import read_session_token
 import codex_canvas
 
 
 class RelayFixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps({"token": "canvas-test-token", "stateDir": self.server.state_dir}).encode()
-        self.send_response(200)
+        if self.path == "/api/session":
+            status, payload = 200, {"token": "canvas-test-token"}
+        elif self.path == "/api/desktop":
+            status, payload = 200, {"stateDir": self.server.state_dir}
+        elif self.path.startswith("/api/sync/pull?scope=state:entities:v1"):
+            status, payload = 200, {
+                "documents": [],
+                "checkpoint": {"seq": 0},
+                "maxSeq": 0,
+            }
+        else:
+            status, payload = 404, {"error": "Unexpected canvas contract fixture GET"}
+        body = json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -527,11 +540,10 @@ class CanvasContract(unittest.TestCase):
             except urllib.error.HTTPError as error:
                 return error.code, error.read()
         try:
-            status, data = request("/api/state")
-            self.assertEqual(status, 200)
-            token = json.loads(data)["token"]
+            token = read_session_token(lambda path: json.loads(request(path)[1]))
+            self.assertTrue(token)
             self.assertEqual(request("/", headers={"Host": "evil.example"})[0], 403)
-            self.assertEqual(request("/api/state", headers={"Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(request("/api/session", headers={"Origin": "https://evil.example"})[0], 403)
             self.assertEqual(request("/api/chats", {})[0], 403)
             body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]}
             headers = {"Origin": base, "X-Canvas-Token": token}

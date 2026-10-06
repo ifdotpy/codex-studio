@@ -2351,6 +2351,177 @@ export interface components {
       /** Tools */
       tools?: components["schemas"]["ActiveToolDto"][] | null;
     };
+    /** AgentEntityDto */
+    AgentEntityDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      accountTransfer?:
+        | components["schemas"]["AccountTransferSummaryDto"]
+        | null;
+      activity?: components["schemas"]["AgentActivity"] | null;
+      agentMode?: components["schemas"]["AgentMode"] | null;
+      /** Agentmoderevision */
+      agentModeRevision?: number | null;
+      /** Agentmodesupported */
+      agentModeSupported?: boolean | null;
+      /** Archived */
+      archived?: boolean | null;
+      /** Autowake */
+      autoWake?: boolean | null;
+      /** Cansend */
+      canSend?: boolean | null;
+      /** Compactions */
+      compactions?: number | null;
+      /** Concurrency */
+      concurrency?: number | null;
+      connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextUsage?: components["schemas"]["ContextUsageDto"] | null;
+      convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
+      /** Created */
+      created?: number | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Daybreakenabled */
+      daybreakEnabled?: boolean | null;
+      /** Deletedat */
+      deletedAt?: number | null;
+      /** Effort */
+      effort?: string | null;
+      /** Empty */
+      empty?: boolean | null;
+      /** Error */
+      error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Fastmode */
+      fastMode?: boolean | null;
+      /** Hasapproval */
+      hasApproval?: boolean | null;
+      /** Hasquestion */
+      hasQuestion?: boolean | null;
+      /** Hasunread */
+      hasUnread?: boolean | null;
+      /** Id */
+      id: string;
+      /** Imageworkspace */
+      imageWorkspace?: boolean | null;
+      /** Imageworkspacebaserepo */
+      imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspaceerror */
+      imageWorkspaceError?: string | null;
+      /** Imageworkspacephase */
+      imageWorkspacePhase?: string | null;
+      /** Imageworkspaceready */
+      imageWorkspaceReady?: boolean | null;
+      /** Imageworkspacerelative */
+      imageWorkspaceRelative?: string | null;
+      /** Imageworkspacerepo */
+      imageWorkspaceRepo?: string | null;
+      /** Imageworkspacestartcommit */
+      imageWorkspaceStartCommit?: string | null;
+      /** Inflight */
+      inFlight?: boolean | null;
+      /** Islead */
+      isLead?: boolean | null;
+      /** Kind */
+      kind?: "agent" | null;
+      /** Lastanswer */
+      lastAnswer?: string | null;
+      /** Lastcompletedturn */
+      lastCompletedTurn?: string | null;
+      /** Lastreadat */
+      lastReadAt?: number | null;
+      /** Launcheralive */
+      launcherAlive?: boolean | null;
+      /** Manualname */
+      manualName?: boolean | null;
+      /** Model */
+      model?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Nativeerror */
+      nativeError?: string | null;
+      /** Nativelimiterrorat */
+      nativeLimitErrorAt?: number | null;
+      nativeRelease?: components["schemas"]["SnapshotNativeRelease"] | null;
+      nativeSafetyBuffering?:
+        | components["schemas"]["NativeSafetyBufferingDto"]
+        | null;
+      nativeSafetyRetry?: components["schemas"]["NativeSafetyRetryDto"] | null;
+      /** Nativestatus */
+      nativeStatus?:
+        | components["schemas"]["AgentNativeStatus"]
+        | components["schemas"]["AgentNativeStatusValue"]
+        | null;
+      nativeThreadBlock?: components["schemas"]["NativeThreadBlockDto"] | null;
+      nativeTurnError?: components["schemas"]["NativeTurnErrorDto"] | null;
+      /** Nextturnsettingssupported */
+      nextTurnSettingsSupported?: boolean | null;
+      /** Orchestratorid */
+      orchestratorId?: string | null;
+      /** Orchestratorname */
+      orchestratorName?: string | null;
+      overview?: components["schemas"]["AgentOverview"] | null;
+      /** Paneldataversion */
+      panelDataVersion?: number | null;
+      /** Panelversion */
+      panelVersion?: number | null;
+      /** Parentid */
+      parentId?: string | null;
+      /** Parkedevent */
+      parkedEvent?: string | null;
+      pendingSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      /** Pendingsettingsaccountkey */
+      pendingSettingsAccountKey?: string | null;
+      /** Pinned */
+      pinned?: boolean | null;
+      /** Project */
+      project?: string | null;
+      /** Projectfolder */
+      projectFolder?: string | null;
+      /** Projectfolderrevision */
+      projectFolderRevision?: number | null;
+      provider?: components["schemas"]["AgentProvider"] | null;
+      queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
+      quickCreate?: components["schemas"]["JsonValue"] | null;
+      readState?: components["schemas"]["ReadStateDto"] | null;
+      /** Readstatesupported */
+      readStateSupported?: boolean | null;
+      /** Retryat */
+      retryAt?: number | null;
+      reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
+      role?: components["schemas"]["AgentRole"] | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Sharedroomid */
+      sharedRoomId?: string | null;
+      source?: components["schemas"]["AgentSource"] | null;
+      startAttempt?: components["schemas"]["SnapshotStartAttempt"] | null;
+      status?: components["schemas"]["AgentStatus"] | null;
+      /** Statusdetail */
+      statusDetail?: string | null;
+      /** Subagentconcurrencyversion */
+      subagentConcurrencyVersion?: number | null;
+      /** Tail */
+      tail?: string | null;
+      /** Threadid */
+      threadId?: string | null;
+      /** Tokensused */
+      tokensUsed?: number | null;
+      /** Turnid */
+      turnId?: string | null;
+      turnStatus?: components["schemas"]["AgentStatus"] | null;
+      /** Unreadcount */
+      unreadCount?: number | null;
+      /** Updated */
+      updated?: number | null;
+      voiceState?: components["schemas"]["JsonValue"] | null;
+      workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Worktree */
+      worktree?: boolean | string | null;
+      /** Worktreepreparation */
+      worktreePreparation?: ("waiting" | "preparing") | null;
+      /** Yolomode */
+      yoloMode?: boolean | null;
+    };
     /**
      * AgentMode
      * @enum {string}
@@ -2626,6 +2797,17 @@ export interface components {
       /** Yolomode */
       yoloMode?: boolean | null;
     };
+    /**
+     * AgentRole
+     * @enum {string}
+     */
+    AgentRole:
+      | "lead"
+      | "worker"
+      | "orchestrator"
+      | "agent"
+      | "implementer"
+      | "reviewer";
     /**
      * AgentRole
      * @enum {string}
@@ -4147,6 +4329,23 @@ export interface components {
       /** Id */
       id: string;
     };
+    /** ChatEntityDto */
+    ChatEntityDto: {
+      /** Id */
+      id: string;
+      /** Kind */
+      kind?: "chat" | null;
+      /** Lastmessageat */
+      lastMessageAt?: number | null;
+      /** Members */
+      members?: string[] | null;
+      /** Messagecount */
+      messageCount?: number | null;
+      /** Name */
+      name?: string | null;
+      /** Tail */
+      tail?: string | null;
+    };
     /** ChatMessage */
     ChatMessage: {
       /** Created */
@@ -4684,6 +4883,36 @@ export interface components {
       /** Version */
       version: number;
     };
+    /** ComplaintEntityDto */
+    ComplaintEntityDto: {
+      /** Author */
+      author?: string | null;
+      /** Authorname */
+      authorName?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Id */
+      id: string;
+      /** Leaddeleted */
+      leadDeleted?: boolean | null;
+      /** Leadid */
+      leadId?: string | null;
+      /** Leadname */
+      leadName?: string | null;
+      /** Leadstopped */
+      leadStopped?: boolean | null;
+      /** Needsresponse */
+      needsResponse?: boolean | null;
+      /** Readat */
+      readAt?: number | null;
+      /** Recipient */
+      recipient?: ("user" | "lead") | null;
+      status?: components["schemas"]["ComplaintStatus"] | null;
+      /** Title */
+      title?: string | null;
+      /** Version */
+      version?: number | null;
+    };
     /** ComplaintResponseDto */
     ComplaintResponseDto: {
       /** At */
@@ -5135,6 +5364,17 @@ export interface components {
        * @enum {string}
        */
       kind: "drafts";
+    };
+    /** EdgeEntityDto */
+    EdgeEntityDto: {
+      /** Id */
+      id: string;
+      /** Kind */
+      kind?: ("chat" | "spawn") | null;
+      /** Source */
+      source?: string | null;
+      /** Target */
+      target?: string | null;
     };
     /**
      * ErrorResponse
@@ -7181,6 +7421,33 @@ export interface components {
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
     };
+    /** ProjectEntityDto */
+    ProjectEntityDto: {
+      /** Accountkey */
+      accountKey?: string | null;
+      /** Accountkeys */
+      accountKeys?: string[] | null;
+      /** Accountrevision */
+      accountRevision?: number | null;
+      /** Created */
+      created?: number | null;
+      /** Folders */
+      folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /** Organizationrevision */
+      organizationRevision?: number | null;
+      /** Path */
+      path?: string | null;
+      /** Peerteams */
+      peerTeams?: components["schemas"]["ProjectPeerTeamDto"][] | null;
+      /** Peerteamsrevision */
+      peerTeamsRevision?: number | null;
+      /** Updated */
+      updated?: number | null;
+    };
     /** ProjectFolder */
     ProjectFolder: {
       /** Id */
@@ -8238,6 +8505,30 @@ export interface components {
       /** Sharestatus */
       shareStatus?: boolean | null;
     };
+    /** RoomEntityDto */
+    RoomEntityDto: {
+      /** Id */
+      id: string;
+      kind?: components["schemas"]["RoomKind"] | null;
+      lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      /** Members */
+      members?: string[] | null;
+      /** Name */
+      name?: string | null;
+      /** Peerteamid */
+      peerTeamId?: string | null;
+      /** Peerteamname */
+      peerTeamName?: string | null;
+      /** Projectpath */
+      projectPath?: string | null;
+      radio?: components["schemas"]["RoomRadio"] | null;
+      /** Rootid */
+      rootId?: string | null;
+      /** Updated */
+      updated?: number | null;
+      /** Userhidden */
+      userHidden?: boolean | null;
+    };
     /**
      * RoomKind
      * @enum {string}
@@ -8457,6 +8748,19 @@ export interface components {
       text?: string;
       /** Wakes */
       wakes?: number | null;
+    };
+    /** RuleEntityDto */
+    RuleEntityDto: {
+      /** Agent */
+      agent?: string | null;
+      /** Description */
+      description?: string | null;
+      /** Enabled */
+      enabled?: boolean | null;
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
     };
     /**
      * RuleKind
@@ -10349,10 +10653,43 @@ export interface components {
       /** Fallbackready */
       fallbackReady?: boolean | null;
     };
+    /** SyncAgentEntityPayload */
+    SyncAgentEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "agent";
+      /** Id */
+      id: string;
+      value: components["schemas"]["AgentEntityDto"];
+    };
+    /** SyncChatEntityPayload */
+    SyncChatEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "chat";
+      /** Id */
+      id: string;
+      value: components["schemas"]["ChatEntityDto"];
+    };
     /** SyncCheckpoint */
     SyncCheckpoint: {
       /** Seq */
       seq: number;
+    };
+    /** SyncComplaintEntityPayload */
+    SyncComplaintEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "complaint";
+      /** Id */
+      id: string;
+      value: components["schemas"]["ComplaintEntityDto"];
     };
     /** SyncDocument */
     SyncDocument: {
@@ -10364,6 +10701,17 @@ export interface components {
       payload: string;
       /** Seq */
       seq: number;
+    };
+    /** SyncEdgeEntityPayload */
+    SyncEdgeEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "edge";
+      /** Id */
+      id: string;
+      value: components["schemas"]["EdgeEntityDto"];
     };
     /**
      * SyncEntity
@@ -10379,6 +10727,32 @@ export interface components {
       /** Seq */
       seq: number;
     };
+    SyncEntityPayload:
+      | components["schemas"]["SyncAgentEntityPayload"]
+      | components["schemas"]["SyncRoomEntityPayload"]
+      | components["schemas"]["SyncTaskEntityPayload"]
+      | components["schemas"]["SyncMonitorEntityPayload"]
+      | components["schemas"]["SyncComplaintEntityPayload"]
+      | components["schemas"]["SyncRequestEntityPayload"]
+      | components["schemas"]["SyncRuleEntityPayload"]
+      | components["schemas"]["SyncProjectEntityPayload"]
+      | components["schemas"]["SyncPeerTeamEntityPayload"]
+      | components["schemas"]["SyncChatEntityPayload"]
+      | components["schemas"]["SyncEdgeEntityPayload"]
+      | components["schemas"]["SyncEventEntityPayload"]
+      | components["schemas"]["SyncWorkEntityPayload"]
+      | components["schemas"]["SyncWorkspaceEntityPayload"];
+    /** SyncEventEntityPayload */
+    SyncEventEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "event";
+      /** Id */
+      id: string;
+      value: components["schemas"]["EventEntityDto"];
+    };
     /** SyncIdentityResponse */
     SyncIdentityResponse: {
       /** Syncentities */
@@ -10392,6 +10766,39 @@ export interface components {
       syncProtocol: 2;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncMonitorEntityPayload */
+    SyncMonitorEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "monitor";
+      /** Id */
+      id: string;
+      value: components["schemas"]["MonitorEntityDto"];
+    };
+    /** SyncPeerTeamEntityPayload */
+    SyncPeerTeamEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "peerTeam";
+      /** Id */
+      id: string;
+      value: components["schemas"]["PeerTeamEntityDto"];
+    };
+    /** SyncProjectEntityPayload */
+    SyncProjectEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "project";
+      /** Id */
+      id: string;
+      value: components["schemas"]["ProjectEntityDto"];
     };
     /** SyncProtocolResponse */
     SyncProtocolResponse: {
@@ -10464,6 +10871,72 @@ export interface components {
       reset?: false | null;
       /** Workspaceid */
       workspaceId: string;
+    };
+    /** SyncRequestEntityPayload */
+    SyncRequestEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "request";
+      /** Id */
+      id: string;
+      value: components["schemas"]["RequestEntityDto"];
+    };
+    /** SyncRoomEntityPayload */
+    SyncRoomEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "room";
+      /** Id */
+      id: string;
+      value: components["schemas"]["RoomEntityDto"];
+    };
+    /** SyncRuleEntityPayload */
+    SyncRuleEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "rule";
+      /** Id */
+      id: string;
+      value: components["schemas"]["RuleEntityDto"];
+    };
+    /** SyncTaskEntityPayload */
+    SyncTaskEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "task";
+      /** Id */
+      id: string;
+      value: components["schemas"]["TaskEntityDto"];
+    };
+    /** SyncWorkEntityPayload */
+    SyncWorkEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "work";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkEntityDto"];
+    };
+    /** SyncWorkspaceEntityPayload */
+    SyncWorkspaceEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "workspace";
+      /** Id */
+      id: string;
+      value: components["schemas"]["WorkspaceEntityDto"];
     };
     /**
      * TailscaleStatus
@@ -10541,6 +11014,53 @@ export interface components {
       turnId?: string | null;
       /** Type */
       type?: string | null;
+    };
+    /** TaskEntityDto */
+    TaskEntityDto: {
+      /** Agent */
+      agent?: string | null;
+      /** Bytes */
+      bytes?: number | null;
+      /** Cancelrequested */
+      cancelRequested?: boolean | null;
+      /** Command */
+      command?: string | null;
+      /** Created */
+      created?: number | null;
+      /** Cwd */
+      cwd?: string | null;
+      /** Durationms */
+      durationMs?: number | null;
+      /** Exitcode */
+      exitCode?: number | null;
+      /** Finished */
+      finished?: number | null;
+      /** Id */
+      id: string;
+      /** Interactive */
+      interactive?: boolean | null;
+      kind?: components["schemas"]["TaskKind"] | null;
+      /** Log */
+      log?: string | null;
+      /** Name */
+      name?: string | null;
+      /** Outputtruncated */
+      outputTruncated?: boolean | null;
+      /** Processid */
+      processId?: string | null;
+      /** Query */
+      query?: string | null;
+      status?: components["schemas"]["TaskStatus"] | null;
+      /** Stdinclosed */
+      stdinClosed?: boolean | null;
+      /** Stdincloserequested */
+      stdinCloseRequested?: string | null;
+      /** Stdinerror */
+      stdinError?: string | null;
+      /** Timeout Ms */
+      timeout_ms?: number | null;
+      /** Turnid */
+      turnId?: string | null;
     };
     /** TaskHistoryCursor */
     TaskHistoryCursor: {
@@ -11855,6 +12375,28 @@ export interface components {
       /** Resultid */
       resultId?: string | null;
     };
+    /** WorkEntityDto */
+    WorkEntityDto: {
+      /** Agent */
+      agent?: string | null;
+      /** Id */
+      id: string;
+      /** Rootid */
+      rootId?: string | null;
+      /** Status */
+      status?:
+        | (
+            | "ready"
+            | "running"
+            | "blocked"
+            | "review"
+            | "accepted"
+            | "cancelled"
+          )
+        | null;
+      /** Title */
+      title?: string | null;
+    };
     /** WorkerDefaults */
     WorkerDefaults: {
       /** Account Key */
@@ -12014,6 +12556,27 @@ export interface components {
       updated?: number | null;
       /** Version */
       version?: number | null;
+    };
+    /** WorkspaceEntityDto */
+    WorkspaceEntityDto: {
+      /** Connected */
+      connected?: boolean | null;
+      /** Nativenotices */
+      nativeNotices?: components["schemas"]["NativeNoticeDto"][] | null;
+      /** Peerteamsversion */
+      peerTeamsVersion?: number | null;
+      /** Projectorganizationversion */
+      projectOrganizationVersion?: number | null;
+      rateLimits?: components["schemas"]["AccountRateLimitsDto"] | null;
+      /** Ratelimitsbyaccount */
+      rateLimitsByAccount?: {
+        [key: string]: components["schemas"]["AccountRateLimitsDto"];
+      } | null;
+      sidebarOrder?: components["schemas"]["SidebarOrderDto"] | null;
+      /** Statedir */
+      stateDir?: string | null;
+      /** Taskshistorylimit */
+      tasksHistoryLimit?: number | null;
     };
     /** WorkspaceResource */
     WorkspaceResource: {
@@ -20967,7 +21530,18 @@ export type JsonValue =
   | string
   | JsonValue[]
   | { [key: string]: JsonValue };
+export type AgentEntityDto = components["schemas"]["AgentEntityDto"];
+export type ChatEntityDto = components["schemas"]["ChatEntityDto"];
+export type ComplaintEntityDto = components["schemas"]["ComplaintEntityDto"];
+export type EdgeEntityDto = components["schemas"]["EdgeEntityDto"];
 export type EventEntityDto = components["schemas"]["EventEntityDto"];
 export type MonitorEntityDto = components["schemas"]["MonitorEntityDto"];
 export type PeerTeamEntityDto = components["schemas"]["PeerTeamEntityDto"];
+export type ProjectEntityDto = components["schemas"]["ProjectEntityDto"];
 export type RequestEntityDto = components["schemas"]["RequestEntityDto"];
+export type RoomEntityDto = components["schemas"]["RoomEntityDto"];
+export type RuleEntityDto = components["schemas"]["RuleEntityDto"];
+export type TaskEntityDto = components["schemas"]["TaskEntityDto"];
+export type WorkEntityDto = components["schemas"]["WorkEntityDto"];
+export type WorkspaceEntityDto = components["schemas"]["WorkspaceEntityDto"];
+export type SyncEntityPayload = components["schemas"]["SyncEntityPayload"];

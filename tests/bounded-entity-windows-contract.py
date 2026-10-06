@@ -13,6 +13,7 @@ import tempfile
 sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+from studio_api.testing import read_runtime_state
 sys.path.insert(0, str(ROOT / "tests"))
 spec = importlib.util.spec_from_file_location("runtime_fixture", ROOT / "tests/runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec)
@@ -32,7 +33,7 @@ def materialized(db, collection):
 
 def assert_state(runtime, db, stage):
     # This is the runtime object placed directly under `runtime` by GET /api/state.
-    state = runtime.snapshot(include_work=False, db=db)
+    state = read_runtime_state(runtime, include_work=False, db=db)
     for public_key, collection in (("tasks", "task"), ("monitors", "monitor"), ("events", "event")):
         expected = {str(row["id"]): project(collection, row) for row in state[public_key]}
         actual = materialized(db, collection)

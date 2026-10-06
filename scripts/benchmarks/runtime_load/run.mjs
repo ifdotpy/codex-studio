@@ -11,12 +11,14 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { HttpOutcomeTracker } from "./http_outcomes.mjs";
+import { fetchRuntimeIdentity } from "./identity.mjs";
 
 const harness = dirname(fileURLToPath(import.meta.url));
 const repo = resolve(harness, "../../..");
 const harnessFiles = [
   "README.md",
   "http_outcomes.mjs",
+  "identity.mjs",
   "run.mjs",
   "server.py",
   "test_http_outcomes.mjs",
@@ -284,9 +286,7 @@ try {
     "Fixture startup",
     check ? 45_000 : 90_000,
   );
-  const identityResponse = await fetch(`${ready.origin}/api/state?view=chat`);
-  assert.equal(identityResponse.status, 200);
-  const stateData = await identityResponse.json();
+  const stateData = await fetchRuntimeIdentity(ready.origin);
   const expectedLeads = check ? 1 : teams;
   const expectedWorkers = check ? 2 : teams * workersPerTeam;
   assert.equal(

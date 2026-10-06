@@ -245,7 +245,7 @@ def main(arguments: Sequence[str] | None = None) -> int:
                 "mypy",
                 "--config-file",
                 str(project / "mypy.ini"),
-                str(scripts / "studio_api"),
+                str(scripts),
             ],
             check=False,
         ).returncode

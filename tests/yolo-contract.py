@@ -10,6 +10,7 @@ import unittest
 spec = importlib.util.spec_from_file_location('defaults', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class Yolo(f.WorkerDefaults):
@@ -49,7 +50,7 @@ class Yolo(f.WorkerDefaults):
         self.assertEqual(command['sandboxPolicy'], {'type':'dangerFullAccess'})
         self.assertNotIn('permissionProfile', command)
         self.runtime.server.gate.set()
-        f.f.eventually(lambda: self.runtime.snapshot()['monitors'][0]['status'] not in {'running','starting'})
+        f.f.eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] not in {'running','starting'})
 
     def test_rule_rechecks_permission_after_mode_change(self):
         rule = self.runtime.rules({'agent':self.lead['id'], 'name':'Check', 'command':'echo ready'})
@@ -60,7 +61,7 @@ class Yolo(f.WorkerDefaults):
         monitor = self.runtime.monitor(self.lead['id'], {'command':'echo ready'},
                                        approved=True, rule=rule)
         self.assertEqual(monitor['status'], 'approval')
-        self.assertTrue(self.runtime.snapshot()['requests'])
+        self.assertTrue(read_runtime_state(self.runtime)['requests'])
 
     def test_restore_blocks_permission_changes(self):
         worker = self.worker()

@@ -28,6 +28,7 @@ f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_terminals import TerminalManager, HISTORY_LIMIT
 from codex_canvas import Canvas, make_server
+from studio_api.testing import read_session_token
 
 
 class TerminalsContract(unittest.TestCase):
@@ -380,7 +381,7 @@ class TerminalsContract(unittest.TestCase):
 
         try:
             self.assertEqual(request("/api/desktop")["application"], "codex-agents")
-            token = request("/api/state")["token"]
+            token = read_session_token(request)
             headers = {"Content-Type": "application/json", "X-Canvas-Token": token}
             body = {"id": str(uuid.uuid4()), "agent": self.agent["id"]}
             with self.assertRaises(urllib.error.HTTPError) as denied:

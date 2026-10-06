@@ -2,38 +2,44 @@
 
 import json
 import time
+from typing import TYPE_CHECKING
 
 from codex_native_release import IDLE_SECONDS, MAX_PER_TICK, _idle_since, _local_blocker
+
+if TYPE_CHECKING:
+    import sqlite3
+    from typing import Any
+    from codex_runtime import Runtime
 
 
 RECHECK_SECONDS = 90
 
 
-def _ticket_id(ticket):
+def _ticket_id(ticket: "Any") -> str:
     return ticket[0] if isinstance(ticket, tuple) else f"fixture:{id(ticket)}"
 
 
-def _ticket_future(ticket):
+def _ticket_future(ticket: "Any") -> "Any":
     return ticket[2] if isinstance(ticket, tuple) else ticket
 
 
-def _receipt_id(account, connection, thread):
+def _receipt_id(account: str, connection: str | None, thread: str) -> str:
     return json.dumps([account, connection, thread], separators=(",", ":"))
 
 
-def _receipt(db, key):
+def _receipt(db: "sqlite3.Connection", key: str) -> "Any":
     row = db.execute("SELECT record FROM runtime_native_sweeps WHERE id=?", (key,)).fetchone()
     return json.loads(row[0]) if row else {}
 
 
-def _save(db, key, **values):
+def _save(db: "sqlite3.Connection", key: str, **values: "Any") -> None:
     record = _receipt(db, key)
     record.update(values)
     db.execute("INSERT OR REPLACE INTO runtime_native_sweeps VALUES (?,?)",
                (key, json.dumps(record)))
 
 
-def _account_busy(rt, db, account):
+def _account_busy(rt: "Runtime", db: "sqlite3.Connection", account: str) -> bool:
     # A fork can create a subscribed thread before Studio learns its ID.
     if (account in getattr(rt, "_native_tools_refreshing", set())
             or account in getattr(rt, "_native_runtime_reservations", {})):
@@ -72,7 +78,8 @@ def _account_busy(rt, db, account):
     return False
 
 
-def _protected(rt, db, account, thread, now):
+def _protected(rt: "Runtime", db: "sqlite3.Connection", account: str, thread: str,
+               now: float) -> bool:
     if db.execute("SELECT 1 FROM runtime_agents WHERE "
                   "json_extract(record,'$.contextRepair.sourceCleanup.phase') IN ('planned','submitted') "
                   "AND json_extract(record,'$.contextRepair.sourceCleanup.accountKey')=? "
@@ -100,7 +107,7 @@ def _protected(rt, db, account, thread, now):
     return False
 
 
-def _loaded(server):
+def _loaded(server: "Any") -> list[str]:
     threads = []
     cursor = None
     seen = set()
@@ -121,7 +128,7 @@ def _loaded(server):
         seen.add(cursor)
 
 
-def _native_idle(server, thread):
+def _native_idle(server: "Any", thread: str) -> bool:
     native = server.call("thread/read", {"threadId": thread, "includeTurns": False}, timeout=10)["thread"]
     if native.get("id") != thread or native.get("status", {}).get("type") != "idle":
         return False
@@ -132,7 +139,8 @@ def _native_idle(server, thread):
     return isinstance(queued.get("data"), list) and not queued["data"] and not queued.get("nextCursor")
 
 
-def _release(rt, account, connection, server, thread, now):
+def _release(rt: "Runtime", account: str, connection: str | None, server: "Any",
+             thread: str, now: float) -> bool:
     key = _receipt_id(account, connection, thread)
     try:
         if not _native_idle(server, thread):
@@ -163,24 +171,24 @@ def _release(rt, account, connection, server, thread, now):
         _save(db, key, phase="submitted", requestId=_ticket_id(ticket), submittedAt=time.time())
         rt.__dict__.setdefault("_native_sweep_tickets", {})[key] = ticket
     try:
-        response = server.wait(ticket, timeout=10)
+        response = server.wait(ticket, timeout=10)  # type: ignore[union-attr]  # typed-narrowing: Successful inspection establishes server availability
         status = response.get("status")
         if status not in {"unsubscribed", "notSubscribed", "notLoaded"}:
             raise ValueError("Native unsubscribe response is invalid")
         phase = status
-        error = None
+        error = None  # type: ignore[misc]  # typed-narrowing: Reassignment restores cleared exception binding
     except Exception as cause:
         phase = "unknown"
-        error = str(cause)[:300]
+        error = str(cause)[:300]  # type: ignore[misc]  # typed-narrowing: Subsequent assignment reinitializes cleared exception
     with rt.lock, rt.db() as db:
         if _ticket_future(ticket).done():
             rt.__dict__.setdefault("_native_sweep_tickets", {}).pop(key, None)
         if _receipt(db, key).get("requestId") == _ticket_id(ticket):
-            _save(db, key, phase=phase, error=error, checkedAt=time.time())
+            _save(db, key, phase=phase, error=error, checkedAt=time.time())  # type: ignore[misc]  # typed-narrowing: Subsequent assignment reinitializes cleared exception
     return True
 
 
-def _settle_ticket(rt, db, key, ticket):
+def _settle_ticket(rt: "Runtime", db: "sqlite3.Connection", key: str, ticket: "Any") -> None:
     try:
         result = _ticket_future(ticket).result()
         status = result.get("status")
@@ -196,7 +204,7 @@ def _settle_ticket(rt, db, key, ticket):
     rt.__dict__.setdefault("_native_sweep_tickets", {}).pop(key, None)
 
 
-def sweep(rt, now=None):
+def sweep(rt: "Runtime", now: float | None = None) -> int:
     """Inspect existing account connections only; use at most two unsubscribes."""
     now = time.time() if now is None else now
     with rt.lock:
@@ -205,7 +213,7 @@ def sweep(rt, now=None):
                           if rt.accounts.get(key).get("provider", "codex") == "codex"
                           and rt.connection_current(key, rt.connection_ids.get(key)))
         offset = getattr(rt, "_native_sweep_cursor", 0) % max(1, len(accounts))
-        rt._native_sweep_cursor = offset + 1
+        rt._native_sweep_cursor = offset + 1  # type: ignore[attr-defined]  # typed-narrowing: Module owns sweep cursor state
     count = 0
     for account, server, connection in accounts[offset:] + accounts[:offset]:
         try:
@@ -236,7 +244,7 @@ def sweep(rt, now=None):
                     if now - receipt.get("submittedAt", now) < RECHECK_SECONDS:
                         continue
                     _save(db, key, phase="unknown", error="Native unsubscribe receipt remains pending")
-                    rt._native_sweep_tickets.pop(key, None)
+                    rt._native_sweep_tickets.pop(key, None)  # type: ignore[attr-defined]  # typed-narrowing: Module owns ticket mapping state
                     ticket = None
                 if ticket:
                     _settle_ticket(rt, db, key, ticket)
@@ -252,18 +260,18 @@ def sweep(rt, now=None):
     return count
 
 
-def tick(rt, now):
+def tick(rt: "Runtime", now: float) -> None:
     if getattr(rt, "_native_sweep_running", False):
         return
-    rt._native_sweep_running = True
+    rt._native_sweep_running = True  # type: ignore[attr-defined]  # typed-narrowing: Module owns sweep running state
     try:
         future = rt.recovery_pool.submit(sweep, rt, now)
     except RuntimeError:
-        rt._native_sweep_running = False
+        rt._native_sweep_running = False  # type: ignore[attr-defined]  # typed-narrowing: Module owns sweep running state
         return
 
-    def done(_future):
-        rt._native_sweep_running = False
+    def done(_future):  # type: (object) -> None
+        rt._native_sweep_running = False  # type: ignore[attr-defined]  # typed-narrowing: Module owns sweep running state
         rt.changed.set()
 
     future.add_done_callback(done)

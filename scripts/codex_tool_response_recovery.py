@@ -7,8 +7,14 @@ import sqlite3
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING, Any
 
 from codex_connection_recovery import supervisor_identity
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 FIELDS = ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'autoWake',
           'status', 'inFlight', 'deletedAt', 'activeTools')
@@ -16,7 +22,7 @@ MAX_JOBS = 8
 MAX_RECEIPTS = 32
 
 
-def eligible(agent):
+def eligible(agent: "AgentRecord") -> bool:
     return bool(agent.get('provider') == 'claude' and not agent.get('deletedAt')
                 and agent.get('status') == 'running' and agent.get('autoWake')
                 and agent.get('inFlight') and agent.get('threadId') and agent.get('turnId')
@@ -25,7 +31,7 @@ def eligible(agent):
                         for tool in agent.get('activeTools', [])))
 
 
-def response_operation_id(runtime, account, rpc_id):
+def response_operation_id(runtime: "Runtime", account: str, rpc_id: Any) -> str | None:
     identity = supervisor_identity(runtime.servers.get(account))
     if identity is None:
         return None
@@ -33,7 +39,7 @@ def response_operation_id(runtime, account, rpc_id):
     return 'tool-response:' + hashlib.sha256(body.encode()).hexdigest()
 
 
-def _rpc_id(value):
+def _rpc_id(value: object) -> bool:
     if not isinstance(value, str) or not value.startswith('claude:'):
         return False
     try:
@@ -42,7 +48,7 @@ def _rpc_id(value):
         return False
 
 
-def _native_proof(runtime, server, record):
+def _native_proof(runtime: "Runtime", server: Any, record: Any) -> Any:
     """An absent acceptance receipt permits a response, never operation replay."""
     identity = supervisor_identity(server)
     if (identity is None or identity['stateDir'] != str(runtime.root.resolve())
@@ -79,7 +85,7 @@ def _native_proof(runtime, server, record):
     return identity
 
 
-def recover(runtime, key):
+def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
     with runtime.lock, runtime.read_db() as db:
         agent = runtime.agent(key, db)
         if runtime.closed or not eligible(agent):
@@ -119,7 +125,7 @@ def recover(runtime, key):
         # exact actor snapshot authorizes this response before native I/O.
         # A later Stop still revokes new operations and interrupts the turn.
         with runtime.start_lock:
-            if not server.write_lock.acquire(blocking=False):
+            if not server.write_lock.acquire(blocking=False):  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
                 continue
             try:
                 # A legacy reply can use a random write identity. Recheck its
@@ -141,7 +147,7 @@ def recover(runtime, key):
                 written = runtime.reply({'id': record['rpcId'], 'result': result}, account, connection,
                                         operation_id=operation_id)
             finally:
-                server.write_lock.release()
+                server.write_lock.release()  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
         if (not isinstance(written, dict) or written.get('accepted') is not True
                 or written.get('duplicate') is not False):
             # A duplicate proves only prior acceptance. Its stdin outcome can
@@ -160,7 +166,7 @@ def recover(runtime, key):
     return {'status': 'tool_response_delivered' if delivered else 'superseded', 'requests': delivered}
 
 
-def tick(runtime, agents):
+def tick(runtime: "Runtime", agents: "Iterable[AgentRecord]") -> None:
     """Bound retries by account and time without blocking the recovery timer."""
     with runtime.lock:
         if runtime.closed:
@@ -188,11 +194,11 @@ def tick(runtime, agents):
                 checks.pop(old)
 
 
-def _run(runtime, key, account):
+def _run(runtime: "Runtime", key: str, account: str) -> None:
     try:
         recover(runtime, key)
     except Exception as error:
-        runtime._tool_response_recovery_error = {'at': time.time(), 'agent': key,
+        runtime._tool_response_recovery_error = {'at': time.time(), 'agent': key,  # type: ignore[attr-defined]  # typed-narrowing: Runtime owns dynamic diagnostic state
                                                  'errorType': type(error).__name__}
     finally:
         with runtime.lock:

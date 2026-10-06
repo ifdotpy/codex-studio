@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import time
 from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 
-from codex_api_client import request_json
+from codex_api_client import desktop_state_dir, request_json, session_token
 from pydantic import ValidationError
 
 from studio_api.sync.resources.models import ResourceRef
@@ -16,7 +17,6 @@ from studio_api.sync.resources.relay.models import ResourceNotifyAck, ResourceNo
 
 DEFAULT_CANVAS_URL = "http://127.0.0.1:4620"
 NOTIFY_ENDPOINT = "/api/sync/notify"
-API_STATE_ENDPOINT = "/api/state"
 NOTIFY_TIMEOUT_SECONDS = 5
 NOTIFY_ATTEMPTS = 2
 NOTIFY_RETRY_DELAY_SECONDS = 0.1
@@ -42,13 +42,8 @@ class ResourceRelayClient:
         if self._token is not None:
             return self._token
         try:
-            state = request_json(self.url, API_STATE_ENDPOINT, timeout=NOTIFY_TIMEOUT_SECONDS)
-            token = state.get("token") if isinstance(state, dict) else None
-            if not isinstance(token, str) or not token:
-                raise NotifyCommittedWriteError("Studio returned no local session token")
-            state_dir = state.get("stateDir") if isinstance(state, dict) else None
-            if not isinstance(state_dir, str) or not state_dir:
-                raise NotifyCommittedWriteError("Studio returned no state directory identity")
+            token = session_token(self.url, timeout=NOTIFY_TIMEOUT_SECONDS)
+            state_dir = desktop_state_dir(self.url, timeout=NOTIFY_TIMEOUT_SECONDS)
             if Path(state_dir).expanduser().resolve() != self.source_root:
                 raise NotifyCommittedWriteError(
                     f"Source state {self.source_root} does not match Studio API state {Path(state_dir).resolve()}"
@@ -58,7 +53,7 @@ class ResourceRelayClient:
         except NotifyCommittedWriteError:
             raise
         except Exception as error:
-            raise NotifyCommittedWriteError(f"Studio API token bootstrap failed: {error}") from error
+            raise NotifyCommittedWriteError(f"Studio API session/workspace bootstrap failed: {error}") from error
 
     def notify(self, request_id: str, resources: list[ResourceRef]) -> ResourceNotifyAck:
         """Send one typed invalidation; retries never repeat the source operation."""
@@ -81,8 +76,14 @@ class ResourceRelayClient:
                 return ack
             except HTTPError as error:
                 if error.code < 500 and error.code != 429:
+                    try:
+                        error_body = json.loads(error.read())
+                        detail = error_body.get("error") if isinstance(error_body, dict) else None
+                    except (OSError, UnicodeDecodeError, ValueError):
+                        detail = None
                     raise NotifyCommittedWriteError(
                         f"Studio rejected the committed write's invalidation (HTTP {error.code})"
+                        + (f": {detail}" if isinstance(detail, str) and detail else "")
                     ) from error
                 last_error = error
             except (URLError, HTTPException, TimeoutError, OSError, ValidationError, ValueError) as error:
