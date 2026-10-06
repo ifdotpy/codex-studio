@@ -73,18 +73,29 @@ def capture_input(db, agent, rows, params, text):
             'textHash': hashlib.sha256(text.encode()).hexdigest()}
 
 
-def _saved_retry(runtime, db, agent):
+def _later_user_input(db, agent, attempt):
+    """A newer pending user instruction can resume a proven rejected input."""
+    created = attempt.get('created')
+    if type(created) not in (int, float):
+        return False
+    return bool(db.execute(
+        "SELECT 1 FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
+        "WHERE e.agent=? AND e.epoch=? AND e.kind='user' AND e.status='pending' "
+        "AND e.turn_id IS NULL AND e.created>? "
+        "AND json_type(m.record,'$.acceptedAt') IN ('integer','real') "
+        "AND json_extract(m.record,'$.acceptedAt')>? LIMIT 1",
+        (agent['id'], agent['epoch'], created, created)).fetchone())
+
+
+def _saved_retry(runtime, db, agent, *, allow_held=False):
     marker = agent.get('claudePreInputRetry')
     if (not isinstance(marker, dict) or not agent.get('autoWake') or agent.get('status') == 'paused'
             or runtime.closed or agent.get('provider') != 'claude' or agent.get('deletedAt')
-            or agent.get('agentArchive') or agent.get('nativeFailureHold')
+            or agent.get('agentArchive') or (agent.get('nativeFailureHold') and not allow_held)
             or agent.get('accountTransferId') or agent.get('workspaceOperation') or native_thread_block(agent)
             or marker.get('epoch') != agent.get('epoch')
             or marker.get('accountKey') != agent.get('accountKey', 'default')
-            or marker.get('threadId') != agent.get('threadId')
-            or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))
-            or not _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
-                                       marker.get('supervisorIdentity'))):
+            or marker.get('threadId') != agent.get('threadId')):
         return None
     row = db.execute('SELECT t.record FROM runtime_execution_attempts t '
                      'JOIN runtime_execution_runs r ON r.id=t.run WHERE t.id=? AND r.agent=?',
@@ -96,14 +107,67 @@ def _saved_retry(runtime, db, agent):
     if (not rejected_start_saved(db, agent['id'], saved) or not isinstance(request, dict)
             or not isinstance(request.get('input'), list) or not isinstance(request.get('configuration'), dict)
             or request.get('transcriptItemId') != agent['id'] + ':' + saved['events'][0]
-            or request.get('source') != _source(agent)
             or request.get('clientUserMessageId') != saved['events'][0]):
         return None
-    return saved
+    source = _source(agent)
+    captured = request.get('source')
+    later_user = _later_user_input(db, agent, saved)
+    if captured != source:
+        # A background Claude turn can compact history while its rejected input
+        # stays local. A newer instruction permits the identical input after that
+        # compaction, with every workspace, account and permission field unchanged.
+        if (not later_user or not isinstance(captured, dict)
+                or type(captured.get('compactions')) is not int
+                or type(source.get('compactions')) is not int
+                or source['compactions'] <= captured['compactions']
+                or {k: v for k, v in captured.items() if k != 'compactions'}
+                    != {k: v for k, v in source.items() if k != 'compactions'}):
+            return None
+    same_transport = (runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))
+                      and _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
+                                              marker.get('supervisorIdentity')))
+    return saved if same_transport or later_user else None
+
+
+def _retry_rows(db, agent, saved):
+    rows = [db.execute('SELECT * FROM runtime_events WHERE id=? AND agent=? AND epoch=?',
+                       (key, agent['id'], agent['epoch'])).fetchone() for key in saved['events']]
+    if (any(row is None or row['status'] != 'pending' or row['turn_id'] for row in rows)
+            or [_event_snapshot(db, row) for row in rows] != saved['claudeInputRequest']['events']):
+        return None
+    return [dict(row) for row in rows]
+
+
+def _input_text(db, agent, request):
+    item = db.execute('SELECT record FROM runtime_items WHERE id=? AND agent=?',
+                      (request['transcriptItemId'], agent['id'])).fetchone()
+    fulltext = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?',
+                          (request['transcriptItemId'],)).fetchone()
+    item = json.loads(item[0]) if item else None
+    text = fulltext[0] if fulltext else (item or {}).get('text')
+    if (not item or item.get('role') != 'user' or not isinstance(text, str)
+            or hashlib.sha256(text.encode()).hexdigest() != request['textHash']):
+        return None
+    return text
+
+
+def _resume_held_retry(runtime, db, agent):
+    if (not agent.get('nativeFailureHold') or agent.get('inFlight')
+            or agent.get('turnId') or agent.get('startAttempt')):
+        return
+    saved = _saved_retry(runtime, db, agent, allow_held=True)
+    if (not saved or not _later_user_input(db, agent, saved)
+            or _retry_rows(db, agent, saved) is None
+            or _input_text(db, agent, saved['claudeInputRequest']) is None):
+        return
+    agent.pop('nativeFailureHold', None)
+    agent.update(status='queued', error=None)
+    runtime.put(db, 'agents', agent)
 
 
 def retire_stopped_retry(runtime, db, agent):
-    """Retire only cancelled input or an exact unsent retry stopped at its old epoch."""
+    """Resume a proven held retry or retire its exact stopped reservation."""
+    _resume_held_retry(runtime, db, agent)
     marker = agent.get('claudePreInputRetry') or {}
     epoch = marker.get('epoch')
     if (runtime.closed or agent.get('provider') != 'claude' or not isinstance(marker, dict)
@@ -174,12 +238,7 @@ def retry_batch(runtime, db, agent):
     saved = _saved_retry(runtime, db, agent)
     if not saved:
         return None
-    rows = [db.execute('SELECT * FROM runtime_events WHERE id=? AND agent=? AND epoch=?',
-                       (key, agent['id'], agent['epoch'])).fetchone() for key in saved['events']]
-    if (any(row is None or row['status'] != 'pending' or row['turn_id'] for row in rows)
-            or [_event_snapshot(db, row) for row in rows] != saved['claudeInputRequest']['events']):
-        return None
-    return [dict(row) for row in rows]
+    return _retry_rows(db, agent, saved)
 
 
 def retry_input(runtime, db, agent, rows):
@@ -196,14 +255,8 @@ def retry_input(runtime, db, agent, rows):
             or [_event_snapshot(db, row) for row in rows] != saved['claudeInputRequest']['events']):
         raise ClaudeRetryChanged('The proven Claude retry changed. Review the saved input before continuing')
     request = copy.deepcopy(saved['claudeInputRequest'])
-    item = db.execute('SELECT record FROM runtime_items WHERE id=? AND agent=?',
-                      (request['transcriptItemId'], agent['id'])).fetchone()
-    fulltext = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?',
-                          (request['transcriptItemId'],)).fetchone()
-    item = json.loads(item[0]) if item else None
-    text = fulltext[0] if fulltext else (item or {}).get('text')
-    if (not item or item.get('role') != 'user' or not isinstance(text, str)
-            or hashlib.sha256(text.encode()).hexdigest() != request['textHash']):
+    text = _input_text(db, agent, request)
+    if text is None:
         raise ClaudeRetryChanged('The original Claude transcript changed. Review the saved input before continuing')
     request['text'] = text
     return request

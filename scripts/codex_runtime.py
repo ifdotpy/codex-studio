@@ -411,7 +411,7 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None):
         import queue
         self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
@@ -470,7 +470,12 @@ class AppServer:
             if not supervisor_handle:
                 raise RuntimeError("Supervisor mode requires a stable native-process handle")
             from codex_process_supervisor import attach
-            self.proc = attach(supervisor_root or root, supervisor_handle, command, env, stderr_sink=self.log.write)
+            try:
+                self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
+                                   stderr_sink=self.log.write, expected=supervisor_expected)
+            except Exception:
+                self.log.close()
+                raise
             if self.proc is None:
                 raise RuntimeError("Supervisor mode is enabled but no compatible supervisor is available")
             self.supervisor_resumed = bool(getattr(self.proc, "resumed", False))
@@ -1640,7 +1645,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
                 from codex_connection_recovery import preparation_eligible
-                if not preparation_eligible(a):
+                from codex_claude_auth_wait import retained_wait as retained_auth_wait
+                if not preparation_eligible(a) and not retained_auth_wait(self, db, a):
                     a.pop("startAttempt", None)
                 from codex_safety_buffering import recover_restart as recover_safety_restart
                 recover_safety_restart(self, db, a)
@@ -3050,6 +3056,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                   executable=selected["path"] if selected else None,
                                                   supervisor_handle="account:" + account_key,
                                                   supervisor_root=self.root,
+                                                  supervisor_expected=(selected or {}).get("retainedSupervisor"),
                                                   supervisor_commit=lambda message, sequence: self.commit_supervisor_event(
                                                       "account:" + account_key, message, sequence, account_key, connection_id),
                                                   supervisor_event_applied=lambda sequence: self.supervisor_event_applied(
@@ -3086,7 +3093,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return server
             if needs_executable:
                 from codex_native_runtime import executable_for
-                selected = executable_for(self)
+                selected = executable_for(self, account_key=account_key, home=home)
 
     def _publish_desktop_resource(self) -> None:
         from studio_api.sync.resources.models import DesktopResource, ResourceRef
@@ -5211,6 +5218,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return self.dispatch_candidates(agent_id)
 
     def dispatch_all(self):
+        from codex_claude_auth_wait import tick as claude_auth_wait_tick
+        claude_auth_wait_tick(self)
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
         from codex_provider_versions import tick as provider_version_tick
@@ -5684,6 +5693,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.put(db, "agents", current)
                 a = current
                 timing["validatedAt"] = time.monotonic_ns()
+            if a.get("provider") == "claude" and not a["startAttempt"].get("activeAtReservation"):
+                from codex_claude_auth_wait import require_auth
+                require_auth(self, a)
             program = turn_program(self, a)
             timing["programReadyAt"] = time.monotonic_ns()
             busy_at_reservation = a["startAttempt"].get("activeAtReservation")
@@ -5852,6 +5864,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a.get("provider") == "claude" and not busy_at_reservation:
                     from codex_claude_input_recovery import capture_input
                     current['startAttempt']['claudeInputRequest'] = capture_input(db, current, rows, params, text)
+                if a.get("provider") == "claude" and (not busy_at_reservation or frozen_input):
+                    # A validated frozen retry can steer a separate background turn.
+                    # Retire its old marker in this exact submission transaction.
                     current.pop('claudePreInputRetry', None)
                 # The saved attempt keeps retries of this submission identical.
                 # A confirmed rejection permits a new attempt for the same input.
@@ -6135,6 +6150,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "pending" if preparation and not attempt.get("submitted") else "failed")
                 db.execute("UPDATE runtime_events SET status=?, error=? WHERE id=? "
                            "AND status IN ('pending','reserved','dispatching','uncertain')", (status, str(error), event_id))
+            from codex_claude_auth_wait import record_wait
+            record_wait(self, db, a, error, unknown=unknown)
             if current_epoch and not unknown and a.get("status") == "failed":
                 if not self.worker_continuation_pending(a):
                     self.child_stopped_event(db, a, "failed", str(error),
@@ -6459,6 +6476,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid LIMIT 1",
                              (tid, account_key)).fetchone()
             if row is None:
+                if method == 'turn/completed':
+                    from codex_context_repair import source_terminal_callback
+                    if source_terminal_callback(self, db, p, account_key, connection_id):
+                        return
                 if p.get("parentThreadId"):
                     from codex_execution import observe_child_thread, safe_record
                     safe_record(db, observe_child_thread, db, account_key, method, p)
