@@ -168,8 +168,10 @@ class RelayRouteTests(unittest.TestCase):
 
         def request_json(_url: str, path: str, data: object = None, _token: str = "", **_kwargs: object) -> object:
             nonlocal calls
-            if path == relay_client.API_STATE_ENDPOINT:
-                return {"token": "relay-test-token", "stateDir": "/tmp/relay-test-state"}
+            if path == "/api/session":
+                return {"token": "relay-test-token"}
+            if path == "/api/desktop":
+                return {"stateDir": "/tmp/relay-test-state"}
             assert isinstance(data, dict)
             body_calls.append((path, data))
             response = _post(self.client, data)
@@ -179,10 +181,17 @@ class RelayRouteTests(unittest.TestCase):
                 raise URLError("fixture response lost after server accepted request")
             return response.json()
 
-        with patch.object(relay_client, "request_json", side_effect=request_json):
+        with (patch.object(relay_client, "request_json", side_effect=request_json),
+              patch("codex_api_client.request_json", side_effect=request_json),
+              patch.object(socket, "create_connection",
+                           side_effect=AssertionError("relay unit test attempted a network escape")) as connect,
+              patch.object(socket.socket, "connect",
+                           side_effect=AssertionError("relay unit test attempted a socket escape")) as socket_connect):
             ack = relay_client.ResourceRelayClient("/tmp/relay-test-state", "http://testserver").notify(
                 "response-loss-id", [ResourceRef(StateResource(kind="state"))]
             )
+        connect.assert_not_called()
+        socket_connect.assert_not_called()
         self.assertEqual(ack.requestId, "response-loss-id")
         self.assertEqual(body_calls[0], body_calls[1])
         self.assertEqual(self.context.hub._revision, 1)

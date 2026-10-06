@@ -28,8 +28,20 @@ import codex_canvas
 
 class RelayFixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps({"token": "canvas-test-token", "stateDir": self.server.state_dir}).encode()
-        self.send_response(200)
+        if self.path == "/api/session":
+            status, payload = 200, {"token": "canvas-test-token"}
+        elif self.path == "/api/desktop":
+            status, payload = 200, {"stateDir": self.server.state_dir}
+        elif self.path.startswith("/api/sync/pull?scope=state:entities:v1"):
+            status, payload = 200, {
+                "documents": [],
+                "checkpoint": {"seq": 0},
+                "maxSeq": 0,
+            }
+        else:
+            status, payload = 404, {"error": "Unexpected canvas contract fixture GET"}
+        body = json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
