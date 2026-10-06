@@ -90,7 +90,7 @@ def _saved_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentReco
             or marker.get('epoch') != agent.get('epoch')
             or marker.get('accountKey') != agent.get('accountKey', 'default')
             or marker.get('threadId') != agent.get('threadId')
-            or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))
+            or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))  # type: ignore[arg-type]  # typed-narrowing: Guard confirms stored account key
             or not _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
                                        marker.get('supervisorIdentity'))):
         return None
@@ -139,7 +139,7 @@ def retire_stopped_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "A
                 or agent.get('workspaceOperation') or native_thread_block(agent)
                 or marker.get('accountKey') != agent.get('accountKey', 'default')
                 or marker.get('threadId') != agent.get('threadId')
-                or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))
+                or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))  # type: ignore[arg-type]  # typed-narrowing: Guard confirms stored account key
                 or not _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
                                            marker.get('supervisorIdentity'))
                 or saved.get('claudeInputRequest', {}).get('source') != _source(agent)
@@ -338,7 +338,7 @@ def recover_rejected_start(
     stage = getattr(runtime, '_stage_event_resources', None)
     if stage is not None:
         stage(db, str(agent['id']))
-    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (  # type: ignore[misc]  # typed-narrowing: Fixed fields are string keys
+    agent['claudePreInputRetry'] = {key: copy.deepcopy(attempt.get(key)) for key in (  # type: ignore[typeddict-item]  # typed-narrowing: Checked attempt supplies all fields
         'id', 'epoch', 'accountKey', 'threadId', 'connectionId', 'nativeOperationId',
         'events', 'submitted', 'supervisorIdentity')}
     agent.pop('startAttempt', None)

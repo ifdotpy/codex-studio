@@ -141,7 +141,7 @@ def _inspection_current(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRe
         raise ValueError("agent changed during native inspection")
     if release.get("resetBy") is not None:
         from codex_agent_management import _authorize
-        actor = _authorize(rt, db, release["resetBy"], release["resetActorEpoch"], agent)
+        actor = _authorize(rt, db, release["resetBy"], release["resetActorEpoch"], agent)  # type: ignore[arg-type]  # typed-narrowing: Guard ensures resetBy value exists
         if _actor_scope(rt, actor) != release["resetActorScope"]:
             raise ValueError("reset owner changed during native inspection")
     return identity

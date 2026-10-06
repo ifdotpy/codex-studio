@@ -13,7 +13,7 @@ from codex_native_errors import NativeRpcError, assert_native_thread_open
 
 if TYPE_CHECKING:
     import sqlite3
-    from codex_records import AgentRecord, NativeSafetyRetryRecord
+    from codex_records import AgentRecord, NativeSafetyRetryRecord, NativeSafetyRetryViewRecord
     from codex_runtime import Runtime
 
 ACTIVE = {'turns', 'items', 'interrupt', 'verify_turns', 'verify_items', 'fork', 'start', 'unknown'}
@@ -33,11 +33,11 @@ def recover_restart(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentR
     db.execute('CREATE TABLE IF NOT EXISTS runtime_safety_retries (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
     row = db.execute('SELECT record FROM runtime_safety_retries WHERE id=?', (receipt.get('id'),)).fetchone()
     op = json.loads(row[0]) if row else {
-        **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+        **receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),  # type: ignore[typeddict-item]  # typed-narrowing: Later checks validate receipt identity
         'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch'),
     }  # type: NativeSafetyRetryRecord
     if op.get('id') != receipt.get('id'):
-        op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),
+        op = {**receipt, 'id': receipt.get('id'), 'agent': agent.get('id'),  # type: ignore[typeddict-item]  # typed-narrowing: Later checks validate receipt identity
               'accountKey': agent.get('accountKey', 'default'), 'epoch': agent.get('epoch')}
     if (op.get('agent') != agent.get('id') or op.get('epoch') != agent.get('epoch')
             or op.get('accountKey') != agent.get('accountKey', 'default')):
@@ -108,9 +108,9 @@ def action(runtime: "Runtime", key: str, data: Any) -> Any:
     return public(op)
 
 
-def public(op: "NativeSafetyRetryRecord") -> Any:
+def public(op: "NativeSafetyRetryRecord") -> "NativeSafetyRetryViewRecord":
     return {k: op.get(k) for k in ('id', 'stage', 'model', 'turnId', 'created', 'updated', 'epoch', 'accountKey',
-                                  'error', 'newThreadId', 'acceptedTurnId', 'requestId', 'rpcMethod')}
+                                  'error', 'newThreadId', 'acceptedTurnId', 'requestId', 'rpcMethod')}  # type: ignore[return-value]  # typed-narrowing: Projection preserves optional receipt fields
 
 
 def save(
@@ -143,7 +143,7 @@ def issue(runtime: "Runtime", op: "NativeSafetyRetryRecord", stage: str) -> None
         from codex_daybreak import turn_program, turn_params
         program = None
         if stage in {"interrupt", "fork", "start"}:
-            candidate = {**runtime.agent(op["agent"]), "model": op["model"]}
+            candidate: "AgentRecord" = {**runtime.agent(op["agent"]), "model": op["model"]}
             program = turn_program(runtime, candidate)
         with runtime.lock, runtime.db() as db:
             a = current(runtime, db, op)

@@ -13,6 +13,10 @@ import tempfile
 import threading
 import unittest
 from unittest.mock import patch
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any, Iterator
 from urllib.parse import parse_qs, urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -24,29 +28,29 @@ SCRIPT = Path(__file__).resolve().parent / "codex-control"
 
 
 class FaultHandler(BaseHTTPRequestHandler):
-    def do_GET(self):
+    def do_GET(self: "Any") -> None:
         self.server.requests.append(("GET", self.path, None))
         self.server.headers.append(("GET", self.path, self.headers.get("X-Canvas-Token")))
         self.server.respond(self)
 
-    def do_POST(self):
+    def do_POST(self: "Any") -> None:
         body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
         self.server.requests.append(("POST", self.path, json.loads(body)))
         self.server.headers.append(("POST", self.path, self.headers.get("X-Canvas-Token")))
         self.server.respond(self)
 
-    def log_message(self, *_args):
+    def log_message(self: "Any", *_args: "Any") -> None:
         pass
 
 
 @contextmanager
-def fault_server(callback):
-    server = ThreadingHTTPServer(("127.0.0.1", 0), FaultHandler)
+def fault_server(callback: "Any") -> "Iterator[tuple[str, Any, list[Any]]]":
+    server: "Any" = ThreadingHTTPServer(("127.0.0.1", 0), FaultHandler)
     server.requests = []
     server.headers = []
     server.callback = callback
 
-    def respond(handler):
+    def respond(handler: "Any") -> "Any":
         status, value, content_type = server.callback(handler.command, handler.path, handler)
         body = value if isinstance(value, bytes) else json.dumps(value).encode()
         handler.send_response(status)
@@ -62,7 +66,7 @@ def fault_server(callback):
     original_connect = socket.socket.connect
     attempts = []
 
-    def guarded_connect(sock, address):
+    def guarded_connect(sock: "Any", address: "Any") -> "Any":
         if (not isinstance(address, tuple) or len(address) < 2
                 or address[0] not in ("127.0.0.1", "localhost")
                 or address[1] != server.server_port):
@@ -86,7 +90,7 @@ def fault_server(callback):
         thread.join(timeout=2)
 
 
-def entity(collection, key, value, sequence, deleted=False):
+def entity(collection: "Any", key: "Any", value: "Any", sequence: "Any", deleted: "Any"=False) -> "Any":
     return {
         "id": f"entity:{collection}:{key}",
         "payload": json.dumps({"collection": collection, "id": key, "value": value}),
@@ -95,13 +99,13 @@ def entity(collection, key, value, sequence, deleted=False):
     }
 
 
-def page(documents, checkpoint, maximum):
+def page(documents: "Any", checkpoint: "Any", maximum: "Any") -> "Any":
     return {"documents": documents, "checkpoint": {"seq": checkpoint}, "maxSeq": maximum}
 
 
 class CodexAPIClientContracts(unittest.TestCase):
-    def test_session_and_desktop_helpers_use_their_narrow_endpoints(self):
-        def route(_method, path, _handler):
+    def test_session_and_desktop_helpers_use_their_narrow_endpoints(self: "Any") -> None:
+        def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
             if path == "/api/session":
                 return 200, {"token": "test-token"}, "application/json"
             if path == "/api/desktop":
@@ -114,7 +118,7 @@ class CodexAPIClientContracts(unittest.TestCase):
             self.assertEqual([path for _, path, _ in server.requests], ["/api/session", "/api/desktop"])
             self.assertEqual(len(attempts), 2)
 
-    def test_entity_pull_reconciles_later_versions_and_tombstones_until_max_seq(self):
+    def test_entity_pull_reconciles_later_versions_and_tombstones_until_max_seq(self: "Any") -> None:
         responses = {
             0: page([entity("agent", "a", {"id": "a", "revision": 1}, 1)], 1, 4),
             1: page([
@@ -124,7 +128,7 @@ class CodexAPIClientContracts(unittest.TestCase):
             3: page([entity("agent", "b", {}, 4, deleted=True)], 4, 4),
         }
 
-        def route(_method, path, _handler):
+        def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
             query = parse_qs(urlsplit(path).query)
             self.assertEqual(query["scope"], [codex_api_client.ENTITY_SCOPE])
             return 200, responses[int(query["after"][0])], "application/json"
@@ -143,8 +147,8 @@ class CodexAPIClientContracts(unittest.TestCase):
             )
             self.assertEqual(len(attempts), 3)
 
-    def test_entity_pull_caps_unfinished_pagination_truthfully(self):
-        def route(_method, path, _handler):
+    def test_entity_pull_caps_unfinished_pagination_truthfully(self: "Any") -> None:
+        def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
             after = int(parse_qs(urlsplit(path).query)["after"][0])
             return 200, page([], after + 1, 10), "application/json"
 
@@ -155,15 +159,15 @@ class CodexAPIClientContracts(unittest.TestCase):
             self.assertEqual(len(server.requests), 2)
             self.assertEqual(len(attempts), 2)
 
-    def test_only_unknown_entity_scope_400_is_reported_as_an_old_backend(self):
-        def route(_method, _path, _handler):
+    def test_only_unknown_entity_scope_400_is_reported_as_an_old_backend(self: "Any") -> None:
+        def route(_method: "Any", _path: "Any", _handler: "Any") -> "Any":
             return 400, {"error": "Invalid sync scope"}, "application/json"
 
         with fault_server(route) as (origin, _server, _attempts):
             with self.assertRaisesRegex(ValueError, "backend may be older"):
                 codex_api_client.pull_entities(origin)
 
-        def bad_query(_method, _path, _handler):
+        def bad_query(_method: "Any", _path: "Any", _handler: "Any") -> "Any":
             return 400, {"error": "Invalid query value for after"}, "application/json"
 
         with fault_server(bad_query) as (origin, _server, _attempts):
@@ -171,15 +175,15 @@ class CodexAPIClientContracts(unittest.TestCase):
                 codex_api_client.pull_entities(origin)
             self.assertNotIn("backend may be older", str(raised.exception))
 
-        def missing_endpoint(_method, _path, _handler):
+        def missing_endpoint(_method: "Any", _path: "Any", _handler: "Any") -> "Any":
             return 404, {"detail": "Not Found"}, "application/json"
 
         with fault_server(missing_endpoint) as (origin, _server, _attempts):
             with self.assertRaisesRegex(ValueError, "backend may be older"):
                 codex_api_client.pull_entities(origin)
 
-    def test_wrong_token_and_unavailable_backend_have_truthful_errors(self):
-        def unauthorized(_method, _path, _handler):
+    def test_wrong_token_and_unavailable_backend_have_truthful_errors(self: "Any") -> None:
+        def unauthorized(_method: "Any", _path: "Any", _handler: "Any") -> "Any":
             return 401, {"error": "Invalid session token"}, "application/json"
 
         with fault_server(unauthorized) as (origin, _server, _attempts):
@@ -195,15 +199,15 @@ class CodexAPIClientContracts(unittest.TestCase):
             codex_api_client.session_token(f"http://127.0.0.1:{port}", timeout=1)
         self.assertRegex(str(raised.exception), "urlopen error|Connection refused")
 
-    def test_non_json_response_is_named_as_non_json(self):
-        def route(_method, _path, _handler):
+    def test_non_json_response_is_named_as_non_json(self: "Any") -> None:
+        def route(_method: "Any", _path: "Any", _handler: "Any") -> "Any":
             return 200, b"not-json", "text/plain"
 
         with fault_server(route) as (origin, _server, _attempts):
             with self.assertRaisesRegex(ValueError, "Studio answered with non-JSON"):
                 codex_api_client.session_token(origin)
 
-    def test_control_list_merges_wave_files_and_sorts_entity_agents(self):
+    def test_control_list_merges_wave_files_and_sorts_entity_agents(self: "Any") -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             (state / "codex-swarm-status.wave.json").write_text(json.dumps([{
@@ -219,7 +223,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                  "isLead": True, "threadId": "lead-thread"},
             ]
 
-            def route(_method, path, _handler):
+            def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
                 if path == "/api/session":
                     return 200, {"token": "test-token"}, "application/json"
                 if path == "/api/desktop":
@@ -237,7 +241,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                     redirect_stdout(output), redirect_stderr(errors):
                 try:
                     runpy.run_path(str(SCRIPT), run_name="__main__")
-                    status = 0
+                    status: int | str | None = 0
                 except SystemExit as exit_code:
                     status = exit_code.code
             self.assertEqual(status, 0, errors.getvalue())
@@ -260,11 +264,11 @@ class CodexAPIClientContracts(unittest.TestCase):
                 if path.startswith("/api/sync/pull")
             ))
 
-    def test_control_configure_concurrency_reads_the_entity_revision(self):
+    def test_control_configure_concurrency_reads_the_entity_revision(self: "Any") -> None:
         lead = {"id": "lead", "name": "Lead", "status": "running", "isLead": True,
                 "agentModeRevision": 8}
 
-        def route(method, path, handler):
+        def route(method: "Any", path: "Any", handler: "Any") -> "Any":
             if method == "POST":
                 return 200, {"ok": True, "requestId": "saved"}, "application/json"
             if path == "/api/session":
@@ -281,7 +285,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
-                status = 0
+                status: int | str | None = 0
             except SystemExit as exit_code:
                 status = exit_code.code
         self.assertEqual(status, 0, errors.getvalue())
@@ -299,12 +303,12 @@ class CodexAPIClientContracts(unittest.TestCase):
             if path != "/api/session"
         ))
 
-    def test_control_list_prefers_current_wave_file_and_merges_graph_alias(self):
+    def test_control_list_prefers_current_wave_file_and_merges_graph_alias(self: "Any") -> None:
         with tempfile.TemporaryDirectory() as directory:
             state = Path(directory)
             status_path = state / "codex-swarm-status.wave.json"
 
-            def write_status(status):
+            def write_status(status: "Any") -> "Any":
                 status_path.write_text(json.dumps([{
                     "wave": "wave", "runId": "run", "threadId": "wave-thread",
                     "name": "Wave Worker", "turnStatus": status,
@@ -323,8 +327,8 @@ class CodexAPIClientContracts(unittest.TestCase):
                                "source": "orchestrator-reference", "status": "unknown"}
             entities = [stale_wave, stale_reference, alias, child]
 
-            def list_agents():
-                def route(_method, path, _handler):
+            def list_agents() -> "Any":
+                def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
                     if path == "/api/session":
                         return 200, {"token": "test-token"}, "application/json"
                     if path == "/api/desktop":
@@ -340,7 +344,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                         redirect_stdout(output), redirect_stderr(errors):
                     try:
                         runpy.run_path(str(SCRIPT), run_name="__main__")
-                        status = 0
+                        status: int | str | None = 0
                     except SystemExit as exit_code:
                         status = exit_code.code
                 self.assertEqual(status, 0, errors.getvalue())
@@ -374,7 +378,7 @@ class CodexAPIClientContracts(unittest.TestCase):
             self.assertEqual(len(rows), len(by_id))
             self.assertEqual(error, "")
 
-    def test_bad_status_files_are_one_line_notes_and_preserve_entities(self):
+    def test_bad_status_files_are_one_line_notes_and_preserve_entities(self: "Any") -> None:
         cases = ((b"{invalid", None), (json.dumps([{"name": "missing thread"}]).encode(), None),
                  (json.dumps([]).encode(), 0))
         for data, mode in cases:
@@ -384,7 +388,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                 if mode is not None:
                     path.chmod(mode)
 
-                def route(_method, endpoint, _handler):
+                def route(_method: "Any", endpoint: "Any", _handler: "Any") -> "Any":
                     if endpoint == "/api/session":
                         return 200, {"token": "token"}, "application/json"
                     if endpoint == "/api/desktop":
@@ -399,7 +403,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                         redirect_stdout(output), redirect_stderr(errors):
                     try:
                         runpy.run_path(str(SCRIPT), run_name="__main__")
-                        status = 0
+                        status: int | str | None = 0
                     except SystemExit as exit_code:
                         status = exit_code.code
                 self.assertEqual(status, 0, errors.getvalue())
@@ -407,10 +411,10 @@ class CodexAPIClientContracts(unittest.TestCase):
                 self.assertEqual(errors.getvalue(),
                     "codex-control: file-backed wave threads are not available from this machine\n")
 
-    def test_list_survives_desktop_without_state_directory_or_unavailable_endpoint(self):
+    def test_list_survives_desktop_without_state_directory_or_unavailable_endpoint(self: "Any") -> None:
         for desktop_response in ((200, {"other": "field"}), (404, {"error": "not found"})):
             with self.subTest(desktop_response=desktop_response):
-                def route(_method, path, _handler):
+                def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
                     if path == "/api/session":
                         return 200, {"token": "token"}, "application/json"
                     if path == "/api/desktop":
@@ -425,7 +429,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                         redirect_stdout(output), redirect_stderr(errors):
                     try:
                         runpy.run_path(str(SCRIPT), run_name="__main__")
-                        status = 0
+                        status: int | str | None = 0
                     except SystemExit as exit_code:
                         status = exit_code.code
                 self.assertEqual(status, 0, errors.getvalue())
@@ -433,7 +437,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                 self.assertEqual(errors.getvalue(),
                     "codex-control: file-backed wave threads are not available from this machine\n")
 
-    def test_incomplete_http_reads_are_one_line_errors_for_list_configure_and_send(self):
+    def test_incomplete_http_reads_are_one_line_errors_for_list_configure_and_send(self: "Any") -> None:
         from http.client import IncompleteRead
 
         for argv in (("list",), ("configure", "lead", "--concurrency", "2"),
@@ -447,15 +451,15 @@ class CodexAPIClientContracts(unittest.TestCase):
                         redirect_stdout(output), redirect_stderr(errors):
                     try:
                         runpy.run_path(str(SCRIPT), run_name="__main__")
-                        status = 0
+                        status: int | str | None = 0
                     except SystemExit as exit_code:
                         status = exit_code.code
                 self.assertEqual(status, 1)
                 self.assertIn("incomplete response", errors.getvalue())
                 self.assertNotIn("Traceback", errors.getvalue())
 
-    def test_http_error_with_json_list_body_has_no_secondary_attribute_error(self):
-        def route(_method, path, _handler):
+    def test_http_error_with_json_list_body_has_no_secondary_attribute_error(self: "Any") -> None:
+        def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
             if path == "/api/session":
                 return 200, {"token": "token"}, "application/json"
             return 500, ["server error"], "application/json"
@@ -467,7 +471,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
-                status = 0
+                status: int | str | None = 0
             except SystemExit as exit_code:
                 status = exit_code.code
         self.assertEqual(status, 1)
@@ -475,8 +479,8 @@ class CodexAPIClientContracts(unittest.TestCase):
         self.assertNotIn("AttributeError", errors.getvalue())
         self.assertNotIn("Traceback", errors.getvalue())
 
-    def test_control_list_keeps_entity_agents_when_remote_wave_files_are_unreadable(self):
-        def route(_method, path, _handler):
+    def test_control_list_keeps_entity_agents_when_remote_wave_files_are_unreadable(self: "Any") -> None:
+        def route(_method: "Any", path: "Any", _handler: "Any") -> "Any":
             if path == "/api/session":
                 return 200, {"token": "test-token"}, "application/json"
             if path == "/api/desktop":
@@ -492,7 +496,7 @@ class CodexAPIClientContracts(unittest.TestCase):
                 redirect_stdout(output), redirect_stderr(errors):
             try:
                 runpy.run_path(str(SCRIPT), run_name="__main__")
-                status = 0
+                status: int | str | None = 0
             except SystemExit as exit_code:
                 status = exit_code.code
         self.assertEqual(status, 0, errors.getvalue())

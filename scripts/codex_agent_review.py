@@ -10,7 +10,7 @@ from codex_time import stamp_tool_result
 
 if TYPE_CHECKING:
     import sqlite3
-    from codex_records import AgentRecord
+    from codex_records import AgentRecord, JsonObject
     from codex_runtime import Runtime
 
 
@@ -178,8 +178,8 @@ def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str)
             child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
                                      'args': requested, 'status': 'pending', 'response': copy.deepcopy(value)}
             rt.put(db, 'agents', child)
-            result = stamp_tool_result({'success': True, 'contentItems': [
-                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
+            result: "JsonObject" = stamp_tool_result({'success': True, 'contentItems': [
+                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())  # type: ignore[assignment]  # typed-narrowing: Tool output contains JSON values
             from codex_payloads import externalize_result
             db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)',
                        (key, json.dumps(externalize_result(rt.root, db, result))))

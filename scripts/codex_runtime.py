@@ -59,14 +59,18 @@ if TYPE_CHECKING:
     from codex_records import (
         AccountTransferRecord,
         AgentRecord,
+        AnnotationRecord,
         CheckpointRecord,
         ComplaintRecord,
         JsonValue,
         NativeNoticeRecord,
-        NativeRequestRecord,
         NativeSafetyRetryRecord,
         ProjectRecord,
+        PlanRecord,
+        RequestRecord,
         RoomRecord,
+        RuleRecord,
+        ToolRequestRecord,
         WorkRecord,
         WorkspaceOperationRecord,
     )
@@ -1451,6 +1455,9 @@ class _RuntimeWalKeeper:
 
 
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
+    search_migration_thread: threading.Thread | None
+    search_migration_error: str | None
+
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
@@ -2481,6 +2488,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def records(self, db: sqlite3.Connection, table: Literal["work"], *, shared: bool = False) -> list["WorkRecord"]: ...
 
     @overload
+    def records(self, db: sqlite3.Connection, table: Literal["plans"], *, shared: bool = False) -> list["PlanRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["annotations"], *, shared: bool = False) -> list["AnnotationRecord"]: ...
+
+    @overload
     def records(self, db: sqlite3.Connection, table: Literal["checkpoints"], *, shared: bool = False) -> list["CheckpointRecord"]: ...
 
     @overload
@@ -2499,10 +2512,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def records(self, db: sqlite3.Connection, table: Literal["rooms"], *, shared: bool = False) -> list["RoomRecord"]: ...
 
     @overload
-    def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["NativeRequestRecord"]: ...
+    def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["RequestRecord"]: ...
 
     @overload
     def records(self, db: sqlite3.Connection, table: Literal["native_notices"], *, shared: bool = False) -> list["NativeNoticeRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["rules"], *, shared: bool = False) -> list["RuleRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["tool_requests"], *, shared: bool = False) -> list["ToolRequestRecord"]: ...
 
     def records(self: Any, db: Any, table: Any = None, *, shared: Any = False) -> Any:
         # Calls already in progress may still use the former static form.
@@ -2878,6 +2897,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
+    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
     def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
@@ -2896,13 +2921,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
+    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
     def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
     def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | NativeSafetyRetryRecord | NativeNoticeRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
         if table in {"checkpoints", "tool_requests"}:
@@ -3421,7 +3455,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._record_supervisor_restore(account, "not_restored", "account_restore_failed",
                                                 type(error).__name__)
 
-    def connection_current(self, account_key, connection_id):
+    def connection_current(self, account_key: str, connection_id: str | None) -> bool:
         return connection_id is None or (
             self.connection_ids.get(account_key) == connection_id
             and account_key not in self.offline_accounts
@@ -6329,7 +6363,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.enqueue_recovery_event(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
         return event_id
 
-    def permanent_worker_hold(self, db, a, operation_id, transition, reason):
+    def permanent_worker_hold(self, db: sqlite3.Connection, a: "AgentRecord", operation_id: str,
+                              transition: str, reason: str) -> None:
         """Save one lead event when an operation removes automatic continuation."""
         if a.get("isLead") or not a.get("parentId"):
             return None
@@ -7984,7 +8019,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Choose submit, read, or respond")
 
     def chat_rooms(self, db, viewer=None, room_id=None, *, include_last_message=None,
-                   include_peer_teams: bool = False) -> list[dict[str, object]]:
+                   include_peer_teams: bool = False) -> list["RoomRecord"]:
         if include_last_message is None:
             include_last_message = room_id is None
         targeted_room = None

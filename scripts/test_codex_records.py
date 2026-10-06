@@ -34,7 +34,7 @@ AGENT_FIELD_GROUPS = {
         imageWorkspaceBaseRepo imageWorkspaceError imageWorkspacePhase imageWorkspaceReady
         imageWorkspaceRelative imageWorkspaceRepo imageWorkspaceStartCommit inFlight isLead
         lastAnswer lastCompletedTurn manualName model name nativeLimitErrorAt nativeRelease
-        nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeTurnError parentId parkedEvent
+        nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeThreadBlock nativeTurnError parentId parkedEvent
         pendingSettings pendingSettingsAccountKey pinned project projectFolder projectFolderRevision
         provider quickCreate readState reviewDefaults role rootId sharedRoomId startAttempt status
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
@@ -67,7 +67,7 @@ AGENT_FIELD_GROUPS = {
     """.split()),
     "derived": frozenset("""
         canSend empty hasApproval hasQuestion hasUnread kind lastReadAt launcherAlive nativeError
-        nativeThreadBlock nextTurnSettingsSupported orchestratorId orchestratorName overview
+        nextTurnSettingsSupported orchestratorId orchestratorName overview
         panelDataVersion panelVersion queuedSettings readStateSupported retryAt source statusDetail
         turnStatus unreadCount voiceState
     """.split()),

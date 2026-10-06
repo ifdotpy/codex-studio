@@ -1,16 +1,27 @@
 """Resolve immutable bases for managed worker worktrees."""
 
 import subprocess
+from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
-def _git(repo, *args):
+class WorkerBase(TypedDict):
+    baseRef: str
+    baseCommit: str
+    mainRef: str | None
+    behindMain: NotRequired[int | None]
+
+
+def _git(repo: "str | Path", *args: str) -> "subprocess.CompletedProcess[str]":
     return subprocess.run(
         ['git', '-C', str(repo), *args], capture_output=True, text=True,
         check=False, timeout=30,
     )
 
 
-def resolve_worker_base(repo, ref=None):
+def resolve_worker_base(repo: "str | Path", ref: str | None = None) -> WorkerBase:
     """Return the selected commit and optional main-branch lag details."""
     selected_ref = ref or 'HEAD'
     if not isinstance(selected_ref, str) or not selected_ref.strip() or len(selected_ref) > 1024:
@@ -39,7 +50,7 @@ def resolve_worker_base(repo, ref=None):
                 break
     behind = None
     if target_ref and target != commit:
-        count = _git(repo, 'rev-list', '--count', commit + '..' + target)
+        count = _git(repo, 'rev-list', '--count', commit + '..' + target)  # type: ignore[operator]  # typed-narrowing: target ref guarantees target string
         if count.returncode == 0:
             behind = int(count.stdout.strip())
     return {'baseRef': selected_ref.strip(), 'baseCommit': commit,

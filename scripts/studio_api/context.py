@@ -378,7 +378,7 @@ class ApiContext:
                     from codex_state import process_is_alive, read_threads
 
                     liveness = tuple(sorted((
-                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))
+                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))  # type: ignore[redundant-cast]  # typed-narrowing: guarded pid has integer type
                         for row in read_threads(self.canvas.root)
                         if row.get("launcherPid") is not None
                     ), key=lambda item: str(item[0])))

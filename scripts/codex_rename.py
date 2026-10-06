@@ -183,11 +183,11 @@ def rename(
                             "error": "The title request stopped. Try /rename again."}
                 db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?",
                            (json.dumps(previous), request_id))
-            return previous  # type: ignore[no-any-return]  # typed-suspect: Stored response may be malformed
+            return previous
         if name is not None:
             result = _set_name(runtime, db, key, name)
             result.update(request_id=request_id, status="applied")
-            return runtime.save_receipt(db, request_id, signature, result)  # type: ignore[no-any-return]  # typed-narrowing: Save method returns persisted mapping
+            return runtime.save_receipt(db, request_id, signature, result)
         agent = runtime.agent(key, db)
         if agent.get("deletedAt"):
             raise ValueError("This conversation was deleted")

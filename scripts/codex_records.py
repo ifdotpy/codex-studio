@@ -5,6 +5,12 @@ remain separate contracts; known disagreements are checked in
 ``test_codex_records.py``.
 """
 
+# A mixin self Protocol must be satisfiable by Runtime. When a slice adds a
+# table overload to RecordStore, it must add the identical overload to Runtime.
+# A helper receiving the runtime uses the narrowest Protocol covering what it
+# uses (RecordStore for record access alone), and the quoted concrete Runtime
+# only when it needs the full class. This lets helpers accept mixin self too.
+
 from typing import Literal, NotRequired, Protocol, TypedDict, overload
 from typing import TYPE_CHECKING
 
@@ -93,6 +99,27 @@ class StartAttemptRecord(TypedDict):
     reviewTarget: NotRequired[JsonObject]
 
 
+class ClaudePreInputRetryRecord(TypedDict):
+    id: NotRequired[str]
+    epoch: NotRequired[int]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str]
+    connectionId: NotRequired[str | None]
+    nativeOperationId: NotRequired[str]
+    events: NotRequired[list[str]]
+    submitted: NotRequired[bool]
+    supervisorIdentity: NotRequired[SupervisorIdentityRecord | None]
+    turnId: NotRequired[str]
+    outcome: NotRequired[Literal["not_applied"]]
+    retry: NotRequired[bool]
+
+
+class NativeTurnRecord(TypedDict):
+    id: NotRequired[str]
+    status: NotRequired[str]
+    error: NotRequired[JsonObject | None]
+
+
 class RestartRecoveryRecord(TypedDict):
     stage: NotRequired[str]
     at: NotRequired[float]
@@ -100,7 +127,7 @@ class RestartRecoveryRecord(TypedDict):
     epoch: NotRequired[int]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
-    turnId: NotRequired[str]
+    turnId: NotRequired[str | None]
     eventId: NotRequired[str]
     reconciledAt: NotRequired[float]
     observedAt: NotRequired[float]
@@ -115,7 +142,7 @@ class DisconnectRecoveryRecord(TypedDict):
     epoch: NotRequired[int]
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
-    turnId: NotRequired[str]
+    turnId: NotRequired[str | None]
     startAttempt: NotRequired[StartAttemptRecord]
     connectionId: NotRequired[str]
     autoWake: NotRequired[bool]
@@ -133,7 +160,7 @@ class ConnectionRecoveryRecord(TypedDict):
     automatic: NotRequired[bool]
     supervisor: NotRequired[JsonObject]
     queuedInputPreserved: NotRequired[bool]
-    attemptId: NotRequired[str]
+    attemptId: NotRequired[str | None]
     eventIds: NotRequired[list[str]]
     completionDelivered: NotRequired[bool]
     holdOperations: NotRequired[list[str]]
@@ -165,7 +192,7 @@ class ContextRepairSnapshotRecord(TypedDict):
 
 
 class HistoricalInputProofRecord(TypedDict):
-    events: NotRequired[list[JsonValue]]
+    events: NotRequired[list[str]]
     terminalTurnId: NotRequired[str]
     terminalCompletedAt: NotRequired[float]
     source: NotRequired[ContextRepairSourceRecord]
@@ -305,7 +332,7 @@ class LazyAccountTransferSourceRecord(TypedDict):
 class LazyAccountTransferRecord(TypedDict):
     id: NotRequired[str]
     sourceAccountKey: NotRequired[str]
-    sourceThreadId: NotRequired[str]
+    sourceThreadId: NotRequired[str | None]
     sourceState: NotRequired[LazyAccountTransferSourceRecord]
 
 
@@ -316,7 +343,7 @@ class CapacityRetryRecord(TypedDict):
     reason: NotRequired[str | None]
     acceptedTurnId: NotRequired[str]
     claimedAt: NotRequired[float]
-    taskClaims: NotRequired[list[JsonValue]]
+    taskClaims: NotRequired[list[str]]
     attempt: NotRequired[int]
     cause: NotRequired[str]
     cwd: NotRequired[str]
@@ -327,6 +354,7 @@ class CapacityRetryRecord(TypedDict):
     turnId: NotRequired[str]
     updatedAt: NotRequired[float]
     accountKey: NotRequired[str]
+    waits: NotRequired[int]
 
 
 class UsageResumeRecord(TypedDict):
@@ -350,6 +378,235 @@ class UsageResumeRecord(TypedDict):
     reason: NotRequired[str | None]
     updatedAt: NotRequired[float]
     taskClaims: NotRequired[list[str]]
+
+
+class RateLimitWindowRecord(TypedDict):
+    usedPercent: NotRequired[int | float]
+    resetsAt: NotRequired[int | float]
+
+
+class RateLimitBucketRecord(TypedDict):
+    primary: NotRequired[RateLimitWindowRecord]
+    secondary: NotRequired[RateLimitWindowRecord]
+    individualLimit: NotRequired[dict[str, int | float]]
+    rateLimitReachedType: NotRequired[JsonValue]
+    spendControlReached: NotRequired[bool]
+
+
+class RateLimitDataRecord(TypedDict):
+    rateLimits: NotRequired[RateLimitBucketRecord | None]
+    rateLimitsByLimitId: NotRequired[dict[str, RateLimitBucketRecord]]
+    ordinaryUsageAllowed: NotRequired[bool]
+
+
+class RateLimitSnapshotRecord(TypedDict):
+    data: NotRequired[RateLimitDataRecord | None]
+    error: NotRequired[JsonValue]
+    stale: NotRequired[bool]
+    accountKey: NotRequired[str]
+    at: NotRequired[int | float | None]
+
+
+class AccountDataRecord(TypedDict):
+    home: str
+    provider: NotRequired[str]
+
+
+class AccountSnapshotRecord(TypedDict):
+    accounts: NotRequired[list[JsonObject]]
+    archivedAccounts: NotRequired[list[JsonObject]]
+    defaultAccountKey: NotRequired[str]
+    logins: NotRequired[list[JsonValue]]
+    supportsDisconnect: NotRequired[bool]
+    supportsDelete: NotRequired[bool]
+
+
+class RequestQuestionFieldRecord(TypedDict):
+    id: NotRequired[str]
+    question: NotRequired[str]
+    isSecret: NotRequired[bool]
+    writeOnly: NotRequired[bool]
+    format: NotRequired[str]
+    title: NotRequired[str]
+
+
+class RequestSchemaRecord(TypedDict):
+    properties: NotRequired[dict[str, RequestQuestionFieldRecord]]
+
+
+class RequestParamsRecord(TypedDict):
+    mode: NotRequired[str]
+    questions: NotRequired[list[RequestQuestionFieldRecord]]
+    requestedSchema: NotRequired[RequestSchemaRecord]
+    itemId: NotRequired[str]
+    threadId: NotRequired[str]
+    turnId: NotRequired[str]
+
+
+class RequestAnswerValuesRecord(TypedDict):
+    answers: NotRequired[list[JsonValue]]
+
+
+class RequestAnswerDataRecord(TypedDict):
+    answers: NotRequired[dict[str, RequestAnswerValuesRecord]]
+    content: NotRequired[JsonObject]
+    decision: NotRequired[str]
+
+
+class RequestPreviewRecord(TypedDict):
+    arguments: NotRequired[JsonObject]
+    id: NotRequired[str]
+    server: NotRequired[str]
+    status: NotRequired[str]
+    tool: NotRequired[str]
+    type: NotRequired[str]
+
+
+class RequestAnswerRecord(TypedDict):
+    id: NotRequired[str]
+    question: NotRequired[str]
+    isSecret: NotRequired[bool]
+    answer: NotRequired[JsonValue]
+
+
+class RequestRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    method: NotRequired[str]
+    status: NotRequired[str]
+    createdAt: NotRequired[float]
+    params: NotRequired[RequestParamsRecord]
+    accountKey: NotRequired[str]
+    connectionId: NotRequired[str]
+    epoch: NotRequired[int]
+    turnId: NotRequired[str]
+    rpcId: NotRequired[str | int]
+    preview: NotRequired[RequestPreviewRecord]
+    answerSignature: NotRequired[str]
+    answeredAt: NotRequired[float]
+    answeredBy: NotRequired[str]
+    decision: NotRequired[str]
+    answerHistory: NotRequired[list[RequestAnswerRecord]]
+    answerError: NotRequired[JsonValue]
+    deferred: NotRequired[bool]
+    deferredAt: NotRequired[float]
+    deferredBy: NotRequired[str]
+    deletedAt: NotRequired[float]
+    deletedBy: NotRequired[str]
+    action: NotRequired[str]
+    command: NotRequired[str]
+    cursor: NotRequired[str]
+    cwd: NotRequired[str]
+    env: NotRequired[JsonObject]
+    expectedPid: NotRequired[int]
+    expectedSignature: NotRequired[str]
+    expectedStartTime: NotRequired[float]
+    handle: NotRequired[str]
+    message: NotRequired[str]
+    nativeId: NotRequired[str]
+    operationId: NotRequired[str]
+    resolvedAt: NotRequired[float]
+    sequence: NotRequired[int]
+
+
+class RuleRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    rootId: NotRequired[str]
+    epoch: NotRequired[int]
+    name: NotRequired[str]
+    kind: NotRequired[str]
+    status: NotRequired[str]
+    at: NotRequired[float]
+    intervalSeconds: NotRequired[int]
+    nextAt: NotRequired[float]
+    path: NotRequired[str | None]
+    event: NotRequired[str]
+    command: NotRequired[str]
+    text: NotRequired[str]
+    created: NotRequired[float]
+    inFlight: NotRequired[bool]
+    checks: NotRequired[int]
+    wakes: NotRequired[int]
+    fingerprint: NotRequired[list[JsonValue] | None]
+    fileActivityAt: NotRequired[float]
+    fileGeneration: NotRequired[int]
+    stallWakeGeneration: NotRequired[int]
+    stallTimeoutSeconds: NotRequired[int]
+    livenessCommand: NotRequired[str]
+    error: NotRequired[str | None]
+    lastAt: NotRequired[float]
+    lastExitCode: NotRequired[int | None]
+    lastFinished: NotRequired[float]
+    lastOutput: NotRequired[str]
+    activeWorkers: NotRequired[int]
+    alerted: NotRequired[bool]
+    durationMinutes: NotRequired[int]
+    eventText: NotRequired[str]
+    lastEvent: NotRequired[str]
+    lastStallError: NotRequired[str | None]
+    lastStallExitCode: NotRequired[int | None]
+    lastStallFinished: NotRequired[float]
+    lowSince: NotRequired[float | None]
+    minimumWorkers: NotRequired[int]
+    restartCheck: NotRequired[JsonObject]
+    restartHoldNotified: NotRequired[bool]
+    stallEventKey: NotRequired[str]
+    stallProbe: NotRequired[JsonObject]
+    stallText: NotRequired[str]
+    userHidden: NotRequired[bool]
+
+
+class ToolRequestTimingRecord(TypedDict):
+    admissionDelayMs: NotRequired[float]
+    callbackQueueDelayMs: NotRequired[float]
+    callbackStartedAt: NotRequired[int | float]
+    executionQueueDelayMs: NotRequired[float]
+    handlerEndedAt: NotRequired[int]
+    handlerStartedAt: NotRequired[int]
+    queueDelayMs: NotRequired[float]
+    reservationBeganAt: NotRequired[int]
+    reservationDelayMs: NotRequired[float]
+    reservationEndedAt: NotRequired[int]
+    reservationLockedAt: NotRequired[int]
+    wireReceivedAt: NotRequired[int | float]
+
+
+class ToolRequestRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    accountKey: NotRequired[str]
+    callId: NotRequired[str]
+    connectionId: NotRequired[str]
+    created: NotRequired[float]
+    epoch: NotRequired[int]
+    outcome: NotRequired[str]
+    readOnly: NotRequired[bool]
+    request_id: NotRequired[str]
+    result: NotRequired[JsonObject]
+    rpcId: NotRequired[int | str]
+    signature: NotRequired[str]
+    stage: NotRequired[str]
+    started: NotRequired[float]
+    threadId: NotRequired[str]
+    timing: NotRequired[ToolRequestTimingRecord]
+    tool: NotRequired[str]
+    turnId: NotRequired[str]
+    updated: NotRequired[float]
+    cancelRequested: NotRequired[bool]
+    finished: NotRequired[float]
+    error: NotRequired[str]
+    agentIds: NotRequired[list[str]]
+    nativeDelivery: NotRequired[JsonObject]
+    operationResult: NotRequired[JsonObject]
+    supervisor: NotRequired[JsonObject]
+    admissionDelayMs: NotRequired[float]
+    callbackQueueDelayMs: NotRequired[float]
+    callbackStartedAt: NotRequired[int | float]
+    executionQueueDelayMs: NotRequired[float]
+    queueDelayMs: NotRequired[float]
+    reservationDelayMs: NotRequired[float]
+    wireReceivedAt: NotRequired[int | float]
 
 
 class AgentActivityRecord(TypedDict):
@@ -471,9 +728,9 @@ class NativeSafetyRetryRecord(TypedDict):
         "start", "unknown", "running", "failed", "cancelled",
     ]]
     model: NotRequired[str]
-    turnId: NotRequired[str]
-    threadId: NotRequired[str]
-    sourceThreadId: NotRequired[str]
+    turnId: NotRequired[str | None]
+    threadId: NotRequired[str | None]
+    sourceThreadId: NotRequired[str | None]
     connectionId: NotRequired[str]
     attemptId: NotRequired[str]
     input: NotRequired[list[JsonValue]]
@@ -489,6 +746,25 @@ class NativeSafetyRetryRecord(TypedDict):
     acceptedTurnId: NotRequired[str]
     requestId: NotRequired[str]
     rpcMethod: NotRequired[str]
+
+
+class NativeSafetyRetryViewRecord(TypedDict):
+    id: NotRequired[str | None]
+    stage: NotRequired[Literal[
+        "turns", "items", "interrupt", "verify_turns", "verify_items", "fork",
+        "start", "unknown", "running", "failed", "cancelled",
+    ] | None]
+    model: NotRequired[str | None]
+    turnId: NotRequired[str | None]
+    epoch: NotRequired[int | None]
+    accountKey: NotRequired[str | None]
+    created: NotRequired[float | None]
+    updated: NotRequired[float | None]
+    error: NotRequired[str | None]
+    newThreadId: NotRequired[str | None]
+    acceptedTurnId: NotRequired[str | None]
+    requestId: NotRequired[str | None]
+    rpcMethod: NotRequired[str | None]
 
 
 class NativeTurnErrorRecord(TypedDict):
@@ -508,22 +784,6 @@ class NativeNoticeRecord(TypedDict):
     message: str
     details: NotRequired[JsonValue]
     at: float
-
-
-class NativeRequestParamsRecord(TypedDict):
-    threadId: NotRequired[str]
-
-
-class NativeRequestRecord(TypedDict):
-    id: str
-    method: NotRequired[str]
-    agent: NotRequired[str]
-    rpcId: NotRequired[str | int]
-    accountKey: NotRequired[str]
-    connectionId: NotRequired[str]
-    params: NotRequired[NativeRequestParamsRecord]
-    status: NotRequired[str]
-    createdAt: NotRequired[float]
 
 
 class ConnectionCheckRecord(TypedDict):
@@ -609,13 +869,50 @@ class EmptyTransferRecoveryRecord(TypedDict):
     epoch: NotRequired[int]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
+    transferId: NotRequired[str]
+    agentId: NotRequired[str]
+    accountKey: NotRequired[str]
+    settings: NotRequired[JsonObject]
+    sourceHistoryMissing: NotRequired[JsonValue]
+    startedAt: NotRequired[float]
+    failedInputIds: NotRequired[list[str]]
+    targetSettings: NotRequired[JsonObject]
+    nativeParams: NotRequired[JsonObject]
+    report: NotRequired[JsonObject]
+
+
+class WorktreeCleanupErrorRecord(TypedDict):
+    message: str
+    at: float
+    by: str
+    stderr: NotRequired[str]
+    errno: NotRequired[int]
+    returncode: NotRequired[int]
+
+
+class WorktreeRegistrationRepairRecord(TypedDict):
+    gitdir: str
+    gitFile: list[int]
+    rootFile: list[int]
 
 
 class WorktreeCleanupRecord(TypedDict):
     path: NotRequired[str]
     phase: NotRequired[str]
     at: NotRequired[float]
-    error: NotRequired[str]
+    error: NotRequired[str | WorktreeCleanupErrorRecord]
+    root: str
+    repo: str
+    relative: str
+    branch: NotRequired[str | None]
+    head: NotRequired[str | None]
+    identity: list[int | float | str | None]
+    gitFile: NotRequired[list[int]]
+    rootFile: NotRequired[list[int]]
+    missing: NotRequired[bool]
+    registrationRepair: NotRequired[WorktreeRegistrationRepairRecord]
+    bytes: NotRequired[int | None]
+    note: NotRequired[str]
 
 
 class WorkspaceOperationAgentRecord(TypedDict):
@@ -639,10 +936,10 @@ class WorkspaceWaitRecord(TypedDict):
 
 
 class CleanedWorktreeRecord(TypedDict):
-    branch: NotRequired[str]
+    branch: NotRequired[str | None]
     bytes: NotRequired[int | None]
-    head: NotRequired[str]
-    identity: NotRequired[list[JsonValue]]
+    head: NotRequired[str | None]
+    identity: NotRequired[list[int | float | str | None]]
     relative: NotRequired[str]
     repo: NotRequired[str]
     root: NotRequired[str]
@@ -654,6 +951,12 @@ class DeliveredModeRecord(TypedDict):
     epoch: NotRequired[list[str | int | None]]
     version: NotRequired[str]
     revision: NotRequired[int]
+    text: NotRequired[str | None]
+
+
+class PreparedContextRecord(TypedDict):
+    epoch: NotRequired[list[str | int | None]]
+    versions: NotRequired[dict[str, str]]
 
 
 class ParkReceiptRecord(TypedDict):
@@ -759,6 +1062,25 @@ class AgentDraftRecord(TypedDict):
     assets: NotRequired[list[JsonValue]]
 
 
+class AccountHistoryRecord(TypedDict):
+    transferId: NotRequired[str]
+    contextRepairId: NotRequired[str]
+    toolRefreshId: NotRequired[str]
+    accountKey: NotRequired[str]
+    threadId: NotRequired[str | None]
+    targetAccountKey: NotRequired[str]
+    targetThreadId: NotRequired[str]
+    at: NotRequired[float]
+    provider: NotRequired[str | None]
+    targetProvider: NotRequired[str | None]
+    recoveryId: NotRequired[str]
+    reason: NotRequired[str]
+    settingsDiscarded: NotRequired[JsonObject]
+    providerOptionsDiscarded: NotRequired[JsonObject]
+    portableHistory: NotRequired[PortableHistoryRecord]
+    sourceHistoryMissing: NotRequired[JsonObject]
+
+
 class AgentRecord(TypedDict):
     """JSON object stored in ``runtime_agents.record`` after mode projection."""
 
@@ -823,7 +1145,7 @@ class AgentRecord(TypedDict):
     activityPhase: NotRequired[str]
     nativeStatus: NotRequired[AgentNativeStatusRecord | NativeStatusValue | None]
     nativeSafetyBuffering: NotRequired[NativeSafetyBufferingRecord]
-    nativeSafetyRetry: NotRequired[NativeSafetyRetryRecord]
+    nativeSafetyRetry: NotRequired[NativeSafetyRetryViewRecord]
     nativeTurnError: NotRequired[NativeTurnErrorRecord]
     nativeThreadBlock: NotRequired[NativeThreadBlockRecord]
     nativeFailureHold: NotRequired[bool | JsonObject]
@@ -862,7 +1184,7 @@ class AgentRecord(TypedDict):
     budgetActionWait: NotRequired[BudgetWaitRecord]
     lastBudgetWait: NotRequired[BudgetWaitRecord]
     claudeInputRequest: NotRequired[JsonObject]
-    claudePreInputRetry: NotRequired[JsonObject]
+    claudePreInputRetry: NotRequired[ClaudePreInputRetryRecord]
     claudeOptions: NotRequired[JsonObject]
     nativeResponseTurn: NotRequired[str]
     nativeToolCatalog: NotRequired[JsonObject]
@@ -876,7 +1198,7 @@ class AgentRecord(TypedDict):
     profileInstructions: NotRequired[str]
     sandbox: NotRequired[JsonObject | None]
     approvalPolicy: NotRequired[str]
-    cyberAccessProgram: NotRequired[JsonValue]
+    cyberAccessProgram: NotRequired[str | None]
     lastAnswer: NotRequired[str]
     lastCompletedTurn: NotRequired[str]
     lastCompletedTurnStatus: NotRequired[AgentStatusValue | None]
@@ -899,13 +1221,13 @@ class AgentRecord(TypedDict):
     checkpointHistoryHead: NotRequired[str]
     restoredCheckpoint: NotRequired[str]
     worktreeCleanup: NotRequired[WorktreeCleanupRecord]
-    cleanedWorktree: NotRequired[CleanedWorktreeRecord]
+    cleanedWorktree: NotRequired[WorktreeCleanupRecord]
     lastWorkspaceWait: NotRequired[WorkspaceWaitRecord]
     workerBaseRef: NotRequired[str | None]
     workerBaseCommit: NotRequired[str | None]
     workerBaseBehindMain: NotRequired[int | None]
     workerBaseMainRef: NotRequired[str | None]
-    accountHistory: NotRequired[list[JsonValue]]
+    accountHistory: NotRequired[list[AccountHistoryRecord]]
     deliveredMode: NotRequired[DeliveredModeRecord]
     agentMode: NotRequired[AgentModeValue]
     agentModeRevision: NotRequired[int]
@@ -934,10 +1256,10 @@ class AgentRecord(TypedDict):
     complaintsPresented: NotRequired[list[str]]
     lastEvent: NotRequired[str]
     prepareAttempt: NotRequired[str]
-    preparedContext: NotRequired[JsonObject]
+    preparedContext: NotRequired[PreparedContextRecord]
     profile: NotRequired[JsonObject | None]
     reviewArchiveAttempts: NotRequired[int]
-    reviewArchiveError: NotRequired[str]
+    reviewArchiveError: NotRequired[str | None]
     reviewArchiveNextAt: NotRequired[float]
     reviewArchiveScheduled: NotRequired[str]
     authResumeAttempt: NotRequired[int]
@@ -959,6 +1281,88 @@ class WorkArchiveRecord(TypedDict):
     worktree: NotRequired[JsonObject]
 
 
+class WorkArchiveIntentRecord(TypedDict):
+    id: str
+    status: Literal["pending", "complete", "terminal"]
+    owner: NotRequired[str | None]
+    attempts: NotRequired[int]
+    created: NotRequired[float]
+    schedulerVersion: NotRequired[int]
+    previousId: NotRequired[str]
+    nextAttemptAt: NotRequired[float]
+    lastOutcome: NotRequired[WorkArchiveRecord]
+    updated: NotRequired[float]
+    outcome: NotRequired[WorkArchiveRecord]
+
+
+class WorkResultRecord(TypedDict):
+    id: str
+    agent: str
+    text: str
+    checks: str
+    revision: str
+    files: list[str]
+    created: float
+    resultFile: NotRequired[str]
+    runId: NotRequired[str]
+    attemptId: NotRequired[str | None]
+
+
+class WorkDecisionRecord(TypedDict):
+    decision: Literal["cancel", "accept", "reject"]
+    reason: str
+    by: str
+    owner: NotRequired[str | None]
+    resultId: NotRequired[str]
+    created: float
+
+
+class PlanRecord(TypedDict):
+    id: str
+    rootId: str
+    text: str
+    version: int
+    updated: float | None
+    steps: list[JsonValue]
+
+
+class AnnotationRecord(TypedDict):
+    id: str
+    agent: str
+    rootId: str
+    path: str
+    line: int
+    text: str
+    created: float
+    turnId: NotRequired[str]
+
+
+class QueueMessageRecord(TypedDict):
+    id: str
+    text: str
+    kind: str
+    status: str
+    error: str | None
+    created: float
+    assets: NotRequired[list[JsonObject]]
+    delivery: NotRequired[str]
+    requestedDelivery: NotRequired[str]
+    acceptedAt: NotRequired[float]
+    metadata: NotRequired[str | None]
+
+
+class QueueSnapshotRecord(TypedDict):
+    items: list[QueueMessageRecord]
+    revision: str
+    capabilities: dict[str, bool]
+
+
+class QueueUpdateResultRecord(TypedDict):
+    status: str
+    revision: str
+    capabilities: dict[str, bool]
+
+
 class WorkRecord(TypedDict):
     id: str
     rootId: str
@@ -971,11 +1375,16 @@ class WorkRecord(TypedDict):
     createdBy: str
     version: int
     dependencies: list[str]
-    decisions: list[JsonValue]
-    results: list[JsonValue]
+    decisions: list[WorkDecisionRecord]
+    results: list[WorkResultRecord]
     archive: NotRequired[WorkArchiveRecord]
-    archiveIntent: NotRequired[JsonObject]
+    archiveIntent: NotRequired[WorkArchiveIntentRecord]
     releases: NotRequired[list[JsonValue]]
+
+
+class WorkViewRecord(WorkRecord):
+    blockedBy: list[str]
+    displayStatus: WorkStatusValue | Literal["blocked"]
 
 
 class CheckpointRecord(TypedDict):
@@ -1038,6 +1447,58 @@ class ProjectRecord(TypedDict):
     workerBaseRevision: NotRequired[int]
 
 
+class AccountTransferRequestRecord(TypedDict):
+    leadId: str
+    targetAccountKey: str
+    scope: AccountTransferScopeValue
+
+
+class AccountTransferResultThreadRecord(TypedDict):
+    id: str
+
+
+class AccountTransferResultRecord(TypedDict):
+    thread: AccountTransferResultThreadRecord
+
+
+class AccountTransferMemberRecord(TypedDict):
+    phase: NotRequired[str]
+    sourceAccountKey: NotRequired[str]
+    sourceThreadId: NotRequired[str | None]
+    name: NotRequired[str | None]
+    provider: NotRequired[AgentProviderValue | None]
+    lazy: NotRequired[bool]
+    targetSettings: NotRequired[JsonObject]
+    source: NotRequired[JsonObject]
+    settings: NotRequired[JsonObject]
+    pendingSettings: NotRequired[PendingSettingsRecord | None]
+    sourcePendingSettings: NotRequired[PendingSettingsRecord | None]
+    sourceClaudeOptions: NotRequired[JsonObject | None]
+    sourceState: NotRequired[LazyAccountTransferSourceRecord]
+    continueAfterTransfer: NotRequired[bool]
+    error: NotRequired[str | None]
+    waiting: NotRequired[str | None]
+    result: NotRequired[AccountTransferResultRecord]
+    portableHistory: NotRequired[JsonObject]
+    archiveSourceThread: NotRequired[JsonObject]
+    archiveInvalidated: NotRequired[bool]
+    interruptReason: NotRequired[str]
+    interruptOutcome: NotRequired[str]
+    interruptSubmittedAt: NotRequired[float]
+    interruptTurnId: NotRequired[str]
+    nextCheck: NotRequired[float]
+    nativeMethod: NotRequired[str]
+    preparationRejections: NotRequired[list[JsonObject]]
+    submittedAt: NotRequired[float]
+    targetConnection: NotRequired[str]
+    nativeParams: NotRequired[JsonObject]
+    sourceHistoryMissing: NotRequired[JsonValue]
+    emptyThreadRecovery: NotRequired[JsonObject]
+    phaseAtReservation: NotRequired[str]
+    reason: NotRequired[str]
+    interruptConfirmedAt: NotRequired[float]
+
+
 class AccountTransferRecord(TypedDict):
     id: str
     leadId: str
@@ -1045,10 +1506,12 @@ class AccountTransferRecord(TypedDict):
     status: AccountTransferStatusValue
     scope: AccountTransferScopeValue
     targetAccountKey: str
-    members: dict[str, JsonObject]
-    requests: dict[str, JsonObject]
+    members: dict[str, AccountTransferMemberRecord]
+    requests: dict[str, AccountTransferRequestRecord]
     updated: NotRequired[float]
     targetProvider: NotRequired[AgentProviderValue]
+    finishHistory: NotRequired[bool]
+    cancelledAt: NotRequired[float]
 
 
 class WorkspaceOperationRecord(TypedDict):
@@ -1100,6 +1563,10 @@ class RecordStore(Protocol):
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["work"], *, shared: bool = False) -> list[WorkRecord]: ...
     @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["plans"], *, shared: bool = False) -> list[PlanRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["annotations"], *, shared: bool = False) -> list[AnnotationRecord]: ...
+    @overload
     def records(self, db: "sqlite3.Connection", table: Literal["checkpoints"], *, shared: bool = False) -> list[CheckpointRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["complaints"], *, shared: bool = False) -> list[ComplaintRecord]: ...
@@ -1112,14 +1579,22 @@ class RecordStore(Protocol):
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["rooms"], *, shared: bool = False) -> list[RoomRecord]: ...
     @overload
-    def records(self, db: "sqlite3.Connection", table: Literal["requests"], *, shared: bool = False) -> list[NativeRequestRecord]: ...
+    def records(self, db: "sqlite3.Connection", table: Literal["requests"], *, shared: bool = False) -> list[RequestRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["native_notices"], *, shared: bool = False) -> list[NativeNoticeRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["rules"], *, shared: bool = False) -> list[RuleRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["tool_requests"], *, shared: bool = False) -> list[ToolRequestRecord]: ...
 
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["agents"], record: AgentRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["work"], record: WorkRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["plans"], record: PlanRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["annotations"], record: AnnotationRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["checkpoints"], record: CheckpointRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
@@ -1133,7 +1608,15 @@ class RecordStore(Protocol):
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["safety_retries"], record: NativeSafetyRetryRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
     def put(self, db: "sqlite3.Connection", table: Literal["native_notices"], record: NativeNoticeRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["rules"], record: RuleRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["tool_requests"], record: ToolRequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> AgentRecord: ...
     def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False, include_id: str | None = None) -> list[AgentRecord]: ...
