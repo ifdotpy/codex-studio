@@ -15,6 +15,7 @@ import time
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
 
 import codex_workspace_images as images
+import codex_workspace_macos as macos
 from codex_workspace_macos import Backend
 
 
@@ -62,12 +63,41 @@ def main():
         if not done.wait(1800) or outcome[-1]['state'] != 'ready':
             raise RuntimeError(f'base build failed: {outcome[-1] if outcome else None}')
 
+        root_added = folder / 'root-event-probe.txt'
+        root_added.write_text('temporary root file\n')
+        git(folder, 'add', 'root-event-probe.txt')
+        root_added.unlink()
+        git(folder, 'add', '-A', '--', 'root-event-probe.txt')
         changed = folder / 'payload/d000/f000000.txt'
         changed.write_text('user edited this file\n')
         git(folder, 'add', 'payload/d000/f000000.txt')
+        backend = images._get_backend()
+        original_sync = backend.sync_delta
+        original_read = macos._read_events
+        delta_seconds = []
+        event_paths = []
+
+        def tracked_read_events(event_root, since):
+            events, newest = original_read(event_root, since)
+            event_paths.extend(events)
+            return events, newest
+
+        def timed_sync(*args, **kwargs):
+            started = time.monotonic()
+            try:
+                return original_sync(*args, **kwargs)
+            finally:
+                delta_seconds.append(time.monotonic() - started)
+
+        macos._read_events = tracked_read_events
+        backend.sync_delta = timed_sync
         start = time.monotonic()
-        workspace = images.create_workspace(folder, agent_id)
-        agent_start_seconds = time.monotonic() - start
+        try:
+            workspace = images.create_workspace(folder, agent_id)
+            agent_start_seconds = time.monotonic() - start
+        finally:
+            backend.sync_delta = original_sync
+            macos._read_events = original_read
         agent_root = pathlib.Path(workspace['path'])
         status_start = time.monotonic()
         status = git(agent_root, 'status', '--porcelain')
@@ -76,7 +106,11 @@ def main():
             raise AssertionError(f'workspace status was not clean after the user staged a file: {status[:200]}')
         if (agent_root / 'payload/d000/f000000.txt').read_text() != 'user edited this file\n':
             raise AssertionError("workspace did not include the user's edit")
+        root_event_fired = any(pathlib.Path(value).resolve() == folder
+                               for value, _flags, _event_id in event_paths)
         print(json.dumps({'paths': count, 'agentStartSeconds': round(agent_start_seconds, 3),
+                          'deltaSeconds': round(sum(delta_seconds), 3),
+                          'rootEventFired': root_event_fired,
                           'firstGitStatusSeconds': round(first_status_seconds, 3)}, sort_keys=True))
     finally:
         try:
