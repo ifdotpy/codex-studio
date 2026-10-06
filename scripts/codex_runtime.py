@@ -62,6 +62,8 @@ if TYPE_CHECKING:
         CheckpointRecord,
         ComplaintRecord,
         JsonValue,
+        NativeNoticeRecord,
+        NativeRequestRecord,
         NativeSafetyRetryRecord,
         ProjectRecord,
         RoomRecord,
@@ -2496,6 +2498,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @overload
     def records(self, db: sqlite3.Connection, table: Literal["rooms"], *, shared: bool = False) -> list["RoomRecord"]: ...
 
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["NativeRequestRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["native_notices"], *, shared: bool = False) -> list["NativeNoticeRecord"]: ...
+
     def records(self: Any, db: Any, table: Any = None, *, shared: Any = False) -> Any:
         # Calls already in progress may still use the former static form.
         if table is None:
@@ -2891,7 +2899,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | NativeSafetyRetryRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | NativeSafetyRetryRecord | NativeNoticeRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
         if table in {"checkpoints", "tool_requests"}:

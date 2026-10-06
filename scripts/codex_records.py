@@ -498,7 +498,32 @@ class NativeTurnErrorRecord(TypedDict):
 
 class NativeThreadBlockRecord(TypedDict):
     threadId: NotRequired[str]
-    error: NotRequired[str]
+    error: NotRequired[JsonObject]
+
+
+class NativeNoticeRecord(TypedDict):
+    id: str
+    accountKey: str
+    connectionId: str
+    message: str
+    details: NotRequired[JsonValue]
+    at: float
+
+
+class NativeRequestParamsRecord(TypedDict):
+    threadId: NotRequired[str]
+
+
+class NativeRequestRecord(TypedDict):
+    id: str
+    method: NotRequired[str]
+    agent: NotRequired[str]
+    rpcId: NotRequired[str | int]
+    accountKey: NotRequired[str]
+    connectionId: NotRequired[str]
+    params: NotRequired[NativeRequestParamsRecord]
+    status: NotRequired[str]
+    createdAt: NotRequired[float]
 
 
 class ConnectionCheckRecord(TypedDict):
@@ -800,6 +825,7 @@ class AgentRecord(TypedDict):
     nativeSafetyBuffering: NotRequired[NativeSafetyBufferingRecord]
     nativeSafetyRetry: NotRequired[NativeSafetyRetryRecord]
     nativeTurnError: NotRequired[NativeTurnErrorRecord]
+    nativeThreadBlock: NotRequired[NativeThreadBlockRecord]
     nativeFailureHold: NotRequired[bool | JsonObject]
     nativeLimitErrorAt: NotRequired[float]
     nativeNameSynced: NotRequired[NativeNameSyncedRecord | None]
@@ -1085,6 +1111,10 @@ class RecordStore(Protocol):
     def records(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], *, shared: bool = False) -> list[WorkspaceOperationRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["rooms"], *, shared: bool = False) -> list[RoomRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["requests"], *, shared: bool = False) -> list[NativeRequestRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["native_notices"], *, shared: bool = False) -> list[NativeNoticeRecord]: ...
 
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["agents"], record: AgentRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
@@ -1102,6 +1132,8 @@ class RecordStore(Protocol):
     def put(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], record: WorkspaceOperationRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["native_notices"], record: NativeNoticeRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> AgentRecord: ...
     def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False, include_id: str | None = None) -> list[AgentRecord]: ...

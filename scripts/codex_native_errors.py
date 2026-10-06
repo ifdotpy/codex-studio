@@ -6,11 +6,18 @@ These handlers record its decisions; they never resubmit a model or tool call.
 import hashlib
 import json
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3
+    from typing import Any
+    from codex_records import AgentRecord, JsonObject, NativeNoticeRecord, NativeThreadBlockRecord
+    from codex_runtime import Runtime
 
 
 class NativeRpcError(RuntimeError):
     """An explicit JSON-RPC rejection, distinct from a lost acknowledgement."""
-    def __init__(self, error):
+    def __init__(self, error: "JsonObject") -> None:
         self.error = error
         self.code = error.get('code') if isinstance(error, dict) else None
         self.data = error.get('data') if isinstance(error, dict) else None
@@ -35,7 +42,7 @@ TURN_NOTICE_METHODS = frozenset({
 })
 
 
-def error_kind(error):
+def error_kind(error: "Any") -> str:
     if not isinstance(error, dict):
         return ''
     info = error.get('codexErrorInfo')
@@ -43,7 +50,7 @@ def error_kind(error):
 
 
 
-def error_message(error):
+def error_message(error: "Any") -> str:
     if isinstance(error, dict):
         kind = error_kind(error)
         if kind == 'tooManyDenials':
@@ -59,14 +66,14 @@ def error_message(error):
 THREAD_BLOCK_MESSAGE = 'This chat is stopped as a precaution. Start or resume another chat.'
 
 
-def preserve_thread_block(agent, error):
+def preserve_thread_block(agent: "AgentRecord", error: "Any") -> None:
     """Keep the native precaution separate from temporary transport errors."""
     if (agent.get('threadId') and isinstance(error, dict)
             and error.get('codexErrorInfo') == 'misalignmentPolicyViolation'):
         agent['nativeThreadBlock'] = {'threadId': agent['threadId'], 'error': error}
 
 
-def native_thread_block(agent):
+def native_thread_block(agent: "AgentRecord") -> "NativeThreadBlockRecord | None":
     block = agent.get('nativeThreadBlock') or {}
     if block.get('threadId') and block['threadId'] == agent.get('threadId'):
         return block
@@ -83,12 +90,14 @@ def native_thread_block(agent):
     return None
 
 
-def assert_native_thread_open(agent):
+def assert_native_thread_open(agent: "AgentRecord") -> None:
     if native_thread_block(agent):
         raise ValueError(THREAD_BLOCK_MESSAGE)
 
 
-def refresh_native_limits(runtime, db, agent, error, turn_id, account_key, connection_id):
+def refresh_native_limits(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+                          error: "Any", turn_id: str | None, account_key: str,
+                          connection_id: str | None) -> None:
     """Read native limits once after this account's exact failed turn."""
     if (not isinstance(error, dict) or error.get('codexErrorInfo') not in
             ('usageLimitExceeded', 'rateLimitExceeded') or not turn_id or not agent.get('threadId')
@@ -107,7 +116,7 @@ def refresh_native_limits(runtime, db, agent, error, turn_id, account_key, conne
     if not inserted.rowcount:
         return
     agent['nativeLimitErrorAt'] = time.time()
-    def read_limits():
+    def read_limits():  # type: () -> None
         try:
             runtime.limits(account_key, force=True, connection_id=connection_id)
         except Exception:
@@ -116,12 +125,13 @@ def refresh_native_limits(runtime, db, agent, error, turn_id, account_key, conne
     runtime.recovery_pool.submit(read_limits)
 
 
-def notice(runtime, db, agent, key, text, kind='warning', **metadata):
+def notice(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord", key: str,
+           text: str, kind: str = 'warning', **metadata: "Any") -> None:
     runtime.item(db, agent['id'], 'native-notice:' + key, 'system', text,
                  'Codex', nativeNotice=kind, **metadata)
 
 
-def warning_text(method, p):
+def warning_text(method: str, p: "JsonObject") -> str:
     text = p.get('message') or p.get('summary') or ''
     if method == 'autoApprovalReview/strictReviewRequired':
         return 'Codex requires additional safety checks. Some tools may take longer.'
@@ -136,7 +146,8 @@ def warning_text(method, p):
     return text
 
 
-def account_notice(runtime, db, method, p, account_key, connection_id):
+def account_notice(runtime: "Runtime", db: "sqlite3.Connection", method: str, p: "JsonObject",
+                   account_key: str, connection_id: str) -> None:
     # These events can arrive during startup, before any thread exists.
     db.execute('CREATE TABLE IF NOT EXISTS runtime_native_notices (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
     text = warning_text(method, p)
@@ -153,14 +164,15 @@ def account_notice(runtime, db, method, p, account_key, connection_id):
                "ORDER BY json_extract(record,'$.at') DESC LIMIT 50)", (account_key, account_key))
 
 
-def account_notices(runtime, db):
+def account_notices(runtime: "Runtime", db: "sqlite3.Connection") -> list["NativeNoticeRecord"]:
     if not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_native_notices'").fetchone():
         return []
     return [r for r in runtime.records(db, 'native_notices')
             if runtime.connection_ids.get(r['accountKey']) == r.get('connectionId')]
 
 
-def hook_notice(runtime, db, agent, method, params):
+def hook_notice(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+                method: str, params: "JsonObject") -> None:
     run = params.get('run') or {}
     if not isinstance(run.get('id'), str) or not run['id']:
         return
@@ -203,7 +215,8 @@ def hook_notice(runtime, db, agent, method, params):
     runtime.touch_ui(agent['id'])
 
 
-def consume_native_notification(runtime, message, account_key, connection_id):
+def consume_native_notification(runtime: "Runtime", message: "JsonObject", account_key: str,
+                                connection_id: str) -> bool:
     method, p = message.get('method'), message.get('params') or {}
     if method not in NOTICE_METHODS | HOOK_METHODS | TURN_NOTICE_METHODS | {'error', 'serverRequest/resolved'}:
         return False
@@ -324,7 +337,7 @@ def consume_native_notification(runtime, message, account_key, connection_id):
     return True
 
 
-def advance_native_status(agent, method, params):
+def advance_native_status(agent: "AgentRecord", method: str, params: "JsonObject") -> None:
     """Restore activity only on progress for this turn, not token telemetry."""
     if method in {'turn/started', 'turn/completed'}:
         agent.pop('nativeSafetyBuffering', None)
@@ -346,7 +359,7 @@ def advance_native_status(agent, method, params):
         agent.pop('nativeTurnError', None)
     elif method == 'turn/completed':
         turn = params.get('turn') or {}
-        previous = agent.get('nativeTurnError') or {}
+        previous: "Any" = agent.get('nativeTurnError') or {}
         if turn.get('status') == 'failed' and not turn.get('error') and previous.get('turnId') == turn.get('id'):
             turn['error'] = previous['error']
         if turn.get('status') == 'failed':
