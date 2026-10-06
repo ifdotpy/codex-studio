@@ -34,7 +34,7 @@ class EntityReadLockContract(unittest.TestCase):
             CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,
                                         created REAL,error TEXT);''')
-        self.agent = {'id': 'owner', 'rootId': 'owner', 'name': 'Owner', 'status': 'paused', 'deletedAt': None}
+        self.agent = {'id': 'owner', 'kind': 'agent', 'rootId': 'owner', 'name': 'Owner', 'status': 'paused', 'deletedAt': None}
         self.monitor = {'id': 'monitor', 'agent': 'owner', 'status': 'running', 'created': 1, 'tail': 'First output'}
         self.anchor.execute('INSERT INTO runtime_agents VALUES (?,?)', ('owner', json.dumps(self.agent)))
         self.anchor.execute('INSERT INTO runtime_monitors VALUES (?,?)', ('monitor', json.dumps(self.monitor)))
@@ -43,7 +43,7 @@ class EntityReadLockContract(unittest.TestCase):
         self.builds = []
         class RuntimeView:
             def agent_entity_view(_self, _db, record):
-                return record
+                return {**record, 'kind': 'agent'}
 
             def complaint_entity_view(_self, _db, record):
                 return record

@@ -148,7 +148,14 @@ class Canvas:
                 own.execute("PRAGMA query_only=ON")
                 own.execute("BEGIN")
                 return self.threads(runtime_agents, db=own)
-        rows = read_threads(self.root)
+        rows = []
+        for path in sorted(self.root.glob("codex-swarm-status.*.json")):
+            wave = path.name.removeprefix("codex-swarm-status.").removesuffix(".json")
+            try:
+                rows.extend(read_threads(self.root, wave))
+            except Exception as error:
+                from codex_sync_entities import _report_bad_entity
+                _report_bad_entity("agent", path.name, error)
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
             row["status"] = effective_status(row)

@@ -818,7 +818,7 @@ class FederationService:
             self.runtime.put(db, "rooms", {"id": room_id, "kind": "federated",
                 "members": room["localMembers"], "updated": created, "name": room["name"],
                 "federation": True, "peerId": room["peerId"], "peerLabel": room["peerLabel"]},
-                include_last_message=True)
+                )
             event_text = _json({"room": room_id, "message_id": message_id,
                                 "sender": sender_id, "sender_name": name,
                                 "text": text, "untrusted_remote": False,
@@ -1038,7 +1038,7 @@ class FederationService:
         standard = {"id": room_id, "kind": "federated", "members": room["localMembers"],
                     "updated": room["updated"], "name": room["name"], "federation": True,
                     "peerId": peer["stateId"], "peerLabel": peer["label"]}
-        self.runtime.put(db, "rooms", standard, include_last_message=True)
+        self.runtime.put(db, "rooms", standard)
         # Remote text is explicitly labeled as untrusted data before entering a model turn.
         event_text = _json({"room": room_id, "message_id": envelope["id"],
                             "sender": display_sender, "sender_name": expected_name or peer["label"],

@@ -156,10 +156,12 @@ class SyncEntityContractTests(unittest.TestCase):
                         self.fail("worker defaults were omitted")
                     self.assertEqual(parsed.workerDefaults.model, model)
                     self.assertIn("model", parsed.workerDefaults.model_dump(exclude_unset=True))
-        codex_sync_entities._REPORTED_BAD_ENTITIES.discard(("agent", "agent-a", "ValidationError"))
+        codex_sync_entities._REPORTED_BAD_FIELDS.discard(
+            ("agent", "agent-a", "workerDefaults", "ValidationError"))
         with self.assertLogs("codex_sync_entities", level="WARNING"):
             projected = project("agent", {
                 "id": "agent-a",
+                "kind": "agent",
                 "workerDefaults": {"model": 42, "effort": None, "fastMode": False},
             })
         self.assertIsNotNone(projected)
@@ -182,13 +184,15 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIn("id", COLLECTION_FIELDS["task"])
         source: dict[str, JsonValue] = {
             "id": "a",
+            "kind": "agent",
             "status": "running",
             "private": "excluded",
         }
         agent = project("agent", source)
-        self.assertEqual(agent, {"id": "a", "status": "running"})
+        self.assertEqual(agent, {"id": "a", "kind": "agent", "status": "running"})
         image_agent = project("agent", {
             "id": "image-worker",
+            "kind": "agent",
             "imageWorkspace": True,
             "imageWorkspaceReady": True,
             "imageWorkspacePhase": "ready",
@@ -259,7 +263,7 @@ class SyncEntityContractTests(unittest.TestCase):
         }
         save_transfer = cast(Callable[[object, dict[str, JsonValue]], None], transfers.save)
         save_transfer(None, operation)
-        projected = project("agent", runtime.lead)
+        projected = project("agent", {**runtime.lead, "kind": "agent"})
         agent = AgentEntityDto.model_validate(projected)
         self.assertIsNotNone(agent.accountTransfer)
         assert agent.accountTransfer is not None
@@ -301,7 +305,9 @@ class SyncEntityContractTests(unittest.TestCase):
                 agent = runtime.create(
                     {"name": "Draft Lead", "prompt": "", "cwd": temporary}, draft=True
                 )
-                projected = project("agent", agent)
+                with runtime.lock, runtime.db() as db:
+                    record = runtime.agent(agent["id"], db)
+                    projected = project("agent", runtime.agent_entity_view(db, record))
                 if not isinstance(projected, dict):
                     self.fail("runtime agent did not project")
                 self.assertIs(projected.get("worktree"), False)
@@ -642,8 +648,8 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
         with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
-            native = project("agent", {"id": "agent-a", "nativeSafetyRetry": {"stage": "other"}})
-            context = project("agent", {"id": "agent-a", "contextUsage": {"tokens": "many", "window": 1}})
+            native = project("agent", {"id": "agent-a", "kind": "agent", "nativeSafetyRetry": {"stage": "other"}})
+            context = project("agent", {"id": "agent-a", "kind": "agent", "contextUsage": {"tokens": "many", "window": 1}})
         self.assertIsNotNone(native)
         self.assertNotIn("nativeSafetyRetry", native)
         self.assertIsNotNone(context)
@@ -748,7 +754,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 projected = project("agent", record)
                 self.assertEqual(projected, record)
                 self.assertEqual(SnapshotAgentDto.model_validate(record).worktreePreparation, phase)
-        self.assertEqual(project("agent", {"id": "worker"}), {"id": "worker"})
+        self.assertIsNone(project("agent", {"id": "worker"}))
 
     def test_snapshot_preserves_unknown_start_identity_and_hold(self) -> None:
         record: dict[str, JsonValue] = {

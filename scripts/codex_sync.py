@@ -465,21 +465,27 @@ class SyncStore:
             stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
                                      "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
             valid_recent: list[tuple[str, JsonObject]] = []
+            unprojectable: set[str] = set()
             for record in recent:
                 key = record.get('id')
                 if not isinstance(key, str) or not key:
                     from codex_sync_entities import _report_bad_entity
                     _report_bad_entity('monitor', str(key or ''), ValueError('stored record has no valid id'))
                     continue
+                projected = project('monitor', record)
+                if projected is None:
+                    unprojectable.add(key)
+                    continue
                 valid_recent.append((key, record))
-            if set(stored) != {key for key, _record in valid_recent}:
+            comparable_stored = {key: value for key, value in stored.items() if key not in unprojectable}
+            if set(comparable_stored) != {key for key, _record in valid_recent}:
                 return True
             for key, record in valid_recent:
                 projected = project('monitor', record)
                 if projected is None:
                     continue
                 _, digest, _ = encoded('monitor', key, projected)
-                if stored[key] != digest:
+                if comparable_stored[key] != digest:
                     return True
         return False
 

@@ -36,7 +36,7 @@ with tempfile.TemporaryDirectory() as directory:
             db.close()
 
     visible = {
-        "id": "agent-1", "name": "Worker", "status": "failed", "error": "visible error",
+        "id": "agent-1", "kind": "agent", "name": "Worker", "status": "failed", "error": "visible error",
         "prompt": "P" * 5000, "lastAnswer": "R" * 5000, "lastCompletedTurn": "turn-1",
         "events": 500, "nativeRelease": {"phase": "released", "resetPending": True, "private": 1},
         "activity": {"phase": "tool", "private": 1}, "nativeStatus": {"error": "status error", "private": 1},
@@ -113,7 +113,7 @@ with tempfile.TemporaryDirectory() as directory:
         organization = {"pinned": True, "archived": False, "projectFolder": "review", "projectFolderRevision": 3}
         db.execute("INSERT INTO runtime_agents VALUES ('agent',?)", (json.dumps({"id":"agent","deletedAt":None, **organization}),))
         # Existing entity rows lack the new fields but contain derived renderer values.
-        put(db, "agent", "agent", {"id": "agent", "empty": True, "canSend": False})
+        put(db, "agent", "agent", {"id": "agent", "kind": "agent", "empty": True, "canSend": False})
         assert upgrade_agent_organization(db) == 1
         migrated = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id='agent'").fetchone()[0])["value"]
         for field, value in organization.items():
@@ -214,7 +214,7 @@ with tempfile.TemporaryDirectory() as directory:
         ensure_tables(db)
 
     snapshot = {"stateDir": directory, "threads": [], "chats": [], "nodes": [], "edges": [],
-                "runtime": {"agents": [{"id": "a", "name": "A", "status": "running", "source": "managed"}],
+                "runtime": {"agents": [{"id": "a", "kind": "agent", "name": "A", "status": "running", "source": "managed"}],
                             "rooms": [], "tasks": [], "monitors": [], "complaints": [], "requests": []}}
     snapshot_builds = []
     def build_snapshot():
@@ -231,7 +231,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert seeded["maxSeq"] >= seeded["checkpoint"]["seq"]
     checkpoint = seeded["checkpoint"]["seq"]
     with connect() as db:
-        assert put(db, "agent", "a", {"id": "a", "name": "Updated", "status": "running", "source": "managed"})
+        assert put(db, "agent", "a", {"id": "a", "kind": "agent", "name": "Updated", "status": "running", "source": "managed"})
     second_window = SyncStore(connect, lambda: snapshot, lambda _key: {})
     first_change = store.pull("state:entities:v1", after=checkpoint)
     replayed_change = second_window.pull("state:entities:v1", after=checkpoint)
@@ -248,7 +248,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert all(not row["_deleted"] for row in fresh["documents"])
     assert fresh["checkpoint"]["seq"] == fresh["maxSeq"]
     with connect() as db:
-        assert put(db, "agent", "in-flight", {"id": "in-flight", "name": "Pending"})
+        assert put(db, "agent", "in-flight", {"id": "in-flight", "kind": "agent", "name": "Pending"})
     first_attempt = store.pull("state:entities:v1", fresh=True, limit=500)
     with connect() as db:
         assert put(db, "agent", "in-flight", {}, deleted=True)
@@ -257,7 +257,7 @@ with tempfile.TemporaryDirectory() as directory:
     assert any(row["id"] == "entity:agent:in-flight" and row["_deleted"]
                for row in retried["documents"])
     with connect() as db:
-        assert put(db, "agent", "later", {"id": "later", "name": "Later"})
+        assert put(db, "agent", "later", {"id": "later", "kind": "agent", "name": "Later"})
         assert put(db, "agent", "later", {}, deleted=True)
     delta = store.pull("state:entities:v1", after=retried["checkpoint"]["seq"],
                        fresh=True, initial_high=retried["initialHigh"])
@@ -308,7 +308,7 @@ with tempfile.TemporaryDirectory() as directory:
         assert db.execute("SELECT count(*) FROM sync_entities WHERE collection='monitor' AND deleted=0").fetchone()[0] == 101
         assert db.execute("SELECT deleted FROM sync_entities WHERE collection='monitor' AND id='monitor-0'").fetchone()[0] == 1
         for index in range(650):
-            put(db, "agent", f"bulk-{index}", {"id": f"bulk-{index}", "name": "Bulk"})
+            put(db, "agent", f"bulk-{index}", {"id": f"bulk-{index}", "kind": "agent", "name": "Bulk"})
         for index in range(800):
             put(db, "agent", f"removed-{index}", {}, deleted=True)
     first = store.pull("state:entities:v1", fresh=True, limit=500)
@@ -338,10 +338,10 @@ with tempfile.TemporaryDirectory() as directory:
         rng = random.Random(82461)
         for index in range(45):
             key = f"random-live-{index}"
-            assert put(db, "agent", key, {"id": key, "name": f"live {rng.randrange(1_000_000)}"})
+            assert put(db, "agent", key, {"id": key, "kind": "agent", "name": f"live {rng.randrange(1_000_000)}"})
         for index in range(70):
             key = f"random-deleted-{index}"
-            put(db, "agent", key, {"id": key, "name": f"old {rng.randrange(1_000_000)}"})
+            put(db, "agent", key, {"id": key, "kind": "agent", "name": f"old {rng.randrange(1_000_000)}"})
             put(db, "agent", key, {}, deleted=True)
         tombstones_before = db.execute(
             "SELECT count(*) FROM sync_entities WHERE deleted=1 AND collection NOT LIKE 'transcript:%'"

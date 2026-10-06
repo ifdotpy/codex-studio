@@ -15,7 +15,7 @@ def _rooms(db):
 def _save(runtime, db, room):
     room['updated'] = time.time()
     if hasattr(runtime, 'chat_rooms'):
-        runtime.put(db, 'rooms', room, include_last_message=True)
+        runtime.put(db, 'rooms', room)
     else:
         runtime.put(db, 'rooms', room)
 

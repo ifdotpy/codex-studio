@@ -484,21 +484,25 @@ class EntityFieldProducers(unittest.TestCase):
             private_record = {"id": private_missing, "kind": "private",
                               "members": ["deleted-or-missing-agent"], "updated": 1.0,
                               "customName": "Stale private room"}
-            broadcast_record = {"id": broadcast_missing, "kind": "broadcast",
+            broadcast_record = {"id": broadcast_missing, "kind": "broadcast", "members": [],
                                 "rootId": "deleted-or-missing-lead", "updated": 1.0}
             self.runtime.put(db, "rooms", private_record)
             self.runtime.put(db, "rooms", broadcast_record)
             entity_put(db, "room", private_missing, private_record)
             entity_put(db, "room", broadcast_missing, broadcast_record)
 
-            # A richer normal room write includes lastMessage. The migration
-            # reprojects it through Runtime.put's default room view.
+            # Every normal room write now includes the same message preview.
             room_record = {"id": room_with_last_message, "kind": "private",
                            "members": [self.lead["id"]], "updated": 2.0}
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) "
                        "VALUES(?,?,?,?,?,?)", ("seed-last-message", room_with_last_message,
                        self.lead["id"], "preview", 2.0, "{}"))
-            self.runtime.put(db, "rooms", room_record, include_last_message=True)
+            self.runtime.put(db, "rooms", room_record)
+            room_payload = db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
+                (room_with_last_message,),
+            ).fetchone()[0]
+            self.assertEqual(json.loads(room_payload)["value"]["lastMessage"]["text"], "preview")
             self.assertFalse(self.runtime.chat_rooms(db, room_id=private_missing))
             self.assertFalse(self.runtime.chat_rooms(db, room_id=broadcast_missing))
         federated_id, members = self.write_federated_room()
@@ -508,7 +512,7 @@ class EntityFieldProducers(unittest.TestCase):
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) "
                        "VALUES(?,?,?,?,?,?)", ("federated-last-message", federated_id,
                        self.lead["id"], "federated preview", 3.0, "{}"))
-            self.runtime.put(db, "rooms", room_record, include_last_message=True)
+            self.runtime.put(db, "rooms", room_record)
         complaint = self.submit_complaint(key="upgrade-promoted-complaint")
         self.write_project_worker_base()
         worker = self.runtime.create({"name": "Upgrade worker", "cwd": self.path,

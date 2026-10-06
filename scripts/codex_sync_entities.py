@@ -153,6 +153,23 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
     if model is None:
         _report_bad_entity(collection, str(record.get("id", "")), ValueError("unknown entity collection"))
         return None
+    key = record.get("id")
+    entity_key = key if isinstance(key, str) else ""
+    if collection in {"agent", "room"} and (not isinstance(key, str) or not key):
+        _report_bad_entity(collection, "", ValueError("entity id is required"))
+        return None
+    structural_error = (
+        collection == "agent" and record.get("kind") != "agent"
+    ) or (
+        collection == "room" and (
+            not isinstance(record.get("kind"), str)
+            or not isinstance(record.get("members"), list)
+            or not all(isinstance(member, str) for member in cast(list[JsonValue], record.get("members", [])))
+        )
+    )
+    if structural_error:
+        _report_bad_entity(collection, entity_key, ValueError("entity is missing or has invalid structural fields"))
+        return None
     fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
     result = {
         key: _bounded(value, key)
