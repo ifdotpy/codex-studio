@@ -1,5 +1,7 @@
 import {
   test,
+  readTestState,
+  readLegacySnapshotForS2Assertions,
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -119,6 +121,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       await readFile(join(dir, "state/performance-fixture.json"), "utf8"),
     );
     const entityState = await readTestState(origin);
+    const fullState = await readLegacySnapshotForS2Assertions(origin);
     const compactState = {
       threads: entityState.threads,
       chats: entityState.chats,
@@ -134,7 +137,7 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
         events: entityState.runtime.events,
       },
     };
-    const full = JSON.stringify(entityState);
+    const full = JSON.stringify(fullState);
     const compact = JSON.stringify(compactState);
     const selected = compactState.threads.find(
       (agent) => agent.id === fixture.lead,
@@ -161,7 +164,12 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       "Fixture history must remain large after compression",
     );
     assert.ok(
-      !compactState.runtime.work,
+      fullState.runtime.work.length > 0,
+      "Fixture has retained work history",
+    );
+    assert.equal(
+      compactState.runtime.work,
+      undefined,
       "The chat projection excludes retained work history",
     );
     browser = await browserType.launch({
@@ -292,10 +300,10 @@ test("Mobile startup performance", { tag: "@performance" }, async () => {
       .waitFor({ state: "visible" });
     measurements.coldUsableChatListMs = Date.now() - started;
     if (expectCurrentBudgets) {
-      assert.equal(
-        requests.filter((request) => request.path === "/api/sync/pull").length,
-        0,
-        "Startup does not download a full snapshot",
+      assert.ok(
+        requests.filter((request) => request.path.startsWith("/api/sync/pull"))
+          .length <= maxIdlePulls,
+        `Startup stays within the ${maxIdlePulls}-pull budget`,
       );
       assert.ok(
         requests.some((request) =>

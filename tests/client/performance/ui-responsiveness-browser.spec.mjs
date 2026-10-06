@@ -1,6 +1,7 @@
 import {
   readTestState,
-  entityPullFixture,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -69,6 +70,11 @@ test(
         inFlight: false,
         turnId: null,
       }));
+      const backendIdentity = await (
+        await fetch(`${origin}/api/sync/identity`)
+      ).json();
+      const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+      const workspaceId = identityResponse.workspaceId;
       const state = {
         ...original,
         threads: agents,
@@ -337,14 +343,13 @@ test(
           }
           if (url.pathname === "/api/sync/identity")
             return route.fulfill({
-              json: { workspaceId: "ui-responsiveness-fixture" },
+              json: identityResponse,
             });
           if (url.pathname === "/api/sync/pull") {
-            const after = Number(url.searchParams.get("after") || 0);
             return route.fulfill({
               json: {
-                workspaceId: "ui-responsiveness-fixture",
-                ...entityPullFixture(state, after),
+                workspaceId: workspaceId,
+                ...entityPullFixtureForRequest(state, url),
               },
             });
           }

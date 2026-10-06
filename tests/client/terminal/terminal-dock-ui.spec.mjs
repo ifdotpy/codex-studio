@@ -1,6 +1,6 @@
 import {
   readTestState,
-  entityPullFixture,
+  entityPullFixtureForRequest,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -218,10 +218,7 @@ test("Terminal dock", async () => {
           status: 200,
           json: {
             workspaceId,
-            ...entityPullFixture(
-              state,
-              Number(url.searchParams.get("after") || 0),
-            ),
+            ...entityPullFixtureForRequest(state, url),
           },
         });
       if (path.startsWith("/api/sync/"))

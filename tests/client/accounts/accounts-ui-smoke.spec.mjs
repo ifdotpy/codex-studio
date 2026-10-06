@@ -1,4 +1,9 @@
-import { test, expect, entityPullFixture } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -180,6 +185,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -209,17 +215,18 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         rateLimitsByAccount: snapshotLimits,
       },
     };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+        onPull: () => {
+          stateReads++;
+        },
+      })
+    )
+      return;
     if (url.pathname === "/api/session") return json({ token: "fixture" });
-    if (url.pathname === "/api/sync/pull") {
-      stateReads++;
-      return json({
-        workspaceId: "account-fixture",
-        ...entityPullFixture(
-          stateForEntities,
-          Number(url.searchParams.get("after") || 0),
-        ),
-      });
-    }
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -427,10 +434,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         warning: false,
         scanning: false,
       });
-    if (url.pathname.startsWith("/api/sync/")) {
-      res.statusCode = 404;
-      return json({ error: "Fixture uses HTTP snapshots" });
-    }
+
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {

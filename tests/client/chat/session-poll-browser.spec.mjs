@@ -1,4 +1,9 @@
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  syncIdentityFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 // Replicated state uses the current credential endpoint and reports failures.
 import { fileURLToPath } from "node:url";
 test("Session Poll Browser", async ({
@@ -40,10 +45,16 @@ test("Session Poll Browser", async ({
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let pulls = 0,
+      snapshotReads = 0,
       sessions = 0,
       status = 200,
       token = "first";
-    const workspaceId = "a".repeat(32);
+    const identity = syncIdentityFixture();
+    const workspaceId = identity.workspaceId;
+    await page.route("**/api/state", (route) => {
+      snapshotReads++;
+      return route.continue();
+    });
     await page.route("**/check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -58,7 +69,7 @@ test("Session Poll Browser", async ({
       });
     });
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identity }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -148,6 +159,8 @@ test("Session Poll Browser", async ({
       "recovered",
     );
     assert.equal(await page.evaluate(() => window.snapshot.error), "");
+    assert.equal(snapshotReads, 0, "Never download the full state");
+    assert.equal(snapshotReads, 0, "Never invoke the old snapshot fallback");
     assert.deepEqual(errors, []);
     console.log(
       "session polling PASS: entity pull, rotated token, visible error, missing endpoint rejection",

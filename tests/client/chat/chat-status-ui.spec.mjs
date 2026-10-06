@@ -1,7 +1,8 @@
 import {
   readTestState,
   readLegacySnapshotForS2Assertions,
-  entityPullFixture,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
   test,
   expect,
   spawnFixture as spawn,
@@ -156,20 +157,48 @@ test("chat-status-ui", async ({ browser }) => {
       viewport: { width: 1440, height: 980 },
     });
     page = await context.newPage();
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (path === "/api/state") stateRequests.push(request.url());
+    });
     page.setDefaultTimeout(10000);
     const errors = [],
       writes = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const workspaceId = "chat-status-fixture";
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    let fixtureMaxSeq = 0;
+    let pullTombstones = [];
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identityResponse }),
     );
     await page.route("**/api/sync/pull?*", (route) => {
-      const after = Number(
-        new URL(route.request().url()).searchParams.get("after") || 0,
+      const url = new URL(route.request().url());
+      const projection = entityPullFixtureForRequest(state, url, {
+        ...(fixtureMaxSeq ? { maxSeq: fixtureMaxSeq } : {}),
+        tombstones: pullTombstones,
+      });
+      if (typeof projection.maxSeq === "number")
+        fixtureMaxSeq = Math.max(fixtureMaxSeq, projection.maxSeq);
+      console.log(
+        "chat status fixture pull",
+        url.search,
+        projection.documents.length,
+        projection.documents.filter((document) =>
+          document.id.startsWith("entity:agent:"),
+        ).length,
       );
       return route.fulfill({
-        json: { workspaceId, ...entityPullFixture(state, after) },
+        json: {
+          workspaceId,
+          ...projection,
+        },
       });
     });
     await page.route("**/api/transcript/stream?*", (route) =>
@@ -252,6 +281,13 @@ test("chat-status-ui", async ({ browser }) => {
       { stateDir: state.stateDir, id: lead.id },
     );
     await page.goto(origin);
+    await page.locator("#conversation-title").waitFor();
+    console.log("initial state reads", {
+      syncPulls: syncPullRequests.length,
+      stateReads: stateRequests,
+    });
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
     const row = (agent) => page.locator(`[data-chat="${agent.id}"]`);
     const indicatorLabel = (label, agent) =>
       agent.model
@@ -303,7 +339,21 @@ test("chat-status-ui", async ({ browser }) => {
     console.log(
       "PASS sidebar, header, worker statuses; question overrides active work; monitor spinner and question pulse",
     );
+    const removedRequest = state.runtime.requests[0];
     state.runtime.requests = [];
+    fixtureMaxSeq += 1;
+    pullTombstones = [
+      {
+        id: `entity:request:${removedRequest.id}`,
+        seq: fixtureMaxSeq,
+        payload: JSON.stringify({
+          collection: "request",
+          id: removedRequest.id,
+          value: removedRequest,
+        }),
+        _deleted: true,
+      },
+    ];
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await status(row(lead), "working");
     await status(page.locator("#conversation-title"), "working");
@@ -486,6 +536,14 @@ test("chat-status-ui", async ({ browser }) => {
       "PASS production Conversation, header, and sidebar: exact wake kinds and counts, static end without a spinner",
     );
     expect(errors).toEqual([]);
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
+    console.log(
+      JSON.stringify({
+        syncPullRequests: syncPullRequests.length,
+        stateRequests,
+      }),
+    );
     console.log(
       JSON.stringify({
         browser: browser.browserType().name(),

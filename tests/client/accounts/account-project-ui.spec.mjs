@@ -1,4 +1,8 @@
-import { entityPullFixture, test } from "../playwright.mjs";
+import {
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+  test,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -149,6 +153,7 @@ test("account project ui", async ({ browser: _browser }) => {
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -179,16 +184,15 @@ test("account project ui", async ({ browser: _browser }) => {
         rateLimitsByAccount: snapshotLimits,
       },
     };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+      })
+    )
+      return;
     if (url.pathname === "/api/session") return json({ token: "fixture" });
-    if (url.pathname === "/api/sync/pull") {
-      return json({
-        workspaceId: "account-fixture",
-        ...entityPullFixture(
-          stateForEntities,
-          Number(url.searchParams.get("after") || 0),
-        ),
-      });
-    }
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -304,10 +308,7 @@ test("account project ui", async ({ browser: _browser }) => {
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
-    if (url.pathname.startsWith("/api/sync/")) {
-      res.statusCode = 404;
-      return json({ error: "Fixture uses HTTP snapshots" });
-    }
+
     if (url.pathname === "/api/accounts/login") {
       accounts.push({
         id: "signed-in",
@@ -357,12 +358,31 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     debugPage = page;
     page.setDefaultTimeout(10000);
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (path === "/api/state") stateRequests.push(request.url());
+    });
     const errors = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.message);
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.locator("[data-chat]").first().waitFor();
+    console.log("initial state reads", {
+      syncPulls: syncPullRequests.length,
+      stateReads: stateRequests,
+    });
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
+    await page.getByRole("button", { name: "Studio settings" }).click();
+    await page
+      .getByRole("button", { name: /Personal.*personal@example\.com/ })
+      .waitFor();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     const picker = page.locator(".account-picker");
     const settings = page.getByRole("dialog", {
       name: "Chat settings",
@@ -393,6 +413,13 @@ test("account project ui", async ({ browser: _browser }) => {
       await page.getByRole("menuitem").filter({ hasText: email }).click();
     };
     await choose("work@example.com");
+    await page.reload();
+    await page.getByRole("button", { name: "Studio settings" }).click();
+    await page.getByText("work@example.com", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.locator('[data-chat="started"]').click();
+    await openSettings();
+    await picker.waitFor();
     await page.waitForFunction(() =>
       document
         .querySelector(".account-picker")
@@ -869,6 +896,8 @@ test("account project ui", async ({ browser: _browser }) => {
     );
     assert.equal(agents.at(-1).accountKey, "work");
     assert.deepEqual(errors, []);
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
     console.log(
       JSON.stringify({
         ok: true,
@@ -892,6 +921,8 @@ test("account project ui", async ({ browser: _browser }) => {
           "project worker base setting",
         ],
         evidence,
+        syncPullRequests: syncPullRequests.length,
+        stateRequests,
       }),
     );
   } catch (error) {

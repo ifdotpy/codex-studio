@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import {
+  syncIdentityFixture,
   test,
   expect,
   spawnFixture as spawn,
@@ -82,10 +83,20 @@ test("Team Motion Ui", async ({
     });
     const shells = [shell("Existing terminal", 1)];
     const page = testPage;
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (path === "/api/state") stateRequests.push(request.url());
+    });
     await page.setViewportSize({ width: 1440, height: 980 });
-    const workspaceId = "team-motion-fixture";
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identityResponse }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
       const response = await route.fetch();
@@ -141,6 +152,13 @@ test("Team Motion Ui", async ({
       route.fulfill({ json: { text: "", offset: 0, status: "exited" } }),
     );
     await page.goto(origin);
+    await page.locator("[data-chat]").first().waitFor();
+    console.log("initial state reads", {
+      syncPulls: syncPullRequests.length,
+      stateReads: stateRequests,
+    });
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })
@@ -275,6 +293,8 @@ test("Team Motion Ui", async ({
       "An older poll cannot remove the newly confirmed terminal",
     );
     assert.equal(await page.locator(".terminal-session").count(), 2);
+    assert.ok(syncPullRequests.length > 0);
+    assert.deepEqual(stateRequests, []);
     await page.screenshot({
       path: join(root, "team-motion.png"),
       animations: "disabled",
@@ -285,6 +305,8 @@ test("Team Motion Ui", async ({
         evidence: root,
         summaryShift: result.after.searchY - result.before.searchY,
         terminalShift: confirmed.y - local.y,
+        syncPullRequests: syncPullRequests.length,
+        stateRequests,
       }),
     );
   } finally {

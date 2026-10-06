@@ -1,5 +1,10 @@
 #!/usr/bin/env node
-import { test, expect, entityPullFixture } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
@@ -144,6 +149,7 @@ test("Account Transfer Ui", async ({
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -173,16 +179,15 @@ test("Account Transfer Ui", async ({
         rateLimitsByAccount: snapshotLimits,
       },
     };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+      })
+    )
+      return;
     if (url.pathname === "/api/session") return json({ token: "fixture" });
-    if (url.pathname === "/api/sync/pull") {
-      return json({
-        workspaceId: "account-fixture",
-        ...entityPullFixture(
-          stateForEntities,
-          Number(url.searchParams.get("after") || 0),
-        ),
-      });
-    }
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -321,10 +326,7 @@ test("Account Transfer Ui", async ({
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
-    if (url.pathname.startsWith("/api/sync/")) {
-      res.statusCode = 404;
-      return json({ error: "Fixture uses HTTP snapshots" });
-    }
+
     if (url.pathname.startsWith("/api/"))
       return json({ items: [], sessions: [] });
     try {
@@ -352,6 +354,10 @@ test("Account Transfer Ui", async ({
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    page.on("response", async (response) => {
+      if (new URL(response.url()).pathname === "/api/accounts")
+        console.log("account transfer fixture accounts", await response.json());
+    });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.locator('[data-chat="started"]').click();
     await page

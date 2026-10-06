@@ -1,6 +1,7 @@
 import {
   readTestState,
-  entityPullFixture,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -64,8 +65,10 @@ test("Session activity integration", async () => {
       processId: "fixture-session",
     };
     const entityState = {
+      stateDir: state.stateDir,
       threads: agents,
       chats: state.chats,
+      edges: state.edges,
       runtime: {
         ...state.runtime,
         agents,
@@ -98,16 +101,20 @@ test("Session activity integration", async () => {
     const errors = [],
       detailReads = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    const workspaceId = "session-activity-fixture";
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
     await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ json: { workspaceId } }),
+      r.fulfill({ json: identityResponse }),
     );
     await page.route("**/api/sync/pull?*", (r) => {
-      const after = Number(
-        new URL(r.request().url()).searchParams.get("after") || 0,
-      );
       return r.fulfill({
-        json: { workspaceId, ...entityPullFixture(entityState, after) },
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(entityState, r.request().url()),
+        },
       });
     });
     await page.route("**/api/transcript/stream?*", (r) =>

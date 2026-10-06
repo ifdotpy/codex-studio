@@ -1,7 +1,8 @@
 import {
   readTestState,
   readLegacySnapshotForS2Assertions,
-  entityPullFixture,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
   test,
   expect,
   spawnFixture as spawn,
@@ -117,18 +118,22 @@ test("Desktop Notifications Ui", async ({
     );
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const workspaceId = "desktop-notifications-fixture";
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identityResponse }),
     );
     let reads = 0;
     await page.route("**/api/sync/pull?*", (route) => {
       reads++;
-      const after = Number(
-        new URL(route.request().url()).searchParams.get("after") || 0,
-      );
       return route.fulfill({
-        json: { workspaceId, ...entityPullFixture(snapshot, after) },
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(snapshot, route.request().url()),
+        },
       });
     });
     await page.goto(origin);

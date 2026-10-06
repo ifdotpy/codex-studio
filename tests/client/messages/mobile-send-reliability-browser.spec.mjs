@@ -1,4 +1,4 @@
-import { test, expect } from "../playwright.mjs";
+import { test, expect, syncIdentityFixture } from "../playwright.mjs";
 // Real RxDB, with controlled HTTP failures. No live server writes.
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -79,6 +79,7 @@ test("Mobile Send Reliability Browser", async ({
     let holdSession = false;
     let missingSession = false;
     let sessionReads = 0;
+    let snapshotReads = 0;
     const sessions = [];
     await context.route("**/check", (route) =>
       route.fulfill({
@@ -86,10 +87,13 @@ test("Mobile Send Reliability Browser", async ({
         body: "<!doctype html><title>Mobile sends</title>",
       }),
     );
+    const identity = syncIdentityFixture();
+    await context.route("**/api/state", (route) => {
+      snapshotReads++;
+      return route.continue();
+    });
     await context.route("**/api/sync/identity", (route) =>
-      route.fulfill({
-        json: { workspaceId: "b".repeat(32) },
-      }),
+      route.fulfill({ json: identity }),
     );
     await context.route("**/api/session", (route) => {
       sessionReads++;
@@ -419,6 +423,7 @@ test("Mobile Send Reliability Browser", async ({
       "failed",
     );
     assert.ok(sessionReads > 0);
+    assert.equal(snapshotReads, 0, "The snapshot fallback is never requested");
     assert.deepEqual(
       posts.filter((post) => post.id === "missing-session-send"),
       [],

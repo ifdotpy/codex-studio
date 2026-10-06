@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 import {
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
   test,
   expect,
   spawnFixture as spawn,
   readTestState,
-  entityPullFixture,
 } from "../playwright.mjs";
 // Confirmed creation opens before the full chat projection arrives. No model calls.
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
@@ -83,9 +84,13 @@ test("Chat Create Latency Ui @performance", async ({
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const workspaceId = "chat-create-latency-fixture";
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({ json: identityResponse }),
     );
     const accountChanges = [];
     const transfers = [];
@@ -102,16 +107,16 @@ test("Chat Create Latency Ui @performance", async ({
       repliedAt;
     const pending = [];
     await page.route("**/api/sync/pull?*", (route) => {
-      const after = Number(
-        new URL(route.request().url()).searchParams.get("after") || 0,
-      );
       if (hold) {
         pending.push(route);
         return;
       }
       return stale
         ? route.fulfill({
-            json: { workspaceId, ...entityPullFixture(initial, after) },
+            json: {
+              workspaceId,
+              ...entityPullFixtureForRequest(initial, route.request().url()),
+            },
           })
         : route.continue();
     });
@@ -206,11 +211,11 @@ test("Chat Create Latency Ui @performance", async ({
     await page.keyboard.press("Escape");
     hold = false;
     for (const route of pending.splice(0)) {
-      const after = Number(
-        new URL(route.request().url()).searchParams.get("after") || 0,
-      );
       await route.fulfill({
-        json: { workspaceId, ...entityPullFixture(initial, after) },
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(initial, route.request().url()),
+        },
       });
     }
     await page.waitForTimeout(1800);
@@ -273,11 +278,11 @@ test("Chat Create Latency Ui @performance", async ({
     const deletedId = confirmed.id;
     hold = false;
     for (const route of pending.splice(0)) {
-      const after = Number(
-        new URL(route.request().url()).searchParams.get("after") || 0,
-      );
       await route.fulfill({
-        json: { workspaceId, ...entityPullFixture(initial, after) },
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(initial, route.request().url()),
+        },
       });
     }
     const row = page.locator(".sidebar-row").filter({

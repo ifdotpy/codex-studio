@@ -1,6 +1,10 @@
+// @ts-check
+
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 
@@ -108,6 +112,7 @@ async function stopFixtureChild(child) {
 }
 
 const test = baseTest.extend({
+  // @ts-expect-error This module adds a private fixture to the shared test type.
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
@@ -160,10 +165,18 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
-  const child = spawn(command, args, options);
+  const child = spawn(command, args, {
+    ...options,
+    env: {
+      ...process.env,
+      ...options?.env,
+      XDG_CACHE_HOME: join(process.env.TMPDIR || tmpdir(), "fixture-cache"),
+    },
+  });
   scope.children.add(child);
   child.on("error", (error) => {
-    if (error.code !== "ESRCH") scope.errors.push(error);
+    if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH")
+      scope.errors.push(error);
   });
   child.once("close", () => scope.children.delete(child));
   return child;
@@ -171,14 +184,16 @@ export function spawnFixture(command, args, options) {
 
 export const browserExecutablePath =
   process.env.CHROME_BIN?.trim() || chromium.executablePath();
-// @ts-check
-
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResetResponse"]} SyncPullResetResponse */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceChangeEvent"]} ResourceChangeEvent */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceTokenRatesEvent"]} ResourceTokenRatesEvent */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["StateSnapshot"]} StateSnapshot */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotAgentDto"]} SnapshotAgentDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotRoomDto"]} SnapshotRoomDto */
@@ -233,7 +248,9 @@ export const browserExecutablePath =
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @type {Record<string, number>} */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: JsonObject, drafts?: SyncEntity[] }} EntityPullFixtureOptions */
+
+/** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
 
 async function readJson(response, path) {
@@ -254,56 +271,66 @@ function isJsonObject(value) {
  * @returns {Promise<TestStateView>}
  */
 export async function readTestState(origin) {
-  const sessionResponse = await fetch(new URL("/api/session", origin));
+  const sessionUrl = new URL("/api/session", origin);
+  const firstPullUrl = new URL("/api/sync/pull", origin);
+  firstPullUrl.searchParams.set("scope", "state:entities:v1");
+  firstPullUrl.searchParams.set("after", "0");
+  firstPullUrl.searchParams.set("limit", String(ENTITY_PAGE_SIZE));
+  firstPullUrl.searchParams.set("fresh", "1");
+  const [sessionResponse, firstPullResponse] = await Promise.all([
+    fetch(sessionUrl),
+    fetch(firstPullUrl),
+  ]);
   /** @type {SessionResponse} */
   const session = await readJson(sessionResponse, "/api/session");
   /** @type {Map<string, Map<string, JsonValue>>} */
   const entities = new Map();
   let after = 0;
-  let fresh = true;
+  let fresh = false;
+  let nextResponse = firstPullResponse;
 
   for (;;) {
+    /** @type {SyncPullResponse | SyncPullResetResponse} */
+    const page = await readJson(nextResponse, "/api/sync/pull");
+    if (page.reset === true) {
+      after = 0;
+      fresh = true;
+    } else {
+      fresh = false;
+      for (const document of page.documents) {
+        if (document._deleted) continue;
+        /** @type {JsonValue} */
+        const decoded = JSON.parse(document.payload);
+        if (
+          !isJsonObject(decoded) ||
+          typeof decoded.collection !== "string" ||
+          typeof decoded.id !== "string" ||
+          !isJsonObject(decoded.value)
+        )
+          throw new Error(`Invalid entity envelope in ${document.id}`);
+        /** @type {EntityEnvelope} */
+        const entity = {
+          collection: decoded.collection,
+          id: decoded.id,
+          value: decoded.value,
+        };
+        let collection = entities.get(entity.collection);
+        if (!collection) {
+          collection = new Map();
+          entities.set(entity.collection, collection);
+        }
+        collection.set(entity.id, entity.value);
+      }
+      const next = page.checkpoint.seq;
+      if (next <= after || next >= (page.maxSeq ?? next)) break;
+      after = next;
+    }
     const url = new URL("/api/sync/pull", origin);
     url.searchParams.set("scope", "state:entities:v1");
     url.searchParams.set("after", String(after));
     url.searchParams.set("limit", String(ENTITY_PAGE_SIZE));
     if (fresh) url.searchParams.set("fresh", "1");
-    const response = await fetch(url);
-    /** @type {SyncPullResponse | SyncPullResetResponse} */
-    const page = await readJson(response, "/api/sync/pull");
-    if (page.reset) {
-      after = 0;
-      fresh = true;
-      continue;
-    }
-    fresh = false;
-    for (const document of page.documents) {
-      if (document._deleted) continue;
-      /** @type {JsonValue} */
-      const decoded = JSON.parse(document.payload);
-      if (
-        !isJsonObject(decoded) ||
-        typeof decoded.collection !== "string" ||
-        typeof decoded.id !== "string" ||
-        !isJsonObject(decoded.value)
-      )
-        throw new Error(`Invalid entity envelope in ${document.id}`);
-      /** @type {EntityEnvelope} */
-      const entity = {
-        collection: decoded.collection,
-        id: decoded.id,
-        value: decoded.value,
-      };
-      let collection = entities.get(entity.collection);
-      if (!collection) {
-        collection = new Map();
-        entities.set(entity.collection, collection);
-      }
-      collection.set(entity.id, entity.value);
-    }
-    const next = page.checkpoint.seq;
-    if (next <= after || next >= (page.maxSeq ?? next)) break;
-    after = next;
+    nextResponse = await fetch(url);
   }
 
   /** @param {string} collection @returns {JsonObject[]} */
@@ -344,19 +371,29 @@ export async function readTestState(origin) {
     rules,
     work,
     get nativeNotices() {
-      return get("workspace", "current")?.nativeNotices;
+      return /** @type {RuntimeSnapshot["nativeNotices"]} */ (
+        get("workspace", "current")?.nativeNotices
+      );
     },
     get sidebarOrder() {
-      return get("workspace", "current")?.sidebarOrder;
+      return /** @type {RuntimeSnapshot["sidebarOrder"]} */ (
+        get("workspace", "current")?.sidebarOrder
+      );
     },
     get rateLimits() {
-      return get("workspace", "current")?.rateLimits;
+      return /** @type {RuntimeSnapshot["rateLimits"]} */ (
+        get("workspace", "current")?.rateLimits
+      );
     },
     get rateLimitsByAccount() {
-      return get("workspace", "current")?.rateLimitsByAccount;
+      return /** @type {RuntimeSnapshot["rateLimitsByAccount"]} */ (
+        get("workspace", "current")?.rateLimitsByAccount
+      );
     },
     get stateDir() {
-      return get("workspace", "current")?.stateDir;
+      return /** @type {string | undefined} */ (
+        get("workspace", "current")?.stateDir
+      );
     },
   };
 
@@ -372,77 +409,213 @@ export async function readTestState(origin) {
   });
 }
 
-/**
- * Build an entity-pull response for HTTP stubs that previously served snapshots.
- * @param {StateSnapshot} snapshot
- * @param {number} [after]
- */
-export function entityPullFixture(snapshot, after = 0) {
-  const runtime = snapshot.runtime;
-  const collections = [
-    ["agent", runtime.agents],
-    ["room", runtime.rooms],
-    ["task", runtime.tasks],
-    ["monitor", runtime.monitors],
-    ["complaint", runtime.complaints],
-    ["project", runtime.projects],
-    ["event", runtime.events],
-    ["peerTeam", runtime.peerTeams],
-    ["request", runtime.requests],
-    ["rule", runtime.rules],
-    ["work", runtime.work],
-    ["chat", snapshot.chats],
-    ["edge", runtime.edges],
-    ["workspace", [{ id: "current", ...runtime }]],
-  ];
-  let seq = after;
-  const documents = [];
-  for (const [collection, values] of collections) {
-    for (const value of values ?? []) {
-      if (!value || typeof value.id !== "string") continue;
-      seq += 1;
-      documents.push({
-        id: `entity:${collection}:${value.id}`,
-        seq,
-        payload: JSON.stringify({ collection, id: value.id, value }),
-      });
-    }
+const entityWorkspaceKeys = [
+  "connected",
+  "nativeNotices",
+  "peerTeamsVersion",
+  "projectOrganizationVersion",
+  "rateLimits",
+  "rateLimitsByAccount",
+  "sidebarOrder",
+  "stateDir",
+  "tasksHistoryLimit",
+];
+
+const snapshotOnlyAgentKeys = new Set([
+  "activeTools",
+  "compactionsObservedOnly",
+  "complaintsPresented",
+  "cyberAccessProgram",
+  "epoch",
+  "events",
+  "executionSettingsAccountKey",
+  "lastEvent",
+  "maxAgents",
+  "maxAgentsExplicit",
+  "nativeEffort",
+  "nativeNameFailure",
+  "nativeToolCatalog",
+  "needsTitle",
+  "prepareAttempt",
+  "preparedContext",
+  "profileId",
+  "profileInstructions",
+  "tokenBudget",
+  "turnEpoch",
+  "usageResumeEnabled",
+  "wave",
+  "workerBaseBehindMain",
+  "workerBaseCommit",
+  "workerBaseMainRef",
+  "workerBaseRef",
+  "worktreeReady",
+  "worktreeWarning",
+]);
+
+/** @param {object} value @param {Iterable<string>} keys @returns {JsonObject} */
+function pickJsonKeys(value, keys) {
+  const source = /** @type {Record<string, JsonValue>} */ (value);
+  /** @type {JsonObject} */
+  const picked = {};
+  for (const key of keys) {
+    if (Object.hasOwn(source, key)) picked[key] = source[key];
   }
-  return {
-    documents,
-    checkpoint: { seq },
-    maxSeq: seq,
-    initialHigh: seq,
-  };
+  return picked;
 }
 
 /**
- * Route a snapshot-shaped test fixture through the current entity sync paths.
- * @param {{ route: Function }} page
+ * Build the entity values from a legacy fixture without serializing its derived
+ * snapshot-only fields.
  * @param {StateSnapshot} snapshot
- * @param {string} [workspaceId]
+ * @returns {{ collection: string, id: string, value: JsonValue }[]}
  */
-export async function stubEntityState(
-  page,
-  snapshot,
-  workspaceId = "entity-fixture",
-) {
-  // SyncStore creates this value with uuid.uuid4().hex; retain a supplied
-  // server-shaped id, otherwise generate the same 32-character UUID hex form.
-  const identity = /^[a-f0-9]{32}$/.test(workspaceId)
-    ? workspaceId
-    : randomUUID().replaceAll("-", "");
-  /** @type {SyncIdentityResponse} */
-  const identityResponse = {
-    workspaceId: identity,
-    syncProtocol: 2,
-    chatState: true,
+function entityValuesFromSnapshot(snapshot) {
+  const runtime = snapshot.runtime;
+  /** @type {{ collection: string, id: string, value: JsonValue }[]} */
+  const values = [];
+  /** @param {string} collection @param {Array<{id?: string}> | null | undefined} rows @param {(row: object) => JsonValue} [project] */
+  const append = (
+    collection,
+    rows,
+    project = (row) => /** @type {JsonValue} */ (row),
+  ) => {
+    for (const row of rows ?? []) {
+      if (typeof row.id !== "string") continue;
+      values.push({ collection, id: row.id, value: project(row) });
+    }
   };
-  // These fields and values mirror /api/sync/protocol in
-  // scripts/studio_api/sync/router.py. syncProtocol on identity is the
-  // identity schema version (2); the entity stream protocol is version 3.
-  /** @type {SyncProtocolResponse} */
-  const protocolResponse = {
+  append("project", runtime.projects, (row) =>
+    pickJsonKeys(row, [
+      "id",
+      "path",
+      "name",
+      "created",
+      "updated",
+      "accountKey",
+      "accountRevision",
+    ]),
+  );
+  append("request", runtime.requests);
+  append("event", runtime.events, (row) =>
+    pickJsonKeys(row, ["id", "agent", "kind", "status", "created", "error"]),
+  );
+  append("room", runtime.rooms, (row) =>
+    pickJsonKeys(row, [
+      "id",
+      "name",
+      "kind",
+      "members",
+      "rootId",
+      "updated",
+      "userHidden",
+      "projectPath",
+      "radio",
+      "peerTeamId",
+      "peerTeamName",
+      "lastMessage",
+    ]),
+  );
+  append("agent", runtime.agents, (row) => {
+    const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
+    for (const key of snapshotOnlyAgentKeys) delete entity[key];
+    const agentNestedAllowLists = {
+      activity: ["phase", "at", "tools"],
+      nativeStatus: ["phase", "error", "message", "turnId", "at"],
+      nativeSafetyBuffering: [
+        "turnId",
+        "threadId",
+        "accountKey",
+        "connectionId",
+        "at",
+        "dismissed",
+        "responseStarted",
+        "showBufferingUi",
+        "fasterModel",
+      ],
+      nativeSafetyRetry: [
+        "id",
+        "stage",
+        "model",
+        "turnId",
+        "created",
+        "updated",
+        "epoch",
+        "accountKey",
+        "error",
+        "newThreadId",
+        "acceptedTurnId",
+        "requestId",
+        "rpcMethod",
+      ],
+      nativeTurnError: ["turnId", "error"],
+      nativeThreadBlock: ["threadId", "error"],
+      connectionCheck: [
+        "epoch",
+        "accountKey",
+        "threadId",
+        "turnId",
+        "at",
+        "previousError",
+        "nativeState",
+        "restartTurnStatus",
+        "readError",
+      ],
+      readState: ["threadId", "turnId", "read", "revision"],
+      startAttempt: ["prepareError", "responseError", "retiredEvents"],
+    };
+    for (const [key, allowed] of Object.entries(agentNestedAllowLists)) {
+      if (isJsonObject(entity[key]))
+        entity[key] = pickJsonKeys(entity[key], allowed);
+    }
+    if (isJsonObject(entity.nativeRelease))
+      entity.nativeRelease = pickJsonKeys(entity.nativeRelease, [
+        "phase",
+        "resetPending",
+      ]);
+    if (isJsonObject(entity.overview)) {
+      const overview = { ...entity.overview };
+      delete overview.resultFile;
+      entity.overview = overview;
+    }
+    return entity;
+  });
+  append("task", runtime.tasks);
+  append("monitor", runtime.monitors);
+  append("complaint", runtime.complaints, (row) => {
+    const entity = /** @type {Record<string, JsonValue>} */ ({ ...row });
+    delete entity.needsResponse;
+    delete entity.title;
+    return entity;
+  });
+  append("peerTeam", runtime.peerTeams);
+  append("rule", runtime.rules);
+  append("work", runtime.work);
+  append("chat", snapshot.chats);
+  append("edge", snapshot.edges);
+  /** @type {Record<string, JsonValue>} */
+  const workspaceSource = { ...runtime, stateDir: snapshot.stateDir };
+  values.push({
+    collection: "workspace",
+    id: "current",
+    value: pickJsonKeys(workspaceSource, entityWorkspaceKeys),
+  });
+  return values;
+}
+
+/** @param {string} [workspaceId] @returns {SyncIdentityResponse} */
+export function syncIdentityFixture(
+  workspaceId = randomUUID().replaceAll("-", ""),
+) {
+  if (!/^[a-f0-9]{32}$/.test(workspaceId))
+    throw new Error(
+      "Sync fixture workspaceId must match the server's 32-hex identity",
+    );
+  return { workspaceId, syncProtocol: 2, chatState: true };
+}
+
+/** @param {{ unixSocket?: boolean }} [options] @returns {SyncProtocolResponse} */
+export function syncProtocolFixture({ unixSocket = false } = {}) {
+  return {
     protocolVersion: 3,
     supportedVersions: [3],
     capabilities: [
@@ -452,7 +625,7 @@ export async function stubEntityState(
       "entityReset",
       "typedResources",
       "tokenRates",
-      "unixSocket",
+      ...(unixSocket ? ["unixSocket"] : []),
     ],
     scopes: ["state:entities:v1", "transcript:<agent-id>", "drafts"],
     pullEndpoint: "/api/sync/pull",
@@ -462,21 +635,265 @@ export async function stubEntityState(
     maxStreamDocuments: 100,
     maxStreamBytes: 1_048_576,
   };
+}
+
+/**
+ * Serve the same sync routes from a small Node HTTP fixture backend.
+ * @param {import("node:http").IncomingMessage} request
+ * @param {import("node:http").ServerResponse} response
+ * @param {{ snapshot: StateSnapshot, workspaceId: string, unixSocket?: boolean, onPull?: () => void }} fixture
+ * @returns {boolean} whether this was an /api/sync route
+ */
+export function handleEntitySyncFixtureRequest(request, response, fixture) {
+  const url = new URL(request.url || "/", "http://fixture.invalid");
+  if (!url.pathname.startsWith("/api/sync/")) return false;
+  const identity = syncIdentityFixture(fixture.workspaceId);
+  const json = (value) => {
+    response.setHeader("Content-Type", "application/json");
+    response.end(JSON.stringify(value));
+  };
+  if (url.pathname === "/api/sync/identity") {
+    json(identity);
+    return true;
+  }
+  if (url.pathname === "/api/sync/protocol") {
+    json(syncProtocolFixture({ unixSocket: fixture.unixSocket }));
+    return true;
+  }
+  if (url.pathname === "/api/sync/pull") {
+    fixture.onPull?.();
+    json({
+      workspaceId: identity.workspaceId,
+      ...entityPullFixtureForRequest(fixture.snapshot, url),
+    });
+    return true;
+  }
+  if (url.pathname === "/api/sync/stream") {
+    const epoch = randomUUID().replaceAll("-", "");
+    let revision = 0;
+    let eventId = 0;
+    response.writeHead(200, {
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "Content-Type": "text/event-stream; charset=utf-8",
+      [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+      "X-Accel-Buffering": "no",
+    });
+    response.write(apiSchemaHandshakeSse());
+    /** @param {string} name @param {ResourceChangeEvent | ResourceHeartbeatEvent | ResourceTokenRatesEvent} value */
+    const writeFrame = (name, value) => {
+      eventId += 1;
+      response.write(
+        `event: ${name}\ndata: ${JSON.stringify(value)}\nid: ${eventId}\n\n`,
+      );
+    };
+    /** @type {ResourceChangeEvent} */
+    const initial = {
+      epoch,
+      protocol: 3,
+      reason: "initial",
+      resources: [{ kind: "state" }],
+      revision: ++revision,
+      workspaceId: identity.workspaceId,
+    };
+    writeFrame("resources", initial);
+    /** @type {ResourceTokenRatesEvent} */
+    const rates = {
+      epoch,
+      protocol: 3,
+      rates: {},
+      revision,
+      teams: {},
+      workspaceId: identity.workspaceId,
+    };
+    writeFrame("token-rates", rates);
+    const heartbeat = () => {
+      if (response.destroyed) return;
+      /** @type {ResourceHeartbeatEvent} */
+      const event = {
+        epoch,
+        protocol: 3,
+        revision: ++revision,
+        workspaceId: identity.workspaceId,
+      };
+      writeFrame("heartbeat", event);
+    };
+    const heartbeatTimer = setInterval(heartbeat, 5000);
+    heartbeatTimer.unref?.();
+    response.once("close", () => clearInterval(heartbeatTimer));
+    return true;
+  }
+  response.statusCode = 404;
+  json({ error: "Not found" });
+  return true;
+}
+
+/**
+ * Build a typed entity-pull fixture with the protocol's page, scope, tombstone,
+ * reset, priority and checkpoint semantics.
+ * @param {StateSnapshot} snapshot
+ * @param {number | EntityPullFixtureOptions} [optionsOrAfter]
+ * @returns {Omit<SyncPullResponse, "workspaceId"> | Omit<SyncPullResetResponse, "workspaceId">}
+ */
+export function entityPullFixture(snapshot, optionsOrAfter = {}) {
+  const options =
+    typeof optionsOrAfter === "number"
+      ? { after: optionsOrAfter }
+      : optionsOrAfter;
+  const scope = options.scope ?? "state:entities:v1";
+  const after = Math.max(0, options.after ?? 0);
+  const generation = options.generation ?? 1;
+  if (scope === "drafts") {
+    const drafts = options.drafts ?? [];
+    const high = drafts.at(-1)?.seq ?? 0;
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+    const page = drafts
+      .filter((document) => document.seq > after)
+      .slice(0, limit);
+    return {
+      generation,
+      documents: page,
+      checkpoint: {
+        seq: page.length === limit ? page.at(-1).seq : high,
+      },
+    };
+  }
+  if (scope.startsWith("transcript:")) {
+    const high = 1;
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+    const doc = /** @type {SyncEntity} */ ({
+      id: scope,
+      seq: high,
+      payload: JSON.stringify(options.transcript ?? { items: [] }),
+      _deleted: false,
+    });
+    return {
+      generation,
+      documents: after < high ? [doc].slice(0, limit) : [],
+      checkpoint: { seq: after < high ? high : after },
+    };
+  }
+  if (scope === "state") {
+    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
+    const document = /** @type {SyncEntity} */ ({
+      id: "state",
+      seq: 1,
+      payload: JSON.stringify(snapshot),
+      _deleted: false,
+    });
+    return {
+      generation,
+      documents: after < 1 ? [document].slice(0, limit) : [],
+      checkpoint: { seq: after < 1 ? 1 : after },
+    };
+  }
+  if (scope !== "state:entities:v1")
+    throw new Error(`Unsupported fixture pull scope: ${scope}`);
+
+  const limit = Math.min(500, Math.max(1, options.limit ?? 500));
+  const values = entityValuesFromSnapshot(snapshot);
+  const baseDocuments = values.map(
+    (entity, index) =>
+      /** @type {SyncEntity} */ ({
+        id: `entity:${entity.collection}:${entity.id}`,
+        seq: index + 1,
+        payload: JSON.stringify(entity),
+        _deleted: false,
+      }),
+  );
+  const tombstones = options.tombstones ?? [];
+  const documents = [...baseDocuments, ...tombstones].sort(
+    (left, right) => left.seq - right.seq,
+  );
+  const high = options.maxSeq ?? documents.at(-1)?.seq ?? 0;
+  const floor = options.floor ?? 0;
+  const fresh = options.fresh === true;
+  const initialHigh = fresh
+    ? options.initialHigh && options.initialHigh > 0
+      ? Math.min(high, options.initialHigh)
+      : high
+    : 0;
+  if (options.reset && !fresh && after > 0 && after < floor)
+    return { generation, reset: true, floor, maxSeq: high };
+
+  let eligible = documents.filter(
+    (document) =>
+      document.seq > after &&
+      (!document._deleted || document.seq > floor) &&
+      (!fresh || !document._deleted || document.seq > initialHigh),
+  );
+  if (after === 0 && fresh && options.priorityId) {
+    eligible = eligible.sort((left, right) => {
+      const priority = `entity:agent:${options.priorityId}`;
+      return Number(right.id === priority) - Number(left.id === priority);
+    });
+  }
+  const page = eligible.slice(0, limit);
+  const checkpoint = page.length === limit ? page.at(-1).seq : high;
+  return {
+    generation,
+    documents: page,
+    checkpoint: { seq: checkpoint },
+    maxSeq: high,
+    initialHigh,
+  };
+}
+
+/**
+ * Convert an incoming fixture request URL to the shared pull fixture options.
+ * @param {StateSnapshot} snapshot
+ * @param {string | URL} requestUrl
+ * @param {EntityPullFixtureOptions} [overrides]
+ * @returns {Omit<SyncPullResponse, "workspaceId"> | Omit<SyncPullResetResponse, "workspaceId">}
+ */
+export function entityPullFixtureForRequest(
+  snapshot,
+  requestUrl,
+  overrides = {},
+) {
+  const url = new URL(requestUrl, "http://fixture.invalid");
+  const query = url.searchParams;
+  return entityPullFixture(snapshot, {
+    scope: query.get("scope") ?? "state:entities:v1",
+    after: Number(query.get("after") || 0),
+    limit: Number(query.get("limit") || 100),
+    fresh: query.get("fresh") === "1",
+    initialHigh: Number(query.get("initialHigh") || 0),
+    reset: query.get("reset") === "1",
+    priorityId: query.get("priorityId") || undefined,
+    ...overrides,
+  });
+}
+
+/**
+ * Route a snapshot-shaped test fixture through the current entity sync paths.
+ * @param {{ route: Function }} page
+ * @param {StateSnapshot} snapshot
+ * @param {string} [workspaceId]
+ */
+export async function stubEntityState(page, snapshot, workspaceId) {
+  const identityResponse = syncIdentityFixture(
+    /^[a-f0-9]{32}$/.test(workspaceId) ? workspaceId : undefined,
+  );
+  const identity = identityResponse.workspaceId;
+  // Identity version 2 and stream protocol 3 are separate generated contracts.
+  const protocolResponse = syncProtocolFixture({ unixSocket: true });
   await page.route("**/api/sync/identity", (route) =>
     route.fulfill({ json: identityResponse }),
   );
   await page.route("**/api/sync/protocol", (route) =>
     route.fulfill({ json: protocolResponse }),
   );
+  // Keep a real backend stream open: route.fulfill closes SSE immediately and
+  // EventSource then reconnects continuously. The pull route below remains the
+  // deterministic entity fixture; the live stream exercises real frame shape.
+  await page.route("**/api/sync/stream?*", (route) => route.continue());
   await page.route("**/api/sync/pull?*", (route) => {
-    const after = Number(
-      new URL(route.request().url()).searchParams.get("after") || 0,
-    );
-    /** @type {SyncPullResponse} */
-    const pullResponse = {
-      workspaceId: identity,
-      ...entityPullFixture(snapshot, after),
-    };
+    const pullResponse =
+      /** @type {SyncPullResponse | SyncPullResetResponse} */ ({
+        workspaceId: identity,
+        ...entityPullFixtureForRequest(snapshot, route.request().url()),
+      });
     return route.fulfill({
       json: pullResponse,
     });
