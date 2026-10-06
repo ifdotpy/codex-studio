@@ -7,12 +7,14 @@ isolate_supervisor_environment()
 import http.client
 import json
 from pathlib import Path
+from contextlib import nullcontext
 import queue
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -75,8 +77,10 @@ class DiagnosticsContract(unittest.TestCase):
 
         runtime = SimpleNamespace(
             lock=lock, servers={"private-account": codex, "other": claude},
-            accounts={"private-account": {"provider": "codex"},
-                      "other": {"provider": "claude"}},
+            accounts=SimpleNamespace(lock=threading.RLock(), data={"accounts": {
+                "private-account": {"provider": "codex"},
+                "other": {"provider": "claude"},
+            }}),
             loaded={"agent"}, recovery_pool=SimpleNamespace(_work_queue=queue.Queue()),
             db=UnlockedDb,
             sample_dispatch_lock_holder=lambda result, waited: result.append("test"),
@@ -100,33 +104,49 @@ class DiagnosticsContract(unittest.TestCase):
     def test_http_route_returns_diagnostics_without_a_token(self):
         with tempfile.TemporaryDirectory() as folder:
             canvas = Canvas(Path(folder))
-            canvas.runtime = SimpleNamespace(lock=threading.RLock())
+            db = sqlite3.connect(":memory:")
+            self.addCleanup(db.close)
+            from codex_execution import ensure_tables
+            ensure_tables(db)
+            db.execute("CREATE TABLE runtime_events (status TEXT)")
+            canvas.runtime = SimpleNamespace(
+                lock=threading.RLock(), servers={}, loaded=set(),
+                recovery_pool=SimpleNamespace(_work_queue=queue.Queue()),
+                db=lambda: nullcontext(db),
+            )
+            with patch("codex_diagnostics.host_resources", return_value={
+                "cpuCount": 8, "totalMemoryBytes": None, "availableMemoryBytes": None,
+            }):
+                fixture = snapshot(canvas.runtime, root_pid=10, ps_output="10 1 1024 0.0 codex-canvas")
             server = make_server(canvas)
+            # This route contract has no hourly runtime maintenance actor.
+            server.context._maintenance_last = time.monotonic()
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
             try:
-                with patch("codex_diagnostics.snapshot", return_value={"processTree": {"kinds": {}}}):
-                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port)
+                with patch("codex_diagnostics.snapshot", return_value=fixture):
+                    connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
                     connection.request("GET", "/api/diagnostics")
                     response = connection.getresponse()
                     self.assertEqual(response.status, 200)
                     body = json.load(response)
                     # The route adds the process supervisor state to the snapshot.
-                    self.assertEqual(body.pop("processTree"), {"kinds": {}})
-                    self.assertEqual(set(body), {"supervisor"})
-                    self.assertIs(type(body["supervisor"]["mode"]), bool)
+                    supervisor = body.pop("supervisor")
+                    self.assertEqual(body, {key: value for key, value in fixture.items() if key != "supervisor"})
+                    self.assertIs(type(supervisor["mode"]), bool)
                     connection.close()
                     cli = subprocess.run([sys.executable, str(Path(__file__).resolve().parents[1]
                                            / "scripts/codex-diagnostics"), "--port",
                                           str(server.server_port)], capture_output=True,
                                          text=True, timeout=5, check=True)
                     printed = json.loads(cli.stdout)
-                    self.assertEqual(printed.pop("processTree"), {"kinds": {}})
-                    self.assertEqual(set(printed), {"supervisor"})
+                    self.assertEqual(printed.pop("supervisor"), supervisor)
+                    self.assertEqual(printed, body)
             finally:
                 server.shutdown()
+                thread.join(5)
                 server.server_close()
-                thread.join()
+                self.assertFalse(thread.is_alive())
 
 
 if __name__ == "__main__":
