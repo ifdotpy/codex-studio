@@ -347,6 +347,179 @@ class UsageResumeRecord(TypedDict):
     taskClaims: NotRequired[list[str]]
 
 
+class RequestQuestionFieldRecord(TypedDict):
+    id: NotRequired[str]
+    question: NotRequired[str]
+    isSecret: NotRequired[bool]
+    writeOnly: NotRequired[bool]
+    format: NotRequired[str]
+    title: NotRequired[str]
+
+
+class RequestSchemaRecord(TypedDict):
+    properties: NotRequired[dict[str, RequestQuestionFieldRecord]]
+
+
+class RequestParamsRecord(TypedDict):
+    mode: NotRequired[str]
+    questions: NotRequired[list[RequestQuestionFieldRecord]]
+    requestedSchema: NotRequired[RequestSchemaRecord]
+    itemId: NotRequired[str]
+    threadId: NotRequired[str]
+    turnId: NotRequired[str]
+
+
+class RequestPreviewRecord(TypedDict):
+    arguments: NotRequired[JsonObject]
+    id: NotRequired[str]
+    server: NotRequired[str]
+    status: NotRequired[str]
+    tool: NotRequired[str]
+    type: NotRequired[str]
+
+
+class RequestAnswerRecord(TypedDict):
+    id: NotRequired[str]
+    question: NotRequired[str]
+    isSecret: NotRequired[bool]
+    answer: NotRequired[JsonValue]
+
+
+class RequestRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    method: NotRequired[str]
+    status: NotRequired[str]
+    createdAt: NotRequired[float]
+    params: NotRequired[RequestParamsRecord]
+    accountKey: NotRequired[str]
+    connectionId: NotRequired[str]
+    epoch: NotRequired[int]
+    turnId: NotRequired[str]
+    rpcId: NotRequired[str]
+    preview: NotRequired[RequestPreviewRecord]
+    answerSignature: NotRequired[str]
+    answeredAt: NotRequired[float]
+    answeredBy: NotRequired[str]
+    decision: NotRequired[str]
+    answerHistory: NotRequired[list[RequestAnswerRecord]]
+    answerError: NotRequired[JsonValue]
+    deferred: NotRequired[bool]
+    deferredAt: NotRequired[float]
+    deferredBy: NotRequired[str]
+    deletedAt: NotRequired[float]
+    deletedBy: NotRequired[str]
+    action: NotRequired[str]
+    command: NotRequired[str]
+    cursor: NotRequired[str]
+    cwd: NotRequired[str]
+    env: NotRequired[JsonObject]
+    expectedPid: NotRequired[int]
+    expectedSignature: NotRequired[str]
+    expectedStartTime: NotRequired[float]
+    handle: NotRequired[str]
+    message: NotRequired[str]
+    nativeId: NotRequired[str]
+    operationId: NotRequired[str]
+    resolvedAt: NotRequired[float]
+    sequence: NotRequired[int]
+
+
+class RuleRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    rootId: NotRequired[str]
+    epoch: NotRequired[int]
+    name: NotRequired[str]
+    kind: NotRequired[str]
+    status: NotRequired[str]
+    at: NotRequired[float]
+    intervalSeconds: NotRequired[int]
+    nextAt: NotRequired[float]
+    path: NotRequired[str | None]
+    event: NotRequired[str]
+    command: NotRequired[str]
+    text: NotRequired[str]
+    created: NotRequired[float]
+    inFlight: NotRequired[bool]
+    checks: NotRequired[int]
+    wakes: NotRequired[int]
+    fingerprint: NotRequired[list[JsonValue] | None]
+    fileActivityAt: NotRequired[float]
+    fileGeneration: NotRequired[int]
+    stallWakeGeneration: NotRequired[int]
+    stallTimeoutSeconds: NotRequired[int]
+    livenessCommand: NotRequired[str]
+    error: NotRequired[str | None]
+    lastAt: NotRequired[float]
+    lastExitCode: NotRequired[int | None]
+    lastFinished: NotRequired[float]
+    lastOutput: NotRequired[str]
+    activeWorkers: NotRequired[int]
+    alerted: NotRequired[bool]
+    durationMinutes: NotRequired[int]
+    eventText: NotRequired[str]
+    lastEvent: NotRequired[str]
+    lastStallError: NotRequired[str | None]
+    lastStallExitCode: NotRequired[int | None]
+    lastStallFinished: NotRequired[float]
+    lowSince: NotRequired[float | None]
+    minimumWorkers: NotRequired[int]
+    restartCheck: NotRequired[JsonObject]
+    restartHoldNotified: NotRequired[bool]
+    stallEventKey: NotRequired[str]
+    stallProbe: NotRequired[JsonObject]
+    stallText: NotRequired[str]
+    userHidden: NotRequired[bool]
+
+
+class ToolRequestTimingRecord(TypedDict):
+    admissionDelayMs: NotRequired[float]
+    callbackQueueDelayMs: NotRequired[float]
+    callbackStartedAt: NotRequired[float]
+    executionQueueDelayMs: NotRequired[float]
+    queueDelayMs: NotRequired[float]
+    reservationDelayMs: NotRequired[float]
+    wireReceivedAt: NotRequired[float]
+
+
+class ToolRequestRecord(TypedDict):
+    id: NotRequired[str]
+    agent: NotRequired[str]
+    accountKey: NotRequired[str]
+    callId: NotRequired[str]
+    connectionId: NotRequired[str]
+    created: NotRequired[float]
+    epoch: NotRequired[int]
+    outcome: NotRequired[str]
+    readOnly: NotRequired[bool]
+    request_id: NotRequired[str]
+    result: NotRequired[JsonObject]
+    rpcId: NotRequired[int | str]
+    signature: NotRequired[str]
+    stage: NotRequired[str]
+    started: NotRequired[float]
+    threadId: NotRequired[str]
+    timing: NotRequired[ToolRequestTimingRecord]
+    tool: NotRequired[str]
+    turnId: NotRequired[str]
+    updated: NotRequired[float]
+    cancelRequested: NotRequired[bool]
+    finished: NotRequired[float]
+    error: NotRequired[str]
+    agentIds: NotRequired[list[str]]
+    nativeDelivery: NotRequired[JsonObject]
+    operationResult: NotRequired[JsonObject]
+    supervisor: NotRequired[JsonObject]
+    admissionDelayMs: NotRequired[float]
+    callbackQueueDelayMs: NotRequired[float]
+    callbackStartedAt: NotRequired[float]
+    executionQueueDelayMs: NotRequired[float]
+    queueDelayMs: NotRequired[float]
+    reservationDelayMs: NotRequired[float]
+    wireReceivedAt: NotRequired[float]
+
+
 class AgentActivityRecord(TypedDict):
     phase: NotRequired[str]
     at: NotRequired[float]
@@ -1039,6 +1212,12 @@ class RecordStore(Protocol):
     def records(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], *, shared: bool = False) -> list[WorkspaceOperationRecord]: ...
     @overload
     def records(self, db: "sqlite3.Connection", table: Literal["rooms"], *, shared: bool = False) -> list[RoomRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["requests"], *, shared: bool = False) -> list[RequestRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["rules"], *, shared: bool = False) -> list[RuleRecord]: ...
+    @overload
+    def records(self, db: "sqlite3.Connection", table: Literal["tool_requests"], *, shared: bool = False) -> list[ToolRequestRecord]: ...
 
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["agents"], record: AgentRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
@@ -1056,6 +1235,12 @@ class RecordStore(Protocol):
     def put(self, db: "sqlite3.Connection", table: Literal["workspace_operations"], record: WorkspaceOperationRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
     @overload
     def put(self, db: "sqlite3.Connection", table: Literal["rooms"], record: RoomRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["requests"], record: RequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["rules"], record: RuleRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    @overload
+    def put(self, db: "sqlite3.Connection", table: Literal["tool_requests"], record: ToolRequestRecord, *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
 
     def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> AgentRecord: ...
     def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False, include_id: str | None = None) -> list[AgentRecord]: ...
