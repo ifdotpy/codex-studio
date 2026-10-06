@@ -5,6 +5,10 @@ import math
 import threading
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from codex_runtime import Runtime
 
 MIN_DURATION = .25
 MAX_RATE = 1000.0
@@ -434,7 +438,7 @@ class TokenRates:
                     if entry.get('root') == root_id and entry['agent'] != root_id
                     and self.agents.get(entry['agent']) == key and entry['rate'] is not None}
 
-    def workspace_snapshot(self):
+    def workspace_snapshot(self) -> dict[str, object]:
         with self.lock:
             now = self.clock()
             rates, teams = {}, {}
@@ -454,7 +458,7 @@ class TokenRates:
             return entry['rate'].snapshot(self.clock()) if entry and entry['rate'] else None
 
 
-def token_rates(runtime):
+def token_rates(runtime: "Runtime") -> "TokenRates":
     rates = runtime.__dict__.get('_token_rates')
     return rates if rates is not None else runtime.__dict__.setdefault(
         '_token_rates', TokenRates(state_dir=getattr(runtime, 'root', None))

@@ -16,6 +16,7 @@ sys.path.insert(0, str(repo / "tests"))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
 sys.path.insert(0, str(repo / "scripts"))
+from studio_api.testing import read_runtime_state
 import codex_canvas
 
 original_make_server = codex_canvas.make_server
@@ -84,7 +85,7 @@ def with_history(canvas, *args, **kwargs):
                 "results": [{"id": f"result-{number}", "agent": lead["id"],
                              "text": evidence, "created": number}],
             })
-    full = runtime.snapshot()
+    full = read_runtime_state(runtime)
     work_bytes = len(json.dumps(full["work"]).encode())
     assert work_bytes > 4_000_000, work_bytes
     with runtime.db() as db:

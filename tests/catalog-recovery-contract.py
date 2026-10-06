@@ -15,6 +15,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_catalog import CatalogPending, CatalogUnavailable, ModelCatalogCache
+from studio_api.testing import read_runtime_state
 
 fixture_spec = importlib.util.spec_from_file_location("catalog_fixture", ROOT / "tests/runtime-contract.py")
 fixture = importlib.util.module_from_spec(fixture_spec)
@@ -279,10 +280,10 @@ class CatalogRuntimeContract(unittest.TestCase):
 
     def test_pending_metadata_creates_no_worker_and_late_success_reuses_catalog(self):
         spec = {"name": "One", "prompt": "Check one", "account_key": "default"}
-        before = self.runtime.team(self.lead["id"])["agents"]
+        before = read_runtime_state(self.runtime)["agents"]
         with self.assertRaises(CatalogPending):
             self.runtime.create(spec, self.lead["id"], defer=True)
-        self.assertEqual(self.runtime.team(self.lead["id"])["agents"], before)
+        self.assertEqual(read_runtime_state(self.runtime)["agents"], before)
         self.server.metadata.requests[0].set_result(CATALOG)
         one = self.runtime.create(spec, self.lead["id"], defer=True)
         two = self.runtime.create({"name": "Two", "prompt": "Check two"}, self.lead["id"], defer=True)
@@ -301,7 +302,7 @@ class CatalogRuntimeContract(unittest.TestCase):
                 self.assertTrue(acquired)
                 if acquired:
                     lock.release()
-            self.assertEqual(len(self.runtime.team(self.lead["id"])["agents"]), 1)
+            self.assertEqual(len(read_runtime_state(self.runtime)["agents"]), 1)
             with self.assertRaises(CatalogPending):
                 pending.result(1)
 

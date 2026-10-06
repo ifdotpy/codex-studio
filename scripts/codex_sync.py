@@ -63,7 +63,7 @@ class SyncStore:
         if reader is not None:
             reader.close()
 
-    def identity(self):
+    def identity(self) -> dict[str, object]:
         reader = getattr(self, '_version_reader', None)
         if reader is None:
             with self.connection("SyncStore.identity") as db:
@@ -608,6 +608,11 @@ class SyncStore:
         if not isinstance(rows, list) or len(rows) > 100:
             raise ValueError('Invalid draft batch')
         conflicts = []
+        # Lazy DDL must finish before the draft write transaction. The
+        # initializer opens its own connection and can otherwise deadlock with
+        # the writer that reaches _put below.
+        if rows:
+            self._ensure_versions()
         with self.scope_lock('drafts'), self.connection("SyncStore.draft_write") as db:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:

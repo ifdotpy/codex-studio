@@ -10,72 +10,81 @@ import stat
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Callable
+    from concurrent.futures import Future
+    from typing import Any
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 
 ACTIVE = {"running", "starting", "approval"}
 TABLE = "native_catalog_updates"
 
 
-def catalog(tools):
+def catalog(tools: list[dict[str, "Any"]]) -> list[dict[str, "Any"]]:
     """Use the current native tagged tool representation for exact comparisons."""
     return [{"type": "function", **copy.deepcopy(tool)} for tool in tools]
 
 
-def digest(tools):
+def digest(tools: list[dict[str, "Any"]]) -> str:
     data = json.dumps(catalog(tools), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(data.encode()).hexdigest()
 
 
-def mark_current(agent, tools):
+def mark_current(agent: "AgentRecord", tools: list[dict[str, "Any"]]) -> None:
     agent["nativeToolCatalog"] = {"threadId": agent.get("threadId"), "digest": digest(tools)}
     notice = agent.pop("nativeToolUpdate", None)
     if notice and agent.get("error") == notice.get("message"):
         agent["error"] = None
 
 
-def needs_refresh(agent, tools):
+def needs_refresh(agent: "AgentRecord", tools: list[dict[str, "Any"]]) -> bool:
     return (agent.get("provider", "codex") == "codex" and bool(agent.get("threadId"))
             and agent.get("nativeToolCatalog") != {"threadId": agent["threadId"], "digest": digest(tools)})
 
 
-def account_reserved(rt, key):
+def account_reserved(rt: "Runtime", key: str) -> bool:
     retiring = getattr(rt, "_native_tools_retiring", {}).get(key)
     if retiring is not None:
         if retiring["server"].proc.poll() is None:
             return True
-        rt._native_tools_retiring.pop(key, None)
+        rt._native_tools_retiring.pop(key, None)  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
     return (key in getattr(rt, "_native_tools_refreshing", set())
             or key in getattr(rt, "_native_runtime_reservations", {}))
 
 
-def assert_connect_allowed(rt, key):
+def assert_connect_allowed(rt: "Runtime", key: str) -> None:
     if key in getattr(rt, "_native_runtime_reservations", {}):
         raise ValueError("The account app-server update is in progress")
     retiring = getattr(rt, "_native_tools_retiring", {}).get(key)
     if retiring is not None:
         if retiring["server"].proc.poll() is None:
             raise ValueError("The previous native process has not stopped. The account tool update is blocked.")
-        rt._native_tools_retiring.pop(key, None)
+        rt._native_tools_retiring.pop(key, None)  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
 
 
-def _schema(db):
+def _schema(db: "sqlite3.Connection") -> None:
     db.execute("CREATE TABLE IF NOT EXISTS runtime_native_catalog_updates "
                "(id TEXT PRIMARY KEY, record TEXT NOT NULL)")
 
 
-def _save(rt, record):
+def _save(rt: "Runtime", record: dict[str, "Any"]) -> None:
     with rt.lock, rt.db() as db:
         _schema(db)
         record["updated"] = time.time()
         rt.put(db, TABLE, record)
 
 
-def _same_source(agent):
+def _same_source(agent: "AgentRecord") -> dict[str, "Any"]:
     return {key: agent.get(key) for key in
             ("id", "epoch", "threadId", "accountKey", "cwd", "provider", "deletedAt")}
 
 
-def _local_idle(rt, db, key, server):
+def _local_idle(rt: "Runtime", db: "sqlite3.Connection", key: str, server: "Any") -> tuple[list["AgentRecord"] | None, str | None]:
     if rt.closed:
         return None, "Studio is stopped"
     # A busy account needs no history decode. Other busy fields retain the
@@ -164,7 +173,7 @@ def _local_idle(rt, db, key, server):
     return agents, None
 
 
-def _native_idle(server):
+def _native_idle(server: "Any") -> dict[str, dict[str, "Any"]]:
     """Inspect every loaded thread, including native children outside Studio."""
     loaded = []
     cursor = None
@@ -201,11 +210,11 @@ def _native_idle(server):
     return sources
 
 
-def _identity(info):
+def _identity(info: os.stat_result) -> tuple[int, int, int, int, int]:
     return (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
 
 
-def _header(path, thread_id):
+def _header(path: Path, thread_id: str) -> tuple[bytes, dict[str, "Any"], os.stat_result]:
     with path.open("rb") as stream:
         info = os.fstat(stream.fileno())
         if not stat.S_ISREG(info.st_mode):
@@ -219,7 +228,9 @@ def _header(path, thread_id):
     return first, value, info
 
 
-def replace_header(path, thread_id, tools, persist, *, allow_growth=False):
+def replace_header(path: str | Path, thread_id: str, tools: list[dict[str, "Any"]],
+                   persist: "Callable[[dict[str, Any]], None]", *,
+                   allow_growth: bool = False) -> dict[str, "Any"]:
     """Stream the exact tail. Save the replacement receipt before atomic rename."""
     path = Path(path)
     if path.is_symlink() or path.suffix != ".jsonl":
@@ -237,7 +248,7 @@ def replace_header(path, thread_id, tools, persist, *, allow_growth=False):
     temporary = path.with_name("." + path.name + ".studio-tools-" + str(uuid.uuid4()) + ".tmp")
     record = {"path": str(path), "threadId": thread_id, "temporary": str(temporary), "status": "copying",
               "originalHeader": base64.b64encode(first).decode(),
-              "newHeader": base64.b64encode(new_header).decode(), "sourceIdentity": _identity(info)}
+              "newHeader": base64.b64encode(new_header).decode(), "sourceIdentity": _identity(info)}  # type: dict[str, Any]
     persist(copy.deepcopy(record))
     old_hash, new_hash, tail_hash = hashlib.sha256(first), hashlib.sha256(new_header), hashlib.sha256()
     try:
@@ -278,7 +289,7 @@ def replace_header(path, thread_id, tools, persist, *, allow_growth=False):
         temporary.unlink(missing_ok=True)
 
 
-def _file_hash(path):
+def _file_hash(path: str | Path) -> str:
     value = hashlib.sha256()
     with Path(path).open("rb") as stream:
         while block := stream.read(1024 * 1024):
@@ -286,7 +297,7 @@ def _file_hash(path):
     return value.hexdigest()
 
 
-def _ticket(rt, key):
+def _ticket(rt: "Runtime", key: str) -> "Any":
     with rt.db() as db:
         row = db.execute("SELECT record FROM runtime_native_catalog_updates WHERE id=?", (key,)).fetchone()
         if row is None:
@@ -294,7 +305,7 @@ def _ticket(rt, key):
         return json.loads(row[0])
 
 
-def _receive_fork(rt, key, future):
+def _receive_fork(rt: "Runtime", key: str, future: "Future[Any]") -> None:
     """Save late native receipts even after the caller's wait expires."""
     try:
         result = future.result()
@@ -333,7 +344,7 @@ def _receive_fork(rt, key, future):
                 _save(rt, ticket)
 
 
-def _growth_target(rt, server, agent):
+def _growth_target(rt: "Runtime", server: "Any", agent: "AgentRecord") -> tuple[Path, dict[str, "Any"]]:
     with rt.lock, rt.db() as db:
         current = rt.agent(agent["id"], db)
         if _same_source(current) != _same_source(agent):
@@ -374,7 +385,7 @@ def _growth_target(rt, server, agent):
                     _save(rt, latest)
                     raise ValueError("The native tool fork outcome is unknown. Its request was not repeated.") from error
         else:
-            completed = concurrent.futures.Future()
+            completed = concurrent.futures.Future()  # type: Future[Any]
             completed.set_result(result)
             _receive_fork(rt, ticket["id"], completed)
         ticket = _ticket(rt, ticket["id"])
@@ -390,7 +401,7 @@ def _growth_target(rt, server, agent):
     return path, ticket
 
 
-def _assert_no_descendants(home, thread_id):
+def _assert_no_descendants(home: Path, thread_id: str) -> None:
     for directory in ("sessions", "archived_sessions"):
         for path in (home / directory).glob("**/*.jsonl"):
             with path.open("rb") as stream:
@@ -400,13 +411,15 @@ def _assert_no_descendants(home, thread_id):
                 raise ValueError("The native tool fork has a descendant; its history offsets are preserved")
 
 
-def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_ids=None):
+def refresh_account(rt: "Runtime", account_key: str = "default",
+                    tools_for_agent: "Callable[[AgentRecord], list[dict[str, Any]]] | None" = None,
+                    *, agent_ids: list[str] | None = None) -> dict[str, "Any"]:
     """Return a durable result. Never stop an account with unconfirmed idle state."""
     tools_for_agent = tools_for_agent or rt.tool_definitions
     if rt.accounts.get(account_key).get("provider", "codex") != "codex":
         return {"status": "not_applicable", "accountKey": account_key}
     operation = {"id": str(uuid.uuid4()), "accountKey": account_key, "status": "checking", "files": {},
-                 "created": time.time()}
+                 "created": time.time()}  # type: dict[str, Any]
     with rt.start_lock:
         with rt.lock, rt.db() as db:
             server = rt.servers.get(account_key)
@@ -415,14 +428,14 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                 return {**operation, "status": "waiting", "reason": reason}
             if account_reserved(rt, account_key):
                 return {**operation, "status": "waiting", "reason": "The account tool update is already reserved"}
-            rt._native_tools_refreshing = getattr(rt, "_native_tools_refreshing", set())
-            rt._native_tools_refreshing.add(account_key)
+            rt._native_tools_refreshing = getattr(rt, "_native_tools_refreshing", set())  # type: ignore[attr-defined]  # typed-narrowing: Module owns account refresh registry
+            rt._native_tools_refreshing.add(account_key)  # type: ignore[attr-defined]  # typed-narrowing: Module owns account refresh registry
         try:
             # Callers must not enter through Runtime.connect while start_lock is held.
             if server is None:
                 return {**operation, "status": "waiting", "reason": "Connect the account before its tool update"}
             sources = _native_idle(server)
-            requested = [a for a in agents if a.get("threadId") and not a.get("deletedAt")
+            requested = [a for a in agents if a.get("threadId") and not a.get("deletedAt")  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                          and (agent_ids is None or a["id"] in agent_ids or
                               (a.get("status") == "queued" and a.get("autoWake") and
                                needs_refresh(a, tools_for_agent(a))))]
@@ -431,7 +444,7 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
             operation["threadErrors"] = {}
             for agent in requested:
                 try:
-                    native = sources.get(agent["threadId"])
+                    native = sources.get(agent["threadId"])  # type: ignore[arg-type]  # typed-narrowing: Request filter confirms thread identity
                     if native is None:
                         native = server.call("thread/read", {"threadId": agent["threadId"],
                                              "includeTurns": False}, timeout=10)["thread"]
@@ -442,7 +455,7 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                     relative = path.relative_to(home)
                     if not relative.parts or relative.parts[0] not in {"sessions", "archived_sessions"}:
                         raise ValueError("Native rollout is outside the account session directory")
-                    _, metadata, _ = _header(path, agent["threadId"])
+                    _, metadata, _ = _header(path, agent["threadId"])  # type: ignore[arg-type]  # typed-narrowing: Request filter confirms thread identity
                     definitions = tools_for_agent(agent)
                     changed = metadata["payload"].get("dynamic_tools", []) != catalog(definitions)
                     ticket = None
@@ -453,7 +466,7 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                         if getattr(server, "supervisor_mode", False):
                             return {**operation, "status": "waiting",
                                     "reason": "Native tool replacement is deferred while supervisor mode is enabled"}
-                        first, replacement, _ = _header(path, agent["threadId"])
+                        first, replacement, _ = _header(path, agent["threadId"])  # type: ignore[arg-type]  # typed-narrowing: Request filter confirms thread identity
                         replacement["payload"]["dynamic_tools"] = catalog(definitions)
                         required = len((json.dumps(replacement, ensure_ascii=False, separators=(",", ":")) + "\n").encode())
                         if required > len(first):
@@ -474,9 +487,9 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                 raise ValueError("Waiting for native events to finish")
             with rt.lock, rt.db() as db:
                 current, reason = _local_idle(rt, db, account_key, server)
-                if reason or [_same_source(a) for a in current] != [_same_source(a) for a in agents]:
+                if reason or [_same_source(a) for a in current] != [_same_source(a) for a in agents]:  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                     raise ValueError(reason or "The account changed during its tool check")
-                operation["agents"] = [_same_source(a) for a in agents]
+                operation["agents"] = [_same_source(a) for a in agents]  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                 operation["connectionId"] = rt.connection_ids.get(account_key)
                 operation["status"] = "reserved"
                 _schema(db)
@@ -484,11 +497,11 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                 db.commit()
                 if any(changed for _, _, _, changed, _ in targets):
                     # Old disconnect callbacks must not create restart recovery events.
-                    rt._native_tools_retiring = getattr(rt, "_native_tools_retiring", {})
-                    rt._native_tools_retiring[account_key] = {"server": server, "attempt": operation["id"]}
+                    rt._native_tools_retiring = getattr(rt, "_native_tools_retiring", {})  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
+                    rt._native_tools_retiring[account_key] = {"server": server, "attempt": operation["id"]}  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
                     rt.connection_ids[account_key] = "retired:" + operation["id"]
                     rt.servers.pop(account_key, None)
-                    rt.loaded.difference_update(a["id"] for a in agents)
+                    rt.loaded.difference_update(a["id"] for a in agents)  # type: ignore[union-attr]  # typed-narrowing: No reason guarantees list presence
                     if account_key == "default":
                         rt.server = None
             if any(changed for _, _, _, changed, _ in targets):
@@ -496,13 +509,13 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                 if server.proc.poll() is None:
                     raise RuntimeError("The native process did not stop; tool metadata was not changed")
                 with rt.lock, rt.db() as db:
-                    rt._native_tools_retiring.pop(account_key, None)
+                    rt._native_tools_retiring.pop(account_key, None)  # type: ignore[attr-defined]  # typed-narrowing: Module owns retiring process registry
                     operation["status"] = "retired"
                     rt.put(db, TABLE, operation)
                     db.commit()
             for agent, path, tools, changed, ticket in targets:
                 if changed:
-                    def persist(file_record):
+                    def persist(file_record):  # type: (dict[str, Any]) -> None
                         operation["files"][agent["id"]] = file_record
                         _save(rt, operation)
                         if ticket:
@@ -510,8 +523,8 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                             _save(rt, ticket)
                     native_id = ticket["result"]["thread"]["id"] if ticket else agent["threadId"]
                     if ticket:
-                        _assert_no_descendants(home, native_id)
-                    replace_header(path, native_id, tools, persist, allow_growth=ticket is not None)
+                        _assert_no_descendants(home, native_id)  # type: ignore[arg-type]  # typed-narrowing: Request filter confirms thread identity
+                    replace_header(path, native_id, tools, persist, allow_growth=ticket is not None)  # type: ignore[arg-type]  # typed-narrowing: Request filter confirms thread identity
             with rt.lock, rt.db() as db:
                 for before, _, tools, _, ticket in targets:
                     agent = rt.agent(before["id"], db)
@@ -523,7 +536,7 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
                             "toolRefreshId": ticket["id"], "accountKey": account_key,
                             "threadId": agent["threadId"], "targetAccountKey": account_key,
                             "targetThreadId": native_id, "provider": "codex", "at": time.time()})
-                        agent.update(threadId=native_id, turnId=None)
+                        agent.update(threadId=native_id, turnId=None)  # type: ignore[call-arg]  # typed-update
                         agent.pop("nativeToolRefreshId", None)
                         agent.pop("prepareAttempt", None)
                         agent.pop("preparedContext", None)
@@ -544,11 +557,13 @@ def refresh_account(rt, account_key="default", tools_for_agent=None, *, agent_id
             return operation
         finally:
             with rt.lock:
-                rt._native_tools_refreshing.discard(account_key)
+                rt._native_tools_refreshing.discard(account_key)  # type: ignore[attr-defined]  # typed-narrowing: Module owns account refresh registry
             rt.changed.set()
 
 
-def _record_target_errors(rt, requested, tools_for_agent, errors):
+def _record_target_errors(rt: "Runtime", requested: list["AgentRecord"],
+                          tools_for_agent: "Callable[[AgentRecord], list[dict[str, Any]]]",
+                          errors: dict[str, str]) -> None:
     with rt.lock, rt.db() as db:
         for before in requested:
             if before["id"] not in errors:
@@ -558,7 +573,8 @@ def _record_target_errors(rt, requested, tools_for_agent, errors):
                 _wait_notice(rt, db, current, tools_for_agent(current), "blocked", errors[current["id"]])
 
 
-def gate(rt, db, agent, tools):
+def gate(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+         tools: list[dict[str, "Any"]]) -> bool:
     """Pre-turn admission. Existing active turns never enter this gate."""
     key = agent.get("accountKey", "default")
     if account_reserved(rt, key):
@@ -583,7 +599,7 @@ def gate(rt, db, agent, tools):
         return False
     jobs = getattr(rt, "_native_tools_jobs", None)
     if jobs is None:
-        jobs = rt._native_tools_jobs = {}
+        jobs = rt._native_tools_jobs = {}  # type: ignore[attr-defined]  # typed-narrowing: Module owns account job registry
     previous = jobs.get(key, {})
     if previous.get("running"):
         return False
@@ -594,7 +610,7 @@ def gate(rt, db, agent, tools):
         return False
     _wait_notice(rt, db, agent, tools, None, None)
     jobs[key] = {"running": True}
-    def run():
+    def run():  # type: () -> None
         try:
             rt.connect(key)
             result = refresh_account(rt, key, agent_ids=[agent["id"]])
@@ -610,17 +626,17 @@ def gate(rt, db, agent, tools):
                                  result.get("threadErrors", {}).get(agent["id"]) or result.get("reason"))
         finally:
             with rt.lock:
-                rt._native_tools_workers.discard(threading.current_thread())
+                rt._native_tools_workers.discard(threading.current_thread())  # type: ignore[attr-defined]  # typed-narrowing: Module owns worker thread registry
             rt.changed.set()
     db.commit()
-    rt._native_tools_workers = getattr(rt, "_native_tools_workers", set())
+    rt._native_tools_workers = getattr(rt, "_native_tools_workers", set())  # type: ignore[attr-defined]  # typed-narrowing: Module owns worker thread registry
     worker = threading.Thread(target=run, daemon=True, name="studio-native-tools")
-    rt._native_tools_workers.add(worker)
+    rt._native_tools_workers.add(worker)  # type: ignore[attr-defined]  # typed-narrowing: Module owns worker thread registry
     worker.start()
     return False
 
 
-def wait_updates(rt):
+def wait_updates(rt: "Runtime") -> None:
     """The Runtime lease must outlive every metadata writer."""
     with rt.lock:
         workers = list(getattr(rt, "_native_tools_workers", ()))
@@ -631,7 +647,9 @@ def wait_updates(rt):
         raise RuntimeError("Native tool metadata update is still running; runtime lease retained")
 
 
-def _wait_notice(rt, db, agent, tools, status, reason):
+def _wait_notice(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+                 tools: list[dict[str, "Any"]], status: str | None,
+                 reason: str | None) -> None:
     previous = agent.get("nativeToolUpdate") or {}
     if status is None:
         if not previous:
@@ -647,5 +665,5 @@ def _wait_notice(rt, db, agent, tools, status, reason):
             return
         if not agent.get("error") or agent.get("error") == previous.get("message"):
             agent["error"] = message
-        agent["nativeToolUpdate"] = notice
+        agent["nativeToolUpdate"] = notice  # type: ignore[typeddict-item]  # typed-narrowing: Notice keys match declared record
     rt.put(db, "agents", agent)

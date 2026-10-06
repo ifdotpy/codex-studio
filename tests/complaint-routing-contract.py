@@ -12,7 +12,9 @@ import unittest
 spec = importlib.util.spec_from_file_location('defaults', Path(__file__).with_name('worker-defaults-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 from codex_runtime import ComplaintConflict
+from studio_api.testing import read_legacy_snapshot_field
 
 
 class ComplaintRouting(unittest.TestCase):
@@ -41,7 +43,8 @@ class ComplaintRouting(unittest.TestCase):
         c = self.submit()
         self.assertEqual(c['recipient'], 'user')
         self.assertEqual(self.events('complaint'), [])
-        self.assertTrue(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        self.assertTrue(read_legacy_snapshot_field(
+            self.runtime.snapshot, 'complaints', 0, 'needsResponse'))
         self.runtime.complaint(self.lead['id'], {'action':'read'}, 'read')
         self.assertIsNone(self.runtime.complaint_detail(c['id'])['readAt'])
         with self.assertRaisesRegex(ValueError, 'assigned to the user'):
@@ -61,7 +64,8 @@ class ComplaintRouting(unittest.TestCase):
         response = self.runtime.complaint(self.lead['id'], {'action':'respond', 'complaint_id':c['id'],
             'text':'Use the checked Python path while I report the defect.', 'status':'in_progress'}, 'lead-response')
         self.assertEqual(response['responses'][0]['author'], self.lead['id'])
-        self.assertFalse(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        self.assertFalse(read_legacy_snapshot_field(
+            self.runtime.snapshot, 'complaints', 0, 'needsResponse'))
         with self.assertRaisesRegex(ValueError, 'orchestrator'):
             self.respond(response, key='user:reopen', status='in_progress')
         closed = self.respond(response, key='user:close')
@@ -91,7 +95,8 @@ class ComplaintRouting(unittest.TestCase):
         self.assertEqual(json.loads(event['text'])['responder'], 'user')
         self.assertEqual(self.respond(c), response)
         self.assertEqual(len(self.events('complaint_response')), 1)
-        self.assertFalse(self.runtime.snapshot()['complaints'][0]['needsResponse'])
+        self.assertFalse(read_legacy_snapshot_field(
+            self.runtime.snapshot, 'complaints', 0, 'needsResponse'))
         with self.assertRaisesRegex(ValueError, 'different content'):
             self.respond(c, text='A different result')
         with self.assertRaises(ComplaintConflict):

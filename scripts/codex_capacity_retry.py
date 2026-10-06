@@ -3,8 +3,18 @@ import hashlib
 import json
 import os
 import time
+from typing import TYPE_CHECKING, Protocol
 
+from codex_records import RecordStore
 from codex_native_errors import assert_native_thread_open, error_kind
+
+if TYPE_CHECKING:
+    import sqlite3
+    from concurrent.futures import ThreadPoolExecutor
+    from threading import Event
+    from typing import ContextManager
+
+    from codex_records import AgentRecord, CapacityRetryRecord, JsonObject, JsonValue, NativeTurnRecord, StartAttemptRecord
 
 DELAYS = (10, 30, 120, 300)
 # A network outage (DNS, Wi-Fi, sleep) can last longer than a busy server.
@@ -16,29 +26,64 @@ CONNECTION_KINDS = {'httpConnectionFailed', 'responseStreamConnectionFailed',
                     'responseStreamDisconnected', 'responseTooManyFailedAttempts'}
 
 
+class CapacityRetryRuntime(RecordStore, Protocol):
+    lock: "ContextManager[object]"
+    changed: "Event"
+    closed: bool
+    loaded: set[str]
+    pool: "ThreadPoolExecutor"
+
+    def db(self) -> "ContextManager[sqlite3.Connection]": ...
+    def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> "AgentRecord": ...
+    def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False,
+                    include_id: str | None = None) -> list["AgentRecord"]: ...
+    def preparation_settings(self, agent: "AgentRecord") -> "JsonObject": ...
+    def continuation_work_claims(self, db: "sqlite3.Connection", agent: "AgentRecord") -> list[str]: ...
+    def continuation_work_claims_valid(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                                       claims: list[str]) -> bool: ...
+    def permanent_worker_hold(self, db: "sqlite3.Connection", agent: "AgentRecord", operation_id: str,
+                              transition: str, reason: str) -> None: ...
+    def assert_workspace_available(self, db: "sqlite3.Connection", agent: "AgentRecord") -> None: ...
+    def dispatch_active_slots(self, db: "sqlite3.Connection") -> list["AgentRecord"]: ...
+    def run_native_action(self, key: str, attempt: "StartAttemptRecord") -> None: ...
+    def capacity_save(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                      retry: "CapacityRetryRecord") -> None: ...
+    def capacity_started(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                         attempt: "StartAttemptRecord", turn_id: str) -> None: ...
+    def capacity_wait(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                      retry: "CapacityRetryRecord", reason: str) -> None: ...
+    def capacity_check(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                       retry: "CapacityRetryRecord", *, claimed: bool = False) -> None: ...
+    def capacity_run(self, key: str, attempt: "StartAttemptRecord") -> None: ...
+    def capacity_retry(self, key: str, retry_id: str, action: str,
+                       *, _automatic: bool = False) -> "CapacityRetryRecord": ...
+
+
 
 class CapacityRetryMixin:
-    def capacity_save(self, db, a, retry):
+    def capacity_save(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                      retry: "CapacityRetryRecord") -> None:
         retry['updatedAt'] = time.time()
         db.execute('INSERT OR REPLACE INTO runtime_capacity_retries VALUES (?, ?, ?)',
                    (retry['id'], a['id'], json.dumps(retry)))
         if (a.get('capacityRetry') or {}).get('id') in (None, retry['id']):
             a['capacityRetry'] = retry
 
-    def capacity_reset(self, db, a, reason='A new instruction replaces this retry.'):
+    def capacity_reset(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                       reason: str = 'A new instruction replaces this retry.') -> None:
         retry = a.get('capacityRetry')
         if retry:
             attempt = a.get('startAttempt') or {}
             if (attempt.get('capacityRetryId') == retry['id'] and not attempt.get('submitted')):
                 # The same lock protects native submission and replacement by new input.
                 a.pop('startAttempt', None)
-                a.update(inFlight=False, status='failed')
-            retry.update(status='finished', dueAt=None, reason=reason)
+                a.update(inFlight=False, status='failed')  # type: ignore[call-arg]  # typed-update
+            retry.update(status='finished', dueAt=None, reason=reason)  # type: ignore[call-arg]  # typed-update
             self.capacity_save(db, a, retry)
         a.pop('capacityRetry', None)
         a.pop('capacityRetryCount', None)
 
-    def capacity_restart(self, db, a):
+    def capacity_restart(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord") -> None:
         retry = a.get('capacityRetry')
         if not retry:
             return
@@ -47,14 +92,14 @@ class CapacityRetryMixin:
             attempt = a.get('startAttempt') or {}
             if (attempt.get('capacityRetryId') == retry['id'] and not attempt.get('submitted')
                     and not retry.get('acceptedTurnId')):
-                retry.update(status='cancelled', dueAt=None,
+                retry.update(status='cancelled', dueAt=None,  # type: ignore[call-arg]  # typed-update
                              reason='The server restarted before turn submission. Automatic retry was cancelled.')
                 terminal = True
                 retry.pop('claimedAt', None)
                 # Startup interrupts active records before this recovery hook.
-                a.update(status='failed', autoWake=True, inFlight=False)
+                a.update(status='failed', autoWake=True, inFlight=False)  # type: ignore[call-arg]  # typed-update
             else:
-                retry.update(status='unknown', dueAt=None,
+                retry.update(status='unknown', dueAt=None,  # type: ignore[call-arg]  # typed-update
                              reason='The server restarted. The turn outcome is unknown.')
                 terminal = True
         elif retry['status'] == 'scheduled':
@@ -62,7 +107,7 @@ class CapacityRetryMixin:
             # capacity_retry validates these claims again before submission.
             if not retry.get('taskClaims') or not self.continuation_work_claims_valid(
                     db, a, retry.get('taskClaims', [])):
-                retry.update(status='cancelled', dueAt=None,
+                retry.update(status='cancelled', dueAt=None,  # type: ignore[call-arg]  # typed-update
                              reason='The server restarted. Automatic retry was cancelled.')
                 terminal = True
         self.capacity_save(db, a, retry)
@@ -70,23 +115,25 @@ class CapacityRetryMixin:
             reason = retry.get('reason') or 'Automatic capacity retry was cancelled.'
             self.permanent_worker_hold(db, a, retry['id'], 'restart-terminal', reason)
 
-    def capacity_started(self, db, a, attempt, turn_id):
+    def capacity_started(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                         attempt: "StartAttemptRecord", turn_id: str) -> None:
         retry = a.get('capacityRetry') or {}
         if attempt.get('action') != 'capacity' or retry.get('id') != attempt.get('capacityRetryId'):
             return
         if not retry.get('acceptedTurnId'):
             retry['acceptedTurnId'] = turn_id
             a['capacityRetryCount'] = a.get('capacityRetryCount', 0) + 1
-            retry.update(status='starting', reason=None, dueAt=None)
+            retry.update(status='starting', reason=None, dueAt=None)  # type: ignore[call-arg]  # typed-update
             self.capacity_save(db, a, retry)
 
-    def capacity_completed(self, db, a, turn, known_turn):
+    def capacity_completed(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                           turn: "NativeTurnRecord", known_turn: bool) -> None:
         retry = a.get('capacityRetry')
         attempt = a.get('startAttempt') or {}
         if known_turn and attempt.get('action') == 'capacity':
             self.capacity_started(db, a, attempt, turn['id'])
         if retry and retry.get('acceptedTurnId') == turn.get('id'):
-            retry.update(status='finished', dueAt=None)
+            retry.update(status='finished', dueAt=None)  # type: ignore[call-arg]  # typed-update
             self.capacity_save(db, a, retry)
             if turn.get('status') == 'completed':
                 a.pop('nativeFailureHold', None)
@@ -107,17 +154,18 @@ class CapacityRetryMixin:
             return
         count = a.get('capacityRetryCount', 0)
         delays = CONNECTION_DELAYS if kind in CONNECTION_KINDS else DELAYS
-        retry = dict(id=retry_id, threadId=a['threadId'], turnId=turn['id'],
+        retry = dict(id=retry_id, threadId=a['threadId'], turnId=turn['id'],  # type: ignore[assignment]  # typed-narrowing: retry resets to complete fields
                      accountKey=a.get('accountKey', 'default'), epoch=a['epoch'], cause=kind,
                      status='scheduled' if count < len(delays) else 'exhausted',
                      dueAt=time.time() + delays[count] if count < len(delays) else None,
                      attempt=count + 1, maxAttempts=len(delays),
                      cwd=a['cwd'], settings=self.preparation_settings(a))
-        retry['taskClaims'] = self.continuation_work_claims(db, a)
-        a['capacityRetry'] = retry
-        self.capacity_save(db, a, retry)
+        retry['taskClaims'] = self.continuation_work_claims(db, a)  # type: ignore[index]  # typed-narrowing: initialized retry accepts task claims
+        a['capacityRetry'] = retry  # type: ignore[typeddict-item]  # typed-narrowing: rebuilt retry matches declared shape
+        self.capacity_save(db, a, retry)  # type: ignore[arg-type]  # typed-narrowing: rebuilt retry matches capacity shape
 
-    def capacity_error(self, db, a, attempt, error, unknown):
+    def capacity_error(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                       attempt: "StartAttemptRecord", error: object, unknown: bool) -> None:
         retry = a.get('capacityRetry') or {}
         if retry.get('id') != attempt.get('capacityRetryId') or not retry:
             return
@@ -126,17 +174,19 @@ class CapacityRetryMixin:
             # is a wait, not a rejection: nothing was submitted. Check again later.
             self.capacity_wait(db, a, retry, str(error))
             return
-        retry.update(status='unknown' if unknown else 'failed', dueAt=None, reason=str(error))
+        retry.update(status='unknown' if unknown else 'failed', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
         self.capacity_save(db, a, retry)
 
-    def capacity_wait(self, db, a, retry, reason):
+    def capacity_wait(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                      retry: "CapacityRetryRecord", reason: str) -> None:
         waits = retry.get('waits', 0) + 1
         retry.pop('claimedAt', None)
-        retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),
+        retry.update(status='scheduled', dueAt=time.time() + min(WAIT_MAX_SECONDS, 15 * waits),  # type: ignore[call-arg]  # typed-update
                      waits=waits, reason=reason)
         self.capacity_save(db, a, retry)
 
-    def capacity_check(self, db, a, retry, *, claimed=False):
+    def capacity_check(self: "CapacityRetryRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                       retry: "CapacityRetryRecord", *, claimed: bool = False) -> None:
         if (self.closed or a.get('deletedAt') or not a.get('autoWake')
                 or retry['epoch'] != a['epoch'] or retry['threadId'] != a.get('threadId')
                 or retry['accountKey'] != a.get('accountKey', 'default')
@@ -156,7 +206,7 @@ class CapacityRetryMixin:
         if a['id'] != root['id']:
             from codex_agent_modes import assert_delegation
             assert_delegation(root)
-        if root.get('tokenBudget') and sum(t['tokensUsed'] for t in agents
+        if root.get('tokenBudget') and sum(t['tokensUsed'] for t in agents  # type: ignore[operator]  # typed-narrowing: guarded get already proves budget
                 if t['rootId'] == root['id']) >= root['tokenBudget']:
             raise ValueError('Team token budget reached. Increase the budget before retry.')
         active = [slot for slot in self.dispatch_active_slots(db) if slot['id'] != a['id']]
@@ -166,22 +216,23 @@ class CapacityRetryMixin:
         if len(active) >= limit or (a['id'] != root['id'] and team_active >= root['concurrency']):
             raise ValueError('Wait for an available agent slot before retry.')
 
-    def capacity_retry(self, key, retry_id, action, *, _automatic=False):
+    def capacity_retry(self: "CapacityRetryRuntime", key: str, retry_id: str, action: str,
+                       *, _automatic: bool = False) -> "CapacityRetryRecord":
         if action not in {'retry', 'cancel'} or not isinstance(retry_id, str) or not retry_id:
             raise ValueError('Supply the retry identity and choose retry or cancel.')
-        attempt = None
+        attempt: StartAttemptRecord | None = None
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             row = db.execute('SELECT record FROM runtime_capacity_retries WHERE id=? AND agent=?',
                              (retry_id, key)).fetchone()
             if not row:
                 raise ValueError('Unknown capacity retry.')
-            retry = json.loads(row[0])
+            retry: CapacityRetryRecord = json.loads(row[0])
             if (a.get('capacityRetry') or {}).get('id') != retry_id:
                 return retry
             if action == 'cancel':
                 if retry['status'] == 'scheduled' and not retry.get('claimedAt'):
-                    retry.update(status='cancelled', dueAt=None, reason=None)
+                    retry.update(status='cancelled', dueAt=None, reason=None)  # type: ignore[call-arg]  # typed-update
                     self.capacity_save(db, a, retry)
                     self.put(db, 'agents', a)
                     self.permanent_worker_hold(db, a, retry_id, 'cancelled',
@@ -192,11 +243,11 @@ class CapacityRetryMixin:
             if retry.get('claimedAt') or retry['status'] not in {'scheduled', 'cancelled', 'exhausted'}:
                 return retry
             if not self.continuation_work_claims_valid(db, a, retry.get('taskClaims', [])):
-                retry.update(status='cancelled', dueAt=None,
+                retry.update(status='cancelled', dueAt=None,  # type: ignore[call-arg]  # typed-update
                              reason='The assigned task changed before automatic continuation.')
                 self.capacity_save(db, a, retry)
                 self.put(db, 'agents', a)
-                self.permanent_worker_hold(db, a, retry_id, 'task-changed', retry['reason'])
+                self.permanent_worker_hold(db, a, retry_id, 'task-changed', retry['reason'])  # type: ignore[arg-type]  # typed-narrowing: cancelled retry always has reason
                 return retry
             self.capacity_check(db, a, retry)
             if a.get('pendingSettings'):
@@ -205,27 +256,27 @@ class CapacityRetryMixin:
                 # Verify the failed turn first, then bind the owner's queued choice
                 # to this exact continuation in the same transaction as its claim.
                 a.pop('pendingSettingsAccountKey', None)
-                a.update(a.pop('pendingSettings'))
+                a.update(a.pop('pendingSettings'))  # type: ignore[typeddict-item]  # typed-narrowing: pending settings contain agent fields
                 retry['settings'] = self.preparation_settings(a)
                 self.loaded.discard(a['id'])
-            retry.update(status='starting', dueAt=None, claimedAt=time.time(), reason=None)
+            retry.update(status='starting', dueAt=None, claimedAt=time.time(), reason=None)  # type: ignore[call-arg]  # typed-update
             attempt = dict(id='capacity:' + retry_id, epoch=a['epoch'], events=[], action='capacity',
                            submitted=False, capacityRetryId=retry_id, accountKey=retry['accountKey'])
-            a.update(status='starting', inFlight=True, turnEpoch=a['epoch'], startAttempt=attempt)
+            a.update(status='starting', inFlight=True, turnEpoch=a['epoch'], startAttempt=attempt)  # type: ignore[call-arg]  # typed-update
             self.capacity_save(db, a, retry)
             self.put(db, 'agents', a)
-        self.pool.submit(self.capacity_run, key, dict(attempt))
+        self.pool.submit(self.capacity_run, key, dict(attempt))  # type: ignore[arg-type]  # typed-narrowing: copy preserves all attempt fields
         self.changed.set()
         return retry
 
-    def capacity_run(self, key, attempt):
+    def capacity_run(self: "CapacityRetryRuntime", key: str, attempt: "StartAttemptRecord") -> None:
         try:
             self.run_native_action(key, attempt)
         except Exception:
             # run_native_action persists an exact failure or uncertain outcome.
             pass
 
-    def capacity_tick(self):
+    def capacity_tick(self: "CapacityRetryRuntime") -> None:
         with self.lock, self.db() as db:
             # Read scheduled retries only when due, plus failed context waits that need retirement.
             now = time.time()
@@ -243,7 +294,7 @@ class CapacityRetryMixin:
                         and str(retry.get('reason', '')).startswith('Context repair waits for ')
                         and not ((a.get('startAttempt') or {}).get('capacityRetryId') == retry.get('id')
                                  and (a.get('startAttempt') or {}).get('submitted'))):
-                    self.capacity_wait(db, a, retry, retry['reason'])
+                    self.capacity_wait(db, a, retry, retry['reason'])  # type: ignore[arg-type]  # typed-narrowing: prefix check guarantees reason text
                     self.put(db, 'agents', a)
             due = [(a['id'], a['capacityRetry']['id']) for a in retrying
                    if (a.get('capacityRetry') or {}).get('status') == 'scheduled'
@@ -258,7 +309,7 @@ class CapacityRetryMixin:
                     retry = a.get('capacityRetry') or {}
                     if retry.get('id') == retry_id and retry.get('status') == 'scheduled':
                         if str(error) == 'This retry belongs to an earlier agent state.':
-                            retry.update(status='cancelled', dueAt=None, reason=str(error))
+                            retry.update(status='cancelled', dueAt=None, reason=str(error))  # type: ignore[call-arg]  # typed-update
                             self.capacity_save(db, a, retry)
                             self.permanent_worker_hold(db, a, retry_id, 'identity-changed', str(error))
                         else:

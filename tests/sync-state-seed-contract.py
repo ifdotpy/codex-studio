@@ -12,10 +12,12 @@ import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
+from studio_api.testing import read_runtime_state
 
 from codex_canvas import Canvas
 from codex_runtime import Runtime
 from codex_sync import SyncStore
+from studio_api.testing import read_legacy_snapshot_field
 
 
 def runtime_fixture():
@@ -68,8 +70,8 @@ class CanvasChatSeedContract(unittest.TestCase):
                 chat_id = str(uuid.uuid4())
                 canvas.create_chat("Planning", [lead["id"]], chat_id)
                 snapshot = {
-                    **canvas.snapshot(runtime_snapshot=runtime.snapshot(include_work=False)),
-                    "runtime": runtime.snapshot(include_work=False),
+                    **canvas.snapshot(runtime_snapshot=read_runtime_state(runtime, include_work=False)),
+                    "runtime": read_runtime_state(runtime, include_work=False),
                 }
                 self.assertIn(chat_id, {node["id"] for node in snapshot["nodes"]})
 
@@ -138,14 +140,19 @@ class CanvasChatSeedContract(unittest.TestCase):
                     expected = runtime.latest_work_result_file(db, worker_id)
 
                 self.assertEqual(expected, "accepted.md")
-                snapshot = runtime.snapshot(include_work=False)
-                worker_view = next(agent for agent in snapshot["agents"] if agent["id"] == worker_id)
-                self.assertEqual(worker_view["overview"]["resultFile"], expected)
+                snapshot = read_runtime_state(runtime, include_work=False)
+                self.assertEqual(read_legacy_snapshot_field(
+                    lambda: snapshot, "agents",
+                    next(index for index, agent in enumerate(snapshot["agents"])
+                         if agent["id"] == worker_id),
+                    "overview", "resultFile"), expected)
                 self.assertNotIn("work", snapshot)
-                full_snapshot = runtime.snapshot(include_work=True)
-                full_worker = next(agent for agent in full_snapshot["agents"]
-                                   if agent["id"] == worker_id)
-                self.assertEqual(full_worker["overview"]["resultFile"], expected)
+                full_snapshot = read_runtime_state(runtime, include_work=True)
+                self.assertEqual(read_legacy_snapshot_field(
+                    lambda: full_snapshot, "agents",
+                    next(index for index, agent in enumerate(full_snapshot["agents"])
+                         if agent["id"] == worker_id),
+                    "overview", "resultFile"), expected)
                 work_ids = {work["id"] for work in full_snapshot["work"]}
                 self.assertEqual(work_ids, {"review-result", "accepted-result", "inactive-result"})
             finally:

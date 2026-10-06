@@ -26,7 +26,7 @@ try:
     canvas = Canvas(read_only=args.action == 'list')
     if args.action == 'list':
         snapshot = canvas.snapshot()
-        result = {k: snapshot[k] for k in ('nodes', 'edges')}
+        result = {key: snapshot[key] for key in ('nodes', 'edges')}
     else:
         result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
         notify_external_write(str(uuid.uuid4()), [

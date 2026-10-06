@@ -32,6 +32,7 @@ import codex_payload_migrate
 import codex_work
 from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
+from studio_api.testing import read_test_state
 
 recovery_spec = importlib.util.spec_from_file_location("recover_backend", ROOT / "desktop/recover_backend.py")
 recover_backend = importlib.util.module_from_spec(recovery_spec)
@@ -203,9 +204,8 @@ class UpgradeContract(unittest.TestCase):
                     def get(path):
                         with urllib.request.urlopen(origin + path, timeout=5) as response:
                             return json.load(response)
-                    state_payload = get("/api/state")
-                    self.assertTrue(any(item.get("id") == agent_id
-                                        for item in state_payload.get("threads", [])))
+                    state = read_test_state(get)
+                    self.assertIsNotNone(state.value("agent", agent_id))
                     identity = get("/api/sync/identity")
                     self.assertTrue(identity["workspaceId"])
                     entity_pull = get("/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100")

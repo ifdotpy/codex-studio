@@ -190,7 +190,7 @@ class ApiContext:
     ) -> None:
         self.canvas = canvas
         self.token = token if token is not None else secrets.token_urlsafe(32)
-        self.remote = remote if remote is not None else cast(RemoteAccessContract, RemoteAccess(canvas.root))  # type: ignore[no-untyped-call]
+        self.remote = remote if remote is not None else cast(RemoteAccessContract, RemoteAccess(canvas.root))
         self.server_port = server_port
         self.unix_socket = unix_socket
         self.schema_only = schema_only
@@ -333,7 +333,7 @@ class ApiContext:
             if self._terminal is None:
                 from codex_terminals import TerminalManager
 
-                self._terminal = TerminalManager(self.canvas.root)  # type: ignore[no-untyped-call]
+                self._terminal = TerminalManager(self.canvas.root)
             return self._terminal
 
     def sync(self) -> SyncStore:
@@ -358,7 +358,7 @@ class ApiContext:
                                 volatile = json.dumps({
                                     "rateLimits": runtime.rate_limits,
                                     "rateLimitsByAccount": {
-                                        key: runtime.rate_limits_for(key)  # type: ignore[no-untyped-call]
+                                        key: runtime.rate_limits_for(key)
                                         for key in runtime.rate_limits_by_account
                                     },
                                     "connectionIds": runtime.connection_ids,
@@ -378,13 +378,13 @@ class ApiContext:
                     from codex_state import process_is_alive, read_threads
 
                     liveness = tuple(sorted((
-                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))
+                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))  # type: ignore[redundant-cast]  # typed-narrowing: guarded pid has integer type
                         for row in read_threads(self.canvas.root)
                         if row.get("launcherPid") is not None
                     ), key=lambda item: str(item[0])))
                     return connected, volatile, tuple(files), liveness
 
-                self._sync_store = SyncStore(  # type: ignore[no-untyped-call]
+                self._sync_store = SyncStore(
                     self.canvas.connect,
                     self.snapshot,
                     self.canvas.transcript,
@@ -430,12 +430,12 @@ class ApiContext:
     def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
         if self.runtime:
             with self.runtime.read_db() as db:
-                runtime_value = self.runtime.snapshot(include_work=include_work, db=db)  # type: ignore[no-untyped-call]
+                runtime_value = self.runtime.snapshot(include_work=include_work, db=db)
                 return cast(dict[str, JsonValue], {
-                    **self.canvas.snapshot(runtime_snapshot=runtime_value, db=db),  # type: ignore[no-untyped-call]
+                    **self.canvas.snapshot(runtime_snapshot=runtime_value, db=db),
                     "runtime": runtime_value,
                 })
-        return cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None})  # type: ignore[no-untyped-call]
+        return cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None})
 
     def chat_snapshot(self) -> dict[str, JsonValue]:
         return self.snapshot(include_work=False)
@@ -469,8 +469,8 @@ class ApiContext:
                 from codex_pricing import PricingCatalog
 
                 if self._pricing is None:
-                    self._pricing = PricingCatalog(self.canvas.root)  # type: ignore[no-untyped-call]
-                self._cost_reader = AccountCostReader(self.canvas.root, runtime.accounts, pricing=self._pricing)  # type: ignore[no-untyped-call]
+                    self._pricing = PricingCatalog(self.canvas.root)
+                self._cost_reader = AccountCostReader(self.canvas.root, runtime.accounts, pricing=self._pricing)
             return self._cost_reader
 
     def session_costs(self) -> SessionCostReader:
@@ -479,11 +479,11 @@ class ApiContext:
             if self._pricing is None:
                 from codex_pricing import PricingCatalog
 
-                self._pricing = PricingCatalog(self.canvas.root)  # type: ignore[no-untyped-call]
+                self._pricing = PricingCatalog(self.canvas.root)
             if self._session_cost_reader is None:
                 from codex_session_costs import SessionCostReader
 
-                self._session_cost_reader = SessionCostReader(  # type: ignore[no-untyped-call]
+                self._session_cost_reader = SessionCostReader(
                     self.canvas.root / "canvas.sqlite3",
                     self._pricing,
                     accounts=getattr(runtime, "accounts", None),
@@ -675,10 +675,10 @@ class ApiContext:
         resource_hub = None
         with self._lock:
             if self._cost_reader is not None:
-                self._cost_reader.close()  # type: ignore[no-untyped-call]
+                self._cost_reader.close()
                 self._cost_reader = None
             if self._terminal is not None:
-                self._terminal.close()  # type: ignore[no-untyped-call]
+                self._terminal.close()
                 self._terminal = None
             if self._session_cost_reader is not None:
                 self._session_cost_reader = None

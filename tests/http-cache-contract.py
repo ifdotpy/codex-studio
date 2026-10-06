@@ -16,6 +16,7 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_session_token
 import codex_canvas
 
 
@@ -63,8 +64,10 @@ class HttpCacheContract(unittest.TestCase):
         self.assertEqual(headers['Content-Encoding'], 'gzip')
         self.assertEqual(headers['Vary'], 'Accept-Encoding')
         self.assertEqual(headers['Cache-Control'], 'no-store')
-        code, session_headers, session = self.get('/api/session')
-        self.assertEqual(json.loads(session)['token'], json.loads(plain)['token'])
+        _, session_headers, session = self.get('/api/session')
+        token = read_session_token(lambda path: json.loads(self.get(path)[2]))
+        self.assertEqual(json.loads(session)['token'], token)
+        self.assertEqual(json.loads(plain)['token'], token)
         self.assertEqual(session_headers['Cache-Control'], 'no-store')
         self.assertLess(len(session), 100)
 

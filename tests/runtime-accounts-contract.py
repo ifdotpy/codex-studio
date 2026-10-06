@@ -20,6 +20,7 @@ spec = importlib.util.spec_from_file_location(
 )
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 from codex_limit_resets import consume_reset
 
 
@@ -155,7 +156,7 @@ class AccountContracts(unittest.TestCase):
                 key,
                 self.runtime.connection_ids[key],
             )
-        requests = self.runtime.snapshot()["requests"]
+        requests = read_runtime_state(self.runtime)["requests"]
         self.assertEqual(len(requests), 2)
         for request in requests:
             self.runtime.answer(
@@ -291,7 +292,7 @@ class AccountContracts(unittest.TestCase):
                 self.assertFalse(worker.is_alive())
             self.assertEqual(self.runtime.agent(a["id"])["tail"], "")
             self.assertEqual(self.runtime.agent(a["id"])["name"], "Lead")
-            self.assertEqual(self.runtime.snapshot()["requests"], [])
+            self.assertEqual(read_runtime_state(self.runtime)["requests"], [])
 
     def test_children_inherit_and_account_binding_survives_restart(self):
         lead = self.lead(self.other_key)

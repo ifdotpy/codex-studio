@@ -12,6 +12,7 @@ from entity_test_support import context_repair_wait
 spec = importlib.util.spec_from_file_location('projection_fixture', Path(__file__).with_name('runtime-contract.py'))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_state
 
 
 class Projection(f.RuntimeContract):
@@ -28,15 +29,15 @@ class Projection(f.RuntimeContract):
                              scope='local', phase='waiting', reason='native receipt'),
                          startAttempt={'id':'exact-start','prepareError':'Wait for the native response.'})
                 self.runtime.put(db, 'agents', a)
-            baseline = self.runtime.snapshot(include_work=False)
+            baseline = read_runtime_state(self.runtime, include_work=False)
             with self.runtime.lock, self.runtime.db() as db:
                 a = self.runtime.agent(a['id'], db)
                 for field in internal:
                     a[field] = {'proof':'record-' * 50000, 'source':field}
                 self.runtime.put(db, 'agents', a)
             before = self.runtime.agent(a['id'])
-            chat = self.runtime.snapshot(include_work=False)
-            full = self.runtime.snapshot()
+            chat = read_runtime_state(self.runtime, include_work=False)
+            full = read_runtime_state(self.runtime)
             self.assertEqual(chat, baseline)
             self.assertLess(len(json.dumps(chat)), 20000)
             self.assertGreater(len(json.dumps(full)), 1500000)

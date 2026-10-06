@@ -9,30 +9,74 @@ import sqlite3
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING, Literal, Protocol, overload
+
+if TYPE_CHECKING:
+    from codex_records import (
+        AccountTransferRecord,
+        AccountTransferMemberRecord,
+        AccountTransferResultRecord,
+        AccountTransferScopeValue,
+        AgentRecord,
+        JsonObject,
+        JsonValue,
+    )
+    from codex_runtime import AppServer, Runtime
 
 TERMINAL = {'completed', 'cancelled'}
 MEMBER_TERMINAL = {'completed', 'left'}
 ACTIVE = {'running', 'starting', 'approval'}
 
 
+class _CatalogTier(Protocol):
+    @overload
+    def get(self, key: Literal['id'], default: str | None = None) -> str | None: ...
+    @overload
+    def get(self, key: str, default: object = None) -> object: ...
+
+
+class _CatalogRow(Protocol):
+    @overload
+    def get(self, key: Literal['hidden'], default: bool = False) -> bool: ...
+    @overload
+    def get(self, key: Literal['model', 'resolvedModel'], default: str | None = None) -> str | None: ...
+    @overload
+    def get(self, key: Literal['isDefault'], default: bool = False) -> bool: ...
+    @overload
+    def get(self, key: Literal['serviceTiers'], default: list[_CatalogTier]) -> list[_CatalogTier]: ...
+    @overload
+    def get(self, key: str, default: object = None) -> object: ...
+    @overload
+    def __getitem__(self, key: Literal['model']) -> str: ...
+    @overload
+    def __getitem__(self, key: str) -> object: ...
+
+
+class _ModelCatalog(Protocol):
+    @overload
+    def get(self, key: Literal['data'], default: list[_CatalogRow]) -> list[_CatalogRow]: ...
+    @overload
+    def get(self, key: str, default: object = None) -> object: ...
+
+
 class TransferSettingsConflict(ValueError):
     pass
 
 
-def transfer_store(rt):
+def transfer_store(rt: "Runtime") -> "AccountTransfers":
     with rt.lock:
         if not hasattr(rt, '_account_transfers'):
-            rt._account_transfers = AccountTransfers(rt)
-        return rt._account_transfers
+            rt._account_transfers = AccountTransfers(rt)  # type: ignore[attr-defined]  # typed-narrowing: branch initializes cache before return
+        return rt._account_transfers  # type: ignore[attr-defined, no-any-return]  # typed-suspect: cache attribute may be uninitialized before transfer access
 
 
 class AccountTransfers:
-    def __init__(self, rt):
+    def __init__(self, rt: "Runtime") -> None:
         self.rt = rt
         self.closing = False
-        self.running = set()
-        self.workers = set()
-        self.futures = {}
+        self.running: set[str] = set()
+        self.workers: set[threading.Thread] = set()
+        self.futures: dict[tuple[str, str], concurrent.futures.Future[None]] = {}
         self.copy_lock = threading.Lock()
         with rt.db() as db:
             db.execute('CREATE TABLE IF NOT EXISTS runtime_account_transfers(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
@@ -46,16 +90,16 @@ class AccountTransfers:
                         member['phase'] = 'lazy' if member.get('lazy') else 'waiting'
                         dirty = True
                     elif member['phase'] in {'submitted', 'lazy_submitted'}:
-                        member.update(phase='unknown', error='The server restarted before the transfer receipt arrived. No request was repeated.')
+                        member.update(phase='unknown', error='The server restarted before the transfer receipt arrived. No request was repeated.')  # type: ignore[call-arg]  # typed-update
                         dirty = True
                     elif member['phase'] == 'interrupting':
-                        member.update(phase='blocked', interruptOutcome='unknown',
+                        member.update(phase='blocked', interruptOutcome='unknown',  # type: ignore[call-arg]  # typed-update
                                       error='The server restarted before the turn interrupt receipt arrived. No request was repeated.')
                         dirty = True
                 if dirty:
                     self.save(db, op)
 
-    def close(self):
+    def close(self) -> None:
         with self.rt.lock:
             self.closing = True
             workers = list(self.workers)
@@ -65,13 +109,13 @@ class AccountTransfers:
         if any(worker.is_alive() for worker in workers):
             raise RuntimeError('Account transfer is still saving context; runtime lease retained')
 
-    def get(self, db, key):
+    def get(self, db: "sqlite3.Connection", key: str) -> "AccountTransferRecord":
         row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (key,)).fetchone()
         if not row:
             raise ValueError('Unknown account transfer')
-        return json.loads(row[0])
+        return json.loads(row[0])  # type: ignore[no-any-return]  # typed-suspect: persisted JSON may not match the declared transfer record
 
-    def save(self, db, op):
+    def save(self, db: "sqlite3.Connection", op: "AccountTransferRecord") -> None:
         op['updated'] = time.time()
         self.rt.put(db, 'account_transfers', op)
         lead = self.rt.agent(op['leadId'], db)
@@ -84,8 +128,8 @@ class AccountTransfers:
             if current.get('status') not in TERMINAL or not self.newer(db, op, current['id']):
                 return
         members = list(op['members'].values())
-        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope', 'finishHistory')}
-        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),
+        lead['accountTransfer'] = {k: op.get(k) for k in ('id', 'targetAccountKey', 'status', 'updated', 'scope', 'finishHistory')}  # type: ignore[typeddict-item]  # typed-narrowing: projection preserves optional summary fields
+        lead['accountTransfer'].update(total=len(members), completed=sum(m['phase'] in MEMBER_TERMINAL for m in members),  # type: ignore[call-arg]  # typed-update
             moved=sum(m.get('lazy') or m['phase'] == 'completed' for m in members),
             nativeHistoryPending=sum(bool(m.get('lazy') and m['phase'] != 'completed') for m in members),
             movingNow=sum(m['phase'] in {'reading', 'submitted', 'lazy_submitted', 'interrupting'} for m in members),
@@ -106,26 +150,26 @@ class AccountTransfers:
         self.rt.put(db, 'agents', lead)
 
     @staticmethod
-    def already_committed(op, m, a):
+    def already_committed(op: "AccountTransferRecord", m: "AccountTransferMemberRecord", a: "AgentRecord") -> bool:
         thread = ((m.get('result') or {}).get('thread') or {}).get('id')
         return bool(thread and a.get('threadId') == thread and not a.get('deletedAt')
                     and a.get('accountKey', 'default') == op['targetAccountKey']
                     and a.get('accountTransferId') in {None, op['id']})
 
-    def newer(self, db, op, other_id):
+    def newer(self, db: "sqlite3.Connection", op: "AccountTransferRecord", other_id: str | None) -> bool:
         row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (other_id,)).fetchone()
         return row is None or op.get('created', 0) > json.loads(row[0]).get('created', 0)
 
-    def check_destination(self, actor, target, db=None):
+    def check_destination(self, actor: "AgentRecord", target: str, db: "sqlite3.Connection | None"=None) -> None:
         self.rt.accounts.home(target)  # Validate the registered account identity.
 
-    def settings_snapshot(self, agent):
+    def settings_snapshot(self, agent: "AgentRecord") -> "JsonObject":
         return {**self.rt.preparation_settings(agent),
                 'provider': agent.get('provider', 'codex'),
                 'workerDefaults': copy.deepcopy(agent.get('workerDefaults')),
                 'claudeOptions': copy.deepcopy(agent.get('claudeOptions'))}
 
-    def destination_settings(self, agent, target, catalog):
+    def destination_settings(self, agent: "AgentRecord", target: str, catalog: _ModelCatalog) -> "JsonObject":
         """Choose destination-native settings without applying a queued source model."""
         rt = self.rt
         source_provider = rt.accounts.get(agent.get('accountKey', 'default')).get('provider', 'codex')
@@ -177,7 +221,7 @@ class AccountTransfers:
                                 pendingSettingsAccountKey=target)
         return resolved
 
-    def request(self, key, target, request_id, scope='team'):
+    def request(self, key: str, target: str, request_id: str, scope: "AccountTransferScopeValue"='team') -> "AccountTransferRecord":
         if not isinstance(request_id, str):
             raise ValueError('Supply a transfer request id')
         uuid.UUID(request_id)
@@ -194,8 +238,8 @@ class AccountTransfers:
                           if request_id in op.get('requests', {})), None)
             if alias:
                 op, receipt = alias
-                if (receipt['leadId'] != key or receipt['targetAccountKey'] != target
-                        or receipt.get('scope', 'team') != scope):
+                if (receipt['leadId'] != key or receipt['targetAccountKey'] != target  # type: ignore[index]  # typed-narrowing: request key membership guarantees receipt
+                        or receipt.get('scope', 'team') != scope):  # type: ignore[union-attr]  # typed-narrowing: request key membership guarantees receipt
                     raise ValueError('This transfer id has different content')
                 return op
             row = db.execute('SELECT record FROM runtime_account_transfers WHERE id=?', (request_id,)).fetchone()
@@ -204,7 +248,7 @@ class AccountTransfers:
                 if (op['leadId'] != key or op['targetAccountKey'] != target
                         or op.get('scope', 'team') != scope):
                     raise ValueError('This transfer id has different content')
-                return op
+                return op  # type: ignore[no-any-return]  # typed-suspect: persisted JSON may not match the declared transfer record
             old = lead.get('accountTransfer') or {}
             if old and old['status'] not in TERMINAL:
                 if old['targetAccountKey'] == target and old.get('scope', 'team') == scope:
@@ -250,8 +294,8 @@ class AccountTransfers:
         rt.changed.set()
         return op
 
-    def adopt(self, db, op, agents, include_later=False):
-        destination_catalog = None
+    def adopt(self, db: "sqlite3.Connection", op: "AccountTransferRecord", agents: list["AgentRecord"], include_later: bool=False) -> None:
+        destination_catalog: _ModelCatalog | None = None
         destination_catalog_checked = False
         destination_catalog_error = None
         for a in agents:
@@ -316,7 +360,7 @@ class AccountTransfers:
                 if lazy:
                     a['lazyAccountTransfer'] = {'id': op['id'], 'sourceAccountKey': source_account,
                                                 'sourceThreadId': source_thread,
-                                                'sourceState': {field: copy.deepcopy(a.get(field)) for field in (
+                                                'sourceState': {field: copy.deepcopy(a.get(field)) for field in (  # type: ignore[typeddict-item]  # typed-narrowing: agent fields copied without conversion
                                                     'provider', 'model', 'effort', 'nativeEffort', 'fastMode',
                                                     'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
                                                     'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
@@ -325,7 +369,7 @@ class AccountTransfers:
                     a['accountKey'] = op['targetAccountKey']
                     if provider != op.get('targetProvider', provider):
                         from codex_runtime import DEFAULT_LEAD_MODEL
-                        a.update(provider=op['targetProvider'],
+                        a.update(provider=op['targetProvider'],  # type: ignore[call-arg]  # typed-update
                                  model='default' if op['targetProvider'] == 'claude' else DEFAULT_LEAD_MODEL,
                                  effort=None, nativeEffort='medium', fastMode=False, daybreakEnabled=False,
                                  cyberAccessProgram='standard')
@@ -334,7 +378,7 @@ class AccountTransfers:
                         a.pop('pendingSettingsAccountKey', None)
                     defaults = copy.deepcopy(a.get('workerDefaults') or self.rt.worker_defaults(a))
                     if provider != op.get('targetProvider', provider):
-                        defaults.update(model=None, effort='medium', fastMode=False,
+                        defaults.update(model=None, effort='medium', fastMode=False,  # type: ignore[call-arg]  # typed-update
                                         daybreakEnabled=False, cyberAccessProgram='standard')
                     defaults['accountKey'] = op['targetAccountKey']
                     a['workerDefaults'] = defaults
@@ -343,7 +387,7 @@ class AccountTransfers:
                         a['executionSettingsAccountKey'] = source_account
                 self.rt.put(db, 'agents', a)
 
-    def action(self, key, action):
+    def action(self, key: str, action: str) -> "AccountTransferRecord":
         if action not in {'cancel', 'retry', 'finish_history'}:
             raise ValueError('Choose cancel, retry, or finish_history')
         rt = self.rt
@@ -410,14 +454,14 @@ class AccountTransfers:
                                     resolved = self.destination_settings(a, op['targetAccountKey'],
                                                                          rt.catalog(op['targetAccountKey']))
                                 except Exception as error:
-                                    m.update(error=str(error))
+                                    m.update(error=str(error))  # type: ignore[call-arg]  # typed-update
                                     continue
                                 source_account = a.get('accountKey', 'default')
                                 source_thread = a.get('threadId')
                                 a['accountTransferId'] = key
                                 a['lazyAccountTransfer'] = {'id': key, 'sourceAccountKey': source_account,
                                     'sourceThreadId': source_thread,
-                                    'sourceState': {field: copy.deepcopy(a.get(field)) for field in (
+                                    'sourceState': {field: copy.deepcopy(a.get(field)) for field in (  # type: ignore[typeddict-item]  # typed-narrowing: agent fields copied without conversion
                                         'provider', 'model', 'effort', 'nativeEffort', 'fastMode',
                                         'daybreakEnabled', 'cyberAccessProgram', 'workerDefaults',
                                         'pendingSettings', 'pendingSettingsAccountKey', 'claudeOptions',
@@ -426,7 +470,7 @@ class AccountTransfers:
                                 a.update(resolved)
                                 m['targetSettings'] = resolved
                                 rt.put(db, 'agents', a)
-                        m.update(phase='lazy' if m.get('lazy') else ('ready' if m.get('result') else 'waiting'),
+                        m.update(phase='lazy' if m.get('lazy') else ('ready' if m.get('result') else 'waiting'),  # type: ignore[call-arg]  # typed-update
                                  error=None, nextCheck=0)
                         if m.get('interruptSubmittedAt'):
                             for field in ('interruptTurnId', 'interruptSubmittedAt', 'interruptOutcome'):
@@ -436,7 +480,7 @@ class AccountTransfers:
         rt.changed.set()
         return op
 
-    def tick(self, agents):
+    def tick(self, agents: list["AgentRecord"]) -> None:
         if self.closing:
             return
         rt = self.rt
@@ -518,12 +562,12 @@ class AccountTransfers:
                         continue
                     if (member['phase'] == 'unknown' and aid not in self.running
                             and (key, aid) not in self.futures and self.already_committed(op, member, a)):
-                        member.update(phase='completed', error=None, waiting=None)
+                        member.update(phase='completed', error=None, waiting=None)  # type: ignore[call-arg]  # typed-update
                         dirty = True
                         continue
                     if (a.get('deletedAt') and member['phase'] not in {'submitted', 'unknown', 'ready'}
                             and aid not in self.running and (key, aid) not in self.futures):
-                        member.update(phase='completed', waiting=None)
+                        member.update(phase='completed', waiting=None)  # type: ignore[call-arg]  # typed-update
                         if (a.get('accountTransferId') == key
                                 and not any(member.get(field) for field in ('submittedAt', 'nativeMethod', 'nativeParams', 'result'))):
                             a.pop('accountTransferId')
@@ -531,7 +575,7 @@ class AccountTransfers:
                         dirty = True
                     if member['phase'] == 'interrupting':
                         if not a.get('inFlight') and a['status'] not in ACTIVE:
-                            member.update(phase='waiting', waiting=None, interruptConfirmedAt=time.time())
+                            member.update(phase='waiting', waiting=None, interruptConfirmedAt=time.time())  # type: ignore[call-arg]  # typed-update
                             dirty = True
                         else:
                             member['waiting'] = 'Waiting for the active turn to stop'
@@ -545,10 +589,10 @@ class AccountTransfers:
                             dirty = True
                             continue
                         if member.get('interruptTurnId') == a.get('turnId'):
-                            member.update(phase='interrupting', waiting='Waiting for the active turn to stop')
+                            member.update(phase='interrupting', waiting='Waiting for the active turn to stop')  # type: ignore[call-arg]  # typed-update
                             dirty = True
                             continue
-                        member.update(phase='interrupting', interruptTurnId=a['turnId'],
+                        member.update(phase='interrupting', interruptTurnId=a['turnId'],  # type: ignore[call-arg]  # typed-update
                                       interruptSubmittedAt=time.time(), waiting='Interrupting active turn')
                         member['continueAfterTransfer'] = bool(a.get('autoWake'))
                         reason = f'Moved to account {self.rt.accounts.get(op["targetAccountKey"]).get("label") or op["targetAccountKey"]}'
@@ -596,7 +640,7 @@ class AccountTransfers:
                 if dirty:
                     self.save(db, op)
 
-    def local_blocker(self, db, a):
+    def local_blocker(self, db: "sqlite3.Connection", a: "AgentRecord") -> str | None:
         rt = self.rt
         from codex_context_repair import blocked, retire_unsent_wait_for_transfer
         from codex_native_tools import account_reserved
@@ -621,7 +665,7 @@ class AccountTransfers:
         boot = rt.started_at
         attempt_events = (a.get('startAttempt') or {}).get('events', []) if lazy_start else []
         event_filter = ''
-        event_values = []
+        event_values: list["JsonValue"] = []
         if attempt_events:
             event_filter = ' AND id NOT IN (' + ','.join('?' for _ in attempt_events) + ')'
             event_values = attempt_events
@@ -645,7 +689,7 @@ class AccountTransfers:
                 return 'End voice to transfer this agent'
         return None
 
-    def run_lazy(self, key, aid):
+    def run_lazy(self, key: str, aid: str) -> None:
         from codex_runtime import PreparationPending
         try:
             with self.rt.lock, self.rt.db() as db:
@@ -665,7 +709,7 @@ class AccountTransfers:
                     future.set_result(None)
             self.rt.changed.set()
 
-    def move_lazy(self, key, aid, *, background=False):
+    def move_lazy(self, key: str, aid: str, *, background: bool=False) -> "AgentRecord | None":
         """Move one rebound idle member's native history before its first start."""
         rt = self.rt
         saved_result = None
@@ -692,7 +736,7 @@ class AccountTransfers:
                 raise RuntimeError('Native history move is not ready')
             delay = member.get('nextCheck', 0) - time.time() if saved_result is None else 0
             if delay > 0:
-                future = concurrent.futures.Future()
+                future = concurrent.futures.Future()  # type: concurrent.futures.Future[None]
                 timer = threading.Timer(delay, lambda: not future.done() and future.set_result(None))
                 timer.daemon = True
                 timer.start()
@@ -700,12 +744,12 @@ class AccountTransfers:
                 raise PreparationPending(future)
             reason = self.local_blocker(db, a)
             if reason:
-                member.update(phase='blocked', error=reason)
+                member.update(phase='blocked', error=reason)  # type: ignore[call-arg]  # typed-update
                 self.save(db, op)
                 db.commit()
                 raise RuntimeError(reason)
             if saved_result is None:
-                member.update(phase='reading', error=None, source={
+                member.update(phase='reading', error=None, source={  # type: ignore[call-arg]  # typed-update
                     'epoch': a.get('epoch'), 'accountKey': lazy['sourceAccountKey'],
                     'threadId': lazy.get('sourceThreadId'), 'cwd': a.get('cwd')},
                     settings=self.settings_snapshot(a),
@@ -738,7 +782,7 @@ class AccountTransfers:
                     a = rt.agent(aid, db)
                     if (a.get('lazyAccountTransfer') or {}).get('id') != key:
                         return a
-                    member.update(targetSettings=resolved, settings=self.settings_snapshot(a),
+                    member.update(targetSettings=resolved, settings=self.settings_snapshot(a),  # type: ignore[call-arg]  # typed-update
                                   pendingSettings=copy.deepcopy(a.get('pendingSettings')),
                                   pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
                     self.save(db, op)
@@ -748,7 +792,7 @@ class AccountTransfers:
                 with rt.lock, rt.db() as db:
                     op = self.get(db, key)
                     member = op['members'][aid]
-                    member.update(phase='blocked', result=saved_result, error=str(error))
+                    member.update(phase='blocked', result=saved_result, error=str(error))  # type: ignore[call-arg]  # typed-update
                     self.save(db, op)
                 raise RuntimeError(str(error)) from error
         try:
@@ -803,7 +847,7 @@ class AccountTransfers:
                 resolved['portableHistory'] = descriptor
                 with rt.lock, rt.db() as db:
                     op = self.get(db, key)
-                    op['members'][aid].update(portableHistory=descriptor, targetSettings=resolved)
+                    op['members'][aid].update(portableHistory=descriptor, targetSettings=resolved)  # type: ignore[call-arg]  # typed-update
                     self.save(db, op)
                 if not self.archive_source_current(key, aid):
                     raise RuntimeError('The source changed during history export; cancel this transfer and start a new one')
@@ -824,7 +868,7 @@ class AccountTransfers:
                 self.assert_settings(member, a)
                 if account_reserved(rt, target):
                     raise RuntimeError('Waiting for the account tool catalog update')
-                member.update(phase='lazy_submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),
+                member.update(phase='lazy_submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),  # type: ignore[call-arg]  # typed-update
                               targetSettings=resolved, targetConnection=rt.connection_ids[target], submittedAt=time.time())
                 self.save(db, op)
                 db.commit()
@@ -848,7 +892,7 @@ class AccountTransfers:
                 with rt.db() as db:
                     member = self.get(db, key)['members'][aid]
                     delay = max(0.0, member.get('nextCheck', 0) - time.time())
-                future = concurrent.futures.Future()
+                future = concurrent.futures.Future()  # type: concurrent.futures.Future[None]
                 timer = threading.Timer(delay, lambda: not future.done() and future.set_result(None))
                 timer.daemon = True
                 timer.start()
@@ -866,12 +910,12 @@ class AccountTransfers:
                     db.commit()
                     raise RuntimeError(str(error)) from error
                 if member.get('phase') == 'lazy_submitted' and member.get('result'):
-                    member.update(phase='blocked', error=str(error))
+                    member.update(phase='blocked', error=str(error))  # type: ignore[call-arg]  # typed-update
                     self.save(db, op)
                     db.commit()
                     raise RuntimeError(str(error)) from error
                 unknown = member.get('phase') == 'lazy_submitted' and not rejected
-                member.update(phase='unknown' if unknown else 'blocked', error=str(error))
+                member.update(phase='unknown' if unknown else 'blocked', error=str(error))  # type: ignore[call-arg]  # typed-update
                 if rejected:
                     for field in ('nativeMethod', 'nativeParams', 'targetConnection', 'submittedAt'):
                         member.pop(field, None)
@@ -883,7 +927,7 @@ class AccountTransfers:
             rt.changed.set()
             raise RuntimeError('Native history move blocked: ' + str(error)) from error
 
-    def commit_lazy(self, key, aid, result, *, background=False):
+    def commit_lazy(self, key: str, aid: str, result: "AccountTransferResultRecord", *, background: bool=False) -> "AgentRecord | None":
         rt = self.rt
         with rt.lock, rt.db() as db:
             op = self.get(db, key)
@@ -894,20 +938,20 @@ class AccountTransfers:
                 return a
             source_key, source_thread = lazy['sourceAccountKey'], lazy.get('sourceThreadId')
             if member.get('targetConnection') != rt.connection_ids[op['targetAccountKey']]:
-                member.update(phase='unknown', error='Destination connection changed after history move submission; no request was repeated')
+                member.update(phase='unknown', error='Destination connection changed after history move submission; no request was repeated')  # type: ignore[call-arg]  # typed-update
                 self.save(db, op)
                 db.commit()
                 raise RuntimeError(member['error'])
             expected = member.get('source') or {}
             if any(a.get(field) != value for field, value in expected.items()
                    if field in {'epoch', 'threadId', 'cwd'}):
-                member.update(phase='blocked', result=result,
+                member.update(phase='blocked', result=result,  # type: ignore[call-arg]  # typed-update
                               error='Agent state changed while native history moved; the saved fork will not be repeated')
                 self.save(db, op)
                 db.commit()
                 raise RuntimeError(member['error'])
             if not isinstance(member.get('targetSettings'), dict):
-                member.update(phase='blocked', result=result,
+                member.update(phase='blocked', result=result,  # type: ignore[call-arg]  # typed-update
                               error='Destination settings need validation before this saved history move can finish')
                 self.save(db, op)
                 db.commit()
@@ -915,13 +959,13 @@ class AccountTransfers:
             try:
                 self.assert_settings(member, a)
             except TransferSettingsConflict as error:
-                member.update(phase='blocked', result=result, error=str(error))
+                member.update(phase='blocked', result=result, error=str(error))  # type: ignore[call-arg]  # typed-update
                 self.save(db, op)
                 db.commit()
                 raise
             reason = self.local_blocker(db, a)
             if reason:
-                member.update(phase='blocked', result=result, error=reason)
+                member.update(phase='blocked', result=result, error=reason)  # type: ignore[call-arg]  # typed-update
                 self.save(db, op)
                 db.commit()
                 raise RuntimeError(reason)
@@ -943,7 +987,7 @@ class AccountTransfers:
             if member.get('portableHistory'):
                 history['portableHistory'] = member['portableHistory']
             a.setdefault('accountHistory', []).append(history)
-            a.update(threadId=result['thread']['id'], turnId=None,
+            a.update(threadId=result['thread']['id'], turnId=None,  # type: ignore[call-arg]  # typed-update
                      sandbox=result.get('sandbox', a.get('sandbox')),
                      approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
             if inherited_catalog:
@@ -970,7 +1014,7 @@ class AccountTransfers:
                     'Preserve completed work. Check existing receipts before any command with an unknown outcome.',
                     'account-transfer:' + key + ':' + aid)
             rt.put(db, 'agents', a)
-            member.update(phase='completed', result=result, error=None)
+            member.update(phase='completed', result=result, error=None)  # type: ignore[call-arg]  # typed-update
             if all(m['phase'] in MEMBER_TERMINAL for m in op['members'].values()):
                 op['status'] = 'completed'
             self.save(db, op)
@@ -986,20 +1030,20 @@ class AccountTransfers:
         rt.changed.set()
         return a
 
-    def before_start(self, agent):
+    def before_start(self, agent: "AgentRecord") -> "AgentRecord | None":
         lazy = agent.get('lazyAccountTransfer') or {}
         if lazy.get('id'):
             return self.move_lazy(lazy['id'], agent['id'])
         return agent
 
     @staticmethod
-    def missing_rollout_error(error, thread_id):
+    def missing_rollout_error(error: str | "JsonObject" | None, thread_id: str) -> bool:
         message = str(error or '')
         return (f'no rollout found for thread id {thread_id}' in message
                 or f'invalid paginated history lineage for {thread_id}: missing source rollout' in message)
 
     @staticmethod
-    def _thread_has_completed_turn(db, agent, thread_id):
+    def _thread_has_completed_turn(db: "sqlite3.Connection", agent: "AgentRecord", thread_id: str) -> bool:
         rows = db.execute('SELECT record FROM runtime_items WHERE agent=? AND '
                           "json_extract(record,'$.threadId')=?", (agent['id'], thread_id)).fetchall()
         for item in rows:
@@ -1017,7 +1061,7 @@ class AccountTransfers:
             (agent['id'] + ':' + str(attempt_turn),)).fetchone())
 
     @staticmethod
-    def source_history_missing(home, thread_id, reported_error=None):
+    def source_history_missing(home: Path, thread_id: str, reported_error: str | None=None) -> "JsonObject | None":
         """Prove a source rollout and its native paginated records are absent."""
         home = Path(home).resolve()
         state_db = home / 'state_5.sqlite'
@@ -1058,7 +1102,7 @@ class AccountTransfers:
         return {'threadId':thread_id, 'rolloutMissing':True, 'nativeTurns':0,
                 'nativeItems':0, 'nativeRealtimeItems':counts.get('thread_realtime_items', 0)}
 
-    def missing_source_transfer(self, db, agent):
+    def missing_source_transfer(self, db: "sqlite3.Connection", agent: "AgentRecord") -> "tuple[AccountTransferRecord, JsonObject, JsonObject] | None":
         """Find a completed member whose source rollout copy failed before submission."""
         thread_id = agent.get('threadId')
         if not thread_id:
@@ -1077,7 +1121,7 @@ class AccountTransfers:
                 return op, member, proof
         return None
 
-    def recover_empty_transferred_thread(self, aid):
+    def recover_empty_transferred_thread(self, aid: str) -> "JsonObject":
         """Replace a proven empty transferred thread without touching input receipts."""
         rt = self.rt
         saved = None
@@ -1231,7 +1275,7 @@ class AccountTransfers:
                 expected_phase = 'submitting' if mutation_submitted else 'checking'
                 if (stored.get('id') == saved['emptyTransferRecovery']['id']
                         and stored.get('phase') == expected_phase):
-                    stored.update(phase='unknown' if mutation_submitted else 'checking', error=str(error)[:1000])
+                    stored.update(phase='unknown' if mutation_submitted else 'checking', error=str(error)[:1000])  # type: ignore[call-arg]  # typed-update
                     current['emptyTransferRecovery'] = stored
                     rt.put(db, 'agents', current)
                     db.commit()
@@ -1245,7 +1289,7 @@ class AccountTransfers:
                     or stored.get('accountKey') != account
                     or rt.connection_ids.get(account) != connection_id
                     or self.settings_snapshot(current) != settings):
-                stored.update(phase='unknown', error='Agent or connection changed after thread start; saved receipt retained.')
+                stored.update(phase='unknown', error='Agent or connection changed after thread start; saved receipt retained.')  # type: ignore[call-arg]  # typed-update
                 current['emptyTransferRecovery'] = stored
                 rt.put(db, 'agents', current)
                 db.commit()
@@ -1283,7 +1327,7 @@ class AccountTransfers:
                 current['executionSettingsAccountKey'] = account
                 current.pop('lazyAccountTransfer', None)
                 current.pop('accountTransferId', None)
-            current.update(threadId=new_thread, turnId=None, status='failed',
+            current.update(threadId=new_thread, turnId=None, status='failed',  # type: ignore[call-arg]  # typed-update
                            error=('Source native history is missing. A fresh native thread is ready. '
                                   'Saved inputs were not replayed.' if source_history_missing else
                                   'Previous transferred thread had no saved rollout. A fresh native thread is ready. '
@@ -1300,14 +1344,14 @@ class AccountTransfers:
         rt.changed.set()
         return report
 
-    def update(self, key, aid, **changes):
+    def update(self, key: str, aid: str, **changes: "JsonValue") -> "AccountTransferRecord":
         with self.rt.lock, self.rt.db() as db:
             op = self.get(db, key)
             op['members'][aid].update(changes)
             self.save(db, op)
         return op
 
-    def wait_for_native_queue(self, key, aid, source, thread_id):
+    def wait_for_native_queue(self, key: str, aid: str, source: "AppServer", thread_id: str | None) -> bool:
         queue = source.call('thread/queue/list', {'threadId': thread_id}, timeout=10)
         if not isinstance(queue.get('data'), list):
             raise ValueError('Codex returned an invalid native queue page')
@@ -1321,17 +1365,17 @@ class AccountTransfers:
             return True
         return False
 
-    def invalidate_archive(self, key, aid):
+    def invalidate_archive(self, key: str, aid: str) -> None:
         self.update(key, aid, phase='blocked', archiveInvalidated=True, waiting=None,
                     error='The source changed after history export. Cancel this transfer and start a new one.')
 
     @staticmethod
-    def same_native_history(before, after):
+    def same_native_history(before: "JsonObject", after: "JsonObject") -> bool:
         # Claude historyVersion also detects edits within one timestamp tick.
         # Status is separate because unsubscribe may unload an idle session.
         return all(before.get(key) == after.get(key) for key in ('id', 'updatedAt', 'historyVersion'))
 
-    def archive_source_current(self, key, aid):
+    def archive_source_current(self, key: str, aid: str) -> bool:
         """Check the source again before adopting a saved destination receipt."""
         with self.rt.lock, self.rt.db() as db:
             member = self.get(db, key)['members'][aid]
@@ -1349,7 +1393,7 @@ class AccountTransfers:
             return False
         return not self.wait_for_native_queue(key, aid, source, before['id'])
 
-    def run(self, key, aid):
+    def run(self, key: str, aid: str) -> None:
         rt = self.rt
         try:
             with rt.lock, rt.db() as db:
@@ -1373,7 +1417,7 @@ class AccountTransfers:
                     else:
                         self.commit(db, op, a)
                         return
-                m.update(phase='reading', source={k: a.get(k) for k in ('epoch', 'accountKey', 'threadId', 'cwd')},
+                m.update(phase='reading', source={k: a.get(k) for k in ('epoch', 'accountKey', 'threadId', 'cwd')},  # type: ignore[call-arg]  # typed-update
                          settings=self.settings_snapshot(a),
                          pendingSettings=a.get('pendingSettings'),
                          pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'), error=None)
@@ -1453,7 +1497,7 @@ class AccountTransfers:
                         self.assert_settings(current_op['members'][aid], rt.agent(aid, db))
                         unsubscribed = rt.submit_reserved(source, 'thread/unsubscribe', {'threadId': a['threadId']})
                     source.wait(unsubscribed, timeout=10)
-                    barrier = concurrent.futures.Future()
+                    barrier: concurrent.futures.Future[None] = concurrent.futures.Future()
                     source.after_events(lambda: barrier.set_result(None))
                     barrier.result(10)
                 with rt.lock:
@@ -1477,7 +1521,7 @@ class AccountTransfers:
                     current = rt.agent(aid, db)
                     self.assert_source(current_op['members'][aid], current)
                     self.assert_settings(current_op['members'][aid], current)
-                    current_op['members'][aid].update(portableHistory=descriptor, targetSettings=resolved)
+                    current_op['members'][aid].update(portableHistory=descriptor, targetSettings=resolved)  # type: ignore[call-arg]  # typed-update
                     self.save(db, current_op)
                 if source:
                     after = source.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=10)['thread']
@@ -1508,7 +1552,7 @@ class AccountTransfers:
                     op['members'][aid]['phase'] = 'waiting'
                     self.save(db, op)
                     return
-                op['members'][aid].update(phase='submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),
+                op['members'][aid].update(phase='submitted', nativeMethod=method, nativeParams=copy.deepcopy(params),  # type: ignore[call-arg]  # typed-update
                                          targetConnection=rt.connection_ids[target], submittedAt=time.time())
                 self.save(db, op)
                 db.commit()
@@ -1524,7 +1568,7 @@ class AccountTransfers:
                 # Once the native mutation can have been sent, never infer absence.
                 from codex_runtime import SubmissionRejected
                 rejected = isinstance(error, SubmissionRejected) or str(error) == 'Codex app-server is offline'
-                m.update(phase='unknown' if m['phase'] == 'submitted' and not rejected else 'blocked', error=str(error))
+                m.update(phase='unknown' if m['phase'] == 'submitted' and not rejected else 'blocked', error=str(error))  # type: ignore[call-arg]  # typed-update
                 self.save(db, op)
         finally:
             with rt.lock, rt.db() as db:
@@ -1537,7 +1581,7 @@ class AccountTransfers:
                     rt.put(db, 'agents', a)
             rt.changed.set()
 
-    def interrupt_for_transfer(self, key, aid, agent, turn_id):
+    def interrupt_for_transfer(self, key: str, aid: str, agent: "AgentRecord", turn_id: str) -> None:
         """Interrupt one active native turn without touching queued event receipts."""
         rt = self.rt
         try:
@@ -1567,7 +1611,7 @@ class AccountTransfers:
                 op = self.get(db, key)
                 member = op['members'][aid]
                 if member.get('phase') == 'interrupting' and member.get('interruptTurnId') == turn_id:
-                    member.update(phase='blocked', error=str(error), waiting=None)
+                    member.update(phase='blocked', error=str(error), waiting=None)  # type: ignore[call-arg]  # typed-update
                     self.save(db, op)
         finally:
             with rt.lock:
@@ -1576,18 +1620,18 @@ class AccountTransfers:
             rt.changed.set()
 
     @staticmethod
-    def assert_source(m, a):
+    def assert_source(m: "AccountTransferMemberRecord", a: "AgentRecord") -> None:
         if a.get('deletedAt') or any(a.get(k) != v for k, v in m['source'].items()):
             raise ValueError('Agent state changed during transfer. Its original session is preserved.')
 
-    def assert_settings(self, member, agent):
+    def assert_settings(self, member: "AccountTransferMemberRecord", agent: "AgentRecord") -> None:
         expected = self.settings_snapshot(agent)
         if (expected != member['settings']
                 or agent.get('pendingSettings') != member.get('pendingSettings')
                 or agent.get('pendingSettingsAccountKey') != member.get('pendingSettingsAccountKey')):
             raise TransferSettingsConflict('Agent settings changed during transfer. The newer choice is preserved')
 
-    def received(self, key, aid, future):
+    def received(self, key: str, aid: str, future: "concurrent.futures.Future[JsonObject]") -> None:
         rt = self.rt
         try:
             result = future.result()
@@ -1615,7 +1659,7 @@ class AccountTransfers:
                 self.futures.pop((key, aid), None)
             rt.changed.set()
 
-    def retry_preparation(self, key, aid, error):
+    def retry_preparation(self, key: str, aid: str, error: BaseException) -> bool:
         from codex_catalog import CatalogPending
         if isinstance(error, CatalogPending):
             with self.rt.lock, self.rt.db() as db:
@@ -1624,7 +1668,7 @@ class AccountTransfers:
                 if (op['status'] != 'pending' or member['phase'] != 'reading'
                         or any(member.get(field) for field in ('submittedAt', 'nativeMethod', 'result'))):
                     return False
-                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,
+                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,  # type: ignore[call-arg]  # typed-update
                               waiting='Waiting for the destination model list', nextCheck=time.time() + 1)
                 self.save(db, op)
             return True
@@ -1647,20 +1691,20 @@ class AccountTransfers:
                                    'at': time.time(), 'error': error.error,
                                    'outcome': 'fork_not_created'})
             if len(rejections) > 3:
-                member.update(phase='blocked', error=message, waiting=None)
+                member.update(phase='blocked', error=message, waiting=None)  # type: ignore[call-arg]  # typed-update
             else:
-                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,
+                member.update(phase='lazy' if member.get('lazy') else 'waiting', error=None,  # type: ignore[call-arg]  # typed-update
                               waiting='Codex history database is busy; retrying',
                               nextCheck=time.time() + 2 ** len(rejections))
             self.save(db, op)
         return True
 
-    def commit(self, db, op, a):
+    def commit(self, db: "sqlite3.Connection", op: "AccountTransferRecord", a: "AgentRecord") -> None:
         rt = self.rt
         m = op['members'][a['id']]
         if self.already_committed(op, m, a):
             # A second commit of the same receipt: the first one moved the agent.
-            m.update(phase='completed', error=None, waiting=None)
+            m.update(phase='completed', error=None, waiting=None)  # type: ignore[call-arg]  # typed-update
             if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
                                                  for member in op['members'].values()):
                 op['status'] = 'completed'
@@ -1696,7 +1740,7 @@ class AccountTransfers:
         if source_provider != target_provider and a.get('claudeOptions'):
             history['providerOptionsDiscarded'] = {'reason': 'provider_changed', 'claudeOptions': a['claudeOptions']}
         a.setdefault('accountHistory', []).append(history)
-        a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,
+        a.update(accountKey=target, threadId=result['thread']['id'], turnId=None,  # type: ignore[call-arg]  # typed-update
                  sandbox=result.get('sandbox', a.get('sandbox')), approvalPolicy=result.get('approvalPolicy', a.get('approvalPolicy')))
         a.update(m['targetSettings'])
         if a.get('isLead'):
@@ -1725,7 +1769,7 @@ class AccountTransfers:
             if pending or m.get('continueAfterTransfer'):
                 a['status'] = 'queued'
         rt.put(db, 'agents', a)
-        m.update(phase='completed', error=None, waiting=None)
+        m.update(phase='completed', error=None, waiting=None)  # type: ignore[call-arg]  # typed-update
         if op['status'] == 'pending' and all(member['phase'] in MEMBER_TERMINAL
                                              for member in op['members'].values()):
             op['status'] = 'completed'
@@ -1739,14 +1783,14 @@ class AccountTransfers:
             rt.loaded.discard(a['id'])
         rt.preparations.pop(a['id'], None)
 
-    def copy_history(self, source_home, target_home, path):
+    def copy_history(self, source_home: Path, target_home: Path, path: Path) -> Path:
         """Copy canonical rollout ancestry only. Native Codex rebuilds its own projections."""
         source_home, target_home = Path(source_home).resolve(), Path(target_home).resolve()
         manifest_path = target_home / '.studio-account-imports.json'
         with self.copy_lock:
             manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
             seen = set()
-            def copy_one(path, boundary=None):
+            def copy_one(path, boundary=None):  # type: (Path, int | None) -> Path
                 path = Path(path).resolve()
                 relative = path.relative_to(source_home)
                 if relative.parts[0] not in {'sessions', 'archived_sessions'} or path.suffix != '.jsonl':
@@ -1797,7 +1841,7 @@ class AccountTransfers:
             return copy_one(path)
 
     @staticmethod
-    def find_rollout(home, tid):
+    def find_rollout(home: Path, tid: str) -> Path:
         uuid.UUID(tid)
         matches = list(home.glob(f'sessions/**/*{tid}.jsonl')) + list(home.glob(f'archived_sessions/**/*{tid}.jsonl'))
         if not matches:

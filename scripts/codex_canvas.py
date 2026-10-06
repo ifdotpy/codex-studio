@@ -602,19 +602,74 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
 
     return create_server(canvas, port, public_origin, unix_socket)
 
+
+def _close_shutdown_resources(updates, server, runtime, completed):
+    """Close each backend resource once so cleanup can resume after interruption."""
+    if updates is not None and not completed["updates"]:
+        updates.close()
+        completed["updates"] = True
+    if server is not None and not completed["server"]:
+        server.shutdown()
+        server.server_close()
+        completed["server"] = True
+    if runtime is not None and not completed["runtime"]:
+        runtime.close()
+        completed["runtime"] = True
+
 def main():
     raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
-    def terminate(_signal, _frame):
-        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
-                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, terminate)
     runtime = None
     server = None
     updates = None
+    shutdown_requests = 0
+    shutdown_signal = None
+    cleanup_started = False
+    cleanup_completed = False
+    shutdown_prepared = False
+    shutdown_cleanup_pending = False
+    serve_wait_finished = False
+    cleanup_steps = {"updates": False, "server": False, "runtime": False}
+    def terminate(_signal, _frame):
+        nonlocal shutdown_requests, shutdown_signal, shutdown_cleanup_pending, serve_wait_finished
+        shutdown_requests += 1
+        shutdown_signal = _signal
+        if shutdown_requests >= 3 and (cleanup_started or shutdown_cleanup_pending) and not cleanup_completed:
+            message = (
+                "Codex Canvas: cleanup abandoned after third shutdown signal "
+                f"pid={os.getpid()} signal={_signal} at={time.time():.6f}\n"
+            ).encode("ascii")
+            os.write(2, message)
+            signal.signal(_signal, signal.SIG_DFL)
+            os.kill(os.getpid(), _signal)
+        if cleanup_started:
+            if cleanup_completed and shutdown_prepared and shutdown_requests > 1:
+                signal.signal(_signal, signal.SIG_DFL)
+                os.kill(os.getpid(), _signal)
+            return
+        # During Runtime construction there is no event loop to shut down. Let
+        # KeyboardInterrupt unwind construction and reach the normal cleanup.
+        if runtime is None:
+            shutdown_cleanup_pending = True
+            raise KeyboardInterrupt
+        if server is not None:
+            # The event loop observes this lock-free flag on its next Uvicorn
+            # tick, then wakes stream generators outside the signal handler.
+            server.request_shutdown_from_signal()
+        # Preserve the established second-signal behavior: interrupt the main
+        # wait so its finally block closes resources and Python exits normally.
+        if shutdown_requests > 1:
+            shutdown_cleanup_pending = True
+            if not serve_wait_finished:
+                # Set this before raising so a signal at the edge of the outer
+                # finally cannot raise a second KeyboardInterrupt through it.
+                serve_wait_finished = True
+                raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
     try:
         from codex_runtime import Runtime
         canvas = Canvas()
@@ -626,21 +681,41 @@ def main():
             unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
-        from codex_live_updates import start as start_updates
-        updates = start_updates(runtime)
-        print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
-        server.serve_forever(poll_interval=0.5)
+        if not server.shutdown_requested.is_set():
+            from codex_live_updates import start as start_updates
+            updates = start_updates(runtime)
+        if not server.shutdown_requested.is_set():
+            print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
+        if not server.shutdown_requested.is_set():
+            try:
+                server.serve_forever(poll_interval=0.5)
+            finally:
+                serve_wait_finished = True
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
-        if updates:
-            updates.close()
-        if server:
-            if server.unix_server:
-                server.unix_server.shutdown()
-                server.unix_server.server_close()
-            server.server_close()
-        if runtime:
-            runtime.close()
+        # The retry loop is inside the finally so a KeyboardInterrupt injected
+        # before the first close step is caught and cleanup is entered again.
+        # Per-resource completion flags make completed steps idempotent.
+        while not cleanup_completed:
+            try:
+                cleanup_started = True
+                _close_shutdown_resources(updates, server, runtime, cleanup_steps)
+                cleanup_completed = True
+            except KeyboardInterrupt:
+                continue
+    if shutdown_requests:
+        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                          "signal": shutdown_signal, "at": time.time(),
+                          "requests": shutdown_requests}), file=sys.stderr, flush=True)
+        import logging
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        logging.shutdown()
+    shutdown_prepared = True
+    if shutdown_requests > 1:
+        signal.signal(shutdown_signal, signal.SIG_DFL)
+        os.kill(os.getpid(), shutdown_signal)
