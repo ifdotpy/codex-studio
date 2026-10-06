@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import sys
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas
 from codex_runtime import Runtime
 from codex_sync import SyncStore
+from studio_api.context import ApiContext
 from studio_api.testing import read_legacy_snapshot_field
 from codex_sync_entities import seed
 
@@ -49,11 +51,11 @@ class CanvasChatSeedContract(unittest.TestCase):
 
                 with runtime.lock, runtime.db() as db:
                     db.execute("BEGIN IMMEDIATE")
-                    seed(db, builder)
+                    seed(db, builder, runtime_owner=runtime)
                 self.assertEqual(len(calls), 1)
                 with runtime.lock, runtime.db() as db:
                     db.execute("BEGIN IMMEDIATE")
-                    seed(db, builder)
+                    seed(db, builder, runtime_owner=runtime)
                 self.assertEqual(len(calls), 1)
             finally:
                 runtime.close()
@@ -82,7 +84,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                                     "stateDir": str(self.runtime.root)}
 
                     builder = Builder(runtime)
-                    seed(db, builder.build)
+                    seed(db, builder.build, runtime_owner=runtime)
                     value = json.loads(db.execute(
                         "SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
                         (complaint["id"],)).fetchone()[0])["value"]
@@ -93,7 +95,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                     from codex_sync_entities import put as entity_put
                     entity_put(db, "complaint", complaint["id"], {
                         key: field for key, field in value.items() if key != "needsUserResponse"})
-                    seed(db, builder.build)
+                    seed(db, builder.build, runtime_owner=runtime)
                     value = json.loads(db.execute(
                         "SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
                         (complaint["id"],)).fetchone()[0])["value"]
@@ -106,6 +108,8 @@ class CanvasChatSeedContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-no-owner-") as directory:
             runtime = Runtime(Path(directory), fixture.FakeServer)
             try:
+                runtime.create({"name": "Lead", "cwd": str(runtime.root), "prompt": ""},
+                               draft=True, defer=True)
                 calls = []
                 def builder():
                     calls.append(None)
@@ -118,11 +122,101 @@ class CanvasChatSeedContract(unittest.TestCase):
                     db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
                     db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
                                "VALUES('agent_organization_fields','1')")
+                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
+                               "VALUES('task_window_migrated','1')")
+                    event_sequence = db.execute(
+                        "SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection='event'").fetchone()[0]
+                    db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('event_window_seq',?)",
+                               (str(event_sequence),))
+                    from codex_sync_entities import put as entity_put
+                    row = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' LIMIT 1").fetchone()
+                    old_value = json.loads(row[0])["value"]
+                    old_value.pop("epoch", None)
+                    agent_id = db.execute("SELECT id FROM sync_entities WHERE collection='agent' LIMIT 1").fetchone()[0]
+                    entity_put(db, "agent", agent_id, old_value)
                 with runtime.lock:
-                    store = SyncStore(runtime.db, builder, lambda _key: {})
-                for _ in range(5):
-                    store.pull("state:entities:v1", fresh=True, reset_support=True)
+                    canvas = Canvas(runtime.root)
+                    context = ApiContext(canvas)
+                    context.snapshot = lambda include_work=True: builder()
+                    store = context.sync()
+                store._ensure_versions()
+                blocker = sqlite3.connect(runtime.db_path, timeout=0)
+                blocker.execute("BEGIN IMMEDIATE")
+                try:
+                    for _ in range(5):
+                        store.pull("state:entities:v1", fresh=True, reset_support=True)
+                finally:
+                    blocker.rollback()
+                    blocker.close()
                 self.assertEqual(calls, [])
+                with runtime.db() as db:
+                    before = {row[0]: row[1] for row in db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
+                canvas.runtime = runtime
+                self.assertIs(context.sync(), store)
+                store.pull("state:entities:v1", fresh=True, reset_support=True)
+                self.assertEqual(calls, [None])
+                with runtime.db() as db:
+                    marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
+                    after = {row[0]: row[1] for row in db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
+                self.assertEqual(marker, "2")
+                self.assertTrue(any(after[key] > before[key] for key in before if key in after))
+                calls.clear()
+                stable = {**after}
+                store.pull("state:entities:v1", fresh=True, reset_support=True)
+                with runtime.db() as db:
+                    self.assertEqual(stable, {row[0]: row[1] for row in db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent'")})
+                self.assertEqual(calls, [])
+            finally:
+                if "context" in locals():
+                    context.close()
+                runtime.close()
+
+    def test_first_seed_agent_entities_match_the_runtime_put_projection(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-state-agent-seed-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                                      draft=True, defer=True)
+                worker = runtime.create({"name": "Worker", "cwd": str(root), "prompt": "Task"},
+                                       parent=lead["id"], draft=True, defer=True)
+                with runtime.lock, runtime.db() as db:
+                    record = runtime.agent(worker["id"], db)
+                    record.update(status="completed", lastCompletedTurn="turn-seed",
+                                  lastAnswer="Seeded answer", turnId=None, inFlight=False)
+                    runtime.put(db, "agents", record)
+                    runtime.put(db, "work", {"id": "seed-result", "owner": worker["id"],
+                        "rootId": lead["id"], "status": "review", "results": [
+                            {"agent": worker["id"], "created": 1, "resultFile": "seed.md"}]})
+
+                    class Builder:
+                        def __init__(self, owner):
+                            self.runtime = owner
+
+                        def build(self):
+                            return {"runtime": self.runtime.snapshot(db=db),
+                                    "stateDir": str(self.runtime.root)}
+
+                    from codex_sync_entities import project, seed, upgrade_agent_organization
+                    builder = Builder(runtime)
+                    seed(db, builder.build, runtime_owner=runtime)
+                    agent_ids = [row[0] for row in db.execute("SELECT id FROM runtime_agents")]
+                    for agent_id in agent_ids:
+                        record = runtime.agent(agent_id, db)
+                        expected = project("agent", runtime.agent_entity_view(db, record))
+                        stored = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                            (agent_id,)).fetchone()[0]
+                        self.assertEqual(json.loads(stored)["value"], expected)
+                    before = {row[0]: row[1] for row in db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
+                    self.assertEqual(upgrade_agent_organization(db, builder.build, runtime_owner=runtime), 0)
+                    after = {row[0]: row[1] for row in db.execute(
+                        "SELECT id,seq FROM sync_entities WHERE collection='agent'")}
+                    self.assertEqual(after, before)
             finally:
                 runtime.close()
 
