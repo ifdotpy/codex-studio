@@ -1440,23 +1440,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/sync/generations": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Generations */
-    get: operations["generations_api_sync_generations_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
   "/api/sync/identity": {
     parameters: {
       query?: never;
@@ -1772,23 +1755,6 @@ export interface paths {
     };
     /** Transcript Search */
     get: operations["transcript_search_api_transcript_search_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
-  "/api/transcript/stream": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Transcript Stream */
-    get: operations["transcript_stream_api_transcript_stream_get"];
     put?: never;
     post?: never;
     delete?: never;
@@ -5780,6 +5746,20 @@ export interface components {
       /** Scope */
       scope?: string | null;
       status: components["schemas"]["LiveUpdateState"];
+    };
+    /** LocalRoomParticipantDto */
+    LocalRoomParticipantDto: {
+      /** Id */
+      id: string;
+      /** Name */
+      name?: string | null;
+      /**
+       * Role
+       * @enum {string}
+       */
+      role: "lead" | "agent";
+      /** Status */
+      status?: string | null;
     };
     /** LockMetricSummary */
     LockMetricSummary: {
@@ -9795,7 +9775,9 @@ export interface components {
       /** Localmembers */
       localMembers?: string[] | null;
       /** Localparticipants */
-      localParticipants?: components["schemas"]["JsonValue"][] | null;
+      localParticipants?:
+        | components["schemas"]["LocalRoomParticipantDto"][]
+        | null;
       /** Members */
       members?: string[] | null;
       /** Name */
@@ -10386,39 +10368,6 @@ export interface components {
       /** Seq */
       seq: number;
     };
-    /** SyncGenerations */
-    SyncGenerations: {
-      /** Drafts */
-      drafts: number;
-      /** State */
-      state: number;
-      /** Transcripts */
-      transcripts: number;
-    };
-    /** SyncGenerationState */
-    SyncGenerationState: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Chatstate */
-      chatState?: boolean | null;
-      generations: components["schemas"]["SyncGenerations"];
-      /**
-       * Protocol
-       * @constant
-       */
-      protocol: 2;
-      /**
-       * Syncprotocol
-       * @constant
-       */
-      syncProtocol: 2;
-      /** Transcriptrevisions */
-      transcriptRevisions?: {
-        [key: string]: number;
-      } | null;
-      /** Workspaceid */
-      workspaceId: string;
-    };
     /** SyncIdentityResponse */
     SyncIdentityResponse: {
       /** Syncentities */
@@ -10451,7 +10400,7 @@ export interface components {
        * Protocolversion
        * @constant
        */
-      protocolVersion: 1;
+      protocolVersion: 3;
       /**
        * Pullendpoint
        * @constant
@@ -10465,7 +10414,7 @@ export interface components {
        */
       streamEndpoint: "/api/sync/stream";
       /** Supportedversions */
-      supportedVersions: (1 | 2 | 3)[];
+      supportedVersions: 3[];
     };
     /** SyncPullResetResponse */
     SyncPullResetResponse: {
@@ -18490,98 +18439,6 @@ export interface operations {
       };
     };
   };
-  generations_api_sync_generations_get: {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["SyncGenerationState"];
-        };
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Forbidden */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Not Found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Conflict */
-      409: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Content Too Large */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Unsupported Media Type */
-      415: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Upgrade Required */
-      426: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal Server Error */
-      500: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
   identity_api_sync_identity_get: {
     parameters: {
       query?: never;
@@ -19896,100 +19753,6 @@ export interface operations {
       };
       /** @description Not Found */
       404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  transcript_stream_api_transcript_stream_get: {
-    parameters: {
-      query?: {
-        id?: string | null;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Server-sent transcript updates */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "text/event-stream": string;
-        };
-      };
-      /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Forbidden */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Not Found */
-      404: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Conflict */
-      409: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Content Too Large */
-      413: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Unsupported Media Type */
-      415: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Upgrade Required */
-      426: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Internal Server Error */
-      500: {
         headers: {
           [name: string]: unknown;
         };

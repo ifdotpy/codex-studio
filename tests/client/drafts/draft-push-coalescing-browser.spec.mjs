@@ -60,6 +60,10 @@ test("draft pushes coalesce at the production replication boundary", async ({
     });
     const origin = `http://127.0.0.1:${server.httpServer.address().port}`;
     await page.goto(`${origin}/check`);
+    const timing = await page.evaluate(async () => {
+      const client = await import("/src/sync/client.ts");
+      return client.DRAFT_SYNC_TIMING_MS;
+    });
     await page.evaluate(async () => {
       const { useSyncedDrafts } = await import("/src/sync/drafts.ts");
       const { useOutbox } = await import("/src/sync/send.ts");
@@ -163,25 +167,30 @@ test("draft pushes coalesce at the production replication boundary", async ({
     const maxWaitStart = Date.now();
     const maxWaitPushIndex = pushes.length;
     let pushedDuringTyping = false;
-    for (let index = 0; index < 28; index++) {
+    for (let index = 0; index < 60; index++) {
       await edit(`continuous ${index}`);
       if (pushes.length > maxWaitPushIndex) pushedDuringTyping = true;
-      if (index < 27) await page.waitForTimeout(70);
+      if (index < 59) await page.waitForTimeout(100);
     }
     assert.ok(
       pushedDuringTyping,
       "The maximum wait must push during continuous typing",
     );
     assert.ok(
-      pushTimes[maxWaitPushIndex] - maxWaitStart <= 2_600,
+      pushTimes[maxWaitPushIndex] - maxWaitStart <= timing.pushMaxWait + 600,
       "The first push is bounded from the start of continuous typing",
+    );
+    assert.ok(
+      pushTimes[maxWaitPushIndex] - maxWaitStart >=
+        timing.pushMaxWait - timing.pushQuietWait - 200,
+      "A quiet-period push must not satisfy the maximum-wait assertion",
     );
     await page.waitForTimeout(400);
     const continuous = pushes.slice(maxWaitPushIndex);
     assert.equal(
       JSON.parse(continuous.at(-1)?.[0]?.newDocumentState?.payload || "{}")
         .text,
-      "continuous 27",
+      "continuous 59",
       "The quiet-period push after continuous typing carries its final value",
     );
 

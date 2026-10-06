@@ -91,8 +91,7 @@ class QuestionsMixin:
             raise ValueError("A conversation is required")
         with self.lock, self.db() as db:
             owner = self.checked_actor(db, key)
-            ids = {a["id"] for a in self.records(db, "agents")
-                   if not a.get("deletedAt") and a["rootId"] == owner["rootId"]}
+            ids = {a["id"] for a in self.team_agents(db, owner["rootId"])}
             records = []
             for record in self.records(db, "requests"):
                 if record.get("agent") not in ids or not is_question(record) or record.get("deletedAt"):

@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Synthetic end-to-end notification to local transcript SSE benchmark."""
+"""Synthetic end-to-end notification to local transcript pull benchmark."""
 from __future__ import annotations
 
 import argparse
+import atexit
 from concurrent.futures import ThreadPoolExecutor
 import json
 import math
 import os
 from pathlib import Path
 import queue
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -21,6 +23,12 @@ import uuid
 
 SCRIPTS = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(SCRIPTS))
+
+# Benchmarks create an in-process Studio API server; keep its runtime schema
+# cache outside the user's normal cache even when invoked directly.
+_TEST_API_CACHE_ROOT = tempfile.mkdtemp(prefix="codex-studio-benchmark-cache-")
+os.environ["XDG_CACHE_HOME"] = _TEST_API_CACHE_ROOT
+atexit.register(shutil.rmtree, _TEST_API_CACHE_ROOT, ignore_errors=True)
 
 DEFAULT_AGENT_COUNTS = (1, 8, 32)
 DEFAULT_MESSAGES_PER_AGENT = 8
@@ -97,7 +105,13 @@ def runtime_class():
 
     class FixtureRuntime(Runtime):
         def schedule(self):
-            return
+            # Keep native dispatch and unrelated scheduler work disabled while
+            # still forwarding committed protocol-3 resource invalidations.
+            while not self.closed:
+                self.changed.wait(0.1)
+                self.changed.clear()
+                if not self.closed:
+                    self._publish_committed_resource_changes()
 
     return FixtureRuntime
 
@@ -113,66 +127,8 @@ def rss_peak() -> dict:
         return {"value": None, "unit": None, "source": "unavailable"}
 
 
-class SSEClient(threading.Thread):
-    def __init__(self, url: str, agent_id: str, expected: dict[str, str], receipt: dict,
-                 error_queue: queue.Queue, stop: threading.Event,
-                 timeout: float = EVENT_TIMEOUT_SECONDS, ready: threading.Event | None = None,
-                 receipt_changed: threading.Event | None = None,
-                 deadline: float | None = None):
-        super().__init__(name="benchmark-sse-" + agent_id[:8], daemon=False)
-        self.url, self.agent_id, self.expected = url, agent_id, expected
-        self.receipt, self.error_queue, self.stop = receipt, error_queue, stop
-        self.ready = ready or threading.Event()
-        self.receipt_changed = receipt_changed or threading.Event()
-        self.deadline = deadline or (time.monotonic() + timeout)
-
-    def run(self):
-        request = urllib.request.Request(self.url, headers={"Accept": "text/event-stream"})
-        try:
-            with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
-                if response.status != 200:
-                    raise RuntimeError(f"SSE returned HTTP {response.status}")
-                data_lines, texts = [], {}
-                while not self.stop.is_set():
-                    raw = response.readline()
-                    if not raw:
-                        break
-                    line = raw.decode("utf-8").rstrip("\r\n")
-                    if line.startswith("data:"):
-                        data_lines.append(line[5:].lstrip())
-                    elif not line and data_lines:
-                        event = json.loads("\n".join(data_lines))
-                        data_lines.clear()
-                        self.ready.set()
-                        observed = time.monotonic_ns()
-                        for item in event.get("items", []):
-                            identity = item.get("id")
-                            # The stream sends versioned deltas: a replacement record or
-                            # text appended to the item seen before.
-                            if "replace" in item:
-                                text = (item["replace"] or {}).get("text")
-                            elif "append" in item:
-                                text = texts.get(identity, "") + item["append"]
-                            else:
-                                text = item.get("text")
-                            texts[identity] = text
-                            if identity in self.expected:
-                                expected = self.expected[identity]
-                                if not isinstance(text, str) or not expected.startswith(text):
-                                    raise RuntimeError(f"corrupt final text for {identity}: {text!r}")
-                                if text == expected and identity not in self.receipt:
-                                    self.receipt[identity] = observed
-                                    self.receipt_changed.set()
-        except (OSError, urllib.error.URLError, ValueError, RuntimeError) as error:
-            if not self.stop.is_set():
-                self.error_queue.put(f"SSE client {self.agent_id}: {error}")
-                self.receipt_changed.set()
-        finally:
-            self.ready.set()
-
-
 class SyncClient(threading.Thread):
-    """One shared invalidation stream and parallel transcript scope pulls."""
+    """One protocol-3 invalidation stream and concurrent transcript pulls."""
     def __init__(self, base: str, agents: list[dict], expected: dict[str, str], receipt: dict,
                  error_queue: queue.Queue, stop: threading.Event, ready: threading.Event,
                  receipt_changed: threading.Event, deadline: float):
@@ -181,53 +137,93 @@ class SyncClient(threading.Thread):
         self.error_queue, self.stop, self.ready = error_queue, stop, ready
         self.receipt_changed, self.deadline = receipt_changed, deadline
         self.checkpoints = {agent["id"]: 0 for agent in agents}
+        self.agents_by_id = {agent["id"]: agent for agent in agents}
+        self.transport = "sync"
+        self.resources = json.dumps(
+            [{"kind": "transcript", "agentId": agent["id"]} for agent in agents],
+            separators=(",", ":"),
+        )
 
     def pull(self, agent: dict) -> None:
-        query = urllib.parse.urlencode({"scope": "transcript:" + agent["id"],
-                                       "after": self.checkpoints[agent["id"]]})
-        with urllib.request.urlopen(self.base + "/api/sync/pull?" + query,
-                                    timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
-            result = json.load(response)
-        self.checkpoints[agent["id"]] = result["checkpoint"]["seq"]
-        observed = time.monotonic_ns()
-        for document in result["documents"]:
-            if document.get("id") != "transcript:" + agent["id"]:
-                raise RuntimeError("sync pull returned an unexpected transcript identity")
-            payload = json.loads(document["payload"])
-            for item in payload.get("items", []):
-                identity = item.get("id")
-                if identity not in self.expected:
-                    continue
-                if item.get("text") != self.expected[identity]:
-                    raise RuntimeError(f"corrupt final text for {identity}: {item.get('text')!r}")
-                if identity not in self.receipt:
-                    self.receipt[identity] = observed
-                    self.receipt_changed.set()
+        if self.transport == "sync":
+            query = urllib.parse.urlencode({"scope": "transcript:" + agent["id"],
+                                            "after": self.checkpoints[agent["id"]]})
+            url = self.base + "/api/sync/pull?" + query
+            with urllib.request.urlopen(url,
+                                        timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+                result = json.load(response)
+            self.checkpoints[agent["id"]] = result["checkpoint"]["seq"]
+            documents = result["documents"]
+            for document in documents:
+                if document.get("id") != "transcript:" + agent["id"]:
+                    raise RuntimeError("sync pull returned an unexpected transcript identity")
+                payload = json.loads(document["payload"])
+                self.observe_items(payload.get("items", []))
+        else:
+            query = urllib.parse.urlencode({"id": agent["id"]})
+            url = self.base + "/api/transcript?" + query
+            with urllib.request.urlopen(url,
+                                        timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
+                result = json.load(response)
+            self.observe_items(result.get("items", []))
 
-    def pulls(self):
-        with ThreadPoolExecutor(max_workers=min(32, len(self.agents))) as pool:
-            list(pool.map(self.pull, self.agents))
+    def observe_items(self, items: list[dict]) -> None:
+        observed = time.monotonic_ns()
+        for item in items:
+            identity = item.get("id")
+            if identity not in self.expected:
+                continue
+            text = item.get("text")
+            if text != self.expected[identity]:
+                raise RuntimeError(f"corrupt final text for {identity}: {text!r}")
+            if identity not in self.receipt:
+                self.receipt[identity] = observed
+                self.receipt_changed.set()
+
+    def pulls(self, agent_ids: list[str] | None = None):
+        agents = [self.agents_by_id[agent_id] for agent_id in agent_ids] if agent_ids else self.agents
+        with ThreadPoolExecutor(max_workers=min(32, len(agents))) as pool:
+            list(pool.map(self.pull, agents))
 
     def run(self):
-        request = urllib.request.Request(self.base + "/api/sync/stream",
-                                         headers={"Accept": "text/event-stream"})
         try:
+            query = urllib.parse.urlencode(
+                {"protocol": 3, "resources": self.resources}
+            )
+            request = urllib.request.Request(self.base + "/api/sync/stream?" + query,
+                                             headers={"Accept": "text/event-stream"})
             with urllib.request.urlopen(request, timeout=min(SOCKET_TIMEOUT_SECONDS, time_left(self.deadline))) as response:
                 if response.status != 200:
                     raise RuntimeError(f"sync stream returned HTTP {response.status}")
+                event_name = "message"
                 data_lines = []
+                initialized = False
                 while not self.stop.is_set():
                     raw = response.readline()
                     if not raw:
                         break
                     line = raw.decode("utf-8").rstrip("\r\n")
-                    if line.startswith("data:"):
+                    if line.startswith("event:"):
+                        event_name = line[6:].strip()
+                    elif line.startswith("data:"):
                         data_lines.append(line[5:].lstrip())
                     elif not line and data_lines:
-                        payload = "\n".join(data_lines)
-                        data_lines.clear()
-                        if payload == '"RESYNC"':
-                            self.pulls()
+                        payload = json.loads("\n".join(data_lines))
+                        current_event = event_name
+                        event_name, data_lines = "message", []
+                        if current_event != "resources":
+                            continue
+                        agent_ids = [
+                            resource["agentId"]
+                            for resource in payload.get("resources", [])
+                            if resource.get("kind") == "transcript"
+                            and resource.get("agentId") in self.agents_by_id
+                        ]
+                        if not agent_ids:
+                            continue
+                        self.pulls(agent_ids)
+                        if not initialized:
+                            initialized = True
                             self.ready.set()
         except (OSError, urllib.error.URLError, ValueError, RuntimeError) as error:
             if not self.stop.is_set():
@@ -374,22 +370,12 @@ def run_case(agent_count: int, messages_per_agent: int, rate_hz: float,
             expected = {f"{agent['id']}:bench-item-{i}": f"synthetic message {i} for {agent['id']}"
                         for agent in agents for i in range(messages_per_agent)}
             ready = threading.Event()
-            if transport == "sync":
+            if transport in ("sync", "transcript"):
                 client = SyncClient(base, agents, expected, receipts, errors, stop, ready,
                                     receipt_changed, deadline)
+                client.transport = transport
                 client.start()
                 clients.append(client)
-            elif transport == "transcript":
-                for agent in agents:
-                    client_ready = threading.Event()
-                    client = SSEClient(base + "/api/transcript/stream?id=" + urllib.parse.quote(agent["id"]),
-                                       agent["id"], expected, receipts, errors, stop,
-                                       ready=client_ready, receipt_changed=receipt_changed, deadline=deadline)
-                    client.start()
-                    clients.append(client)
-                    if not client_ready.wait(time_left(deadline)):
-                        raise TimeoutError(f"transcript client {agent['id']} did not receive its initial SSE event")
-                ready.set()
             else:
                 raise ValueError("transport must be sync or transcript")
             if not ready.wait(min(EVENT_TIMEOUT_SECONDS, time_left(deadline))):
@@ -635,7 +621,7 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     if args.check:
         args.agents, args.messages_per_agent, args.repetitions, args.analytics = [1], 8, 1, "off"
-        args.transport = "transcript"
+        args.transport = "sync"
     if (not set(args.agents) <= SUPPORTED_AGENT_COUNTS or len(set(args.agents)) != len(args.agents)):
         parser.error("--agents accepts distinct values from 1, 8, and 32")
     if not 1 <= args.messages_per_agent <= MAX_MESSAGES_PER_AGENT:
@@ -659,8 +645,9 @@ def main(argv=None) -> int:
                          "offeredRateMessagesPerSecond": args.rate, "repetitions": args.repetitions,
                          "analyticsImportModes": ["on" if value else "off" for value in cases],
                          "transports": transports,
-                         "primaryPath": "Runtime.notification -> SQLite transcript -> sync invalidation SSE -> transcript scope pull",
-                         "fallbackPath": "Runtime.notification -> SQLite transcript -> direct transcript SSE",
+                         "invalidationPath": "Runtime.notification -> SQLite transcript -> protocol-3 resource SSE",
+                         "syncPullPath": "protocol-3 invalidation -> /api/sync/pull?scope=transcript:<id>",
+                         "transcriptPullPath": "protocol-3 invalidation -> /api/transcript?id=<id>",
                          "clock": "time.monotonic_ns", "nativeTransport": False},
               "cases": []}
     try:

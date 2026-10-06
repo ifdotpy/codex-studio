@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -100,26 +101,30 @@ class BenchmarkTests(unittest.TestCase):
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         listener.listen()
-        accepted = threading.Event()
-        connection = []
+        stream_accepted = threading.Event()
+        release = threading.Event()
 
-        def accept_and_hold():
-            conn, _ = listener.accept()
-            connection.append(conn)
-            accepted.set()
-            conn.recv(4096)
+        def serve_stream_then_hold():
+            stream, _ = listener.accept()
+            stream.recv(4096)
+            stream_accepted.set()
+            release.wait(1)
+            stream.close()
 
-        holder = threading.Thread(target=accept_and_hold, daemon=True)
+        holder = threading.Thread(target=serve_stream_then_hold, daemon=True)
         holder.start()
         errors = queue.Queue()
-        client = benchmark.SSEClient(f"http://127.0.0.1:{listener.getsockname()[1]}/stream",
-                                     "timeout", {}, {}, errors, threading.Event(), timeout=.05)
+        receipt_changed = threading.Event()
+        client = benchmark.SyncClient(
+            f"http://127.0.0.1:{listener.getsockname()[1]}",
+            [{"id": "timeout-agent"}], {}, {}, errors, threading.Event(),
+            threading.Event(), receipt_changed, time.monotonic() + .25,
+        )
         client.start()
-        self.assertTrue(accepted.wait(1))
+        self.assertTrue(stream_accepted.wait(1))
         client.join(1)
+        release.set()
         listener.close()
-        for conn in connection:
-            conn.close()
         holder.join(1)
         self.assertFalse(client.is_alive())
         self.assertIn("timed out", errors.get_nowait().lower())

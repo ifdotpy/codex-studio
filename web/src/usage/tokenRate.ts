@@ -14,21 +14,6 @@ export function configureTokenRateStream(
 const values = new Map<string, TokenRate | null>();
 const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
 const teamMembers = new Map<string, Set<string>>();
-function validRate(value: unknown): value is TokenRate | null {
-  return (
-    value === null ||
-    (isRecord(value) &&
-      typeof value.turnId === "string" &&
-      typeof value.active === "boolean" &&
-      typeof value.estimated === "boolean" &&
-      typeof value.rate === "number" &&
-      Number.isFinite(value.rate) &&
-      value.rate >= 0 &&
-      typeof value.outputTokens === "number" &&
-      Number.isFinite(value.outputTokens) &&
-      value.outputTokens >= 0)
-  );
-}
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -56,10 +41,7 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
     if (!isRecord(batch) || batch.teamId !== teamId || !isRecord(batch.rates))
       return;
     const entries = Object.entries(batch.rates);
-    if (
-      entries.length > 1024 ||
-      entries.some(([id, value]) => id.length > 200 || !validRate(value))
-    )
+    if (entries.length > 1024 || entries.some(([id]) => id.length > 200))
       return;
     const next = new Set(entries.map(([id]) => id));
     const previous = teamMembers.get(teamId);
@@ -68,7 +50,7 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
         if (!next.has(id)) publishRate(workerRateKey(teamId, id), null);
     teamMembers.set(teamId, next);
     for (const [id, value] of entries)
-      if (validRate(value)) publishRate(workerRateKey(teamId, id), value);
+      publishRate(workerRateKey(teamId, id), value as TokenRate | null);
   } catch {
     /* Ignore malformed telemetry without affecting the team. */
   }
@@ -76,8 +58,7 @@ export function receiveTeamTokenRates(teamId: string, event: MessageEvent) {
 export function receiveTokenRate(id: string, event: MessageEvent) {
   try {
     const value: unknown = JSON.parse(event.data);
-    if (!validRate(value)) return;
-    publishRate(id, value);
+    publishRate(id, value as TokenRate | null);
   } catch {
     /* A malformed telemetry event does not affect the transcript. */
   }
@@ -94,9 +75,7 @@ function validRates(value: unknown): value is Record<string, TokenRate | null> {
     typeof value === "object" &&
     !Array.isArray(value) &&
     Object.keys(value).length <= 1024 &&
-    Object.entries(value).every(
-      ([id, rate]) => id.length <= 200 && validRate(rate),
-    ),
+    Object.entries(value).every(([id]) => id.length <= 200),
   );
 }
 function publishTeam(teamId: string) {

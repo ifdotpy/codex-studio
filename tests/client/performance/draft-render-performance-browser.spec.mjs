@@ -1,6 +1,6 @@
 // Real draft hook, local durability, and consumer commits with 500 saved chats.
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
 
 test("Draft Render Performance Browser @performance", async ({
   browser: testBrowser,
@@ -59,7 +59,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await page.route("**/api/sync/stream*", (r) =>
-        r.fulfill({ contentType: "text/event-stream", body: "" }),
+        r.fulfill({
+          contentType: "text/event-stream",
+          body: apiSchemaHandshakeSse(),
+        }),
       );
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,
@@ -90,12 +93,23 @@ test("Draft Render Performance Browser @performance", async ({
             JSON.stringify(workspaceId),
           );
           const drafts = {};
-          for (let i = 0; i < count; i++)
-            drafts["chat-" + i] = "x".repeat(2000);
-          localStorage.setItem(
-            "codex-drafts:" + workspaceId,
-            JSON.stringify(drafts),
-          );
+          for (let i = 0; i < count; i++) {
+            const session = "chat-" + i;
+            const text = "x".repeat(2000);
+            drafts[session] = text;
+            localStorage.setItem(
+              `codex-chat-draft:${workspaceId}:${session}`,
+              JSON.stringify({
+                version: 1,
+                workspace: workspaceId,
+                session,
+                text,
+                deleted: false,
+                source: "local",
+                updated: 1,
+              }),
+            );
+          }
           const { useSyncedDrafts } = await importWithRetry(
             "/src/sync/drafts.ts",
           );
@@ -203,26 +217,20 @@ test("Draft Render Performance Browser @performance", async ({
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
       }
       const result = await page.evaluate(
-        async ({ workspaceId, baselineMode }) => {
+        async ({ workspaceId }) => {
           const baseCommits = window.commits,
             baseRenders = window.renders,
             baseComposerCommits = window.composerCommits,
             baseSidebarRenders = window.sidebarRenders,
             baseTranscriptRenders = window.transcriptRenders;
-          let mapWrites = 0,
-            mapBytes = 0,
-            chatWrites = 0,
+          let chatWrites = 0,
             chatBytes = 0,
             journalWrites = 0;
           const original = Storage.prototype.setItem;
           Storage.prototype.setItem = function (k, v) {
-            if (k.startsWith("codex-drafts:")) {
-              if (k.includes(":pending:")) journalWrites++;
-              else {
-                mapWrites++;
-                mapBytes += v.length * 2;
-              }
-            } else if (k.startsWith("codex-chat-draft:")) {
+            if (k.startsWith(`codex-drafts:${workspaceId}:pending:`))
+              journalWrites++;
+            else if (k.startsWith("codex-chat-draft:")) {
               chatWrites++;
               chatBytes += v.length * 2;
             }
@@ -235,13 +243,10 @@ test("Draft Render Performance Browser @performance", async ({
               ...old,
               "chat-0": "typed " + i,
             }));
-            const legacy = localStorage.getItem("codex-drafts:" + workspaceId);
             const local = localStorage.getItem(
               "codex-chat-draft:" + workspaceId + ":chat-0",
             );
-            const persisted = baselineMode
-              ? JSON.parse(legacy)["chat-0"]
-              : JSON.parse(local).text;
+            const persisted = JSON.parse(local).text;
             if (persisted !== "typed " + i)
               throw new Error(
                 "Each edit must synchronously reach its local chat record",
@@ -274,27 +279,17 @@ test("Draft Render Performance Browser @performance", async ({
             composerCommits: window.composerCommits - baseComposerCommits,
             sidebarRenders: window.sidebarRenders - baseSidebarRenders,
             transcriptRenders: window.transcriptRenders - baseTranscriptRenders,
-            mapWrites,
-            mapBytes,
             chatWrites,
             chatBytes,
             migrationChatBytes,
             journalWrites,
           };
         },
-        {
-          workspaceId,
-          baselineMode: process.env.RENDER_ISOLATION === "baseline",
-        },
-      );
-      assert.equal(
-        result.mapWrites,
-        process.env.RENDER_ISOLATION === "baseline" ? 20 : 0,
-        "The current store must not rewrite the aggregate legacy map",
+        { workspaceId },
       );
       assert.equal(
         result.chatWrites,
-        process.env.RENDER_ISOLATION === "baseline" ? 0 : 20,
+        20,
         "Each edit writes only its per-chat record",
       );
       assert.equal(
@@ -314,29 +309,24 @@ test("Draft Render Performance Browser @performance", async ({
       assert.equal(
         result.renders,
         expectedOwnerRenders,
-        `Expected ${expectedOwnerRenders} harness renders in ${process.env.RENDER_ISOLATION === "baseline" ? "baseline" : "isolated"} mode`,
+        `Expected ${expectedOwnerRenders} harness renders for current draft storage`,
       );
       assert.equal(
         result.sidebarRenders,
         expectedOwnerRenders,
-        "Harness sidebar render count must match the selected baseline/current mode",
+        "Harness sidebar does not rerender for a composer edit",
       );
       assert.equal(
         result.transcriptRenders,
         expectedOwnerRenders,
-        "Harness transcript render count must match the selected baseline/current mode",
+        "Harness transcript does not rerender for a composer edit",
       );
       assert.equal(
         result.composerCommits,
         20,
         "Only the active composer should commit for the 20 edits",
       );
-      assert.ok(
-        process.env.RENDER_ISOLATION === "baseline"
-          ? result.mapBytes > 35_000_000
-          : result.chatBytes < 400_000,
-        "Per-chat edits stay below 400 KB versus the paired baseline's >35 MB",
-      );
+      assert.ok(result.chatBytes < 400_000, "Per-chat edits stay below 400 KB");
       const noOp = await page.evaluate(async () => {
         const before = window.commits;
         const original = Storage.prototype.setItem;
@@ -373,44 +363,28 @@ test("Draft Render Performance Browser @performance", async ({
           }),
         });
       });
-      if (process.env.RENDER_ISOLATION === "baseline") {
-        // The historical baseline adopts the remote value immediately while
-        // retaining the just-edited local version as a dismissible alternative.
-        await page.waitForFunction(
-          () =>
-            draft.drafts["chat-0"] === "Concurrent remote text" &&
-            draft.conflicts.some((v) => v.text === "typed 19"),
-        );
-        await page.getByRole("button", { name: "Other drafts (1)" }).click();
-        await page
-          .locator(".draft-version")
-          .filter({ hasText: "typed 19" })
-          .getByRole("button", { name: "Dismiss", exact: true })
-          .click();
-      } else {
-        // Current behavior keeps the local edit and presents the remote branch
-        // through DraftVersions. Conversation's Replace text action calls
-        // setDraft with the selected version, so exercise that public hook path.
-        await page.waitForFunction(
-          () =>
-            draft.drafts["chat-0"] === "typed 19" &&
-            draft.conflicts.some(
-              (version) => version.text === "Concurrent remote text",
-            ),
-        );
-        const remote = await page.evaluate(
-          () =>
-            draft.conflicts.find(
-              (version) => version.text === "Concurrent remote text",
-            ).text,
-        );
-        await page.evaluate((text) => {
-          draft.setDrafts((current) => ({ ...current, "chat-0": text }));
-        }, remote);
-        await page.waitForFunction(
-          () => draft.drafts["chat-0"] === "Concurrent remote text",
-        );
-      }
+      // Current behavior keeps the local edit and presents the remote branch
+      // through DraftVersions. Conversation's Replace text action calls
+      // setDraft with the selected version, so exercise that public hook path.
+      await page.waitForFunction(
+        () =>
+          draft.drafts["chat-0"] === "typed 19" &&
+          draft.conflicts.some(
+            (version) => version.text === "Concurrent remote text",
+          ),
+      );
+      const remote = await page.evaluate(
+        () =>
+          draft.conflicts.find(
+            (version) => version.text === "Concurrent remote text",
+          ).text,
+      );
+      await page.evaluate((text) => {
+        draft.setDrafts((current) => ({ ...current, "chat-0": text }));
+      }, remote);
+      await page.waitForFunction(
+        () => draft.drafts["chat-0"] === "Concurrent remote text",
+      );
       await page.waitForFunction(
         () =>
           draft.drafts["chat-0"] === "Concurrent remote text" &&
@@ -441,7 +415,10 @@ test("Draft Render Performance Browser @performance", async ({
         }),
       );
       await other.route("**/api/sync/stream*", (route) =>
-        route.fulfill({ contentType: "text/event-stream", body: "" }),
+        route.fulfill({
+          contentType: "text/event-stream",
+          body: apiSchemaHandshakeSse(),
+        }),
       );
       await other.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,

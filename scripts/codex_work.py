@@ -1246,12 +1246,9 @@ class WorkMixin:
         )
         with self.read_db() as db:
             caller = self.checked_actor(db, agent_id) if agent_id else None
-            allowed = {
-                a["id"]
-                for a in self.records(db, "agents")
-                if not a.get("deletedAt")
-                and (not caller or a["rootId"] == caller["rootId"])
-            }
+            agents = ([a for a in self.records(db, "agents") if not a.get("deletedAt")]
+                      if caller is None else self.team_agents(db, caller["rootId"]))
+            allowed = {a["id"] for a in agents}
             found = []
             next_index = self._search_phase(db) in {"active", "dropping", "complete"}
             if next_index:

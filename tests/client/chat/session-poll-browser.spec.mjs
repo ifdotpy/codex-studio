@@ -1,6 +1,6 @@
 // Replicated state uses the current credential endpoint and reports failures.
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
 
 test("Session Poll Browser", async ({
   browser: _testBrowser,
@@ -68,7 +68,7 @@ test("Session Poll Browser", async ({
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
         contentType: "text/event-stream",
-        body: "data: 1\n\n",
+        body: apiSchemaHandshakeSse(),
       }),
     );
     await page.route("**/api/sync/pull?*", (route) => {

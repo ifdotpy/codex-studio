@@ -120,14 +120,42 @@ The server's creation response opens the chat before the full list refreshes.
 An older list cannot remove that confirmed chat while synchronization catches up.
 The client retains the confirmed chat across reloads until the list includes it.
 
+The renderer sends its generated OpenAPI schema hash with API requests and
+protocol-3 stream connections. Once the server hash is ready, API responses
+carry it; ordinary reads during startup remain available without the header.
+A hash-bearing protocol-3 stream starts with an `api-schema` handshake; a
+mismatching stream closes after that event without a subscription. Hashless
+non-renderer clients retain the earlier protocol-3 event sequence. If hashes
+differ, the page keeps the loaded transcript and local composer draft visible,
+then pauses stream, draft replication, outbox delivery, and send actions until
+the renderer updates. The mismatch alert appears even before the first workspace
+snapshot loads. If the server cannot compute its API schema hash, startup shows
+the schema identity error with a Reload Studio link.
+Protocol-3 event payloads no longer use generated per-event runtime validators;
+workspace, epoch, revision, and ordering semantics remain enforced.
+Desktop windows skip service workers, so Update reloads the renderer directly;
+a mismatch that remains after reload requires rebuilding Studio.
+The server caches its computed API schema hash outside the checkout at
+`$XDG_CACHE_HOME/codex-studio-api-schema/hash-v1.json` (by default
+`~/.cache/codex-studio-api-schema/hash-v1.json` on Linux and
+`~/Library/Caches/codex-studio-api-schema/hash-v1.json` on macOS). Deleting this
+file is safe; Studio recomputes it on the next start. A background verification
+also repairs a valid but incorrect cached value.
+
 Managed conversations use the workspace sync projection. One tab holds the
-exclusive browser lock and owns `/api/sync/stream?protocol=2`, then shares its
-scoped generation notices with other tabs in the same browser profile. Each tab
-still pulls only the projection it uses. The browser lock prevents duplicate
-streams even if RxDB reports duplicate leaders.
-A bounded `/api/sync/generations` poll recovers when coordination or the lock is
-unavailable. Managed transcript views use `transcript:<id>` pulls;
-the legacy `/api/transcript/stream` route remains available to older clients.
+exclusive browser lock and owns `/api/sync/stream?protocol=3`, sharing
+typed resource invalidations with other tabs in the same browser profile. Tabs
+pull only the projections they use. If cross-tab coordination is unavailable,
+each tab can open its own protocol-3 stream. Transcript updates use scoped
+`transcript:<id>` pulls; the server does not expose a transcript stream or a
+generation-poll endpoint. Hash-bearing protocol-3 connections begin with an
+`api-schema` event; a mismatching connection receives only that handshake and
+closes without subscribing. Hashless connections keep the prior event sequence.
+During the one-time rollout, a pre-gate tab can hold the stream lock while its
+hashless channel messages are ignored, leaving a new tab degraded until the old
+tab is closed or reloaded.
+Mutating HTTP requests with a hash mismatch receive the marked reload-required
+response.
 These UI updates do not call the model.
 
 Draft recovery journal and local record writes happen synchronously on each
@@ -141,19 +169,16 @@ the client makes one transcript read to show the missing or unavailable result.
 Cached history never supplies the current agent status.
 
 The lock-owning tab reconnects after network or page resume and forces a refresh so
-peers do not rely on notices missed while asleep. If coordination cannot be
-established, each tab polls the compact generation row every three seconds; this
-does not fetch transcript bodies unless that transcript's generation changed.
-A tab that becomes hidden releases the stream lock so a visible peer can take
-over; other tabs use bounded polling while the owner changes.
+peers do not rely on notices missed while asleep. A tab that becomes hidden
+releases the stream lock so a visible peer can take over.
 Cached transcript pages remain available offline and historical paging keeps
 using the transcript page endpoint. Agent rooms and the team list retain their
 existing refresh intervals.
 
-In plain terms, eight tabs do not each phone the server. One tab listens for
-updates and tells the other seven which small piece changed. The other tabs then
-ask for only that piece. If the tabs cannot pass those notes, they check a tiny
-change counter on a timer instead.
+In plain terms, eight coordinated tabs do not each phone the server. One tab
+listens for updates and tells the other seven which small piece changed. The
+other tabs then ask for only that piece. If tabs cannot coordinate, each uses a
+protocol-3 resource stream and still pulls only its own subscribed data.
 
 Assistant text and incomplete code appear as they arrive. Complete sentences use
 a short fade. Earlier text nodes stay mounted as new text arrives.

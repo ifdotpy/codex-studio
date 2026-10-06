@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
 // Exercise reconnect and delivery state in real React/RxDB browser hooks.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -86,7 +86,10 @@ test("Sync recovery browser", async ({
       hangSession ? undefined : route.fulfill({ json: { token: "fixture" } }),
     );
     await page.route("**/api/sync/stream*", (route) =>
-      route.fulfill({ contentType: "text/event-stream", body: "" }),
+      route.fulfill({
+        contentType: "text/event-stream",
+        body: apiSchemaHandshakeSse(),
+      }),
     );
     await page.route("**/api/sync/pull?*", (route) => {
       const after = Number(

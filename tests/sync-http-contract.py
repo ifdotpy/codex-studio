@@ -36,44 +36,30 @@ with tempfile.TemporaryDirectory() as directory:
                         raise
                     time.sleep(.1)
         identity, state = get('/api/sync/identity'), get('/api/state')
-        generations = get('/api/sync/generations')
-        assert identity['syncProtocol'] == generations['protocol'] == 2
-        assert set(generations['generations']) == {'state', 'transcripts', 'drafts'}
-        with urllib.request.urlopen(origin + '/api/sync/stream?protocol=2', timeout=10) as stream:
-            lines = []
-            while True:
-                line = stream.readline().decode().rstrip('\r\n')
-                if line.startswith('data: '):
-                    lines.append(line[6:])
-                if not line:
-                    break
-        event = json.loads(lines[0])
-        assert event['protocol'] == 2
-        assert event['workspaceId'] == identity['workspaceId']
-        assert set(event['generations']) == {'state', 'transcripts', 'drafts'}
-        assert all(isinstance(value, int) for value in event['generations'].values())
-        before_legacy_thread = generations['generations']['state']
+        protocol = get('/api/sync/protocol')
+        assert protocol['protocolVersion'] == 3
+        assert protocol['supportedVersions'] == [3]
+        for removed in ('/api/sync/generations', '/api/transcript/stream'):
+            try:
+                get(removed)
+                raise AssertionError(f'removed route still exists: {removed}')
+            except urllib.error.HTTPError as error:
+                assert error.code in (404, 405)
         status_file = Path(directory) / 'codex-swarm-status.legacy-contract.json'
         status_file.write_text(json.dumps([{
             'name': 'Legacy fixture', 'threadId': 'a' * 36, 'runId': 'b' * 36,
             'wave': 'legacy-contract', 'launcherPid': os.getpid(),
             'turnStatus': 'running', 'cwd': directory,
         }]))
-        after_legacy_thread = get('/api/sync/generations')
         deadline = time.monotonic() + 5
-        while (after_legacy_thread['generations']['state'] <= before_legacy_thread
-               and time.monotonic() < deadline):
-            time.sleep(.05)
-            after_legacy_thread = get('/api/sync/generations')
-        assert after_legacy_thread['generations']['state'] > before_legacy_thread
-        with urllib.request.urlopen(origin + '/api/sync/stream', timeout=10) as stream:
-            while True:
-                line = stream.readline().decode().rstrip('\r\n')
-                if line.startswith('data: '):
-                    assert line == 'data: "RESYNC"'
-                    break
         projection = get('/api/sync/pull?scope=state')
-        assert projection['generation'] >= after_legacy_thread['generations']['state']
+        while time.monotonic() < deadline:
+            payload = json.loads(projection['documents'][0]['payload'])
+            if any(row['name'] == 'Legacy fixture' for row in payload['threads']):
+                break
+            time.sleep(.05)
+            projection = get('/api/sync/pull?scope=state')
+        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
         payload = json.loads(projection['documents'][0]['payload'])
         assert 'runtime' in payload and 'threads' in payload and 'token' not in payload
         assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
@@ -91,17 +77,6 @@ with tempfile.TemporaryDirectory() as directory:
                      if row['id'].startswith('entity:agent:'))
         assert {'id', 'name', 'status'} <= agent.keys()
         assert 'nativeToolCatalog' not in agent and 'accountHistory' not in agent
-        with urllib.request.urlopen(origin + '/api/sync/stream?scope=state%3Aentities%3Av1', timeout=5) as stream:
-            entity_event = stream.readline().decode().strip()
-            assert entity_event.startswith('data: ')
-            assert int(json.loads(entity_event[6:])) == get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=1')['maxSeq']
-        lead_id = next(item['id'] for item in state['threads'] if item.get('isLead'))
-        with urllib.request.urlopen(origin + '/api/sync/stream?scope=transcript:' + lead_id, timeout=5) as stream:
-            transcript_event = stream.readline().decode().strip()
-            assert transcript_event.startswith('data: ')
-            assert isinstance(json.loads(transcript_event[6:]), int)
-        with urllib.request.urlopen(origin + '/api/sync/stream', timeout=5) as stream:
-            assert stream.readline().decode().strip() == 'data: "RESYNC"'
         row = {'newDocumentState': {'id': 'phone:lead', 'seq': 0, '_deleted': False,
                'payload': json.dumps({'text': 'draft', 'session': 'lead', 'device': 'phone', 'updated': 1})}}
         def push(rows, workspace):
@@ -114,14 +89,13 @@ with tempfile.TemporaryDirectory() as directory:
         assert push([row], identity['workspaceId']) == []
         drafts = get('/api/sync/pull?scope=drafts')
         assert len(drafts['documents']) == 1
-        with urllib.request.urlopen(origin + '/api/sync/stream?scope=drafts', timeout=5) as stream:
-            assert int(json.loads(stream.readline().decode().strip()[6:])) == drafts['checkpoint']['seq']
         for rows, workspace, status in [([row], 'wrong', 409), ([{}], identity['workspaceId'], 400)]:
             try:
                 push(rows, workspace)
                 raise AssertionError('Invalid push accepted')
             except urllib.error.HTTPError as error:
                 assert error.code == status, error.read()
+        lead_id = next(item['id'] for item in state['threads'] if item.get('isLead'))
         lead = lead_id
         def voice(action, **body):
             request = urllib.request.Request(origin + '/api/voice/' + action,

@@ -5,7 +5,12 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  apiSchemaHandshakeSse,
+} from "../playwright.mjs";
 
 test("chat prefetch ui @performance", async ({ browser }) => {
   const repo = dirname(
@@ -157,6 +162,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 "Cache-Control": "no-cache",
                 Connection: "keep-alive",
               });
+              response.write(apiSchemaHandshakeSse());
               response.write(
                 `retry: 100\nevent: resources\ndata: ${JSON.stringify({
                   protocol: 3,

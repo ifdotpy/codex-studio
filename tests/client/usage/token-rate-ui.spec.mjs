@@ -101,7 +101,7 @@ test("Token rate ui", async ({
       await page.waitForFunction(() =>
         window.__rateSources.some(
           (source) =>
-            source.readyState === 1 && source.url.includes("protocol=2"),
+            source.readyState === 1 && source.url.includes("protocol=3"),
         ),
       );
     } catch (error) {
@@ -269,7 +269,7 @@ test("Token rate ui", async ({
           const source = window.__rateSources.findLast(
             (source) =>
               source.readyState === 1 &&
-              source.url.includes("/api/sync/stream?protocol=2"),
+              source.url.includes("/api/sync/stream?protocol=3"),
           );
           if (!source) throw Error("No existing shared workspace stream");
           source.dispatchEvent(
@@ -433,7 +433,7 @@ test("Token rate ui", async ({
     await page.waitForFunction(() =>
       window.__rateSources.some(
         (source) =>
-          source.readyState === 1 && source.url.includes("protocol=2"),
+          source.readyState === 1 && source.url.includes("protocol=3"),
       ),
     );
     const cardsOffConnections = await connections();
@@ -518,7 +518,7 @@ test("Token rate ui", async ({
         () =>
           window.__rateSources.filter(
             (source) =>
-              source.readyState !== 2 && source.url.includes("protocol=2"),
+              source.readyState !== 2 && source.url.includes("protocol=3"),
           ).length,
       ),
       1,

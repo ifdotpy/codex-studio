@@ -1,7 +1,9 @@
 """Offline OpenAPI construction and strict schema coverage checks."""
 from __future__ import annotations
 
+import hashlib
 import json
+import threading
 from typing import cast
 
 from studio_api.models import JsonValue
@@ -39,6 +41,12 @@ SCHEMA_SHAPE_KEYS = frozenset(
     }
 )
 SCHEMA_COMBINATORS = ("oneOf", "anyOf", "allOf")
+API_SCHEMA_HASH_HEADER = "X-Studio-API-Schema"
+API_SCHEMA_HASH_PARAM = "apiSchema"
+API_SCHEMA_MISMATCH_HEADER = "X-Studio-API-Schema-Mismatch"
+API_SCHEMA_MISMATCH_FIELD = "mismatch"
+_HASH_LOCK = threading.Lock()
+_CACHED_API_SCHEMA_HASH: str | None = None
 
 
 def openapi_document() -> dict[str, JsonValue]:
@@ -48,6 +56,76 @@ def openapi_document() -> dict[str, JsonValue]:
 
     app = create_app(ApiContext.for_schema())
     return cast(dict[str, JsonValue], json.loads(json.dumps(app.openapi())))
+
+
+_NAME_KEYED_MAPS = frozenset({
+    "properties", "$defs", "definitions", "patternProperties", "dependentSchemas",
+    "paths", "schemas", "parameters", "responses", "requestBodies", "headers",
+    "links", "callbacks", "securitySchemes", "content", "encoding", "mapping",
+    "webhooks",
+})
+
+
+def canonical_openapi_json(document: dict[str, JsonValue]) -> bytes:
+    """Canonicalize wire-shape OpenAPI fields; ignore documentation-only metadata."""
+    def strip_documentation(value: JsonValue) -> JsonValue:
+        if isinstance(value, list):
+            return [strip_documentation(item) for item in value]
+        if isinstance(value, dict):
+            canonical: dict[str, JsonValue] = {}
+            for key, item in value.items():
+                if key in {"description", "summary", "examples", "externalDocs"}:
+                    continue
+                if key == "default":
+                    # A default is arbitrary JSON data, not OpenAPI metadata.
+                    canonical[key] = item
+                elif key in _NAME_KEYED_MAPS:
+                    if isinstance(item, dict):
+                        canonical[key] = {
+                            name: strip_documentation(child)
+                            for name, child in item.items()
+                        }
+                    else:
+                        canonical[key] = strip_documentation(item)
+                elif key == "components" and isinstance(item, dict):
+                    # Both component categories and component names are named
+                    # maps. Preserve them at each level, then clean schema bodies.
+                    canonical[key] = {
+                        category: (
+                            {
+                                name: strip_documentation(component)
+                                for name, component in collection.items()
+                            }
+                            if category in _NAME_KEYED_MAPS and isinstance(collection, dict)
+                            else strip_documentation(collection)
+                        )
+                        for category, collection in item.items()
+                    }
+                else:
+                    canonical[key] = strip_documentation(item)
+            return canonical
+        return value
+
+    return json.dumps(
+        strip_documentation(document),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+
+
+def api_schema_hash(document: dict[str, JsonValue] | None = None) -> str:
+    """Hash the canonical OpenAPI document shared by codegen and the server."""
+    if document is not None:
+        return hashlib.sha256(canonical_openapi_json(document)).hexdigest()
+    global _CACHED_API_SCHEMA_HASH
+    if _CACHED_API_SCHEMA_HASH is None:
+        with _HASH_LOCK:
+            if _CACHED_API_SCHEMA_HASH is None:
+                _CACHED_API_SCHEMA_HASH = hashlib.sha256(
+                    canonical_openapi_json(openapi_document())
+                ).hexdigest()
+    return _CACHED_API_SCHEMA_HASH
 
 
 def _object(value: JsonValue) -> dict[str, JsonValue] | None:

@@ -1,12 +1,53 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
 
 const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
 const { chromium } = require("playwright");
+
+const generatedApiSchema = readFileSync(
+  new URL("../../web/src/generated/apiSchema.ts", import.meta.url),
+  "utf8",
+);
+
+export const API_SCHEMA_HASH_HEADER = readGeneratedString(
+  "API_SCHEMA_HASH_HEADER",
+);
+export const API_SCHEMA_HASH_PARAM = readGeneratedString(
+  "API_SCHEMA_HASH_PARAM",
+);
+
+function readGeneratedString(name) {
+  const match = generatedApiSchema.match(
+    new RegExp(`${name}\\s*=\\s*"([^"]+)"`),
+  );
+  if (!match) throw new Error(`Generated ${name} is missing.`);
+  return match[1];
+}
+
+export function readApiSchemaHash() {
+  const match = generatedApiSchema.match(
+    /API_SCHEMA_HASH\s*=\s*"([0-9a-f]{64})"/,
+  );
+  if (!match) throw new Error("Generated API schema hash is missing.");
+  return match[1];
+}
+
+export function apiSchemaHandshakeSse(body = "", overrides = {}) {
+  return `event: api-schema\ndata: ${JSON.stringify(apiSchemaHandshakeEvent(overrides))}\n\n${body}`;
+}
+
+export function apiSchemaHandshakeEvent(overrides = {}) {
+  return { hash: readApiSchemaHash(), ...overrides };
+}
+
+export function protocol3SseEvent(name, value) {
+  return `event: ${name}\ndata: ${JSON.stringify(value)}\n\n`;
+}
 
 const fixtureScopes = new WeakMap();
 const childTerminationWaitMs = 1_000;

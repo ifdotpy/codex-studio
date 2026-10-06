@@ -5,11 +5,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test } from "../playwright.mjs";
-import {
-  isResourceChangeEvent,
-  isResourceHeartbeatEvent,
-} from "../../../web/src/generated/stream-validators.js";
+import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -50,14 +46,16 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       reason,
       resources,
     };
-    assert.ok(isResourceChangeEvent(event));
+    assert.ok(
+      Array.isArray(event.resources) && Number.isFinite(event.revision),
+    );
     stream.response.write(
       `event: resources\ndata: ${JSON.stringify(event)}\n\n`,
     );
   };
   const writeHeartbeat = (stream) => {
     const event = { protocol: 3, workspaceId, epoch, revision };
-    assert.ok(isResourceHeartbeatEvent(event));
+    assert.ok(Number.isFinite(event.revision));
     stream.response.write(
       `event: heartbeat\ndata: ${JSON.stringify(event)}\n\n`,
     );
@@ -115,6 +113,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
                 "Cache-Control": "no-cache",
                 Connection: "keep-alive",
               });
+              res.write(apiSchemaHandshakeSse());
               streams.add(stream);
               writeResources(stream, "initial");
               const heartbeat = setInterval(() => writeHeartbeat(stream), 1000);

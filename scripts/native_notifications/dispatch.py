@@ -34,7 +34,7 @@ def matching_agents(runtime, db, account_key, thread_id):
     else:
         # Account-level notices are handled before this path. Retain the legacy
         # active-agent routing for rare notifications that omit threadId.
-        candidates = runtime.records(db, 'agents')
+        candidates = runtime.account_agents(db, account_key)
     return [agent for agent in candidates
             if not agent.get('deletedAt')
             and agent.get('accountKey', 'default') == account_key

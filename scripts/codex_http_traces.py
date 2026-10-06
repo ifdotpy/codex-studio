@@ -28,7 +28,7 @@ _STARTED_AT = time.time()
 _UNTRACKED = 0
 # Only these constant routes can identify the global connection error.
 _ROUTES = frozenset(("/api/session", "/api/state", "/api/sync/identity",
-                     "/api/sync/pull", "/api/sync/generations"))
+                     "/api/sync/pull"))
 
 
 def report_failure(error):

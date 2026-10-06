@@ -67,6 +67,10 @@ import {
   save,
   saved,
   type PostBody,
+  isApiSchemaMismatch,
+  onApiSchemaMismatch,
+  schemaUpdateFailedAfterReload,
+  updateRendererAndReload,
 } from "./api";
 import { useSnapshot } from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
@@ -174,6 +178,20 @@ const BackgroundTasks = lazy(
 );
 export default function App() {
   reportPromptComposerRender("app");
+  const [schemaMismatch, setSchemaMismatch] = useState(false);
+  const [schemaMismatchNeedsRebuild, setSchemaMismatchNeedsRebuild] =
+    useState(false);
+  const [schemaUpdateError, setSchemaUpdateError] = useState("");
+  useEffect(() => {
+    let shown = false;
+    const showMismatch = () => {
+      if (shown) return;
+      shown = true;
+      setSchemaMismatchNeedsRebuild(schemaUpdateFailedAfterReload());
+      setSchemaMismatch(true);
+    };
+    return onApiSchemaMismatch(showMismatch);
+  }, []);
   const outbox = useOutbox();
   const [removingAllSending, setRemovingAllSending] = useState(false);
   const [outgoing, setOutgoing] = useState<Record<string, OutgoingMessage>>({});
@@ -1092,6 +1110,7 @@ export default function App() {
     onPersist?: () => void | Promise<void>;
     delivery?: "after_tool" | "after_turn";
   }) => {
+    if (schemaMismatch || isApiSchemaMismatch()) return;
     const draftKey = opened || "new",
       text = getDraft(draftKey).trim();
     if ((!text && !options?.assets?.length) || sendingLock.current) return;
@@ -1412,9 +1431,53 @@ export default function App() {
         ),
       });
   };
+  const schemaMismatchDialog = (
+    <Modal
+      opened={schemaMismatch}
+      onClose={() => {}}
+      title="Studio update required"
+      closeOnEscape={false}
+      closeOnClickOutside={false}
+      withCloseButton={false}
+      role="alertdialog"
+      aria-label="Studio update required"
+    >
+      <p>
+        {schemaMismatchNeedsRebuild
+          ? "The installed renderer build does not match the server. Rebuild Studio before continuing."
+          : "Studio has been updated. Update this tab to continue syncing and sending."}
+      </p>
+      {!schemaMismatchNeedsRebuild && (
+        <>
+          <Button
+            onClick={() => {
+              setSchemaUpdateError("");
+              void updateRendererAndReload().catch((error: unknown) =>
+                setSchemaUpdateError(
+                  error instanceof Error
+                    ? error.message
+                    : "Studio update failed. Try again.",
+                ),
+              );
+            }}
+          >
+            Update
+          </Button>
+          {schemaUpdateError && <p role="alert">{schemaUpdateError}</p>}
+        </>
+      )}
+    </Modal>
+  );
   if (!data)
-    return (
-      <div className="startup">{error || "Connecting to Codex Studio…"}</div>
+    return schemaMismatch ? (
+      schemaMismatchDialog
+    ) : (
+      <main className="startup" aria-label="Studio startup">
+        <p role={error ? "alert" : "status"}>
+          {error || "Connecting to Codex Studio…"}
+        </p>
+        {error && <a href="/">Reload Studio</a>}
+      </main>
     );
   const title = agent?.name || room?.name || legacy?.name || "New conversation";
   const projectName =
@@ -2129,6 +2192,7 @@ export default function App() {
               dismissDraft={dismissDraft}
               send={send}
               sending={sending}
+              schemaMismatch={schemaMismatch}
               outgoing={visibleOutgoing}
               onObserved={observeSends}
               onReadResult={readState.observeRead}
@@ -2716,6 +2780,7 @@ export default function App() {
           />
         )}
       </Modal>
+      {schemaMismatchDialog}
       {toast && (
         <div id="toast" role="status">
           {toast}

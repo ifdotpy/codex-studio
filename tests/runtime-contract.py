@@ -1225,6 +1225,17 @@ class RuntimeContract(unittest.TestCase):
         turns = [p for method,p in self.runtime.server.calls if method == 'turn/start']
         self.assertIn('monitor_exit', turns[-1]['input'][0]['text'])
 
+    def test_monitor_producer_includes_identity_for_sync(self):
+        from codex_sync_entities import project
+
+        lead = self.lead()
+        monitor = self.runtime.monitor(lead['id'], {'command': 'producer contract'})
+        projected = project('monitor', monitor)
+        self.assertEqual(projected['id'], monitor['id'])
+        self.assertEqual(projected['agent'], lead['id'])
+        self.assertEqual(projected['created'], monitor['created'])
+        self.assertEqual(projected['status'], 'approval')
+
     def test_stop_cancels_descendants_and_suppresses_late_wake(self):
         lead = self.lead()
         child = self.runtime.create({'name': 'Child', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'])

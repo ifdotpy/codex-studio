@@ -24,6 +24,7 @@ from codex_runtime import (
     TokenRateObservation,
     workspace_agent_resource_changed,
 )
+from codex_sync_entities import ensure_tables
 from studio_api.sync.resources.hub import (
     ResourceHub,
     register_resource_hub,
@@ -59,9 +60,9 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime = Runtime.__new__(Runtime)
             runtime.root = state_dir
             runtime.lock = threading.RLock()
-            runtime._rate_cache_lock = threading.RLock()
             runtime.ui_condition = threading.Condition(runtime.lock)
             runtime.ui_revisions = {}
+            runtime._rate_cache_lock = threading.RLock()
             runtime.changed = threading.Event()
             runtime._committed_resource_changes = {}
             runtime._committed_resource_overflow = False
@@ -426,6 +427,8 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             connection = sqlite3.connect(":memory:")
             connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
             connection.execute("CREATE TABLE runtime_tasks(id TEXT PRIMARY KEY, record TEXT)")
+            connection.execute("CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY, record TEXT)")
+            connection.execute("CREATE TABLE runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT)")
             for agent_id, root_id in (("lead", "lead"), ("worker-a", "lead"), ("worker-b", "lead")):
                 connection.execute(
                     "INSERT INTO runtime_agents VALUES (?,?)",
@@ -508,6 +511,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime = Runtime.__new__(Runtime)
             runtime.root = state_dir
             runtime.lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
             runtime._rate_cache_lock = threading.RLock()
             runtime.changed = threading.Event()
             runtime._committed_resource_changes = {}
@@ -554,6 +558,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime = Runtime.__new__(Runtime)
             runtime.root = state_dir
             runtime.lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
             runtime._rate_cache_lock = threading.RLock()
             runtime.changed = threading.Event()
             runtime._committed_resource_changes = {}
@@ -756,6 +761,8 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime = Runtime.__new__(Runtime)
             runtime.root = state_dir
             runtime.lock = threading.RLock()
+            runtime.ui_condition = threading.Condition(runtime.lock)
+            runtime.ui_revisions = {}
             runtime._rate_cache_lock = threading.RLock()
             runtime.changed = threading.Event()
             runtime._committed_resource_changes = {}
@@ -771,8 +778,20 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime.records = lambda _db, _table: []
             db_connection = sqlite3.connect(":memory:", check_same_thread=False)
             db_connection.row_factory = sqlite3.Row
+            db_connection.execute("CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)")
+            db_connection.execute("CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT)")
+            db_connection.execute("CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY, record TEXT)")
+            db_connection.execute("CREATE TABLE runtime_federation_rooms(id TEXT PRIMARY KEY, record TEXT)")
             db_connection.execute("CREATE TABLE runtime_tasks(record TEXT)")
             db_connection.execute("CREATE TABLE runtime_monitors(record TEXT)")
+            db_connection.execute(
+                "CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT NOT NULL, kind TEXT NOT NULL, "
+                "text TEXT NOT NULL, status TEXT NOT NULL, created REAL NOT NULL, epoch INTEGER NOT NULL, "
+                "turn_id TEXT, error TEXT)"
+            )
+            db_connection.execute("INSERT INTO runtime_agents VALUES (?,?)", (
+                "agent-a", json.dumps({"id": "agent-a", "accountKey": "default", "status": "idle"})))
+            ensure_tables(db_connection)
 
             @contextmanager
             def database():

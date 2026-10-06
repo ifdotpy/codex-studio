@@ -209,8 +209,7 @@ class AccountTransfers:
             if old and old['status'] not in TERMINAL:
                 if old['targetAccountKey'] == target and old.get('scope', 'team') == scope:
                     op = self.get(db, old['id'])
-                    members = [a for a in rt.records(db, 'agents')
-                               if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+                    members = rt.team_agents(db, key, include_id=key)
                     op.setdefault('targetProvider', rt.accounts.get(target).get('provider', 'codex'))
                     self.adopt(db, op, members, include_later=True)
                     if lead.get('accountKey', 'default') == target:
@@ -231,8 +230,7 @@ class AccountTransfers:
                 raise ValueError("This account was deleted. Select another destination")
             if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
-            members = [a for a in rt.records(db, 'agents')
-                       if (a['id'] == key or a.get('rootId') == key) and not a.get('deletedAt')]
+            members = rt.team_agents(db, key, include_id=key)
             target_provider = rt.accounts.get(target).get('provider', 'codex')
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
                   'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},

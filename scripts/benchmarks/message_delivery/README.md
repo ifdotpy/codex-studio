@@ -28,7 +28,7 @@ python3 scripts/benchmarks/message_delivery/benchmark.py --agents 1 8 32 --messa
 python3 -m unittest discover -s scripts/benchmarks/message_delivery -p 'test_*.py'
 ```
 
-The first command is a quick direct-SSE smoke run. The full command produces
+The first command is a quick protocol-3 stream and sync-pull smoke run. The full command produces
 separate cases for 1, 8, and 32 subscribed agents, with and without the real
 analytics history importer, through both transport paths. Its synthetic offered
 rate defaults to 80 messages per second across the whole case. `--rate` changes
@@ -41,15 +41,27 @@ At the same total rate, more subscribers receive fewer messages per second each
 and the case lasts longer. Compare matching configurations, not an apparent
 improvement from adding subscribers to a fixed-rate workload.
 
-`--transport sync` measures the primary application route: one shared
-`/api/sync/stream` connection emits invalidations, then concurrent pulls fetch
-each subscribed `transcript:<id>` scope from `/api/sync/pull`. `--transport
-transcript` measures the direct `/api/transcript/stream` fallback, with one
-stream per synthetic subscriber. The reports label those cases separately.
+Both transport cases use one protocol-3 `/api/sync/stream` connection with
+typed transcript subscriptions. `--transport sync` measures concurrent
+`transcript:<id>` projection pulls from `/api/sync/pull`; `--transport
+transcript` measures concurrent current transcript reads from `/api/transcript`.
+The reports label the pull paths separately.
+
+### Measurement change from the legacy benchmark
+
+Protocol 3 uses one shared resource stream and then pulls transcript state. The
+previous benchmark opened one direct transcript stream per subscriber and
+measured incremental append/prefix handling. This version no longer measures
+direct per-subscriber delivery, incremental SSE payload behavior, or the cost
+of N concurrent streams. `--check` now exercises the protocol-3 sync-pull
+transport; previous `--check` transcript-stream timings are not comparable.
+The report configuration fields `primaryPath` and `fallbackPath` were replaced
+by `invalidationPath`, `syncPullPath`, and `transcriptPullPath`. Compare results
+only when transport, workload, host, and report schema match.
 
 The 1/8/32 counts stress increasing numbers of subscribed chats. They do not
-mean a normal foreground view opens 32 streams: the application shares one sync
-invalidation stream across projection subscribers. This benchmark measures
+mean a normal foreground view opens 32 streams: the application shares one
+protocol-3 invalidation stream across projection subscribers. This benchmark measures
 server and local HTTP delivery only. It does not measure the browser, RxDB,
 rendering, a physical network, a native callback queue, or model response time.
 The synthetic dispatch queue belongs to this fixture and is reported as such;
@@ -58,7 +70,7 @@ Each case runs in a child process with a parent-enforced 60-second deadline.
 The worker also uses bounded thread cleanup. Parent supervision can terminate a
 case if a production lock or runtime close leaves a non-daemon thread stuck.
 HTTP sockets use a 20-second read timeout, above the server's 15-second
-heartbeat interval plus its 80 ms stream coalescing period. The 60-second case
+protocol-3 heartbeat interval. The 60-second case
 deadline remains the overall bound.
 
 ## Report fields

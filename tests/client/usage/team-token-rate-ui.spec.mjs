@@ -83,7 +83,7 @@ test("team token rate ui", async ({ browser }) => {
           constructor(...args) {
             super(...args);
             window.__allSources.push(this);
-            if (this.url.includes("/api/sync/stream?protocol=2")) {
+            if (this.url.includes("/api/sync/stream?protocol=3")) {
               window.__teamRateSources.push(this);
               this.addEventListener("token-rates", (event) => {
                 const batch = JSON.parse(event.data);
@@ -106,7 +106,7 @@ test("team token rate ui", async ({ browser }) => {
       await page.waitForFunction(() =>
         window.__allSources.some(
           (source) =>
-            source.readyState === 1 && source.url.includes("protocol=2"),
+            source.readyState === 1 && source.url.includes("protocol=3"),
         ),
       );
       const connections = (view) =>
@@ -348,14 +348,14 @@ test("team token rate ui", async ({ browser }) => {
           () =>
             window.__allSources.filter(
               (source) =>
-                source.readyState !== 2 && source.url.includes("protocol=2"),
+                source.readyState !== 2 && source.url.includes("protocol=3"),
             ).length,
         )) +
           (await follower.evaluate(
             () =>
               window.__allSources.filter(
                 (source) =>
-                  source.readyState !== 2 && source.url.includes("protocol=2"),
+                  source.readyState !== 2 && source.url.includes("protocol=3"),
               ).length,
           )),
         1,
