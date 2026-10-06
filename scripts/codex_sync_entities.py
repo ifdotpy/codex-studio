@@ -4,7 +4,7 @@ import json
 import logging
 import math
 import sqlite3
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 
 from pydantic import AfterValidator, TypeAdapter
 
@@ -53,7 +53,7 @@ _DTO_MODELS = {
 }
 AGENT_FIELDS = frozenset(AgentEntityDto.model_fields)
 COLLECTION_FIELDS = {
-    name: frozenset(model.model_fields)
+    name: frozenset(model.model_fields)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_fields dynamically
     for name, model in _DTO_MODELS.items()
     if name != "agent"
 }
@@ -110,7 +110,7 @@ def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValu
     return value
 
 
-def _contains_nonfinite(value):
+def _contains_nonfinite(value: JsonValue) -> bool:
     if isinstance(value, float):
         return not math.isfinite(value)
     if isinstance(value, dict):
@@ -177,12 +177,12 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                         "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
                         identity[0], field, "NonFiniteNumber")
     try:
-        validated = model.model_validate(result)
+        validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
     except Exception as error:
         if collection != "agent" or not hasattr(error, "errors"):
             raise
         failures = error.errors()
-        promoted = {"epoch", "lastCompletedTurnStatus", "capacityRetry", "usageResume",
+        promoted = {"epoch", "lastCompletedTurnStatus", "capacityRetry", "usageResume",  # type: ignore[assignment]  # typed-narrowing: this local is reused for the promoted field-name set
                     "contextRepairWait", "lastEvent", "accountTransferId", "workspaceOperation"}
         bad_fields = {str(item["loc"][0]) for item in failures
                       if item.get("loc") and str(item["loc"][0]) in promoted}
@@ -197,7 +197,7 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 logging.getLogger(__name__).warning(
                     "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
                     identity[0], field, type(error).__name__)
-        validated = model.model_validate(result)
+        validated = model.model_validate(result)  # type: ignore[attr-defined]  # typed-narrowing: Pydantic v2 supplies model_validate dynamically
     return cast(JsonValue, validated.model_dump(mode="json", exclude_unset=True))
 
 
@@ -212,7 +212,7 @@ def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) 
     return payload, hashlib.sha256(payload.encode("utf-8")).hexdigest(), bool(deleted)
 
 
-def ensure_tables(db):
+def ensure_tables(db: sqlite3.Connection) -> None:
     db.executescript("""
       CREATE TABLE IF NOT EXISTS sync_entities (
         collection TEXT NOT NULL, id TEXT NOT NULL, seq INTEGER NOT NULL,
@@ -270,8 +270,9 @@ def ensure_tables(db):
         db.execute("CREATE INDEX IF NOT EXISTS runtime_event_created_id ON runtime_events(created DESC,id)")
 
 
-def register_functions(db):
+def register_functions(db: sqlite3.Connection) -> None:
     def payload(collection, key, raw, deleted):
+        # type: (str, str, str, int) -> str
         try:
             value = json.loads(raw)
         except (TypeError, ValueError):
@@ -284,7 +285,7 @@ def register_functions(db):
                        lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest())
 
 
-def install_bypass_triggers(db):
+def install_bypass_triggers(db: sqlite3.Connection) -> None:
     """Track direct runtime_events writes; Runtime.put owns all other DTO rows."""
     for operation in ("INSERT", "UPDATE", "DELETE"):
         old = operation == "DELETE"
@@ -306,7 +307,7 @@ def install_bypass_triggers(db):
         END""")
 
 
-def put(db, collection, key, record, deleted=False):
+def put(db: sqlite3.Connection, collection: str, key: str, record: Any, deleted: bool = False) -> bool:
     dto = project(collection, record) if not deleted else {}
     payload, digest, deleted = encoded(collection, key, dto, deleted)
     old = db.execute("SELECT hash,deleted FROM sync_entities WHERE collection=? AND id=?",
@@ -321,7 +322,7 @@ def put(db, collection, key, record, deleted=False):
     return True
 
 
-def patch(db, collection, key, changes):
+def patch(db: sqlite3.Connection, collection: str, key: str, changes: Any) -> bool:
     """Change fields of the stored renderer view; a raw record must not replace it."""
     try:
         row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection=? AND id=?",
@@ -334,7 +335,7 @@ def patch(db, collection, key, changes):
     return put(db, collection, key, {**value, **changes})
 
 
-def retire_closed_requests(db):
+def retire_closed_requests(db: sqlite3.Connection) -> int:
     """Remove answered or deleted requests that an older server kept as live entities."""
     rows = db.execute("SELECT id FROM sync_entities WHERE collection='request' AND deleted=0 "
                       "AND COALESCE(json_extract(payload,'$.value.status'),'')!='pending'").fetchall()
@@ -343,11 +344,11 @@ def retire_closed_requests(db):
     return len(rows)
 
 
-def _snapshot_runtime_present(snapshot):
+def _snapshot_runtime_present(snapshot: Any) -> bool:
     return isinstance(snapshot, dict) and isinstance(snapshot.get("runtime"), dict)
 
 
-def upgrade_agent_organization(db, snapshot=None, runtime_owner=None):
+def upgrade_agent_organization(db: sqlite3.Connection, snapshot: Any = None, runtime_owner: Any = None) -> int:
     """Restore sidebar metadata and reproject widened entities by migration version."""
     marker = db.execute(
         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
@@ -381,7 +382,7 @@ def upgrade_agent_organization(db, snapshot=None, runtime_owner=None):
     return changed
 
 
-def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
+def upgrade_renderer_fields(db: sqlite3.Connection, snapshot: Any, runtime_owner: Any = None) -> int:
     """Reproject current rows as part of the existing entity upgrade."""
     runtime_data = snapshot.get("runtime") or {}
     if not runtime_data:
@@ -417,11 +418,11 @@ def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
         row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
         prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
         changed += bool(put(db, "workspace", "current", {**prior, **meta}))
-        return changed
+        return changed  # type: ignore[no-any-return]  # typed-narrowing: delegated peer team sync has an untyped return
     return 0
 
 
-def seed(db, snapshot, runtime_owner=None):
+def seed(db: sqlite3.Connection, snapshot: Any, runtime_owner: Any = None) -> None:
     """Seed once from the compatible view while the caller holds a write lock."""
     seeded = bool(db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone())
     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
@@ -481,7 +482,7 @@ def seed(db, snapshot, runtime_owner=None):
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
 
 
-def sync_event_window(db):
+def sync_event_window(db: sqlite3.Connection) -> int:
     """Materialize the shared bounded event window."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
         return 0
@@ -505,11 +506,11 @@ def sync_event_window(db):
     return len(stale)
 
 
-def _recent_monitor_records(db):
+def _recent_monitor_records(db: sqlite3.Connection) -> list[Any]:
     return monitor_records(db)
 
 
-def sync_monitor_window(db):
+def sync_monitor_window(db: sqlite3.Connection) -> int:
     """Match active monitors and the recent terminal window in the chat snapshot."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_monitors'").fetchone():
         return 0
@@ -525,17 +526,17 @@ def sync_monitor_window(db):
     return retired
 
 
-def sync_monitor_write(db, record):
+def sync_monitor_write(db: sqlite3.Connection, record: Any) -> None:
     """Project a monitor write and retire the displaced terminal record."""
     sync_monitor_window(db)
 
 
-def sync_monitor_agent_change(db):
+def sync_monitor_agent_change(db: sqlite3.Connection) -> None:
     """Refresh monitors after an agent's deletedAt state changes."""
     sync_monitor_window(db)
 
 
-def sync_task_window(db, batch_size=100, force=False):
+def sync_task_window(db: sqlite3.Connection, batch_size: int = 100, force: bool = False) -> int:
     """Match the shared bounded task window; retire legacy rows in batches."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_tasks'").fetchone():
         return 0
@@ -559,7 +560,7 @@ def sync_task_window(db, batch_size=100, force=False):
     return len(stale)
 
 
-def _trim_live_task_history(db):
+def _trim_live_task_history(db: sqlite3.Connection) -> None:
     """Keep only the newest hundred archived task DTOs; running tasks are unbounded."""
     rows = db.execute(f"""SELECT id FROM sync_entities
         WHERE collection='task' AND deleted=0
@@ -569,7 +570,7 @@ def _trim_live_task_history(db):
         put(db, "task", key, {}, deleted=True)
 
 
-def _backfill_task_history(db):
+def _backfill_task_history(db: sqlite3.Connection) -> None:
     """Refill archived slots from the bounded, created-indexed runtime window."""
     for record in task_records(db):
         if record.get("status") == "running":
@@ -579,7 +580,7 @@ def _backfill_task_history(db):
     _trim_live_task_history(db)
 
 
-def sync_task_write(db, record):
+def sync_task_write(db: sqlite3.Connection, record: Any) -> bool:
     """Incrementally project a task write without scanning runtime_tasks."""
     if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated'").fetchone():
         return False
@@ -620,7 +621,7 @@ def sync_task_write(db, record):
     return put(db, "task", key, {}, deleted=True)
 
 
-def sync_task_agent_change(db, agent_id, deleted):
+def sync_task_agent_change(db: sqlite3.Connection, agent_id: str, deleted: bool) -> None:
     """Refresh one agent's task window after its rare deletedAt transition."""
     if not db.execute("SELECT 1 FROM sync_entity_meta WHERE key='task_window_migrated'").fetchone():
         return
@@ -639,27 +640,27 @@ def sync_task_agent_change(db, agent_id, deleted):
     _trim_live_task_history(db)
 
 
-def next_sequence(db):
+def next_sequence(db: sqlite3.Connection) -> int:
     row = db.execute("""SELECT max(seq)+1 FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
         SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
         SELECT COALESCE(MAX(seq),0) FROM sync_versions)""").fetchone()
-    return row[0]
+    return row[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 aggregate results are dynamically typed
 
 
-def max_seq(db):
+def max_seq(db: sqlite3.Connection) -> int:
     row = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities WHERE collection NOT LIKE 'transcript:%'").fetchone()
-    return max(row[0], entity_tombstone_floor(db))
+    return max(row[0], entity_tombstone_floor(db))  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 aggregate results are dynamically typed
 
 
-def entity_tombstone_floor(db):
+def entity_tombstone_floor(db: sqlite3.Connection) -> int:
     row = db.execute("SELECT value FROM sync_entity_meta WHERE key=?",
                      (ENTITY_TOMBSTONE_FLOOR_KEY,)).fetchone()
     return int(row[0]) if row else 0
 
 
-def prune_entity_tombstones(db, limit=ENTITY_TOMBSTONE_LIMIT,
-                            batch_size=ENTITY_TOMBSTONE_PRUNE_BATCH):
+def prune_entity_tombstones(db: sqlite3.Connection, limit: int = ENTITY_TOMBSTONE_LIMIT,
+                            batch_size: int = ENTITY_TOMBSTONE_PRUNE_BATCH) -> int:
     """Prune one small, committed batch of old entity tombstones.
 
     The caller runs this in a background worker with a pause between batches.
