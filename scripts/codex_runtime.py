@@ -3276,11 +3276,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             value = json.loads(row[0]).get("value") or {}
             value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
             value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
-            return sync_entity_put(db, "workspace", "current", value)
+            changed = sync_entity_put(db, "workspace", "current", value)
+            self.__dict__["_workspace_entity_refresh_dirty"] = False
+            return changed
         except sqlite3.OperationalError as error:
-            message = str(error).lower()
-            busy = error.sqlite_errorcode in (sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED) \
-                if getattr(error, "sqlite_errorcode", None) is not None else ("locked" in message or "busy" in message)
+            busy = sqlite_busy(error)
+            if busy:
+                self.__dict__["_workspace_entity_refresh_dirty"] = True
             self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
             if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
                 raise
@@ -3301,16 +3303,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def refresh_workspace_volatile(self):
         """Refresh volatile workspace state after an asynchronous source update."""
         if not self.lock.acquire(blocking=False):
+            self.__dict__["_workspace_entity_refresh_dirty"] = True
             self._workspace_refresh_diagnostic("runtime-lock-busy")
             return False
         try:
             with self.db(busy_timeout=0) as db:
                 return self.sync_workspace_volatile(db)
         except sqlite3.OperationalError as error:
-            message = str(error).lower()
-            code = getattr(error, "sqlite_errorcode", None)
-            busy = ((code & 255) in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}
-                    if code is not None else ("locked" in message or "busy" in message))
+            busy = sqlite_busy(error)
+            if busy:
+                self.__dict__["_workspace_entity_refresh_dirty"] = True
             self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
             if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
                 raise
@@ -3322,6 +3324,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return False
         finally:
             self.lock.release()
+
+    def _retry_dirty_workspace_refresh(self):
+        """Retry a volatile workspace update skipped on the scheduler's last tick."""
+        if self.__dict__.get("_workspace_entity_refresh_dirty", False):
+            self.refresh_workspace_volatile()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -5410,6 +5417,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 break
             try:
+                self._retry_dirty_workspace_refresh()
                 self._publish_committed_resource_changes()
                 self.monitors_tick()
                 self.rules_tick()
@@ -8044,6 +8052,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                           if isinstance(value, str) and value != "user"})
             agents = {a["id"]: a for a in (json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
+        responses = complaint.get("responses")
+        safe_complaint = {
+            **complaint,
+            "responses": [response for response in responses or []
+                          if isinstance(response, dict) and isinstance(response.get("author"), str)],
+        }
         return {
             **{key: complaint.get(key) for key in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
             "title": str(complaint.get("text") or "")[:140],
@@ -8051,7 +8065,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "version": complaint.get("version"),
             "needsUserResponse": (complaint.get("recipient") == "user"
                                   and self.complaint_needs_response(
-                                      {**complaint, "recipient": "user"})),
+                                      {**safe_complaint, "recipient": "user"})),
             "authorName": agents.get(complaint.get("author"), {}).get(
                 "name", "You" if complaint.get("author") == "user" else complaint.get("author")),
             "leadName": agents.get(complaint.get("leadId"), {}).get("name", complaint.get("leadId")),

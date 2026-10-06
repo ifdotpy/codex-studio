@@ -60,7 +60,7 @@ class EntityReadLockContract(unittest.TestCase):
                 return {'runtime': {'agents': [self.agent], 'monitors': [self.monitor]}}
 
         self.snapshot_owner = SnapshotOwner()
-        self.store = SyncStore(self.connect, self.snapshot_owner.snapshot, lambda _key: {})
+        self.store = SyncStore(self.connect, lambda: self.snapshot_owner.snapshot(), lambda _key: {})
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')
@@ -151,6 +151,8 @@ class EntityReadLockContract(unittest.TestCase):
     def test_boot_markers_still_require_seed_and_window_repairs(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
+                self.store.runtime = (self.snapshot_owner.runtime if marker == 'agent_organization_fields'
+                                      else None)
                 with self.connect() as db:
                     db.execute('DELETE FROM sync_entity_meta WHERE key=?', (marker,))
                 with self.writer(), self.assertRaisesRegex(sqlite3.OperationalError, 'database is locked'):
@@ -159,6 +161,38 @@ class EntityReadLockContract(unittest.TestCase):
                 self.assertTrue(response['documents'])
                 with self.connect() as db:
                     self.assertIsNotNone(db.execute('SELECT value FROM sync_entity_meta WHERE key=?', (marker,)).fetchone())
+
+    def test_plain_builder_waits_for_runtime_then_upgrades_once(self):
+        with self.connect() as db:
+            db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
+            db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
+                       "VALUES('agent_organization_fields','1')")
+        builds_before = len(self.builds)
+        self.statements.clear()
+        with self.writer():
+            unchanged = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(len(self.builds), builds_before)
+        self.assertEqual(unchanged['documents'], [])
+
+        self.store.runtime = self.snapshot_owner.runtime
+        upgraded = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        with self.connect() as db:
+            marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
+            sequence = db.execute("SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0]
+        self.assertEqual(marker, '2')
+        self.assertEqual(len(self.builds), builds_before + 1)
+        self.assertEqual(upgraded['documents'], [])
+
+        self.statements.clear()
+        with self.writer():
+            stable = self.store.pull('state:entities:v1', upgraded['checkpoint']['seq'])
+        self.assertEqual(stable['documents'], [])
+        self.assertEqual(self.writes(), [])
+        self.assertEqual(len(self.builds), builds_before + 1)
+        with self.connect() as db:
+            self.assertEqual(db.execute(
+                "SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0], sequence)
 
     def test_concurrent_commit_cannot_move_a_read_cursor_past_unseen_changes(self):
         original = self.store.entity_maintenance_needed

@@ -42,7 +42,8 @@ class EntityFieldProducers(unittest.TestCase):
             lead.update(autoWake=True, status="idle")
             self.runtime.put(db, "agents", lead)
             from codex_sync_entities import seed
-            seed(db, lambda: {"runtime": self.runtime.snapshot(db=db), "stateDir": str(self.runtime.root)})
+            seed(db, lambda: {"runtime": self.runtime.snapshot(db=db), "stateDir": str(self.runtime.root)},
+                 runtime_owner=self.runtime)
 
     def entity(self, collection, key):
         with self.runtime.db() as db:
@@ -119,6 +120,25 @@ class EntityFieldProducers(unittest.TestCase):
                 self.assertIn("field=" + field, diagnostic)
                 self.assertIn("error=ValidationError", diagnostic)
 
+    def test_nonfinite_promoted_agent_fields_are_omitted_and_entity_payload_validates(self):
+        import math
+        from codex_sync_entities import _OMITTED_PROMOTED_AGENT_FIELDS, validate_entity_payload
+
+        for field, value in (("capacityRetry", {"updatedAt": math.nan}),
+                             ("usageResume", {"dueAt": math.inf}),
+                             ("epoch", -math.inf)):
+            with self.subTest(field=field), self.assertLogs("codex_sync_entities", level="WARNING"):
+                _OMITTED_PROMOTED_AGENT_FIELDS.discard((self.lead["id"], field))
+                with self.runtime.lock, self.runtime.db() as db:
+                    agent = self.runtime.agent(self.lead["id"], db)
+                    agent[field] = value
+                    self.runtime.put(db, "agents", agent)
+                    payload = db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (self.lead["id"],)).fetchone()[0]
+                    validated = validate_entity_payload(payload)
+                self.assertNotIn(field, validated.value.model_dump(exclude_unset=True))
+
     def test_http_agent_responses_match_entity_projection(self):
         from studio_api.agents.models import AgentResponse
         from studio_api.history.models import BranchResponse
@@ -165,7 +185,7 @@ class EntityFieldProducers(unittest.TestCase):
 
             from codex_sync_entities import upgrade_agent_organization
             with self.assertLogs("codex_sync_entities", level="WARNING"):
-                upgrade_agent_organization(db, BoundBuilder(self.runtime).build)
+                upgrade_agent_organization(db, BoundBuilder(self.runtime).build, runtime_owner=self.runtime)
             marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
             self.assertEqual(marker, "2")
             entity = json.loads(db.execute(
@@ -204,7 +224,7 @@ class EntityFieldProducers(unittest.TestCase):
                 payload, digest, _ = encoded("agent", agent_id, {"id": agent_id})
                 db.execute("UPDATE sync_entities SET payload=?,hash=? WHERE collection='agent' AND id=?",
                            (payload, digest, agent_id))
-            seed(db, Builder(self.runtime).build)
+            seed(db, Builder(self.runtime).build, runtime_owner=self.runtime)
             for agent_id in agent_ids:
                 record = self.runtime.agent(agent_id, db)
                 expected = project("agent", self.runtime.agent_entity_view(db, record))
@@ -337,6 +357,44 @@ class EntityFieldProducers(unittest.TestCase):
         self.runtime.complaint(self.lead["id"], {"action": "respond", "complaint_id": complaint["id"],
             "text": "I have an update", "status": "in_progress"}, "entity-field-lead-answer")
         self.assertFalse(self.entity("complaint", complaint["id"])["needsUserResponse"])
+
+    def test_complaint_entity_view_tolerates_missing_responses_and_response_author(self):
+        from codex_sync_entities import validate_entity_payload
+
+        complaints = [self.submit_complaint(key="entity-field-missing-responses"),
+                      self.submit_complaint(key="entity-field-missing-response-author")]
+        malformed = [
+            {key: value for key, value in complaints[0].items() if key != "responses"},
+            {**complaints[1], "responses": [{"id": "partial", "text": "legacy"}]},
+        ]
+        for complaint in malformed:
+            with self.subTest(id=complaint["id"]), self.runtime.lock, self.runtime.db() as db:
+                self.runtime.put(db, "complaints", complaint)
+                row = db.execute("SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
+                                 (complaint["id"],)).fetchone()
+                validated = validate_entity_payload(row[0])
+                self.assertTrue(validated.value.model_dump(exclude_unset=True)["needsUserResponse"])
+
+    def test_upgrade_complaint_entity_view_tolerates_missing_response_shapes(self):
+        from codex_sync_entities import upgrade_agent_organization
+
+        complaints = [self.submit_complaint(key="upgrade-missing-responses"),
+                      self.submit_complaint(key="upgrade-missing-response-author")]
+        malformed = [
+            {key: value for key, value in complaints[0].items() if key != "responses"},
+            {**complaints[1], "responses": [{"id": "partial", "text": "legacy"}]},
+        ]
+        with self.runtime.lock, self.runtime.db() as db:
+            for complaint in malformed:
+                db.execute("UPDATE runtime_complaints SET record=? WHERE id=?",
+                           (json.dumps(complaint), complaint["id"]))
+            db.execute("UPDATE sync_entity_meta SET value='1' WHERE key='agent_organization_fields'")
+            self.assertGreater(upgrade_agent_organization(
+                db, {"runtime": {"agents": []}}, runtime_owner=self.runtime), 0)
+            for complaint in malformed:
+                row = db.execute("SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
+                                 (complaint["id"],)).fetchone()
+                self.assertIsNotNone(row)
 
     def write_project_worker_base(self):
         self.runtime.projects({"action": "set_worker_base", "path": self.path,
@@ -485,7 +543,6 @@ class EntityFieldProducers(unittest.TestCase):
                              if old_overview.get(name) != new_overview.get(name))
             changed_field_names[key] = names
         expected_changed = {("room", federated_id), ("agent", worker["id"]),
-                            ("agent", self.lead["id"]),
                             ("complaint", complaint["id"]), ("project", self.path)}
         self.assertEqual(changed_pairs, expected_changed, changed_field_names)
         for key, names in changed_field_names.items():
@@ -565,15 +622,24 @@ class EntityFieldProducers(unittest.TestCase):
         conn = __import__("sqlite3").connect(blocker, timeout=0)
         try:
             conn.execute("BEGIN IMMEDIATE")
+            server = Mock()
+            server.closed = False
+            server.join_callbacks.return_value = True
+            self.runtime.servers["default"] = server
+            self.runtime.offline_accounts.discard("default")
             with self.runtime.db(busy_timeout=0) as db:
                 self.assertFalse(self.runtime.sync_workspace_volatile(db))
             started = __import__("time").monotonic()
             self.assertFalse(self.runtime.refresh_workspace_volatile())
+            self.assertTrue(self.runtime.__dict__.get("_workspace_entity_refresh_dirty"))
             self.runtime._publish_desktop_resource()
             self.assertLess(__import__("time").monotonic() - started, 0.5)
         finally:
             conn.rollback()
             conn.close()
+        self.runtime._retry_dirty_workspace_refresh()
+        self.assertFalse(self.runtime.__dict__.get("_workspace_entity_refresh_dirty"))
+        self.assertTrue(self.entity("workspace", "current")["connected"])
 
     def test_workspace_refresh_does_not_break_primary_write_on_source_error(self):
         from unittest.mock import patch

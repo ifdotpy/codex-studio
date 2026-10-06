@@ -84,7 +84,7 @@ def seed(runtime):
             sync_entity_put(db, "agent", agent["id"], agent)
         # This synthetic database starts with already-current entity rows, so
         # use the production marker path before measuring recovery writes.
-        upgrade_agent_organization(db, lambda: runtime.snapshot(db=db))
+        upgrade_agent_organization(db, lambda: runtime.snapshot(db=db), runtime_owner=runtime)
     return {r["id"]: r for r in recs}
 
 def get(db, key):

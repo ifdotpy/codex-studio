@@ -2,6 +2,7 @@
 import hashlib
 import json
 import logging
+import math
 import sqlite3
 from typing import Annotated, cast
 
@@ -109,6 +110,16 @@ def _bounded(value: JsonValue, key: str = "", list_limit: int = 200) -> JsonValu
     return value
 
 
+def _contains_nonfinite(value):
+    if isinstance(value, float):
+        return not math.isfinite(value)
+    if isinstance(value, dict):
+        return any(_contains_nonfinite(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_nonfinite(item) for item in value)
+    return False
+
+
 def project(collection: str, record: JsonValue) -> JsonValue | None:
     """Return only renderer-owned fields; never expose a raw runtime record."""
     if not isinstance(record, dict):
@@ -153,6 +164,18 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 for key, value in overview.items()
                 if key in {"task", "taskTruncated", "result", "resultTruncated", "resultTurnId", "resultFile"}
             }
+        promoted = ("capacityRetry", "usageResume", "contextRepairWait", "epoch",
+                    "lastCompletedTurnStatus", "lastEvent", "accountTransferId",
+                    "workspaceOperation", "overview")
+        for field in promoted:
+            if field in result and _contains_nonfinite(result[field]):
+                result.pop(field)
+                identity = (str(record.get("id", "")), field)
+                if identity not in _OMITTED_PROMOTED_AGENT_FIELDS:
+                    _OMITTED_PROMOTED_AGENT_FIELDS.add(identity)
+                    logging.getLogger(__name__).warning(
+                        "Omitting invalid promoted agent entity field agent=%s field=%s error=%s",
+                        identity[0], field, "NonFiniteNumber")
     try:
         validated = model.model_validate(result)
     except Exception as error:
@@ -344,8 +367,6 @@ def upgrade_agent_organization(db, snapshot=None, runtime_owner=None):
         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','1') "
                    "ON CONFLICT(key) DO UPDATE SET value='1'")
     if snapshot is not None:
-        owner = getattr(snapshot, "__self__", None)
-        runtime_owner = runtime_owner or getattr(owner, "runtime", None)
         if callable(snapshot):
             snapshot = snapshot()
         if runtime_owner is None or not _snapshot_runtime_present(snapshot):
@@ -400,26 +421,31 @@ def upgrade_renderer_fields(db, snapshot, runtime_owner=None):
     return 0
 
 
-def seed(db, snapshot):
+def seed(db, snapshot, runtime_owner=None):
     """Seed once from the compatible view while the caller holds a write lock."""
     seeded = bool(db.execute("SELECT 1 FROM sync_entity_meta WHERE key='seeded'").fetchone())
     marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
     if seeded and marker and int(marker[0]) >= 2:
         return
-    owner = getattr(snapshot, "__self__", None)
-    runtime_owner = getattr(owner, "runtime", None)
     if seeded and (not marker or int(marker[0]) < 2) and runtime_owner is None:
         return
     if callable(snapshot):
         snapshot = snapshot()
-    upgrade_agent_organization(db, snapshot, runtime_owner)
     if seeded:
+        upgrade_agent_organization(db, snapshot, runtime_owner)
         return
     # Callers pass a builder: the full snapshot is costly and seeding runs once.
     runtime = snapshot.get("runtime") or {}
+    has_runtime_agents = bool(db.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_agents'").fetchone())
     threads = {item.get("id"): item for item in snapshot.get("threads", []) if item.get("id")}
     for agent in runtime.get("agents", []):
         threads[agent["id"]] = {**threads.get(agent["id"], {}), **agent}
+    if runtime_owner is not None and has_runtime_agents:
+        # Seed live runtime records through the same projection as Runtime.put.
+        for key, raw in db.execute("SELECT id,record FROM runtime_agents").fetchall():
+            record = json.loads(raw)
+            threads[str(key)] = runtime_owner.agent_entity_view(db, record)
     for value in threads.values():
         put(db, "agent", value["id"], value, bool(value.get("deletedAt")))
     for name, collection in (("rooms", "room"), ("tasks", "task"), ("monitors", "monitor"),
@@ -449,6 +475,9 @@ def seed(db, snapshot):
                                                   "tasksHistoryLimit") if key in runtime}
     meta["stateDir"] = snapshot.get("stateDir", "")
     put(db, "workspace", "current", meta)
+    if runtime_owner is not None and has_runtime_agents and _snapshot_runtime_present(snapshot):
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','2') "
+                   "ON CONFLICT(key) DO UPDATE SET value='2'")
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
 
 
