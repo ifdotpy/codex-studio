@@ -659,6 +659,23 @@ class BudgetWaitRecord(TypedDict):
     admission: NotRequired[JsonValue]
 
 
+class BudgetStateRecord(TypedDict):
+    cutoff: float
+    floor: int
+    spent: int
+    before: int
+    after: int
+    historicalNotices: int
+    noticeSpent: int
+    counter: int | None
+    thread: str | None
+    noticeAt: int | float
+    created: float
+    lastAmount: int | None
+    ambiguousNotices: list[str]
+    faults: list[str]
+
+
 class CleanedImageWorkspaceRecord(TypedDict):
     repo: NotRequired[str]
     relative: NotRequired[str]
@@ -809,7 +826,7 @@ class AgentRecord(TypedDict):
     capacityRetry: NotRequired[CapacityRetryRecord]
     capacityRetryCount: NotRequired[int]
     usageResume: NotRequired[UsageResumeRecord]
-    budgetBlocked: NotRequired[JsonObject]
+    budgetBlocked: NotRequired[str]
     budgetStartWait: NotRequired[BudgetWaitRecord]
     budgetActionWait: NotRequired[BudgetWaitRecord]
     lastBudgetWait: NotRequired[BudgetWaitRecord]
