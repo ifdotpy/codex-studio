@@ -7,8 +7,9 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { get, post, ApiError, errorText } from "../api";
-import type { Agent, LegacySnapshot, Message, Snapshot } from "../types";
+import { post, ApiError, errorText } from "../api";
+import { refreshProjection } from "../sync/client";
+import type { Agent, Message, Snapshot } from "../types";
 
 export type ChatReadState = NonNullable<Agent["readState"]>;
 export type ChatReadProof = { id: string; threadId: string; turnId: string };
@@ -22,20 +23,16 @@ const completed = (agent: Agent): ChatReadProof | null =>
         turnId: agent.lastCompletedTurn,
       }
     : null;
-const legacyCompleted = (
-  agent: LegacySnapshot["threads"][number],
-): ChatReadProof | null =>
-  agent.threadId &&
-  agent.lastCompletedTurn &&
-  agent.lastCompletedTurnStatus === "completed"
-    ? {
-        id: agent.id,
-        threadId: agent.threadId,
-        turnId: agent.lastCompletedTurn,
-      }
-    : null;
 const sameResult = (a: ChatReadProof, b: ChatReadProof) =>
   a.id === b.id && a.threadId === b.threadId && a.turnId === b.turnId;
+export function matchingCompletedAgent(
+  agents: Agent[],
+  proof: ChatReadProof,
+): Agent | null {
+  const agent = agents.find((value) => value.id === proof.id);
+  const result = agent && completed(agent);
+  return result && sameResult(result, proof) ? agent : null;
+}
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const parseReadState = (value: unknown): ChatReadState | null =>
@@ -212,23 +209,17 @@ export function useChatReadState(
         if (valid()) {
           current.attempted.delete(attempt);
           current.uncertain.add(proof.id);
-          // Reconcile a lost success before a queued Unread can use local state.
-          // The app's normal refresh can update only credentials during sync.
+          // Reconcile a lost success from the entity projection before a
+          // queued Unread can use local state.
           try {
-            const snapshot = await get("/api/state", {
-              query: { view: "chat" },
-            });
+            const snapshot = await refreshProjection("state");
             if (!valid()) return;
-            const canonical = snapshot.threads.find(
-              (value) => value.id === proof.id,
-            );
-            const result = canonical && legacyCompleted(canonical);
-            if (
-              snapshot.stateDir === latest.current.data?.stateDir &&
-              result &&
-              sameResult(result, proof)
-            ) {
-              const state = canonical?.readState ?? null;
+            const canonical =
+              snapshot?.stateDir === latest.current.data?.stateDir
+                ? matchingCompletedAgent(snapshot.threads, proof)
+                : null;
+            if (canonical) {
+              const state = canonical.readState ?? null;
               const known = current.states.get(proof.id);
               if (state && (!known || state.revision >= known.revision))
                 current.states.set(proof.id, state);

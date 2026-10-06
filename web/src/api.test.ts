@@ -25,13 +25,15 @@ describe("OpenAPI transport facade", () => {
 
   it("keeps GET query and cache headers while omitting POST credentials", async () => {
     const fetch = vi.fn(async (request: Request) => {
-      expect(new URL(request.url).searchParams.get("view")).toBe("chat");
+      expect(new URL(request.url).searchParams.get("account_key")).toBe(
+        "default",
+      );
       return Response.json({});
     });
     vi.stubGlobal("fetch", fetch);
 
-    await get("/api/state", {
-      query: { view: "chat" },
+    await get("/api/limits", {
+      query: { account_key: "default" },
       etag: "etag-old",
       readMetadata: {},
     });
@@ -127,8 +129,8 @@ describe("OpenAPI transport facade", () => {
     );
     const readMetadata: { etag?: string; notModified?: boolean } = {};
 
-    const result = await get("/api/state", {
-      query: { view: "chat" },
+    const result = await get("/api/limits", {
+      query: { account_key: "default" },
       etag: "etag-old",
       readMetadata,
     });

@@ -15,7 +15,8 @@ import {
 } from "./api";
 import {
   refreshProjection,
-  subscribeProjection,
+  subscribeStateProjection,
+  subscribeTranscriptProjection,
   watchResourceConnection,
   syncDatabase,
   watchResourceChanges,
@@ -25,167 +26,15 @@ import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
 import { drainRoomUpdates } from "./hooks/roomUpdates";
 import type { GetResult } from "./api";
-import type {
-  Agent,
-  Json,
-  LegacySnapshot,
-  Message,
-  Room,
-  Snapshot,
-} from "./types";
+import type { Agent, Json, Message, Snapshot } from "./types";
 type TranscriptPageData = GetResult<"/api/transcript">;
-type LegacyAgent = LegacySnapshot["threads"][number];
-type LegacyRoom = NonNullable<LegacySnapshot["runtime"]>["rooms"][number];
-type LegacyComplaint = NonNullable<
-  LegacySnapshot["runtime"]
->["complaints"][number];
-type RendererRoomRadio = NonNullable<Room["radio"]>;
-type RoomRadioActive = NonNullable<RendererRoomRadio["active"]>;
 
-export function legacyComplaintNeedsUserResponse(
-  complaint: Pick<LegacyComplaint, "recipient" | "needsResponse">,
-): boolean {
-  return complaint.recipient === "user" && complaint.needsResponse === true;
-}
-
-function legacyRoomRadioIdentity(
-  identity: Array<string | number | null>,
-): RoomRadioActive["identity"] | null {
-  const [roomId, revision, sequence] = identity;
-  if (
-    identity.length !== 3 ||
-    (roomId !== null && typeof roomId !== "string") ||
-    (revision !== null && typeof revision !== "number") ||
-    typeof sequence !== "number"
-  )
-    return null;
-  return [roomId, revision, sequence];
-}
-
-function legacyRoomForRenderer(room: LegacyRoom): Room {
-  const radio = room.radio;
-  if (!radio) return { ...room, radio };
-
-  const active = radio.active;
-  const activeIdentity = active && legacyRoomRadioIdentity(active.identity);
-  const seen: NonNullable<RendererRoomRadio["seen"]> = {};
-  for (const [member, cursor] of Object.entries(radio.seen ?? {})) {
-    const identity = legacyRoomRadioIdentity(cursor.identity);
-    if (identity) seen[member] = { ...cursor, identity };
-  }
-  return {
-    ...room,
-    radio: {
-      ...radio,
-      active:
-        active && activeIdentity
-          ? { ...active, identity: activeIdentity }
-          : null,
-      seen,
-    },
-  };
-}
-
-function legacyCapacityRetryForRenderer(
-  retry: LegacyAgent["capacityRetry"],
-): Agent["capacityRetry"] {
-  if (!retry) return null;
-  if (retry.id == null || retry.status == null || retry.updatedAt == null)
-    return null;
-  return {
-    id: retry.id,
-    threadId: retry.threadId ?? null,
-    epoch: retry.epoch ?? null,
-    accountKey: retry.accountKey ?? null,
-    status: retry.status,
-    updatedAt: retry.updatedAt,
-    dueAt: retry.dueAt ?? null,
-    acceptedTurnId: retry.acceptedTurnId,
-    claimedAt: retry.claimedAt,
-    reason: retry.reason,
-  };
-}
-
-function legacyUsageResumeForRenderer(
-  resume: LegacyAgent["usageResume"],
-): Agent["usageResume"] {
-  if (!resume) return null;
-  if (
-    resume.id == null ||
-    resume.cause == null ||
-    resume.status == null ||
-    resume.updatedAt == null
-  )
-    return null;
-  return {
-    id: resume.id,
-    cause: resume.cause,
-    status: resume.status,
-    reason: resume.reason ?? null,
-    updatedAt: resume.updatedAt,
-    plannedAt: resume.plannedAt ?? null,
-    dueAt: resume.dueAt ?? null,
-  };
-}
-
-function legacyAgentForRenderer(agent: LegacyAgent): Agent {
-  const {
-    workspaceOperation,
-    capacityRetry,
-    usageResume,
-    contextRepairWait,
-    ...fields
-  } = agent;
-  return {
-    ...fields,
-    capacityRetry: legacyCapacityRetryForRenderer(capacityRetry),
-    usageResume: legacyUsageResumeForRenderer(usageResume),
-    contextRepairWait: contextRepairWait
-      ? { error: contextRepairWait.error, scope: contextRepairWait.scope }
-      : null,
-    workspaceOperation:
-      typeof workspaceOperation === "string" ? workspaceOperation : null,
-  };
-}
-
-/**
- * Normalize the temporary, cached /api/state fallback until that fallback is
- * removed; older cached snapshots may omit collection arrays.
- */
-function legacyStateSnapshot(data: LegacySnapshot): Snapshot {
-  const runtime = data.runtime;
-  const threads = (data.threads ?? []).map(legacyAgentForRenderer);
-  const chats = data.chats ?? [];
-  const nodes = (data.nodes ?? []).map((node) =>
-    node.kind === "chat" ? node : legacyAgentForRenderer(node),
-  );
-  return {
-    token: data.token,
-    stateDir: data.stateDir,
-    threads,
-    chats,
-    nodes,
-    edges: data.edges ?? [],
-    runtime: {
-      ...runtime,
-      agents: (runtime?.agents ?? data.threads ?? []).map(
-        legacyAgentForRenderer,
-      ),
-      rooms: runtime?.rooms?.map(legacyRoomForRenderer) ?? [],
-      tasks: runtime?.tasks ?? [],
-      monitors: runtime?.monitors ?? [],
-      complaints: (runtime?.complaints ?? []).map((complaint) => ({
-        ...complaint,
-        needsUserResponse: legacyComplaintNeedsUserResponse(complaint),
-      })),
-      requests: runtime?.requests ?? [],
-      rules: runtime?.rules ?? [],
-      projects: runtime?.projects ?? [],
-      peerTeams: runtime?.peerTeams ?? [],
-      events: runtime?.events ?? [],
-      work: runtime?.work ?? [],
-    },
-  };
+export function snapshotErrorMessage(
+  error: string,
+  syncError: string,
+  transportError: string,
+): string {
+  return error || syncError || transportError;
 }
 
 export function useSnapshot() {
@@ -274,7 +123,6 @@ export function useSnapshot() {
   const generation = useRef(0);
   const replicated = useRef(false);
   const sessionToken = useRef("");
-  const legacyFallback = useRef(false);
   const credentialRetry = useRef<ReturnType<typeof setTimeout> | undefined>(
     undefined,
   );
@@ -294,23 +142,11 @@ export function useSnapshot() {
             : old,
         );
         if (!credentialsOnly) {
-          try {
-            await refreshProjection("state");
-          } catch (projectionError) {
-            // A renderer can update before the server patch. Keep the previous
-            // snapshot route as a first-load fallback until entity sync exists.
-            if (replicated.current) throw projectionError;
-            const legacy = await syncGet("/api/state", {
-              query: { view: "chat" },
-            });
-            if (request !== generation.current) return;
-            setData(
-              legacyStateSnapshot({
-                ...legacy,
-                token: session.token,
-              }),
-            );
-          }
+          const projection = await refreshProjection("state");
+          if (request !== generation.current) return;
+          if (!projection)
+            throw new Error("The entity projection is not ready yet.");
+          setData({ ...projection, token: session.token });
         }
         if (request !== generation.current) return;
         credentialFailures.current = 0;
@@ -355,7 +191,6 @@ export function useSnapshot() {
       } catch (error) {
         if (stopped) return;
         setError(errorText(error));
-        if (!replicated.current) await refresh(true);
       }
     };
     const offline = () =>
@@ -388,10 +223,9 @@ export function useSnapshot() {
   );
   useEffect(
     () =>
-      subscribeProjection(
-        "state",
+      subscribeStateProjection(
         (next) => {
-          if (next && "runtime" in next) {
+          if (next) {
             replicated.current = true;
             setSyncError("");
             setData({ ...next, token: sessionToken.current });
@@ -399,31 +233,13 @@ export function useSnapshot() {
         },
         (error) => {
           setSyncError(error === null ? "" : errorText(error));
-          if (
-            error !== null &&
-            !replicated.current &&
-            !legacyFallback.current
-          ) {
-            legacyFallback.current = true;
-            void syncGet("/api/state", { query: { view: "chat" } })
-              .then((legacy) => {
-                sessionToken.current = legacy.token || sessionToken.current;
-                setData(
-                  legacyStateSnapshot({
-                    ...legacy,
-                    token: sessionToken.current,
-                  }),
-                );
-              })
-              .catch((fallbackError) => setError(errorText(fallbackError)));
-          }
         },
       ),
     [],
   );
   return {
     data: visibleData,
-    error: error || syncError || transportError,
+    error: snapshotErrorMessage(error, syncError, transportError),
     refresh,
     workspaceId,
     rememberCreated,
@@ -972,11 +788,11 @@ export function useMessages(
   useEffect(() => {
     if (!id || kind !== "agent" || !managed) return;
     let seen = false;
-    return subscribeProjection(
+    return subscribeTranscriptProjection(
       `transcript:${id}`,
       (next) => {
         if (active.current !== scope) return;
-        if (next && "items" in next) {
+        if (next) {
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);
