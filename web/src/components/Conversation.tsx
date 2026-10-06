@@ -1576,13 +1576,11 @@ export default function Conversation(p: {
                     <Terminal size={28} />
                   </span>
                 )}
-                <h2>
-                  {p.room ? "No messages yet" : "What should we work on?"}
-                </h2>
+                <h2>{p.room ? "No messages yet" : "New chat"}</h2>
                 <p>
                   {p.room
                     ? "Agent messages will appear here."
-                    : "The lead can split the work across agents."}
+                    : `Ask a question or give a task.${agent?.cwd ? " Project: " + (p.data.runtime?.projects?.find((project) => project.path === agent.cwd)?.name || agent.cwd.split("/").filter(Boolean).pop()) + "." : ""}`}
                 </p>
               </div>
             )}
@@ -1791,15 +1789,32 @@ export default function Conversation(p: {
                       /model · Choose model and reasoning
                     </Button>
                   )}
-                  {modelCommandRequest > 0 && p.agent?.source === "managed" && (
-                    <ExecutionSettings
-                      // Transcript metadata can predate a settings change.
-                      agent={p.agent}
-                      catalog={modelCatalog}
-                      refresh={p.refresh}
-                      openRequest={modelCommandRequest}
-                      onOpenChange={setModelCommandOpen}
-                    />
+                  {p.agent?.source === "managed" && (
+                    <div className="composer-context-row">
+                      <ExecutionSettings
+                        // Transcript metadata can predate a settings change.
+                        agent={p.agent}
+                        catalog={modelCatalog}
+                        refresh={p.refresh}
+                        openRequest={modelCommandRequest}
+                        onOpenChange={setModelCommandOpen}
+                      />
+                      {!items.length && (
+                        <span className="composer-context-values">
+                          <span>
+                            {p.limitsAccountLabel || "Account name unavailable"}
+                          </span>
+                          {p.agent.cwd && (
+                            <span title={p.agent.cwd}>
+                              {p.data.runtime?.projects?.find(
+                                (project) => project.path === p.agent?.cwd,
+                              )?.name ||
+                                p.agent.cwd.split("/").filter(Boolean).pop()}
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </div>
                   )}
                   {draftTooLong && (
                     <div
@@ -1842,103 +1857,110 @@ export default function Conversation(p: {
                       }
                       dismiss={(version) => p.dismissDraft?.(version)}
                     />
-                    {managed && (
-                      <>
-                        {!!pendingFiles.length && (
-                          <div className="attachment-list" role="status">
-                            {pendingFiles.map((file) => (
-                              <div className="attachment-chip" key={file.id}>
-                                <span>
-                                  {file.name}: saved on this device, waiting for
-                                  upload
-                                </span>
-                                <Button
-                                  size="compact-xs"
-                                  onClick={() => {
-                                    void uploadRecovery
-                                      .remove(file.id, () => {
-                                        setAttachments((current) => ({
-                                          ...current,
-                                          [file.agent]: (
-                                            current[file.agent] || []
-                                          ).filter(
-                                            (asset) => asset.id !== file.id,
-                                          ),
-                                        }));
-                                      })
-                                      .catch((error) =>
-                                        p.notify(errorText(error)),
-                                      );
-                                  }}
-                                >
-                                  Remove pending {file.name}
-                                </Button>
-                              </div>
-                            ))}
-                          </div>
-                        )}
-                        {uploadRecovery.error && (
-                          <p role="status">
-                            {uploadRecovery.error}{" "}
-                            <button
-                              type="button"
-                              onClick={uploadRecovery.retry}
-                            >
-                              Retry file upload
-                            </button>
-                          </p>
-                        )}
-                        <ComposerAttachments
-                          notify={p.notify}
-                          assets={assets}
-                          uploading={uploading}
+                    <div className="composer-tools">
+                      {managed && (
+                        <>
+                          {!!pendingFiles.length && (
+                            <div className="attachment-list" role="status">
+                              {pendingFiles.map((file) => (
+                                <div className="attachment-chip" key={file.id}>
+                                  <span>
+                                    {file.name}: saved on this device, waiting
+                                    for upload
+                                  </span>
+                                  <Button
+                                    size="compact-xs"
+                                    onClick={() => {
+                                      void uploadRecovery
+                                        .remove(file.id, () => {
+                                          setAttachments((current) => ({
+                                            ...current,
+                                            [file.agent]: (
+                                              current[file.agent] || []
+                                            ).filter(
+                                              (asset) => asset.id !== file.id,
+                                            ),
+                                          }));
+                                        })
+                                        .catch((error) =>
+                                          p.notify(errorText(error)),
+                                        );
+                                    }}
+                                  >
+                                    Remove pending {file.name}
+                                  </Button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                          {uploadRecovery.error && (
+                            <p role="status">
+                              {uploadRecovery.error}{" "}
+                              <button
+                                type="button"
+                                onClick={uploadRecovery.retry}
+                              >
+                                Retry file upload
+                              </button>
+                            </p>
+                          )}
+                          <ComposerAttachments
+                            notify={p.notify}
+                            assets={assets}
+                            uploading={uploading}
+                            disabled={!canSend || p.sending}
+                            add={addFiles}
+                            remove={(id) => {
+                              const agentId = p.id || "";
+                              void uploadRecovery
+                                .remove(id, () => {
+                                  setAttachments((current) => ({
+                                    ...current,
+                                    [agentId]: (current[agentId] || []).filter(
+                                      (asset) => asset.id !== id,
+                                    ),
+                                  }));
+                                })
+                                .catch((error) => p.notify(errorText(error)));
+                            }}
+                          />
+                        </>
+                      )}
+                      {managed && p.id && (
+                        <Dictation
+                          key={`${p.data.stateDir}:${p.id}`}
+                          chatId={`${p.data.stateDir}:${p.id}`}
                           disabled={!canSend || p.sending}
-                          add={addFiles}
-                          remove={(id) => {
-                            const agentId = p.id || "";
-                            void uploadRecovery
-                              .remove(id, () => {
-                                setAttachments((current) => ({
-                                  ...current,
-                                  [agentId]: (current[agentId] || []).filter(
-                                    (asset) => asset.id !== id,
-                                  ),
-                                }));
-                              })
-                              .catch((error) => p.notify(errorText(error)));
+                          onInsert={(text) => {
+                            const next =
+                              draft +
+                              (draft && !draft.endsWith("\n") ? "\n" : "") +
+                              text;
+                            p.setDraft(next);
                           }}
                         />
-                      </>
-                    )}
-                    {managed && p.id && (
-                      <Dictation
-                        key={`${p.data.stateDir}:${p.id}`}
-                        chatId={`${p.data.stateDir}:${p.id}`}
-                        disabled={!canSend || p.sending}
-                        onInsert={(text) => {
-                          const next =
-                            draft +
-                            (draft && !draft.endsWith("\n") ? "\n" : "") +
-                            text;
-                          p.setDraft(next);
-                        }}
-                      />
-                    )}
-                    {managed &&
-                      agent?.isLead &&
-                      agent?.provider !== "claude" &&
-                      p.id &&
-                      !threadBlock && (
-                        <RealtimeVoice
-                          key={`voice:${p.id}`}
-                          agentId={p.id}
-                          notify={p.notify}
-                        />
                       )}
+                      {managed &&
+                        agent?.isLead &&
+                        agent?.provider !== "claude" &&
+                        p.id &&
+                        !threadBlock && (
+                          <RealtimeVoice
+                            key={`voice:${p.id}`}
+                            agentId={p.id}
+                            notify={p.notify}
+                          />
+                        )}
+                    </div>
                     <span id="send-state" role="status" aria-live="polite">
                       {p.sending ? "Sending…" : ""}
                     </span>
                     <div className="composer-submit-actions">
+                      {managed && (
+                        <span className="composer-timing">
+                          Send after tools · Queue after turn
+                        </span>
+                      )}
                       {managed && (
                         <ActionIcon
                           type="button"
@@ -1958,49 +1980,52 @@ export default function Conversation(p: {
                           <ListEnd size={18} />
                         </ActionIcon>
                       )}
-                      {agent && (
-                        <ActionIcon
-                          type="button"
-                          id="stop"
-                          aria-label="Stop agent"
-                          title={
-                            ["running", "starting", "approval"].includes(
-                              agent.status || "",
-                            )
-                              ? "Stop agent"
-                              : "No active turn to stop"
-                          }
-                          disabled={
-                            stopping ||
-                            !["running", "starting", "approval"].includes(
-                              agent.status || "",
-                            )
-                          }
-                          aria-busy={stopping}
-                          onClick={() => {
-                            const agentId = p.id;
-                            if (stopping || !agentId) return;
-                            const attempt = ++stopAttempt.current;
-                            setStopping(true);
-                            void post("/api/stop", {
-                              id: agentId,
-                              descendants: false,
-                            })
-                              .then(p.refresh)
-                              .catch((e) => p.notify(errorText(e)))
-                              .finally(() => {
-                                if (stopAttempt.current === attempt)
-                                  setStopping(false);
-                              });
-                          }}
-                        >
-                          {stopping ? (
-                            <Loader size={14} color="currentColor" />
-                          ) : (
-                            <Square size={14} fill="currentColor" />
-                          )}
-                        </ActionIcon>
-                      )}
+                      {agent &&
+                        ["running", "starting", "approval"].includes(
+                          agent.status || "",
+                        ) && (
+                          <ActionIcon
+                            type="button"
+                            id="stop"
+                            aria-label="Stop agent"
+                            title={
+                              ["running", "starting", "approval"].includes(
+                                agent.status || "",
+                              )
+                                ? "Stop agent"
+                                : "No active turn to stop"
+                            }
+                            disabled={
+                              stopping ||
+                              !["running", "starting", "approval"].includes(
+                                agent.status || "",
+                              )
+                            }
+                            aria-busy={stopping}
+                            onClick={() => {
+                              const agentId = p.id;
+                              if (stopping || !agentId) return;
+                              const attempt = ++stopAttempt.current;
+                              setStopping(true);
+                              void post("/api/stop", {
+                                id: agentId,
+                                descendants: false,
+                              })
+                                .then(p.refresh)
+                                .catch((e) => p.notify(errorText(e)))
+                                .finally(() => {
+                                  if (stopAttempt.current === attempt)
+                                    setStopping(false);
+                                });
+                            }}
+                          >
+                            {stopping ? (
+                              <Loader size={14} color="currentColor" />
+                            ) : (
+                              <Square size={14} fill="currentColor" />
+                            )}
+                          </ActionIcon>
+                        )}
                       <ActionIcon
                         type="submit"
                         variant="filled"

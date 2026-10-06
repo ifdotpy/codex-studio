@@ -334,7 +334,7 @@ function ScopedConcurrencyControl({
       }}
     >
       <label className="agent-mode-limit-label">
-        <span>Subagent parallelism</span>
+        <span className="agent-mode-visible-label">Subagent parallelism</span>
         <span className="agent-mode-limit-mode">
           {mode === "single"
             ? "Single agent"

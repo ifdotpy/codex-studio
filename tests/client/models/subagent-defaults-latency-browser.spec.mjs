@@ -132,7 +132,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     await button.click();
   };
   await openDefaults();
-  const dialog = page.getByRole("dialog", {
+  const dialog = page.getByRole("region", {
     name: "Subagent defaults",
     exact: true,
   });

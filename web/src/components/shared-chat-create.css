@@ -25,3 +25,29 @@
 .shared-create-participant .mantine-NativeSelect-input {
   text-overflow: ellipsis;
 }
+
+.shared-create-participants {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+.shared-create-participant {
+  border: 0;
+  padding: 0;
+}
+.shared-create-footer {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+.shared-create-path {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+@media (max-width: 600px) {
+  .shared-create-participants {
+    grid-template-columns: 1fr;
+  }
+}

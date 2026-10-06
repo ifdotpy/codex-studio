@@ -28,9 +28,12 @@ export default function BrowserAccessNotice({
 
   if (!active || !status || status.enabled) return null;
   return (
-    <p className="browser-access-notice" role="status">
-      Browser access is off:{" "}
-      {status.reason || "not available for this account."}
-    </p>
+    <div className="browser-access-notice" role="status">
+      <p>Browser access is off.</p>
+      <details>
+        <summary>Details</summary>
+        {status.reason || "Not available for this account."}
+      </details>
+    </div>
   );
 }

@@ -148,11 +148,15 @@ test("execution settings ui", async ({ browser: _browser }) => {
       throw Error("Timed out: " + predicate.toString() + " " + log);
     };
     const openSettings = async (name) => {
-      if (!(await page.getByRole("button", { name, exact: true }).isVisible()))
+      const settings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      if (!(await settings.isVisible()))
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await page.getByRole("button", { name, exact: true }).click();
+      await settings.getByRole("button", { name, exact: true }).click();
     };
     await page
       .locator("[data-chat]")
@@ -223,9 +227,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await listBox.waitFor({ state: "hidden" });
     assert.ok(
       await page
-        .getByRole("dialog", { name: "Main agent settings", exact: true })
+        .getByRole("region", { name: "Main agent settings", exact: true })
         .isVisible(),
-      "Escape on the open list keeps the settings popover",
+      "Escape on the open list keeps the settings detail section",
     );
     assert.equal(
       await page.evaluate(() => document.activeElement?.id),
@@ -296,16 +300,16 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
     await page
-      .getByRole("dialog", { name: "Main agent settings", exact: true })
+      .getByRole("region", { name: "Main agent settings", exact: true })
       .waitFor({ state: "hidden" });
     assert.ok(
       await page
         .getByRole("dialog", { name: "Chat settings", exact: true })
         .isVisible(),
-      "Escape closes only the model popover",
+      "Escape closes only the model detail section",
     );
     await openSettings("Subagent defaults");
-    const dialog = page.getByRole("dialog", {
+    const dialog = page.getByRole("region", {
       name: "Subagent defaults",
       exact: true,
     });

@@ -91,7 +91,11 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           .click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
       await page.locator("#composer").waitFor();
-      await page.locator("#stop:disabled").waitFor();
+      assert.equal(
+        await page.locator("#stop").count(),
+        0,
+        "Stop is absent while idle",
+      );
       await page.locator("#message").fill("Check this task");
       await page.waitForFunction(() => {
         const message = document.querySelector("#message");
@@ -113,7 +117,6 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
             ".composer-bar",
             ".attach-button",
             ...(mobile ? [] : [".dictation-trigger"]),
-            "#stop",
             "#send",
             ...(mobile ? [] : [".usage-footer"]),
           ]) {
@@ -165,7 +168,6 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         for (const selector of [
           ".attach-button",
           ...(width <= 760 ? [] : [".dictation-trigger"]),
-          "#stop",
           "#send",
         ])
           assert.ok(
@@ -184,7 +186,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         );
         await page.evaluate(() => window.dispatchEvent(new Event("online")));
         await page.waitForFunction(
-          (expected) => document.querySelector("#stop").disabled === expected,
+          (idle) =>
+            idle
+              ? !document.querySelector("#stop")
+              : !!document.querySelector("#stop:not(:disabled)"),
           next === "completed",
         );
         await page.waitForTimeout(80);

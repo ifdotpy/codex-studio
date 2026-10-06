@@ -534,7 +534,7 @@ test("Shell ux ui", async ({
       exact: true,
     });
     await folderDialog
-      .getByRole("button", { name: "Use this folder", exact: true })
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     await createdRequest;
     assert.equal(projects.length, 1);
