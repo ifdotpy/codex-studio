@@ -1,3 +1,4 @@
+import SearchOverlay from "./components/shell/SearchOverlay";
 import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
@@ -410,6 +411,7 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
+    [searchOpen, setSearchOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [tasksRendered, setTasksRendered] = useState(false),
     [workspaceRendered, setWorkspaceRendered] = useState(false),
@@ -960,8 +962,8 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setWorkspaceSection("search");
-        setWorkspaceOpen(true);
+        setSidebar(false);
+        setSearchOpen(true);
       }
       if (e.key === "Escape") {
         setModal(null);
@@ -1677,7 +1679,10 @@ export default function App() {
         open={open}
         prepareChat={prepareChat}
         newChat={(path, folder) => void newChat(path, folder)}
-        newSharedChat={(path) => setSharedCreate({ path })}
+        newSharedChat={(path) => {
+          setSidebar(false);
+          setSharedCreate({ path });
+        }}
         addProject={() => {
           setSidebar(false);
           setModal({
@@ -1737,8 +1742,7 @@ export default function App() {
         collapsed={sidebarCollapsed}
         onSearch={() => {
           setSidebar(false);
-          setWorkspaceSection("search");
-          setWorkspaceOpen(true);
+          setSearchOpen(true);
         }}
         close={() => {
           if (mobileClient) setSidebar(false);
@@ -1777,12 +1781,17 @@ export default function App() {
             }
             modeControl={
               lead?.source === "managed" && !mobileClient ? (
-                <SubagentConcurrencyControl
-                  lead={lead}
-                  stateDir={data.stateDir}
-                  workspaceId={workspaceId}
-                  refresh={refresh}
-                />
+                <span className="header-mode-summary">
+                  {lead.concurrency === 0 ||
+                  (lead.concurrency == null &&
+                    lead.agentModeSupported &&
+                    lead.agentMode === "single")
+                    ? "Single agent"
+                    : lead.concurrency != null ||
+                        (lead.agentModeSupported && lead.agentMode === "multi")
+                      ? "Multi agent"
+                      : "Mode unavailable"}
+                </span>
               ) : undefined
             }
             statusText={
@@ -1818,7 +1827,7 @@ export default function App() {
             title="Studio settings"
             onClick={() => setStudioSettingsOpen(true)}
           >
-            <Settings2 size={18} />
+            <Settings size={18} />
           </ActionIcon>
           <div id="conversation-header-tools" />
           {!room?.radio && (
@@ -1828,7 +1837,7 @@ export default function App() {
               title="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
-              <Settings size={20} />
+              <Settings2 size={18} />
             </ActionIcon>
           )}
           {!!workers.length && (
@@ -1880,22 +1889,26 @@ export default function App() {
                 </ActionIcon>
               </Menu.Target>
               <Menu.Dropdown>
+                <Menu.Label>Views</Menu.Label>
                 {(
                   [
                     ["changes", "Changes", FileDiff],
                     ["plan", "Plan", BookOpen],
-                    ["rules", "Rules", Clock3],
+                    ["rules", "Wake rules", Clock3],
                     ["search", "Search", Search],
                   ] as const
                 ).map(([section, label, Icon]) => (
                   <Menu.Item
                     key={section}
-                    aria-label={label}
+                    aria-label={section === "rules" ? "Rules" : label}
                     data-workspace-section={section}
                     leftSection={<Icon size={14} />}
                     onClick={() => {
-                      setWorkspaceSection(section);
-                      setWorkspaceOpen(true);
+                      if (section === "search") setSearchOpen(true);
+                      else {
+                        setWorkspaceSection(section);
+                        setWorkspaceOpen(true);
+                      }
                     }}
                   >
                     {label}
@@ -1910,9 +1923,10 @@ export default function App() {
                     setTasksOpen(true);
                   }}
                 >
-                  Activity {taskCount || ""}
+                  Background activity {taskCount || ""}
                 </Menu.Item>
                 <Menu.Divider />
+                <Menu.Label>Chat</Menu.Label>
                 <Menu.Item
                   id="chat-actions-settings"
                   aria-label="Chat settings"
@@ -1953,36 +1967,6 @@ export default function App() {
                 )}
                 {agent?.source === "managed" && (
                   <>
-                    <Menu.Divider />
-                    {(
-                      [
-                        ["compact", "Compact", Minimize2],
-                        ["review", "Review", ShieldCheck],
-                      ] as const
-                    )
-                      .filter(([action]) =>
-                        menuActions(agent.provider ?? undefined).includes(
-                          action,
-                        ),
-                      )
-                      .map(([action, label, Icon]) => (
-                        <Menu.Item
-                          key={action}
-                          data-action={action}
-                          leftSection={<Icon size={14} />}
-                          disabled={
-                            busy.has(agent.status ?? "") ||
-                            !!agent.inFlight ||
-                            !!nativeThreadError(agent) ||
-                            !agent.threadId
-                          }
-                          onClick={() => {
-                            void run(() => submitNativeAction(agent, action));
-                          }}
-                        >
-                          {label}
-                        </Menu.Item>
-                      ))}
                     {(!!agent.inFlight ||
                       team.some(
                         (member) =>
@@ -2006,6 +1990,48 @@ export default function App() {
                         Stop team
                       </Menu.Item>
                     )}
+                    <Menu.Divider />
+                    <Menu.Label>Model actions</Menu.Label>
+                    {(
+                      [
+                        ["compact", "Compact", Minimize2],
+                        ["review", "Review", ShieldCheck],
+                      ] as const
+                    )
+                      .filter(([action]) =>
+                        menuActions(agent.provider ?? undefined).includes(
+                          action,
+                        ),
+                      )
+                      .map(([action, label, Icon]) => (
+                        <Menu.Item
+                          key={action}
+                          aria-label={label}
+                          data-action={action}
+                          leftSection={<Icon size={14} />}
+                          disabled={
+                            busy.has(agent.status ?? "") ||
+                            !!agent.inFlight ||
+                            !!nativeThreadError(agent) ||
+                            !agent.threadId
+                          }
+                          onClick={() => {
+                            void run(() => submitNativeAction(agent, action));
+                          }}
+                        >
+                          {label}
+                          {(!agent.threadId ||
+                            agent.inFlight ||
+                            busy.has(agent.status ?? "") ||
+                            !!nativeThreadError(agent)) && (
+                            <small className="menu-action-help">
+                              {!agent.threadId
+                                ? "Available after the chat starts."
+                                : "Wait until the chat is ready."}
+                            </small>
+                          )}
+                        </Menu.Item>
+                      ))}
                   </>
                 )}
               </Menu.Dropdown>
@@ -2260,6 +2286,18 @@ export default function App() {
           <TerminalDock data={data} agent={agent || lead} notify={notify} />
         </Suspense>
       )}
+      <SearchOverlay
+        opened={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        data={chatData!}
+        onSelect={open}
+        navigate={(section, id) => {
+          if (id) open(id);
+          setSearchOpen(false);
+          setWorkspaceSection(section);
+          setWorkspaceOpen(true);
+        }}
+      />
       {(workspaceRendered || workspaceOpen) && (
         <Suspense fallback={null}>
           <Workspace

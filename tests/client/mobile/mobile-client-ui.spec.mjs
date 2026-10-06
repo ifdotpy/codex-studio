@@ -40,6 +40,20 @@ test("Mobile client ui", async ({
     await page.goto(url);
     await page.locator("#message").waitFor();
     await page.getByLabel("Toggle conversations").click();
+    await page
+      .getByRole("button", { name: "New shared chat", exact: true })
+      .click();
+    await page.getByRole("dialog", { name: "New shared chat" }).waitFor();
+    await page.locator("#sidebar").waitFor({ state: "hidden" });
+    assert.equal(
+      await page.getByRole("dialog", { name: "New shared chat" }).isVisible(),
+      true,
+    );
+    await page
+      .getByRole("dialog", { name: "New shared chat" })
+      .getByRole("button", { name: "Close" })
+      .click();
+    await page.getByLabel("Toggle conversations").click();
     await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
     const openChatActions = async () => {
       await page

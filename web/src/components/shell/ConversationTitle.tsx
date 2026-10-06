@@ -1,4 +1,4 @@
-import { Button } from "@mantine/core";
+import { ActionButton } from "../ui/primitives";
 import { ArrowLeft } from "lucide-react";
 import type { ReactNode } from "react";
 import type { Agent } from "../../types";
@@ -27,14 +27,15 @@ export default function ConversationTitle({
   return (
     <div className="conversation-heading">
       {onBack && (
-        <Button
+        <ActionButton
+          actionRole="quiet"
           size="compact-xs"
           leftSection={<ArrowLeft size={13} />}
           id="back-lead"
           onClick={onBack}
         >
           Back to main agent
-        </Button>
+        </ActionButton>
       )}
       <h1 id="conversation-title" title={title}>
         <ChatStatus

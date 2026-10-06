@@ -2124,3 +2124,107 @@ html body #root {
   background: light-dark(#e5f1fc, #253a50);
   border-radius: 16px 16px 4px 16px;
 }
+
+#sidebar .brand {
+  font-size: 18px;
+}
+#sidebar .sidebar-primary-actions {
+  display: flex;
+  gap: 2px;
+}
+#sidebar .sidebar-primary-actions .sidebar-nav-button {
+  width: auto;
+  min-width: 0;
+  padding-inline: 4px;
+}
+#sidebar .sidebar-search {
+  flex: 1;
+}
+#sidebar .sidebar-search .mantine-Button-label {
+  flex-wrap: wrap;
+  gap: 2px 6px;
+  text-align: left;
+}
+#sidebar .sidebar-search kbd {
+  color: var(--muted);
+  font: inherit;
+  font-size: 12px;
+}
+#sidebar .row-actions,
+#sidebar .row-pin-action,
+#sidebar .project-tree-action {
+  opacity: 0;
+}
+#sidebar .sidebar-row:hover :is(.row-actions, .row-pin-action),
+#sidebar .sidebar-row:focus-within :is(.row-actions, .row-pin-action),
+#sidebar .project-tree-heading:hover .project-tree-action,
+#sidebar .project-tree-heading:focus-within .project-tree-action {
+  opacity: 1;
+}
+#sidebar .inline-rename {
+  position: relative;
+  flex-wrap: wrap;
+  width: 100%;
+  padding: 4px;
+  background: var(--sidebar);
+}
+#sidebar .inline-rename > :first-child {
+  flex-basis: 100%;
+}
+#sidebar .project-chats {
+  padding-left: 18px;
+}
+#sidebar .project-folder-chats {
+  padding-left: 18px;
+}
+[data-mantine-color-scheme="light"] #sidebar {
+  background: #f1f2f6;
+}
+@media (hover: none) {
+  #sidebar :is(.row-actions, .row-pin-action, .project-tree-action) {
+    opacity: 1;
+  }
+}
+#sidebar .project-tree-action[aria-haspopup="menu"] {
+  opacity: 0;
+  pointer-events: none;
+}
+#sidebar .project-tree-heading:focus-within .project-tree-action,
+#sidebar .project-tree-heading:hover .project-tree-action,
+#sidebar .sidebar-row:focus-within :is(.row-actions, .row-pin-action) {
+  opacity: 1;
+  pointer-events: auto;
+}
+#sidebar #chat-list .project-tree-toggle {
+  padding-right: 28px;
+}
+#sidebar
+  #chat-list
+  .project-tree-heading:has(.project-tree-action + .project-tree-action)
+  .project-tree-toggle {
+  padding-right: 54px;
+}
+#sidebar #chat-list .chat-row {
+  padding-right: 62px;
+}
+@media (hover: none), (max-width: 760px) {
+  #sidebar .project-tree-action[aria-haspopup="menu"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  #sidebar #chat-list .chat-row {
+    padding-right: 46px;
+  }
+  #sidebar #chat-list .project-tree-toggle {
+    padding-right: 42px;
+  }
+  #sidebar
+    #chat-list
+    .project-tree-heading:has(.project-tree-action + .project-tree-action)
+    .project-tree-toggle {
+    padding-right: 84px;
+  }
+}
+#sidebar .sidebar-row:has(.inline-rename) > .chat-row {
+  display: none;
+}

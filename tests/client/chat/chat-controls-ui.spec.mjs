@@ -117,7 +117,7 @@ test("Chat controls", async ({ page }) => {
   await mkdir(folder);
   await openActions();
   await page
-    .getByRole("menuitem", { name: "Change project folder", exact: true })
+    .getByRole("menuitem", { name: "Change project directory", exact: true })
     .click();
   const folderDialog = page.getByRole("dialog", {
     name: "Choose project folder",

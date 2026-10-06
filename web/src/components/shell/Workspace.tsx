@@ -1,3 +1,4 @@
+import { SearchContent } from "./SearchOverlay";
 import { localDateTime } from "../../local-time";
 import ErrorDescription from "../ErrorDescription";
 import { useWorkspaceResource as useResource } from "../useWorkspaceResource";
@@ -31,7 +32,6 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  get,
   post,
   errorText,
   type ApiPostPath,
@@ -133,9 +133,6 @@ function Status({ value }: { value: string }) {
       {value.replaceAll("_", " ")}
     </Badge>
   );
-}
-function ownerName(data: Snapshot, id?: string) {
-  return data.threads.find((a) => a.id === id)?.name || id || "Unassigned";
 }
 
 export function Workspace(props: Props) {
@@ -372,7 +369,7 @@ export function Workspace(props: Props) {
                   }
                 />
               )}
-              {section === "search" && <Find {...context} />}
+              {section === "search" && <SearchContent {...context} />}
               {section === "plan" && <Plan {...context} />}
               {section === "checkpoints" && <Checkpoints {...context} />}
               {section === "tools" && <Tools {...context} />}
@@ -600,140 +597,6 @@ function Changes(c: Context) {
               Send comment
             </Button>
           </form>
-        )}
-      </Modal>
-    </>
-  );
-}
-
-function Find(c: Context) {
-  const sourceRequest = useRef(0);
-  useEffect(
-    () => () => {
-      sourceRequest.current++;
-    },
-    [],
-  );
-  type SearchResult = GetResult<"/api/search">["results"][number];
-  type SearchItem = GetResult<"/api/search/item">;
-  type SearchSource =
-    | (SearchResult & { loading: boolean })
-    | (SearchItem & { loading: boolean });
-  const [source, setSource] = useState<SearchSource | null>(null),
-    [sourceError, setSourceError] = useState("");
-  const [query, setQuery] = useState(""),
-    [search, setSearch] = useState("");
-  const state = useResource(search ? "/api/search" : null, c.revision, {
-    query: { q: search },
-  });
-  return (
-    <>
-      <form
-        className="workspace-toolbar"
-        onSubmit={(e) => {
-          e.preventDefault();
-          setSearch(query.trim());
-        }}
-      >
-        <TextInput
-          className="workspace-grow"
-          autoFocus
-          aria-label="Search all conversations"
-          placeholder="Search messages, work, and agent chats"
-          value={query}
-          onChange={(e) => setQuery(e.target.value)}
-          leftSection={<Search size={16} />}
-        />
-        <Button
-          variant="filled"
-          type="submit"
-          disabled={!query.trim()}
-          loading={state.loading}
-        >
-          Search
-        </Button>
-      </form>
-      <ResourceState state={state} />
-      {(state.data?.results || []).map((result, index) => (
-        <UnstyledButton
-          className="workspace-row"
-          key={`${result.kind}:${result.id}:${index}`}
-          onClick={async () => {
-            const request = ++sourceRequest.current;
-            setSource({ ...result, loading: true });
-            setSourceError("");
-            try {
-              const record = await get("/api/search/item", {
-                query: { id: result.id },
-              });
-              if (request === sourceRequest.current)
-                setSource({ ...result, ...record, loading: false });
-            } catch (e) {
-              if (request === sourceRequest.current) {
-                setSourceError(errorText(e));
-                setSource({ ...result, loading: false });
-              }
-            }
-          }}
-        >
-          <div className="workspace-row-head">
-            <Badge size="xs" variant="light" color="gray">
-              {result.kind}
-            </Badge>
-            <small>{ownerName(c.data, result.agent)}</small>
-          </div>
-          <p className="workspace-prose">{result.text}</p>
-        </UnstyledButton>
-      ))}
-      {search && state.data && !state.data.results?.length && (
-        <Empty>No results for “{search}”.</Empty>
-      )}
-      {!search && <Empty>Searches all messages, archived chats too.</Empty>}
-      <Modal
-        opened={!!source}
-        onClose={() => {
-          sourceRequest.current++;
-          setSource(null);
-        }}
-        title="Search source"
-        size="lg"
-      >
-        {source && (
-          <>
-            <div className="workspace-toolbar">
-              <Badge variant="light" color="gray">
-                {source.kind || ("type" in source ? source.type : "")}
-              </Badge>
-              <small className="workspace-muted">{source.id}</small>
-            </div>
-            {sourceError && (
-              <p role="alert" className="workspace-error">
-                {sourceError}
-              </p>
-            )}
-            {source.loading ? (
-              <Loader size="sm" />
-            ) : (
-              <p className="workspace-prose">
-                {typeof source.text === "string"
-                  ? source.text
-                  : JSON.stringify(source, null, 2)}
-              </p>
-            )}
-            <Button
-              variant="light"
-              onClick={() => {
-                if (source.kind === "plan") c.navigate("plan", source.agent);
-                else {
-                  c.onSelect(source.room || source.agent, source.id);
-                  c.onClose();
-                }
-                setSource(null);
-              }}
-            >
-              Open {source.kind === "plan" ? "plan" : "chat"}
-            </Button>
-          </>
         )}
       </Modal>
     </>

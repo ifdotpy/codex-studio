@@ -510,11 +510,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
       } else {
         await projectOptions("Client work");
         await page
-          .getByRole("menuitem", { name: "New folder", exact: true })
+          .getByRole("menuitem", { name: "New chat folder", exact: true })
           .click();
       }
       const form = page.getByRole("dialog", {
-        name: "New folder",
+        name: "New chat folder",
         exact: true,
       });
       await form.getByLabel("Folder name").fill(name);

@@ -409,3 +409,25 @@
   font-size: inherit;
   line-height: inherit;
 }
+
+/* Keep navigation and status on one header row. */
+header.workspace-header.simple-workspace-header {
+  flex-wrap: nowrap;
+}
+.simple-workspace-header .conversation-meta {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+.header-mode-summary {
+  flex-shrink: 0;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  white-space: nowrap;
+}
+.menu-action-help {
+  display: block;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  line-height: 1.4;
+  white-space: normal;
+}

@@ -68,10 +68,47 @@ test("Shell ux ui", async ({
     await page
       .getByRole("button", { name: "Search chats", exact: true })
       .click();
-    await page.getByRole("dialog").waitFor();
-    await page.keyboard.press("Escape");
+    const searchDialog = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
+    await searchDialog.waitFor();
+    assert.equal(await searchDialog.getByRole("navigation").count(), 0);
+    assert.equal(
+      await page
+        .getByLabel("Search all conversations")
+        .evaluate((input) => input === document.activeElement),
+      true,
+    );
+    await searchDialog
+      .getByLabel("Search all conversations")
+      .fill("Review the release");
+    await searchDialog
+      .getByRole("button", { name: "Search", exact: true })
+      .click();
+    await searchDialog
+      .getByRole("button", { name: /Review the release/ })
+      .first()
+      .click();
+    const searchSource = page.getByRole("dialog", {
+      name: "Search source",
+      exact: true,
+    });
+    await searchSource
+      .getByText("Review the release", { exact: false })
+      .waitFor();
+    await searchSource
+      .getByRole("button", { name: "Open chat", exact: true })
+      .click();
+    await searchDialog.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+k");
-    await page.getByRole("dialog").waitFor();
+    await searchDialog.waitFor();
+    assert.equal(
+      await page
+        .getByLabel("Search all conversations")
+        .evaluate((input) => input === document.activeElement),
+      true,
+    );
     await page.keyboard.press("Escape");
     const other = snapshot.threads.find(
       (item) => item.name === "Other project",
