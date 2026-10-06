@@ -2,18 +2,23 @@
 
 import json
 import time
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from codex_runtime import Runtime
 
 
 class WorkspaceBusyError(ValueError):
     """Carry the reservation observed before any native turn submission."""
 
-    def __init__(self, blockers):
+    def __init__(self, blockers: list[dict[str, object]]) -> None:
         self.blockers = [dict(blocker) for blocker in blockers]
         super().__init__("A workspace operation is active in this directory: "
                          + json.dumps(self.blockers))
 
 
-def defer_workspace_start(runtime, agent_id, attempt_id, error, *, unknown=False):
+def defer_workspace_start(runtime: "Runtime", agent_id: str, attempt_id: str,
+                          error: Exception, *, unknown: bool = False) -> bool:
     if (unknown or not isinstance(error, WorkspaceBusyError)
             or not error.blockers
             or any(b["operation"] not in {"checkpoint", "capture"} for b in error.blockers)):
@@ -38,7 +43,7 @@ def defer_workspace_start(runtime, agent_id, attempt_id, error, *, unknown=False
                        (event_id, agent_id, agent["epoch"]))
         agent.update(status="queued", inFlight=False, error=None,
                      lastWorkspaceWait={"attemptId": attempt_id, "events": attempt.get("events", []),
-                                        "blockers": error.blockers, "at": time.time()})
+                                        "blockers": error.blockers, "at": time.time()})  # type: ignore[call-arg]  # typed-update
         agent.pop("startAttempt", None)
         runtime.put(db, "agents", agent)
     runtime.changed.set()
