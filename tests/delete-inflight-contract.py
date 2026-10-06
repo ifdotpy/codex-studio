@@ -21,7 +21,49 @@ class DeleteInflightContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-delete-inflight-")
         self.addCleanup(self.temp.cleanup)
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.FakeServer)
+        self._start_futures = {}
+        self._start_condition = fixture.fixture.threading.Condition()
+        executor = self.runtime.delivery_executor()
+        original_submit = executor.submit
+
+        def track_start(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, "__name__", None) == "start" and args:
+                agent_id = args[0]["id"]
+                with self._start_condition:
+                    self._start_futures.setdefault(agent_id, []).append(future)
+                    self._start_condition.notify_all()
+            return future
+
+        submit_patch = patch.object(executor, "submit", side_effect=track_start)
+        submit_patch.start()
+        self.addCleanup(submit_patch.stop)
         self.addCleanup(lambda: self.runtime.close())
+
+    def take_start(self, agent_id):
+        with self._start_condition:
+            while not self._start_futures.get(agent_id):
+                self._start_condition.wait()
+            return self._start_futures[agent_id].pop(0)
+
+    def wait_start(self, agent_id):
+        self.take_start(agent_id).result()
+
+    def start_gate(self, server):
+        entered = fixture.fixture.threading.Event()
+        released = fixture.fixture.threading.Event()
+
+        class Gate:
+            def wait(self, timeout=None):
+                entered.set()
+                return released.wait()
+
+            def set(self):
+                released.set()
+
+        server.start_gate = Gate()
+        self.addCleanup(released.set)
+        return entered, released
 
     def slots(self):
         with self.runtime.read_db() as db:
@@ -42,7 +84,7 @@ class DeleteInflightContract(unittest.TestCase):
         baseline = len(self.slots())
         self.runtime.send(agent["id"], "Run a turn", "delete-inflight-start")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: self.runtime.agent(agent["id"]).get("turnId"))
+        self.wait_start(agent["id"])
         self.assertEqual(len(self.slots()), baseline + 1)
         return self.runtime.agent(agent["id"]), baseline
 
@@ -159,12 +201,12 @@ class DeleteInflightContract(unittest.TestCase):
         root = self.runtime.create({"name": "Archive root", "cwd": self.temp.name,
                                     "prompt": "Root", "maxAgents": 4})
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(root["id"]).get("turnId"))
+        self.wait_start(root["id"])
         worker = self.runtime.create({"name": "Archived worker", "prompt": "Worker",
                                       "role": "reviewer"}, root["id"], defer=True)
         self.runtime.send(worker["id"], "Run worker", "archive-worker-run")
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(worker["id"]).get("turnId"))
+        self.wait_start(worker["id"])
         archived = self.runtime.agent(worker["id"])
         now = fixture.fixture.time.time()
         with self.runtime.lock, self.runtime.db() as db:
@@ -188,17 +230,19 @@ class DeleteInflightContract(unittest.TestCase):
         agent, _ = self.running_chat()
         server = self.runtime.server
         server.complete(agent["threadId"], agent["turnId"])
-        fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+        self.assertFalse(self.runtime.agent(agent["id"]).get("inFlight"))
         baseline = len(self.slots())
-        gate = fixture.fixture.threading.Event()
-        server.start_gate = gate
+        entered, gate = self.start_gate(server)
         self.runtime.send(agent["id"], "Run while start is pending", "late-start-race")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) == 2)
+        start_future = self.take_start(agent["id"])
+        entered.wait()
+        self.assertEqual(sum(method == "turn/start" for method, _ in server.calls), 2)
         self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
         gate.set()
-        fixture.fixture.eventually(lambda: any(method == "turn/interrupt" for method, _ in server.calls))
+        start_future.result()
+        self.assertTrue(any(method == "turn/interrupt" for method, _ in server.calls))
         accepted_turn = next(params["turnId"] for method, params in server.calls
                              if method == "turn/interrupt")
         self.assertEqual(sum(method == "turn/interrupt" and params["turnId"] == accepted_turn
@@ -211,14 +255,15 @@ class DeleteInflightContract(unittest.TestCase):
         server = self.runtime.server
         log_path = self.attach_runtime_log()
         server.complete(agent["threadId"], agent["turnId"])
-        fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+        self.assertFalse(self.runtime.agent(agent["id"]).get("inFlight"))
         baseline = len(self.slots())
-        gate = fixture.fixture.threading.Event()
-        server.start_gate = gate
+        entered, gate = self.start_gate(server)
         start_count = sum(method == "turn/start" for method, _ in server.calls)
         self.runtime.send(agent["id"], "Run while start is pending", "late-failed-interrupt")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) > start_count)
+        start_future = self.take_start(agent["id"])
+        entered.wait()
+        self.assertGreater(sum(method == "turn/start" for method, _ in server.calls), start_count)
         self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
         original = server.call
@@ -232,8 +277,9 @@ class DeleteInflightContract(unittest.TestCase):
 
         with patch.object(server, "call", side_effect=fail_interrupt):
             gate.set()
-            fixture.fixture.eventually(lambda: bool(interrupt_calls)
-                                        and self.runtime.agent(agent["id"]).get("error"))
+            start_future.result()
+        self.assertTrue(interrupt_calls)
+        self.assertTrue(self.runtime.agent(agent["id"]).get("error"))
         accepted_turn = interrupt_calls[0]["turnId"]
         self.assertEqual(sum(call["turnId"] == accepted_turn for call in interrupt_calls), 1)
         current = self.runtime.agent(agent["id"])
@@ -249,14 +295,15 @@ class DeleteInflightContract(unittest.TestCase):
         agent, _ = self.running_chat()
         server = self.runtime.server
         server.complete(agent["threadId"], agent["turnId"])
-        fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+        self.assertFalse(self.runtime.agent(agent["id"]).get("inFlight"))
         baseline = len(self.slots())
-        gate = fixture.fixture.threading.Event()
-        server.start_gate = gate
+        entered, gate = self.start_gate(server)
         start_count = sum(method == "turn/start" for method, _ in server.calls)
         self.runtime.send(agent["id"], "Run while start is pending", "late-failed-start")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) > start_count)
+        start_future = self.take_start(agent["id"])
+        entered.wait()
+        self.assertGreater(sum(method == "turn/start" for method, _ in server.calls), start_count)
         self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
         server.fail_start = True
@@ -269,18 +316,20 @@ class DeleteInflightContract(unittest.TestCase):
 
         with patch.object(self.runtime, "start_error", side_effect=record_failure):
             gate.set()
-            self.assertTrue(failed.wait(5), "late turn/start failure callback did not run")
+            start_future.result()
+            self.assertTrue(failed.is_set(), "late turn/start failure callback did not run")
         self.assert_deleted_and_released(agent["id"], baseline)
 
     def test_unanswered_steer_reservation_is_released_and_restart_keeps_evidence(self):
         agent, baseline = self.running_chat()
         server = self.runtime.server
         first_turn = agent["turnId"]
-        gate = fixture.fixture.threading.Event()
-        server.start_gate = gate
+        entered, gate = self.start_gate(server)
         self.runtime.send(agent["id"], "Steer while busy", "late-steer-race", delivery="steer")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) == 2)
+        start_future = self.take_start(agent["id"])
+        entered.wait()
+        self.assertEqual(sum(method == "turn/start" for method, _ in server.calls), 2)
         self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
         attempt = self.runtime.agent(agent["id"]).get("startAttempt") or {}
@@ -290,7 +339,8 @@ class DeleteInflightContract(unittest.TestCase):
             self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id=?", (event_id,)).fetchone()[0],
                              "dispatching")
         gate.set()
-        fixture.fixture.eventually(lambda: sum(method == "turn/interrupt" for method, _ in server.calls) >= 1)
+        start_future.result()
+        self.assertGreaterEqual(sum(method == "turn/interrupt" for method, _ in server.calls), 1)
         self.assert_deleted_and_released(agent["id"], baseline)
         self.runtime.close()
         self.runtime = fixture.Runtime(Path(self.temp.name), fixture.fixture.FakeServer)
@@ -324,28 +374,29 @@ class DeleteInflightContract(unittest.TestCase):
     def test_busy_steer_delete_releases_reserved_capacity(self):
         agent, baseline = self.running_chat()
         server = self.runtime.server
-        gate = fixture.fixture.threading.Event()
-        server.start_gate = gate
+        entered, gate = self.start_gate(server)
         self.runtime.send(agent["id"], "Steer before delete", "busy-steer-race", delivery="steer")
         self.runtime.dispatch(agent["id"])
-        fixture.fixture.eventually(lambda: sum(method == "turn/start" for method, _ in server.calls) == 2)
+        start_future = self.take_start(agent["id"])
+        entered.wait()
+        self.assertEqual(sum(method == "turn/start" for method, _ in server.calls), 2)
         self.runtime.delete_conversation(agent["id"])
         self.assert_deleted_and_released(agent["id"], baseline)
         self.assertFalse((self.runtime.agent(agent["id"]).get("startAttempt") or {}).get("activeAtReservation"))
         gate.set()
-        fixture.fixture.eventually(lambda: sum(method == "turn/interrupt" for method, _ in server.calls) >= 1)
+        start_future.result()
+        self.assertGreaterEqual(sum(method == "turn/interrupt" for method, _ in server.calls), 1)
         self.assert_deleted_and_released(agent["id"], baseline)
 
     def test_deleting_lead_settles_running_worker(self):
         lead = self.runtime.create({"name": "Lead", "cwd": self.temp.name, "prompt": "Lead", "maxAgents": 4})
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(lead["id"]).get("turnId"))
+        self.wait_start(lead["id"])
         worker = self.runtime.create({"name": "Worker", "prompt": "Worker", "role": "reviewer"}, lead["id"], defer=True)
         baseline = 0
         self.runtime.send(worker["id"], "Run worker", "worker-run")
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(lead["id"]).get("turnId")
-                                   and self.runtime.agent(worker["id"]).get("turnId"))
+        self.wait_start(worker["id"])
         self.runtime.delete_conversation(lead["id"])
         self.assert_deleted_and_released(lead["id"], baseline)
         self.assert_deleted_and_released(worker["id"], baseline)
@@ -357,35 +408,37 @@ class DeleteInflightContract(unittest.TestCase):
             for index, agent in enumerate(running):
                 self.runtime.send(agent["id"], f"Run {index}", f"global-{index}")
             self.runtime.dispatch()
-            fixture.fixture.eventually(lambda: sum(bool(self.runtime.agent(agent["id"]).get("turnId"))
-                                                    for agent in running) == 3)
+            for agent in running[:3]:
+                self.wait_start(agent["id"])
+            self.assertEqual(sum(bool(self.runtime.agent(agent["id"]).get("turnId"))
+                                 for agent in running), 3)
             self.assertFalse(self.runtime.agent(running[3]["id"]).get("turnId"))
             for agent in running[:3]:
                 self.runtime.delete_conversation(agent["id"])
             self.assertEqual(len(self.slots()), 0)
             self.runtime.dispatch()
-            fixture.fixture.eventually(lambda: self.runtime.agent(running[3]["id"]).get("turnId"))
+            self.wait_start(running[3]["id"])
             agent = self.runtime.agent(running[3]["id"])
             self.runtime.server.complete(agent["threadId"], agent["turnId"])
-            fixture.fixture.eventually(lambda: not self.runtime.agent(agent["id"]).get("inFlight"))
+            self.assertFalse(self.runtime.agent(agent["id"]).get("inFlight"))
 
     def test_deleted_worker_releases_per_root_limit_for_next_turn(self):
         root = self.runtime.create({"name": "Team", "cwd": self.temp.name, "prompt": "Team",
                                     "maxAgents": 5, "concurrency": 1})
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(root["id"]).get("turnId"))
+        self.wait_start(root["id"])
         worker1 = self.runtime.create({"name": "Worker one", "prompt": "One", "role": "reviewer"}, root["id"], defer=True)
         worker2 = self.runtime.create({"name": "Worker two", "prompt": "Two", "role": "reviewer"}, root["id"], defer=True)
         self.runtime.send(worker1["id"], "Run worker one", "root-one")
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(worker1["id"]).get("turnId"))
+        self.wait_start(worker1["id"])
         self.runtime.send(worker2["id"], "Run worker two", "root-two")
         self.runtime.dispatch()
         self.assertFalse(self.runtime.agent(worker2["id"]).get("turnId"))
         self.runtime.delete_conversation(worker1["id"])
         self.assertEqual([slot["id"] for slot in self.slots()], [root["id"]])
         self.runtime.dispatch()
-        fixture.fixture.eventually(lambda: self.runtime.agent(worker2["id"]).get("turnId"))
+        self.wait_start(worker2["id"])
 
     def test_idle_delete_and_repeated_delete_remain_safe(self):
         agent = self.runtime.create(
