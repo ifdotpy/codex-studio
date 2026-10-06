@@ -66,8 +66,22 @@ test("Progress cache", async () => {
         calls: 0,
         held: [],
       };
-      window.fetch = (input, options) => {
-        const url = new URL(String(input), location.href);
+      window.fetch = async (input, options = {}) => {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(
+          request ? request.url : String(input),
+          location.href,
+        );
+        if (request)
+          options = {
+            ...options,
+            method: request.method,
+            signal: request.signal,
+            body:
+              request.method === "GET"
+                ? undefined
+                : await request.clone().text(),
+          };
         if (url.pathname !== "/api/panel") return original(input, options);
         const fixture = window.progressFixture;
         fixture.calls++;

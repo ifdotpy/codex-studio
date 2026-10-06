@@ -21,7 +21,7 @@
   gap: 2px 8px;
   padding: 4px 10px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 16px;
 }
 .agent-panel button {
@@ -31,8 +31,7 @@
   color: inherit;
   font: inherit;
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  text-decoration: none;
 }
 .agent-panel button:disabled {
   cursor: default;
@@ -57,7 +56,7 @@
 }
 .progress-markdown {
   display: flow-root;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   line-height: 1.35;
   overflow-wrap: anywhere;
   white-space: normal;
@@ -105,7 +104,7 @@
   display: flex;
   flex-wrap: wrap;
   gap: 2px 8px;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -147,7 +146,7 @@
   padding: 0 10px;
   min-height: 32px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 16px;
 }
 .agent-panel-compact > button,
@@ -178,4 +177,41 @@
   .agent-panel-compact {
     min-height: 44px;
   }
+}
+
+.agent-panel-heading,
+.agent-panel-compact {
+  font-size: var(--studio-text-meta);
+  gap: 4px 8px;
+}
+.agent-panel-heading {
+  padding: 4px 10px;
+  min-height: 40px;
+}
+.agent-panel button {
+  padding-inline: 8px;
+  min-height: var(--studio-action-size);
+  text-decoration: none;
+}
+.agent-panel-heading > button:first-child,
+.agent-panel-compact > button:first-child {
+  font-size: var(--studio-text-body);
+  font-weight: 600;
+}
+.progress-markdown {
+  font-size: var(--studio-text-body);
+  line-height: 1.5;
+}
+.progress-markdown code {
+  font-family: var(--mantine-font-family-monospace);
+  font-size: var(--studio-text-code);
+}
+
+.agent-panel-title {
+  margin: 0;
+  font-size: var(--studio-text-body);
+  font-weight: 600;
+}
+.agent-panel-title button {
+  font-weight: inherit;
 }

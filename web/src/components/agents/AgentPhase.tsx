@@ -138,7 +138,7 @@ export default function AgentPhase({
   const details = errorDetails(nativeError?.additionalDetails);
   return (
     <div
-      className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}`}
+      className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}${connection === "reconnecting" ? " studio-recovery-banner" : ""}`}
       role="status"
       data-phase={phase}
       data-wait-state={waiting ? (wait?.live ? "live" : "ended") : undefined}
@@ -192,8 +192,14 @@ export default function AgentPhase({
               />
             )}
           </span>
-          {connection === "reconnecting" && native && <p>{message}</p>}
-          {typeof details === "string" && details && <pre>{details}</pre>}
+          {(connection === "reconnecting" ||
+            (typeof details === "string" && details)) && (
+            <details>
+              <summary>Details</summary>
+              {connection === "reconnecting" && <p>{message}</p>}
+              {typeof details === "string" && details && <pre>{details}</pre>}
+            </details>
+          )}
         </div>
       )}
       {active && !waiting && connection !== "reconnecting" && (

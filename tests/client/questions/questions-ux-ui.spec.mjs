@@ -156,6 +156,34 @@ test("Questions Ux Ui", async ({
       "an open multi-question card does not repeat its first question",
     );
     assert.equal(await card.locator(".request-prompt").count(), 0);
+    const openLayout = await card.evaluate((element) => {
+      const viewport = document
+        .querySelector("#messages")
+        .getBoundingClientRect();
+      const heading = element
+        .querySelector(".request-heading")
+        .getBoundingClientRect();
+      const actions = element
+        .querySelector(".request-answer-actions")
+        .getBoundingClientRect();
+      return {
+        headingVisible:
+          heading.top >= viewport.top && heading.bottom <= viewport.bottom,
+        actionsVisible:
+          actions.top >= viewport.top && actions.bottom <= viewport.bottom,
+      };
+    });
+    assert.equal(
+      openLayout.headingVisible,
+      true,
+      "Answer brings the card heading into view",
+    );
+    assert.equal(
+      openLayout.actionsVisible,
+      true,
+      "the answer action row stays in view",
+    );
+
     assert.equal(
       await page.getByRole("dialog", { name: "Reply to the agent" }).count(),
       0,

@@ -467,6 +467,7 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     remember,
+    revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -1624,6 +1625,13 @@ export default function Conversation(p: {
             <AgentPhase agent={agent} connection={connection} wait={wait} />
           )}
           <Requests
+            onAnswerOpen={() => setFollow(false)}
+            onAnswerPosition={revealRequest}
+            mainAgentId={
+              !p.room && agent?.isLead === false
+                ? agent.rootId || undefined
+                : undefined
+            }
             showDates={!!p.room}
             scope={p.data.stateDir}
             allRequests={runtime?.requests || []}
