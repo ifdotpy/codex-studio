@@ -215,3 +215,25 @@
 .agent-panel-title button {
   font-weight: inherit;
 }
+
+/* PROGRESS reads as secondary status: lighter title, headings and emphasis. */
+.agent-panel-heading > button:first-child,
+.agent-panel-compact > button:first-child {
+  font-size: var(--studio-text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}
+.progress-markdown {
+  font-size: var(--studio-text-code);
+}
+.progress-markdown :is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 550;
+}
+.progress-markdown :is(strong, b) {
+  font-weight: 550;
+}
+.agent-panel-title {
+  font-size: var(--studio-text-meta);
+  font-weight: 500;
+  color: var(--muted);
+}

@@ -2228,7 +2228,15 @@ html body #root {
   .project-tree-toggle {
   padding-right: 54px;
 }
+/* Reserve space for row actions only while they are visible, so idle names
+   use the full row width. */
 #sidebar #chat-list .chat-row {
+  padding-right: 10px;
+}
+#sidebar
+  #chat-list
+  .sidebar-row:is(:hover, :focus-within, .selected)
+  > .chat-row {
   padding-right: 62px;
 }
 @media (hover: none), (max-width: 760px) {
@@ -2285,14 +2293,10 @@ html body #root {
   max-width: var(--studio-chat-max);
   margin-inline: auto;
 }
+/* Assistant answers keep their card for emphasis within the shared column. */
 .ai-conversation .message.assistant,
 .agent-conversation .message.bubble:not(.outgoing) {
-  width: 100%;
   max-width: 100%;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
 }
 .ai-conversation .message.user,
 .agent-conversation .message.bubble.outgoing {
@@ -2359,4 +2363,8 @@ html body #root {
 }
 .studio-recovery-banner summary {
   cursor: pointer;
+}
+#sidebar .sidebar-row.selected :is(.row-actions, .row-pin-action) {
+  opacity: 1;
+  pointer-events: auto;
 }
