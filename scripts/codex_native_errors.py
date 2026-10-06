@@ -240,7 +240,7 @@ def consume_native_notification(runtime: "Runtime", message: "JsonObject", accou
                             and r.get('connectionId') == connection_id
                             and r.get('params', {}).get('threadId') == tid
                             and r.get('status') in {'pending', 'answering', 'uncertain', 'blocked'}):
-                        r.update(status='resolved', resolvedAt=time.time())
+                        r.update(status='resolved', resolvedAt=time.time())  # type: ignore[call-arg]  # typed-update
                         runtime.put(db, 'requests', r)
                 pending = any(r.get('agent') == a['id'] and r.get('status') == 'pending'
                               for r in runtime.records(db, 'requests'))
