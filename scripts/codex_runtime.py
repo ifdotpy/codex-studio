@@ -3006,11 +3006,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 for complaint_id, raw in rows:
                     complaint = json.loads(raw)
                     sync_entity_put(db, "complaint", complaint_id,
-<<<<<<< HEAD
                                     self.complaint_entity_view(db, complaint))  # type: ignore[no-untyped-call]
-=======
-                                    self.complaint_entity_view(db, complaint))
->>>>>>> codex-agent/b8f972ad-8dfa-5bd5-9aac-16d1036d53ee
             if table == "agents" and previous is not None and (
                 previous.get("deletedAt") != record.get("deletedAt")
             ):
