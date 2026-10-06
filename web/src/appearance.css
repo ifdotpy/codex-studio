@@ -673,3 +673,54 @@
 .message-queue-content .message-queue-expand {
   padding: 0 4px;
 }
+
+.chat-settings-panel .execution-menu {
+  padding: 8px 0;
+  border: 0;
+  background: transparent;
+}
+.chat-settings-panel .execution-menu .mantine-Button-inner {
+  width: 100%;
+  min-width: 0;
+}
+.chat-settings-panel .execution-menu .mantine-Button-label {
+  flex: 1;
+  min-width: 0;
+  width: auto;
+}
+.chat-settings-panel .execution-menu .mantine-Button-section {
+  flex-shrink: 0;
+  margin-left: 8px;
+}
+.chat-settings-panel #project {
+  border: 0;
+  background: transparent;
+}
+.chat-settings-panel .model-refresh {
+  justify-self: end;
+}
+.composer-tools .composer-context-row {
+  margin: 0;
+  padding: 0;
+  gap: 8px;
+}
+.composer-tools .execution-menu {
+  padding: 0 6px;
+  height: 30px;
+  min-height: 30px;
+  border: 0;
+  background: transparent;
+}
+.composer-tools .execution-menu .mantine-Button-section {
+  display: flex;
+  margin-left: 4px;
+}
+.chat-settings-panel
+  .execution-menu
+  .mantine-Button-section[data-position="right"],
+.composer-tools .execution-menu .mantine-Button-section[data-position="right"] {
+  position: static;
+  width: 14px;
+  margin-left: 8px;
+  flex-shrink: 0;
+}

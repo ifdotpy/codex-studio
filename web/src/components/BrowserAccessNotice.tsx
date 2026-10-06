@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { SettingsRow } from "./ui/primitives";
 import { get, type GetResult } from "../api";
 import "./browser-access-notice.css";
 
@@ -29,7 +30,9 @@ export default function BrowserAccessNotice({
   if (!active || !status || status.enabled) return null;
   return (
     <div className="browser-access-notice" role="status">
-      <p>Browser access is off.</p>
+      <SettingsRow label="Browser access">
+        <span>Off</span>
+      </SettingsRow>
       <details>
         <summary>Details</summary>
         {status.reason || "Not available for this account."}

@@ -846,6 +846,7 @@ function ScopedExecutionSettings({
       <ModelPicker
         id={teamDefaults ? undefined : "model"}
         label={prefix + " model"}
+        visibleLabel={inline ? "Model" : undefined}
         options={modelOptions}
         value={current.model || DEFAULT}
         currentValue={currentModel || ""}
@@ -854,8 +855,22 @@ function ScopedExecutionSettings({
           void change({ model: value === DEFAULT ? null : value })
         }
       />
+      {selectedProvider !== "claude" &&
+        !catalog.loading &&
+        !catalog.error &&
+        !canEnableDaybreak && (
+          <Button
+            className="model-refresh"
+            variant="subtle"
+            size="compact-xs"
+            onClick={catalog.retry}
+          >
+            Refresh model list
+          </Button>
+        )}
       <NativeSelect
-        label={prefix + " reasoning"}
+        label={inline ? "Reasoning" : prefix + " reasoning"}
+        aria-label={prefix + " reasoning"}
         data={options}
         value={current.effort || DEFAULT}
         disabled={disabled || !modeSupported}
@@ -968,14 +983,6 @@ function ScopedExecutionSettings({
               : "The selected model does not support this mode in the account model list. Select another model or change the mode."}
           </p>
         )}
-        {selectedProvider !== "claude" &&
-          !catalog.loading &&
-          !catalog.error &&
-          !canEnableDaybreak && (
-            <Button variant="default" size="compact-xs" onClick={catalog.retry}>
-              Refresh model list
-            </Button>
-          )}
         <Switch
           label="Fast mode"
           aria-label="Fast mode"

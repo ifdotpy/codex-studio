@@ -1789,33 +1789,6 @@ export default function Conversation(p: {
                       /model · Choose model and reasoning
                     </Button>
                   )}
-                  {p.agent?.source === "managed" && (
-                    <div className="composer-context-row">
-                      <ExecutionSettings
-                        // Transcript metadata can predate a settings change.
-                        agent={p.agent}
-                        catalog={modelCatalog}
-                        refresh={p.refresh}
-                        openRequest={modelCommandRequest}
-                        onOpenChange={setModelCommandOpen}
-                      />
-                      {!items.length && (
-                        <span className="composer-context-values">
-                          <span>
-                            {p.limitsAccountLabel || "Account name unavailable"}
-                          </span>
-                          {p.agent.cwd && (
-                            <span title={p.agent.cwd}>
-                              {p.data.runtime?.projects?.find(
-                                (project) => project.path === p.agent?.cwd,
-                              )?.name ||
-                                p.agent.cwd.split("/").filter(Boolean).pop()}
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </div>
-                  )}
                   {draftTooLong && (
                     <div
                       id="draft-length-error"
@@ -1951,6 +1924,37 @@ export default function Conversation(p: {
                             notify={p.notify}
                           />
                         )}
+                      {p.agent?.source === "managed" && (
+                        <div className="composer-context-row">
+                          <ExecutionSettings
+                            // Transcript metadata can predate a settings change.
+                            agent={p.agent}
+                            catalog={modelCatalog}
+                            refresh={p.refresh}
+                            openRequest={modelCommandRequest}
+                            onOpenChange={setModelCommandOpen}
+                          />
+                          {!items.length && (
+                            <span className="composer-context-values">
+                              <span>
+                                {p.limitsAccountLabel ||
+                                  "Account name unavailable"}
+                              </span>
+                              {p.agent.cwd && (
+                                <span title={p.agent.cwd}>
+                                  {p.data.runtime?.projects?.find(
+                                    (project) => project.path === p.agent?.cwd,
+                                  )?.name ||
+                                    p.agent.cwd
+                                      .split("/")
+                                      .filter(Boolean)
+                                      .pop()}
+                                </span>
+                              )}
+                            </span>
+                          )}
+                        </div>
+                      )}
                     </div>
                     <span id="send-state" role="status" aria-live="polite">
                       {p.sending ? "Sending…" : ""}
