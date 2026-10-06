@@ -39,29 +39,38 @@ class ShutdownEvent:
     """A shutdown flag that can wake stream generators on each server loop."""
 
     def __init__(self) -> None:
-        self._requested = threading.Event()
-        self._lock = threading.Lock()
-        self._async_events: dict[asyncio.AbstractEventLoop, asyncio.Event] = {}
+        # These fields use copy-on-write snapshots so set() is safe when called
+        # by a Python signal handler interrupting async_event() on this thread.
+        self._requested = False
+        self._notified = False
+        self._async_events: tuple[
+            tuple[asyncio.AbstractEventLoop, asyncio.Event], ...
+        ] = ()
 
     def is_set(self) -> bool:
-        return self._requested.is_set()
+        return self._requested
 
     def async_event(self) -> asyncio.Event:
         loop = asyncio.get_running_loop()
-        with self._lock:
-            event = self._async_events.get(loop)
-            if event is None:
-                event = asyncio.Event()
-                self._async_events[loop] = event
-            requested = self._requested.is_set()
-        if requested:
+        listeners = self._async_events
+        event = next((candidate for registered_loop, candidate in listeners
+                      if registered_loop is loop), None)
+        if event is None:
+            event = asyncio.Event()
+            self._async_events = (*listeners, (loop, event))
+        if self._requested:
             event.set()
         return event
 
     def set(self) -> None:
-        self._requested.set()
-        with self._lock:
-            listeners = tuple(self._async_events.items())
+        self._requested = True
+        self.notify_listeners()
+
+    def notify_listeners(self) -> None:
+        if self._notified:
+            return
+        self._notified = True
+        listeners = self._async_events
         for loop, event in listeners:
             try:
                 loop.call_soon_threadsafe(event.set)
@@ -109,6 +118,7 @@ class _StudioUvicornServer(uvicorn.Server):
         super().__init__(config)
         self.context = context
         self.schema_hash_start_scheduled = False
+        self.shutdown_requested: ShutdownEvent | None = None
 
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
@@ -116,6 +126,9 @@ class _StudioUvicornServer(uvicorn.Server):
         yield
 
     async def on_tick(self, counter: int) -> bool:
+        if self.shutdown_requested is not None and self.shutdown_requested.is_set():
+            self.shutdown_requested.notify_listeners()
+            self.should_exit = True
         should_exit = await super().on_tick(counter)
         # Let the first ordinary read finish before the CPU-heavy OpenAPI build
         # starts. Gated requests can still start and await the shared future.
@@ -185,6 +198,7 @@ class BoundServer:
         context: ApiContext,
         *,
         owned_unix: tuple[int, int] | None = None,
+        shutdown_requested: ShutdownEvent | None = None,
     ) -> None:
         self.socket = sock
         self.app = app
@@ -201,14 +215,15 @@ class BoundServer:
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
             limit_max_requests=None,
         ), context)
+        self.server.shutdown_requested = shutdown_requested
         self.server_address = sock.getsockname()
         self.server_port = int(sock.getsockname()[1]) if sock.family != socket.AF_UNIX else context.server_port
         self.address_family = sock.family
         self.owned_socket_identity = owned_unix
         self._closed = False
+        self._socket_path_unlinked = False
         self._lock = threading.Lock()
         self._serve_thread: threading.Thread | None = None
-        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def address(self) -> object:
@@ -219,27 +234,16 @@ class BoundServer:
         self._serve_thread = threading.current_thread()
 
         async def serve() -> None:
-            self._loop = asyncio.get_running_loop()
             await self.server.serve(sockets=[self.socket])
 
         asyncio.run(serve())
 
-    def shutdown(self, *, force: bool = False) -> None:
+    def shutdown(self) -> None:
         self.server.should_exit = True
-        if force:
-            self.server.force_exit = True
-            loop = self._loop
-            if loop is not None:
-                try:
-                    loop.call_soon_threadsafe(self._abort_connections)
-                except RuntimeError:
-                    pass
 
-    def _abort_connections(self) -> None:
-        for connection in tuple(self.server.server_state.connections):
-            transport = getattr(connection, "transport", None)
-            if transport is not None:
-                transport.abort()
+    def request_shutdown_from_signal(self) -> None:
+        if self.server.shutdown_requested is not None:
+            self.server.shutdown_requested._requested = True
 
     def _join_serve_thread(self) -> bool:
         serving_thread = self._serve_thread
@@ -248,15 +252,15 @@ class BoundServer:
         serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
         return not serving_thread.is_alive()
 
-    def server_close(self) -> bool:
-        if not self._join_serve_thread():
-            return False
+    def _close_bound_resources(self, *, close_socket: bool = True) -> bool:
         with self._lock:
             if self._closed:
                 return True
-            self._closed = True
-            self.socket.close()
-            if self.owned_socket_identity is not None:
+            if close_socket:
+                self._closed = True
+                self.socket.close()
+            if not self._socket_path_unlinked and self.owned_socket_identity is not None:
+                self._socket_path_unlinked = True
                 socket_path = Path(str(self.server_address))
                 try:
                     stat = socket_path.stat()
@@ -265,6 +269,13 @@ class BoundServer:
                 except FileNotFoundError:
                     pass
         return True
+
+    def server_close(self) -> bool:
+        joined = self._join_serve_thread()
+        # Uvicorn owns the live descriptor while its selector is running. Its
+        # shutdown closes that descriptor when a bounded join expires.
+        self._close_bound_resources(close_socket=joined)
+        return joined
 
 
 class CanvasServer(BoundServer):
@@ -285,25 +296,27 @@ class CanvasServer(BoundServer):
     def shutdown_requested(self) -> ShutdownEvent:
         return self._shutdown_requested
 
-    def shutdown(self, *, force: bool = False) -> None:
+    def shutdown(self) -> None:
         self._shutdown_requested.set()
-        self._tcp.shutdown(force=force)
+        self._tcp.shutdown()
         if self.unix_server is not None:
-            self.unix_server.shutdown(force=force)
+            self.unix_server.shutdown()
 
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         self._tcp._serve_thread = threading.current_thread()
         super().serve_forever(poll_interval=poll_interval)
 
-    def server_close(self) -> None:
-        if not self._join_serve_thread():
-            return
+    def server_close(self) -> bool:
+        # The TCP serve thread is this caller when codex-canvas runs Uvicorn in
+        # the main thread; the Unix listener has its own serving thread.
+        tcp_joined = self._tcp._join_serve_thread()
+        unix_joined = True
         if self.unix_server is not None:
-            if not self.unix_server.server_close():
-                return
-        if not self._tcp.server_close():
-            return
+            unix_joined = self.unix_server._join_serve_thread()
+            self.unix_server._close_bound_resources(close_socket=unix_joined)
+        self._tcp._close_bound_resources(close_socket=tcp_joined)
         self._context.close()
+        return tcp_joined and unix_joined
 
 
 def _bind_tcp(port: int) -> socket.socket:
@@ -371,8 +384,11 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
             unix_socket_fd, identity = _bind_unix(Path(canvas.root) / UNIX_SOCKET_NAME)
             unix_handle = BoundServer(
                 unix_socket_fd, UnixScopeApp(app), context, owned_unix=identity,
+                shutdown_requested=shutdown_requested,
             )
-        tcp = BoundServer(tcp_socket, app, context)
+        tcp = BoundServer(
+            tcp_socket, app, context, shutdown_requested=shutdown_requested,
+        )
         tcp.unix_server = unix_handle
         context.initialize()
         # Hash generation starts in serve_forever after the bound sockets are ready.

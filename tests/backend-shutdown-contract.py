@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import select
 import signal
+import sqlite3
 import socket
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from urllib.parse import urlencode
 
 ROOT = Path(__file__).resolve().parents[1]
 NORMAL_SHUTDOWN_BOUND_SECONDS = 1.5
-FORCED_SHUTDOWN_BOUND_SECONDS = 3.0
+SECOND_SIGNAL_BOUND_SECONDS = 6.5
 PROCESS_CLEANUP_BOUND_SECONDS = 45
 
 
@@ -34,6 +35,8 @@ class BackendShutdownContract(unittest.TestCase):
         *,
         handler_delay: float = 0,
         startup_delay: float = 0,
+        updates_delay: float = 0,
+        cleanup_delay: float = 0,
     ) -> tuple[subprocess.Popen[str], Path]:
         env = os.environ.copy()
         for key, leaf in (
@@ -54,7 +57,7 @@ class BackendShutdownContract(unittest.TestCase):
         })
         marker = root / "backend-test-marker"
         bootstrap = f"""
-import runpy, sys, time
+import sys, time
 from pathlib import Path
 sys.path.insert(0, {str(ROOT / 'scripts')!r})
 if {handler_delay!r}:
@@ -73,14 +76,36 @@ if {startup_delay!r}:
         time.sleep({startup_delay!r})
         original_runtime_init(self, *args, **kwargs)
     Runtime.__init__ = delayed_runtime_init
-sys.argv = [{str(ROOT / 'scripts/codex-canvas')!r}, '--port', {str(port)!r}]
-runpy.run_path(sys.argv[0], run_name='__main__')
-"""
-        command = (
-            [sys.executable, "-B", "-c", bootstrap]
-            if handler_delay or startup_delay
-            else [sys.executable, "-B", str(ROOT / "scripts/codex-canvas"), "--port", str(port)]
+if {updates_delay!r}:
+    import codex_live_updates
+    original_start_updates = codex_live_updates.start
+    def delayed_start_updates(runtime):
+        Path({str(marker)!r}).write_text('updates startup entered')
+        time.sleep({updates_delay!r})
+        return original_start_updates(runtime)
+    codex_live_updates.start = delayed_start_updates
+from codex_runtime import Runtime
+original_runtime_close = Runtime.close
+def fixture_runtime_close(self):
+    with self.lock, self.db() as db:
+        db.execute(
+            'INSERT OR REPLACE INTO runtime_agents(id, record) VALUES (?, ?)',
+            ('shutdown-test-agent', __import__('json').dumps({{
+                'id': 'shutdown-test-agent', 'epoch': 1, 'accountKey': 'default',
+                'threadId': 'shutdown-test-thread', 'turnId': 'shutdown-test-turn',
+                'autoWake': True, 'status': 'running', 'inFlight': True,
+            }})),
         )
+    if {cleanup_delay!r}:
+        Path({str(marker)!r}).write_text('runtime cleanup entered')
+        time.sleep({cleanup_delay!r})
+    return original_runtime_close(self)
+Runtime.close = fixture_runtime_close
+sys.argv = [{str(ROOT / 'scripts/codex-canvas')!r}, '--port', {str(port)!r}]
+from codex_canvas import main
+main()
+"""
+        command = [sys.executable, "-B", "-c", bootstrap]
         process = subprocess.Popen(
             command,
             cwd=ROOT,
@@ -150,9 +175,12 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         *,
         stream_count: int = 0,
         unread_stream: bool = False,
-        second_signal: bool = False,
+        second_signal_delay: float | None = None,
+        second_signal_number: int | None = None,
         handler_delay: float = 0,
         startup_delay: float = 0,
+        updates_delay: float = 0,
+        cleanup_delay: float = 0,
         first_signal: int = signal.SIGTERM,
     ) -> tuple[float, int, str, str]:
         with tempfile.TemporaryDirectory(prefix="backend-shutdown-") as directory:
@@ -160,13 +188,15 @@ runpy.run_path(sys.argv[0], run_name='__main__')
             port = self.free_port()
             process, marker = self.start_backend(
                 root, port, handler_delay=handler_delay, startup_delay=startup_delay,
+                updates_delay=updates_delay,
+                cleanup_delay=cleanup_delay,
             )
             streams = []
             request_thread: threading.Thread | None = None
             request_errors: list[BaseException] = []
             initial_output = ""
             try:
-                if startup_delay:
+                if startup_delay or updates_delay:
                     self.wait_marker(marker, process)
                 else:
                     initial_output = self.wait_for_start(process, port)
@@ -207,18 +237,21 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                     self.wait_marker(marker, process)
                 started = time.monotonic()
                 process.send_signal(first_signal)
-                if second_signal:
-                    time.sleep(0.1)
-                    process.send_signal(first_signal)
-                if stream_count and not unread_stream and not second_signal and not handler_delay:
+                second_started = None
+                if second_signal_delay is not None:
+                    time.sleep(second_signal_delay)
+                    if process.poll() is None:
+                        second_started = time.monotonic()
+                        process.send_signal(second_signal_number or first_signal)
+                if stream_count and not unread_stream and second_signal_delay is None and not handler_delay:
                     for _connection, response in streams:
                         self.assertIn(
                             b"data:", response.read(),
                             "shutdown drains stream events through a clean HTTP EOF",
                         )
                 timeout = (
-                    FORCED_SHUTDOWN_BOUND_SECONDS
-                    if second_signal
+                    SECOND_SIGNAL_BOUND_SECONDS + (second_signal_delay or 0)
+                    if second_signal_delay is not None
                     else max(PROCESS_CLEANUP_BOUND_SECONDS, handler_delay + 10)
                 )
                 try:
@@ -229,7 +262,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                     self.fail(f"backend did not shut down within {timeout}s; stderr={stderr}")
                 elapsed = time.monotonic() - started
                 combined_stdout = initial_output + (stdout or "")
-                if startup_delay:
+                if startup_delay or updates_delay:
                     self.assertNotIn("Codex Canvas: http://", combined_stdout)
                     self.assertIn('"event": "backend_shutdown"', stderr)
                 lines = stderr.splitlines()
@@ -240,24 +273,55 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 )
                 self.assertIsNotNone(shutdown, stderr)
                 tail = "\n".join(lines[shutdown + 1:])
-                self.assertNotRegex(tail, r"Traceback|Exception in")
-                if not handler_delay and not second_signal and not startup_delay:
+                self.assertNotRegex(stderr, r"Traceback|Exception in")
+                if not handler_delay and second_signal_delay is None and not startup_delay and not updates_delay:
                     self.assertNotRegex(stderr, r"Cancel \d+ running task\(s\)")
                     self.assertLess(elapsed, NORMAL_SHUTDOWN_BOUND_SECONDS)
-                if second_signal:
-                    self.assertLess(elapsed, FORCED_SHUTDOWN_BOUND_SECONDS)
-                self.assertEqual(process.returncode, 0, stderr)
+                if second_signal_delay is not None:
+                    self.assertLess(elapsed, SECOND_SIGNAL_BOUND_SECONDS + second_signal_delay)
+                    self.assertIsNotNone(second_started, "the second signal must be delivered")
+                    self.assertLess(time.monotonic() - second_started, SECOND_SIGNAL_BOUND_SECONDS)
+                expected_status = -(second_signal_number or first_signal) if second_signal_delay is not None else 0
+                self.assertEqual(process.returncode, expected_status, stderr)
+                socket_path = root / "state" / "canvas.sock"
+                self.assertFalse(socket_path.exists(), "shutdown removes its owned Unix socket")
+                row_count = None
+                database = root / "state" / "canvas.sqlite3"
+                if handler_delay:
+                    with sqlite3.connect(database) as db:
+                        row_count = db.execute(
+                            "SELECT count(*) FROM sync_documents WHERE scope='drafts' AND id=?",
+                            ("shutdown-test:chat",),
+                        ).fetchone()[0]
+                    self.assertEqual(row_count, 0 if second_signal_delay is not None else 1)
+                restart_capture = None
+                if not startup_delay:
+                    with sqlite3.connect(database) as db:
+                        restart_capture = db.execute(
+                            "SELECT json_extract(record, '$.restartRecovery.stage') "
+                            "FROM runtime_agents WHERE id='shutdown-test-agent'",
+                        ).fetchone()
+                    self.assertEqual(
+                        restart_capture,
+                        ("pending",),
+                        "Runtime.close writes restart capture before a second-signal exit",
+                    )
                 print(json.dumps({
                     "case": {
                         "streams": stream_count,
                         "unread": unread_stream,
                         "handlerSeconds": handler_delay,
                         "startupSeconds": startup_delay,
+                        "updatesStartupSeconds": updates_delay,
                         "firstSignal": signal.Signals(first_signal).name,
-                        "secondSignal": second_signal,
+                        "secondSignal": signal.Signals(second_signal_number or first_signal).name if second_signal_delay is not None else None,
+                        "secondSignalDelay": second_signal_delay,
+                        "draftRows": row_count,
+                        "restartCapture": restart_capture,
                     },
                     "exitCode": process.returncode,
                     "elapsedSeconds": round(elapsed, 3),
+                    "elapsedAfterSecondSignal": round(time.monotonic() - second_started, 3) if second_started else None,
                     "stderr": stderr.splitlines()[-3:],
                 }), flush=True)
                 if request_thread is not None:
@@ -286,22 +350,33 @@ runpy.run_path(sys.argv[0], run_name='__main__')
     def test_sigterm_closes_a_stream_even_when_the_client_does_not_read(self):
         self.run_shutdown(stream_count=1, unread_stream=True)
 
-    def test_second_signal_forces_bounded_stream_drain(self):
-        self.run_shutdown(stream_count=1, second_signal=True)
+    def test_second_signal_closes_bounded_stream_drain(self):
+        self.run_shutdown(stream_count=1, second_signal_delay=0.1)
 
-    def test_second_sigterm_forces_bounded_two_stream_drain(self):
-        self.run_shutdown(stream_count=2, second_signal=True)
+    def test_second_sigterm_closes_bounded_two_stream_drain(self):
+        self.run_shutdown(stream_count=2, second_signal_delay=0.1)
 
-    def test_second_sigint_forces_bounded_stream_drain(self):
+    def test_second_sigint_closes_bounded_stream_drain(self):
         self.run_shutdown(
-            stream_count=1, second_signal=True, first_signal=signal.SIGINT,
+            stream_count=1, second_signal_delay=0.1, first_signal=signal.SIGINT,
         )
 
-    def test_second_signal_forces_five_second_handler_to_exit(self):
-        self.run_shutdown(handler_delay=5, second_signal=True)
+    def test_second_signal_exits_five_second_handler(self):
+        self.run_shutdown(handler_delay=5, second_signal_delay=0.1)
 
-    def test_second_signal_forces_thirty_second_handler_to_exit(self):
-        self.run_shutdown(handler_delay=30, second_signal=True)
+    def test_second_signal_exits_thirty_second_handler(self):
+        self.run_shutdown(handler_delay=30, second_signal_delay=0.1)
+
+    def test_thirty_second_handler_exits_after_second_signal_at_each_gap(self):
+        for delay in (0.1, 1.0, 3.0):
+            with self.subTest(delay=delay):
+                self.run_shutdown(handler_delay=30, second_signal_delay=delay)
+
+    def test_second_sigint_exits_thirty_second_handler_after_one_second(self):
+        self.run_shutdown(
+            handler_delay=30, second_signal_delay=1.0,
+            second_signal_number=signal.SIGINT,
+        )
 
     def test_single_signal_allows_five_second_handler_to_finish(self):
         elapsed, _, _, _ = self.run_shutdown(handler_delay=5)
@@ -311,8 +386,45 @@ runpy.run_path(sys.argv[0], run_name='__main__')
         elapsed, _, _, _ = self.run_shutdown(handler_delay=30)
         self.assertGreaterEqual(elapsed, 29)
 
-    def test_second_signal_during_startup_does_not_announce_url(self):
-        self.run_shutdown(startup_delay=3, second_signal=True)
+    def test_first_signal_during_runtime_construction_does_not_announce_url(self):
+        self.run_shutdown(startup_delay=6)
+
+    def test_second_signal_during_update_startup_exits_promptly(self):
+        for delay in (0.1, 1.0, 3.0):
+            with self.subTest(delay=delay):
+                self.run_shutdown(updates_delay=30, second_signal_delay=delay)
+
+    def test_third_signal_abandons_a_stuck_cleanup(self):
+        with tempfile.TemporaryDirectory(prefix="backend-shutdown-third-") as directory:
+            root = Path(directory)
+            port = self.free_port()
+            process, marker = self.start_backend(root, port, cleanup_delay=30)
+            try:
+                self.wait_for_start(process, port)
+                process.send_signal(signal.SIGTERM)
+                time.sleep(0.1)
+                process.send_signal(signal.SIGTERM)
+                self.wait_marker(marker, process)
+                started = time.monotonic()
+                process.send_signal(signal.SIGINT)
+                stdout, stderr = process.communicate(timeout=3)
+                elapsed = time.monotonic() - started
+                self.assertEqual(process.returncode, -signal.SIGINT, stderr)
+                self.assertLess(elapsed, 3)
+                self.assertIn("cleanup abandoned after third shutdown signal", stderr)
+                self.assertNotRegex(stderr, r"Traceback|Exception in")
+                self.assertFalse((root / "state" / "canvas.sock").exists())
+                print(json.dumps({
+                    "case": {"cleanupSeconds": 30, "signals": ["SIGTERM", "SIGTERM", "SIGINT"]},
+                    "exitCode": process.returncode,
+                    "elapsedSeconds": round(elapsed, 3),
+                    "stderr": stderr.splitlines()[-2:],
+                    "stdout": stdout.splitlines()[-1:],
+                }), flush=True)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
 
 
 if __name__ == "__main__":

@@ -27,7 +27,6 @@ WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
-FORCED_SHUTDOWN_EXIT_GRACE_SECONDS = 2
 
 
 HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
@@ -612,29 +611,35 @@ def main():
     server = None
     updates = None
     shutdown_requests = 0
-    forced_exit_timer = None
-
-    def force_process_exit():
-        # The second signal has requested immediate server closure. This bounds
-        # a native or worker-thread handler that cannot be stopped cooperatively.
-        os._exit(0)
-
+    shutdown_signal = None
+    cleanup_started = False
+    cleanup_completed = False
+    shutdown_prepared = False
     def terminate(_signal, _frame):
-        nonlocal shutdown_requests, forced_exit_timer
+        nonlocal shutdown_requests, shutdown_signal
         shutdown_requests += 1
-        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
-                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
-        if server is None and shutdown_requests == 1:
+        shutdown_signal = _signal
+        if shutdown_requests >= 3 and cleanup_started and not cleanup_completed:
+            os.write(2, b"Codex Canvas: cleanup abandoned after third shutdown signal\n")
+            signal.signal(_signal, signal.SIG_DFL)
+            os.kill(os.getpid(), _signal)
+        if cleanup_started:
+            if cleanup_completed and shutdown_prepared and shutdown_requests > 1:
+                signal.signal(_signal, signal.SIG_DFL)
+                os.kill(os.getpid(), _signal)
+            return
+        # During Runtime construction there is no event loop to shut down. Let
+        # KeyboardInterrupt unwind construction and reach the normal cleanup.
+        if runtime is None:
             raise KeyboardInterrupt
         if server is not None:
-            server.shutdown(force=shutdown_requests > 1)
-        if shutdown_requests > 1 and forced_exit_timer is None:
-            forced_exit_timer = threading.Timer(
-                FORCED_SHUTDOWN_EXIT_GRACE_SECONDS,
-                force_process_exit,
-            )
-            forced_exit_timer.daemon = True
-            forced_exit_timer.start()
+            # The event loop observes this lock-free flag on its next Uvicorn
+            # tick, then wakes stream generators outside the signal handler.
+            server.request_shutdown_from_signal()
+        # Preserve the established second-signal behavior: interrupt the main
+        # wait so its finally block closes resources and Python exits normally.
+        if shutdown_requests > 1:
+            raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
@@ -661,14 +666,25 @@ def main():
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
+        cleanup_started = True
         if updates:
             updates.close()
         if server:
-            if server.unix_server:
-                server.unix_server.shutdown()
-                server.unix_server.server_close()
+            server.shutdown()
             server.server_close()
         if runtime:
             runtime.close()
-        if forced_exit_timer:
-            forced_exit_timer.cancel()
+    cleanup_completed = True
+    if shutdown_requests:
+        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                          "signal": shutdown_signal, "at": time.time(),
+                          "requests": shutdown_requests}), file=sys.stderr, flush=True)
+        import logging
+
+        sys.stdout.flush()
+        sys.stderr.flush()
+        logging.shutdown()
+    shutdown_prepared = True
+    if shutdown_requests > 1:
+        signal.signal(shutdown_signal, signal.SIG_DFL)
+        os.kill(os.getpid(), shutdown_signal)
