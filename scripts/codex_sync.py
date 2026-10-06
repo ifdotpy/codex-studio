@@ -25,11 +25,13 @@ TRANSCRIPT_REVISION_ID = '@revision'
 class SyncStore:
     def __init__(self, connect: Callable[[], ContextManager[sqlite3.Connection]], snapshot: Callable[[], Any],
                  transcript: Callable[[str], Any], chat_snapshot: Any = None,
-                 state_signature: Callable[[], Any] | None = None, runtime: Any = None) -> None:
+                 state_signature: Callable[[], Any] | None = None, runtime: Any = None,
+                 canvas: Any = None) -> None:
         self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
         self.chat_snapshot = chat_snapshot
         self.state_signature = state_signature
         self.runtime = runtime
+        self.canvas = canvas
         self._observed_state_signature = None
         self._signature_lock = threading.Lock()
         self._entity_prune_lock = threading.Lock()
@@ -450,7 +452,7 @@ class SyncStore:
             "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
         if ('seeded' not in markers
                 or (self.runtime is not None and 'runtime_agents' in tables and
-                    int(markers.get('agent_organization_fields', '0')) < 2)
+                    int(markers.get('agent_organization_fields', '0')) < 3)
                 or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
             return True
         if 'runtime_events' in tables:
@@ -465,7 +467,10 @@ class SyncStore:
                 return True
             for record in recent:
                 key = str(record['id'])
-                _, digest, _ = encoded('monitor', key, project('monitor', record))
+                projected = project('monitor', record)
+                if projected is None:
+                    continue
+                _, digest, _ = encoded('monitor', key, projected)
                 if stored[key] != digest:
                     return True
         return False
@@ -485,7 +490,7 @@ class SyncStore:
                 # The existing maintenance functions read again under the writer.
                 db.rollback()
                 db.execute('BEGIN IMMEDIATE')
-                seed(db, self.chat_snapshot or self.snapshot, runtime_owner=self.runtime)
+                seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
                 startup_memory_mark("entity-seed")
                 # Retire old task DTOs gradually so existing checkpoints
                 # consume the resulting tombstones through ordinary deltas.
@@ -522,8 +527,16 @@ class SyncStore:
                                    AND (?=0 OR deleted=0 OR seq>?)
                                  ORDER BY seq LIMIT ?''',
                               (after, floor, int(bool(fresh)), initial_high, limit)).fetchall()
-            documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
-                          'seq': row[2], '_deleted': bool(row[4])} for row in rows]
+            documents = []
+            from codex_sync_entities import validate_stored_entity_payload, _report_bad_entity
+            for row in rows:
+                try:
+                    validate_stored_entity_payload(row[3], str(row[0]), str(row[1]), bool(row[4]))
+                except Exception as error:
+                    _report_bad_entity(str(row[0]), str(row[1]), error)
+                    continue
+                documents.append({'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
+                                  'seq': row[2], '_deleted': bool(row[4])})
             checkpoint = (documents[-1]['seq'] if len(documents) == limit else high)
             return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                     'documents': documents, 'checkpoint': {'seq': checkpoint},

@@ -5,11 +5,26 @@ import time
 import uuid
 from pathlib import Path
 import sqlite3
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 from collections.abc import Iterable, Mapping
 
 from codex_records import AgentRecord, PeerTeamRecord, ProjectRecord, RecordStore
 from codex_work import text_field
+
+def _report_bad_peer_row(collection: str, key: str, error: BaseException) -> None:
+    from codex_sync_entities import _report_bad_entity
+    _report_bad_entity(collection, key, error)
+
+
+def _decode_peer_record(collection: str, key: str, raw: str) -> dict[str, Any] | None:
+    try:
+        record = json.loads(raw)
+        if not isinstance(record, dict):
+            raise TypeError("record is not an object")
+        return record
+    except (TypeError, ValueError) as error:
+        _report_bad_peer_row(collection, key, error)
+        return None
 
 if TYPE_CHECKING:
     from codex_runtime import Runtime
@@ -28,8 +43,12 @@ def _lead(agent: AgentRecord, path: str | Path) -> bool:
 
 
 def _agents(db: sqlite3.Connection) -> dict[str, AgentRecord]:
-    return {row['id']: row for row in
-            (json.loads(item[0]) for item in db.execute('SELECT record FROM runtime_agents'))}
+    agents: dict[str, AgentRecord] = {}
+    for key, raw in db.execute('SELECT id,record FROM runtime_agents'):
+        record = _decode_peer_record('agent', str(key), raw)
+        if record is not None and isinstance(record.get('id'), str):
+            agents[record['id']] = cast(AgentRecord, record)
+    return agents
 
 
 def _members(db: sqlite3.Connection, ids: Iterable[str]) -> dict[str, AgentRecord]:
@@ -38,8 +57,13 @@ def _members(db: sqlite3.Connection, ids: Iterable[str]) -> dict[str, AgentRecor
     ids = sorted(set(ids))
     if not ids:
         return {}
-    rows = db.execute('SELECT record FROM runtime_agents WHERE id IN (' + ','.join('?' * len(ids)) + ')', ids)
-    return {row['id']: row for row in (json.loads(item[0]) for item in rows)}
+    rows = db.execute('SELECT id,record FROM runtime_agents WHERE id IN (' + ','.join('?' * len(ids)) + ')', ids)
+    agents: dict[str, AgentRecord] = {}
+    for key, raw in rows:
+        record = _decode_peer_record('agent', str(key), raw)
+        if record is not None and isinstance(record.get('id'), str):
+            agents[record['id']] = cast(AgentRecord, record)
+    return agents
 
 
 def _teams(project: ProjectRecord, agents: dict[str, AgentRecord]) -> list[PeerTeamRecord]:
@@ -57,10 +81,27 @@ def _teams(project: ProjectRecord, agents: dict[str, AgentRecord]) -> list[PeerT
 
 
 def snapshot(runtime: RecordStore, db: sqlite3.Connection) -> list[PeerTeamRecord]:
-    projects = [json.loads(row[0]) for row in db.execute('SELECT record FROM runtime_projects')]
-    agents = _members(db, (key for project in projects for team in project.get('peerTeams', [])
-                           for key in team['members']))
-    return [team for project in projects for team in _teams(project, agents)]
+    projects = [cast(ProjectRecord, record) for key, raw in db.execute('SELECT id,record FROM runtime_projects')
+                if (record := _decode_peer_record('project', str(key), raw)) is not None]
+    member_ids: set[str] = set()
+    for project in projects:
+        teams_value = project.get('peerTeams', [])
+        if not isinstance(teams_value, list):
+            _report_bad_peer_row('project', str(project.get('id', '')), TypeError('peerTeams is not a list'))
+            continue
+        for team in teams_value:
+            if not isinstance(team, dict) or not isinstance(team.get('members'), list):
+                _report_bad_peer_row('project', str(project.get('id', '')), TypeError('peer team is malformed'))
+                continue
+            member_ids.update(key for key in team['members'] if isinstance(key, str))
+    agents = _members(db, member_ids)
+    teams: list[PeerTeamRecord] = []
+    for project in projects:
+        try:
+            teams.extend(_teams(project, agents))
+        except (KeyError, TypeError, ValueError) as error:
+            _report_bad_peer_row('project', str(project.get('id', '')), error)
+    return teams
 
 
 def sync_entities(runtime: RecordStore, db: sqlite3.Connection,

@@ -9,6 +9,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 sys.path.insert(0, str(src / "scripts"))
 from codex_runtime import Runtime
+from codex_canvas import Canvas
 from codex_sync_entities import put as sync_entity_put, upgrade_agent_organization
 spec = importlib.util.spec_from_file_location("runtime_contract_fixture", src / "tests" / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
@@ -52,6 +53,7 @@ def seed(runtime):
         {"id": "orphan-private", "kind": "private", "members": ["missing-agent"], "updated": NOW},
     ]
     leads[0]["sharedRoomId"] = "shared-a"; leads[1]["sharedRoomId"] = "shared-a"
+    canvas = Canvas(runtime.root)
     with runtime.db() as db:
         db.execute("DELETE FROM runtime_agents")
         for r in recs:
@@ -84,7 +86,7 @@ def seed(runtime):
             sync_entity_put(db, "agent", agent["id"], agent)
         # This synthetic database starts with already-current entity rows, so
         # use the production marker path before measuring recovery writes.
-        upgrade_agent_organization(db, lambda: runtime.snapshot(db=db), runtime_owner=runtime)
+        upgrade_agent_organization(db, runtime, canvas)
     return {r["id"]: r for r in recs}
 
 def get(db, key):

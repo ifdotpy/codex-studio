@@ -126,7 +126,9 @@ class ProjectContracts(unittest.TestCase):
         self.runtime.projects({'path': str(self.first)})
         with self.runtime.db() as db:
             from codex_sync_entities import seed
-            seed(db, lambda: {'runtime': read_runtime_state(self.runtime, db=db), 'stateDir': str(self.root)})
+            canvas = Canvas(self.runtime.root)
+            canvas.runtime = self.runtime
+            seed(db, runtime_owner=self.runtime, canvas_owner=canvas)
         first = {'action': 'reorder', 'request_id': str(uuid.uuid4()),
                  'expected_revision': 0, 'groups': {'projects': [str(self.first)]},
                  'migration': True}

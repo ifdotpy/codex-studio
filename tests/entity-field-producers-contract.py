@@ -37,13 +37,15 @@ class EntityFieldProducers(unittest.TestCase):
         self.addCleanup(self.runtime.close)
         self.lead = self.runtime.create({"name": "Lead", "cwd": self.path,
                                          "prompt": "Keep the project moving"}, defer=True)
+        from codex_canvas import Canvas
+        self.canvas = Canvas(self.runtime.root)
+        self.canvas.runtime = self.runtime
         with self.runtime.lock, self.runtime.db() as db:
             lead = self.runtime.agent(self.lead["id"], db)
             lead.update(autoWake=True, status="idle")
             self.runtime.put(db, "agents", lead)
             from codex_sync_entities import seed
-            seed(db, lambda: {"runtime": self.runtime.snapshot(db=db), "stateDir": str(self.runtime.root)},
-                 runtime_owner=self.runtime)
+            seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
 
     def entity(self, collection, key):
         with self.runtime.db() as db:
@@ -176,18 +178,11 @@ class EntityFieldProducers(unittest.TestCase):
                        (json.dumps(agent), self.lead["id"]))
             db.execute("UPDATE sync_entity_meta SET value='1' WHERE key='agent_organization_fields'")
 
-            class BoundBuilder:
-                def __init__(builder, runtime):
-                    builder.runtime = runtime
-
-                def build(builder):
-                    return {"runtime": builder.runtime.snapshot(db=db)}
-
             from codex_sync_entities import upgrade_agent_organization
             with self.assertLogs("codex_sync_entities", level="WARNING"):
-                upgrade_agent_organization(db, BoundBuilder(self.runtime).build, runtime_owner=self.runtime)
+                upgrade_agent_organization(db, self.runtime)
             marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
-            self.assertEqual(marker, "2")
+            self.assertEqual(marker, "3")
             entity = json.loads(db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
                 (self.lead["id"],)).fetchone()[0])["value"]
@@ -212,19 +207,15 @@ class EntityFieldProducers(unittest.TestCase):
                            (json.dumps({"value": {"id": agent_id}}), agent_id))
             db.execute("UPDATE sync_entity_meta SET value='1' WHERE key='agent_organization_fields'")
 
-            class Builder:
-                def __init__(builder, runtime):
-                    builder.runtime = runtime
-
-                def build(builder):
-                    return {"runtime": builder.runtime.snapshot(db=db), "stateDir": str(builder.runtime.root)}
-
             from codex_sync_entities import encoded, seed, project
             for agent_id in agent_ids:
                 payload, digest, _ = encoded("agent", agent_id, {"id": agent_id})
                 db.execute("UPDATE sync_entities SET payload=?,hash=? WHERE collection='agent' AND id=?",
                            (payload, digest, agent_id))
-            seed(db, Builder(self.runtime).build, runtime_owner=self.runtime)
+            from codex_canvas import Canvas
+            canvas = Canvas(self.runtime.root)
+            canvas.runtime = self.runtime
+            seed(db, runtime_owner=self.runtime, canvas_owner=canvas)
             for agent_id in agent_ids:
                 record = self.runtime.agent(agent_id, db)
                 expected = project("agent", self.runtime.agent_entity_view(db, record))
@@ -244,7 +235,7 @@ class EntityFieldProducers(unittest.TestCase):
             before = db.execute("SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
             db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
             from codex_sync_entities import upgrade_agent_organization
-            upgrade_agent_organization(db, {"stateDir": str(self.runtime.root), "runtime": None})
+            upgrade_agent_organization(db)
             marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()
             after = db.execute("SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
             self.assertIsNone(marker)
@@ -389,8 +380,10 @@ class EntityFieldProducers(unittest.TestCase):
                 db.execute("UPDATE runtime_complaints SET record=? WHERE id=?",
                            (json.dumps(complaint), complaint["id"]))
             db.execute("UPDATE sync_entity_meta SET value='1' WHERE key='agent_organization_fields'")
-            self.assertGreater(upgrade_agent_organization(
-                db, {"runtime": {"agents": []}}, runtime_owner=self.runtime), 0)
+            upgrade_agent_organization(db, self.runtime)
+            self.assertEqual(db.execute(
+                "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'"
+            ).fetchone()[0], "3")
             for complaint in malformed:
                 row = db.execute("SELECT payload FROM sync_entities WHERE collection='complaint' AND id=?",
                                  (complaint["id"],)).fetchone()
@@ -450,7 +443,7 @@ class EntityFieldProducers(unittest.TestCase):
             entity_put(db, "room", broadcast_missing, broadcast_record)
 
             # A richer normal room write includes lastMessage. The migration
-            # must leave these non-federated payload bytes and sequence intact.
+            # reprojects it through Runtime.put's default room view.
             room_record = {"id": room_with_last_message, "kind": "private",
                            "members": [self.lead["id"]], "updated": 2.0}
             db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) "
@@ -512,12 +505,11 @@ class EntityFieldProducers(unittest.TestCase):
                 "SELECT collection,id,seq,payload FROM sync_entities")}
             before_federated = db.execute(
                 "SELECT seq FROM sync_entities WHERE collection='room' AND id=?", (federated_id,)).fetchone()[0]
-            upgrade_agent_organization(db,
-                {"runtime": self.runtime.snapshot(db=db), "stateDir": str(self.runtime.root)}, self.runtime)
+            upgrade_agent_organization(db, self.runtime)
             upgraded_room = json.loads(db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
                 (federated_id,)).fetchone()[0])["value"]
-            self.assertEqual(upgraded_room["lastMessage"]["text"], "federated preview")
+            self.assertNotIn("lastMessage", upgraded_room)
             self.runtime.federation()._sync_room_entity(db, federated_id)
             reconfirmed_room = json.loads(db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
@@ -542,7 +534,9 @@ class EntityFieldProducers(unittest.TestCase):
                 names.update("overview." + name for name in old_overview.keys() | new_overview.keys()
                              if old_overview.get(name) != new_overview.get(name))
             changed_field_names[key] = names
-        expected_changed = {("room", federated_id), ("agent", worker["id"]),
+        expected_changed = {("room", federated_id), ("room", private_missing),
+                            ("room", broadcast_missing), ("room", room_with_last_message),
+                            ("agent", worker["id"]),
                             ("complaint", complaint["id"]), ("project", self.path)}
         self.assertEqual(changed_pairs, expected_changed, changed_field_names)
         for key, names in changed_field_names.items():
@@ -550,15 +544,20 @@ class EntityFieldProducers(unittest.TestCase):
                 "agent": {"epoch", "lastCompletedTurnStatus", "capacityRetry", "usageResume",
                           "contextRepairWait", "lastEvent", "accountTransferId",
                           "workspaceOperation", "overview"},
-                "room": {"peerLabel", "localMembers"},
+                "room": {"peerLabel", "localMembers", "id", "kind", "members", "rootId",
+                         "updated", "lastMessage"},
                 "complaint": {"needsUserResponse", "title", "authorName", "leadName"},
                 "project": {"workerBaseRef", "workerBaseRevision"},
             }[key[0]]
             self.assertTrue(names and all(name.split(".", 1)[0] in promoted for name in names),
                             (key, names))
-        for room_id in (private_missing, broadcast_missing, room_with_last_message):
-            key = ("room", room_id)
-            self.assertEqual(after[key], before[key])
+        for room_id in (private_missing, broadcast_missing):
+            with self.runtime.db() as db:
+                deleted = db.execute("SELECT deleted FROM sync_entities WHERE collection='room' AND id=?",
+                                     (room_id,)).fetchone()[0]
+            self.assertEqual(deleted, 1)
+        room_value = self.entity("room", room_with_last_message)
+        self.assertNotIn("lastMessage", room_value)
         self.assertGreater(after_federated, before_federated)
         self.assertEqual(self.entity("room", federated_id)["peerLabel"], "Peer")
         self.assertEqual(self.entity("room", federated_id)["localMembers"], members)

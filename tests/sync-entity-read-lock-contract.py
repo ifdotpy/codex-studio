@@ -60,7 +60,8 @@ class EntityReadLockContract(unittest.TestCase):
                 return {'runtime': {'agents': [self.agent], 'monitors': [self.monitor]}}
 
         self.snapshot_owner = SnapshotOwner()
-        self.store = SyncStore(self.connect, lambda: self.snapshot_owner.snapshot(), lambda _key: {})
+        self.store = SyncStore(self.connect, lambda: self.snapshot_owner.snapshot(), lambda _key: {},
+                               runtime=self.snapshot_owner.runtime)
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')
@@ -105,7 +106,7 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(fresh['initialHigh'], self.initial['maxSeq'])
         self.assertEqual(self.writes(), [])
         prune.assert_not_called()
-        self.assertEqual(len(self.builds), 1)
+        self.assertEqual(len(self.builds), 0)
 
     def test_changed_monitor_requires_maintenance_and_publishes_the_exact_source(self):
         changed = {**self.monitor, 'status': 'completed', 'tail': 'The final output'}
@@ -136,7 +137,8 @@ class EntityReadLockContract(unittest.TestCase):
     def test_event_window_retires_stale_rows_and_uses_the_global_sequence(self):
         with self.connect() as db:
             db.execute("INSERT INTO sync_documents(seq,scope,id,payload,deleted) VALUES(5000,'drafts','draft','{}',0)")
-            put(db, 'event', 'stale', {'id': 'stale', 'agent': 'owner', 'status': 'delivered'})
+            put(db, 'event', 'stale', {'id': 'stale', 'agent': 'owner', 'kind': 'user',
+                                       'status': 'delivered', 'created': 9})
             db.execute("INSERT INTO runtime_events VALUES ('new-event','owner','user','pending',10,NULL)")
         response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         rows = {row['id']: row for row in response['documents']}
@@ -168,6 +170,7 @@ class EntityReadLockContract(unittest.TestCase):
             db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
                        "VALUES('agent_organization_fields','1')")
         builds_before = len(self.builds)
+        self.store.runtime = None
         self.statements.clear()
         with self.writer():
             unchanged = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
@@ -180,8 +183,8 @@ class EntityReadLockContract(unittest.TestCase):
         with self.connect() as db:
             marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
             sequence = db.execute("SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0]
-        self.assertEqual(marker, '2')
-        self.assertEqual(len(self.builds), builds_before + 1)
+        self.assertEqual(marker, '3')
+        self.assertEqual(len(self.builds), builds_before)
         self.assertEqual(upgraded['documents'], [])
 
         self.statements.clear()
@@ -189,7 +192,7 @@ class EntityReadLockContract(unittest.TestCase):
             stable = self.store.pull('state:entities:v1', upgraded['checkpoint']['seq'])
         self.assertEqual(stable['documents'], [])
         self.assertEqual(self.writes(), [])
-        self.assertEqual(len(self.builds), builds_before + 1)
+        self.assertEqual(len(self.builds), builds_before)
         with self.connect() as db:
             self.assertEqual(db.execute(
                 "SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0], sequence)

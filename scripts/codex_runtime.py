@@ -3274,9 +3274,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return False
             from codex_sync_entities import put as sync_entity_put
             value = json.loads(row[0]).get("value") or {}
-            value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
-            value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
-            changed = sync_entity_put(db, "workspace", "current", value)
+            changed = sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db, value))
             self.__dict__["_workspace_entity_refresh_dirty"] = False
             return changed
         except sqlite3.OperationalError as error:
@@ -3292,6 +3290,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.__dict__.get("_strict_workspace_refresh_errors", False):
                 raise
             return False
+
+    def workspace_entity_view(self, db, base=None):
+        """Build the workspace DTO from its runtime sources for seed and writes."""
+        from codex_project_folders import sidebar_order
+
+        value = dict(base or {})
+        value.update(
+            connected=bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
+            nativeNotices=account_notices(self, db)
+                         + __import__("codex_provider_versions").monitor(self).status()["warnings"],
+            rateLimits=self.rate_limits.copy(),
+            rateLimitsByAccount={key: item.copy() for key, item in self.rate_limits_by_account.copy().items()},
+            projectOrganizationVersion=1,
+            peerTeamsVersion=1,
+            tasksHistoryLimit=100,
+            sidebarOrder=sidebar_order(db),
+            stateDir=str(self.root),
+        )
+        return value
 
     @staticmethod
     def _workspace_refresh_diagnostic(error_kind):

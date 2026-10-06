@@ -225,7 +225,7 @@ with tempfile.TemporaryDirectory() as directory:
     # The full snapshot seeds once; later pulls must not rebuild it under the write lock.
     store.pull("state:entities:v1", after=0, limit=100)
     store.pull("state:entities:v1", after=seeded["checkpoint"]["seq"])
-    assert len(snapshot_builds) == 1, snapshot_builds
+    assert len(snapshot_builds) == 0, snapshot_builds
     assert seeded["workspaceId"] == "a" * 32
     assert all(item["id"].startswith("entity:") for item in seeded["documents"])
     assert seeded["maxSeq"] >= seeded["checkpoint"]["seq"]
