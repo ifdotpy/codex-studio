@@ -173,7 +173,9 @@
 }
 .sidebar-nav-button {
   width: 100%;
-  height: 34px;
+  height: auto;
+  min-height: 34px;
+  padding-block: 4px;
   padding-inline: 10px;
   color: var(--text);
 }
@@ -272,7 +274,8 @@
 .chat-settings-panel #project {
   width: 100%;
   max-width: 100%;
-  height: 36px;
+  height: auto;
+  min-height: 36px;
   padding-inline: 12px;
   color: var(--text);
   font-size: 13px;
@@ -723,4 +726,16 @@
   width: 14px;
   margin-left: 8px;
   flex-shrink: 0;
+}
+
+.conversation-title-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.sidebar-shared-chat .mantine-Button-label {
+  display: block;
+  min-width: 0;
+  text-overflow: ellipsis;
 }

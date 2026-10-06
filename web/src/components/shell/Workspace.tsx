@@ -891,7 +891,14 @@ function Tools(c: Context) {
                     <strong>
                       {inventoryName(tool) || `Tool ${index + 1}`}
                     </strong>
-                    <span className="workspace-tool-description">
+                    <span
+                      className="workspace-tool-description"
+                      title={
+                        typeof tool.description === "string"
+                          ? tool.description
+                          : undefined
+                      }
+                    >
                       {typeof tool.description === "string"
                         ? tool.description
                         : ""}

@@ -447,7 +447,15 @@ function ProgressDisplay({
             >
               <span>PROGRESS.md</span>
             </Button>
-            <span className="agent-panel-summary">
+            <span
+              className="agent-panel-summary"
+              title={
+                parsed.firstLine ||
+                (current.error
+                  ? "Cannot read PROGRESS.md."
+                  : "Open PROGRESS.md to view this format.")
+              }
+            >
               {parsed.firstLine ||
                 (current.error
                   ? "Cannot read PROGRESS.md."

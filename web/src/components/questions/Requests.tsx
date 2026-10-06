@@ -486,7 +486,7 @@ function RequestCard({
                 {permissionRows(permissions).map(([name, value]) => (
                   <div key={name}>
                     <dt>{name}</dt>
-                    <dd>{value}</dd>
+                    <dd title={value}>{value}</dd>
                   </div>
                 ))}
               </dl>
