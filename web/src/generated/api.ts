@@ -2507,18 +2507,16 @@ export interface components {
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -3839,18 +3837,16 @@ export interface components {
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -9254,6 +9250,10 @@ export interface components {
       /** Checkpointerror */
       checkpointError?: string | null;
       claudeOptions?: components["schemas"]["JsonValue"] | null;
+      /** Cleanedimageworkspace */
+      cleanedImageWorkspace?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Command */
       command?: string | null;
       /** Compactions */
@@ -9326,10 +9326,8 @@ export interface components {
       imageWorkspace?: boolean | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
-      /** Imageworkspacecollect */
-      imageWorkspaceCollect?: {
-        [key: string]: components["schemas"]["JsonValue"];
-      } | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
       /** Imageworkspacemount */
@@ -9344,14 +9342,8 @@ export interface components {
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacesnapshotcommit */
-      imageWorkspaceSnapshotCommit?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
       /** Importedfrom */
       importedFrom?: string | null;
       /** Inflight */
