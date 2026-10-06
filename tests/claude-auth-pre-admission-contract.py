@@ -181,7 +181,7 @@ class AccountAdmission(admission.PreAdmission):
         self.queued_steer_cannot_reject_admitted_input('11111111-1111-4111-8111-111111111111')
 
     def test_bridge_version_identifies_the_account_receipt_guard(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 16)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 17)
 
 
 def load_tests(loader, tests, pattern):

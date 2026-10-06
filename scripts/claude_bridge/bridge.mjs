@@ -78,6 +78,9 @@ const queries = new Map(),
   pending = new Map();
 const pendingTurnReceipts = new Set();
 const PREPARATION_TIMEOUT_MS = 20_000;
+// A cold Claude process can need more than 20 seconds under launchd limits.
+// Retained query controls keep their shorter, shared deadline.
+const INITIALIZATION_TIMEOUT_MS = 60_000;
 
 async function boundedPreparation(read, deadline, onTimeout) {
   let timer;
@@ -249,7 +252,7 @@ async function probe(cwd, read) {
     await hold;
   }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20000);
+  const timer = setTimeout(() => controller.abort(), INITIALIZATION_TIMEOUT_MS);
   const q = query({
     prompt: prompt(),
     options: {
@@ -273,7 +276,7 @@ async function probe(cwd, read) {
         checkAccount(await q.accountInfo());
         return read(q);
       },
-      Date.now() + PREPARATION_TIMEOUT_MS,
+      Date.now() + INITIALIZATION_TIMEOUT_MS,
       () => controller.abort(),
     );
   } finally {
@@ -645,6 +648,7 @@ async function finishTurn(s, active, result, error) {
 }
 async function startSession(s, active, p) {
   const initial = active.turn;
+  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
   let admit;
   const admitted = new Promise((r) => (admit = r));
   let allowed = false;
@@ -675,7 +679,11 @@ async function startSession(s, active, p) {
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
         ...(p.effort ? { effort: p.effort } : {}),
-        settings: await flags(s, p),
+        settings: await boundedPreparation(
+          () => flags(s, p),
+          deadline,
+          () => {},
+        ),
         extraArgs: {
           ...providerOptions.extraArgs,
           "replay-user-messages": null,
@@ -749,7 +757,7 @@ async function startSession(s, active, p) {
     checkAccount(
       await boundedPreparation(
         () => q.accountInfo(),
-        Date.now() + PREPARATION_TIMEOUT_MS,
+        deadline,
         () => q.close(),
       ),
     );
@@ -1243,7 +1251,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 16 },
+      capabilities: { claudeVersion: 17 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {

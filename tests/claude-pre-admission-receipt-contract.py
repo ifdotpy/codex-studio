@@ -17,6 +17,7 @@ SDK = SDK.replace(
     "accountInfo:async()=>{if(fs.existsSync(options.cwd+'/.hang-account'))",
     """accountInfo:async()=>{
      if(fs.existsSync(options.cwd+'/.account-timeout-text'))throw new Error('Claude preparation timed out before input was submitted');
+     if(options.systemPrompt&&fs.existsSync(options.cwd+'/.slow-account'))await new Promise(resolve=>setTimeout(resolve,1200));
      if(fs.existsSync(options.cwd+'/.late-account')){
       fs.writeFileSync(options.cwd+'/.account-entered','yes');
       await new Promise(resolve=>setTimeout(resolve,1800));
@@ -39,6 +40,8 @@ SDK = SDK.replace(
 class PreAdmission(fixture.Bridge):
     def setUp(self):
         self.preparation_timeout_ms = 1000
+        if self._testMethodName == 'test_cold_initialization_can_exceed_control_budget_and_admit_once':
+            self.initialization_timeout_ms = 2000
         original = fixture.SDK
         fixture.SDK = SDK
         try:
@@ -88,6 +91,24 @@ class PreAdmission(fixture.Bridge):
         self.assertEqual(self.turn('fixture input', 'fresh-timeout')['turn']['id'], new)
         self.assertEqual(len(self.admissions()), 1)
         self.assertEqual(len(self.history()), 2)
+
+    def test_cold_initialization_can_exceed_control_budget_and_admit_once(self):
+        (self.root / '.slow-account').touch()
+        started = time.monotonic()
+        turn = self.turn('fixture input', 'slow-cold-start')['turn']['id']
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertGreater(time.monotonic() - started, 1)
+        self.assertEqual(self.history()[0]['startOutcome'], 'accepted')
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertEqual(self.turn('fixture input', 'slow-cold-start')['turn']['id'], turn)
+        self.assertEqual(len(self.admissions()), 1)
+        (self.root / '.slow-account').unlink()
+        (self.root / '.hang-preparation').touch()
+        started = time.monotonic()
+        with self.assertRaisesRegex(ValueError, 'before input was submitted'):
+            self.turn('second input', 'blocked-control')
+        self.assertLess(time.monotonic() - started, 1.8)
+        self.assertEqual(len(self.admissions()), 1)
 
     def test_preparation_late_account_result_cannot_admit_rejected_input(self):
         (self.root / '.late-account').touch()
