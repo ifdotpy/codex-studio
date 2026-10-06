@@ -1,12 +1,14 @@
 import type { Snapshot } from "../types";
-import type {
-  BackgroundTask,
-  DisplayBackgroundTask,
-  Monitor,
-  WorkspaceTask,
-} from "../types";
+import type { BackgroundTask, Monitor, WorkspaceTask } from "../types";
 
-type Task = BackgroundTask;
+type Task = BackgroundTask | WorkspaceTask;
+type RendererTaskFields = {
+  agent: string;
+  created: number;
+  kind: string;
+  status: string;
+};
+export type DisplayBackgroundTask = (Task | Monitor) & RendererTaskFields;
 
 export const activeTask = (task: DisplayBackgroundTask) =>
   ["running", "starting", "approval", "pending", "stopping"].includes(
@@ -14,9 +16,11 @@ export const activeTask = (task: DisplayBackgroundTask) =>
   );
 
 export function projectTaskForRenderer(
-  task: Task | WorkspaceTask | Monitor,
+  task: Task | Monitor,
+  source: "task" | "monitor" = "task",
 ): DisplayBackgroundTask | null {
-  const kind = "kind" in task ? task.kind : "monitor";
+  const kind =
+    source === "monitor" ? "monitor" : "kind" in task ? task.kind : null;
   if (
     task.agent == null ||
     task.created == null ||
@@ -38,10 +42,10 @@ export function backgroundTasks(
 ): DisplayBackgroundTask[] {
   return [
     ...(data?.runtime.monitors ?? [])
-      .map(projectTaskForRenderer)
+      .map((monitor) => projectTaskForRenderer(monitor, "monitor"))
       .filter((task): task is DisplayBackgroundTask => task !== null),
     ...(data?.runtime.tasks ?? [])
-      .map(projectTaskForRenderer)
+      .map((task) => projectTaskForRenderer(task, "task"))
       .filter((task): task is DisplayBackgroundTask => task !== null),
   ];
 }

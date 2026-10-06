@@ -38,18 +38,15 @@ import {
 } from "../../api";
 import type { paths } from "../../generated/api";
 import "./background-controls.css";
-import type {
-  Agent,
-  DisplayBackgroundTask,
-  JsonValue,
-  Monitor,
-  Request,
-  Snapshot,
-} from "../../types";
+import type { Agent, JsonValue, Monitor, Request, Snapshot } from "../../types";
 import { useWorkspaceTaskFeed } from "../useWorkspaceTaskFeed";
 import { watchResourceReads } from "../watchResourceReads";
 import { copyText } from "../../clipboard/clipboard";
-import { activeTask, projectTaskForRenderer } from "../backgroundTaskModel";
+import {
+  activeTask,
+  projectTaskForRenderer,
+  type DisplayBackgroundTask,
+} from "../backgroundTaskModel";
 
 type BackgroundAction = <Path extends ApiPostPath>(
   path: Path,
@@ -63,7 +60,7 @@ type PendingRequest = Request;
 export function monitorTask(
   monitor: MonitorTask,
 ): DisplayBackgroundTask | null {
-  return projectTaskForRenderer(monitor);
+  return projectTaskForRenderer(monitor, "monitor");
 }
 
 function isJsonObject(
@@ -141,6 +138,7 @@ const taskKindLabel = (task: DisplayBackgroundTask, owner?: Agent) => {
   if (task.kind === "monitor") return "Monitor";
   if (task.kind !== "command") return "Tool";
   const outsideTurn =
+    "turnId" in task &&
     task.turnId &&
     owner &&
     (owner.inFlight === false ||
@@ -192,7 +190,7 @@ export default function BackgroundTasks({
         .map(monitorTask)
         .filter((task): task is DisplayBackgroundTask => task !== null),
       ...(taskFeed?.tasks ?? data.runtime.tasks)
-        .map(projectTaskForRenderer)
+        .map((task) => projectTaskForRenderer(task, "task"))
         .filter((task): task is DisplayBackgroundTask => task !== null),
     ].filter(activeTask),
     owner = (id: string) => agents.find((a) => a.id === id);
@@ -478,6 +476,9 @@ function TaskDetail({
   }, [opened, summary.id, summary.kind]);
   const resolvedDetail = detail?.id === summary.id ? detail : null;
   const task = resolvedDetail ? { ...resolvedDetail, ...summary } : summary;
+  const monitor = task.kind === "monitor" && "tail" in task ? task : null;
+  const outputTail = resolvedDetail?.tail ?? monitor?.tail;
+  const outputError = resolvedDetail?.error ?? monitor?.error;
   const [pending, setPending] = useState(false),
     [follow, setFollow] = useState(true),
     [copied, setCopied] = useState(false);
@@ -485,7 +486,7 @@ function TaskDetail({
   useEffect(() => {
     if (follow && output.current)
       output.current.scrollTop = output.current.scrollHeight;
-  }, [resolvedDetail?.tail, follow]);
+  }, [outputTail, follow]);
   const act: BackgroundAction = async <Path extends ApiPostPath>(
     path: Path,
     body: PostBody<Path>,
@@ -586,9 +587,9 @@ function TaskDetail({
             Output unavailable: {loadError}
           </p>
         )}
-        {resolvedDetail?.error && (
+        {outputError && (
           <p role="alert" className="task-error">
-            <ErrorDescription value={resolvedDetail.error} />
+            <ErrorDescription value={outputError} />
           </p>
         )}
         {task.stdinError && (
@@ -627,9 +628,9 @@ function TaskDetail({
               <ActionIcon
                 size="sm"
                 aria-label="Copy task output"
-                disabled={!resolvedDetail?.tail}
+                disabled={!outputTail}
                 onClick={() => {
-                  void copyText(resolvedDetail?.tail || "")
+                  void copyText(outputTail || "")
                     .then(() => setCopied(true))
                     .catch(() => notify("Could not copy output"));
                 }}
@@ -640,21 +641,21 @@ function TaskDetail({
           </div>
           <pre
             ref={output}
-            className={`task-output ${!resolvedDetail?.tail ? "empty" : ""}`}
+            className={`task-output ${!outputTail ? "empty" : ""}`}
             onScroll={(e) => {
               const el = e.currentTarget;
               if (el.scrollHeight - el.scrollTop - el.clientHeight > 35)
                 setFollow(false);
             }}
           >
-            {resolvedDetail?.tail ||
+            {outputTail ||
               (activeTask(task)
                 ? "Waiting for output…"
                 : "No output recorded.")}
           </pre>
           {(task.outputTruncated ||
             (task.bytes || 0) >
-              new TextEncoder().encode(resolvedDetail?.tail || "").length) && (
+              new TextEncoder().encode(outputTail || "").length) && (
             <p className="task-output-limit">
               Latest output shown
               {task.log ? ". The saved log is available below." : "."}

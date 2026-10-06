@@ -508,6 +508,91 @@ it("keeps chats after an unrelated entity update", () => {
   assert.deepEqual(updated.chats, [{ id: "c", title: "Shared chat" }]);
 });
 
+it("skips invalid entity rows once and still applies the rest of the batch", () => {
+  const state = emptyEntityProjection();
+  const initial = applyEntityRows(
+    state,
+    [
+      entityRow("agent", "a", { id: "a", name: "A1" }, 1),
+      entityRow("project", "p", { id: "p", name: "P1" }, 2),
+    ],
+    true,
+  );
+  const reports = [];
+  const report = console.error;
+  console.error = (...args) => reports.push(args);
+  try {
+    const changed = applyEntityRows(
+      state,
+      [
+        entityRow("agent", "a", { id: "a", name: "A2" }, 3),
+        { id: "entity:broken:json", payload: "{", seq: 4 },
+        {
+          id: "entity:broken:empty",
+          payload: "",
+          seq: 5,
+        },
+        {
+          id: "entity:broken:collection",
+          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
+          seq: 6,
+        },
+        {
+          id: "entity:broken:type",
+          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
+          seq: 7,
+        },
+        entityRow("project", "p", { id: "p", name: "P2" }, 8),
+      ],
+      true,
+    );
+    assert.equal(changed.threads[0].name, "A2");
+    assert.equal(changed.runtime.projects[0].name, "P2");
+    assert.equal(changed.chats, initial.chats);
+    assert.equal(reports.length, 4);
+    assert.ok(
+      reports.every(
+        ([message, fields]) =>
+          message.includes(fields.collection) && message.includes(fields.id),
+      ),
+    );
+    assert.ok(reports.every(([, fields]) => !Object.hasOwn(fields, "payload")));
+
+    const repeated = applyEntityRows(
+      state,
+      [
+        entityRow("agent", "a", { id: "a", name: "A2" }, 3),
+        { id: "entity:broken:json", payload: "{", seq: 4 },
+        {
+          id: "entity:broken:empty",
+          payload: "",
+          seq: 5,
+        },
+        {
+          id: "entity:broken:collection",
+          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
+          seq: 6,
+        },
+        {
+          id: "entity:broken:type",
+          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
+          seq: 7,
+        },
+        entityRow("project", "p", { id: "p", name: "P2" }, 8),
+      ],
+      true,
+    );
+    assert.equal(repeated, changed);
+    assert.equal(
+      reports.length,
+      4,
+      "the same invalid row versions report once",
+    );
+  } finally {
+    console.error = report;
+  }
+});
+
 it("moves replaced entities between collections and removes rows omitted by RxDB", () => {
   const state = emptyEntityProjection();
   const first = applyEntityRows(

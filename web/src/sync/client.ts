@@ -19,6 +19,7 @@ import {
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
+import type { components } from "../generated/api";
 import {
   watchResourceChanges,
   watchResourceConnection,
@@ -51,6 +52,15 @@ export type SyncDocument = {
   seq: number;
   _deleted?: boolean;
 };
+type SyncEntitiesEventDetail = {
+  workspaceId: string;
+  documents: components["schemas"]["SyncEntity"][];
+};
+declare global {
+  interface WindowEventMap {
+    "codex-sync-entities": CustomEvent<SyncEntitiesEventDetail>;
+  }
+}
 class WorkspaceMismatchError extends Error {
   constructor() {
     super("The server workspace changed. Reload to synchronize.");
@@ -176,13 +186,12 @@ export function syncDatabase() {
 }
 
 if (typeof window !== "undefined")
-  window.addEventListener("codex-sync-entities", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    if (!detail || !Array.isArray(detail.documents)) return;
+  window.addEventListener("codex-sync-entities", (event) => {
+    const detail = event.detail;
     void syncDatabase()
       .then(async ({ db, workspaceId }) => {
-        if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents as SyncDocument[]) {
+        if (detail.workspaceId !== workspaceId) return;
+        for (const document of detail.documents) {
           if (!document.id.startsWith("entity:")) continue;
           await persistProjection(db.projections, document);
         }
@@ -980,26 +989,9 @@ async function acquireProjection(
 }
 
 type ProjectionPayload = Snapshot | GetResult<"/api/transcript"> | null;
-
-export function watchProjection(
-  scope: "state",
-  accept: (payload: Snapshot | null) => void,
-  fail: (error: unknown) => void,
-): Promise<() => void>;
-export function watchProjection(
-  scope: `transcript:${string}`,
-  accept: (payload: GetResult<"/api/transcript"> | null) => void,
-  fail: (error: unknown) => void,
-): Promise<() => void>;
-export function watchProjection(
-  scope: string,
-  accept: (payload: ProjectionPayload) => void,
-  fail: (error: unknown) => void,
-): Promise<() => void>;
 export async function watchProjection(
   scope: string,
-  // Overload implementation bridge; public signatures above remain scope-specific.
-  accept: (payload: any | null) => void,
+  accept: (payload: ProjectionPayload) => void,
   fail: (e: unknown) => void,
 ) {
   const { db, workspaceId, state, release } = await acquireProjection(scope);
@@ -1103,7 +1095,7 @@ export function prefetchTranscript(
       // Query the same persisted document used by the foreground view.
       const subscription = handle.db.projections
         .findOne(`transcript:${id}`)
-        .$.subscribe((doc: any) => {
+        .$.subscribe((doc) => {
           if (doc)
             void cacheStoredTranscript(
               handle.db.projections,
@@ -1488,24 +1480,8 @@ export async function startDraftReplication(
 
 // Reopen a subscription after an initial connection failure, without a page reload.
 export function subscribeProjection(
-  scope: "state",
-  accept: (payload: Snapshot | null) => void,
-  report: (error: unknown | null) => void,
-): () => void;
-export function subscribeProjection(
-  scope: `transcript:${string}`,
-  accept: (payload: GetResult<"/api/transcript"> | null) => void,
-  report: (error: unknown | null) => void,
-): () => void;
-export function subscribeProjection(
   scope: string,
   accept: (payload: ProjectionPayload) => void,
-  report: (error: unknown | null) => void,
-): () => void;
-export function subscribeProjection(
-  scope: string,
-  // Overload implementation bridge; public signatures above remain scope-specific.
-  accept: (payload: any | null) => void,
   report: (error: unknown | null) => void,
 ) {
   let stopped = false,

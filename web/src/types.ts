@@ -28,19 +28,6 @@ export type Room = RoomEntityDto;
 export type Complaint = ComplaintEntityDto;
 export type BackgroundTask = TaskEntityDto;
 export type WorkspaceTask = GetResult<"/api/workspace/tasks">["tasks"][number];
-export type ProjectedMonitorTask = Monitor & { kind: "monitor" };
-type RendererTaskFields = {
-  agent: string;
-  created: number;
-  kind: string;
-  status: string;
-};
-export type DisplayBackgroundTask = (
-  | BackgroundTask
-  | WorkspaceTask
-  | ProjectedMonitorTask
-) &
-  RendererTaskFields;
 export type Monitor = MonitorEntityDto;
 export type Request = RequestEntityDto;
 export type Rule = RuleEntityDto;

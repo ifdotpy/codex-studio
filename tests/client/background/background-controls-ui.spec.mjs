@@ -60,7 +60,8 @@ test("Background controls", async ({ context }) => {
     timeout_ms: 1800000,
     status: "running",
     created: Date.now() / 1000,
-    tail: "ready",
+    tail: "Monitor output text",
+    error: "Monitor error line",
     log: "/fixture/monitor.log",
   };
   const state = {
@@ -155,6 +156,16 @@ test("Background controls", async ({ context }) => {
       0,
     );
     await drawer.locator(`[data-task="${monitor.id}"]`).click();
+    assert.match(
+      await drawer.locator(".task-output").innerText(),
+      /Monitor output text/,
+    );
+    assert.ok(
+      (await drawer
+        .getByRole("alert")
+        .filter({ hasText: "Monitor error line" })
+        .count()) >= 1,
+    );
     await drawer
       .getByRole("button", { name: "Send line", exact: true })
       .waitFor();

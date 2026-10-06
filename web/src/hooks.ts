@@ -86,22 +86,30 @@ function legacyAgentForRenderer(agent: LegacyAgent): Agent {
   };
 }
 
-/** Adapt only the temporary /api/state bootstrap into the renderer entity shape. */
+/**
+ * Normalize the temporary, cached /api/state fallback until that fallback is
+ * removed; older cached snapshots may omit collection arrays.
+ */
 function legacyStateSnapshot(data: LegacySnapshot): Snapshot {
   const runtime = data.runtime;
+  const threads = (data.threads ?? []).map(legacyAgentForRenderer);
+  const chats = data.chats ?? [];
+  const nodes = (data.nodes ?? []).map((node) =>
+    node.kind === "chat" ? node : legacyAgentForRenderer(node),
+  );
   return {
     token: data.token,
     stateDir: data.stateDir,
-    threads: data.threads.map(legacyAgentForRenderer),
-    chats: data.chats,
-    nodes: data.nodes.map((node) =>
-      node.kind === "chat" ? node : legacyAgentForRenderer(node),
-    ),
-    edges: data.edges,
+    threads,
+    chats,
+    nodes,
+    edges: data.edges ?? [],
     runtime: {
       ...runtime,
-      agents: (runtime?.agents ?? data.threads).map(legacyAgentForRenderer),
-      rooms: runtime?.rooms.map(legacyRoomForRenderer) ?? [],
+      agents: (runtime?.agents ?? data.threads ?? []).map(
+        legacyAgentForRenderer,
+      ),
+      rooms: runtime?.rooms?.map(legacyRoomForRenderer) ?? [],
       tasks: runtime?.tasks ?? [],
       monitors: runtime?.monitors ?? [],
       complaints: runtime?.complaints ?? [],
@@ -187,19 +195,15 @@ export function useSnapshot() {
     return {
       ...data,
       threads: [...data.threads, ...missing],
-      ...(runtime
-        ? {
-            runtime: {
-              ...runtime,
-              agents: [
-                ...runtime.agents.filter(
-                  (a) => !missing.some((row) => row.id === a.id),
-                ),
-                ...missing,
-              ],
-            },
-          }
-        : {}),
+      runtime: {
+        ...runtime,
+        agents: [
+          ...runtime.agents.filter(
+            (a) => !missing.some((row) => row.id === a.id),
+          ),
+          ...missing,
+        ],
+      },
     };
   }, [data, created, scope]);
   const generation = useRef(0);
@@ -322,7 +326,7 @@ export function useSnapshot() {
       subscribeProjection(
         "state",
         (next) => {
-          if (next) {
+          if (next && "runtime" in next) {
             replicated.current = true;
             setSyncError("");
             setData({ ...next, token: sessionToken.current });
@@ -907,7 +911,7 @@ export function useMessages(
       `transcript:${id}`,
       (next) => {
         if (active.current !== scope) return;
-        if (next) {
+        if (next && "items" in next) {
           seen = true;
           syncActive.current = scope;
           setSyncId(scope);

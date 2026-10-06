@@ -39,6 +39,7 @@ type EntityRowState = {
 
 export type EntityProjection = {
   rows: Map<string, EntityRowState>;
+  invalidReportedSeq: Map<string, number>;
   values: EntityValues;
   snapshot: Snapshot | null;
 };
@@ -62,12 +63,46 @@ function emptyEntityValues(): EntityValues {
   };
 }
 
+type ParsedEntityPayload =
+  | { payload: SyncEntityPayload }
+  | { invalidCollection: string };
+
 /**
- * The server validates each canonical entity payload before storing and
- * returning it, and the schema-version gate keeps this generated union in sync.
+ * The server validates canonical payloads, and normal requests are schema
+ * gated. Cached rows can outlive a schema change, so tolerate malformed JSON
+ * and unknown collection names while retaining typed handling for known rows.
  */
-function parseEntityPayload(payload: string): SyncEntityPayload {
-  return JSON.parse(payload) as SyncEntityPayload;
+function parseEntityPayload(payload: string): ParsedEntityPayload {
+  let parsed: SyncEntityPayload;
+  try {
+    parsed = JSON.parse(payload) as SyncEntityPayload;
+  } catch {
+    return { invalidCollection: "unparseable" };
+  }
+  if (parsed === null || typeof parsed !== "object")
+    return { invalidCollection: "missing" };
+  const collection = parsed.collection;
+  if (typeof collection !== "string")
+    return { invalidCollection: "non-string" };
+  switch (collection) {
+    case "agent":
+    case "room":
+    case "task":
+    case "monitor":
+    case "complaint":
+    case "request":
+    case "rule":
+    case "project":
+    case "peerTeam":
+    case "chat":
+    case "edge":
+    case "event":
+    case "work":
+    case "workspace":
+      return { payload: parsed };
+    default:
+      return { invalidCollection: collection };
+  }
 }
 
 function entityValues<C extends EntityCollection>(
@@ -159,7 +194,12 @@ function projectSnapshotCollections(
 }
 
 export function emptyEntityProjection(): EntityProjection {
-  return { rows: new Map(), values: emptyEntityValues(), snapshot: null };
+  return {
+    rows: new Map(),
+    invalidReportedSeq: new Map(),
+    values: emptyEntityValues(),
+    snapshot: null,
+  };
 }
 
 /** Apply only rows whose server sequence changed. Unchanged entity values and
@@ -181,6 +221,7 @@ export function applyEntityRows(
     const oldCollection = previous?.collection;
     const oldEntityId = previous?.entityId;
     if (row._deleted) {
+      state.invalidReportedSeq.delete(row.id);
       if (oldCollection && oldEntityId !== undefined) {
         state.values[oldCollection].delete(oldEntityId);
         changed.add(oldCollection);
@@ -195,7 +236,19 @@ export function applyEntityRows(
       addedTombstone = true;
       continue;
     }
-    const payload = parseEntityPayload(row.payload);
+    const parsed = parseEntityPayload(row.payload);
+    if ("invalidCollection" in parsed) {
+      if (state.invalidReportedSeq.get(row.id) !== row.seq) {
+        state.invalidReportedSeq.set(row.id, row.seq);
+        console.error(
+          `Skipping sync entity row for collection "${parsed.invalidCollection}" and document "${row.id}"`,
+          { collection: parsed.invalidCollection, id: row.id },
+        );
+      }
+      continue;
+    }
+    state.invalidReportedSeq.delete(row.id);
+    const payload = parsed.payload;
     if (
       oldCollection &&
       oldEntityId !== undefined &&
@@ -249,7 +302,8 @@ export function applyEntityRows(
         break;
       default: {
         const exhaustive: never = payload;
-        throw new Error(`Unknown entity payload: ${exhaustive}`);
+        void exhaustive;
+        continue;
       }
     }
     state.rows.set(row.id, {
@@ -259,6 +313,9 @@ export function applyEntityRows(
     });
     changed.add(payload.collection);
   }
+  for (const rowId of state.invalidReportedSeq.keys()) {
+    if (!seen.has(rowId)) state.invalidReportedSeq.delete(rowId);
+  }
   // RxDB find queries omit tombstones. Missing IDs therefore represent deletes.
   const missing: Array<[string, EntityRowState]> = [];
   for (const [rowId, previous] of state.rows) {
@@ -267,6 +324,7 @@ export function applyEntityRows(
     missing.push([rowId, previous]);
   }
   for (const [rowId, previous] of missing) {
+    state.invalidReportedSeq.delete(rowId);
     if (previous.collection && previous.entityId !== undefined) {
       state.values[previous.collection].delete(previous.entityId);
       changed.add(previous.collection);
