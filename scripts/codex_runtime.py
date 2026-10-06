@@ -2850,8 +2850,29 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             elif table == "monitors":
                 from codex_sync_entities import sync_monitor_write
                 sync_monitor_write(db, record)
+            elif table == "complaints":
+                sync_entity_put(db, collection, str(record["id"]), self.complaint_entity_view(db, record))
+            elif table == "work":
+                sync_entity_put(db, collection, str(record["id"]), record)
+                owners = {result.get("agent") for result in record.get("results", [])
+                          if isinstance(result, dict) and isinstance(result.get("agent"), str)}
+                for owner in owners:
+                    row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner,)).fetchone()
+                    if row:
+                        agent = json.loads(row[0])
+                        sync_entity_put(db, "agent", owner, self.agent_entity_view(db, agent),
+                                        bool(agent.get("deletedAt")))
             else:
                 sync_entity_put(db, collection, str(record["id"]), record)
+            if table == "agents" and previous is not None and previous.get("name") != record.get("name"):
+                rows = db.execute(
+                    "SELECT id,record FROM runtime_complaints WHERE "
+                    "json_extract(record,'$.author')=? OR json_extract(record,'$.leadId')=?",
+                    (record["id"], record["id"]))
+                for complaint_id, raw in rows:
+                    complaint = json.loads(raw)
+                    sync_entity_put(db, "complaint", complaint_id,
+                                    self.complaint_entity_view(db, complaint))
             if table == "agents" and previous is not None and (
                 previous.get("deletedAt") != record.get("deletedAt")
             ):
@@ -2866,6 +2887,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         elif (sync_rooms and table == "projects"
               and (previous or {}).get("peerTeams") != record.get("peerTeams")):
             self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))
+        if changed:
+            self.sync_workspace_volatile(db)
         if table == "agents":
             self.mark_agent_records_changed(record["id"])
             self.touch_ui(record["id"], db, publish_resource=False)
@@ -3087,6 +3110,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 selected = executable_for(self)
 
     def _publish_desktop_resource(self) -> None:
+        with self.lock, self.db() as db:
+            self.sync_workspace_volatile(db)
         from studio_api.sync.resources.models import DesktopResource, ResourceRef
 
         resource = ResourceRef(DesktopResource(kind="desktop"))
@@ -3097,6 +3122,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 self._committed_resource_changes[key] = resource
         self.changed.set()
+
+    def sync_workspace_volatile(self, db):
+        """Keep volatile workspace entity fields current with their live sources."""
+        try:
+            row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
+        except sqlite3.OperationalError:
+            return False
+        if not row or row[1] or not row[0]:
+            return False
+        from codex_sync_entities import put as sync_entity_put
+        value = json.loads(row[0]).get("value") or {}
+        value["connected"] = bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed
+        value["nativeNotices"] = account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"]
+        return sync_entity_put(db, "workspace", "current", value)
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -7706,20 +7745,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def complaint_summaries(self, db):
         complaints = self.records(db, "complaints")
-        # Decode only the agents that the complaints name.
-        ids = sorted({key for c in complaints for key in (c["author"], c["leadId"])})
-        agents = {a["id"]: a for a in (json.loads(r[0]) for r in db.execute(
+        result = [self.complaint_entity_view(db, c) | {"text": c["text"], "responses": c["responses"]}
+                  for c in complaints]
+        for summary, source in zip(result, complaints):
+            summary["needsResponse"] = self.complaint_needs_response(source)
+            row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (source.get("leadId"),)).fetchone()
+            lead = json.loads(row[0]) if row else {}
+            summary["leadStopped"] = not lead.get("autoWake", False)
+            summary["leadDeleted"] = bool(lead.get("deletedAt"))
+        return sorted(result, key=lambda c: (not self.complaint_needs_response(c), -c["updated"]))
+
+    def complaint_entity_view(self, db, complaint):
+        """Build viewer-independent complaint entity fields from their named sources."""
+        ids = sorted({value for value in (complaint.get("author"), complaint.get("leadId"))
+                      if isinstance(value, str) and value != "user"})
+        agents = {a["id"]: a for a in (json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
-        result = []
-        for c in complaints:
-            result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
-                           "title": c["text"][:140], "text": c["text"], "responses": c["responses"], "recipient": self.complaint_recipient(c),
-                           "version": c["version"], "needsResponse": self.complaint_needs_response(c),
-                           "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
-                           "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
-                           "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
-                           "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
-        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
+        user_view = {**complaint, "recipient": "user", "responses": complaint.get("responses") or []}
+        return {
+            **{key: complaint.get(key) for key in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
+            "title": str(complaint.get("text") or "")[:140],
+            "recipient": "user" if complaint.get("recipient") == "user" else "lead",
+            "version": complaint.get("version"),
+            "needsUserResponse": self.complaint_needs_response(user_view),
+            "authorName": agents.get(complaint.get("author"), {}).get(
+                "name", "You" if complaint.get("author") == "user" else complaint.get("author")),
+            "leadName": agents.get(complaint.get("leadId"), {}).get("name", complaint.get("leadId")),
+        }
 
     def complaint_detail(self, key):
         with self.lock, self.db() as db:

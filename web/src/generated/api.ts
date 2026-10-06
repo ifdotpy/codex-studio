@@ -2460,6 +2460,8 @@ export interface components {
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
         | null;
+      /** Accounttransferid */
+      accountTransferId?: string | null;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -2472,11 +2474,13 @@ export interface components {
       autoWake?: boolean | null;
       /** Cansend */
       canSend?: boolean | null;
+      capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
       /** Compactions */
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
@@ -2491,6 +2495,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
+      /** Epoch */
+      epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
@@ -2529,6 +2535,9 @@ export interface components {
       lastAnswer?: string | null;
       /** Lastcompletedturn */
       lastCompletedTurn?: string | null;
+      lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
+      /** Lastevent */
+      lastEvent?: string | null;
       /** Lastreadat */
       lastReadAt?: number | null;
       /** Launcheralive */
@@ -2617,8 +2626,11 @@ export interface components {
       unreadCount?: number | null;
       /** Updated */
       updated?: number | null;
+      usageResume?: components["schemas"]["UsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspaceoperation */
+      workspaceOperation?: string | null;
       /** Worktree */
       worktree?: boolean | string | null;
       /** Worktreepreparation */
@@ -3791,6 +3803,8 @@ export interface components {
       accountTransfer?:
         | components["schemas"]["AccountTransferSummaryDto"]
         | null;
+      /** Accounttransferid */
+      accountTransferId?: string | null;
       activity?: components["schemas"]["AgentActivity"] | null;
       agentMode?: components["schemas"]["AgentMode"] | null;
       /** Agentmoderevision */
@@ -3803,11 +3817,13 @@ export interface components {
       autoWake?: boolean | null;
       /** Cansend */
       canSend?: boolean | null;
+      capacityRetry?: components["schemas"]["CapacityRetryDto"] | null;
       /** Compactions */
       compactions?: number | null;
       /** Concurrency */
       concurrency?: number | null;
       connectionCheck?: components["schemas"]["ConnectionCheckDto"] | null;
+      contextRepairWait?: components["schemas"]["ContextRepairWaitDto"] | null;
       contextUsage?: components["schemas"]["ContextUsageDto"] | null;
       convertedFromLead?: components["schemas"]["ConvertedFromLeadDto"] | null;
       /** Created */
@@ -3823,6 +3839,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
+      /** Epoch */
+      epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
@@ -3861,6 +3879,9 @@ export interface components {
       lastAnswer?: string | null;
       /** Lastcompletedturn */
       lastCompletedTurn?: string | null;
+      lastCompletedTurnStatus?: components["schemas"]["AgentStatus"] | null;
+      /** Lastevent */
+      lastEvent?: string | null;
       /** Lastreadat */
       lastReadAt?: number | null;
       /** Launcheralive */
@@ -3949,8 +3970,11 @@ export interface components {
       unreadCount?: number | null;
       /** Updated */
       updated?: number | null;
+      usageResume?: components["schemas"]["UsageResumeDto"] | null;
       voiceState?: components["schemas"]["JsonValue"] | null;
       workerDefaults?: components["schemas"]["WorkerDefaultsDto"] | null;
+      /** Workspaceoperation */
+      workspaceOperation?: string | null;
       /** Worktree */
       worktree?: boolean | string | null;
       /** Worktreepreparation */
@@ -4668,6 +4692,8 @@ export interface components {
       leadStopped?: boolean | null;
       /** Needsresponse */
       needsResponse?: boolean | null;
+      /** Needsuserresponse */
+      needsUserResponse?: boolean | null;
       /** Readat */
       readAt?: number | null;
       /** Recipient */
@@ -4787,10 +4813,18 @@ export interface components {
       at?: number | null;
       /** Error */
       error: string;
+      /** Events */
+      events: string[];
+      /** Nextcheckat */
+      nextCheckAt: number;
       /** Readonly */
       readOnly?: boolean | null;
       /** Scope */
       scope: string;
+      /** Source */
+      source: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
@@ -6727,10 +6761,14 @@ export interface components {
       id: string;
       kind?: components["schemas"]["RoomKind"] | null;
       lastMessage?: components["schemas"]["RoomLastMessage"] | null;
+      /** Localmembers */
+      localMembers?: string[] | null;
       /** Members */
       members: string[];
       /** Name */
       name?: string | null;
+      /** Peerlabel */
+      peerLabel?: string | null;
       /** Peerteamid */
       peerTeamId?: string | null;
       /** Peerteamname */
@@ -9628,6 +9666,8 @@ export interface components {
       leadStopped?: boolean | null;
       /** Needsresponse */
       needsResponse?: boolean | null;
+      /** Needsuserresponse */
+      needsUserResponse?: boolean | null;
       /** Readat */
       readAt?: number | null;
       /** Recipient */

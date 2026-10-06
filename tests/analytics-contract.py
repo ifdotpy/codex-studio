@@ -401,6 +401,14 @@ class AnalyticsContract(unittest.TestCase):
     def test_rate_limit_and_turn_pages_keep_sql_totals_and_export_all_rows(self):
         account = self.agent.get('accountKey', 'default')
         root = self.agent['rootId']
+        turn_key = ':'.join((self.agent['id'], str(self.agent['threadId']), str(self.agent['turnId'])))
+
+        def initial_turn_captured():
+            with self.runtime.analytics_read_connection() as analytics_db:
+                return analytics_db.execute(
+                    'SELECT 1 FROM analytics_turns WHERE id=?', (turn_key,)).fetchone() is not None
+
+        fixture.eventually(initial_turn_captured)
         with self.runtime.db() as db:
             previous_turns = db.execute('SELECT COUNT(*) FROM analytics_turns WHERE agent=?',
                                         (self.agent['id'],)).fetchone()[0]

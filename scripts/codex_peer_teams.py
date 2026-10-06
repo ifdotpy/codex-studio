@@ -119,6 +119,7 @@ def manage(runtime, data):
             return previous
         project = runtime.ensure_project(path, runtime.project_account(path, db=db), db)
         current = project.get('peerTeamsRevision', 0)
+        previous_team_ids = {team.get('id') for team in project.get('peerTeams', []) if team.get('id')}
         if revision != current:
             raise ValueError('Peer teams changed. Reload before saving')
         agents = _agents(db)
@@ -154,4 +155,12 @@ def manage(runtime, data):
             teams = [team for team in teams if team['id'] != team_id]
         project.update(peerTeams=teams, peerTeamsRevision=current + 1, updated=time.time())
         runtime.put(db, 'projects', project)
+        from codex_sync_entities import put as sync_entity_put
+        current_team_ids = set()
+        for team in teams:
+            current_team_ids.add(team['id'])
+            sync_entity_put(db, 'peerTeam', team['id'], {
+                **team, 'projectPath': path, 'revision': project['peerTeamsRevision']})
+        for removed_id in previous_team_ids - current_team_ids:
+            sync_entity_put(db, 'peerTeam', removed_id, {}, deleted=True)
         return runtime.save_receipt(db, 'peer-team:' + request_id, signature, project)

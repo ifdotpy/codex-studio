@@ -14,6 +14,7 @@ spec = importlib.util.spec_from_file_location(
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 repair = fixture.repair
+from entity_test_support import context_repair_wait
 
 
 class ContextRepairProvider(unittest.TestCase):
@@ -74,8 +75,8 @@ class ContextRepairProvider(unittest.TestCase):
         self.assertEqual(self.server.calls, [])
 
     def test_claude_context_wait_still_blocks(self):
-        agent = self.agent_update(self.a, provider='claude', contextRepairWait={
-            'error': 'Context repair waits for its pending input receipts'})
+        agent = self.agent_update(self.a, provider='claude', contextRepairWait=context_repair_wait(
+            'Context repair waits for its pending input receipts', scope='local'))
         for entry in ('idle', 'before_start'):
             with self.subTest(entry=entry):
                 with self.assertRaisesRegex(ValueError, 'pending input receipts'):
