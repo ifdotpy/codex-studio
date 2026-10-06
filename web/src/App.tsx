@@ -1476,7 +1476,10 @@ export default function App() {
       schemaMismatchDialog
     ) : (
       <main className="startup" aria-label="Studio startup">
-        <p role={error ? "alert" : "status"}>
+        <p
+          role={error ? "alert" : "status"}
+          className={error ? "studio-recovery-banner" : undefined}
+        >
           {error || "Connecting to Codex Studio…"}
         </p>
         {error && <a href="/">Reload Studio</a>}
