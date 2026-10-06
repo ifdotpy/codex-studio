@@ -570,7 +570,7 @@ class WorkMixin:
                 target = 'fresh origin/main or local main' if remotes else 'local main'
                 return {'status': 'kept', 'reason': 'The result commit is not reachable from ' + target}
             if owner.get('worktreeReady'):
-                _, reason = _worktree_check(self, agent_id, owner_id, epoch)  # type: ignore[arg-type]  # typed-suspect: mixin host may not satisfy Runtime helper
+                _, reason = _worktree_check(self, agent_id, owner_id, epoch)  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
                 if reason:
                     retryable = any(value in reason for value in (
                         'active_turn', 'workspace_operation', 'thread_preparation', 'descendants',
@@ -591,7 +591,7 @@ class WorkMixin:
                         or latest.get('results') != work.get('results')):
                     return {'status': 'kept', 'reason': 'The accepted task or owner changed during the archive check'}
             try:
-                archived = manage_agent(self, agent_id,  # type: ignore[arg-type]  # typed-suspect: mixin host is not proven Runtime
+                archived = manage_agent(self, agent_id,  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
                                          {'action': 'archive', 'agent_id': owner_id,
                                           'reason': 'Accepted task result is on main'}, epoch)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
@@ -652,7 +652,7 @@ class WorkMixin:
                 "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"):
             child = json.loads(row['record'])
             self.delivery_executor().submit(
-                _archive_reviewer, self, child['rootId'], child.get('parentId'),  # type: ignore[arg-type]  # typed-suspect: mixin host is not proven Runtime
+                _archive_reviewer, self, child['rootId'], child.get('parentId'),  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
                 child['id'], child['reviewArchiveScheduled'])
 
     def setup_search_rows(self: "_WorkHost", db: "sqlite3.Connection") -> "None":
