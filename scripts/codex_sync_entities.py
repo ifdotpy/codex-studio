@@ -418,7 +418,7 @@ def upgrade_renderer_fields(db: sqlite3.Connection, snapshot: Any, runtime_owner
         row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
         prior = json.loads(row[0]).get("value", {}) if row and row[0] else {}
         changed += bool(put(db, "workspace", "current", {**prior, **meta}))
-        return changed  # type: ignore[no-any-return]  # typed-narrowing: delegated peer team sync has an untyped return
+        return changed
     return 0
 
 

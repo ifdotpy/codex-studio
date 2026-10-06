@@ -170,9 +170,10 @@ async function open() {
   return { db, workspaceId, verifyWorkspace };
 }
 export function syncDatabase() {
-  // Keep a failed open memoized so each mutation does not retry a broken DB.
-  // Reloading is the recovery path after a permanent open failure.
-  return (pending ??= open());
+  return (pending ??= open().catch((error) => {
+    pending = undefined;
+    throw error;
+  }));
 }
 
 if (typeof window !== "undefined")
