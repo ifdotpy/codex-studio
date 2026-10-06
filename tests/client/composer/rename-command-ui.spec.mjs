@@ -1,10 +1,9 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("/rename updates the sidebar without sending a message", async ({
   browser,
 }) => {
@@ -36,7 +35,7 @@ test("/rename updates the sidebar without sending a message", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(`${origin}/api/state`)).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     assert.ok(lead);
     const page = await context.newPage();

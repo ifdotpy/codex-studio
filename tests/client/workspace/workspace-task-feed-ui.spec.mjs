@@ -1,11 +1,10 @@
 #!/usr/bin/env node
+import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
 // Verify the visible task drawer follows the cursor feed while it is open.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("workspace task feed ui", async ({ page: runnerPage }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -32,8 +31,7 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const get = async (path) => (await fetch(origin + path)).json();
-    const initial = await get("/api/state");
+    const initial = await readTestState(origin);
     const lead = initial.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );

@@ -1,10 +1,9 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Message info", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -27,7 +26,7 @@ test("Message info", async ({ browser: testBrowser }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const readState = async () => (await fetch(origin + "/api/state")).json();
+    const readState = async () => readTestState(origin);
     const initial = await readState();
     const actor = initial.runtime.agents.find(
       (agent) => agent.name === "Other project",

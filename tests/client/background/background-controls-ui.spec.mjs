@@ -1,19 +1,40 @@
+import {
+  handleEntitySyncFixtureRequest,
+  readFixtureSyncContract,
+  syncIdentityFixture,
+  stubEntityState,
+  test,
+  updateEntitySyncFixture,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
-import { test } from "../playwright.mjs";
-
 test("Background controls", async ({ context }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
+  let syncFixture;
   const server = createServer(async (req, res) => {
     try {
+      const url = new URL(req.url, "http://localhost");
+      if (req.method === "POST" && url.pathname === "/api/monitor/cancel") {
+        for await (const _chunk of req) {
+          // The fixture action has no body fields beyond its id.
+        }
+        monitor.cancelRequested = true;
+        monitor.error = "Stop requested; waiting for the command to exit";
+        const syncEntities = updateEntitySyncFixture(state);
+        res.setHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({ ...monitor, _syncEntities: syncEntities }));
+        return;
+      }
+      if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
+        return;
       const name = new URL(req.url, "http://localhost").pathname;
       const path = join(skill, "web/dist", name === "/" ? "index.html" : name);
       res.setHeader(
@@ -78,10 +99,17 @@ test("Background controls", async ({ context }) => {
       requests: [],
     },
   };
+  const workspaceId = syncIdentityFixture().workspaceId;
+  updateEntitySyncFixture(state);
+  syncFixture = {
+    snapshot: state,
+    workspaceId,
+  };
   const writes = [];
   let failInput = false;
+  let page;
   try {
-    const page = await context.newPage();
+    page = await context.newPage();
     await page.setViewportSize({ width: 1440, height: 980 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -95,13 +123,7 @@ test("Background controls", async ({ context }) => {
         writes.push({ path, body });
       }
       let value = {};
-      if (path === "/api/sync/identity")
-        return route.fulfill({
-          status: 404,
-          json: { error: "Fixture uses HTTP snapshots" },
-        });
       if (path === "/api/session") value = { token: "fixture-token" };
-      else if (path === "/api/state") value = state;
       else if (path === "/api/accounts")
         value = { accounts: [], defaultAccountKey: "default" };
       else if (path === "/api/voice/records")
@@ -126,9 +148,7 @@ test("Background controls", async ({ context }) => {
           },
         });
       else if (path === "/api/monitor/cancel") {
-        monitor.cancelRequested = true;
-        monitor.error = "Stop requested; waiting for the command to exit";
-        value = monitor;
+        return route.continue();
       } else if (path === "/api/monitor/input" && failInput) {
         failInput = false;
         return route.fulfill({
@@ -143,7 +163,9 @@ test("Background controls", async ({ context }) => {
       }
       await route.fulfill({ json: value });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    await stubEntityState(page, state, await readFixtureSyncContract(origin));
+    await page.goto(origin);
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
@@ -320,6 +342,7 @@ test("Background controls", async ({ context }) => {
     assert.deepEqual(errors, []);
     console.log(`PASS background controls browser contract. Evidence: ${root}`);
   } finally {
+    await page?.close();
     await new Promise((r) => server.close(r));
   }
 });

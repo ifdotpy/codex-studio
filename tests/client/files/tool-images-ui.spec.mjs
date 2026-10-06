@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Real runtime notifications, persisted transcript, HTTP file policy, production App.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
@@ -6,8 +12,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { deflateSync } from "node:zlib";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("tool images ui", async ({ browser }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -105,7 +109,7 @@ test("tool images ui", async ({ browser }) => {
     await page.locator("#send").click();
     let agent;
     await until(async () => {
-      const state = await (await fetch(origin + "/api/state")).json();
+      const state = await readTestState(origin);
       agent = state.runtime.agents.find(
         (agent) => agent.name === "Other project",
       );

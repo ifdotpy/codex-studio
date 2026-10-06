@@ -1,3 +1,9 @@
+import {
+  handleEntitySyncFixtureRequest,
+  legacySnapshotRoute,
+  syncIdentityFixture,
+  test,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -5,8 +11,6 @@ import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -150,6 +154,7 @@ test("account project ui", async ({ browser: _browser }) => {
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -163,26 +168,32 @@ test("account project ui", async ({ browser: _browser }) => {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
-    if (url.pathname === "/api/state")
-      return json({
-        token: "fixture",
-        stateDir: evidence,
-        threads: agents,
-        chats: [],
-        runtime: {
-          agents,
-          projects,
-          projectOrganizationVersion: 1,
-          rooms: [],
-          complaints: [],
-          requests: [],
-          monitors: [],
-          tasks: [],
-          work: [],
-          userTasks: [],
-          rateLimitsByAccount: snapshotLimits,
-        },
-      });
+    const stateForEntities = {
+      stateDir: evidence,
+      threads: agents,
+      chats: [],
+      runtime: {
+        agents,
+        projects,
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        work: [],
+        userTasks: [],
+        rateLimitsByAccount: snapshotLimits,
+      },
+    };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+      })
+    )
+      return;
+    if (url.pathname === "/api/session") return json({ token: "fixture" });
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||
@@ -298,10 +309,7 @@ test("account project ui", async ({ browser: _browser }) => {
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
-    if (url.pathname.startsWith("/api/sync/")) {
-      res.statusCode = 404;
-      return json({ error: "Fixture uses HTTP snapshots" });
-    }
+
     if (url.pathname === "/api/accounts/login") {
       accounts.push({
         id: "signed-in",
@@ -351,12 +359,32 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     debugPage = page;
     page.setDefaultTimeout(10000);
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
+    });
     const errors = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
       console.error(error.message);
     });
     await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.locator("[data-chat]").first().waitFor();
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
+    await page.getByRole("button", { name: "Studio settings" }).click();
+    await page
+      .getByRole("button", { name: /Personal.*personal@example\.com/ })
+      .waitFor();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
     const picker = page.locator(".account-picker");
     const settings = page.getByRole("dialog", {
       name: "Chat settings",
@@ -387,6 +415,13 @@ test("account project ui", async ({ browser: _browser }) => {
       await page.getByRole("menuitem").filter({ hasText: email }).click();
     };
     await choose("work@example.com");
+    await page.reload();
+    await page.getByRole("button", { name: "Studio settings" }).click();
+    await page.getByText("work@example.com", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await page.locator('[data-chat="started"]').click();
+    await openSettings();
+    await picker.waitFor();
     await page.waitForFunction(() =>
       document
         .querySelector(".account-picker")
@@ -863,6 +898,12 @@ test("account project ui", async ({ browser: _browser }) => {
     );
     assert.equal(agents.at(-1).accountKey, "work");
     assert.deepEqual(errors, []);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
     console.log(
       JSON.stringify({
         ok: true,
@@ -886,6 +927,8 @@ test("account project ui", async ({ browser: _browser }) => {
           "project worker base setting",
         ],
         evidence,
+        syncPullRequests: syncPullRequests.length,
+        stateRequests,
       }),
     );
   } catch (error) {

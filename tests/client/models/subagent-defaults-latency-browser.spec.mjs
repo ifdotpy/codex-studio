@@ -1,11 +1,10 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { modelValue, selectModel } from "../../model-picker.mjs";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Subagent defaults latency @performance", async ({ context }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -69,7 +68,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     proc.once("exit", () => reject(Error(log)));
   });
   const url = `http://127.0.0.1:${port}`;
-  const snapshot = async () => await (await fetch(url + "/api/state")).json();
+  const snapshot = async () => await readTestState(url);
   const post = async (path, body) => {
     const response = await fetch(url + path, {
       method: "POST",
@@ -94,6 +93,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   const second = accounts.accounts.find((a) => a.label === "second-account");
   assert.ok(second);
   const page = await context.newPage();
+  await page.exposeFunction("__readTestState", () => readTestState(url));
   await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(20000);
   const errors = [];
@@ -174,7 +174,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     await save.click();
     await save.waitFor({ state: "hidden" });
     await page.waitForFunction(async (id) => {
-      const state = await fetch("/api/state").then((r) => r.json());
+      const state = await window.__readTestState();
       return state.runtime.agents.find((a) => a.id === id).workerDefaults
         .accountKey;
     }, lead.id);
@@ -229,7 +229,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   timings.modelShownMs = Math.round(performance.now() - modelStart);
   if (legacy) {
     await page.waitForFunction(async (id) => {
-      const state = await fetch("/api/state").then((r) => r.json());
+      const state = await window.__readTestState();
       return (
         state.runtime.agents.find((a) => a.id === id).workerDefaults.model ===
         "gpt-5.6-sol"
@@ -243,7 +243,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   } else {
     await saved().waitFor();
     await page.waitForFunction(async (id) => {
-      const state = await fetch("/api/state").then((r) => r.json());
+      const state = await window.__readTestState();
       return (
         state.runtime.agents.find((a) => a.id === id).workerDefaults.model ===
         "gpt-5.6-sol"

@@ -1,8 +1,7 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -146,7 +145,7 @@ test("Message receipt pagination browser", async ({
       );
       return response.json();
     };
-    const state = await get("/api/state?view=chat");
+    const state = await readTestState(target);
     const agent = state.threads.find((agent) => agent.name === "Release lead");
     assert.ok(agent?.id);
     changeFixture(agent.id, "initial");
@@ -306,7 +305,7 @@ test("Message receipt pagination browser", async ({
     );
     assert.deepEqual((await get(`/api/queue?agent=${agent.id}`)).items, []);
     assert.ok(
-      !(await get("/api/state?view=chat")).runtime.events.some(
+      !(await readTestState(target)).runtime.events.some(
         (event) => event.id === id,
       ),
     );

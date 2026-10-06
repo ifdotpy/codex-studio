@@ -1,15 +1,17 @@
+import {
+  readTestState,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-} from "../playwright.mjs";
-
 test("Session activity integration", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -38,23 +40,19 @@ test("Session activity integration", async () => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((a) => a.name === "Release lead");
     const other = state.threads.find((a) => a.name === "Other project");
     const child = state.threads.find((a) => a.rootId === lead.id && !a.isLead);
-    for (const a of state.threads)
-      Object.assign(a, {
-        status: "completed",
-        inFlight: false,
-        turnId: null,
-        autoWake: true,
-        lastCompletedTurn: null,
-      });
-    Object.assign(child, {
-      name: "webcrypto-globals",
-      status: "paused",
-      autoWake: false,
-    });
+    const agents = state.threads.map((agent) => ({
+      ...agent,
+      status: agent.id === child.id ? "paused" : "completed",
+      inFlight: false,
+      turnId: null,
+      autoWake: agent.id !== child.id,
+      lastCompletedTurn: null,
+      ...(agent.id === child.id ? { name: "webcrypto-globals" } : {}),
+    }));
     const task = {
       id: "old-live-command",
       agent: child.id,
@@ -66,18 +64,27 @@ test("Session activity integration", async () => {
       created: Date.now() / 1000 - 14 * 3600,
       processId: "fixture-session",
     };
-    state.runtime.tasks = [
-      task,
-      {
-        ...task,
-        id: "newer-command",
-        command: "second active command",
-        created: Date.now() / 1000,
+    const entityState = {
+      stateDir: state.stateDir,
+      threads: agents,
+      chats: state.chats,
+      edges: state.edges,
+      runtime: {
+        ...state.runtime,
+        agents,
+        tasks: [
+          task,
+          {
+            ...task,
+            id: "newer-command",
+            command: "second active command",
+            created: Date.now() / 1000,
+          },
+        ],
+        monitors: [],
+        requests: [],
       },
-    ];
-    state.runtime.monitors = [];
-    state.runtime.requests = [];
-    state.runtime.agents = state.threads;
+    };
     browser = await engine.launch({
       headless: true,
       ...(engine === chromium
@@ -94,10 +101,22 @@ test("Session activity integration", async () => {
     const errors = [],
       detailReads = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.route("**/api/sync/**", (r) =>
-      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ json: identityResponse }),
     );
-    await page.route("**/api/state*", (r) => r.fulfill({ json: state }));
+    await page.route("**/api/sync/pull?*", (r) => {
+      return r.fulfill({
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(entityState, r.request().url()),
+        },
+      });
+    });
     await page.route("**/api/transcript/stream?*", (r) =>
       r.fulfill({ status: 404, json: { error: "Polling fixture" } }),
     );

@@ -1,7 +1,12 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  readFixtureSyncContract,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Real renderer and isolated server. Delayed streams must not delay navigation.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,7 +36,7 @@ test(
         proc.once("exit", () => reject(Error(log)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      const state = await (await fetch(origin + "/api/state")).json();
+      const state = await readTestState(origin);
       const a = state.threads.find((x) => x.name === "Other project");
       const b = state.threads.find((x) => x.name === "Release lead");
       page = runnerPage;
@@ -44,29 +49,34 @@ test(
         window.__chatSwitchPaintAt = undefined;
         window.testStreams = [];
         window.createdStreams = [];
-        window.EventSource = class extends EventTarget {
-          constructor(url) {
-            super();
-            this.url = url;
-            window.testStreams.push(this);
-            window.createdStreams.push(url);
-          }
-          close() {
-            window.testStreams = window.testStreams.filter((x) => x !== this);
-          }
-        };
+        const NativeEventSource = window.EventSource;
+        window.EventSource = new Proxy(NativeEventSource, {
+          construct(target, args) {
+            const url = String(args[0]);
+            if (new URL(url, location.href).pathname === "/api/sync/stream")
+              return Reflect.construct(target, args);
+            class TranscriptFixtureStream extends EventTarget {
+              constructor() {
+                super();
+                this.url = url;
+                window.testStreams.push(this);
+                window.createdStreams.push(url);
+              }
+              close() {
+                window.testStreams = window.testStreams.filter(
+                  (stream) => stream !== this,
+                );
+              }
+            }
+            return new TranscriptFixtureStream();
+          },
+        });
         window.emitTranscript = (id, data) =>
           window.testStreams.forEach((s) => {
             if (new URL(s.url, location.href).searchParams.get("id") === id)
               s.onmessage?.({ data: JSON.stringify(data) });
           });
       });
-      await page.route("**/api/sync/**", (r) =>
-        r.fulfill({
-          status: 404,
-          json: { error: "Fixture uses transcript transport" },
-        }),
-      );
       const snapshot = {
         ...state,
         threads: state.threads.map((x) => ({
@@ -77,8 +87,10 @@ test(
         })),
         runtime: { ...state.runtime, requests: [] },
       };
-      await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
-        r.fulfill({ json: snapshot }),
+      await stubEntityState(
+        page,
+        snapshot,
+        await readFixtureSyncContract(origin),
       );
       const payload = (agent, tag) => ({
         agent: { ...agent, status: "completed", inFlight: false, turnId: null },

@@ -1,12 +1,18 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  stubEntityState,
+  readFixtureSyncContract,
+  readTestState,
+} from "../playwright.mjs";
 // Browser-local Studio preferences. Uses the production bundle and isolated fixture.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("studio settings browser ui", async ({
   browser: runnerBrowser,
   page: runnerPage,
@@ -36,7 +42,7 @@ test("studio settings browser ui", async ({
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(`${origin}/api/state`)).json();
+    const snapshot = await readTestState(origin);
     browser = runnerBrowser;
 
     const page = runnerPage;
@@ -599,11 +605,10 @@ test("studio settings browser ui", async ({
         monitors: [],
       },
     };
-    await emptyPage.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await emptyPage.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: emptyState }),
+    await stubEntityState(
+      emptyPage,
+      emptyState,
+      await readFixtureSyncContract(origin),
     );
     await emptyPage.addInitScript((key) => {
       // A valid saved preference object from before the avatar option existed.

@@ -1,12 +1,11 @@
-// Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
-import { fileURLToPath } from "node:url";
 import {
   apiSchemaHandshakeSse,
   protocol3SseEvent,
   test,
   expect,
 } from "../playwright.mjs";
-
+// Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
+import { fileURLToPath } from "node:url";
 test("Sync Browser", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -60,9 +59,6 @@ test("Sync Browser", async ({
       sends = [],
       content = "first",
       draftPushes = [];
-    await page.route("**/api/state", (route) =>
-      route.fulfill({ json: { token: "fixture" } }),
-    );
     await page.route("**/api/session", (route) =>
       route.fulfill({ json: { token: "fixture" } }),
     );

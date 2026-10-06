@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Real notification handling, SQLite, HTTP event stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -63,7 +62,7 @@ test("read activity ui", async ({ browser: _browser }) => {
     await page.locator("#send").click();
     let agent;
     await poll(async () => {
-      const state = await (await fetch(origin + "/api/state")).json();
+      const state = await readTestState(origin);
       agent = state.runtime.agents.find((a) => a.name === "Other project");
       return agent.status === "running" && agent.turnId;
     }, "turn starts");

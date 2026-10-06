@@ -1,7 +1,6 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Real app-server notification handlers, SQLite sync stream, and browser. No inference.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,7 +34,7 @@ test("Live chat ui", async ({
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () => await (await fetch(origin + "/api/state")).json();
+    const state = async () => await readTestState(origin);
     page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
     const errors = [];

@@ -1,12 +1,17 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+  entityPullFixture,
+} from "../playwright.mjs";
 // Production renderer with an isolated fixture. No model calls or user state.
 
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Worker Overview Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -60,7 +65,7 @@ test("Worker Overview Ui", async ({
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
@@ -99,6 +104,8 @@ test("Worker Overview Ui", async ({
     let workerStopError = stopReason;
     let pending = true;
     let deferred = false;
+    let fixtureRefreshStage = 0;
+    let appliedFixtureRefreshStage = 0;
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
@@ -107,10 +114,7 @@ test("Worker Overview Ui", async ({
       errors.push(error.message);
       console.error("Browser error:", error.message);
     });
-    // Keep the status fixture on HTTP snapshots; sync has separate coverage.
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
-    );
+    // Keep the real fixture stream open; only pull values are customized below.
     await page.route(/\/api\/file\?/, (route) =>
       route.fulfill({
         json: {
@@ -122,66 +126,160 @@ test("Worker Overview Ui", async ({
         },
       }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
+    await page.route("**/api/sync/pull?*", async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      for (const agent of data.threads) {
-        const workerIndex = workers.findIndex(
-          (worker) => worker.id === agent.id,
-        );
-        if (workerIndex >= 0) {
-          const index = Number(workers[workerIndex].name.split(" ")[1]);
-          agent.status =
-            index === 7
-              ? "failed"
-              : index < 8
-                ? "running"
-                : index === 24
-                  ? "paused"
-                  : index < 25
-                    ? "queued"
-                    : "completed";
+      const pullUrl = new URL(route.request().url());
+      const isEntityPull =
+        pullUrl.searchParams.get("scope") === "state:entities:v1";
+      for (const document of data.documents ?? []) {
+        if (document._deleted) continue;
+        const entity = JSON.parse(document.payload);
+        if (entity.collection === "agent") {
+          const agent = entity.value;
+          const workerIndex = workers.findIndex(
+            (worker) => worker.id === agent.id,
+          );
+          if (workerIndex >= 0) {
+            const index = Number(workers[workerIndex].name.split(" ")[1]);
+            agent.status =
+              index === 7
+                ? "failed"
+                : index < 8
+                  ? "running"
+                  : index === 24
+                    ? "paused"
+                    : index < 25
+                      ? "queued"
+                      : "completed";
+          }
+          if (agent.id === worker(7).id) agent.error = workerFailure;
+          if (agent.id === worker(24).id)
+            Object.assign(agent, { autoWake: false, error: workerStopError });
+          if (agent.id === worker(0).id && deferred) agent.status = "approval";
+          if (agent.id === worker(1).id)
+            Object.assign(agent, {
+              name: longName,
+              overview: { task, result: "" },
+            });
+          if (agent.id === worker(25).id)
+            Object.assign(agent, {
+              overview: {
+                task: "Verify receipt recovery",
+                result: report,
+                resultTruncated: true,
+                resultFile: resultPath,
+              },
+            });
+          entity.value = agent;
         }
-        if (agent.id === worker(7).id) agent.error = workerFailure;
-        if (agent.id === worker(24).id)
-          Object.assign(agent, { autoWake: false, error: workerStopError });
-        if (agent.id === worker(0).id && deferred) agent.status = "approval";
-        if (agent.id === worker(1).id)
-          Object.assign(agent, {
-            name: longName,
-            overview: { task, result: "" },
-          });
-        if (agent.id === worker(25).id)
-          Object.assign(agent, {
-            overview: {
-              task: "Verify receipt recovery",
-              result: report,
-              resultTruncated: true,
-              resultFile: resultPath,
+        document.payload = JSON.stringify(entity);
+      }
+      if (isEntityPull) {
+        const requests = [];
+        if (pending)
+          requests.push({
+            id: "worker-question",
+            agent: worker(0).id,
+            status: "pending",
+            deferred,
+            method: "agent/asyncQuestion",
+            params: {
+              questions: [
+                { id: "scope", question: "Which receipt should I inspect?" },
+              ],
             },
           });
-      }
-      if (pending)
-        data.runtime.requests.push({
-          id: "worker-question",
-          agent: worker(0).id,
-          status: "pending",
-          deferred,
+        requests.push({
+          id: "answered-worker-question",
+          agent: worker(2).id,
+          status: "answered",
           method: "agent/asyncQuestion",
           params: {
-            questions: [
-              { id: "scope", question: "Which receipt should I inspect?" },
-            ],
+            questions: [{ id: "done", question: "Already answered" }],
           },
         });
-      data.runtime.requests.push({
-        id: "answered-worker-question",
-        agent: worker(2).id,
-        status: "answered",
-        method: "agent/asyncQuestion",
-        params: { questions: [{ id: "done", question: "Already answered" }] },
-      });
+        let seq = data.checkpoint.seq;
+        data.documents.push(
+          ...requests.map((value) => {
+            seq += 1;
+            return {
+              id: `entity:request:${value.id}`,
+              seq,
+              _deleted: false,
+              payload: JSON.stringify({
+                collection: "request",
+                id: value.id,
+                value,
+              }),
+            };
+          }),
+        );
+        data.checkpoint.seq = seq;
+        data.maxSeq = seq;
+        if (!pending) {
+          const tombstoneSeq = data.maxSeq + 1;
+          data.documents.push({
+            id: "entity:request:worker-question",
+            seq: tombstoneSeq,
+            _deleted: true,
+            payload: "{}",
+          });
+          data.checkpoint.seq = tombstoneSeq;
+          data.maxSeq = tombstoneSeq;
+        }
+      }
+      if (isEntityPull && fixtureRefreshStage > appliedFixtureRefreshStage) {
+        appliedFixtureRefreshStage = fixtureRefreshStage;
+        const changedAgents = initial.runtime.agents.map((agent) => ({
+          ...agent,
+        }));
+        const updateAgent = (id, updates) => {
+          const index = changedAgents.findIndex((agent) => agent.id === id);
+          if (index >= 0)
+            changedAgents[index] = { ...changedAgents[index], ...updates };
+        };
+        updateAgent(worker(24).id, {
+          status: "failed",
+          autoWake: false,
+          error: workerStopError,
+        });
+        updateAgent(worker(7).id, { status: "failed", error: workerFailure });
+        const changedState = {
+          ...initial,
+          threads: changedAgents,
+          runtime: { ...initial.runtime, agents: changedAgents },
+        };
+        const projected = entityPullFixture(changedState, {
+          scope: "state:entities:v1",
+          fresh: true,
+        });
+        let seq = data.maxSeq;
+        for (const id of [worker(24).id, worker(7).id]) {
+          const source = projected.documents.find(
+            (document) => document.id === `entity:agent:${id}`,
+          );
+          if (!source) continue;
+          seq++;
+          data.documents.push({ ...source, seq });
+        }
+        data.checkpoint.seq = seq;
+        data.maxSeq = seq;
+      }
       await route.fulfill({ response, json: data });
+    });
+    await page.addInitScript(() => {
+      const NativeEventSource = window.EventSource;
+      window.EventSource = class extends NativeEventSource {
+        constructor(url, options) {
+          super(url, options);
+          if (!String(url).includes("/api/sync/stream")) return;
+          window.workerOverviewStream = this;
+          this.addEventListener("resources", (event) => {
+            window.workerOverviewResource = JSON.parse(event.data);
+          });
+        }
+      };
     });
     await page.goto(origin);
     const selectLead = () =>
@@ -204,6 +302,24 @@ test("Worker Overview Ui", async ({
       team
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
+    const refreshFromEntityPull = async () => {
+      fixtureRefreshStage++;
+      await page.evaluate(() => {
+        const source = window.workerOverviewStream;
+        const current = window.workerOverviewResource;
+        if (!source || !current)
+          throw new Error("The real sync resource stream is not connected");
+        const next = {
+          ...current,
+          reason: "change",
+          revision: current.revision + 1,
+        };
+        window.workerOverviewResource = next;
+        source.dispatchEvent(
+          new MessageEvent("resources", { data: JSON.stringify(next) }),
+        );
+      });
+    };
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       "Release lead",
@@ -236,7 +352,7 @@ test("Worker Overview Ui", async ({
       stopReason,
     );
     workerStopError = workerFailure;
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await refreshFromEntityPull();
     await page.waitForFunction(
       ({ id, message }) =>
         document.querySelector(`[data-worker="${id}"] .worker-error`)
@@ -261,7 +377,7 @@ test("Worker Overview Ui", async ({
       message: "The next account check still reports a usage limit.",
       additionalDetails: "Updated recovery details.",
     };
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await refreshFromEntityPull();
     await page.waitForFunction(
       ({ id, message }) =>
         document.querySelector(`[data-worker="${id}"] .worker-error`)
@@ -428,7 +544,7 @@ test("Worker Overview Ui", async ({
     const receipt = await deletedResponse.json();
     assert.deepEqual(receipt.deleted, [worker(1).id]);
     await card(1).waitFor({ state: "hidden" });
-    const remaining = await (await fetch(origin + "/api/state")).json();
+    const remaining = await readTestState(origin);
     assert.ok(remaining.threads.some((agent) => agent.id === lead.id));
     assert.ok(remaining.threads.some((agent) => agent.id === worker(2).id));
     assert.ok(!remaining.threads.some((agent) => agent.id === worker(1).id));

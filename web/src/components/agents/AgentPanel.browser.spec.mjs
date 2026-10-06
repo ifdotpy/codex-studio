@@ -1,3 +1,4 @@
+import { readTestState } from "../../../../tests/client/playwright.mjs";
 import {
   access,
   mkdir,
@@ -72,7 +73,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
   const origin = `http://127.0.0.1:${port}`;
 
   try {
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const other = initial.threads.find(
       (agent) => agent.name === "Other project",

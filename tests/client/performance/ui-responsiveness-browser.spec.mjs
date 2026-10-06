@@ -1,8 +1,13 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  readFixtureSyncContract,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production App at 4x CPU. Timings are evidence, correctness is asserted.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -54,7 +59,7 @@ test(
         fixture.once("exit", () => reject(new Error(fixtureLog)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      const original = await (await fetch(origin + "/api/state")).json();
+      const original = await readTestState(origin);
       const a = original.threads.find(
         (agent) => agent.name === "Other project",
       );
@@ -176,18 +181,27 @@ test(
                 ),
               );
             window.fixtureStreams = [];
-            window.EventSource = class extends EventTarget {
-              constructor(url) {
-                super();
-                this.url = url;
-                window.fixtureStreams.push(this);
-              }
-              close() {
-                window.fixtureStreams = window.fixtureStreams.filter(
-                  (stream) => stream !== this,
-                );
-              }
-            };
+            const NativeEventSource = window.EventSource;
+            window.EventSource = new Proxy(NativeEventSource, {
+              construct(target, args) {
+                const url = String(args[0]);
+                if (new URL(url, location.href).pathname === "/api/sync/stream")
+                  return Reflect.construct(target, args);
+                class TranscriptFixtureStream extends EventTarget {
+                  constructor() {
+                    super();
+                    this.url = url;
+                    window.fixtureStreams.push(this);
+                  }
+                  close() {
+                    window.fixtureStreams = window.fixtureStreams.filter(
+                      (stream) => stream !== this,
+                    );
+                  }
+                }
+                return new TranscriptFixtureStream();
+              },
+            });
             window.metrics = {
               phase: "startup",
               inputSequence: 0,
@@ -331,13 +345,6 @@ test(
               .fulfill({ path: join(staticDir, path), contentType: type })
               .catch(() => route.fallback());
           }
-          if (url.pathname.startsWith("/api/sync/"))
-            return route.fulfill({
-              status: 404,
-              json: { error: "Controlled legacy transcript fixture" },
-            });
-          if (url.pathname === "/api/state")
-            return route.fulfill({ json: state });
           if (url.pathname === "/api/transcript") {
             const id = url.searchParams.get("id");
             return route.fulfill({
@@ -350,6 +357,11 @@ test(
           }
           return route.fallback();
         });
+        await stubEntityState(
+          page,
+          state,
+          await readFixtureSyncContract(origin),
+        );
         await page.goto(origin);
         if (!(await page.locator('[data-message="a-result-29"]').count())) {
           if (name === "mobile")

@@ -1,7 +1,11 @@
-import { test, browserExecutablePath } from "../playwright.mjs";
+import {
+  readTestState,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI and HTTP handlers with fake native commands in a hidden browser.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -30,7 +34,7 @@ test("Native action retry browser", async () => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const lead = snapshot.threads.find((a) => a.name === "Action lead");
     const post = (body) =>
       fetch(origin + "/api/action", {
