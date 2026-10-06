@@ -16,19 +16,23 @@ from typing import Any, Iterable
 
 
 _HOLDERS: dict[int, subprocess.Popen[bytes]] = {}
-_OVERLAY_MOUNT = r'''
+_OVERLAY_SETNS = r'''
 import ctypes, os, sys
 libc = ctypes.CDLL(None, use_errno=True)
-source, target, options = (os.fsencode(item) for item in sys.argv[1:])
-if libc.mount(source, target, b"overlay", 0, options) != 0:
-    error = ctypes.get_errno()
-    raise OSError(error, os.strerror(error), os.fsdecode(target))
-'''
-_OVERLAY_UNMOUNT = r'''
-import ctypes, os, sys
-libc = ctypes.CDLL(None, use_errno=True)
-target = os.fsencode(sys.argv[1])
-if libc.umount2(target, 0) != 0:
+pid, operation, *args = sys.argv[1:]
+user_ns = os.open(f"/proc/{pid}/ns/user", os.O_RDONLY)
+mount_ns = os.open(f"/proc/{pid}/ns/mnt", os.O_RDONLY)
+for fd, namespace in ((user_ns, 0x10000000), (mount_ns, 0x00020000)):
+    if libc.setns(fd, namespace) != 0:
+        error = ctypes.get_errno()
+        raise OSError(error, os.strerror(error))
+if operation == "mount":
+    source, target, options = (os.fsencode(item) for item in args)
+    result = libc.mount(source, target, b"overlay", 0, options)
+else:
+    target, = (os.fsencode(item) for item in args)
+    result = libc.umount2(target, 0)
+if result != 0:
     error = ctypes.get_errno()
     raise OSError(error, os.strerror(error), os.fsdecode(target))
 '''
@@ -198,8 +202,8 @@ class Backend:
         pid = self._ensure_namespace()
         if not _mount_exists(pid, mount):
             options = f"lowerdir={base_image},upperdir={upper},workdir={work},userxattr"
-            _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_MOUNT,
-                                                        "overlay", str(mount), options])
+            _run([sys.executable, "-c", _OVERLAY_SETNS, str(pid), "mount",
+                  "overlay", str(mount), options])
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
     def sync_delta(self, repo_root: Path, target_repo: Path, token: object, *,
@@ -269,8 +273,7 @@ class Backend:
                     except ProcessLookupError:
                         pass
         if _mount_exists(pid, mount):
-            _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_UNMOUNT,
-                                                        str(mount)])
+            _run([sys.executable, "-c", _OVERLAY_SETNS, str(pid), "unmount", str(mount)])
 
     def remove_layer(self, agent_dir: Path) -> None:
         agent_dir = Path(agent_dir)
@@ -302,11 +305,8 @@ class Backend:
         return self._nsenter(self._ensure_namespace())
 
     @staticmethod
-    def _nsenter(pid: int, *, keep_caps: bool = False) -> list[str]:
-        args = ["nsenter", "-t", str(pid), "-U", "-m", "--preserve-credentials"]
-        if keep_caps:
-            args.append("--keep-caps")
-        return args + ["--"]
+    def _nsenter(pid: int) -> list[str]:
+        return ["nsenter", "-t", str(pid), "-U", "-m", "--preserve-credentials", "--"]
 
     def _ensure_namespace(self) -> int:
         state_path = _namespace_state_path()

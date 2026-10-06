@@ -92,5 +92,7 @@ Record these values on macOS for both 50,000 and 200,000 paths:
 - Time for `create_workspace` to return.
 - Time for the first `git status` inside the agent after editing one file in the source folder
   and running `git add` there.
+- Also record delta sync time after adding and deleting one root-level file, then editing and
+  staging one nested file. Record whether FSEvents reports the root folder.
 
 The benchmark uses the copied index as-is. Do not add a Git-specific workaround.
