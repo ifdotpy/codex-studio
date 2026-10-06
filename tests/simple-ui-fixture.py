@@ -203,12 +203,14 @@ if os.environ.get('PROGRESS_PUSH_UI_FIXTURE'):
                 ),
             }
 
-    server.app.add_api_route(
+    # The served app is the shutdown wrapper; routes live on the wrapped app.
+    api_app = getattr(server.app, 'app', server.app)
+    api_app.add_api_route(
         '/api/test/progress-watch-state', progress_watch_state,
         methods=['GET'], include_in_schema=False,
     )
-    fixture_route = server.app.routes.pop()
-    server.app.routes.insert(-1, fixture_route)
+    fixture_route = api_app.routes.pop()
+    api_app.routes.insert(-1, fixture_route)
 # Test-only notification input drives the real runtime and HTTP stream.
 import json
 import threading
