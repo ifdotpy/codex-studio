@@ -192,9 +192,7 @@ function ScopedExecutionSettings({
     };
   }, []);
   const canQueueSettings =
-    nextTurnSupported ??
-    (agent as Agent & { nextTurnSettingsSupported?: boolean })
-      .nextTurnSettingsSupported === true;
+    nextTurnSupported ?? agent.nextTurnSettingsSupported === true;
   const [opened, setOpened] = useState(false);
   useEffect(() => {
     if (openRequest > 0) setOpened(true);
@@ -1022,13 +1020,11 @@ function ScopedExecutionSettings({
               label="Full access without approval"
               aria-label="Full access without approval"
               checked={pendingYolo?.value ?? agent.yoloMode === true}
-              disabled={saving || active || !("yoloMode" in agent)}
+              disabled={saving || active}
               description={
-                !("yoloMode" in agent)
-                  ? "Available after the server update."
-                  : agent.yoloMode == null
-                    ? "The team uses normal Codex permissions."
-                    : "Tools run without permission prompts."
+                agent.yoloMode == null
+                  ? "The team uses normal Codex permissions."
+                  : "Tools run without permission prompts."
               }
               onChange={(event) => void changeYolo(event.currentTarget.checked)}
             />

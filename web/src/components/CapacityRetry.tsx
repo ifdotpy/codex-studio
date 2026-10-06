@@ -36,7 +36,6 @@ export default function CapacityRetry({
       : 0;
   const available =
     !current.claimedAt &&
-    typeof current.status === "string" &&
     ["scheduled", "cancelled", "exhausted"].includes(current.status);
   const action = async (choice: "retry" | "cancel") => {
     if (lock.current) return;

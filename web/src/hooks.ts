@@ -77,10 +77,63 @@ function legacyRoomForRenderer(room: LegacyRoom): Room {
   };
 }
 
+function legacyCapacityRetryForRenderer(
+  retry: LegacyAgent["capacityRetry"],
+): Agent["capacityRetry"] {
+  if (!retry) return null;
+  if (retry.id == null || retry.status == null || retry.updatedAt == null)
+    return null;
+  return {
+    id: retry.id,
+    threadId: retry.threadId ?? null,
+    epoch: retry.epoch ?? null,
+    accountKey: retry.accountKey ?? null,
+    status: retry.status,
+    updatedAt: retry.updatedAt,
+    dueAt: retry.dueAt ?? null,
+    acceptedTurnId: retry.acceptedTurnId,
+    claimedAt: retry.claimedAt,
+    reason: retry.reason,
+  };
+}
+
+function legacyUsageResumeForRenderer(
+  resume: LegacyAgent["usageResume"],
+): Agent["usageResume"] {
+  if (!resume) return null;
+  if (
+    resume.id == null ||
+    resume.cause == null ||
+    resume.status == null ||
+    resume.updatedAt == null
+  )
+    return null;
+  return {
+    id: resume.id,
+    cause: resume.cause,
+    status: resume.status,
+    reason: resume.reason ?? null,
+    updatedAt: resume.updatedAt,
+    plannedAt: resume.plannedAt ?? null,
+    dueAt: resume.dueAt ?? null,
+  };
+}
+
 function legacyAgentForRenderer(agent: LegacyAgent): Agent {
-  const { workspaceOperation, ...fields } = agent;
+  const {
+    workspaceOperation,
+    capacityRetry,
+    usageResume,
+    contextRepairWait,
+    ...fields
+  } = agent;
   return {
     ...fields,
+    capacityRetry: legacyCapacityRetryForRenderer(capacityRetry),
+    usageResume: legacyUsageResumeForRenderer(usageResume),
+    contextRepairWait: contextRepairWait
+      ? { error: contextRepairWait.error, scope: contextRepairWait.scope }
+      : null,
     workspaceOperation:
       typeof workspaceOperation === "string" ? workspaceOperation : null,
   };

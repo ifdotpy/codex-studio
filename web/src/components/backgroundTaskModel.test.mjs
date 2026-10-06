@@ -34,14 +34,16 @@ it("projects generated monitor and task payloads for renderer use", () => {
   assert.equal(activeTask(tasks[1]), true);
 });
 
-it("does not classify a task without kind as a monitor", () => {
-  assert.equal(
-    projectTaskForRenderer({
+it("keeps a task entity visible when its optional kind is absent", () => {
+  const task = projectTaskForRenderer(
+    {
       id: "task-without-kind",
       agent: "lead",
       created: 1,
       status: "running",
-    }),
-    null,
+    },
+    "task",
   );
+  assert.equal(task?.kind, "tool");
+  assert.equal(task?.id, "task-without-kind");
 });

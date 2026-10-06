@@ -20,13 +20,12 @@ export function projectTaskForRenderer(
   source: "task" | "monitor" = "task",
 ): DisplayBackgroundTask | null {
   const kind =
-    source === "monitor" ? "monitor" : "kind" in task ? task.kind : null;
-  if (
-    task.agent == null ||
-    task.created == null ||
-    kind == null ||
-    task.status == null
-  )
+    source === "monitor"
+      ? "monitor"
+      : "kind" in task
+        ? (task.kind ?? "tool")
+        : "tool";
+  if (task.agent == null || task.created == null || task.status == null)
     return null;
   return {
     ...task,
@@ -40,11 +39,12 @@ export function projectTaskForRenderer(
 export function backgroundTasks(
   data: Snapshot | null,
 ): DisplayBackgroundTask[] {
+  if (!data) return [];
   return [
-    ...(data?.runtime.monitors ?? [])
+    ...data.runtime.monitors
       .map((monitor) => projectTaskForRenderer(monitor, "monitor"))
       .filter((task): task is DisplayBackgroundTask => task !== null),
-    ...(data?.runtime.tasks ?? [])
+    ...data.runtime.tasks
       .map((task) => projectTaskForRenderer(task, "task"))
       .filter((task): task is DisplayBackgroundTask => task !== null),
   ];

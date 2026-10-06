@@ -71,11 +71,7 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
     );
   }
   for (const complaint of data.runtime.complaints) {
-    if (
-      complaint.needsUserResponse &&
-      (complaint.recipient === "user" ||
-        (!complaint.recipient && complaint.author === complaint.leadId))
-    )
+    if (complaint.needsUserResponse)
       add(
         `complaint:${complaint.id}:${complaint.version || 0}`,
         complaint.leadId,

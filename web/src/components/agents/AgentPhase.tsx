@@ -20,12 +20,6 @@ import {
 } from "../chat-status/chatStatusModel";
 import "./provider-activity.css";
 
-function objectRecord(value: unknown): Record<string, unknown> | null {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : null;
-}
-
 export default function AgentPhase({
   agent,
   connection,
@@ -36,9 +30,7 @@ export default function AgentPhase({
   wait?: ChatWaitState;
 }) {
   if (!agent) return null;
-  const safety = objectRecord(
-    "nativeSafetyBuffering" in agent ? agent.nativeSafetyBuffering : undefined,
-  );
+  const safety = agent.nativeSafetyBuffering;
   if (
     safety?.showBufferingUi === true &&
     safety.dismissed !== true &&
@@ -123,13 +115,13 @@ export default function AgentPhase({
   const waiting = ["waiting", "parked"].includes(phase);
   const liveWait = waiting && wait?.live && connection !== "reconnecting";
   const native = ["retrying", "auth", "safety"].includes(phase)
-    ? objectRecord(agent.nativeStatus)
+    ? typeof agent.nativeStatus === "object"
+      ? agent.nativeStatus
+      : null
     : null;
-  const nativeError = objectRecord(native?.error);
-  const nativeMessage =
-    typeof native?.message === "string" ? native.message : undefined;
-  const nativeErrorMessage =
-    typeof nativeError?.message === "string" ? nativeError.message : undefined;
+  const nativeError = typeof native?.error === "object" ? native.error : null;
+  const nativeMessage = native?.message || undefined;
+  const nativeErrorMessage = nativeError?.message;
   const message =
     displayError(nativeMessage) ||
     displayError(nativeErrorMessage) ||

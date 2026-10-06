@@ -247,7 +247,7 @@ it("turns active requests into question or approval notifications", () => {
   );
 });
 
-it("notifies only user-directed complaints and supports legacy lead-authored messages", () => {
+it("uses the server's user-response flag for complaint alerts", () => {
   const complaints = [
     {
       id: "for-user",
@@ -262,6 +262,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       id: "legacy",
       leadId: "lead",
       author: "lead",
+      recipient: "user",
       needsUserResponse: true,
       title: "Legacy message.",
     },
@@ -285,7 +286,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       id: "other-author",
       leadId: "lead",
       author: "worker",
-      needsUserResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
@@ -293,7 +294,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       leadId: "lead",
       author: "lead",
       recipient: "lead",
-      needsUserResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
@@ -301,7 +302,7 @@ it("notifies only user-directed complaints and supports legacy lead-authored mes
       leadId: "lead",
       author: "lead",
       recipient: "team",
-      needsUserResponse: true,
+      needsUserResponse: false,
       title: "Internal.",
     },
     {
