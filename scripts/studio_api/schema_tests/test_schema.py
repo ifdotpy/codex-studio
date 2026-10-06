@@ -4,6 +4,7 @@ from __future__ import annotations
 import unittest
 from typing import cast
 
+from codex_sync_entities import _DTO_MODELS
 from studio_api.models import JsonValue
 from studio_api.generate_types import render
 from studio_api.schema import (
@@ -325,6 +326,22 @@ class SchemaContractTests(unittest.TestCase):
         mapping = discriminator["mapping"]
         assert isinstance(mapping, dict)
         self.assertEqual(len(mapping), 14)
+
+        for collection, dto_model in _DTO_MODELS.items():
+            with self.subTest(collection=collection):
+                payload_ref = mapping[collection]
+                assert isinstance(payload_ref, str)
+                payload_name = payload_ref.rsplit("/", 1)[-1]
+                payload_member = schemas[payload_name]
+                assert isinstance(payload_member, dict)
+                properties = payload_member["properties"]
+                assert isinstance(properties, dict)
+                value_schema = properties["value"]
+                assert isinstance(value_schema, dict)
+                self.assertEqual(
+                    value_schema["$ref"],
+                    f"#/components/schemas/{dto_model.__name__}",
+                )
 
     def test_generator_exports_the_named_sync_entity_payload_union(self) -> None:
         document = sample_document({"type": "string"})

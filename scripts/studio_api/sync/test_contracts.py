@@ -8,17 +8,15 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-import uuid
 from collections.abc import Callable
 from contextlib import AbstractContextManager
 from pathlib import Path
-from typing import Any, Protocol, cast
+from typing import Protocol, cast
 
-from pydantic import TypeAdapter, ValidationError
-from codex_canvas import Canvas
+from pydantic import ValidationError
 from codex_account_transfer import AccountTransfers
-from codex_sync_entities import COLLECTION_FIELDS, _DTO_MODELS, project, seed, validate_entity_payload
-from studio_api.models import ContractModel, JsonValue
+from codex_sync_entities import COLLECTION_FIELDS, project, seed, validate_entity_payload
+from studio_api.models import JsonValue
 from studio_api.sync.models import (
     AgentEntityDto,
     AgentNativeStatus,
@@ -43,16 +41,6 @@ class RuntimeFixture(Protocol):
     def create(self, data: dict[str, object], parent: str | None = None, defer: bool = False,
                parent_epoch: int | None = None, draft: bool = False) -> dict[str, JsonValue]: ...
     def close(self) -> None: ...
-
-
-class RuntimeEntityFixture(Protocol):
-    def create(
-        self, data: dict[str, JsonValue], defer: bool = False
-    ) -> dict[str, JsonValue]: ...
-    def close(self) -> None: ...
-    def db(self) -> AbstractContextManager[sqlite3.Connection]: ...
-    def put(self, db: sqlite3.Connection, table: str, record: dict[str, JsonValue]) -> None: ...
-    def snapshot(self, *, db: sqlite3.Connection) -> dict[str, JsonValue]: ...
 
 
 class ReconcileRuntimeFixture(Protocol):
@@ -661,133 +649,45 @@ class SyncEntityContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             validate_entity_payload(invalid)
 
-    def test_union_matches_runtime_projection_for_empty_collections(self) -> None:
-        repository = Path(__file__).resolve().parents[3]
-        test_directory = repository / "tests"
-        test_path = test_directory / "runtime-contract.py"
-        sys.path.insert(0, str(test_directory))
-        try:
-            spec = importlib.util.spec_from_file_location("sync_union_runtime_fixture", test_path)
-            if spec is None or spec.loader is None:
-                self.fail("runtime fixture could not be loaded")
-            fixture = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(fixture)
-        finally:
-            sys.path.remove(str(test_directory))
-
-        runtime_factory = cast(
-            Callable[[Path, Callable[..., object]], RuntimeEntityFixture],
-            getattr(fixture, "Runtime"),
+    def test_entity_payload_accepts_every_collection_and_rejects_invalid_values(self) -> None:
+        collections = (
+            "agent", "room", "task", "monitor", "complaint", "request", "rule",
+            "project", "peerTeam", "chat", "edge", "event", "work", "workspace",
         )
-        fake_server = cast(Callable[..., object], getattr(fixture, "FakeServer"))
-        with tempfile.TemporaryDirectory(prefix="sync-empty-collection-union-") as temporary:
-            runtime = runtime_factory(Path(temporary), fake_server)
-            try:
-                first = runtime.create({"name": "Lead one", "prompt": "Sync union", "cwd": temporary}, defer=True)
-                second = runtime.create({"name": "Lead two", "prompt": "Sync union", "cwd": temporary}, defer=True)
-                first_id = first["id"]
-                second_id = second["id"]
-                assert isinstance(first_id, str) and isinstance(second_id, str)
+        for collection in collections:
+            with self.subTest(collection=collection):
+                identity = f"{collection}-id"
+                value = {} if collection == "workspace" else {"id": identity}
+                payload = json.dumps({
+                    "collection": collection,
+                    "id": identity,
+                    "value": value,
+                })
+                envelope = validate_entity_payload(payload)
+                self.assertEqual(envelope.collection.value, collection)
+                self.assertEqual(
+                    envelope.value.model_dump(exclude_unset=True), value
+                )
 
-                canvas = Canvas(Path(temporary))  # type: ignore[no-untyped-call]
-                canvas.runtime = runtime
-                chat_id = str(uuid.uuid4())
-                canvas.create_chat("Sync union", [first_id], chat_id)  # type: ignore[no-untyped-call]
+        invalid_payloads = (
+            '{"collection":"chat","id":"c","value":{"id":"c","created":1}}',
+            '{"collection":"agent","id":"a","value":{}}',
+        )
+        for index, payload in enumerate(invalid_payloads):
+            with self.subTest(invalid_case=index):
+                with self.assertRaises(ValidationError):
+                    validate_entity_payload(payload)
 
-                request_id = "sync-union-request"
-                peer_team_id = "sync-union-peer-team"
-                project_id = temporary
-                with runtime.db() as db:
-                    runtime.put(db, "requests", {
-                        "id": request_id,
-                        "method": "agent/asyncQuestion",
-                        "agent": first_id,
-                        "status": "pending",
-                    })
-                    runtime.put(db, "projects", {
-                        "id": project_id,
-                        "path": temporary,
-                        "name": "Sync union project",
-                        "created": 1.0,
-                        "peerTeamsRevision": 1,
-                        "peerTeams": [{
-                            "id": peer_team_id,
-                            "name": "Sync union peers",
-                            "members": [first_id, second_id],
-                        }],
-                    })
-                    snapshot = runtime.snapshot(db=db)
-                    seed(db, {
-                        "runtime": snapshot,
-                        "threads": [],
-                        "chats": [],
-                        "edges": [],
-                        "nodes": [],
-                        "stateDir": temporary,
-                    })  # type: ignore[no-untyped-call]
-
-                    payloads = {
-                        collection: str(db.execute(
-                            "SELECT payload FROM sync_entities WHERE collection=? AND id=? AND deleted=0",
-                            (collection, identity),
-                        ).fetchone()[0])
-                        for collection, identity in (
-                            ("request", request_id),
-                            ("chat", chat_id),
-                            ("peerTeam", peer_team_id),
-                        )
-                    }
-                    edge = db.execute(
-                        "SELECT id,payload FROM sync_entities WHERE collection='edge' AND deleted=0"
-                    ).fetchone()
-                    self.assertIsNotNone(edge)
-                    payloads["edge"] = str(edge["payload"])
-                    self.assertEqual(set(payloads), {"request", "chat", "edge", "peerTeam"})
-
-                class OldEnvelope(ContractModel):
-                    collection: EntityCollection
-                    id: str
-                    value: JsonValue
-
-                for collection, payload in payloads.items():
-                    with self.subTest(collection=collection):
-                        old = TypeAdapter(OldEnvelope).validate_json(payload)
-                        old_value: Any = TypeAdapter(
-                            _DTO_MODELS[old.collection.value]
-                        ).validate_python(old.value)
-                        old_normalized = {
-                            "collection": old.collection.value,
-                            "id": old.id,
-                            "value": old_value.model_dump(mode="json", exclude_unset=True),
-                        }
-                        new = validate_entity_payload(payload)
-                        self.assertEqual(
-                            new.model_dump(mode="json", exclude_unset=True), old_normalized
-                        )
-
-                        wrong_collection = json.loads(payload)
-                        wrong_collection["collection"] = "agent"
-                        wrong_payload = json.dumps(wrong_collection)
-                        with self.assertRaises(ValidationError):
-                            old_envelope = TypeAdapter(OldEnvelope).validate_json(wrong_payload)
-                            TypeAdapter(
-                                _DTO_MODELS[old_envelope.collection.value]
-                            ).validate_python(old_envelope.value)
-                        with self.assertRaises(ValidationError):
-                            validate_entity_payload(wrong_payload)
-
-                        missing_id = json.loads(payload)
-                        del missing_id["value"]["id"]
-                        missing_payload = json.dumps(missing_id)
-                        with self.assertRaises(ValidationError):
-                            old_envelope = TypeAdapter(OldEnvelope).validate_json(missing_payload)
-                            TypeAdapter(
-                                _DTO_MODELS[old_envelope.collection.value]
-                            ).validate_python(old_envelope.value)
-                        with self.assertRaises(ValidationError):
-                            validate_entity_payload(missing_payload)
-            finally:
-                runtime.close()
+        nonfinite_tokens = ("NaN", "Infinity", "-Infinity", "1e999", "9" * 400)
+        for token_index, token in enumerate(nonfinite_tokens):
+            payloads = (
+                f'{{"collection":"agent","id":"a","value":{{"id":"a","created":{token}}}}}',
+                f'{{"collection":"agent","id":"a","value":{{"id":"a","accountTransfer":{{"updated":{token}}}}}}}',
+            )
+            for field_depth, payload in enumerate(payloads):
+                with self.subTest(number_kind=token_index, field_depth=field_depth):
+                    with self.assertRaises(ValidationError):
+                        validate_entity_payload(payload)
 
     def test_draft_batch_is_fully_validated_before_service_call(self) -> None:
         row = {

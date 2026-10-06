@@ -22,18 +22,7 @@ from studio_api.schema import (
     API_SCHEMA_MISMATCH_FIELD,
 )
 from studio_api.sync.models import (
-    AgentEntityDto,
-    ChatEntityDto,
-    ComplaintEntityDto,
     DraftPushRequest,
-    EdgeEntityDto,
-    EventEntityDto,
-    MonitorEntityDto,
-    PeerTeamEntityDto,
-    ProjectEntityDto,
-    RequestEntityDto,
-    RoomEntityDto,
-    RuleEntityDto,
     SyncIdentityResponse,
     SyncProtocolResponse,
     SyncDocument,
@@ -41,9 +30,6 @@ from studio_api.sync.models import (
     SyncPullResponse,
     SyncPullResetResponse,
     SyncStreamQuery,
-    TaskEntityDto,
-    WorkEntityDto,
-    WorkspaceEntityDto,
 )
 from studio_api.sync.resources.models import (
     DraftsResource,
@@ -225,31 +211,9 @@ def create_router(context: ApiContext) -> APIRouter:
         return context.send(request, {**projection, "generation": store.generation()})
 
     pull_route = router.routes[-1]
-    entity_models = (
-        AgentEntityDto,
-        RoomEntityDto,
-        TaskEntityDto,
-        MonitorEntityDto,
-        ComplaintEntityDto,
-        RequestEntityDto,
-        RuleEntityDto,
-        ProjectEntityDto,
-        PeerTeamEntityDto,
-        ChatEntityDto,
-        EdgeEntityDto,
-        EventEntityDto,
-        WorkEntityDto,
-        WorkspaceEntityDto,
-    )
     register_route_components(
         pull_route,
         {
-            **{
-                model.__name__: model.model_json_schema(
-                    ref_template="#/components/schemas/{model}"
-                )
-                for model in entity_models
-            },
             "SyncEntityPayload": TypeAdapter(SyncEntityPayload).json_schema(
                 ref_template="#/components/schemas/{model}"
             ),
