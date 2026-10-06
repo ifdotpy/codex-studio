@@ -79,14 +79,15 @@ def _cleanup_image_workspace(rt, agent_id):
                 rt.put(db, 'agents', current)
         removed = archive_workspace(agent_id)
         saved = {**saved, 'phase': 'archived',
-                 'bytes': removed.get('freedBytes', saved.get('bytes', 0))}
+                 'freedBytes': removed.get('freedBytes', 0)}
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
             current.update(imageWorkspaceReady=False,
                            imageWorkspacePhase='archived', cleanedImageWorkspace=saved)
             current['imageWorkspace'] = True
             rt.put(db, 'agents', current)
-        return {'state': 'archived', 'bytes': saved['bytes']}
+        return {'state': 'archived', 'bytes': saved['bytes'],
+                'freedBytes': saved['freedBytes']}
     except Exception as error:
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)

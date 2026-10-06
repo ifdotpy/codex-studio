@@ -752,6 +752,10 @@ finally:
         self.assertEqual(calls[0]['phase'], 'archiving')
         self.assertTrue((image_repo / 'draft.txt').is_file())
         engine.archive_workspace.assert_called_once_with('worker')
+        with self.rt.db() as db:
+            saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
+        self.assertEqual(saved['bytes'], 4096)
+        self.assertEqual(saved['freedBytes'], 0)
 
     def test_archive_crash_retry_finishes_detach_without_losing_saved_record(self):
         mount, image_repo, engine = self.image_workspace()
