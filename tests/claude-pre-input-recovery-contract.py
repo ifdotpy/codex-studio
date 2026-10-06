@@ -98,6 +98,26 @@ class ClaudePreInputRecovery(unittest.TestCase):
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_events WHERE agent=? AND id IN (?,?)',
                                         (self.agent['id'], *self.ids)).fetchone()[0], 2)
 
+    def test_account_validation_rejection_keeps_exact_input_pending_without_auto_retry(self):
+        self.start()
+        terminal = self.terminal(error={'message': 'Claude sign-in cannot be verified', 'data': {
+            'turnStartOutcome': 'not_applied', 'claudePreparationFailure': 'account_validation'}})
+        self.complete(terminal)
+        self.assert_pending_batch()
+        current = self.runtime.agent(self.agent['id'])
+        self.assertTrue(current['nativeFailureHold'])
+        self.assertEqual(current['status'], 'failed')
+        self.assertFalse(self.receipt()['retry'])
+        self.runtime.dispatch()
+        self.assertEqual(self.server.calls, self.calls)
+        self.runtime.send(self.agent['id'], 'The user restores the same account', 'auth-continue', manual=True)
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(starts[0]['input'], starts[1]['input'])
+        self.assertEqual(starts[0]['clientUserMessageId'], starts[1]['clientUserMessageId'])
+        self.assertEqual(self.runtime.delivery_receipt('auth-continue')['status'], 'pending')
+
     def test_notification_after_rpc_acceptance_retries_same_ids_once(self):
         self.start()
         self.runtime.send(self.agent['id'], 'Private later input', 'later', manual=False)

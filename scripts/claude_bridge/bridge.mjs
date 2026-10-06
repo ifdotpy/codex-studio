@@ -179,17 +179,66 @@ const settings = (s) => ({
   stderr: (line) => process.stderr.write(line),
 });
 function checkAccount(account) {
-  if (
-    !process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account.email !== process.env.STUDIO_CLAUDE_ACCOUNT ||
-    account.apiProvider !== "firstParty" ||
-    !account.subscriptionType ||
-    (account.apiKeySource && account.apiKeySource !== "none")
-  ) {
-    throw new Error(
-      "Claude Code account or subscription changed. Restore the original login.",
+  const reject = (reason, message) => {
+    throw Object.assign(new Error(message), {
+      claudeAccountValidationFailed: true,
+      data: {
+        turnStartOutcome: "not_applied",
+        claudePreparationFailure: "account_validation",
+        claudeAccountFailure: reason,
+      },
+    });
+  };
+  const expected = process.env.STUDIO_CLAUDE_ACCOUNT;
+  if (!expected)
+    reject(
+      "expected_identity",
+      "Claude Code account identity is not configured. No input was submitted.",
     );
-  }
+  if (!account || typeof account !== "object" || Array.isArray(account))
+    reject(
+      "account_metadata",
+      "Claude Code account metadata is missing. No input was submitted.",
+    );
+  if (typeof account.email !== "string" || !account.email.trim())
+    reject(
+      "email_metadata",
+      "Claude Code email metadata is missing. No input was submitted.",
+    );
+  if (account.email !== expected)
+    reject(
+      "identity_mismatch",
+      "Claude Code account or subscription changed: expected " +
+        expected +
+        ", got " +
+        account.email +
+        ". Restore the original login.",
+    );
+  if (typeof account.apiProvider !== "string" || !account.apiProvider)
+    reject(
+      "provider_metadata",
+      "Claude Code API provider metadata is missing. No input was submitted.",
+    );
+  if (account.apiProvider !== "firstParty")
+    reject(
+      "provider_mismatch",
+      "Claude Code API provider is " +
+        account.apiProvider +
+        ", expected firstParty. Restore the original login.",
+    );
+  if (
+    typeof account.subscriptionType !== "string" ||
+    !account.subscriptionType.trim()
+  )
+    reject(
+      "subscription_metadata",
+      "Claude Code subscription metadata is missing. No input was submitted.",
+    );
+  if (account.apiKeySource && account.apiKeySource !== "none")
+    reject(
+      "api_key_source",
+      "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
+    );
 }
 async function probe(cwd, read) {
   let release;
@@ -461,9 +510,20 @@ async function finishTurn(s, active, result, error) {
         ? { codexErrorInfo: turn.apiErrorInfo }
         : {}),
       ...(turn.startOutcome === "not_applied" &&
-      error?.preparationTimedOut === true &&
+      (error?.preparationTimedOut === true ||
+        error?.claudeAccountValidationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
-        ? { data: { turnStartOutcome: "not_applied" } }
+        ? {
+            data: {
+              turnStartOutcome: "not_applied",
+              ...(error?.data?.claudePreparationFailure === "account_validation"
+                ? {
+                    claudePreparationFailure: "account_validation",
+                    claudeAccountFailure: error.data.claudeAccountFailure,
+                  }
+                : {}),
+            },
+          }
         : {}),
       ...turn.limitError,
     };
@@ -1085,7 +1145,8 @@ async function startSession(s, active, p) {
     if (
       !allowed &&
       active.turn === initial &&
-      error?.preparationTimedOut === true &&
+      (error?.preparationTimedOut === true ||
+        error?.claudeAccountValidationFailed === true) &&
       error?.data?.turnStartOutcome === "not_applied"
     ) {
       // The prompt gate proves this exact input never reached the SDK.
@@ -1173,7 +1234,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 15 },
+      capabilities: { claudeVersion: 16 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
