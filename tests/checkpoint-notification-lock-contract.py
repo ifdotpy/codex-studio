@@ -135,7 +135,7 @@ class CheckpointNotificationLockContract(unittest.TestCase):
                                  [("other-writer",)])
         self.assertEqual(self.captures, [(self.agent["id"], "After turn", self.agent["turnId"])])
 
-    def test_rolled_back_notification_does_not_capture_or_collect_images(self):
+    def test_rolled_back_notification_does_not_capture_images(self):
         self.agent = self.update(self.agent, imageWorkspaceReady=True)
         put = self.runtime.put
 
@@ -145,11 +145,9 @@ class CheckpointNotificationLockContract(unittest.TestCase):
             return put(db, table, record, **kwargs)
 
         with patch.object(self.runtime, "put", side_effect=failed_put):
-            with patch("codex_workspace_images.collect") as collect:
-                with self.assertRaisesRegex(ValueError, "^fixture terminal commit failure$"):
-                    self.runtime.notification(self.notice())
-                self.drain()
-                collect.assert_not_called()
+            with self.assertRaisesRegex(ValueError, "^fixture terminal commit failure$"):
+                self.runtime.notification(self.notice())
+            self.drain()
         self.assertEqual(self.captures, [])
         self.assertEqual(self.operations(), [])
         with self.runtime.db() as db:
@@ -282,11 +280,9 @@ class CheckpointNotificationLockContract(unittest.TestCase):
 
     def test_image_workspace_skips_checkpoint_capture_and_collection(self):
         operation_id = self.image_operation()
-        with patch.object(self.runtime, "capture_checkpoint") as capture, \
-                patch("codex_workspace_images.collect") as collect:
+        with patch.object(self.runtime, "capture_checkpoint") as capture:
             self.runtime.checkpoint_after_turn(self.agent["id"], "image-turn", operation_id)
             capture.assert_not_called()
-            collect.assert_not_called()
         self.assertNotIn("imageWorkspaceCollect", self.runtime.agent(self.agent["id"]))
 
 

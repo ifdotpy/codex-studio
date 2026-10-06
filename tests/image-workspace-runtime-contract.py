@@ -123,6 +123,20 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertFalse(record['worktree'])
         self.assertEqual(record['imageWorkspaceRepo'], str(folder.resolve()))
 
+    def test_folder_outside_git_uses_original_folder_when_images_are_unsupported(self):
+        folder = self.root / 'plain-folder-unsupported'
+        folder.mkdir()
+        self.rt.image_workspace_support = lambda _root: (False, 'unsupported')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        result = self.rt.spawn_agents(self.rt.agent(self.lead['id']), {'agents': [{
+            'name': 'Plain folder fallback', 'prompt': 'Edit files', 'cwd': str(folder)}]},
+            'plain-folder-fallback')['agents'][0]
+        record = self.rt.agent(result['id'])
+        self.assertEqual(result['workspace'], 'shared')
+        self.assertFalse(record['imageWorkspace'])
+        self.assertFalse(record['worktree'])
+        self.assertEqual(record['cwd'], str(folder.resolve()))
+
     def test_worker_result_includes_copy_path_source_time_and_uncommitted_state(self):
         worker_id = self.spawn()['id']
         with self.rt.lock, self.rt.db() as db:
@@ -406,6 +420,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             run.assert_not_called()
         with self.assertRaisesRegex(ValueError, 'unavailable for image workspaces'):
             self.rt.git(self.rt.agent(worker), ['status'])
+        with self.assertRaisesRegex(ValueError, 'Git checkpoints are unavailable for image workspaces'):
+            self.rt.checkpoint_capture(worker)
 
     def test_unsupported_platform_uses_git_worktree(self):
         self.rt.image_workspace_support = lambda _repo: (False, 'unsupported platform')
@@ -454,6 +470,22 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertTrue(record['imageWorkspaceReady'])
         self.assertEqual(record['cwd'], str(image_repo / 'project'))
         engine.ensure_mounted.assert_called_once_with(worker)
+
+    def test_delete_agent_removes_retained_image_outside_lock(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn()['id']
+        self.assertTrue(self.rt.agent(worker)['imageWorkspace'])
+        engine = types.ModuleType('codex_workspace_images')
+        def remove(agent_id):
+            self.assertFalse(self.rt.lock._is_owned())
+            self.assertEqual(agent_id, worker)
+            return {'state': 'removed', 'freedBytes': 12}
+        engine.remove_workspace = Mock(side_effect=remove)
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}):
+            result = self.rt.delete_conversation(worker)
+        self.assertIn(worker, result['deleted'])
+        engine.remove_workspace.assert_called_once_with(worker)
 
     def test_maintenance_and_disk_reports_include_workspace_and_base_bytes(self):
         from codex_agent_management import worktree_maintenance_report

@@ -90,7 +90,7 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                     wait_for(lambda: rt.agent(worker_id).get('imageWorkspaceReady'))
                     self.assertTrue(user_edit_written.is_set())
                     ready = rt.agent(worker_id)
-                    image_repo = Path(ready['cwd']).parents[1]
+                    image_repo = Path(ready['cwd']).parent
                     self.assertEqual((image_repo / 'project' / 'tracked.txt').read_text(),
                                      'parent uncommitted edit\n')
                     taken_at = time.strftime('%Y-%m-%dT%H:%M:%SZ',
