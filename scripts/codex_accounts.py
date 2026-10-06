@@ -131,7 +131,7 @@ class AccountStore:
             raise ValueError("Unknown Codex account")
         return self.data["accounts"][key]
 
-    def refresh(self, key):
+    def refresh(self, key: str) -> dict[str, object]:
         claude_metadata = None
         with self.lock:
             row = self._row(key)
@@ -187,7 +187,7 @@ class AccountStore:
                     row.pop("error", None)
             return {k: v for k, v in row.items() if not k.startswith("_")}
 
-    def get(self, key):
+    def get(self, key: str) -> dict[str, object]:
         with self.lock:
             return self.refresh(key)
 
@@ -223,7 +223,7 @@ class AccountStore:
                 "supportsDelete": True,
             }
 
-    def default(self, key=None):
+    def default(self, key: str | None = None) -> str:
         with self.lock:
             if key is not None:
                 row = self.get(key)

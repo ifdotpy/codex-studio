@@ -5,8 +5,17 @@ import glob
 import json
 import os
 from pathlib import Path
+from typing import NotRequired, TypedDict
 
 ACTIVE = {"starting", "running", "waiting", "capacity-retry"}
+
+
+class ThreadStatus(TypedDict):
+    name: str
+    threadId: str
+    wave: NotRequired[str]
+    turnStatus: NotRequired[str]
+    launcherPid: NotRequired[int]
 
 def outside_claude(path: Path) -> Path:
     resolved = path.expanduser().resolve()
@@ -24,7 +33,7 @@ def state_dir() -> Path:
 def codex_home() -> Path:
     return outside_claude(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"))
 
-def process_is_alive(pid: int) -> bool:
+def process_is_alive(pid: int | None) -> bool:
     if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 0:
         return False
     try:
@@ -35,18 +44,18 @@ def process_is_alive(pid: int) -> bool:
     except OSError:
         return False
 
-def effective_status(thread: dict) -> str:
+def effective_status(thread: ThreadStatus) -> str:
     status = thread.get("turnStatus", "unknown")
     if status in ACTIVE and not process_is_alive(thread.get("launcherPid")):
         return "abandoned"
     return status
 
-def read_threads(root: Path, wave: str | None = None) -> list[dict]:
+def read_threads(root: Path, wave: str | None = None) -> list[ThreadStatus]:
     paths = [root / f"codex-swarm-status.{wave}.json"] if wave else sorted(root.glob("codex-swarm-status.*.json"))
-    threads = []
+    threads: list[ThreadStatus] = []
     for path in paths:
         try:
-            records = json.loads(path.read_text(encoding="utf-8"))
+            records: list[ThreadStatus] = json.loads(path.read_text(encoding="utf-8"))
         except FileNotFoundError:
             continue
         except (OSError, json.JSONDecodeError) as error:
