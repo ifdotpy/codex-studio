@@ -105,6 +105,8 @@ class DraftsResource(ContractModel):
 
 
 class TranscriptsResource(ContractModel):
+    """Legacy collection-wide transcript subscription retained for clients."""
+
     kind: Literal["transcripts"]
 
 
@@ -143,6 +145,17 @@ class ResourceRef(RootModel[ResourceRefValue]):
     """Closed discriminated union of all typed UI resource identities."""
 
 
+class ResourceRevisionEntry(ContractModel):
+    """Per-resource revision; StateResource uses the entity sequence."""
+
+    # Omitted on the wire: entries align positionally with event.resources.
+    # Optional decode support keeps older or hand-written protocol-3 frames valid.
+    resource: ResourceRef | None = None
+    revision: ResourceRevision
+    entitySequences: list[ResourceRevision] | None = None
+    entitySequenceReset: bool | None = None
+
+
 class ResourceChangeEvent(ContractModel):
     """Named `resources` SSE payload. A change invalidates the listed refs."""
 
@@ -152,6 +165,7 @@ class ResourceChangeEvent(ContractModel):
     revision: ResourceRevision
     reason: Literal["initial", "change", "reconnect", "overflow", "workspace"]
     resources: list[ResourceRef]
+    resourceVersions: list[ResourceRevisionEntry]
 
 
 class ResourceHeartbeatEvent(ContractModel):

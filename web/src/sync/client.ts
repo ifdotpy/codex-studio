@@ -20,11 +20,14 @@ import {
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
+import { EntitySequenceCheckpoint } from "./entitySequence";
 import {
+  acknowledgeEntitySequences,
   watchResourceChanges,
   watchResourceConnection,
   type ResourceConnectionState,
   type ResourceRef,
+  type ResourceVersion,
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
@@ -182,9 +185,22 @@ if (typeof window !== "undefined")
   registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
     const { db, workspaceId } = await syncDatabase();
     if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
-    for (const document of documents)
-      if (document.id.startsWith("entity:"))
+    const entities = documents.filter((document) =>
+      document.id.startsWith("entity:"),
+    );
+    // Acknowledge the response envelope before the next coalesced state frame
+    // can schedule a redundant pull; a failed persistence triggers reconciliation.
+    acknowledgeEntitySequences(
+      entities.map((document) => document.seq),
+      targetWorkspaceId,
+    );
+    try {
+      for (const document of entities)
         await persistProjection(db.projections, document);
+    } catch (error) {
+      await refreshProjection().catch(() => {});
+      throw error;
+    }
   });
 
 async function pull(
@@ -228,12 +244,12 @@ function resourceForScope(scope: string): ResourceRef {
 }
 
 export function watchSyncInvalidations(
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
   scope?: string,
 ): () => void;
 export function watchSyncInvalidations(
   scope: string,
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
 ): () => void;
 export function watchSyncInvalidations(
   first: string | (() => void),
@@ -599,6 +615,19 @@ async function acquireProjection(
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
+    let unversionedInvalidation = false;
+    let requiredEntitySequence: number | undefined;
+    // Sequence zero is a valid initial baseline. Keep a sentinel until the
+    // first pull establishes that the local projection already has that row.
+    const latestEntitySequence = new EntitySequenceCheckpoint();
+    if (remoteScope === "state:entities:v1") {
+      const [checkpoint] =
+        await db.projections.storageInstance.findDocumentsById(
+          ["state:entities:checkpoint"],
+          true,
+        );
+      if (checkpoint) latestEntitySequence.assign(checkpoint.seq);
+    }
     let resetReadySeq: number | undefined;
     let invalidationBlocked = false;
     let readFailed = false;
@@ -660,6 +689,7 @@ async function acquireProjection(
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
           invalidated = false;
+          unversionedInvalidation = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
             (document.hidden || navigator.onLine === false)
@@ -728,6 +758,7 @@ async function acquireProjection(
               signal && scopes.get(scope)?.foreground === 0
                 ? signal
                 : undefined;
+            const pullResetVersion = latestEntitySequence.resetVersion;
             const result = await retryRead(
               () =>
                 pull(
@@ -748,7 +779,18 @@ async function acquireProjection(
               requestSignal,
             );
             if (stopped) return;
+            // An epoch/reset during this request invalidates the old server
+            // checkpoint. Same-epoch responses remain usable and cannot move
+            // the local checkpoint backwards.
+            if (
+              remoteScope === "state:entities:v1" &&
+              !latestEntitySequence.isSameResetVersion(pullResetVersion)
+            ) {
+              more = true;
+              continue;
+            }
             if (isEntityResetResponse(result, remoteScope)) {
+              latestEntitySequence.reset();
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
@@ -850,10 +892,15 @@ async function acquireProjection(
             }
             if (remoteScope === "state:entities:v1") {
               await persistProjectionBatch(db.projections, entityBatch);
+              if (!latestEntitySequence.isSameResetVersion(pullResetVersion)) {
+                more = true;
+                continue;
+              }
+              latestEntitySequence.assignWithinEpoch(result.checkpoint.seq);
               await persistProjection(db.projections, {
                 id: checkpointId,
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),
-                seq: result.checkpoint.seq,
+                seq: latestEntitySequence.value,
               });
               if (!readyPublished) {
                 await persistProjection(db.projections, {
@@ -874,6 +921,15 @@ async function acquireProjection(
             } else {
               more = false;
             }
+          }
+          if (
+            invalidated &&
+            !unversionedInvalidation &&
+            requiredEntitySequence !== undefined &&
+            latestEntitySequence.covers(requiredEntitySequence)
+          ) {
+            invalidated = false;
+            requiredEntitySequence = undefined;
           }
           report(null);
         } while (invalidated && !stopped);
@@ -896,6 +952,10 @@ async function acquireProjection(
         })
         .finally(() => {
           pending = undefined;
+          // An invalidation can land between the final loop condition and
+          // clearing `pending`; make that edge schedule one more projection.
+          if (invalidated && !stopped)
+            queueMicrotask(() => void refresh().catch(() => {}));
         });
       return pending;
     };
@@ -904,10 +964,26 @@ async function acquireProjection(
       ? scope.slice(11)
       : null;
     let stopInvalidation: (() => void) | undefined;
-    const invalidate = () => {
+    const invalidate = (version?: ResourceVersion) => {
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
       if (invalidationBlocked) return;
+      if (remoteScope === "state:entities:v1" && version) {
+        latestEntitySequence.observeEpoch(version.epoch);
+        if (version.entitySequenceReset) latestEntitySequence.reset();
+      }
+      if (
+        remoteScope === "state:entities:v1" &&
+        version?.entitySequence !== undefined
+      ) {
+        if (latestEntitySequence.covers(version.entitySequence)) return;
+        requiredEntitySequence = Math.max(
+          requiredEntitySequence ?? 0,
+          version.entitySequence,
+        );
+      } else {
+        unversionedInvalidation = true;
+      }
       invalidated = true;
       void refresh().catch(() => {});
     };

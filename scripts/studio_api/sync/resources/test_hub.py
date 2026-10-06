@@ -9,17 +9,23 @@ import tempfile
 import unittest
 
 from studio_api.sync.resources.hub import (
+    MAX_ENTITY_SEQUENCE_IDS,
     MAX_PENDING_RESOURCES,
+    MAX_RESOURCE_REVISION_ENTRIES,
     ResourceHub,
     publish_resources,
     register_resource_hub,
     unregister_resource_hub,
 )
 from studio_api.sync.resources.models import (
+    AccountsResource,
+    CostsResource,
+    LimitsResource,
     PanelResource,
     QueueResource,
     ResourceRef,
     ResourceTokenRatesEvent,
+    StateResource,
     TokenRateSnapshot,
     TokenRateValue,
 )
@@ -77,6 +83,114 @@ class CrossThreadWatchdog:
 
 
 class ResourceHubTests(unittest.IsolatedAsyncioTestCase):
+    async def test_resource_revision_survives_subscription_gap_and_is_bounded(self) -> None:
+        loop = asyncio.get_running_loop()
+        costs = ResourceRef(CostsResource(kind="costs"))
+        hub = ResourceHub("workspace-revisions")
+        first = hub.subscribe([costs], loop=loop)
+        first.close()
+        hub.publish(costs)
+        hub.publish(ResourceRef(AccountsResource(kind="accounts")))
+
+        returned = hub.subscribe([costs], loop=loop)
+        self.assertEqual(returned.initial.resourceVersions[0].revision, 1)
+        returned.close()
+
+        resources = [
+            ResourceRef(LimitsResource(kind="limits", accountKey=f"account-{index}"))
+            for index in range(MAX_RESOURCE_REVISION_ENTRIES + 4)
+        ]
+        hub.publish_many(resources)
+        self.assertLessEqual(len(hub._resource_revisions), MAX_RESOURCE_REVISION_ENTRIES)
+        hub.close()
+
+    async def test_state_entity_sequence_is_independent_and_commit_bursts_coalesce(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        watched_panel = panel("agent-state-test")
+        hub = ResourceHub("workspace-state", entity_sequence=4)
+        subscription = hub.subscribe([state, watched_panel], loop=loop)
+        initial = {
+            resource.root.kind: version.revision
+            for resource, version in zip(
+                subscription.initial.resources,
+                subscription.initial.resourceVersions,
+                strict=True,
+            )
+        }
+        self.assertEqual(initial["state"], 4)
+        self.assertEqual(initial["panel"], 0)
+
+        hub.publish(watched_panel)
+        typed = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(typed)
+        assert typed is not None
+        typed_versions = {
+            resource.root.kind: version.revision
+            for resource, version in zip(typed.resources, typed.resourceVersions, strict=True)
+        }
+        self.assertEqual(typed_versions["panel"], 1)
+
+        hub.publish_entity_sequence(5, [5])
+        hub.publish_entity_sequence(6, [6])
+        state_event = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(state_event)
+        assert state_event is not None
+        self.assertEqual(state_event.resources, [state])
+        self.assertEqual(state_event.resourceVersions[0].revision, 6)
+        self.assertEqual(state_event.resourceVersions[0].entitySequences, [5, 6])
+        self.assertIsNone(await subscription.next_event(timeout=0.05))
+
+        hub.publish_overflow()
+        overflow = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(overflow)
+        assert overflow is not None
+        state_version = next(
+            version.revision
+            for resource, version in zip(
+                overflow.resources, overflow.resourceVersions, strict=True
+            )
+            if resource.root.kind == "state"
+        )
+        self.assertEqual(state_version, 6)
+        subscription.close()
+
+    async def test_entity_sequence_payload_is_bounded_and_signals_reset(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        hub = ResourceHub("workspace-state-bounded")
+        subscription = hub.subscribe([state], loop=loop)
+
+        hub.publish_entity_sequence(
+            MAX_ENTITY_SEQUENCE_IDS + 1,
+            list(range(1, MAX_ENTITY_SEQUENCE_IDS + 2)),
+        )
+        event = await subscription.next_event(timeout=1)
+
+        self.assertIsNotNone(event)
+        assert event is not None
+        version = event.resourceVersions[0]
+        self.assertIsNone(version.entitySequences)
+        self.assertTrue(version.entitySequenceReset)
+        subscription.close()
+
+    async def test_entity_sequence_without_frame_does_not_advance_hub_revision(self) -> None:
+        loop = asyncio.get_running_loop()
+        state = ResourceRef(StateResource(kind="state"))
+        hub = ResourceHub("workspace-sequence-no-op", entity_sequence=10)
+        subscription = hub.subscribe([state], loop=loop)
+
+        self.assertEqual(hub.publish_entity_sequence(20), 0)
+        self.assertEqual(hub._resource_revision(state), 10)
+
+        hub.publish_entity_sequence(11, [11])
+        event = await subscription.next_event(timeout=1)
+        self.assertIsNotNone(event)
+        assert event is not None
+        self.assertEqual(event.resourceVersions[0].revision, 11)
+        self.assertEqual(event.resourceVersions[0].entitySequences, [11])
+        subscription.close()
+
     async def test_atomic_baseline_and_change_coalescing(self) -> None:
         loop = asyncio.get_running_loop()
         hub = ResourceHub("workspace-a")

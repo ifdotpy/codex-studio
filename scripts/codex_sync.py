@@ -515,7 +515,7 @@ class SyncStore:
             floor = entity_tombstone_floor(db)
             initial_high = (min(high, max(0, int(initial_high)))
                             if fresh and int(initial_high) > 0 else high)
-            if reset_support and not fresh and after > 0 and after < floor:
+            if reset_support and not fresh and after > 0 and (after < floor or after > high):
                 return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                         'reset': True, 'floor': floor, 'maxSeq': high}
             # A new browser has no rows to remove. Existing checkpoints

@@ -35,6 +35,7 @@ from studio_api.sync.resources.models import (
 )
 from codex_runtime import Runtime
 from codex_sync import SyncStore
+from codex_sync_entities import put
 
 
 class StoreStub:
@@ -410,6 +411,32 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(unchanged.status_code, 200)
         self.assertEqual(unchanged.json()["documents"], [])
         self.assertEqual(unchanged.json()["checkpoint"]["seq"], checkpoint)
+
+    def test_entity_pull_resets_when_client_checkpoint_exceeds_server_high(self) -> None:
+        context = ContextStub()
+        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(
+            connect,
+            snapshot=lambda: {},
+            transcript=context.runtime.transcript,
+        )
+        with connect() as db:
+            put(db, "workspace", "current", {"id": "current"})
+
+        response = store.pull(
+            "state:entities:v1", after=100, reset_support=True
+        )
+        self.assertTrue(response["reset"])
+        self.assertEqual(response["maxSeq"], 1)
 
     def test_pull_keeps_query_parameter_openapi_schema(self) -> None:
         app = FastAPI()

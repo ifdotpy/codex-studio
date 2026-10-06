@@ -248,6 +248,8 @@ def ensure_tables(db: sqlite3.Connection) -> None:
         PRIMARY KEY(collection,id));
       CREATE INDEX IF NOT EXISTS sync_entities_seq ON sync_entities(seq);
       CREATE INDEX IF NOT EXISTS sync_entities_collection_seq ON sync_entities(collection,seq);
+      CREATE INDEX IF NOT EXISTS sync_entities_non_transcript_seq ON sync_entities(seq)
+        WHERE collection NOT LIKE 'transcript:%';
       CREATE INDEX IF NOT EXISTS sync_entities_collection_deleted
         ON sync_entities(collection,deleted);
       CREATE INDEX IF NOT EXISTS sync_entities_tombstone_order

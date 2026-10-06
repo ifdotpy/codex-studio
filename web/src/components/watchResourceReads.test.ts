@@ -28,6 +28,7 @@ vi.mock("../sync/resume", () => ({
 import { watchResourceReads } from "./watchResourceReads";
 
 const terminals: ResourceRef = { kind: "terminals" };
+const limits: ResourceRef = { kind: "limits", accountKey: "default" };
 const output: ResourceRef = { kind: "terminal", terminalId: "terminal-1" };
 const notify = (resource: ResourceRef) => {
   const callback = watchers.get(JSON.stringify(resource));
@@ -44,6 +45,23 @@ describe("watchResourceReads", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.unstubAllGlobals();
+  });
+
+  it("refreshes account limits after their typed resource event", async () => {
+    vi.useFakeTimers();
+    const displayed: number[] = [];
+    const read = vi.fn(async () => {
+      displayed.push(displayed.length === 0 ? 20 : 80);
+    });
+    const stop = watchResourceReads(limits, read, vi.fn());
+    notify(limits);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(displayed).toEqual([20]);
+    notify(limits);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(displayed).toEqual([20, 80]);
+    expect(read).toHaveBeenCalledTimes(2);
+    stop();
   });
 
   it("recovers a failed read without another resource change", async () => {

@@ -151,6 +151,9 @@ each tab can open its own protocol-3 stream. Transcript updates use scoped
 generation-poll endpoint. Hash-bearing protocol-3 connections begin with an
 `api-schema` event; a mismatching connection receives only that handshake and
 closes without subscribing. Hashless connections keep the prior event sequence.
+Resource baselines carry per-resource revisions. The state revision is the
+durable non-transcript entity sequence, so subscription changes skip unchanged
+resources while a new stream epoch forces a full reconciliation.
 During the one-time rollout, a pre-gate tab can hold the stream lock while its
 hashless channel messages are ignored, leaving a new tab degraded until the old
 tab is closed or reloaded.
