@@ -35,10 +35,44 @@ GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 2
 SERVER_THREAD_JOIN_TIMEOUT_SECONDS = GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS + 1
 
 
+class ShutdownEvent:
+    """A shutdown flag that can wake stream generators on each server loop."""
+
+    def __init__(self) -> None:
+        self._requested = threading.Event()
+        self._lock = threading.Lock()
+        self._async_events: dict[asyncio.AbstractEventLoop, asyncio.Event] = {}
+
+    def is_set(self) -> bool:
+        return self._requested.is_set()
+
+    def async_event(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            event = self._async_events.get(loop)
+            if event is None:
+                event = asyncio.Event()
+                self._async_events[loop] = event
+            requested = self._requested.is_set()
+        if requested:
+            event.set()
+        return event
+
+    def set(self) -> None:
+        self._requested.set()
+        with self._lock:
+            listeners = tuple(self._async_events.items())
+        for loop, event in listeners:
+            try:
+                loop.call_soon_threadsafe(event.set)
+            except RuntimeError:
+                pass
+
+
 class ShutdownAwareApp:
     """Finish an in-flight response when Uvicorn bounds shutdown draining."""
 
-    def __init__(self, app: ASGIApp, shutdown_requested: threading.Event) -> None:
+    def __init__(self, app: ASGIApp, shutdown_requested: ShutdownEvent) -> None:
         self.app = app
         self.shutdown_requested = shutdown_requested
 
@@ -55,7 +89,11 @@ class ShutdownAwareApp:
             await send(message)
 
         try:
-            await self.app(scope, receive, tracked_send)
+            marked = dict(scope)
+            state = dict(scope.get("state", {}))
+            state["studio_shutdown_event"] = self.shutdown_requested
+            marked["state"] = state
+            await self.app(marked, receive, tracked_send)
         except asyncio.CancelledError:
             if not self.shutdown_requested.is_set():
                 raise
@@ -170,6 +208,7 @@ class BoundServer:
         self._closed = False
         self._lock = threading.Lock()
         self._serve_thread: threading.Thread | None = None
+        self._loop: asyncio.AbstractEventLoop | None = None
 
     @property
     def address(self) -> object:
@@ -178,23 +217,45 @@ class BoundServer:
     def serve_forever(self, poll_interval: float = 0.5) -> None:
         del poll_interval  # Uvicorn runs the event loop and polling itself.
         self._serve_thread = threading.current_thread()
-        asyncio.run(self.server.serve(sockets=[self.socket]))
+
+        async def serve() -> None:
+            self._loop = asyncio.get_running_loop()
+            await self.server.serve(sockets=[self.socket])
+
+        asyncio.run(serve())
 
     def shutdown(self, *, force: bool = False) -> None:
         self.server.should_exit = True
         if force:
             self.server.force_exit = True
+            loop = self._loop
+            if loop is not None:
+                try:
+                    loop.call_soon_threadsafe(self._abort_connections)
+                except RuntimeError:
+                    pass
 
-    def server_close(self) -> None:
+    def _abort_connections(self) -> None:
+        for connection in tuple(self.server.server_state.connections):
+            transport = getattr(connection, "transport", None)
+            if transport is not None:
+                transport.abort()
+
+    def _join_serve_thread(self) -> bool:
         serving_thread = self._serve_thread
-        if serving_thread is not None and serving_thread is not threading.current_thread():
-            serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
+        if serving_thread is None or serving_thread is threading.current_thread():
+            return True
+        serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
+        return not serving_thread.is_alive()
+
+    def server_close(self) -> bool:
+        if not self._join_serve_thread():
+            return False
         with self._lock:
             if self._closed:
-                return
+                return True
             self._closed = True
-            if serving_thread is None or not serving_thread.is_alive():
-                self.socket.close()
+            self.socket.close()
             if self.owned_socket_identity is not None:
                 socket_path = Path(str(self.server_address))
                 try:
@@ -203,6 +264,7 @@ class BoundServer:
                         socket_path.unlink()
                 except FileNotFoundError:
                     pass
+        return True
 
 
 class CanvasServer(BoundServer):
@@ -211,7 +273,7 @@ class CanvasServer(BoundServer):
         tcp: BoundServer,
         unix: BoundServer | None,
         context: ApiContext,
-        shutdown_requested: threading.Event,
+        shutdown_requested: ShutdownEvent,
     ) -> None:
         self.__dict__.update(tcp.__dict__)
         self.unix_server = unix
@@ -219,19 +281,28 @@ class CanvasServer(BoundServer):
         self._context = context
         self._shutdown_requested = shutdown_requested
 
+    @property
+    def shutdown_requested(self) -> ShutdownEvent:
+        return self._shutdown_requested
+
     def shutdown(self, *, force: bool = False) -> None:
         self._shutdown_requested.set()
         self._tcp.shutdown(force=force)
         if self.unix_server is not None:
             self.unix_server.shutdown(force=force)
 
+    def serve_forever(self, poll_interval: float = 0.5) -> None:
+        self._tcp._serve_thread = threading.current_thread()
+        super().serve_forever(poll_interval=poll_interval)
+
     def server_close(self) -> None:
-        serving_thread = self._serve_thread
-        if serving_thread is not None and serving_thread is not threading.current_thread():
-            serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
+        if not self._join_serve_thread():
+            return
         if self.unix_server is not None:
-            self.unix_server.server_close()
-        self._tcp.server_close()
+            if not self.unix_server.server_close():
+                return
+        if not self._tcp.server_close():
+            return
         self._context.close()
 
 
@@ -290,7 +361,7 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
         unix_socket=unix_socket,
         backend_build=codex_backend_identity.BACKEND_BUILD,
     )
-    shutdown_requested = threading.Event()
+    shutdown_requested = ShutdownEvent()
     app = ShutdownAwareApp(create_app(context), shutdown_requested)
     tcp_socket = _bind_tcp(port)
     context.server_port = int(tcp_socket.getsockname()[1])

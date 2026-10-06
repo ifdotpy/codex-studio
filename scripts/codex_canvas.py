@@ -27,6 +27,7 @@ WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
+FORCED_SHUTDOWN_EXIT_GRACE_SECONDS = 2
 
 
 HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
@@ -611,15 +612,29 @@ def main():
     server = None
     updates = None
     shutdown_requests = 0
+    forced_exit_timer = None
+
+    def force_process_exit():
+        # The second signal has requested immediate server closure. This bounds
+        # a native or worker-thread handler that cannot be stopped cooperatively.
+        os._exit(0)
 
     def terminate(_signal, _frame):
-        nonlocal shutdown_requests
+        nonlocal shutdown_requests, forced_exit_timer
         shutdown_requests += 1
         print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
                           "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
-        if server is None:
+        if server is None and shutdown_requests == 1:
             raise KeyboardInterrupt
-        server.shutdown(force=shutdown_requests > 1)
+        if server is not None:
+            server.shutdown(force=shutdown_requests > 1)
+        if shutdown_requests > 1 and forced_exit_timer is None:
+            forced_exit_timer = threading.Timer(
+                FORCED_SHUTDOWN_EXIT_GRACE_SECONDS,
+                force_process_exit,
+            )
+            forced_exit_timer.daemon = True
+            forced_exit_timer.start()
 
     signal.signal(signal.SIGTERM, terminate)
     signal.signal(signal.SIGINT, terminate)
@@ -634,10 +649,13 @@ def main():
             unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
-        from codex_live_updates import start as start_updates
-        updates = start_updates(runtime)
-        print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
-        server.serve_forever(poll_interval=0.5)
+        if not server.shutdown_requested.is_set():
+            from codex_live_updates import start as start_updates
+            updates = start_updates(runtime)
+        if not server.shutdown_requested.is_set():
+            print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
+        if not server.shutdown_requested.is_set():
+            server.serve_forever(poll_interval=0.5)
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
@@ -652,3 +670,5 @@ def main():
             server.server_close()
         if runtime:
             runtime.close()
+        if forced_exit_timer:
+            forced_exit_timer.cancel()
