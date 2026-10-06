@@ -1,7 +1,7 @@
 """Measure image workspace start and the first status on large folders."""
 
-import io
 import json
+import io
 import os
 import pathlib
 import shutil
@@ -50,18 +50,24 @@ def main():
     os.environ['CODEX_WORKSPACE_STORE'] = str(store)
     agent_id = f'copy-scale-{count}'
     try:
+        phase_start = time.monotonic()
         make_files(folder, count, root / 'files.tar')
         git(folder, 'init', '-q')
         git(folder, 'config', 'user.name', 'Scale Test')
         git(folder, 'config', 'user.email', 'scale@example.invalid')
         git(folder, 'add', '-A')
         git(folder, 'commit', '-m', f'{count} path fixture')
+        print(json.dumps({'phase': 'git-fixture', 'paths': count,
+                          'seconds': round(time.monotonic() - phase_start, 3)}), flush=True)
 
+        phase_start = time.monotonic()
         done = threading.Event()
         outcome = []
         images.start_base_build(folder, lambda value: (outcome.append(value), done.set()))
         if not done.wait(1800) or outcome[-1]['state'] != 'ready':
             raise RuntimeError(f'base build failed: {outcome[-1] if outcome else None}')
+        print(json.dumps({'phase': 'base-build', 'paths': count,
+                          'seconds': round(time.monotonic() - phase_start, 3)}), flush=True)
 
         root_added = folder / 'root-event-probe.txt'
         root_added.write_text('temporary root file\n')
@@ -98,10 +104,14 @@ def main():
         finally:
             backend.sync_delta = original_sync
             macos._read_events = original_read
+        print(json.dumps({'phase': 'agent-start', 'paths': count,
+                          'seconds': round(agent_start_seconds, 3)}), flush=True)
         agent_root = pathlib.Path(workspace['path'])
         status_start = time.monotonic()
         status = git(agent_root, 'status', '--porcelain')
         first_status_seconds = time.monotonic() - status_start
+        print(json.dumps({'phase': 'first-git-status', 'paths': count,
+                          'seconds': round(first_status_seconds, 3)}), flush=True)
         if status:
             raise AssertionError(f'workspace status was not clean after the user staged a file: {status[:200]}')
         if (agent_root / 'payload/d000/f000000.txt').read_text() != 'user edited this file\n':
