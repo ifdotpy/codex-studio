@@ -196,16 +196,8 @@ describe("OpenAPI transport facade", () => {
   it("dispatches sync entities from a successful POST response", async () => {
     const events = new EventTarget();
     const syncEvents: CustomEvent[] = [];
-    const lifecycle: string[] = [];
-    events.addEventListener("codex-api-mutation-start", () =>
-      lifecycle.push("start"),
-    );
-    events.addEventListener("codex-api-mutation-end", () =>
-      lifecycle.push("end"),
-    );
     events.addEventListener("codex-sync-entities", (event) => {
       syncEvents.push(event as CustomEvent);
-      lifecycle.push("entities");
     });
     vi.stubGlobal("window", events);
     const documents = [
@@ -219,7 +211,6 @@ describe("OpenAPI transport facade", () => {
     await post("/api/sync/drafts", { rows: [] });
 
     expect(syncEvents).toHaveLength(1);
-    expect(lifecycle).toEqual(["start", "entities", "end"]);
     expect(syncEvents[0]?.detail).toEqual({
       workspaceId: "workspace-a",
       documents,

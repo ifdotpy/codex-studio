@@ -624,7 +624,6 @@ export default function App() {
     true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
-  const cachedLimitsReads = useRef(new Set<string>());
   const selectedAccount =
     accounts.data.accounts.find((a) => a.id === accountKey) ||
     accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
@@ -817,12 +816,6 @@ export default function App() {
     },
     [accounts.data.accounts],
   );
-  const reloadLimitsForCurrent = useRef(reloadLimitsFor);
-  reloadLimitsForCurrent.current = reloadLimitsFor;
-  const reloadLimitsForStable = useCallback(
-    (key: string, force = false) => reloadLimitsForCurrent.current(key, force),
-    [],
-  );
   const reloadLimits = useCallback(
     (force = false) => reloadLimitsFor(accountKey, force),
     [accountKey, reloadLimitsFor],
@@ -912,9 +905,6 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accounts.data.accounts.find((item) => item.id === key);
       if (account?.disconnected) continue;
-      const requestKey = JSON.stringify([data.stateDir, key]);
-      if (cachedLimitsReads.current.has(requestKey)) continue;
-      cachedLimitsReads.current.add(requestKey);
       void get("/api/limits", { query: { account_key: key, cached: "1" } })
         .then((result) => {
           if (!accountLimits(result, key, account?.accountId) || !result.data)
@@ -925,9 +915,7 @@ export default function App() {
             return { ...old, [key]: result };
           });
         })
-        .catch(() => {
-          cachedLimitsReads.current.delete(requestKey);
-        });
+        .catch(() => {});
     }
   }, [data?.stateDir, accounts.data.accounts, usageAccountKeys]);
   useEffect(() => {
@@ -940,7 +928,7 @@ export default function App() {
       watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsForStable(key, true);
+          await reloadLimitsFor(key, true);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.
@@ -950,7 +938,7 @@ export default function App() {
     return () => {
       for (const stop of stops) stop();
     };
-  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsForStable]);
+  }, [data?.stateDir, accountKey, usageAccountKeys, reloadLimitsFor]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
     const incoming = { ...data?.runtime?.rateLimitsByAccount };

@@ -218,10 +218,6 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
             revision: 0,
             reason: "initial",
             resources,
-            resourceVersions: resources.map((resource) => ({
-              resource,
-              revision: 0,
-            })),
           })}\n\n`,
         );
         streams.add(res);

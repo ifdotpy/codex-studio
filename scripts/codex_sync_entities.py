@@ -2,11 +2,10 @@
 import hashlib
 import json
 import sqlite3
-import threading
-from pathlib import Path
 from typing import Annotated, cast
 
 from pydantic import AfterValidator, TypeAdapter
+
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
 from studio_api.sync.models import (
@@ -32,8 +31,6 @@ ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
 ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
-_entity_publish_lock = threading.Lock()
-_entity_publish_queue = None
 
 
 _DTO_MODELS = {
@@ -216,8 +213,6 @@ def ensure_tables(db):
         db.executescript(f"""INSERT OR IGNORE INTO sync_entity_meta(key,value)
             SELECT '{ENTITY_TOMBSTONE_COUNT_KEY}',CAST(COUNT(*) AS TEXT) FROM sync_entities
             WHERE deleted=1 AND collection NOT LIKE 'transcript:%';""")
-    if getattr(db, "_codex_sync_stage_registered", False):
-        _install_change_triggers(db)
     # This index is built once by SQLite at startup and supports the bounded
     # newest-event pull. IF NOT EXISTS avoids rebuilding it on every start.
     if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone():
@@ -236,60 +231,6 @@ def register_functions(db):
     db.create_function("sync_entity_payload", 4, payload)
     db.create_function("sync_entity_hash", 1,
                        lambda value: hashlib.sha256(value.encode("utf-8")).hexdigest())
-
-    def stage_sync_entity_change():
-        if getattr(db, "_codex_sync_entity_baseline", None) is None:
-            db._codex_sync_entity_baseline = db.execute(
-                "SELECT COALESCE(MAX(seq),0) FROM sync_entities"
-            ).fetchone()[0]
-        return None
-
-    db.create_function("studio_stage_sync_entity_change", 0, stage_sync_entity_change)
-    db._codex_sync_stage_registered = True
-    if db.execute("SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
-        _install_change_triggers(db)
-
-
-def _install_change_triggers(db):
-    db.execute("""CREATE TEMP TRIGGER IF NOT EXISTS studio_sync_entity_stage_insert
-        BEFORE INSERT ON main.sync_entities
-        BEGIN SELECT studio_stage_sync_entity_change(); END""")
-    db.execute("""CREATE TEMP TRIGGER IF NOT EXISTS studio_sync_entity_stage_update
-        BEFORE UPDATE ON main.sync_entities
-        BEGIN SELECT studio_stage_sync_entity_change(); END""")
-    db.execute("""CREATE TEMP TRIGGER IF NOT EXISTS studio_sync_entity_stage_delete
-        BEFORE DELETE ON main.sync_entities
-        BEGIN SELECT studio_stage_sync_entity_change(); END""")
-
-
-def publish_committed_entity_change(db):
-    """Publish one state invalidation for a committed entity-sequence advance."""
-    baseline = getattr(db, "_codex_sync_entity_baseline", None)
-    db._codex_sync_entity_baseline = None
-    if baseline is None:
-        return
-    try:
-        sequence = db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_entities").fetchone()[0]
-    except sqlite3.OperationalError:
-        return
-    if sequence <= baseline:
-        return
-    root = Path(getattr(db, "_codex_database_path", "")).parent
-    if not str(root):
-        return
-
-    def publish():
-        from studio_api.sync.resources.hub import publish_entity_sequence
-
-        publish_entity_sequence(root, sequence)
-
-    global _entity_publish_queue
-    with _entity_publish_lock:
-        if _entity_publish_queue is None:
-            from concurrent.futures import ThreadPoolExecutor
-
-            _entity_publish_queue = ThreadPoolExecutor(max_workers=1, thread_name_prefix="sync-entities")
-        _entity_publish_queue.submit(publish)
 
 
 def install_bypass_triggers(db):

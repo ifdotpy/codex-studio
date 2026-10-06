@@ -171,10 +171,6 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                   revision: notificationRevision,
                   reason: "initial",
                   resources,
-                  resourceVersions: resources.map((resource) => ({
-                    resource,
-                    revision: notificationRevision,
-                  })),
                 })}\n\n`,
               );
               const connection = { response, resources, openedAt: Date.now() };

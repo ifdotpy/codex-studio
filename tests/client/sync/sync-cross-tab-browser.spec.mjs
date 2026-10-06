@@ -40,7 +40,6 @@ test("sync-cross-tab-browser @performance", async ({
         revision,
         reason,
         resources,
-        resourceVersions: resources.map((resource) => ({ resource, revision })),
       })}\n\n`,
     );
   };
@@ -58,10 +57,6 @@ test("sync-cross-tab-browser @performance", async ({
         revision: revisions.get(currentWorkspace) || 0,
         reason,
         resources,
-        resourceVersions: resources.map((resource) => ({
-          resource,
-          revision: revisions.get(currentWorkspace) || 0,
-        })),
       })}\n\n`,
     );
   };
@@ -287,7 +282,6 @@ test("sync-cross-tab-browser @performance", async ({
           revision: 9000,
           reason: "change",
           resources: [{ kind: "state" }],
-          resourceVersions: [{ resource: { kind: "state" }, revision: 9000 }],
         },
       });
       channel.close();

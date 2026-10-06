@@ -248,31 +248,6 @@ describe("resource read callers", () => {
     });
   });
 
-  it("loads only the current account catalog after an account switch", async () => {
-    get.mockImplementation(
-      async (_path: string, options: { query: { account_key: string } }) => ({
-        data: [{ model: options.query.account_key }],
-      }),
-    );
-
-    mount(() => useWorkerModels("account-a", true, true));
-    notify({ kind: "models" });
-    await vi.advanceTimersByTimeAsync(0);
-    for (const cleanup of cleanups.splice(0).reverse()) cleanup();
-
-    mount(() => useWorkerModels("account-b", true, true));
-    notify({ kind: "models" });
-    await vi.advanceTimersByTimeAsync(0);
-
-    expect(
-      get.mock.calls.map(([, options]) => options.query.account_key),
-    ).toEqual(["account-a", "account-b"]);
-    expect(states[0]!.value).toMatchObject({
-      key: "account-b:true",
-      models: [{ model: "account-b" }],
-    });
-  });
-
   it("keeps a catalog pending marker under server control", async () => {
     get.mockRejectedValue(
       new ApiError("Pending", 400, { catalogPending: true }),

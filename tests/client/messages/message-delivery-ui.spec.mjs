@@ -156,10 +156,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
                       revision,
                       reason: "change",
                       resources,
-                      resourceVersions: resources.map((resource) => ({
-                        resource,
-                        revision,
-                      })),
                     }),
                   }),
                 );
@@ -429,7 +425,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
       const top = await page
         .locator("#messages")
         .evaluate((element) => element.scrollTop);
-      const streamRenderedAt = Date.now();
       await publish(a.id, [
         ...history.get(a.id).items,
         {
@@ -439,13 +434,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
           streaming: true,
         },
       ]);
-      await page
-        .locator("#messages article")
-        .filter({ hasText: "New streamed content." })
-        .waitFor();
-      console.log(
-        `STREAMED_TRANSCRIPT_LATENCY ${JSON.stringify({ mode, elapsedMs: Date.now() - streamRenderedAt })}`,
-      );
       await page.waitForTimeout(220);
       assert.ok(
         Math.abs(

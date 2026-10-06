@@ -45,10 +45,6 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       revision,
       reason,
       resources,
-      resourceVersions: resources.map((resource) => ({
-        resource,
-        revision,
-      })),
     };
     assert.ok(
       Array.isArray(event.resources) && Number.isFinite(event.revision),

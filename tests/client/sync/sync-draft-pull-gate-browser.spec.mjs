@@ -33,7 +33,6 @@ test("draft pull waits for a real trigger without blocking push recovery", async
           revision,
           reason: "change",
           resources: [{ kind: "drafts" }],
-          resourceVersions: [{ resource: { kind: "drafts" }, revision }],
         })}\n\n`,
       );
     }
@@ -65,10 +64,6 @@ test("draft pull waits for a real trigger without blocking push recovery", async
             revision,
             reason: "initial",
             resources,
-            resourceVersions: resources.map((resource) => ({
-              resource,
-              revision,
-            })),
           })}\n\n`,
         );
         const stream = { response: res, resources };

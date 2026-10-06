@@ -107,10 +107,6 @@ const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
 const RESOURCE_FLUSH_MS = 20;
-const STREAM_RECONFIGURE_MS = 0;
-const STARTUP_RECONFIGURE_MS = 250;
-const INITIAL_STREAM_COALESCE_MS = 0;
-const COORDINATOR_IDLE_STOP_MS = 1000;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
 const subscribers = new Map<string, Set<Listener>>();
@@ -144,8 +140,6 @@ let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
 let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
-let streamUpdateTimer: ReturnType<typeof setTimeout> | undefined;
-let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
 let preHandshakeResponseGeneration: number | undefined;
@@ -157,11 +151,9 @@ let lastTokenRevision: number | undefined;
 let lastTokenEvent: ResourceTokenRatesEvent | undefined;
 let lastLeaderHeartbeatAt = 0;
 let activeQueryKey = "";
-let startupTranscriptSetSubscribed = false;
 let keepLiveOnReconfigure = false;
 let pendingResources = new Set<string>();
 let pendingReset = false;
-let apiMutationsInFlight = 0;
 let currentStatus: ResourceConnectionState = "connecting";
 let stopResume: (() => void) | undefined;
 let onlineHandler: (() => void) | undefined;
@@ -248,12 +240,8 @@ function hasTokenRateInterest() {
   );
 }
 
-function dispatchResource(
-  resource: ResourceRef,
-  version: Version,
-  force = false,
-) {
-  if (!rememberResourceVersion(resource, version) && !force) return;
+function dispatchResource(resource: ResourceRef, version: Version) {
+  if (!rememberResourceVersion(resource, version)) return;
   pendingResources.add(resourceKey(resource));
 }
 
@@ -272,37 +260,6 @@ function rememberResourceVersion(resource: ResourceRef, version: Version) {
   }
   resourceValues.set(key, version);
   return true;
-}
-
-export function acknowledgeEntitySequence(
-  sequence: number,
-  incomingWorkspaceId?: string,
-) {
-  if (
-    !Number.isSafeInteger(sequence) ||
-    sequence < 0 ||
-    !lastEpoch ||
-    (incomingWorkspaceId && incomingWorkspaceId !== workspaceId)
-  )
-    return;
-  const stateKey = resourceKey({ kind: "state" });
-  const acknowledged = { epoch: lastEpoch, revision: sequence };
-  rememberResourceVersion({ kind: "state" }, acknowledged);
-  const pending = resourceValues.get(stateKey);
-  if (
-    pending?.epoch === acknowledged.epoch &&
-    pending.revision <= acknowledged.revision
-  ) {
-    pendingResources.delete(stateKey);
-    if (
-      pendingResources.size === 0 &&
-      !pendingReset &&
-      flushTimer !== undefined
-    ) {
-      clearTimeout(flushTimer);
-      flushTimer = undefined;
-    }
-  }
 }
 
 function pruneResourceVersions(active: Set<string>) {
@@ -328,8 +285,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
     setStatus("degraded");
     return;
   }
-  const epochChanged = lastEpoch !== event.epoch;
-  if (epochChanged) {
+  if (lastEpoch !== event.epoch) {
     lastEpoch = event.epoch;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
@@ -344,28 +300,21 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (!staleRevision && !isDuplicate) lastRevision = event.revision;
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
-  const versions = new Map(
-    event.resourceVersions.map((entry) => [
-      resourceKey(entry.resource),
-      { epoch: event.epoch, revision: entry.revision },
-    ]),
-  );
-  const forceBaseline =
-    (event.reason === "reconnect" && !isDuplicate) ||
-    event.reason === "overflow" ||
-    event.reason === "workspace";
   for (const resource of event.resources) {
     const key = resourceKey(resource);
-    const version = versions.get(key)!;
-    const force =
-      forceBaseline || epochChanged || baselineReconciliations.delete(key);
-    if (active.has(key)) dispatchResource(resource, version, force);
+    const version = {
+      epoch: event.epoch,
+      revision: event.revision,
+    };
+    if (active.has(key)) dispatchResource(resource, version);
     else rememberResourceVersion(resource, version);
+    if (event.reason !== "change" && baselineReconciliations.delete(key))
+      pendingResources.add(key);
   }
   pruneResourceVersions(active);
   const local = localResources().map(resourceKey);
   if (
-    forceBaseline &&
+    event.reason !== "change" &&
     !staleRevision &&
     !isDuplicate &&
     local.every((key) =>
@@ -419,35 +368,18 @@ function scheduleFlush() {
         }
         pendingResources = new Set();
       } else {
-        const stateKey = resourceKey({ kind: "state" });
-        const remaining = new Set<string>();
         for (const key of pendingResources) {
-          if (apiMutationsInFlight > 0 && key === stateKey) {
-            remaining.add(key);
-            continue;
-          }
           const version = resourceValues.get(key);
           if (!version) continue;
           for (const listener of subscribers.get(key) || []) listener(version);
         }
-        pendingResources = remaining;
+        pendingResources = new Set();
       }
       retryCount = 0;
     } catch (error) {
       frameFailed(error);
     }
   }, RESOURCE_FLUSH_MS);
-}
-
-if (typeof window !== "undefined") {
-  window.addEventListener("codex-api-mutation-start", () => {
-    apiMutationsInFlight++;
-  });
-  window.addEventListener("codex-api-mutation-end", () => {
-    apiMutationsInFlight = Math.max(0, apiMutationsInFlight - 1);
-    if (apiMutationsInFlight === 0 && pendingResources.size > 0)
-      scheduleFlush();
-  });
 }
 
 function receiveResourceEvent(value: unknown, fromPeer = false) {
@@ -544,7 +476,7 @@ function receiveChannelMessage(value: unknown) {
       seenAt: Date.now(),
     });
     if (owner) {
-      scheduleOwnerStreamUpdate();
+      updateOwnerStream();
       replayResourceBaseline(added);
       if (
         record.tokenRates === true &&
@@ -619,10 +551,6 @@ function replayResourceBaseline(resources: ResourceRef[]) {
         revision: version.revision,
         reason: "initial",
         resources: known,
-        resourceVersions: known.map((resource) => ({
-          resource,
-          revision: resourceValues.get(resourceKey(resource))!.revision,
-        })),
       },
     });
 }
@@ -635,20 +563,7 @@ function announceSubscriptions(reset = false) {
     tokenRates: tokenRateListeners.size > 0,
     reset,
   });
-  if (owner || independent) scheduleOwnerStreamUpdate();
-}
-
-function scheduleOwnerStreamUpdate() {
-  if (streamUpdateTimer !== undefined) clearTimeout(streamUpdateTimer);
-  const delay = source
-    ? startupTranscriptSetSubscribed
-      ? STREAM_RECONFIGURE_MS
-      : STARTUP_RECONFIGURE_MS
-    : INITIAL_STREAM_COALESCE_MS;
-  streamUpdateTimer = setTimeout(() => {
-    streamUpdateTimer = undefined;
-    updateOwnerStream();
-  }, delay);
+  if (owner || independent) updateOwnerStream();
 }
 
 function closeSource() {
@@ -832,9 +747,6 @@ function openSource() {
 function updateOwnerStream() {
   const resources = aggregateResources();
   const tokenRates = hasTokenRateInterest();
-  const transcriptCount = resources.filter(
-    (resource) => resource.kind === "transcript",
-  ).length;
   const key = JSON.stringify([resources.map(resourceKey), tokenRates]);
   if (!resources.length && !tokenRates) {
     closeSource();
@@ -844,11 +756,9 @@ function updateOwnerStream() {
     keepLiveOnReconfigure = currentStatus === "live";
     closeSource();
     openSource();
-    if (transcriptCount > 1) startupTranscriptSetSubscribed = true;
     return;
   }
   openSource();
-  if (transcriptCount > 1) startupTranscriptSetSubscribed = true;
 }
 
 function sendPeerHeartbeat() {
@@ -882,7 +792,7 @@ function startIndependent() {
   if (!coordinatorActive || owner || independent) return;
   independent = true;
   startPeerHeartbeat();
-  scheduleOwnerStreamUpdate();
+  openSource();
 }
 
 function startAsOwner() {
@@ -921,7 +831,7 @@ function startAsOwner() {
         startPeerHeartbeat();
         broadcast({ kind: "discover-subscriptions" });
         broadcast({ kind: "status", status: "connecting" });
-        scheduleOwnerStreamUpdate();
+        openSource();
         await new Promise<void>((resolve) => {
           releaseOwner = resolve;
         });
@@ -1022,9 +932,7 @@ function resumeTransport() {
     startPeerHeartbeat();
     if (!owner && !independent) startAsOwner();
   }
-  // announceSubscriptions below schedules one query update after any local or
-  // peer changes have settled; opening immediately here races that update and
-  // can reopen the same URL during renderer startup or resume.
+  if (owner || independent) openSource();
   announceSubscriptions(true);
 }
 
@@ -1032,14 +940,9 @@ function stopCoordinator() {
   coordinatorActive = false;
   coordinatorGeneration++;
   initializing = false;
-  if (coordinatorIdleStopTimer !== undefined)
-    clearTimeout(coordinatorIdleStopTimer);
-  coordinatorIdleStopTimer = undefined;
   releaseStream();
   if (flushTimer !== undefined) clearTimeout(flushTimer);
   flushTimer = undefined;
-  if (streamUpdateTimer !== undefined) clearTimeout(streamUpdateTimer);
-  streamUpdateTimer = undefined;
   clearTimeout(heartbeatTimeout);
   clearTimeout(reconnectTimer);
   stopChannel();
@@ -1059,7 +962,6 @@ function stopCoordinator() {
   lastTokenRevision = undefined;
   lastTokenEvent = undefined;
   resourceValues.clear();
-  startupTranscriptSetSubscribed = false;
   baselineReconciliations.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
@@ -1104,8 +1006,6 @@ export function watchResourceChanges(
   callback: (version?: ResourceVersion) => void,
 ): () => void {
   const key = resourceKey(resource);
-  clearTimeout(coordinatorIdleStopTimer);
-  coordinatorIdleStopTimer = undefined;
   let listeners = subscribers.get(key);
   if (!listeners) subscribers.set(key, (listeners = new Set()));
   resourceRefs.set(key, resource);
@@ -1132,13 +1032,8 @@ export function watchResourceChanges(
       !subscribers.size &&
       !tokenRateListeners.size &&
       (!owner || !aggregateResources().length)
-    ) {
-      clearTimeout(coordinatorIdleStopTimer);
-      coordinatorIdleStopTimer = setTimeout(() => {
-        coordinatorIdleStopTimer = undefined;
-        if (!subscribers.size && !tokenRateListeners.size) stopCoordinator();
-      }, COORDINATOR_IDLE_STOP_MS);
-    }
+    )
+      stopCoordinator();
   };
 }
 
@@ -1153,8 +1048,6 @@ export function watchResourceConnection(
 export function watchTokenRateEvents(
   listener: (event: ResourceTokenRatesEvent) => void,
 ): () => void {
-  clearTimeout(coordinatorIdleStopTimer);
-  coordinatorIdleStopTimer = undefined;
   tokenRateListeners.add(listener);
   if (lastTokenEvent && lastTokenEvent.workspaceId === workspaceId)
     listener(lastTokenEvent);
@@ -1166,13 +1059,7 @@ export function watchTokenRateEvents(
     stopped = true;
     tokenRateListeners.delete(listener);
     announceSubscriptions();
-    if (!subscribers.size && !tokenRateListeners.size) {
-      clearTimeout(coordinatorIdleStopTimer);
-      coordinatorIdleStopTimer = setTimeout(() => {
-        coordinatorIdleStopTimer = undefined;
-        if (!subscribers.size && !tokenRateListeners.size) stopCoordinator();
-      }, COORDINATOR_IDLE_STOP_MS);
-    }
+    if (!subscribers.size && !tokenRateListeners.size) stopCoordinator();
   };
 }
 

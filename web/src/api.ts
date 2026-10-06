@@ -441,8 +441,6 @@ export async function post<Path extends PathsFor<"post">>(
   if (schemaMismatch) throw new ApiSchemaMismatchError();
   const timeoutMs = options.timeoutMs;
   const controller = requestController(options, timeoutMs);
-  if (typeof window !== "undefined")
-    window.dispatchEvent(new Event("codex-api-mutation-start"));
   try {
     const fetchOptions = {
       parseAs: "json" as const,
@@ -474,8 +472,6 @@ export async function post<Path extends PathsFor<"post">>(
     throw error;
   } finally {
     controller.finish();
-    if (typeof window !== "undefined")
-      window.dispatchEvent(new Event("codex-api-mutation-end"));
   }
 }
 

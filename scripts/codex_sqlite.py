@@ -64,7 +64,6 @@ def connect(database, *, site=None, **options):
     options["factory"] = InstrumentedConnection
     db = sqlite3.connect(database, **options)
     db._codex_site = _site(site)
-    db._codex_database_path = str(database)
     from codex_sqlite_traces import database_kind
     db._codex_database_kind = database_kind(database)
     return db
@@ -110,11 +109,7 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                operation = words[0].upper() if words else ""
-                outcome = "committed" if operation in {"COMMIT", "END"} else (
-                    "rolledBack" if operation == "ROLLBACK" else "ended"
-                )
-                self._finish_transaction(outcome)
+                self._finish_transaction()
 
     def executemany(self, sql, seq_of_parameters, /):
         started = _clock()
@@ -143,11 +138,7 @@ class InstrumentedConnection(sqlite3.Connection):
                 except Exception as error:
                     logging.getLogger("codex.sqlite").warning("SQLite owner capture failed: %s", type(error).__name__)
             if was_in_transaction and not self.in_transaction:
-                operation = words[0].upper() if words else ""
-                outcome = "committed" if operation in {"COMMIT", "END"} else (
-                    "rolledBack" if operation == "ROLLBACK" else "ended"
-                )
-                self._finish_transaction(outcome)
+                self._finish_transaction()
 
     def _finish_transaction(self, outcome="ended"):
         started = getattr(self, "_codex_transaction_started", None)
@@ -161,16 +152,6 @@ class InstrumentedConnection(sqlite3.Connection):
                 logging.getLogger("codex.sqlite").warning("SQLite owner completion failed: %s", type(error).__name__)
             self._codex_transaction_started = None
             self._codex_transaction_site = None
-        if outcome == "committed":
-            try:
-                from codex_sync_entities import publish_committed_entity_change
-
-                publish_committed_entity_change(self)
-            except Exception as error:
-                logging.getLogger("codex.sync").warning(
-                    "Could not publish committed sync entity change: %s",
-                    type(error).__name__,
-                )
 
     def commit(self):
         outcome = "ended"
