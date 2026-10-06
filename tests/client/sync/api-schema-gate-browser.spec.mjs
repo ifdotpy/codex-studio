@@ -84,17 +84,21 @@ test("cold stream handshake mismatch shows the gate when startup responses have 
   page,
 }) => {
   const { url } = await startColdGateFixture();
+  let streams = 0;
   await page.route("**/api/**", async (route) => {
     const url = new URL(route.request().url());
-    if (url.pathname === "/api/sync/stream")
+    if (url.pathname === "/api/sync/stream") {
+      streams++;
       return route.fulfill({
         status: 200,
         headers: { "content-type": "text/event-stream" },
         body: apiSchemaHandshakeSse("", { hash: "foreign-schema" }),
       });
+    }
     const response = await route.fetch();
     const headers = new Headers(response.headers());
-    headers.delete(API_SCHEMA_HASH_HEADER);
+    if (url.pathname !== "/api/sync/identity")
+      headers.delete(API_SCHEMA_HASH_HEADER);
     await route.fulfill({ response, headers: Object.fromEntries(headers) });
   });
   let apiRequests = 0;
@@ -108,6 +112,7 @@ test("cold stream handshake mismatch shows the gate when startup responses have 
         "Studio has been updated. Update this tab to continue syncing and sending.",
     }),
   ).toBeVisible({ timeout: 5_000 });
+  assert.ok(streams > 0, "the stream handshake caused the mismatch gate");
   await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
   const quietCount = apiRequests;
   await page.waitForTimeout(8_000);
@@ -131,6 +136,39 @@ test("matching cold renderer loads normally", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
 });
 
+test("a rollback without a schema header shows Update instead of stale chat data", async ({
+  page,
+}) => {
+  const { fixture, url } = await startColdGateFixture();
+  let messageWrites = 0;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path === "/api/messages")
+      messageWrites++;
+    if (path === "/api/sync/identity") {
+      const response = await route.fetch();
+      const headers = new Headers(response.headers());
+      headers.delete(API_SCHEMA_HASH_HEADER);
+      return route.fulfill({ response, headers: Object.fromEntries(headers) });
+    }
+    return route.continue();
+  });
+  try {
+    await page.goto(url);
+    await expect(
+      page.locator('[data-modal-content="true"]').filter({
+        hasText:
+          "Studio has been updated. Update this tab to continue syncing and sending.",
+      }),
+    ).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
+    assert.equal(messageWrites, 0);
+  } finally {
+    fixture.kill();
+  }
+});
+
 test("cold schema identity failure shows a reloadable error", async ({
   page,
 }) => {
@@ -152,6 +190,73 @@ test("cold schema identity failure shows a reloadable error", async ({
     ),
   ).toBeVisible({ timeout: 5_000 });
   await expect(page.getByRole("link", { name: "Reload Studio" })).toBeVisible();
+});
+
+test("a warm server rollback preserves the draft and stops the stale stream", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.studioTestSources = [];
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        window.studioTestSources.push(this);
+      }
+    };
+  });
+  const { fixture, url } = await startColdGateFixture();
+  try {
+    await page.goto(url);
+    await expect(page.locator("#message")).toBeVisible({ timeout: 10_000 });
+    await page.waitForFunction(() =>
+      window.studioTestSources.some(
+        (source) => source.readyState === EventSource.OPEN,
+      ),
+    );
+    await page.locator("#message").fill("Preserve this draft after rollback");
+    let rejections = 0;
+    let identityProbes = 0;
+    let messageWrites = 0;
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const path = new URL(request.url()).pathname;
+      if (request.method() === "POST" && path === "/api/messages")
+        messageWrites++;
+      if (path === "/api/sync/stream") {
+        rejections++;
+        return route.fulfill({
+          status: 426,
+          json: { error: "Old sync protocol" },
+        });
+      }
+      const response = await route.fetch();
+      const headers = new Headers(response.headers());
+      headers.delete(API_SCHEMA_HASH_HEADER);
+      if (path === "/api/sync/identity") identityProbes++;
+      return route.fulfill({ response, headers: Object.fromEntries(headers) });
+    });
+    await page.evaluate(() => {
+      for (const source of window.studioTestSources) {
+        if (source.readyState === EventSource.OPEN)
+          source.dispatchEvent(new Event("error"));
+      }
+    });
+    await expect(page.getByRole("button", { name: "Update" })).toBeVisible({
+      timeout: 5_000,
+    });
+    assert.ok(rejections > 0, "the new connection reached the old server");
+    assert.ok(identityProbes > 0, "the failed stream rechecked the identity");
+    await expect(page.locator("#message")).toHaveValue(
+      "Preserve this draft after rollback",
+    );
+    await expect(
+      page.getByRole("button", { name: "Send message" }),
+    ).toBeDisabled();
+    assert.equal(messageWrites, 0);
+  } finally {
+    fixture.kill();
+  }
 });
 
 test("cold three silent stream handshakes escalate to the mismatch gate", async ({
