@@ -10,6 +10,7 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
+from studio_api.test_helpers import read_test_state
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory() as directory:
@@ -35,7 +36,8 @@ with tempfile.TemporaryDirectory() as directory:
                     if error.code != 503 or time.monotonic() >= deadline:
                         raise
                     time.sleep(.1)
-        identity, state = get('/api/sync/identity'), get('/api/state')
+        identity = get('/api/sync/identity')
+        state = read_test_state(get)
         protocol = get('/api/sync/protocol')
         assert protocol['protocolVersion'] == 3
         assert protocol['supportedVersions'] == [3]
@@ -83,7 +85,7 @@ with tempfile.TemporaryDirectory() as directory:
             request = urllib.request.Request(
                 origin + '/api/sync/drafts', data=json.dumps({'rows': rows}).encode(),
                 headers={'Content-Type': 'application/json', 'Origin': origin,
-                         'X-Canvas-Token': state['token'], 'X-Canvas-Workspace': workspace},
+                         'X-Canvas-Token': state.token, 'X-Canvas-Workspace': workspace},
             )
             return json.load(urllib.request.urlopen(request, timeout=10))
         assert push([row], identity['workspaceId']) == []
@@ -95,12 +97,12 @@ with tempfile.TemporaryDirectory() as directory:
                 raise AssertionError('Invalid push accepted')
             except urllib.error.HTTPError as error:
                 assert error.code == status, error.read()
-        lead_id = next(item['id'] for item in state['threads'] if item.get('isLead'))
+        lead_id = next(item['id'] for item in state.values('agent') if item.get('isLead'))
         lead = lead_id
         def voice(action, **body):
             request = urllib.request.Request(origin + '/api/voice/' + action,
                 data=json.dumps({'agent': lead, **body}).encode(),
-                headers={'Content-Type': 'application/json', 'X-Canvas-Token': state['token'],
+                headers={'Content-Type': 'application/json', 'X-Canvas-Token': state.token,
                          'X-Canvas-Workspace': identity['workspaceId']})
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.load(response)

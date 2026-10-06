@@ -87,10 +87,10 @@ class WorkerBase(unittest.TestCase):
         self.assertIn('2 commits behind main', text)
 
     def test_invalid_base_ref_rejects_batch_without_workers(self):
-        before = len(self.runtime.snapshot()['agents'])
+        before = len(self.runtime.team(self.lead['id'])['agents'])
         with self.assertRaisesRegex(ValueError, 'does not resolve to a commit'):
             self.spawn('invalid', base_ref='missing/branch')
-        self.assertEqual(len(self.runtime.snapshot()['agents']), before)
+        self.assertEqual(len(self.runtime.team(self.lead['id'])['agents']), before)
 
 
 if __name__ == '__main__':

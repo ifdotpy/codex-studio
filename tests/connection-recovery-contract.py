@@ -19,6 +19,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
 from codex_connection_recovery import recover, tick as connection_recovery_tick
+from studio_api.test_helpers import read_session_token
 
 
 class Runtime(fixture.Runtime):
@@ -579,7 +580,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 finally:
                     error.close()
         try:
-            token = request('/api/session')[1]['token']
+            token = read_session_token(lambda path: request(path)[1])
             path, body = '/api/connection-recovery', {'id': self.key}
             self.assertEqual(request(path, body)[0], 403)
             self.assertEqual(request(path, body, {'Origin': 'https://evil.invalid', 'X-Canvas-Token': token})[0], 403)

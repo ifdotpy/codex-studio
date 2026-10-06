@@ -22,6 +22,7 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
+from studio_api.test_helpers import read_session_token
 import codex_canvas
 
 
@@ -527,11 +528,10 @@ class CanvasContract(unittest.TestCase):
             except urllib.error.HTTPError as error:
                 return error.code, error.read()
         try:
-            status, data = request("/api/state")
-            self.assertEqual(status, 200)
-            token = json.loads(data)["token"]
+            token = read_session_token(lambda path: json.loads(request(path)[1]))
+            self.assertTrue(token)
             self.assertEqual(request("/", headers={"Host": "evil.example"})[0], 403)
-            self.assertEqual(request("/api/state", headers={"Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(request("/api/session", headers={"Origin": "https://evil.example"})[0], 403)
             self.assertEqual(request("/api/chats", {})[0], 403)
             body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]}
             headers = {"Origin": base, "X-Canvas-Token": token}

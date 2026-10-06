@@ -23,6 +23,11 @@ spec = importlib.util.spec_from_file_location(
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_canvas import Canvas, make_server
+from studio_api.test_helpers import (
+    read_legacy_snapshot_field,
+    read_session_token,
+    read_test_state,
+)
 
 
 class ProjectContracts(unittest.TestCase):
@@ -62,7 +67,7 @@ class ProjectContracts(unittest.TestCase):
         self.assertEqual(project["name"], "Work")
         self.assertGreater(project["created"], 0)
         self.assertEqual(self.runtime.projects({"path": str(self.first), "name": "Another name"}), project)
-        self.assertEqual(self.runtime.snapshot()["projects"], [project])
+        self.assertEqual(self.runtime.projects()["items"], [project])
         self.restart()
         self.assertEqual(self.runtime.projects(), {"items": [project]})
 
@@ -128,7 +133,8 @@ class ProjectContracts(unittest.TestCase):
         result = self.runtime.projects(first)
         self.assertEqual(result, {'revision': 1, 'groups': first['groups']})
         self.restart()
-        self.assertEqual(self.runtime.snapshot()['sidebarOrder'], result)
+        self.assertEqual(read_legacy_snapshot_field(
+            self.runtime.snapshot, "sidebarOrder"), result)
         self.assertEqual(self.runtime.projects(first), result)
         with self.assertRaisesRegex(ValueError, 'different content'):
             self.runtime.projects({**first, 'groups': {}})
@@ -218,7 +224,7 @@ class ProjectContracts(unittest.TestCase):
         self.assertEqual(reused["cwd"], str(self.second))
         for field in ("model", "effort", "fastMode", "workerDefaults"):
             self.assertEqual(reused[field], lead[field])
-        self.assertEqual(len(self.runtime.snapshot()["agents"]), 1)
+        self.assertEqual(len(self.runtime.team(lead["id"])["agents"]), 1)
         self.restart()
         self.assertEqual(self.runtime.new_lead(request)["id"], lead["id"])
         with self.assertRaisesRegex(ValueError, "different settings"):
@@ -292,7 +298,7 @@ class ProjectContracts(unittest.TestCase):
                 return json.loads(response.read())
 
         try:
-            headers["X-Canvas-Token"] = request("/api/state")["token"]
+            headers["X-Canvas-Token"] = read_session_token(request)
             self.assertEqual(request("/api/projects"), {"items": []})
             project = request("/api/projects", {"path": str(self.second)})
             entities = project.pop("_syncEntities")
@@ -300,7 +306,8 @@ class ProjectContracts(unittest.TestCase):
             self.assertEqual(entities[0]["id"], "entity:project:" + project["path"])
             self.assertEqual(json.loads(entities[0]["payload"])["value"], project)
             self.assertEqual(request("/api/projects"), {"items": [project]})
-            self.assertEqual(request("/api/state")["runtime"]["projects"], [project])
+            state = read_test_state(request)
+            self.assertEqual(state.value("project", project["path"]), project)
             order = {"action": "reorder", "request_id": str(uuid.uuid4()),
                      "expected_revision": 0, "groups": {"projects": [project["path"]]},
                      "migration": True}

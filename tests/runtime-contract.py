@@ -18,6 +18,7 @@ isolate_supervisor_environment()
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_runtime import Runtime
+from studio_api.test_helpers import read_legacy_snapshot_field
 
 # Keep general protocol fixtures independent of host image support. Dedicated
 # image workspace contracts exercise the supported path with explicit mocks.
@@ -607,7 +608,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len(first['responses']), 1)
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE agent=? AND kind='complaint_response'", (child['id'],)).fetchone()[0], 1)
-        self.assertFalse(self.snapshot()['complaints'][0]['needsResponse'])
+        self.assertFalse(read_legacy_snapshot_field(self.snapshot, 'complaints', 0, 'needsResponse'))
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.complaint_detail(c['id'])['status'], 'resolved')
@@ -630,7 +631,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertFalse(stopped['autoWake'])
         self.assertEqual(stopped['status'], 'failed')
         self.assertIn('Three turns', stopped['error'])
-        self.assertTrue(self.snapshot()['complaints'][0]['needsResponse'])
+        self.assertTrue(read_legacy_snapshot_field(self.snapshot, 'complaints', 0, 'needsResponse'))
         self.runtime.send(lead['id'], 'Read the complaint and act')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         a = self.runtime.agent(lead['id'])

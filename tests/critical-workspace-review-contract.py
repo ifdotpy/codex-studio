@@ -78,7 +78,7 @@ class WorkspaceReviewContract(unittest.TestCase):
         self.assertEqual(result['id'], repeated['id'])
         self.assertEqual(result['forkedFrom'], lead['id'])
         self.assertEqual(result['accountKey'], lead['accountKey'])
-        self.assertEqual(len(self.runtime.snapshot()['agents']), 2)
+        self.assertEqual(len(self.runtime.team(lead['id'])['agents']), 2)
         self.assertEqual(sum(method == 'thread/fork' for method, _ in self.runtime.server.calls), 1)
 
     def test_concurrent_restore_uses_one_native_result(self):

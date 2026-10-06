@@ -351,13 +351,13 @@ class WorkerDefaults(unittest.TestCase):
             "invalid-batch", [valid, {**valid, "name": "Bad", "fast_mode": "true"}]
         )
         self.assertFalse(result["success"])
-        self.assertEqual(len(self.runtime.snapshot()["agents"]), 1)
+        self.assertEqual(len(self.runtime.team(lead["id"])["agents"]), 1)
         result = call(
             "valid-batch",
             [valid, {**valid, "name": "Standard", "fast_mode": False, "effort": None}],
         )
         self.assertTrue(result["success"], result)
-        workers = [a for a in self.runtime.snapshot()["agents"] if a["parentId"]]
+        workers = [a for a in self.runtime.team(lead["id"])["agents"] if a["parentId"]]
         self.assertEqual(len(workers), 2)
         self.assertEqual({a["fastMode"] for a in workers}, {True, False})
         self.assertEqual({a["effort"] for a in workers}, {"high", None})

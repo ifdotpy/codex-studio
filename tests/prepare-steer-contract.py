@@ -19,6 +19,8 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_runtime import PreparationPending, ResponseTimeout, Runtime
 from codex_worktree_creation import WorktreeNeedsReview
+from codex_canvas import Canvas, make_server
+from studio_api.test_helpers import read_test_state
 
 spec = importlib.util.spec_from_file_location("prepare_fixture", Path(__file__).with_name("runtime-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
@@ -237,7 +239,6 @@ class PrepareSteerContract(unittest.TestCase):
         self.assertEqual((path / "user-file.txt").read_text(), "keep")
 
     def test_worktree_checkout_serializes_per_repo_without_blocking_runtime(self):
-        from codex_canvas import Canvas, make_server
         repos = [(self.root / "repo-one").resolve(), (self.root / "repo-two").resolve()]
         for repo in repos:
             repo.mkdir()
@@ -293,12 +294,13 @@ class PrepareSteerContract(unittest.TestCase):
                 http_thread = threading.Thread(target=server.serve_forever, daemon=True)
                 http_thread.start()
                 try:
-                    with urllib.request.urlopen(f"http://127.0.0.1:{server.server_port}/api/state",
-                                                timeout=3) as response:
-                        self.assertEqual(response.status, 200)
-                        payload = json.loads(response.read())
+                    origin = f"http://127.0.0.1:{server.server_port}"
+                    def get_json(path):
+                        with urllib.request.urlopen(origin + path, timeout=3) as response:
+                            return json.load(response)
+                    state = read_test_state(get_json)
                     self.assertIn("waiting", [agent.get("worktreePreparation")
-                                              for agent in payload["runtime"]["agents"]])
+                                              for agent in state.values("agent")])
                 finally:
                     server.shutdown()
                     server.server_close()

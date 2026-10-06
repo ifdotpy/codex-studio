@@ -46,7 +46,8 @@ class SpawnRequestRecovery(unittest.TestCase):
         return json.loads(result['contentItems'][0]['text'])
 
     def children(self):
-        return [a for a in self.runtime.snapshot()['agents'] if a.get('parentId') == self.actor['id']]
+        return [a for a in self.runtime.team(self.actor['rootId'])['agents']
+                if a.get('parentId') == self.actor['id']]
 
     def request(self, action='get', request_id='batch-1'):
         return self.runtime.request_action(self.actor['id'], {'action': action, 'request_id': request_id})

@@ -21,6 +21,7 @@ import urllib.error
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_accounts import AccountStore, auth_metadata
+from studio_api.test_helpers import read_session_token
 
 
 def auth(home, account, email="test@example.invalid"):
@@ -270,7 +271,7 @@ class AccountsContract(unittest.TestCase):
             })
             self.assertEqual(unauthorized_delete[0], 403)
             headers.update(
-                {"Origin": base, "X-Canvas-Token": request("/api/state")[1]["token"]}
+                {"Origin": base, "X-Canvas-Token": read_session_token(lambda path: request(path)[1])}
             )
             other = self.home / "other"
             auth(other, "account-two")
@@ -338,7 +339,7 @@ class AccountsContract(unittest.TestCase):
             thread.start()
             base = f"http://127.0.0.1:{server.server_port}"
             headers["Origin"] = base
-            headers["X-Canvas-Token"] = request("/api/state")[1]["token"]
+            headers["X-Canvas-Token"] = read_session_token(lambda path: request(path)[1])
             status, replayed_delete = request("/api/accounts/delete", {
                 "account_key": key, "request_id": delete_request
             })

@@ -20,6 +20,7 @@ spec = importlib.util.spec_from_file_location('request_http_fixture', Path(__fil
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_canvas import Canvas, make_server
+from studio_api.test_helpers import read_session_token
 
 
 class ToolRequestHTTP(unittest.TestCase):
@@ -99,8 +100,11 @@ class ToolRequestHTTP(unittest.TestCase):
 
     def test_cancel_requires_csrf_token_and_allowed_origin(self):
         self.runtime.reserve_tool_request(self.message())
-        with urllib.request.urlopen(self.base + '/api/state', timeout=3) as response:
-            token = json.load(response)['token']
+        def get_json(path):
+            with urllib.request.urlopen(self.base + path, timeout=3) as response:
+                return json.load(response)
+
+        token = read_session_token(get_json)
         for headers in [{}, {'X-Canvas-Token': 'wrong'},
                         {'X-Canvas-Token': token, 'Origin': 'https://outside.invalid'}]:
             with self.assertRaises(urllib.error.HTTPError) as rejected:

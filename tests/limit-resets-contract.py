@@ -22,6 +22,7 @@ spec = importlib.util.spec_from_file_location(
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_limit_resets import consume_reset
+from studio_api.test_helpers import read_session_token
 
 
 def credit(key="credit-A", **changes):
@@ -256,7 +257,7 @@ class ResetContracts(unittest.TestCase):
                 request("/api/limits/reset", body)
             self.assertEqual(denied.exception.code, 403)
             headers = {
-                "X-Canvas-Token": request("/api/state")["token"],
+                "X-Canvas-Token": read_session_token(request),
                 "Content-Type": "application/json",
             }
             with self.assertRaises(urllib.error.HTTPError) as cross:
