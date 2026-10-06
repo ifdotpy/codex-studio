@@ -6468,6 +6468,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid LIMIT 1",
                              (tid, account_key)).fetchone()
             if row is None:
+                if method == 'turn/completed':
+                    from codex_context_repair import source_terminal_callback
+                    if source_terminal_callback(self, db, p, account_key, connection_id):
+                        return
                 if p.get("parentThreadId"):
                     from codex_execution import observe_child_thread, safe_record
                     safe_record(db, observe_child_thread, db, account_key, method, p)
