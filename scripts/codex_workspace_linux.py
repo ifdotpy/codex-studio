@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import tempfile
@@ -14,7 +15,6 @@ import time
 from typing import Any, Iterable
 
 
-_GIT_OBJECTS_MARKER = "HEAD"
 _HOLDERS: dict[int, subprocess.Popen[bytes]] = {}
 _OVERLAY_MOUNT = r'''
 import ctypes, os, sys
@@ -55,30 +55,9 @@ def _relative_excludes(root: Path, excludes: Iterable[str | Path]) -> set[Path]:
     return result
 
 
-def _is_excluded(path: Path, excludes: set[Path]) -> bool:
-    return path in excludes or any(parent in excludes for parent in path.parents)
-
-
-def _git_object_stores(root: Path, excludes: set[Path] | None = None) -> list[Path]:
-    """Return object stores that belong to a Git directory or bare repository."""
-    excludes = excludes or set()
-    stores: list[Path] = []
-    for current, dirs, _files in os.walk(root, topdown=True, followlinks=False):
-        current_path = Path(current)
-        for name in list(dirs):
-            store = current_path / name
-            relative = store.relative_to(root)
-            if _is_excluded(relative, excludes):
-                dirs.remove(name)
-            elif name == "objects" and (current_path / _GIT_OBJECTS_MARKER).is_file():
-                stores.append(store)
-                dirs.remove(name)
-    return stores
-
-
-def _copy_without_object_stores(source: Path, destination: Path,
-                                excludes: Iterable[str | Path] = ()) -> None:
-    """Copy tree in large reflink-capable chunks, skipping Git object stores."""
+def _copy_folder(source: Path, destination: Path,
+                 excludes: Iterable[str | Path] = ()) -> None:
+    """Copy a folder tree with rsync and the requested folder exclusions."""
     source = source.resolve()
     if destination.exists():
         if destination.is_dir() and not destination.is_symlink():
@@ -87,25 +66,11 @@ def _copy_without_object_stores(source: Path, destination: Path,
             destination.unlink()
     destination.mkdir(parents=True, exist_ok=True)
     excluded = _relative_excludes(source, excludes)
-    stores = {path.relative_to(source) for path in _git_object_stores(source, excluded)}
-    blocked = set(stores)
-    for root in stores | excluded:
-        blocked.update(root.parents)
-    blocked.discard(Path("."))
-
-    def copy_dir(src: Path, dst: Path, relative: Path) -> None:
-        dst.mkdir(parents=True, exist_ok=True)
-        for entry in os.scandir(src):
-            rel = relative / entry.name
-            src_entry = Path(entry.path)
-            if rel in stores or _is_excluded(rel, excluded):
-                continue
-            if entry.is_dir(follow_symlinks=False) and rel in blocked:
-                copy_dir(src_entry, dst / entry.name, rel)
-            else:
-                _run(["cp", "-a", "--reflink=auto", "--", str(src_entry), str(dst)])
-
-    copy_dir(source, destination, Path("."))
+    args = ["rsync", "-a", "--delete"]
+    for path in sorted(excluded, key=lambda item: item.as_posix()):
+        relative = "" if path == Path(".") else path.as_posix()
+        args.append(f"--exclude=/{relative}/***")
+    _run([*args, str(source) + "/", str(destination) + "/"])
 
 
 def _namespace_state_path() -> Path:
@@ -167,7 +132,7 @@ class Backend:
     def supported(self, repo_root: Path) -> tuple[bool, str]:
         if not sys.platform.startswith("linux"):
             return False, "Linux overlay workspaces require Linux"
-        missing = [name for name in ("unshare", "nsenter", "rsync", "cp")
+        missing = [name for name in ("unshare", "nsenter", "rsync", "lsof")
                    if shutil.which(name) is None]
         if missing:
             return False, "Missing Linux workspace tools: " + ", ".join(missing)
@@ -197,7 +162,7 @@ class Backend:
 
     def copy_base_tree(self, repo_root: Path, destination: Path, *,
                        excludes: tuple[str, ...]) -> None:
-        _copy_without_object_stores(Path(repo_root), Path(destination), excludes)
+        _copy_folder(Path(repo_root), Path(destination), excludes)
 
     def seal_base(self, staging: dict[str, Any]) -> dict[str, Any]:
         staging_path = Path(staging["versionPath"]).resolve()
@@ -240,14 +205,22 @@ class Backend:
     def sync_delta(self, repo_root: Path, target_repo: Path, token: object, *,
                    excludes: tuple[str, ...]) -> dict[str, Any]:
         current_token = token.get("token") if isinstance(token, dict) else token
-        repo_root, target_repo = Path(repo_root).resolve(), Path(target_repo).resolve()
+        repo_root = Path(repo_root).resolve()
+        target_repo = Path(os.path.abspath(target_repo))
+        try:
+            info = target_repo.lstat()
+        except FileNotFoundError:
+            info = None
+        if info is not None and (stat.S_ISLNK(info.st_mode) or not stat.S_ISDIR(info.st_mode)):
+            if stat.S_ISDIR(info.st_mode) and not stat.S_ISLNK(info.st_mode):
+                shutil.rmtree(target_repo)
+            else:
+                target_repo.unlink()
+        target_repo.mkdir(parents=True, exist_ok=True)
         pid = self._ensure_namespace()
         args = self._nsenter(pid) + ["rsync", "-a", "--delete", "--itemize-changes",
                                      "--out-format=%i %n"]
         excluded = _relative_excludes(repo_root, excludes)
-        # Linked worktrees and submodules can store objects below a .git
-        # directory. Exclude these without walking the source tree.
-        args.append("--exclude=**/.git/objects/***")
         for path in sorted(excluded, key=lambda item: item.as_posix()):
             relative = "" if path == Path(".") else path.as_posix()
             args.append(f"--exclude=/{relative}/***")
@@ -264,7 +237,6 @@ class Backend:
         return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}
 
     def unmount_workspace(self, mount: Path, *, force: bool = False) -> None:
-        del force
         mount = Path(mount).resolve()
         state_path = _namespace_state_path()
         try:
@@ -274,6 +246,28 @@ class Backend:
         if not _namespace_alive(record):
             return
         pid = int(record["pid"])
+        if force:
+            result = _run(self._nsenter(pid) + ["lsof", "-t", "+f", "--", str(mount)], check=False)
+            pids = {int(value) for value in result.stdout.split() if value.isdigit()}
+            holders = {process_id: _proc_start_time(process_id) for process_id in pids}
+            holders = {process_id: start for process_id, start in holders.items()
+                       if start is not None}
+            for process_id, start in holders.items():
+                try:
+                    if _proc_start_time(process_id) == start:
+                        os.kill(process_id, 15)
+                except ProcessLookupError:
+                    pass
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and any(_proc_start_time(process_id) == start
+                                                      for process_id, start in holders.items()):
+                time.sleep(0.1)
+            for process_id, start in holders.items():
+                if _proc_start_time(process_id) == start:
+                    try:
+                        os.kill(process_id, 9)
+                    except ProcessLookupError:
+                        pass
         if _mount_exists(pid, mount):
             _run(self._nsenter(pid, keep_caps=True) + [sys.executable, "-c", _OVERLAY_UNMOUNT,
                                                         str(mount)])

@@ -38,14 +38,17 @@ worker base setting, then repository HEAD. Studio resolves and saves the commit
 before it creates workers. Check the spawn result for the commit and any warning
 that it is behind main. A retry with the same request_id keeps the same commit.
 Supply bounded ownership, a completion check, and explicit commit authority.
-On supported platforms, implementers use an image workspace. A base build starts
-when Multi agent mode turns on. Until the base is ready, new implementers work
-read-only in their selected folder. Studio then switches them to a writable
-image workspace and sends a notice. Other platforms use a Git worktree. Include
-or commit required inputs in the selected base commit. With no explicit or
-project base ref, the image workspace includes the user's current uncommitted
-changes in a snapshot commit. Collect leaves that snapshot commit out of the
-worker branch. A selected base ref starts from its commit and excludes those edits.
+On supported platforms, implementers use an image copy of the Git root that
+contains the selected folder, or the selected folder when it is outside Git.
+The copy includes uncommitted changes. A base build starts when Multi agent
+mode turns on. Until the base is ready, new implementers work read-only in the
+selected folder. Studio then switches them to the copy and sends its path and
+copy time. Other platforms use a Git worktree when Git is available, or the
+original folder otherwise. Studio gives a requested `base_ref` and its resolved
+commit to the worker in its first input. The worker checks it out. Studio does
+not create Git checkpoints or collect changes inside image copies. Ask workers
+to commit on a named branch. Integrate work by reading from the copy path or by
+fetching the branch, for example `git fetch <path> <branch>`.
 After a lost reply, use `orchestration_request` to recover the saved result.
 `applied` confirms the operation receipt, not worker completion. Check current
 registry states before counting workers. Use a new spawn ID only after

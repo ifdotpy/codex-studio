@@ -568,6 +568,8 @@ class WorkspaceMixin:
         return result.stdout
 
     def git(self, a, args, env=None, input=None):
+        if a.get("imageWorkspace"):
+            raise ValueError("Studio Git tools are unavailable for image workspaces")
         prefix = []
         if a.get("imageWorkspaceReady"):
             from codex_workspace_images import exec_prefix
@@ -730,6 +732,8 @@ class WorkspaceMixin:
         return operation["id"]
 
     def queue_checkpoint_after_turn(self, db, agent, turn_id):
+        if agent.get("imageWorkspace") or not agent.get("worktreeReady"):
+            return
         if agent.get("workspaceOperation"):
             agent["checkpointError"] = "Checkpoint skipped: An agent is using this workspace"
             return
@@ -859,6 +863,8 @@ class WorkspaceMixin:
     def checkpoint_capture(
         self, agent_id, label="Checkpoint", turn_id=None, internal=False
     ):
+        if self.agent(agent_id).get("imageWorkspace"):
+            raise ValueError("Studio Git checkpoints are unavailable for image workspaces")
         if internal:
             return self.capture_checkpoint(agent_id, label, turn_id)
         with self.lock, self.db() as db:
@@ -878,6 +884,8 @@ class WorkspaceMixin:
 
     def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None, tree=None):
         a = self.checked_actor_in_own_db(agent_id)
+        if a.get("imageWorkspace"):
+            raise ValueError("Studio Git checkpoints are unavailable for image workspaces")
         tree = tree if tree is not None else self.snapshot_tree(a)
         key = str(uuid.uuid4())
         env = {
@@ -984,6 +992,10 @@ class WorkspaceMixin:
                 if k not in {"items", "historyDelta"}}
 
     def checkpoint_after_turn(self, key, turn_id, operation_id):
+        with self.lock, self.db() as db:
+            agent = self.agent(key, db)
+            if agent.get("imageWorkspace") or not agent.get("worktreeReady"):
+                return
         try:
             if self._capture_reserved_checkpoint(key, "After turn", turn_id, operation_id) is None:
                 return
@@ -991,50 +1003,6 @@ class WorkspaceMixin:
             # The capture helper persists the exact failure and releases only its
             # own reservation. Automatic capture must not fail the completed turn.
             return
-        scope = None
-
-        def current(agent):
-            return (scope == (agent.get("epoch"), self._workspace_source(agent))
-                    and agent.get("autoWake") and agent.get("status") not in {"paused", "starting"}
-                    and not agent.get("inFlight") and not agent.get("turnId")
-                    and not agent.get("workspaceOperation") and not agent.get("workspaceReservationId")
-                    and not agent.get("deletedAt") and not agent.get("agentArchive")
-                    and agent.get("lastCompletedTurn") == turn_id and agent.get("imageWorkspaceReady"))
-
-        try:
-            with self.lock, self.db() as db:
-                operation = self._workspace_operation(db, operation_id)
-                if (not operation or operation.get("agent") != key or operation.get("phase") != "completed"
-                        or operation.get("turnId") != turn_id or not operation.get("source")):
-                    return
-                scope = (operation["epoch"], operation["source"])
-                agent = self.agent(key, db)
-                if not current(agent):
-                    return
-            from codex_workspace_images import collect
-            result = collect(key)
-            with self.lock, self.db() as db:
-                agent = self.agent(key, db)
-                if not current(agent):
-                    return
-                agent["imageWorkspaceCollect"] = result
-                if result.get("conflict") or result.get("conflicts"):
-                    conflict = str(result.get("conflict") or result.get("conflicts"))[:1200]
-                    agent["imageWorkspaceError"] = "Collect conflict: " + conflict
-                    raw_ref = result.get("rawRef") or result.get("branch") or "unknown raw branch"
-                    self.parent_event(db, agent, "collect:" + str(turn_id),
-                                      "Image workspace collect conflict after turn "
-                                      + str(turn_id) + ": " + conflict + ". Raw branch: " + str(raw_ref))
-                self.put(db, "agents", agent)
-                self.changed.set()
-        except Exception as error:
-            with self.lock, self.db() as db:
-                agent = self.agent(key, db)
-                if not current(agent):
-                    return
-                agent["imageWorkspaceError"] = "Collect failed: " + str(error)[:1200]
-                self.put(db, "agents", agent)
-                self.changed.set()
 
     def checkpoint_preview(self, key, checkpoint_id):
         a = self.checked_actor_in_own_db(key)
