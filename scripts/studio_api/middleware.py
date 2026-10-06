@@ -69,12 +69,12 @@ class HttpTraceMiddleware:
             query = scope.get("query_string", b"")
             if query:
                 target += "?" + query.decode("latin-1")
-            trace_id = codex_http_traces.begin(str(scope.get("method", "GET")), target)  # type: ignore[no-untyped-call]
+            trace_id = codex_http_traces.begin(str(scope.get("method", "GET")), target)
         except Exception as error:
             try:
                 import codex_http_traces
 
-                codex_http_traces.report_failure(error)  # type: ignore[no-untyped-call]
+                codex_http_traces.report_failure(error)
             except Exception:
                 pass
 
@@ -93,13 +93,13 @@ class HttpTraceMiddleware:
             try:
                 import codex_http_traces
 
-                codex_http_traces.finish(trace_id, status, outcome)  # type: ignore[no-untyped-call]
+                codex_http_traces.finish(trace_id, status, outcome)
             except Exception as error:
                 try:
                     import codex_http_traces
 
-                    codex_http_traces.report_failure(error)  # type: ignore[no-untyped-call]
-                    codex_http_traces.discard(trace_id)  # type: ignore[no-untyped-call]
+                    codex_http_traces.report_failure(error)
+                    codex_http_traces.discard(trace_id)
                 except Exception:
                     pass
 
