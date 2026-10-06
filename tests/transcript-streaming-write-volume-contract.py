@@ -49,7 +49,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                 finally:
                     db.close()
 
-            store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            store = SyncStore(connect, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
             self.prepare_revision(store, connect)
             first = store.pull('transcript:fixture', 0)
             self.assertEqual(len(first['documents']), 1)
@@ -132,7 +132,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                 finally:
                     db.close()
 
-            store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            store = SyncStore(connect, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
             self.prepare_revision(store, connect)
             first = store.pull('transcript:fixture', 0)
             stale_cursor = first['checkpoint']['seq']
@@ -178,7 +178,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                 finally:
                     db.close()
 
-            store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            store = SyncStore(connect, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
             self.prepare_revision(store, connect)
             result = store.pull('transcript:fixture', 0)
             full_bytes = len(json.dumps(result, separators=(',', ':'), ensure_ascii=False).encode())
@@ -223,7 +223,7 @@ class TranscriptStreamingWriteVolumeContract(unittest.TestCase):
                 finally:
                     db.close()
 
-            store = SyncStore(connect, lambda: {}, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
+            store = SyncStore(connect, lambda _key: {'items': items, 'agent': {'id': 'fixture'}})
             self.prepare_revision(store, connect)
             full = store.pull('transcript:fixture', 0)
             cursor = full['checkpoint']['seq']

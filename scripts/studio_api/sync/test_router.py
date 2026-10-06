@@ -52,10 +52,12 @@ class StoreStub:
         self.draft_revision_increment = 1
 
     def identity(self) -> dict[str, object]:
-        return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
+        return {"workspaceId": "workspace-a", "syncProtocol": 2}
 
     def pull(self, *args: object) -> dict[str, object]:
         self.pull_arguments = args
+        if args and args[0] in {"state", "state:chat"}:
+            raise ValueError("Invalid sync scope")
         if self.reset_pull:
             return {
                 "workspaceId": "workspace-a", "reset": True, "floor": 4, "maxSeq": 8,
@@ -370,12 +372,20 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"kind":"state"', body)
         self.assertEqual(context.watchdog.agents, [])
 
-    def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
+    def test_pull_uses_first_nonempty_entity_scope_query_value(self) -> None:
         context = ContextStub()
-        response = make_client(context).get("/api/sync/pull?scope=&scope=state&after=&after=9&limit=20")
+        response = make_client(context).get("/api/sync/pull?scope=&scope=state:entities:v1&after=&after=9&limit=20")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
-        self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+        self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 9, 20, False, 0, False, None))
+
+    def test_legacy_pull_scopes_return_bad_request(self) -> None:
+        client = make_client(ContextStub())
+        for scope in ("state", "state:chat"):
+            with self.subTest(scope=scope):
+                response = client.get("/api/sync/pull?scope=" + scope)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"error": "Invalid sync scope"})
 
     def test_real_sync_store_returns_unchanged_transcript_for_full_pull(self) -> None:
         context = ContextStub()
@@ -396,7 +406,6 @@ class SyncRouterTests(unittest.TestCase):
 
         store = SyncStore(
             connect,
-            snapshot=lambda: {},
             transcript=context.runtime.transcript,
         )
         context.sync = lambda: store
@@ -426,7 +435,6 @@ class SyncRouterTests(unittest.TestCase):
 
         store = SyncStore(
             connect,
-            snapshot=lambda: {},
             transcript=context.runtime.transcript,
         )
         with connect() as db:
@@ -569,10 +577,10 @@ class SyncRouterTests(unittest.TestCase):
         with patch.object(context, "sync", return_value=store):
             with TestClient(app, raise_server_exceptions=False) as client:
                 identity = client.get("/api/sync/identity")
-                pull = client.get("/api/sync/pull?scope=state&after=0")
+                pull = client.get("/api/sync/pull?scope=state:entities:v1&after=0")
         self.assertEqual(identity.status_code, 200)
         self.assertEqual(identity.json(), {
-            "workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True,
+            "workspaceId": "workspace-a", "syncProtocol": 2,
         })
         self.assertEqual(pull.status_code, 200)
         self.assertEqual(pull.json()["generation"], 3)

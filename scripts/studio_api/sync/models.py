@@ -358,6 +358,7 @@ class RequestPreviewDto(ContractModel):
 class AgentStartAttempt(ContractModel):
     prepareError: str | None = None
     responseError: str | None = None
+    retiredEvents: list[str] | None = None
 
 
 class NativeReleasePhase(ContractStrEnum):
@@ -385,22 +386,6 @@ class ActiveToolDto(ContractModel):
     id: str
     type: str
     name: str
-
-
-class SnapshotNativeRelease(AgentNativeRelease):
-    id: str | None = None
-    threadId: str | None = None
-    accountKey: str | None = None
-    connectionId: str | None = None
-    at: float | None = None
-    submittedAt: float | None = None
-    resumedAt: float | None = None
-    releasedAt: float | None = None
-    closedAt: float | None = None
-    nativeStatus: AgentNativeStatusValue | None = None
-    error: str | None = None
-    resetReason: str | None = None
-    resetBy: str | None = None
 
 
 class WorkerDefaultsDto(ContractModel):
@@ -506,16 +491,6 @@ class NativeActionIdentityDto(ContractModel):
     epoch: int
 
 
-class SnapshotModelSettingsDto(ContractModel):
-    id: str
-    epoch: int
-    accountKey: str
-    threadId: str
-    connectionId: str
-    settings: CapacityRetrySettingsDto
-    status: Literal["submitted", "acknowledged"]
-
-
 class ReviewUncommittedTargetDto(ContractModel):
     type: Literal["uncommittedChanges"]
 
@@ -543,51 +518,6 @@ ReviewTargetDto = Annotated[
     | ReviewCustomTargetDto,
     Field(discriminator="type"),
 ]
-
-
-class SnapshotStartAttempt(AgentStartAttempt):
-    supervisorIdentity: SupervisorIdentity | None = None
-    id: str | None = None
-    epoch: int | None = None
-    events: list[str] | None = None
-    action: Literal["review", "capacity", "compact", "safety"] | None = None
-    submitted: bool | None = None
-    activeAtReservation: bool | None = None
-    turnId: str | None = None
-    observedTurnId: str | None = None
-    nativeOperationId: str | None = None
-    accountKey: str | None = None
-    connectionId: str | None = None
-    threadId: str | None = None
-    created: float | None = None
-    settingsFixed: bool | None = None
-    capacityRetryId: str | None = None
-    actionRequestId: str | None = None
-    actionIdentity: NativeActionIdentityDto | None = None
-    reviewTarget: ReviewTargetDto | None = None
-    modelSettings: SnapshotModelSettingsDto | None = None
-    executionOutcome: Literal["unknown", "unsent", "rejected"] | None = None
-    notSubmittedReason: str | None = None
-    retiredEvents: list[str] | None = None
-    completedAt: float | None = None
-
-
-class SnapshotNativeToolCatalogDto(ContractModel):
-    threadId: str | None = None
-    digest: str
-
-
-class SnapshotNativeNameIdentityDto(ContractModel):
-    accountKey: str
-    threadId: str
-    name: str
-
-
-class SnapshotNativeNameFailureDto(ContractModel):
-    identity: SnapshotNativeNameIdentityDto
-    error: str
-    attempts: int
-    retryAt: float
 
 
 class AgentOverview(ContractModel):
@@ -662,7 +592,7 @@ class AgentEntityDto(ContractModel):
     accountTransfer: AccountTransferSummaryDto | None = None
     convertedFromLead: ConvertedFromLeadDto | None = None
     overview: AgentOverview | None = None
-    nativeRelease: SnapshotNativeRelease | None = None
+    nativeRelease: AgentNativeRelease | None = None
     activity: AgentActivity | None = None
     nativeStatus: AgentNativeStatus | AgentNativeStatusValue | None = None
     nativeSafetyBuffering: NativeSafetyBufferingDto | None = None
@@ -671,7 +601,7 @@ class AgentEntityDto(ContractModel):
     connectionCheck: ConnectionCheckDto | None = None
     readState: ReadStateDto | None = None
     nativeLimitErrorAt: float | None = None
-    startAttempt: SnapshotStartAttempt | None = None
+    startAttempt: AgentStartAttempt | None = None
     panelVersion: int | None = None
     panelDataVersion: int | None = None
     unreadCount: int | None = None
@@ -720,223 +650,6 @@ class TurnRecoveryDto(ContractModel):
     source: Literal["replaced_native_child", "native_thread_read"]
     attemptId: str | None = None
     latestTurnId: str | None = None
-
-
-class SnapshotAgentDto(ContractModel):
-    """Full renderer snapshot agent, including named runtime/native metadata."""
-
-    id: str
-    name: str | None = None
-    manualName: bool | None = None
-    status: AgentStatus | None = None
-    source: AgentSource | None = None
-    parentId: str | None = None
-    rootId: str | None = None
-    threadId: str | None = None
-    orchestratorId: str | None = None
-    orchestratorName: str | None = None
-    isLead: bool | None = None
-    role: AgentRole | None = None
-    sharedRoomId: str | None = None
-    model: str | None = None
-    provider: AgentProvider | None = None
-    # Reasoning effort levels come from the selected model's capability catalog.
-    effort: str | None = None
-    fastMode: bool | None = None
-    concurrency: int | None = None
-    accountKey: str | None = None
-    cwd: str | None = None
-    worktree: bool | str | None = None
-    worktreePreparation: Literal["waiting", "preparing"] | None = None
-    imageWorkspace: bool | None = None
-    imageWorkspaceReady: bool | None = None
-    imageWorkspacePhase: str | None = None
-    imageWorkspaceError: str | None = None
-    imageWorkspaceRepo: str | None = None
-    imageWorkspaceBaseRepo: str | None = None
-    imageWorkspaceRelative: str | None = None
-    imageWorkspaceStartCommit: str | None = None
-    created: float | None = None
-    updated: float | None = None
-    turnId: str | None = None
-    turnStatus: AgentStatus | None = None
-    inFlight: bool | None = None
-    compactions: int | None = None
-    tokensUsed: int | None = None
-    contextUsage: ContextUsageDto | None = None
-    error: NativeProviderError | str | None = None
-    tail: str | None = None
-    canSend: bool | None = None
-    launcherAlive: bool | None = None
-    empty: bool | None = None
-    yoloMode: bool | None = None
-    agentMode: AgentMode | None = None
-    agentModeRevision: int | None = None
-    agentModeSupported: bool | None = None
-    subagentConcurrencyVersion: int | None = None
-    workerDefaults: WorkerDefaultsDto | None = None
-    reviewDefaults: ReviewDefaultsDto | None = None
-    parkedEvent: str | None = None
-    pendingSettings: ExecutionSettingsDto | None = None
-    pendingSettingsAccountKey: str | None = None
-    queuedSettings: ExecutionSettingsDto | None = None
-    quickCreate: JsonValue | None = None
-    nativeThreadBlock: NativeThreadBlockDto | None = None
-    daybreakEnabled: bool | None = None
-    accountTransfer: AccountTransferSummaryDto | None = None
-    convertedFromLead: ConvertedFromLeadDto | None = None
-    overview: AgentOverview | None = None
-    nativeRelease: SnapshotNativeRelease | None = None
-    activity: AgentActivity | None = None
-    nativeStatus: AgentNativeStatus | AgentNativeStatusValue | None = None
-    nativeSafetyBuffering: NativeSafetyBufferingDto | None = None
-    nativeSafetyRetry: NativeSafetyRetryDto | None = None
-    nativeTurnError: NativeTurnErrorDto | None = None
-    connectionCheck: ConnectionCheckDto | None = None
-    readState: ReadStateDto | None = None
-    nativeLimitErrorAt: float | None = None
-    startAttempt: SnapshotStartAttempt | None = None
-    panelVersion: int | None = None
-    panelDataVersion: int | None = None
-    unreadCount: int | None = None
-    lastReadAt: float | None = None
-    deletedAt: float | None = None
-    autoWake: bool | None = None
-    voiceState: JsonValue | None = None
-    nativeError: str | None = None
-    retryAt: float | None = None
-    hasUnread: bool | None = None
-    hasQuestion: bool | None = None
-    hasApproval: bool | None = None
-    statusDetail: str | None = None
-    lastAnswer: str | None = None
-    lastCompletedTurn: str | None = None
-    nextTurnSettingsSupported: bool | None = None
-    readStateSupported: bool | None = None
-    pinned: bool | None = None
-    archived: bool | None = None
-    projectFolder: str | None = None
-    projectFolderRevision: int | None = None
-    project: str | None = None
-    lastCompletedTurnStatus: AgentStatus | None = None
-    capacityRetry: CapacityRetryDto | None = None
-    usageResume: UsageResumeDto | None = None
-    contextRepairWait: ContextRepairWaitDto | None = None
-    imageWorkspaceSnapshotCommit: str | None = None
-    imageWorkspaceMount: str | None = None
-    imageWorkspaceNoticeSent: str | None = None
-    imageWorkspaceNoticeText: str | None = None
-    imageWorkspaceNoticeError: str | None = None
-    imageWorkspaceCollect: dict[str, JsonValue] | None = None
-    startOutcomeHold: StartOutcomeHoldDto | None = None
-    turnRecovery: TurnRecoveryDto | None = None
-
-    kind: Literal["agent"]
-    wave: str | None = None
-    runId: str | None = None
-    launcherPid: int | None = None
-    events: int | None = None
-    graphAlias: str | None = None
-    reportedAt: float | None = None
-    epoch: int | None = None
-    turnEpoch: int | None = None
-    maxAgents: int | None = None
-    maxAgentsExplicit: bool | None = None
-    tokenBudget: int | None = None
-    usageResumeEnabled: bool | None = None
-    compactionsObservedOnly: bool | None = None
-    profileId: str | None = None
-    profileInstructions: str | None = None
-    worktreeReady: bool | None = None
-    worktreeWarning: str | None = None
-    checkpointError: str | None = None
-    tokenUsageAccounting: Literal["provisional", "responseRecords"] | None = None
-    workerBaseRef: str | None = None
-    workerBaseCommit: str | None = None
-    workerBaseBehindMain: bool | None = None
-    workerBaseMainRef: str | None = None
-    nativeEffort: str | None = None
-    needsTitle: bool | None = None
-    quickCreateRequest: str | None = None
-    contextRepair: JsonValue | None = None
-    contextRepairHistory: list[JsonValue] | None = None
-    lastContextRepairCheck: dict[str, JsonValue] | None = None
-    lastContextRepairWait: dict[str, JsonValue] | None = None
-    connectionRecovery: dict[str, JsonValue] | None = None
-    nativeNameSynced: bool | None = None
-    capacity: JsonValue | None = None
-    transfer: JsonValue | None = None
-    accountTransferState: JsonValue | None = None
-    nativeFailureHold: JsonValue | None = None
-    supervisorRestore: JsonValue | None = None
-    activityPhase: str | None = None
-    nativeToolCatalog: SnapshotNativeToolCatalogDto | None = None
-    nativeNameFailure: SnapshotNativeNameFailureDto | None = None
-    executionSettingsAccountKey: str | None = None
-    accountTransferId: str | None = None
-    accountId: str | None = None
-    acceptedAt: float | None = None
-    importedFrom: str | None = None
-    activeTools: JsonValue | None = None
-    answers: JsonValue | None = None
-    assets: list[str] | None = None
-    branch: JsonValue | None = None
-    browserRecovery: JsonValue | None = None
-    budgetActionWait: JsonValue | None = None
-    budgetBlocked: JsonValue | None = None
-    cancelledPark: JsonValue | None = None
-    claudeOptions: JsonValue | None = None
-    complaintMisses: int | None = None
-    complaintsPresented: list[str] | None = None
-    content: str | None = None
-    cyberAccessProgram: str | None = None
-    decision: str | None = None
-    delivery: JsonValue | None = None
-    disconnectRecovery: JsonValue | None = None
-    expectedModeRevision: int | None = None
-    lastCompletedTurnError: NativeProviderError | str | None = None
-    lastEvent: str | None = None
-    lastUpdated: float | None = None
-    lazyAccountTransfer: JsonValue | None = None
-    liveSteerAttempt: JsonValue | None = None
-    liveSteerRejectedTurnId: str | None = None
-    livenessCommand: str | None = None
-    nativeReview: JsonValue | None = None
-    nativeToolRefreshId: str | None = None
-    nativeToolUpdate: JsonValue | None = None
-    nextTurn: JsonValue | None = None
-    overviewFile: str | None = None
-    portableHistory: JsonValue | None = None
-    preparedContext: JsonValue | None = None
-    prepareAttempt: JsonValue | None = None
-    previous: JsonValue | None = None
-    queueNotice: JsonValue | None = None
-    rateLimitResetCredits: JsonValue | None = None
-    rateLimits: JsonValue | None = None
-    rateLimitsByLimitId: JsonValue | None = None
-    requestId: str | None = None
-    restartRecovery: JsonValue | None = None
-    restoredCheckpoint: JsonValue | None = None
-    reuseEmpty: bool | None = None
-    signedIn: bool | None = None
-    steerRejectedTurnId: str | None = None
-    transcriptItemId: str | None = None
-    version: int | None = None
-    workspaceOperation: JsonValue | None = None
-    agentOwner: str | None = None
-    goalStatus: GoalStatus | None = None
-    requestedModel: str | None = None
-    capacityRetries: int | None = None
-    pendingSubmission: JsonValue | None = None
-    lastTurnStatus: str | None = None
-    lastCompletedTurnId: str | None = None
-    currentMessageId: str | None = None
-    mailboxError: str | None = None
-    agentArchive: JsonValue | None = None
-    command: str | None = None
-    interactive: bool | None = None
-    modelEventProjection: JsonValue | None = None
-    requestedDelivery: str | None = None
 
 
 class RoomKind(ContractStrEnum):
@@ -1016,30 +729,6 @@ class RoomEntityDto(ContractModel):
     localMembers: list[str] | None = None
 
 
-class RemoteRoomMember(ContractModel):
-    id: str
-    name: str | None = None
-    role: str | None = None
-    status: str | None = None
-
-
-class LocalRoomParticipantDto(ContractModel):
-    id: str
-    role: Literal["lead", "agent"]
-    name: str | None = None
-    status: str | None = None
-
-
-class SnapshotRoomDto(RoomEntityDto):
-    federated: bool | None = None
-    peerId: str | None = None
-    peerLabel: str | None = None
-    localMembers: list[str] | None = None
-    remoteMembers: list[RemoteRoomMember] | None = None
-    localParticipants: list[LocalRoomParticipantDto] | None = None
-    customName: str | None = None
-
-
 class TaskStatus(ContractStrEnum):
     RUNNING = "running"
     STARTING = "starting"
@@ -1084,21 +773,6 @@ class TaskEntityDto(ContractModel):
     bytes: int | None = None
     log: str | None = None
     outputTruncated: bool | None = None
-
-
-class SnapshotTaskDto(TaskEntityDto):
-    agent: str
-    kind: TaskKind
-    status: TaskStatus
-    created: float
-    type: str | None = None
-    itemId: str | None = None
-    server: str | None = None
-    startedAtMs: float | None = None
-    completedAtMs: float | None = None
-    arguments: str | None = None
-    tail: str | None = None
-    error: str | None = None
 
 
 class MonitorEntityDto(ContractModel):
@@ -1159,26 +833,6 @@ class ComplaintResponseDto(ContractModel):
     at: float
 
 
-class SnapshotComplaintDto(ContractModel):
-    id: str
-    leadId: str | None = None
-    author: str | None = None
-    authorName: str | None = None
-    leadName: str | None = None
-    title: str | None = None
-    status: ComplaintStatus | None = None
-    needsResponse: bool | None = None
-    created: float | None = None
-    readAt: float | None = None
-    leadStopped: bool | None = None
-    leadDeleted: bool | None = None
-    recipient: Literal["user", "lead"] | None = None
-    version: int | None = None
-    updated: float | None = None
-    text: str | None = None
-    responses: list[ComplaintResponseDto] | None = None
-
-
 class RequestStatus(ContractStrEnum):
     PENDING = "pending"
     BLOCKED = "blocked"
@@ -1235,36 +889,6 @@ class RuleKind(ContractStrEnum):
 class RuleStatus(ContractStrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
-
-
-class RuleSnapshotDto(RuleEntityDto):
-    rootId: str | None = None
-    epoch: int | None = None
-    kind: RuleKind | None = None
-    intervalSeconds: int | None = None
-    nextAt: float | None = None
-    at: float | None = None
-    path: str | None = None
-    event: str | None = None
-    command: str | None = None
-    stallTimeoutSeconds: int | None = None
-    livenessCommand: str | None = None
-    fileActivityAt: float | None = None
-    fileGeneration: int | None = None
-    stallWakeGeneration: int | None = None
-    text: str | None = None
-    status: RuleStatus | None = None
-    created: float | None = None
-    inFlight: bool | None = None
-    checks: int | None = None
-    wakes: int | None = None
-    fingerprint: JsonValue | None = None
-    minimumWorkers: int | None = None
-    durationMinutes: int | None = None
-    lowSince: float | None = None
-    alerted: bool | None = None
-    error: str | None = None
-    restartCheck: JsonValue | None = None
 
 
 class ProjectFolder(ContractModel):
@@ -1360,20 +984,6 @@ class WorkDecisionDto(ContractModel):
     created: float
 
 
-class WorkSnapshotDto(WorkEntityDto):
-    description: str | None = None
-    owner: str | None = None
-    dependencies: list[str] | None = None
-    created: float | None = None
-    updated: float | None = None
-    version: int | None = None
-    results: list[WorkResultDto] | None = None
-    decisions: list[WorkDecisionDto] | None = None
-    createdBy: str | None = None
-    blockedBy: list[str] | None = None
-    displayStatus: str | None = None
-
-
 class RateLimitWindowDto(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
@@ -1447,68 +1057,6 @@ class WorkspaceEntityDto(ContractModel):
     stateDir: str | None = None
 
 
-class SnapshotProjectDto(ProjectEntityDto):
-    workerBaseRef: str | None = None
-    workerBaseRevision: int | None = None
-
-
-class SnapshotChatDto(ChatEntityDto):
-    pass
-
-
-class SnapshotEdgeDto(EdgeEntityDto):
-    pass
-
-
-class RuntimeSnapshot(ResponseModel):
-    agents: list[SnapshotAgentDto]
-    projects: list[SnapshotProjectDto]
-    projectOrganizationVersion: int
-    sidebarOrder: SidebarOrderDto | None = None
-    peerTeamsVersion: int
-    peerTeams: list[PeerTeamEntityDto]
-    tasks: list[SnapshotTaskDto]
-    tasksHistoryLimit: int
-    monitors: list[MonitorEntityDto]
-    requests: list[RequestEntityDto]
-    rooms: list[SnapshotRoomDto]
-    complaints: list[SnapshotComplaintDto]
-    work: list[WorkSnapshotDto] | None = None
-    rules: list[RuleSnapshotDto]
-    rateLimits: AccountRateLimitsDto
-    nativeNotices: list[NativeNoticeDto]
-    rateLimitsByAccount: dict[str, AccountRateLimitsDto]
-    events: list[EventEntityDto]
-    connected: bool
-
-
-class SnapshotChatGroupDto(ContractModel):
-    id: str
-    name: str
-    members: list[str]
-    kind: Literal["chat"]
-    messageCount: int
-    tail: str
-    lastMessageAt: float | None
-
-
-SnapshotNodeDto = Annotated[
-    SnapshotAgentDto | SnapshotChatGroupDto,
-    Field(discriminator="kind"),
-]
-
-
-class StateSnapshot(ResponseModel):
-    token: str
-    stateDir: str
-    threads: list[SnapshotAgentDto]
-    chats: list[SnapshotChatGroupDto]
-    nodes: list[SnapshotNodeDto]
-    edges: list[SnapshotEdgeDto]
-    at: float
-    runtime: RuntimeSnapshot | None
-
-
 class SyncProtocolResponse(ResponseModel):
     protocolVersion: Literal[3]
     supportedVersions: list[Literal[3]]
@@ -1525,7 +1073,6 @@ class SyncProtocolResponse(ResponseModel):
 class SyncIdentityResponse(ResponseModel):
     workspaceId: str
     syncProtocol: Literal[2]
-    chatState: bool | None = None
 
 
 class SyncStreamQuery(ContractModel):

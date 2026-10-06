@@ -102,7 +102,7 @@ def measure():
                     db.execute("INSERT INTO runtime_chat_messages "
                                "(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                                (f"message-{index}", room_id, lead["id"], "message", time.time(), "{}"))
-            SyncStore(runtime.db, lambda: {}, lambda _key: {})
+            SyncStore(runtime.db, lambda _key: {})
             traced = MeasuredLock(runtime.lock)
             runtime.lock = traced
             canvas.lock = traced

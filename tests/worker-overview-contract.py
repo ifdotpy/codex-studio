@@ -12,7 +12,6 @@ spec = importlib.util.spec_from_file_location("runtime_contract", Path(__file__)
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from studio_api.testing import read_runtime_state
-from studio_api.testing import read_legacy_snapshot_field
 
 
 class WorkerOverviewContract(unittest.TestCase):
@@ -35,10 +34,7 @@ class WorkerOverviewContract(unittest.TestCase):
             self.worker.update(updates)
             self.runtime.put(db, "agents", self.worker)
         snapshot_agents = read_runtime_state(self.runtime)["agents"]
-        worker_index = next(i for i, agent in enumerate(snapshot_agents)
-                            if agent["id"] == self.worker["id"])
-        return read_legacy_snapshot_field(
-            lambda: read_runtime_state(self.runtime), "agents", worker_index, "overview")
+        return next(agent for agent in snapshot_agents if agent["id"] == self.worker["id"])["overview"]
 
     def test_running_commentary_and_stale_completed_turn_are_not_results(self):
         agent = self.legacy_overview(status="running", inFlight=True, turnId="new", lastCompletedTurn="old", lastAnswer="I will investigate")
@@ -70,10 +66,7 @@ class WorkerOverviewContract(unittest.TestCase):
         self.assertEqual(agent["result"], "")
         lead = next(a for a in read_runtime_state(self.runtime)["agents"] if a["id"] == self.lead["id"])
         agents = read_runtime_state(self.runtime)["agents"]
-        lead_index = next(i for i, agent in enumerate(agents) if agent["id"] == lead["id"])
-        legacy_lead = read_legacy_snapshot_field(
-            lambda: read_runtime_state(self.runtime), "agents", lead_index)
-        self.assertNotIn("overview", legacy_lead)
+        self.assertNotIn("overview", lead)
         with self.runtime.db() as db:
             entity_lead = self.runtime.agent_entity_view(db, self.runtime.agent(lead["id"], db))
         self.assertNotIn("overview", entity_lead)

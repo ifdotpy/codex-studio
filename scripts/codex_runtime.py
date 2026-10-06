@@ -2899,8 +2899,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def agent_entity_view(
         self, db: sqlite3.Connection, record: "AgentRecord",
     ) -> dict[str, object]:
-        # Match the renderer-facing fields added by snapshot(), so later
-        # internal agent writes cannot erase visible source/team details.
+        # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
         block = native_thread_block(record)  # type: ignore[no-untyped-call]
         view.update(kind="agent", source="managed", canSend=not bool(block),
@@ -9744,128 +9743,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return {"work": [self.work_view(w, works) for w in works
                                  if w["rootId"] in ids and (not root or w["rootId"] == root)]}
             raise ValueError("Unknown workspace view")
-
-    def snapshot(self, *, include_work=True, db=None):
-        if db is None:
-            with self.read_db() as own:
-                return self._snapshot_from_db(own, include_work)
-        return self._snapshot_from_db(db, include_work)
-
-    def _snapshot_from_db(self, db, include_work):
-        from codex_peer_teams import snapshot as peer_snapshot
-        from codex_project_folders import sidebar_order
-        agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
-        agent_ids = {a["id"] for a in agents}
-        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
-        team_names = {a["id"]: a["name"] for a in agents}
-        work_records = self.records(db, "work") if include_work else []
-        work_result_files = {}
-        if worker_ids:
-            if include_work:
-                result_records = iter(sorted(
-                    work_records,
-                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
-                                        record.get("status") or ""),
-                ))
-            else:
-                rows = db.execute(
-                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
-                    "(SELECT value FROM json_each(?)) "
-                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
-                    (json.dumps(sorted(worker_ids)),),
-                )
-                result_records = (json.loads(row[0]) for row in rows)
-            for record in result_records:
-                owner = record.get("owner")
-                if owner not in worker_ids:
-                    continue
-                for result in record.get("results", []):
-                    if result.get("agent") != owner or not result.get("resultFile"):
-                        continue
-                    created = result.get("created", 0)
-                    prior = work_result_files.get(owner)
-                    if prior is None or created > prior[0]:
-                        work_result_files[owner] = (created, result["resultFile"])
-        for a in agents:
-            a["nextTurnSettingsSupported"] = True
-            a["readStateSupported"] = True
-            a["empty"] = self.empty_lead(db, a)
-            if not a.get("isLead"):
-                task = str(a.get("prompt") or "")
-                # A completed message can be commentary. Publish the last report
-                # only once the current turn has completed successfully.
-                result = str(a.get("lastAnswer") or "") if (
-                    a.get("lastCompletedTurn") and not a.get("turnId")
-                    and not a.get("inFlight") and a.get("status") == "completed"
-                ) else ""
-                result_file = work_result_files.get(a['id'], (None, None))[1]
-                a["overview"] = {
-                    "task": task[:4000], "taskTruncated": len(task) > 4000,
-                    "result": result[:4000], "resultTruncated": len(result) > 4000,
-                    "resultTurnId": a.get("lastCompletedTurn") if result else None,
-                    "resultFile": result_file,
-                }
-            for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
-                ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
-                 "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
-            ):
-                a.pop(private, None)
-            block = native_thread_block(a)
-            if block:
-                a["nativeThreadBlock"] = block
-            a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                     wave="Team: " + team_names.get(a["rootId"], "Team"))
-        from codex_entity_contracts import event_records
-        from codex_sync_entities import project
-        events = [project("event", record) for record in event_records(db)]
-        return {
-            "agents": agents,  # type: ignore[call-arg]  # typed-update
-            "projects": self.projects(db=db)["items"],
-            "projectOrganizationVersion": 1,
-            "sidebarOrder": sidebar_order(db),
-            "peerTeamsVersion": 1,
-            "peerTeams": peer_snapshot(self, db),
-            "tasks": self.recent_tasks(db),
-            "tasksHistoryLimit": 100,
-            "monitors": [
-                m
-                for m in self.recent_monitors(db)
-                if m["agent"] in agent_ids
-            ],
-            "requests": [
-                r
-                for r in self.records(db, "requests")
-                if r["status"] == "pending"
-                and r.get("agent") in agent_ids
-            ],
-            "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
-            "complaints": self.complaint_summaries(db),
-            # The chat view reads work through /api/work when opened.
-            # Omit it before the database read so old result histories do
-            # not delay every chat update.
-            **({"work": [
-                w
-                for w in work_records
-                if w["rootId"] in agent_ids
-            ]} if include_work else {}),
-            "rules": [
-                r
-                for r in self.records(db, "rules")
-                if r["agent"] in agent_ids
-            ],
-            "rateLimits": self.rate_limits.copy(),
-            "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],
-            "rateLimitsByAccount": {k: value.copy() for k, value in self.rate_limits_by_account.copy().items()},
-            "events": events,
-            "connected": bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
-        }
-
-    def team(self, root):
-        state = self.snapshot(include_work=False)
-        agents = [a for a in state["agents"] if a["rootId"] == root]
-        return {"workerDefaults": self.worker_defaults(self.agent(root)),
-                "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
-                "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
         with self.db() as db:

@@ -39,7 +39,7 @@ def run(iterations):
             with connect() as db:
                 group_count = db.execute("SELECT count(*) FROM groups").fetchone()[0]
             return {"agents": [], "groupCount": group_count, "largeProjection": "x" * 3_000_000}
-        store = SyncStore(connect, state, lambda key: {"items": []})
+        store = SyncStore(connect, lambda key: {"items": []})
         first = store.pull("state")
         after = first["checkpoint"]["seq"]
         timings = {"analyticsChurn": [], "uiWrites": []}

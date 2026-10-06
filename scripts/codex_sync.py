@@ -13,9 +13,6 @@ from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
 SCOPE_STRIPES = 64
-# Windows pull state together after each RESYNC. Without a write in between,
-# they share one snapshot. The age bound limits in-memory state staleness.
-SNAPSHOT_REUSE_SECONDS = 2
 TRANSCRIPT_MAX_TOMBSTONES = 512
 TRANSCRIPT_ORDER_ID = '@order'
 TRANSCRIPT_META_ID = '@meta'
@@ -24,24 +21,17 @@ TRANSCRIPT_REVISION_ID = '@revision'
 
 
 class SyncStore:
-    def __init__(self, connect: Callable[[], ContextManager[sqlite3.Connection]], snapshot: Callable[[], Any],
-                 transcript: Callable[[str], Any], chat_snapshot: Any = None,
-                 state_signature: Callable[[], Any] | None = None, runtime: Any = None,
+    def __init__(self, connect: Callable[[], ContextManager[sqlite3.Connection]],
+                 transcript: Callable[[str], Any], runtime: Any = None,
                  canvas: Any = None) -> None:
-        self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
-        self.chat_snapshot = chat_snapshot
-        self.state_signature = state_signature
+        self.connect, self.transcript = connect, transcript
         self.runtime = runtime
         self.canvas = canvas
-        self._observed_state_signature = None
-        self._signature_lock = threading.Lock()
         self._entity_prune_lock = threading.Lock()
         self.entity_prune_status = {"status": "idle", "updated": time.time(), "deleted": 0}
-        # Transcript and legacy snapshot comparisons stay serial within their
-        # stripe. The fixed stripe count bounds memory. Entity reads use SQLite
-        # snapshots without these stripes.
+        # Transcript reads stay serial within their stripe. Entity reads use
+        # SQLite snapshots without these stripes.
         self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
-        self.snapshots: dict[str, Any] = {}
         with self.connection("SyncStore.initialize") as db:
             from codex_sync_entities import ensure_tables
             ensure_tables(db)
@@ -78,8 +68,7 @@ class SyncStore:
         else:
             with self._version_lock:  # type: ignore[attr-defined]  # typed-narrowing: lazily initialized with version reader
                 workspace_id = reader.execute('SELECT id FROM sync_identity').fetchone()[0]
-        return {'workspaceId': workspace_id, 'syncProtocol': 2,
-                **({'chatState': True} if self.chat_snapshot else {})}
+        return {'workspaceId': workspace_id, 'syncProtocol': 2}
 
     def generation(self) -> int:
         # A persistent reader sees one data_version change per committed writer
@@ -89,16 +78,6 @@ class SyncStore:
             return self._version_reader.execute('PRAGMA data_version').fetchone()[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 pragma result is dynamically typed
 
     def generation_state(self) -> dict[str, Any]:
-        # The legacy generation also covers file-backed/state:chat clients.
-        # Transcript pulls still use their per-agent revision to skip unchanged
-        # projections; the shared stream is only an invalidation hint.
-        if self.state_signature:
-            current = self.state_signature()
-            with self._signature_lock:
-                if current is not None and current != self._observed_state_signature:
-                    with self.connection("SyncStore.external_state") as db:
-                        db.execute('UPDATE sync_generation SET value=value+1 WHERE id=1')
-                    self._observed_state_signature = current
         generation = self.generation()
         revisions = self.transcript_revisions(generation)
         return {"protocol": 2, **self.identity(), "generations": {
@@ -570,80 +549,31 @@ class SyncStore:
             # its read snapshot and maintenance writes consistent. A scope
             # stripe would queue readers behind unrelated transcript work.
             return self.entity_pull(after, limit, fresh, initial_high, reset_support, priority_id)
-        with self.scope_lock(scope):
-            if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
-                encoded, digest = self.shared_snapshot(scope)
-                deleted = False
-            elif scope.startswith('transcript:') and len(scope) < 300:
-                revision = self.transcript_revision(scope.split(':', 1)[1])
+        if scope.startswith('transcript:') and len(scope) < 300:
+            with self.scope_lock(scope):
+                agent_id = scope.split(':', 1)[1]
+                revision = self.transcript_revision(agent_id)
                 if revision is not None:
                     checkpoint = self.transcript_revision_matches(scope, revision, after)
                     if checkpoint is not None:
                         return {'workspaceId': self.identity()['workspaceId'],
                                 'documents': [], 'checkpoint': {'seq': checkpoint}}
                 try:
-                    payload, deleted = self.transcript(scope.split(':', 1)[1]), False
+                    payload, deleted = self.transcript(agent_id), False
                 except ValueError:
                     payload, deleted = {}, True
-                if scope.startswith('transcript:'):
-                    return self.transcript_pull(scope, after, payload, deleted, revision)
-            elif scope != 'drafts':
-                raise ValueError('Invalid sync scope')
-            if scope.startswith('transcript:'):
-                return self.transcript_pull(scope, after, payload, deleted)
-            with self.connection("SyncStore.pull") as db:
-                if scope == 'drafts':
-                    rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
-                                      (scope, after, limit)).fetchall()
-                    documents = [self.document(row) for row in rows]
-                else:
-                    current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
-                    if current is None or current[1] != digest or bool(current[2]) != deleted:
-                        # Different scope stripes can update simultaneously.
-                        # Claim the next global sequence under SQLite's writer
-                        # lock, then recheck a version written while waiting.
-                        db.execute('BEGIN IMMEDIATE')
-                        current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
-                        if current is None or current[1] != digest or bool(current[2]) != deleted:
-                            legacy = (db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
-                                                 (scope, scope)).fetchone() if current is None else None)
-                            if legacy and legacy[1] == encoded and bool(legacy[2]) == deleted:
-                                seq = legacy[0]
-                            else:
-                                from codex_sync_entities import next_sequence
-                                seq = next_sequence(db)
-                            if current is None:
-                                db.execute('INSERT INTO sync_versions VALUES (?,?,?,?,?)',
-                                           (seq, scope, digest, int(deleted), time.time()))
-                            else:
-                                db.execute('UPDATE sync_versions SET seq=?,hash=?,deleted=?,updated=? WHERE scope=?',
-                                           (seq, digest, int(deleted), time.time(), scope))
-                        else:
-                            seq = current[0]
-                    else:
-                        seq = current[0]
-                    documents = ([{'id': scope, 'payload': encoded, 'seq': seq, '_deleted': deleted}]
-                                 if seq > after else [])
-                return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
-                        'documents': documents,
-                        'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
-
-    def shared_snapshot(self, scope: str) -> tuple[Any, str]:
-        # The caller holds this scope's lock.
-        generation = self.generation()
-        cached = self.snapshots.get(scope)
-        if cached and cached[0] == generation and time.monotonic() - cached[1] < SNAPSHOT_REUSE_SECONDS:
-            return cached[2], cached[3]
-        payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
-        payload.pop('token', None)
-        payload.pop('at', None)
-        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-        digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
-        # A write during the snapshot changes the generation; the next pull rebuilds.
-        # Retain the wire representation in the existing cache. The raw object
-        # has no caller after this point and would otherwise be kept as well.
-        self.snapshots[scope] = (generation, time.monotonic(), encoded, digest)
-        return encoded, digest
+                return self.transcript_pull(scope, after, payload, deleted, revision)
+        if scope != 'drafts':
+            raise ValueError('Invalid sync scope')
+        with self.scope_lock(scope), self.connection("SyncStore.pull") as db:
+            rows = db.execute(
+                'SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
+                (scope, after, limit),
+            ).fetchall()
+            documents = [self.document(row) for row in rows]
+            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                    'documents': documents,
+                    'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
 
     def push_drafts(self, rows: Any) -> list[dict[str, Any]]:
         if not isinstance(rows, list) or len(rows) > 100:

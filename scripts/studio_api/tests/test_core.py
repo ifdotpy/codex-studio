@@ -1037,13 +1037,6 @@ class CoreResponseTests(unittest.TestCase):
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
 
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        fake_modules[sync_models.__name__] = sync_models
         schema_package = ModuleType("studio_api.sync")
         schema_package.__path__ = []
         fake_modules[schema_package.__name__] = schema_package
@@ -1055,9 +1048,7 @@ class CoreResponseTests(unittest.TestCase):
             app = create_app(ApiContext.for_schema())
             paths = app.openapi()["paths"]
         self.assertIn("/api/session", paths)
-        self.assertIn("/api/state", paths)
-        self.assertIn("400", paths["/api/state"]["get"]["responses"])
-        self.assertIn("403", paths["/api/state"]["get"]["responses"])
+        self.assertNotIn("/api/state", paths)
         self.assertIn("409", paths["/api/federation/v1/raw"]["post"]["responses"])
         self.assertIn("RawFederationBody", app.openapi()["components"]["schemas"])
         self.assertNotIn("x-studio-components", paths["/api/federation/v1/raw"]["post"])
@@ -1091,17 +1082,6 @@ class CoreResponseTests(unittest.TestCase):
             router_module.create_router = create_router  # type: ignore[attr-defined]
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
-
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        sync_package = ModuleType("studio_api.sync")
-        sync_package.__path__ = []
-        fake_modules[sync_package.__name__] = sync_package
-        fake_modules[sync_models.__name__] = sync_models
 
         context = ApiContext.for_schema()
         context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://testserver")
@@ -1162,24 +1142,6 @@ class CoreResponseTests(unittest.TestCase):
             router_module.create_router = create_router  # type: ignore[attr-defined]
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
-
-        sync_package = ModuleType("studio_api.sync")
-        sync_package.__path__ = []
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            threads: list[JsonValue]
-            chats: list[JsonValue]
-            nodes: list[JsonValue]
-            edges: list[JsonValue]
-            at: float
-            stateDir: str
-            runtime: JsonValue | None
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        fake_modules[sync_package.__name__] = sync_package
-        fake_modules[sync_models.__name__] = sync_models
 
         with tempfile.TemporaryDirectory(prefix="studio-api-core-") as state_dir:
             from codex_canvas import Canvas

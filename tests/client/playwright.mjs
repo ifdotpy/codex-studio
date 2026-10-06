@@ -192,6 +192,7 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
+/** @typedef {SyncIdentityResponse & { chatState: true }} FixtureSyncIdentityResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceChangeEvent"]} ResourceChangeEvent */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
@@ -199,21 +200,16 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceRef"]} ResourceRef */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyRequest"]} ResourceNotifyRequest */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyAck"]} ResourceNotifyAck */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["StateSnapshot"]} StateSnapshot */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotAgentDto"]} SnapshotAgentDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotRoomDto"]} SnapshotRoomDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotTaskDto"]} SnapshotTaskDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotProjectDto"]} SnapshotProjectDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["AgentEntityDto"]} AgentEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["ChatEntityDto"]} ChatEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ComplaintEntityDto"]} ComplaintEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["EdgeEntityDto"]} EdgeEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ProjectEntityDto"]} ProjectEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["RoomEntityDto"]} RoomEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["RuleEntityDto"]} RuleEntityDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["TaskEntityDto"]} TaskEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkspaceEntityDto"]} WorkspaceEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["RuntimeSnapshot"]} RuntimeSnapshot */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["RuleSnapshotDto"]} RuleSnapshotDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkSnapshotDto"]} WorkSnapshotDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotChatGroupDto"]} SnapshotChatGroupDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SnapshotEdgeDto"]} SnapshotEdgeDto */
+/** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkEntityDto"]} WorkEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["EventEntityDto"]} EventEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["MonitorEntityDto"]} MonitorEntityDto */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["PeerTeamEntityDto"]} PeerTeamEntityDto */
@@ -221,7 +217,7 @@ export const browserExecutablePath =
 
 /**
  * Keep this view limited to fields in AgentEntityDto.
- * @typedef {Pick<SnapshotAgentDto,
+ * @typedef {Pick<AgentEntityDto,
  *   "id" | "name" | "manualName" | "status" | "source" | "kind" |
  *   "parentId" | "rootId" | "threadId" | "orchestratorId" | "orchestratorName" |
  *   "isLead" | "role" | "sharedRoomId" | "model" | "provider" | "effort" |
@@ -243,17 +239,15 @@ export const browserExecutablePath =
  *   "statusDetail" | "lastAnswer" | "lastCompletedTurn" | "nextTurnSettingsSupported" |
  *   "readStateSupported" | "pinned" | "archived" | "projectFolder" |
  *   "projectFolderRevision" | "project"
- * > & Pick<AgentEntityDto,
- *   "epoch" | "lastCompletedTurnStatus" | "capacityRetry" | "usageResume" |
- *   "contextRepairWait" | "lastEvent" | "accountTransferId" | "workspaceOperation"
- * > & { overview?: AgentEntityDto["overview"] | null }} TestAgent */
+ * >} TestAgent */
 
-/** @typedef {Pick<SnapshotRoomDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage"> & Pick<RoomEntityDto, "peerLabel" | "localMembers">} TestRoom */
-/** @typedef {Pick<SnapshotTaskDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
-/** @typedef {Pick<SnapshotProjectDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams"> & Pick<ProjectEntityDto, "workerBaseRef" | "workerBaseRevision">} TestProject */
+/** @typedef {Pick<RoomEntityDto, "id" | "name" | "kind" | "members" | "rootId" | "updated" | "userHidden" | "projectPath" | "radio" | "peerTeamId" | "peerTeamName" | "lastMessage" | "peerLabel" | "localMembers">} TestRoom */
+/** @typedef {Pick<TaskEntityDto, "id" | "turnId" | "agent" | "kind" | "status" | "created" | "finished" | "name" | "command" | "query" | "cwd" | "processId" | "durationMs" | "timeout_ms" | "interactive" | "stdinClosed" | "stdinCloseRequested" | "stdinError" | "cancelRequested" | "exitCode" | "bytes" | "log" | "outputTruncated">} TestTask */
+/** @typedef {Pick<ProjectEntityDto, "id" | "path" | "name" | "created" | "updated" | "accountKey" | "accountRevision" | "accountKeys" | "organizationRevision" | "peerTeamsRevision" | "folders" | "peerTeams" | "workerBaseRef" | "workerBaseRevision">} TestProject */
 /** @typedef {Pick<ComplaintEntityDto, "id" | "leadId" | "author" | "authorName" | "leadName" | "title" | "status" | "needsUserResponse" | "created" | "readAt" | "recipient" | "version">} TestComplaint */
-/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleSnapshotDto[], work: WorkSnapshotDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: RuntimeSnapshot["nativeNotices"], sidebarOrder: RuntimeSnapshot["sidebarOrder"], rateLimits: RuntimeSnapshot["rateLimits"], rateLimitsByAccount: RuntimeSnapshot["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
-/** @typedef {{ token: string, stateDir?: string, chats: SnapshotChatGroupDto[], edges: SnapshotEdgeDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
+/** @typedef {{ agents: TestAgent[], rooms: TestRoom[], tasks: TestTask[], monitors: MonitorEntityDto[], complaints: TestComplaint[], projects: TestProject[], events: EventEntityDto[], peerTeams: PeerTeamEntityDto[], requests: RequestEntityDto[], rules: RuleEntityDto[], work: WorkEntityDto[], connected?: WorkspaceEntityDto["connected"], peerTeamsVersion?: WorkspaceEntityDto["peerTeamsVersion"], projectOrganizationVersion?: WorkspaceEntityDto["projectOrganizationVersion"], tasksHistoryLimit?: WorkspaceEntityDto["tasksHistoryLimit"], nativeNotices: WorkspaceEntityDto["nativeNotices"], sidebarOrder: WorkspaceEntityDto["sidebarOrder"], rateLimits: WorkspaceEntityDto["rateLimits"], rateLimitsByAccount: WorkspaceEntityDto["rateLimitsByAccount"], stateDir?: string }} TestRuntimeView */
+/** @typedef {{ token: string, stateDir?: string, chats: ChatEntityDto[], edges: EdgeEntityDto[], runtime: TestRuntimeView, threads: TestAgent[] }} TestStateView */
+/** @typedef {Omit<TestStateView, "token" | "threads">} EntityFixtureState */
 
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
@@ -365,10 +359,10 @@ export async function readTestState(origin) {
   const events = /** @type {EventEntityDto[]} */ (list("event"));
   const peerTeams = /** @type {PeerTeamEntityDto[]} */ (list("peerTeam"));
   const requests = /** @type {RequestEntityDto[]} */ (list("request"));
-  const rules = /** @type {RuleSnapshotDto[]} */ (list("rule"));
-  const work = /** @type {WorkSnapshotDto[]} */ (list("work"));
-  const chats = /** @type {SnapshotChatGroupDto[]} */ (list("chat"));
-  const edges = /** @type {SnapshotEdgeDto[]} */ (list("edge"));
+  const rules = /** @type {RuleEntityDto[]} */ (list("rule"));
+  const work = /** @type {WorkEntityDto[]} */ (list("work"));
+  const chats = /** @type {ChatEntityDto[]} */ (list("chat"));
+  const edges = /** @type {EdgeEntityDto[]} */ (list("edge"));
   /** @type {TestRuntimeView} */
   const runtime = {
     agents,
@@ -396,22 +390,22 @@ export async function readTestState(origin) {
       get("workspace", "current")?.tasksHistoryLimit
     ),
     get nativeNotices() {
-      return /** @type {RuntimeSnapshot["nativeNotices"]} */ (
+      return /** @type {WorkspaceEntityDto["nativeNotices"]} */ (
         get("workspace", "current")?.nativeNotices
       );
     },
     get sidebarOrder() {
-      return /** @type {RuntimeSnapshot["sidebarOrder"]} */ (
+      return /** @type {WorkspaceEntityDto["sidebarOrder"]} */ (
         get("workspace", "current")?.sidebarOrder
       );
     },
     get rateLimits() {
-      return /** @type {RuntimeSnapshot["rateLimits"]} */ (
+      return /** @type {WorkspaceEntityDto["rateLimits"]} */ (
         get("workspace", "current")?.rateLimits
       );
     },
     get rateLimitsByAccount() {
-      return /** @type {RuntimeSnapshot["rateLimitsByAccount"]} */ (
+      return /** @type {WorkspaceEntityDto["rateLimitsByAccount"]} */ (
         get("workspace", "current")?.rateLimitsByAccount
       );
     },
@@ -447,7 +441,7 @@ const entityWorkspaceKeys = [
   "tasksHistoryLimit",
 ];
 
-/** @type {Set<keyof SnapshotAgentDto>} */
+/** @type {Set<string>} */
 const snapshotOnlyAgentKeys = new Set([
   "activeTools",
   "compactionsObservedOnly",
@@ -502,7 +496,7 @@ function generatedSyncPullResponse(response) {
 /**
  * Build entity values from a fixture, omitting fields that the entity contract
  * does not expose.
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  * @returns {{ collection: string, id: string, value: JsonValue }[]}
  */
 function entityValuesFromSnapshot(snapshot) {
@@ -636,7 +630,7 @@ function entityValuesFromSnapshot(snapshot) {
   return values;
 }
 
-/** @param {string} [workspaceId] @returns {SyncIdentityResponse} */
+/** @param {string} [workspaceId] @returns {FixtureSyncIdentityResponse} */
 export function syncIdentityFixture(
   workspaceId = randomUUID().replaceAll("-", ""),
 ) {
@@ -694,7 +688,7 @@ export async function readFixtureSyncContract(origin) {
 
 /** @typedef {{ documents: Map<string, SyncEntity>, maxSeq: number }} MutableEntityPullState */
 
-/** @type {WeakMap<StateSnapshot, MutableEntityPullState>} */
+/** @type {WeakMap<EntityFixtureState, MutableEntityPullState>} */
 const nodeEntityPullStates = new WeakMap();
 
 /** @returns {MutableEntityPullState} */
@@ -706,7 +700,7 @@ function createMutableEntityPullState() {
  * Version changed entities and tombstones so clients that have advanced their
  * cursor can observe fixture state changes on a later pull.
  * @param {MutableEntityPullState} pullState
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  */
 function reconcileMutableEntityPullState(pullState, snapshot) {
   const nextById = new Map(
@@ -759,7 +753,7 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
 /**
  * Commit a fixture state change and return the entity documents its mutation
  * response should carry. This mirrors the server's `_syncEntities` envelope.
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  * @returns {SyncEntity[]}
  */
 export function updateEntitySyncFixture(snapshot) {
@@ -779,7 +773,7 @@ export function updateEntitySyncFixture(snapshot) {
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
- * @param {{ snapshot: StateSnapshot, workspaceId: string, unixSocket?: boolean, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
+ * @param {{ snapshot: EntityFixtureState, workspaceId: string, unixSocket?: boolean, onPull?: () => void, onStreamReady?: (notify: (resources: ResourceRef[]) => void) => void }} fixture
  * @returns {boolean} whether this was an /api/sync route
  */
 export function handleEntitySyncFixtureRequest(request, response, fixture) {
@@ -907,7 +901,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
 /**
  * Build a typed entity-pull fixture with the protocol's page, scope, tombstone,
  * reset, priority and checkpoint semantics.
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  * @param {number | EntityPullFixtureOptions} [optionsOrAfter]
  * @returns {Omit<SyncPullResponse, "workspaceId"> | Omit<SyncPullResetResponse, "workspaceId">}
  */
@@ -1111,7 +1105,7 @@ export function validateSyncPullRequest(requestUrl) {
 
 /**
  * Convert an incoming fixture request URL to the shared pull fixture options.
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  * @param {string | URL} requestUrl
  * @param {EntityPullFixtureOptions} [overrides]
  * @returns {Omit<SyncPullResponse, "workspaceId"> | Omit<SyncPullResetResponse, "workspaceId">}
@@ -1136,9 +1130,9 @@ export function entityPullFixtureForRequest(
 /**
  * Route a snapshot-shaped test fixture through the current entity sync paths.
  * @param {{ route: Function }} page
- * @param {StateSnapshot} snapshot
+ * @param {EntityFixtureState} snapshot
  * @param {{ identity: SyncIdentityResponse, protocol: SyncProtocolResponse }} contract
- * @returns {Promise<{ update: (nextSnapshot: StateSnapshot, options?: { origin: string, token: string, resources?: ResourceRef[] }) => Promise<ResourceNotifyAck | undefined> }>}
+ * @returns {Promise<{ update: (nextSnapshot: EntityFixtureState, options?: { origin: string, token: string, resources?: ResourceRef[] }) => Promise<ResourceNotifyAck | undefined> }>}
  */
 export async function stubEntityState(page, snapshot, contract) {
   const { identity: identityResponse, protocol: protocolResponse } = contract;
@@ -1152,7 +1146,7 @@ export async function stubEntityState(page, snapshot, contract) {
     );
   const identity = identityResponse.workspaceId;
   let generation = 1;
-  /** @type {StateSnapshot} */
+  /** @type {EntityFixtureState} */
   let currentSnapshot = snapshot;
   const pullState = createMutableEntityPullState();
   reconcileMutableEntityPullState(pullState, currentSnapshot);
@@ -1193,7 +1187,7 @@ export async function stubEntityState(page, snapshot, contract) {
    * Update changed entity documents with monotonic sequences and tombstone
    * removed entities. If origin/token are provided, publish the state
    * invalidation as a stand-in for the missing base server commit notification.
-   * @param {StateSnapshot} nextSnapshot
+   * @param {EntityFixtureState} nextSnapshot
    * @param {{ origin: string, token: string, resources?: ResourceRef[] }} [publish]
    * @returns {Promise<ResourceNotifyAck | undefined>}
    */

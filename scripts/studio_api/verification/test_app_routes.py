@@ -22,7 +22,6 @@ GET_PATHS = frozenset(
         "/api/sync/protocol",
         "/api/sync/pull",
         "/api/sync/stream",
-        "/api/state",
         "/api/worktree-disk",
         "/api/costs",
         "/api/session-cost",
@@ -241,9 +240,8 @@ class ApplicationRouteContract(unittest.TestCase):
         document = cast(dict[str, object], self.app.openapi())
         query_names = {
             path: query_parameter_names(document, path)
-            for path in ("/api/state", "/api/sync/pull", "/api/agent-chat")
+            for path in ("/api/sync/pull", "/api/agent-chat")
         }
-        self.assertIn("view", query_names["/api/state"])
         self.assertTrue({"scope", "after", "limit"}.issubset(query_names["/api/sync/pull"]))
         self.assertTrue({"room", "before", "after", "limit"}.issubset(query_names["/api/agent-chat"]))
 
@@ -314,6 +312,7 @@ class ApplicationRouteContract(unittest.TestCase):
         with TestClient(http_app) as client:
             for path in (
                 "/api/migration-contract-unknown",
+                "/api/state",
                 "/api/sync/generations",
                 "/api/transcript/stream",
             ):

@@ -21,7 +21,7 @@ from codex_records import (
     WorkStatusValue,
     WorkspaceOperationPhase,
 )
-from studio_api.sync.models import AgentEntityDto, AgentMode, AgentProvider, AgentRole, AgentStatus, SnapshotAgentDto
+from studio_api.sync.models import AgentEntityDto, AgentMode, AgentProvider, AgentRole, AgentStatus
 
 
 # This is the one explicit partition of the stored shape and the entity view.
@@ -77,8 +77,8 @@ AGENT_FIELD_GROUPS = {
 
 # These are measured storage/wire disagreements, not permission to coerce rows.
 KNOWN_WIRE_DISAGREEMENTS = {
-    "nativeNameSynced": "stored identity object; SnapshotAgentDto declares bool | None",
-    "workerBaseBehindMain": "stored commit count; SnapshotAgentDto declares bool | None",
+    "nativeNameSynced": "stored identity receipt; not a renderer entity field",
+    "workerBaseBehindMain": "stored commit count; not a renderer entity field",
     "error": "stored provider dict/string/null; entity DTO declares NativeProviderError/string/null",
     "worktree": "stored bool; entity DTO also accepts legacy string",
     "startAttempt": "full stored attempt; entity projection forwards only prepareError, responseError, retiredEvents",
@@ -253,10 +253,8 @@ class AgentRecordContractTests(unittest.TestCase):
         hints = get_type_hints(AgentRecord)
         self.assertEqual(hints["nativeNameSynced"], NativeNameSyncedRecord | None)
         self.assertEqual(hints["workerBaseBehindMain"], int | None)
-        self.assertIn("nativeNameSynced", SnapshotAgentDto.model_fields)
-        self.assertIn("workerBaseBehindMain", SnapshotAgentDto.model_fields)
-        self.assertEqual(SnapshotAgentDto.model_fields["nativeNameSynced"].annotation, bool | None)
-        self.assertEqual(SnapshotAgentDto.model_fields["workerBaseBehindMain"].annotation, bool | None)
+        self.assertNotIn("nativeNameSynced", AgentEntityDto.model_fields)
+        self.assertNotIn("workerBaseBehindMain", AgentEntityDto.model_fields)
         self.assertEqual(
             KNOWN_WIRE_DISAGREEMENTS.keys(),
             {"nativeNameSynced", "workerBaseBehindMain", "error", "worktree", "startAttempt", "nativeRelease", "status"},

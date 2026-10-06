@@ -24,36 +24,18 @@ with tempfile.TemporaryDirectory() as directory:
         db.execute('CREATE TABLE runtime_agents(id TEXT PRIMARY KEY, record TEXT)')
         db.execute('CREATE TABLE runtime_items(id TEXT PRIMARY KEY, record TEXT)')
         db.execute('CREATE VIRTUAL TABLE message_search USING fts5(text)')
-    state = {'nodes': [], 'token': 'secret', 'at': 12}
     def transcript(key):
         if key != 'one':
             raise ValueError('Gone')
         return {'items': [{'id': 'message', 'text': 'hello'}]}
-    store = SyncStore(connect, lambda: state, transcript)
-    assert store.identity() == SyncStore(connect, lambda: state, transcript).identity()
-    first = store.pull('state')
-    assert 'token' not in json.loads(first['documents'][0]['payload'])
-    assert not store.pull('state', first['checkpoint']['seq'])['documents']
-    state['nodes'] = [{'id': 'one'}]
-    # Pulls without a write share one snapshot for a short time.
-    assert not store.pull('state', first['checkpoint']['seq'])['documents']
-    import codex_sync
-    import time
-    time.sleep(codex_sync.SNAPSHOT_REUSE_SECONDS)
-    second = store.pull('state', first['checkpoint']['seq'])
-    assert second['checkpoint']['seq'] > first['checkpoint']['seq']
-    # A write makes the next pull rebuild at once.
-    state['nodes'] = [{'id': 'two'}]
-    with connect() as db:
-        db.execute("INSERT INTO runtime_agents VALUES ('writer', '{}')")
-    third = store.pull('state', second['checkpoint']['seq'])
-    assert json.loads(third['documents'][0]['payload'])['nodes'] == [{'id': 'two'}]
-    with connect() as db:
-        db.execute("DELETE FROM runtime_agents WHERE id='writer'")
-    state['nodes'] = [{'id': 'one'}]
-    time.sleep(codex_sync.SNAPSHOT_REUSE_SECONDS)
-    second = store.pull('state', first['checkpoint']['seq'])
-    assert second == store.pull('state', first['checkpoint']['seq'])
+    store = SyncStore(connect, transcript)
+    assert store.identity() == SyncStore(connect, transcript).identity()
+    for scope in ('state', 'state:chat'):
+        try:
+            store.pull(scope)
+            raise AssertionError(f'retired sync scope accepted: {scope}')
+        except ValueError as error:
+            assert str(error) == 'Invalid sync scope'
     assert store.pull('transcript:gone')['documents'][0]['_deleted']
     # A live upgrade accepts an old checkpoint without rewriting its payload.
     old_payload = json.dumps(transcript('one'), sort_keys=True, separators=(',', ':'))
@@ -63,7 +45,7 @@ with tempfile.TemporaryDirectory() as directory:
         old_seq = db.execute("SELECT seq FROM sync_documents WHERE scope='transcript:one'").fetchone()[0]
         db.execute('CREATE TRIGGER sync_watch_runtime_items_UPDATE AFTER UPDATE ON runtime_items '
                    'BEGIN UPDATE sync_generation SET value=value+1 WHERE id=1; END')
-    upgraded = SyncStore(connect, lambda: state, transcript)
+    upgraded = SyncStore(connect, transcript)
     replacement = upgraded.pull('transcript:one', old_seq)
     assert replacement['documents']
     assert replacement['documents'][0]['seq'] > old_seq
@@ -78,7 +60,7 @@ with tempfile.TemporaryDirectory() as directory:
         db.execute('INSERT INTO runtime_agents VALUES (?,?)', ('one', '{}'))
     assert store.generation() > generation
     from concurrent.futures import ThreadPoolExecutor
-    concurrent = SyncStore(connect, lambda: state, lambda key: {'key': key})
+    concurrent = SyncStore(connect, lambda key: {'key': key})
     with ThreadPoolExecutor(max_workers=8) as pool:
         versions = list(pool.map(lambda key: concurrent.pull('transcript:' + str(key))['checkpoint']['seq'], range(24)))
     assert len(set(versions)) == len(versions)
@@ -129,32 +111,11 @@ with tempfile.TemporaryDirectory() as directory:
             raise AssertionError('Invalid row accepted')
         except ValueError:
             pass
-    # A slow state snapshot does not delay a transcript pull; one scope stays serial.
-    import threading
-    entered, release = threading.Event(), threading.Event()
-    def slow_state():
-        entered.set()
-        assert release.wait(5)
-        return state
-    slow = SyncStore(connect, slow_state, transcript)
-    worker = threading.Thread(target=slow.pull, args=('state',))
-    worker.start()
-    assert entered.wait(5)
-    try:
-        import time
-        started = time.monotonic()
-        assert slow.pull('transcript:one')['documents']
-        assert time.monotonic() - started < 2 and not release.is_set()
-        assert not slow.scope_lock('state').acquire(blocking=False)
-    finally:
-        release.set()
-        worker.join(5)
-    assert not worker.is_alive()
     # An unchanged analytics agent row is not rewritten; windows are not told to resync.
     from codex_analytics import AnalyticsMixin
     with connect() as db:
         db.execute('CREATE TABLE analytics_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)')
-    SyncStore(connect, lambda: state, transcript)
+    SyncStore(connect, transcript)
     agent = {'id': 'a1', 'name': 'Worker', 'rootId': 'a1'}
     with connect() as db:
         AnalyticsMixin.analytics_agent(None, db, agent)

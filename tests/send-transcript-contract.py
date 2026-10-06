@@ -76,7 +76,7 @@ class SendTranscriptContract(unittest.TestCase):
         for contents in (None, [], {}, "unexpected", [None, 7, {}, {"type": "inputText", "text": None}]):
             with self.subTest(contents=contents):
                 a, _ = self.tool_fixture(None, native={"contentItems": contents})
-                sync = SyncStore(self.runtime.db, lambda: read_runtime_state(self.runtime), self.runtime.transcript)
+                sync = SyncStore(self.runtime.db, self.runtime.transcript)
                 result = sync.pull("transcript:" + a["id"])
                 transcript = json.loads(result["documents"][0]["payload"])
                 item = transcript["items"][-1]

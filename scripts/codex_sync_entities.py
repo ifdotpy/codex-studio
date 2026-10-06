@@ -197,7 +197,9 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 key: release[key] for key in ("phase", "resetPending") if key in release
             }
         overview = record.get("overview")
-        if not isinstance(overview, dict) and ("prompt" in record or "lastAnswer" in record):
+        if record.get("isLead"):
+            overview = None
+        elif not isinstance(overview, dict) and ("prompt" in record or "lastAnswer" in record):
             task = str(record.get("prompt") or "")
             overview_result = str(record.get("lastAnswer") or "") if (
                 record.get("lastCompletedTurn") and not record.get("turnId")

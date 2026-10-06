@@ -28,7 +28,7 @@ with tempfile.TemporaryDirectory() as directory:
                        [(f'chat-{n}', '{}') for n in range(500)])
     def forbidden(*_):
         raise AssertionError('Revision hints must not project history or workspace state')
-    store = SyncStore(connect, forbidden, forbidden)
+    store = SyncStore(connect, forbidden)
     first = store.generation_state()
     assert len(first['transcriptRevisions']) == 500
     assert set(first['transcriptRevisions'].values()) == {0}

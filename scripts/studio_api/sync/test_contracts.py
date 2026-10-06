@@ -26,14 +26,9 @@ from studio_api.sync.models import (
     EntityCollection,
     NativeProviderError,
     MonitorEntityDto,
-    RuntimeSnapshot,
     AccountRateLimitsDto,
     RequestEntityDto,
     RoomRadioSeen,
-    SnapshotAgentDto,
-    SnapshotChatGroupDto,
-    SnapshotRoomDto,
-    StateSnapshot,
     SyncDocument,
     WorkspaceEntityDto,
 )
@@ -150,8 +145,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 }
                 projected = project("agent", record)
                 agent = AgentEntityDto.model_validate(projected)
-                snapshot = SnapshotAgentDto.model_validate(record)
-                for parsed in (agent, snapshot):
+                for parsed in (agent,):
                     if parsed.workerDefaults is None:
                         self.fail("worker defaults were omitted")
                     self.assertEqual(parsed.workerDefaults.model, model)
@@ -203,38 +197,8 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertEqual(image_agent["imageWorkspace"], True)
         self.assertEqual(image_agent["imageWorkspacePhase"], "ready")
 
-    def test_image_workspace_paths_and_commits_survive_each_snapshot_location(self) -> None:
-        for relative, commit in ((None, None), (".", None), ("packages/app", "a" * 40)):
-            with self.subTest(relative=relative, commit=commit):
-                source: dict[str, JsonValue] = {
-                    "id": "image-worker", "kind": "agent",
-                    "imageWorkspaceRelative": relative, "imageWorkspaceStartCommit": commit,
-                }
-                projected = project("agent", source)
-                if not isinstance(projected, dict):
-                    self.fail("image workspace agent did not project")
-                for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
-                    self.assertIn(field, projected)
-                    self.assertEqual(projected[field], source[field])
-                snapshot = StateSnapshot.model_validate({
-                    "token": "session", "stateDir": "/state", "threads": [source],
-                    "chats": [], "nodes": [source], "edges": [], "at": 15.0,
-                    "runtime": {
-                        "agents": [source], "projects": [], "projectOrganizationVersion": 0,
-                        "peerTeamsVersion": 0, "peerTeams": [], "tasks": [],
-                        "tasksHistoryLimit": 0, "monitors": [], "requests": [], "rooms": [],
-                        "complaints": [], "rules": [], "rateLimits": {
-                            "accountKey": "default", "data": None, "at": None, "error": None,
-                        }, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
-                        "connected": False,
-                    },
-                })
-                assert snapshot.runtime is not None
-                for agent in (snapshot.threads[0], snapshot.nodes[0], snapshot.runtime.agents[0]):
-                    self.assertEqual(agent.model_dump(mode="json", exclude_unset=True), source)
-
     def test_image_workspace_metadata_rejects_wrong_types_and_unknown_fields(self) -> None:
-        for model in (AgentEntityDto, SnapshotAgentDto):
+        for model in (AgentEntityDto,):
             for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
                 for value in (42, False, {}, []):
                     with self.subTest(model=model.__name__, field=field, value=value):
@@ -375,7 +339,7 @@ class SyncEntityContractTests(unittest.TestCase):
                 projected = project("agent", runtime_view)
                 if not isinstance(projected, dict):
                     self.fail("reconciled runtime agent did not project")
-                snapshot_agent = SnapshotAgentDto.model_validate(projected)
+                snapshot_agent = AgentEntityDto.model_validate(projected)
                 self.assertIsNotNone(snapshot_agent.startAttempt)
                 assert snapshot_agent.startAttempt is not None
                 self.assertEqual(snapshot_agent.startAttempt.retiredEvents, [event_id])
@@ -468,15 +432,11 @@ class SyncEntityContractTests(unittest.TestCase):
             "data": None, "error": None,
         })
         self.assertEqual(account_limits.readAt, 1791091211.8)
-        agent = SnapshotAgentDto.model_validate({
-            "id": "agent-a", "kind": "agent",
-            "lastCompletedTurnError": {
-                "message": "Usage limit reached: workspace_owner_credits_depleted (rateLimitExceeded).",
-                "codexErrorInfo": "rateLimitExceeded",
-            },
+        error = NativeProviderError.model_validate({
+            "message": "Usage limit reached: workspace_owner_credits_depleted (rateLimitExceeded).",
+            "codexErrorInfo": "rateLimitExceeded",
         })
-        assert isinstance(agent.lastCompletedTurnError, NativeProviderError)
-        self.assertEqual(agent.lastCompletedTurnError.codexErrorInfo, "rateLimitExceeded")
+        self.assertEqual(error.codexErrorInfo, "rateLimitExceeded")
 
     def test_projection_preserves_typed_runtime_and_request_receipts(self) -> None:
         provider_error: dict[str, JsonValue] = {
@@ -564,25 +524,6 @@ class SyncEntityContractTests(unittest.TestCase):
         assert isinstance(parsed.nativeStatus, AgentNativeStatus)
         self.assertEqual(parsed.nativeStatus.phase, "retrying")
 
-        snapshot_source = {key: value for key, value in source.items() if key != "privateRuntimeField"}
-        snapshot = SnapshotAgentDto.model_validate(snapshot_source)
-        parsed = snapshot
-        self.assertIsNotNone(parsed.capacityRetry)
-        self.assertIsNotNone(parsed.usageResume)
-        assert parsed.capacityRetry is not None
-        assert parsed.usageResume is not None
-        assert parsed.capacityRetry.settings is not None
-        self.assertEqual(parsed.capacityRetry.taskClaims, ["work-a"])
-        self.assertEqual(parsed.capacityRetry.settings.role, "worker")
-        self.assertFalse(parsed.capacityRetry.settings.yoloMode)
-        self.assertEqual(parsed.usageResume.cause, "usage_limit")
-        self.assertEqual(parsed.lastEvent, "2026-10-04T03:00:00Z")
-        self.assertIsNotNone(parsed.nativeNameFailure)
-        assert parsed.nativeNameFailure is not None
-        self.assertEqual(parsed.nativeNameFailure.attempts, 2)
-        assert parsed.startAttempt is not None
-        self.assertTrue(parsed.startAttempt.settingsFixed)
-
         request_source: dict[str, JsonValue] = {
             "id": "request-a", "method": "mcpServer/elicitation/request", "agent": "agent-a",
             "epoch": 4, "status": "pending", "deferred": False,
@@ -599,53 +540,6 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIsInstance(request, dict)
         RequestEntityDto.model_validate(request)
 
-        runtime_snapshot = RuntimeSnapshot.model_validate({
-            "agents": [snapshot_source], "projects": [], "projectOrganizationVersion": 1,
-            "peerTeamsVersion": 1, "peerTeams": [], "tasks": [{
-                "id": "agent-a:item-a", "agent": "agent-a", "kind": "command",
-                "type": "commandExecution", "itemId": "item-a", "status": "completed",
-                "created": 13.0, "startedAtMs": 13000, "completedAtMs": 14000,
-            }], "tasksHistoryLimit": 100,
-            "monitors": [], "requests": [request_source], "rooms": [], "complaints": [],
-            "rules": [], "rateLimits": {
-                "accountKey": "default", "at": 14.0, "error": None,
-                "data": {"accountId": "acct", "rateLimits": {
-                    "limitId": "codex", "planType": "plus",
-                    "primary": {"usedPercent": 95, "resetsAt": 30, "windowDurationMins": 300},
-                }},
-            }, "nativeNotices": [{
-                "id": "provider-version:default", "accountKey": "default", "provider": "codex",
-                "version": "0.153.0", "baseline": "0.153.4", "message": "Update available", "at": 14.0,
-            }],
-            "rateLimitsByAccount": {"default": {
-                "accountKey": "default", "at": None, "data": None, "error": None,
-            }},
-            "events": [], "connected": True,
-        })
-        self.assertEqual(runtime_snapshot.requests[0].epoch, 4)
-        self.assertEqual(runtime_snapshot.tasks[0].itemId, "item-a")
-        self.assertIsNotNone(runtime_snapshot.rateLimits.data)
-        assert runtime_snapshot.rateLimits.data is not None
-        self.assertIsNotNone(runtime_snapshot.rateLimits.data.rateLimits)
-        assert runtime_snapshot.rateLimits.data.rateLimits is not None
-        self.assertEqual(runtime_snapshot.rateLimits.data.rateLimits.planType, "plus")
-        self.assertEqual(runtime_snapshot.nativeNotices[0].provider, "codex")
-        state = StateSnapshot.model_validate({
-            "token": "session", "stateDir": "/state", "threads": [snapshot_source],
-            "chats": [{
-                "id": "chat-a", "name": "Chat", "members": ["agent-a"], "kind": "chat",
-                "messageCount": 1, "tail": "Hello", "lastMessageAt": 14.0,
-            }], "nodes": [snapshot_source, {
-                "id": "chat-a", "name": "Chat", "members": ["agent-a"], "kind": "chat",
-                "messageCount": 1, "tail": "Hello", "lastMessageAt": 14.0,
-            }], "edges": [], "at": 15.0,
-            "runtime": runtime_snapshot.model_dump(mode="json"),
-        })
-        self.assertIsNotNone(state.runtime)
-        self.assertEqual(state.threads[0].project, "Studio")
-        self.assertIsInstance(state.nodes[0], SnapshotAgentDto)
-        self.assertIsInstance(state.nodes[1], SnapshotChatGroupDto)
-
     def test_sync_projection_rejects_invalid_typed_provider_fields(self) -> None:
         with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
             native = project("agent", {"id": "agent-a", "kind": "agent", "nativeSafetyRetry": {"stage": "other"}})
@@ -655,23 +549,6 @@ class SyncEntityContractTests(unittest.TestCase):
         self.assertIsNotNone(context)
         self.assertNotIn("contextUsage", context)
         self.assertEqual(len(captured.records), 2)
-
-    def test_legacy_status_file_public_row_has_named_external_fields(self) -> None:
-        row = {
-            "id": "wave:run:worker", "name": "Worker", "threadId": "thread-id",
-            "runId": "run-id", "wave": "wave", "launcherPid": 123,
-            "turnStatus": "running", "status": "running", "goalStatus": "active",
-            "agentOwner": "wave:run:worker", "role": "reviewer", "kind": "agent",
-            "source": "app-server", "branch": "branch-name", "cwd": "/workspace",
-            "requestedModel": "model", "model": "model", "effort": "high",
-            "events": 1, "lastEvent": "2026-10-04T00:00:00Z", "tokensUsed": 4,
-            "error": None, "tail": "", "capacityRetries": 0, "capacityRetry": None,
-            "pendingSubmission": None, "lastTurnStatus": "inProgress",
-            "currentMessageId": None, "mailboxError": None, "launcherAlive": True,
-            "canSend": True,
-        }
-        parsed = SnapshotAgentDto.model_validate(row)
-        self.assertEqual(parsed.agentOwner, "wave:run:worker")
 
     def test_sync_document_preserves_wire_alias(self) -> None:
         document = SyncDocument.model_validate(
@@ -753,74 +630,8 @@ class SyncEntityContractTests(unittest.TestCase):
                 record: dict[str, JsonValue] = {"id": "worker", "kind": "agent", "status": "starting", "worktreePreparation": phase}
                 projected = project("agent", record)
                 self.assertEqual(projected, record)
-                self.assertEqual(SnapshotAgentDto.model_validate(record).worktreePreparation, phase)
+                self.assertEqual(AgentEntityDto.model_validate(record).worktreePreparation, phase)
         self.assertIsNone(project("agent", {"id": "worker"}))
-
-    def test_snapshot_preserves_unknown_start_identity_and_hold(self) -> None:
-        record: dict[str, JsonValue] = {
-            "id": "worker", "kind": "agent", "status": "interrupted",
-            "startAttempt": {"id": "attempt", "supervisorIdentity": {
-                "stateDir": "/fixture", "handle": "native", "generation": 2,
-            }},
-            "startOutcomeHold": {
-                "stage": "held", "at": 1.5, "attemptId": "attempt",
-                "threadId": "thread", "connectionId": "connection",
-                "evidence": "complete_history_absent_idle_twice_journal_drained",
-            },
-        }
-        self.assertEqual(
-            SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
-        )
-        projected = project("agent", record)
-        assert isinstance(projected, dict)
-        self.assertNotIn("startOutcomeHold", projected)
-        self.assertEqual(projected["startAttempt"], {})
-
-    def test_snapshot_preserves_recovery_outcomes_without_sync_expansion(self) -> None:
-        recoveries: list[dict[str, JsonValue]] = [
-            {"at": 1.5, "turnId": None, "outcome": "input_absent",
-             "source": "replaced_native_child", "attemptId": "attempt"},
-            {"at": 1.5, "turnId": None, "latestTurnId": "last", "outcome": "idle",
-             "source": "native_thread_read"},
-        ]
-        for outcome in ("completed", "failed", "interrupted"):
-            recoveries.append({"at": 1.5, "turnId": "turn", "outcome": outcome,
-                               "source": "native_thread_read"})
-        for recovery in recoveries:
-            record: dict[str, JsonValue] = {
-                "id": "worker", "kind": "agent", "turnRecovery": recovery,
-                "checkpointError": "fixture checkout failure",
-            }
-            self.assertEqual(
-                SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
-            )
-            projected = project("agent", record)
-            assert isinstance(projected, dict)
-            self.assertNotIn("turnRecovery", projected)
-            self.assertNotIn("checkpointError", projected)
-
-    def test_snapshot_accepts_budget_accounting_modes(self) -> None:
-        for mode in ("provisional", "responseRecords"):
-            record: dict[str, JsonValue] = {"id": "worker", "kind": "agent", "tokenUsageAccounting": mode}
-            self.assertEqual(SnapshotAgentDto.model_validate(record).tokenUsageAccounting, mode)
-            projected = project("agent", record)
-            assert isinstance(projected, dict)
-            self.assertNotIn("tokenUsageAccounting", projected)
-
-    def test_recovery_receipts_are_snapshot_only_json_objects(self) -> None:
-        for field in ("connectionRecovery", "lastContextRepairCheck", "lastContextRepairWait"):
-            record: dict[str, JsonValue] = {
-                "id": "worker", "kind": "agent", field: {"at": 1.5, "events": ["input"]},
-            }
-            self.assertEqual(
-                SnapshotAgentDto.model_validate(record).model_dump(mode="json", exclude_unset=True), record,
-            )
-            projected = project("agent", record)
-            assert isinstance(projected, dict)
-            self.assertNotIn(field, projected)
-            for invalid in (1.5, {"at": float("nan")}):
-                with self.subTest(field=field, invalid=invalid), self.assertRaises(ValidationError):
-                    SnapshotAgentDto.model_validate({"id": "worker", "kind": "agent", field: invalid})
 
     def test_draft_row_standalone_validation_stays_scoped_to_payloads(self) -> None:
         row = {
@@ -870,64 +681,6 @@ class SyncEntityContractTests(unittest.TestCase):
                     [expected_location],
                 )
 
-    def test_chat_and_full_snapshot_models_share_runtime_contract(self) -> None:
-        active_agent = {
-            "id": "agent-a", "kind": "agent", "status": "running", "activity": {
-                "phase": "tool", "at": 1.5,
-                "tools": [{"id": "tool-a", "type": "commandExecution", "name": "exec"}],
-            },
-            "nativeRelease": {
-                "id": "release-a", "phase": "unsubscribing", "threadId": "thread-a",
-                "accountKey": "default", "connectionId": "conn-a", "at": 1.0,
-                "submittedAt": 1.2, "resetPending": True,
-            },
-            "nativeStatus": "notLoaded",
-            "startAttempt": {
-                "id": "attempt-a", "epoch": 4, "events": ["event-a"],
-                "action": "compact", "submitted": True, "activeAtReservation": True,
-                "observedTurnId": "turn-a", "nativeOperationId": "native-a",
-                "prepareError": "prepare details", "responseError": "response details",
-            },
-            "overview": {"task": "task", "result": "result", "resultFile": "/tmp/result.md"},
-            "workerDefaults": {
-                "model": "gpt-6-luna", "effort": "high", "fastMode": False,
-                "daybreakEnabled": False, "accountKey": "default",
-            },
-            "reviewDefaults": {"model": None, "effort": None},
-            "pendingSettings": {"model": "gpt-6-luna", "effort": "medium", "fastMode": True},
-        }
-        runtime = {
-            "agents": [active_agent], "projects": [], "projectOrganizationVersion": 1,
-            "peerTeamsVersion": 1, "peerTeams": [], "tasks": [], "tasksHistoryLimit": 100,
-            "monitors": [], "requests": [], "rooms": [], "complaints": [], "rules": [],
-            "rateLimits": {
-                "accountKey": "default", "at": None, "data": None, "error": None,
-            }, "nativeNotices": [], "rateLimitsByAccount": {}, "events": [],
-            "connected": True,
-        }
-        snapshot = StateSnapshot.model_validate({
-            "token": "session", "stateDir": "/state", "threads": [], "chats": [],
-            "nodes": [], "edges": [], "at": 1.0, "runtime": runtime,
-        })
-        if snapshot.runtime is None:
-            self.fail("snapshot runtime was omitted")
-        self.assertIsNone(snapshot.runtime.work)
-        active = snapshot.runtime.agents[0]
-        if (active.activity is None or active.activity.tools is None or not active.activity.tools
-                or active.nativeRelease is None or active.startAttempt is None or active.workerDefaults is None
-                or active.overview is None):
-            self.fail("active producer nested values were omitted")
-        self.assertEqual(active.activity.at, 1.5)
-        self.assertEqual(active.activity.tools[0].name, "exec")
-        self.assertEqual(active.nativeRelease.connectionId, "conn-a")
-        self.assertEqual(active.startAttempt.events, ["event-a"])
-        self.assertEqual(active.workerDefaults.model, "gpt-6-luna")
-        self.assertEqual(active.overview.resultFile, "/tmp/result.md")
-        with self.assertRaises(ValidationError):
-            SnapshotAgentDto.model_validate({**active_agent, "activity": {"unknown": True}})
-        runtime["work"] = []
-        full = RuntimeSnapshot.model_validate(runtime)
-        self.assertEqual(full.work, [])
 
 if __name__ == "__main__":
     unittest.main()

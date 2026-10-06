@@ -37,7 +37,7 @@ class SyncReadLatencyContract(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.path = self.root / "canvas.sqlite3"
-        self.agent = {"id": "owner", "rootId": "owner", "name": "Owner",
+        self.agent = {"id": "owner", "rootId": "owner", "name": "Owner", "kind": "agent",
                       "status": "paused", "deletedAt": None}
         self.monitor = {"id": "monitor", "agent": "owner", "status": "running",
                         "created": 1, "tail": "First output"}
@@ -54,7 +54,6 @@ class SyncReadLatencyContract(unittest.TestCase):
 
         self.canvas = Canvas(self.root)
         self.canvas.connect = self.connect
-        self.canvas.snapshot = lambda **_kwargs: {"threads": [self.agent], "stateDir": str(self.root)}
         self.canvas.transcript = self.transcript
         with self.connect() as db:
             db.executescript("""PRAGMA journal_mode=WAL;
@@ -187,30 +186,31 @@ class SyncReadLatencyContract(unittest.TestCase):
             self.assertEqual(response["body"]["workspaceId"], "committed-workspace-id")
         self.assertEqual(connections, [])
 
-    def test_unchanged_state_pull_reuses_encoded_snapshot_until_external_commit(self):
-        state = {"threads": [{"id": "before"}]}
-        self.store.snapshot = lambda: state
-        first = self.store.pull("state")
+    def test_unchanged_entity_pull_checks_only_the_bounded_monitor_projection(self):
+        first = self.store.pull(ENTITY_SCOPE, fresh=True)
         cursor = first["checkpoint"]["seq"]
-        # The first projection commits sync_versions, which changes SQLite's
-        # data_version; let the next pull observe that store-owned commit.
-        stabilized = self.store.pull("state", cursor)
+        stabilized = self.store.pull(ENTITY_SCOPE, cursor)
         self.assertEqual(stabilized["documents"], [])
 
         with patch.object(codex_sync.json, "dumps", wraps=json.dumps) as dumps:
-            unchanged = self.store.pull("state", cursor)
+            unchanged = self.store.pull(ENTITY_SCOPE, cursor)
         self.assertEqual(unchanged["documents"], [])
         self.assertEqual(unchanged["checkpoint"]["seq"], cursor)
-        dumps.assert_not_called()
+        self.assertEqual(len(dumps.call_args_list), 1)
+        self.assertEqual(dumps.call_args.args[0]["collection"], "monitor")
 
-        state["threads"] = [{"id": "after"}]
         with self.connect() as db:
-            db.execute("UPDATE sync_identity SET id=id")
+            db.execute("UPDATE runtime_monitors SET record=? WHERE id=?",
+                       (json.dumps({**self.monitor, "status": "completed"}), "monitor"))
         with patch.object(codex_sync.json, "dumps", wraps=json.dumps) as dumps:
-            changed = self.store.pull("state", cursor)
-        dumps.assert_called_once()
+            changed = self.store.pull(ENTITY_SCOPE, cursor)
+        self.assertTrue(dumps.call_args_list)
+        self.assertTrue(all(call.args[0].get("collection") == "monitor"
+                            for call in dumps.call_args_list))
         self.assertEqual(len(changed["documents"]), 1)
-        self.assertEqual(json.loads(changed["documents"][0]["payload"]), state)
+        entity = json.loads(changed["documents"][0]["payload"])
+        self.assertEqual(entity["collection"], "monitor")
+        self.assertEqual(entity["value"]["status"], "completed")
         self.assertGreater(changed["checkpoint"]["seq"], cursor)
 
     def test_writer_conflicts_do_not_serialize_two_entity_http_deadlines(self):

@@ -26,8 +26,6 @@ if TYPE_CHECKING:
 
 def create_app(context: ApiContext) -> FastAPI:
     """Create the API without opening state or starting background services."""
-    from studio_api.sync.models import StateSnapshot
-
     app = FastAPI(title="Codex Studio API", version="1")
     app.state.api_context = context
     app.add_middleware(RequestBoundary, context=context)
@@ -38,12 +36,6 @@ def create_app(context: ApiContext) -> FastAPI:
     @app.get("/api/session", response_model=SessionResponse, tags=["core"])
     async def session(request: Request) -> object:
         return context.send(request, {"token": context.token})
-
-    @app.get("/api/state", response_model=StateSnapshot, tags=["core"])
-    def state(request: Request, view: str = "full") -> object:
-        snapshot = context.snapshot(include_work=view != "chat")
-        snapshot["token"] = context.token
-        return context.send(request, snapshot)
 
     from studio_api.agents.router import create_router as create_agents_router
     from studio_api.accounts.router import create_router as create_accounts_router

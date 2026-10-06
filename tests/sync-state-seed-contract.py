@@ -19,7 +19,6 @@ from codex_runtime import Runtime
 from codex_sync import SyncStore
 from studio_api.context import ApiContext
 from studio_api.testing import read_runtime_state
-from studio_api.testing import read_legacy_snapshot_field
 from codex_sync_entities import seed
 
 
@@ -314,7 +313,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                 canvas.runtime = runtime
                 chat_id = str(uuid.uuid4())
                 canvas.create_chat("Planning", [lead["id"]], chat_id)
-                store = SyncStore(canvas.connect, lambda: {}, lambda _key: {}, runtime=runtime, canvas=canvas)
+                store = SyncStore(canvas.connect, canvas.transcript, runtime=runtime, canvas=canvas)
                 store.pull("state:entities:v1", fresh=True, reset_support=True)
 
                 with canvas.connect() as db:
@@ -452,7 +451,7 @@ class CanvasChatSeedContract(unittest.TestCase):
     def test_malformed_stored_entity_is_skipped_and_reported_once_on_pull(self):
         with tempfile.TemporaryDirectory(prefix="sync-state-malformed-") as directory:
             canvas = Canvas(Path(directory))
-            store = SyncStore(canvas.connect, lambda: {}, lambda _key: {}, canvas=canvas)
+            store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
             with canvas.connect() as db:
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')")
@@ -467,7 +466,7 @@ class CanvasChatSeedContract(unittest.TestCase):
     def test_malformed_row_does_not_advance_a_short_filtered_page_to_high_water(self):
         with tempfile.TemporaryDirectory(prefix="sync-state-page-corrupt-") as directory:
             canvas = Canvas(Path(directory))
-            store = SyncStore(canvas.connect, lambda: {}, canvas.transcript, canvas=canvas)
+            store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
             with canvas.connect() as db:
                 from codex_sync_entities import put
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
@@ -549,8 +548,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                     db.execute("DELETE FROM sync_entity_meta WHERE key IN ('seeded','agent_organization_fields')")
                     db.execute("DELETE FROM sync_entities")
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
-                store = SyncStore(canvas.connect, lambda: {}, canvas.transcript,
-                                  runtime=runtime, canvas=canvas)
+                store = SyncStore(canvas.connect, canvas.transcript, runtime=runtime, canvas=canvas)
                 self.assertIn("documents", store.pull("state:entities:v1", fresh=True))
             finally:
                 with runtime.lock, runtime.db() as db:
@@ -601,18 +599,10 @@ class CanvasChatSeedContract(unittest.TestCase):
 
                 self.assertEqual(expected, "accepted.md")
                 snapshot = read_runtime_state(runtime, include_work=False)
-                self.assertEqual(read_legacy_snapshot_field(
-                    lambda: snapshot, "agents",
-                    next(index for index, agent in enumerate(snapshot["agents"])
-                         if agent["id"] == worker_id),
-                    "overview", "resultFile"), expected)
+                self.assertEqual(next(agent for agent in snapshot["agents"] if agent["id"] == worker_id)["overview"]["resultFile"], expected)
                 self.assertNotIn("work", snapshot)
                 full_snapshot = read_runtime_state(runtime, include_work=True)
-                self.assertEqual(read_legacy_snapshot_field(
-                    lambda: full_snapshot, "agents",
-                    next(index for index, agent in enumerate(full_snapshot["agents"])
-                         if agent["id"] == worker_id),
-                    "overview", "resultFile"), expected)
+                self.assertEqual(next(agent for agent in full_snapshot["agents"] if agent["id"] == worker_id)["overview"]["resultFile"], expected)
                 work_ids = {work["id"] for work in full_snapshot["work"]}
                 self.assertEqual(work_ids, {"review-result", "accepted-result", "inactive-result"})
             finally:

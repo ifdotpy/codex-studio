@@ -213,26 +213,18 @@ with tempfile.TemporaryDirectory() as directory:
         db.execute("DELETE FROM sync_entity_meta")
         ensure_tables(db)
 
-    snapshot = {"stateDir": directory, "threads": [], "chats": [], "nodes": [], "edges": [],
-                "runtime": {"agents": [{"id": "a", "kind": "agent", "name": "A", "status": "running", "source": "managed"}],
-                            "rooms": [], "tasks": [], "monitors": [], "complaints": [], "requests": []}}
-    snapshot_builds = []
-    def build_snapshot():
-        snapshot_builds.append(1)
-        return snapshot
-    store = SyncStore(connect, build_snapshot, lambda _key: {})
+    store = SyncStore(connect, lambda _key: {})
     seeded = store.pull("state:entities:v1", after=0, limit=100)
-    # The full snapshot seeds once; later pulls must not rebuild it under the write lock.
+    # Current markers let repeated entity pulls avoid maintenance writes.
     store.pull("state:entities:v1", after=0, limit=100)
     store.pull("state:entities:v1", after=seeded["checkpoint"]["seq"])
-    assert len(snapshot_builds) == 0, snapshot_builds
     assert seeded["workspaceId"] == "a" * 32
     assert all(item["id"].startswith("entity:") for item in seeded["documents"])
     assert seeded["maxSeq"] >= seeded["checkpoint"]["seq"]
     checkpoint = seeded["checkpoint"]["seq"]
     with connect() as db:
         assert put(db, "agent", "a", {"id": "a", "kind": "agent", "name": "Updated", "status": "running", "source": "managed"})
-    second_window = SyncStore(connect, lambda: snapshot, lambda _key: {})
+    second_window = SyncStore(connect, lambda _key: {})
     first_change = store.pull("state:entities:v1", after=checkpoint)
     replayed_change = second_window.pull("state:entities:v1", after=checkpoint)
     assert first_change["documents"] == replayed_change["documents"]
@@ -263,11 +255,14 @@ with tempfile.TemporaryDirectory() as directory:
                        fresh=True, initial_high=retried["initialHigh"])
     assert [row["id"] for row in delta["documents"]] == ["entity:agent:later"]
     assert delta["documents"][0]["_deleted"]
-    restarted = SyncStore(connect, lambda: snapshot, lambda _key: {})
+    restarted = SyncStore(connect, lambda _key: {})
     assert not restarted.pull("state:entities:v1", after=delta["checkpoint"]["seq"])["documents"]
-    # The full state scope remains available to clients not yet reloaded.
-    legacy = store.pull("state")
-    assert "runtime" in json.loads(legacy["documents"][0]["payload"])
+    for scope in ("state", "state:chat"):
+        try:
+            store.pull(scope)
+            raise AssertionError(f"retired sync scope accepted: {scope}")
+        except ValueError as error:
+            assert str(error) == "Invalid sync scope"
     with connect() as db:
         db.executescript("""CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT,
             kind TEXT, status TEXT, created REAL, error TEXT);
