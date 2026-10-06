@@ -300,7 +300,7 @@ class LazyAccountTransferSourceRecord(TypedDict):
 class LazyAccountTransferRecord(TypedDict):
     id: NotRequired[str]
     sourceAccountKey: NotRequired[str]
-    sourceThreadId: NotRequired[str]
+    sourceThreadId: NotRequired[str | None]
     sourceState: NotRequired[LazyAccountTransferSourceRecord]
 
 
@@ -555,6 +555,16 @@ class EmptyTransferRecoveryRecord(TypedDict):
     epoch: NotRequired[int]
     threadId: NotRequired[str]
     turnId: NotRequired[str]
+    transferId: NotRequired[str]
+    agentId: NotRequired[str]
+    accountKey: NotRequired[str]
+    settings: NotRequired[JsonObject]
+    sourceHistoryMissing: NotRequired[JsonValue]
+    startedAt: NotRequired[float]
+    failedInputIds: NotRequired[list[str]]
+    targetSettings: NotRequired[JsonObject]
+    nativeParams: NotRequired[JsonObject]
+    report: NotRequired[JsonObject]
 
 
 class WorktreeCleanupRecord(TypedDict):
@@ -966,6 +976,58 @@ class ProjectRecord(TypedDict):
     workerBaseRevision: NotRequired[int]
 
 
+class AccountTransferRequestRecord(TypedDict):
+    leadId: str
+    targetAccountKey: str
+    scope: AccountTransferScopeValue
+
+
+class AccountTransferResultThreadRecord(TypedDict):
+    id: str
+
+
+class AccountTransferResultRecord(TypedDict):
+    thread: AccountTransferResultThreadRecord
+
+
+class AccountTransferMemberRecord(TypedDict):
+    phase: NotRequired[str]
+    sourceAccountKey: NotRequired[str]
+    sourceThreadId: NotRequired[str | None]
+    name: NotRequired[str | None]
+    provider: NotRequired[AgentProviderValue | None]
+    lazy: NotRequired[bool]
+    targetSettings: NotRequired[JsonObject]
+    source: NotRequired[JsonObject]
+    settings: NotRequired[JsonObject]
+    pendingSettings: NotRequired[PendingSettingsRecord | None]
+    sourcePendingSettings: NotRequired[PendingSettingsRecord | None]
+    sourceClaudeOptions: NotRequired[JsonObject | None]
+    sourceState: NotRequired[LazyAccountTransferSourceRecord]
+    continueAfterTransfer: NotRequired[bool]
+    error: NotRequired[str | None]
+    waiting: NotRequired[str | None]
+    result: NotRequired[AccountTransferResultRecord]
+    portableHistory: NotRequired[JsonObject]
+    archiveSourceThread: NotRequired[JsonObject]
+    archiveInvalidated: NotRequired[bool]
+    interruptReason: NotRequired[str]
+    interruptOutcome: NotRequired[str]
+    interruptSubmittedAt: NotRequired[float]
+    interruptTurnId: NotRequired[str]
+    nextCheck: NotRequired[float]
+    nativeMethod: NotRequired[str]
+    preparationRejections: NotRequired[list[JsonObject]]
+    submittedAt: NotRequired[float]
+    targetConnection: NotRequired[str]
+    nativeParams: NotRequired[JsonObject]
+    sourceHistoryMissing: NotRequired[JsonValue]
+    emptyThreadRecovery: NotRequired[JsonObject]
+    phaseAtReservation: NotRequired[str]
+    reason: NotRequired[str]
+    interruptConfirmedAt: NotRequired[float]
+
+
 class AccountTransferRecord(TypedDict):
     id: str
     leadId: str
@@ -973,10 +1035,12 @@ class AccountTransferRecord(TypedDict):
     status: AccountTransferStatusValue
     scope: AccountTransferScopeValue
     targetAccountKey: str
-    members: dict[str, JsonObject]
-    requests: dict[str, JsonObject]
+    members: dict[str, AccountTransferMemberRecord]
+    requests: dict[str, AccountTransferRequestRecord]
     updated: NotRequired[float]
     targetProvider: NotRequired[AgentProviderValue]
+    finishHistory: NotRequired[bool]
+    cancelledAt: NotRequired[float]
 
 
 class WorkspaceOperationRecord(TypedDict):
