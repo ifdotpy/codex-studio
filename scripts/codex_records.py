@@ -600,6 +600,12 @@ class DeliveredModeRecord(TypedDict):
     epoch: NotRequired[list[str | int | None]]
     version: NotRequired[str]
     revision: NotRequired[int]
+    text: NotRequired[str | None]
+
+
+class PreparedContextRecord(TypedDict):
+    epoch: NotRequired[list[str | int | None]]
+    versions: NotRequired[dict[str, str]]
 
 
 class ParkReceiptRecord(TypedDict):
@@ -862,7 +868,7 @@ class AgentRecord(TypedDict):
     complaintsPresented: NotRequired[list[str]]
     lastEvent: NotRequired[str]
     prepareAttempt: NotRequired[str]
-    preparedContext: NotRequired[JsonObject]
+    preparedContext: NotRequired[PreparedContextRecord]
     profile: NotRequired[JsonObject | None]
     reviewArchiveAttempts: NotRequired[int]
     reviewArchiveError: NotRequired[str]
@@ -887,6 +893,26 @@ class WorkArchiveRecord(TypedDict):
     worktree: NotRequired[JsonObject]
 
 
+class WorkResultRecord(TypedDict):
+    id: str
+    agent: str
+    text: str
+    checks: str
+    revision: str
+    files: list[str]
+    created: float
+    resultFile: NotRequired[str]
+
+
+class WorkDecisionRecord(TypedDict):
+    decision: Literal["cancel", "accept", "reject"]
+    reason: str
+    by: str
+    owner: NotRequired[str | None]
+    resultId: NotRequired[str]
+    created: float
+
+
 class WorkRecord(TypedDict):
     id: str
     rootId: str
@@ -899,8 +925,8 @@ class WorkRecord(TypedDict):
     createdBy: str
     version: int
     dependencies: list[str]
-    decisions: list[JsonValue]
-    results: list[JsonValue]
+    decisions: list[WorkDecisionRecord]
+    results: list[WorkResultRecord]
     archive: NotRequired[WorkArchiveRecord]
     archiveIntent: NotRequired[JsonObject]
     releases: NotRequired[list[JsonValue]]

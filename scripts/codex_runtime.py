@@ -7969,7 +7969,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("Choose submit, read, or respond")
 
     def chat_rooms(self, db, viewer=None, room_id=None, *, include_last_message=None,
-                   include_peer_teams: bool = False) -> list[dict[str, object]]:
+                   include_peer_teams: bool = False) -> list["RoomRecord"]:
         if include_last_message is None:
             include_last_message = room_id is None
         targeted_room = None
