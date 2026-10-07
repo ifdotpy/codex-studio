@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -64,6 +64,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
     fixtureLog += chunk;
   });
   let activeHash = oldHash;
+  let pendingEntitySequence;
   let firstPullFails = false;
   let pullFailureCount = 0;
   const rendererHashes = [];
@@ -124,6 +125,24 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
           reason: "initial",
           resources: initialResources,
         });
+        if (streamHash === nextHash && pendingEntitySequence !== undefined) {
+          body += protocol3SseEvent("resources", {
+            protocol: 3,
+            workspaceId,
+            epoch: "schema-cache-test",
+            revision: 2,
+            reason: "change",
+            resources: [{ kind: "state" }],
+            resourceVersions: [
+              {
+                resource: { kind: "state" },
+                revision: 2,
+                entitySequences: [pendingEntitySequence],
+              },
+            ],
+          });
+          pendingEntitySequence = undefined;
+        }
       }
       return route.fulfill({
         status: 200,
@@ -146,7 +165,9 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       });
     }
     try {
-      const response = await route.fetch();
+      const requestHeaders = { ...route.request().headers() };
+      requestHeaders[API_SCHEMA_HASH_HEADER.toLowerCase()] = oldHash;
+      const response = await route.fetch({ headers: requestHeaders });
       if (
         requestUrl.pathname === "/api/sync/pull" &&
         requestUrl.searchParams.get("scope")?.startsWith("transcript:")
@@ -413,6 +434,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
         hasText: "Studio has been updated. Update this tab",
       }),
     ).toBeVisible({ timeout: 20_000 });
+    await oldPage.waitForTimeout(1_500);
     await expect
       .poll(() =>
         newPage.evaluate(async (expected) => {
@@ -423,6 +445,44 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
         }, validProjectionDatabaseNames),
       )
       .toEqual(validProjectionDatabaseNames);
+
+    const { token } = await fetch(`${origin}/api/session`).then((r) =>
+      r.json(),
+    );
+    const createdId = randomUUID();
+    const mutation = await fetch(`${origin}/api/leads`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": token,
+        Origin: origin,
+        [API_SCHEMA_HASH_HEADER]: oldHash,
+      },
+      body: JSON.stringify({ id: createdId, cwd: "/" }),
+    });
+    assert.equal(mutation.status, 200);
+    const mutationBody = await mutation.json();
+    const mutationEntity = mutationBody._syncEntities?.find((row) =>
+      row.id.startsWith("entity:"),
+    );
+    assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
+    const pullsBeforeMutationEvent = statePulls.filter(
+      (pull) => pull.page === newPage,
+    ).length;
+    pendingEntitySequence = mutationEntity.seq;
+    confirmedResources.clear();
+    await newPage.reload();
+    await expect
+      .poll(() => statePulls.filter((pull) => pull.page === newPage).length)
+      .toBeGreaterThan(pullsBeforeMutationEvent);
+    const checkpointPulls = statePulls.filter((pull) => pull.page === newPage);
+    assert.ok(
+      checkpointPulls.some((pull) => Number(pull.after) > 0),
+      "the valid tab pulls the fixture change from its retained checkpoint",
+    );
+    await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
+      timeout: 30_000,
+    });
 
     const pulls = await newPage.evaluate(() =>
       performance
