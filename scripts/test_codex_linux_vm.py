@@ -186,6 +186,17 @@ class ClientTests(unittest.TestCase):
                 self.client.ensure_running(timeout=0.01)
             launch.assert_not_called()
 
+    def test_guest_clock_failure_is_explicit_and_does_not_retry(self):
+        applied = []
+        def handler(channel, request):
+            applied.append(request['id'])
+            channel.sendall(json.dumps({'id': request['id'], 'result': {'exitCode': 124}}).encode() + b'\n')
+        guest = Guest(self.directory, handler)
+        with self.assertRaisesRegex(vm.LinuxVMError, 'clock did not synchronize'):
+            self.client._wait_guest_clock(time.monotonic() + 10)
+        guest.finish()
+        self.assertEqual(len(applied), 1)
+
     def test_payload_excludes_cache_and_credentials(self):
         guest = self.directory / 'vm/guest'
         guest.mkdir(parents=True)

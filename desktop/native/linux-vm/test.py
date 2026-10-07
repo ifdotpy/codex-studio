@@ -143,6 +143,7 @@ def main():
                         entry = next(row for row in config['write_files'] if row['path'] == '/opt/codex-studio/provision.sh')
                         entry['content'] = entry['content'].replace('set -euo pipefail', '''set -euo pipefail
 if [ ! -f /opt/codex-studio/restart-proof ]; then
+  cat /etc/netplan/50-cloud-init.yaml
   touch /opt/codex-studio/restart-proof
   echo STUDIO_PROVISION_ERROR: injected-restart-check >&2
   exit 1
@@ -166,6 +167,9 @@ fi''', 1)
             metrics.update(createSeconds=round(create_seconds,3), bootSeconds=round(boot_seconds,3), health=ready['health'])
             if args.provision_restart_check:
                 metrics['provisionRestart'] = True
+                mac = command(client, ['cat', '/sys/class/net/enp0s1/address']).strip()
+                assert mac == (client.state_dir / 'network-mac').read_text().strip()
+                metrics['networkMacPreserved'] = True
             print(json.dumps(metrics), flush=True)
         finally:
             if not args.existing_state and not args.keep_state:

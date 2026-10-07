@@ -501,13 +501,24 @@ class Client:
             if state['state'] == 'running':
                 try:
                     health = self.call('health', {}, timeout=min(5, max(0.01, deadline - time.monotonic())))
-                    return {**state, 'health': health}
                 except LinuxVMError:
                     pass
+                else:
+                    self._wait_guest_clock(deadline)
+                    return {**state, 'health': health}
             time.sleep(0.25)
         diagnostics = self.state_dir / ('console.log' if (self.state_dir / 'console.log').exists() else 'helper.log')
         details = diagnostics.read_text(errors='replace')[-2000:] if diagnostics.exists() else ''
         raise LinuxVMError(f'The Linux VM did not become ready within {timeout} seconds. {details}')
+
+    def _wait_guest_clock(self, deadline: float) -> None:
+        # Direct Linux boot starts without an RTC. TLS needs a current guest clock.
+        seconds = max(1, int(_remaining(deadline, 120)))
+        result = self.call('exec', {'argv': ['timeout', '--kill-after=5', str(seconds), 'bash', '-c',
+            'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'],
+            'cwd': '/home/studio', 'timeoutSeconds': seconds + 5}, timeout=_remaining(deadline, seconds + 10))
+        if result.get('exitCode') != 0:
+            raise LinuxVMError('The Linux VM clock did not synchronize within its timeout.')
 
     def stop(self, *, timeout: float = 40) -> dict[str, Any]:
         with self._lock():

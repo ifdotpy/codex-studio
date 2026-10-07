@@ -277,6 +277,7 @@ The helper accepts connections from the same macOS user only.
 Each guest request uses one connection. A subsequent request reconnects automatically.
 The client does not retry a mutation after a lost response. `LinuxVMError.uncertain`
 identifies failures where the guest can have applied the request.
+`ensure_running()` also waits for the guest clock to synchronize before providers use TLS (Transport Layer Security).
 
 Resource settings use `cpus`, `memoryBytes`, `systemDiskBytes`, and `dataDiskBytes`.
 Defaults: 4 CPUs, 4 GiB RAM, 16 GiB system disk, 128 GiB data disk.
@@ -309,6 +310,8 @@ CODEX_LINUX_VM_HELPER=/tmp/studio-linux-vm python3 scripts/codex_linux_vm.py sta
 `com.apple.security.virtualization` entitlement. A backend exit does not stop it.
 A separate helper lease prevents two VMs from opening the same disks.
 The helper keeps the latest 1 MiB of guest console output for boot diagnostics.
+The helper preserves the MAC (media access control) address across VM boots.
+Cloud-init uses that address to select the network device.
 
 The Claude bridge uses `/opt/codex-studio/claude_bridge/bridge.mjs`.
 Provisioning installs its production dependencies from the maintained package lock.
