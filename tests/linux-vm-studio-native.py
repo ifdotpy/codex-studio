@@ -16,7 +16,6 @@ import sys
 import tempfile
 import threading
 import uuid
-from unittest.mock import patch
 
 
 def git(root, *arguments):
@@ -25,6 +24,30 @@ def git(root, *arguments):
 
 def progress(name):
     print('Studio VM check: ' + name, flush=True)
+
+
+def run_turn(runtime, agent, prompt):
+    completed = threading.Event()
+    notification, start_error = runtime.notification, runtime.start_error
+    def observe(message, *identity):
+        notification(message, *identity)
+        if message.get('method') == 'turn/completed' and message.get('params', {}).get('threadId') == agent['threadId']:
+            completed.set()
+    def rejected(key, *arguments, **options):
+        start_error(key, *arguments, **options)
+        if key == agent['id']:
+            completed.set()
+    runtime.notification, runtime.start_error = observe, rejected
+    try:
+        with runtime.lock, runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (agent['id'],))
+        runtime.send(agent['id'], prompt, message_id=str(uuid.uuid4()), resume=True)
+        runtime.dispatch(agent['id'])
+        assert completed.wait(360), 'The native model turn did not complete'
+        result = runtime.agent(agent['id'])
+        assert result.get('lastCompletedTurnStatus') == 'completed', result.get('error') or 'The native model turn failed'
+    finally:
+        runtime.notification, runtime.start_error = notification, start_error
 
 
 def main():
@@ -133,26 +156,14 @@ def main():
             assert worker['threadId']
             server = runtime.connect_agent(worker)
             server.call('thread/read', {'threadId':worker['threadId']}, timeout=30)
-            completed = threading.Event()
-            notification = runtime.notification
-            def observe(message, *identity):
-                notification(message, *identity)
-                if message.get('method') == 'turn/completed' and message.get('params', {}).get('threadId') == worker['threadId']:
-                    completed.set()
-            runtime.notification = observe
-            with runtime.lock, runtime.db() as db:
-                db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (worker['id'],))
-            runtime.send(worker['id'], 'Create branch result. Write native-result.txt with linux-native-ok. '
+            run_turn(runtime, worker, 'Create branch result. Write native-result.txt with linux-native-ok. '
                          'Commit all source changes on result. Use the native command tool. '
-                         'Do not spawn agents. Report the commit hash.', message_id=str(uuid.uuid4()), resume=True)
-            runtime.dispatch(worker['id'])
-            assert completed.wait(360), 'The native Codex turn did not complete'
+                         'Do not spawn agents. Report the commit hash.')
             assert command(worker, 'cat', 'native-result.txt') == 'linux-native-ok'
             assert command(worker, 'git', 'branch', '--show-current') == 'result'
             assert command(worker, 'git', 'status', '--porcelain') == ''
             metrics['codexNativeModelCommit'] = True
             progress('native Codex model commit')
-            runtime.notification = notification
             handle = 'linux-worker:' + worker['id']
             before = remote.request('provider.rpc', {'handle':handle, 'action':'info'})
             runtime.close()
@@ -191,46 +202,30 @@ def main():
             metrics['archiveAndRestore'] = True
             progress('archive and restore')
             if args.claude:
-                from codex_claude import auth_metadata
-                account = {'provider':'claude', 'claudeOptions':{}}
-                account.update(auth_metadata(account, force=True))
-                assert account['status'] == 'ready', 'The host Claude profile must be signed in'
+                claude_key = runtime.accounts.register_claude()
                 claude = spawn(lead)
-                original_get = runtime.accounts.get
-                with patch.object(runtime.accounts, 'get', side_effect=lambda key: account if key == 'native-claude' else original_get(key)):
-                    with runtime.lock, runtime.db() as db:
-                        current = runtime.agent(claude['id'], db)
-                        current.update(accountKey='native-claude', provider='claude')
-                        runtime.put(db, 'agents', current)
-                    bridge = runtime.connect_agent(runtime.agent(claude['id']))
-                    catalog = bridge.call('model/list', {}, timeout=30)
-                    runtime.catalog = lambda key='default': catalog if key == 'native-claude' else fixture.CATALOG
-                    selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
-                    effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
-                    with runtime.lock, runtime.db() as db:
-                        current = runtime.agent(claude['id'], db)
-                        current.update(model=selected['model'], effort=effort, nativeEffort=native_effort, yoloMode=True)
-                        runtime.put(db, 'agents', current)
-                    prepared = runtime.prepare_locked(current)
-                    if isinstance(prepared, concurrent.futures.Future):
-                        prepared.result(timeout=120)
-                    claude = runtime.agent(claude['id'])
-                    completed = threading.Event()
-                    notification = runtime.notification
-                    def observe_claude(message, *identity):
-                        notification(message, *identity)
-                        if message.get('method') == 'turn/completed' and message.get('params', {}).get('threadId') == claude['threadId']:
-                            completed.set()
-                    runtime.notification = observe_claude
-                    with runtime.lock, runtime.db() as db:
-                        db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (claude['id'],))
-                    runtime.send(claude['id'], 'Reply linux-claude-ok. Do not use tools.', message_id=str(uuid.uuid4()), resume=True)
-                    runtime.dispatch(claude['id'])
-                    assert completed.wait(360), 'The native Claude turn did not complete'
-                    assert not runtime.agent(claude['id']).get('nativeFailureHold'), 'The Claude turn failed'
-                    metrics['claudeNativeModelTurn'] = True
-                    progress('native Claude model turn')
-                    runtime.notification = notification
+                with runtime.lock, runtime.db() as db:
+                    current = runtime.agent(claude['id'], db)
+                    current.update(accountKey=claude_key, provider='claude')
+                    runtime.put(db, 'agents', current)
+                bridge = runtime.connect_agent(runtime.agent(claude['id']))
+                catalog = bridge.call('model/list', {}, timeout=30)
+                runtime.catalog = lambda key='default': catalog if key == claude_key else fixture.CATALOG
+                selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
+                effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
+                with runtime.lock, runtime.db() as db:
+                    current = runtime.agent(claude['id'], db)
+                    current.update(model=selected['model'], effort=effort, nativeEffort=native_effort, yoloMode=True)
+                    runtime.put(db, 'agents', current)
+                prepared = runtime.prepare_locked(current)
+                if isinstance(prepared, concurrent.futures.Future):
+                    prepared.result(timeout=120)
+                claude = runtime.agent(claude['id'])
+                run_turn(runtime, claude, 'Reply linux-claude-ok. Do not use tools.')
+                history = bridge.call('thread/read', {'threadId':claude['threadId'], 'includeTurns':True}, timeout=30)
+                assert 'linux-claude-ok' in json.dumps(history), 'The Claude reply is missing'
+                metrics['claudeNativeModelTurn'] = True
+                progress('native Claude model turn')
         finally:
             for worker_id in workers:
                 dispose(runtime, worker_id, remove=True)

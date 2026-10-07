@@ -259,6 +259,16 @@ process reuse after a Runtime restart, result fetch, archive, restore, removal,
 and resource reports. Use `--claude` to check a native Claude model turn with
 the signed-in host profile. The test copies credentials and preserves host files.
 
+Use the state directory and helper path of an already running test VM:
+
+```sh
+python3 scripts/codex_python.py --exec tests/linux-vm-studio-native.py \
+  --state-dir /tmp/studio-vm-check --helper /tmp/studio-linux-vm --claude
+```
+
+The test uses a private Studio account registry. It does not start an HTTP
+backend or stop the VM. It removes only the guest workers that it creates.
+
 ## Host interface
 
 The guest listens on vsock port 4050. The helper relays each guest connection through
