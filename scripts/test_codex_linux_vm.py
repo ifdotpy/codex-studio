@@ -169,6 +169,24 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(self.client.get_settings(), limits)
         self.assertFalse((self.directory / 'config.json').exists())
 
+    def test_create_removes_abandoned_staging_without_touching_vm_disks(self):
+        limits = vm.Settings(cpus=1, memoryBytes=vm._GIB, systemDiskBytes=8*vm._GIB, dataDiskBytes=8*vm._GIB)
+        (self.directory / 'config.json').write_text(json.dumps(vm.asdict(limits)))
+        for name in ['system.raw', 'data.raw']:
+            with (self.directory / name).open('wb') as disk:
+                disk.write(b'keep')
+                disk.truncate(8*vm._GIB)
+        abandoned = self.directory / 'create-interrupted'
+        abandoned.mkdir()
+        (abandoned / 'ubuntu.tar.gz').write_bytes(b'partial download')
+        unrelated = self.directory / 'other-state'
+        unrelated.mkdir()
+        self.client.create(limits)
+        self.assertFalse(abandoned.exists())
+        self.assertTrue(unrelated.exists())
+        with (self.directory / 'system.raw').open('rb') as disk:
+            self.assertEqual(disk.read(4), b'keep')
+
     def test_invalid_id_and_timeout_do_not_send(self):
         for arguments in [{'request_id': ''}, {'request_id': 'x' * 129}, {'timeout': 0}]:
             with self.assertRaises(vm.LinuxVMError) as error:
