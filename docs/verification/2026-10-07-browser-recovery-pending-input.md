@@ -38,7 +38,8 @@ The new dispatch delivered both exact event identities through one native turn.
 The context preflight control also rejected pending browser repair before the change.
 
 The separate late-fork contract failed on the unchanged baseline.
-Its `prepareError` snapshot mismatch is a separate defect under repair.
+Its `prepareError` snapshot mismatch was fixed in the
+[context attempt check](2026-10-07-context-attempt-prepare-error.md).
 
 ## Live result
 
