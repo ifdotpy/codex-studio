@@ -210,14 +210,23 @@ class ImportTests(unittest.TestCase):
         self.assertEqual(self.f.state()["deletedAt"], 1)
         self.assertEqual(len(self.f.captured()), 1)
 
-    def test_agent_list_is_decoded_once_per_round(self):
+    def test_agent_list_is_projected_once_per_round(self):
         self.f.path.write_bytes(self.header)
         with self.f.db() as db:
             for key in ("second", "third"):
                 db.execute("INSERT INTO runtime_agents VALUES (?,?)", (key, json.dumps(
                     {"id": key, "accountKey": "first", "threadId": "missing-" + key})))
-        decoded, records = [], self.f.records
-        self.f.records = lambda db, table: decoded.append(table) or records(db, table)
+        projected, original_db = [], self.f.db
+
+        @contextlib.contextmanager
+        def observed_db():
+            with original_db() as db:
+                db.set_trace_callback(lambda sql: projected.append("agents")
+                                      if sql.startswith("SELECT record -> '$.id'")
+                                      or sql == "SELECT record FROM runtime_agents" else None)
+                yield db
+
+        self.f.db = observed_db
         agent = self.f.agent
 
         def current(key, db):
@@ -229,13 +238,13 @@ class ImportTests(unittest.TestCase):
         self.f._analytics_history_save = lambda key, a, state: seen.append(a["id"]) or save(key, a, state)
         self.f.analytics_history_step()
         self.f.analytics_history_step()
-        # An agent removed during the round is skipped without a new decode.
+        # An agent removed during the round is skipped without a new projection.
         with self.f.db() as db:
             db.execute("DELETE FROM runtime_agents WHERE id='third'")
         self.assertFalse(self.f.analytics_history_step())
-        self.assertEqual((decoded, seen), (["agents"], ["second"]))
+        self.assertEqual((projected, seen), (["agents"], ["second"]))
         self.f.analytics_history_step()
-        self.assertEqual(decoded, ["agents", "agents"])
+        self.assertEqual(projected, ["agents", "agents"])
         self.f.analytics_history_step()
         self.assertEqual(seen, ["second", "second"])
 
