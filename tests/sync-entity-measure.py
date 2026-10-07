@@ -24,9 +24,10 @@ with tempfile.TemporaryDirectory() as directory:
     anchor.execute("PRAGMA wal_autocheckpoint=0")
     with anchor:
         ensure_tables(anchor)
+        anchor.execute("BEGIN IMMEDIATE")
         for index in range(40):
             put(anchor, "agent", f"agent-{index}", {
-                "id": f"agent-{index}", "name": f"Worker {index}", "status": "running",
+                "id": f"agent-{index}", "kind": "agent", "name": f"Worker {index}", "status": "running",
                 "source": "managed", "error": "x" * 200, "prompt": "p" * 400,
                 "contextUsage": {"tokens": 1000 + index, "window": 200000, "at": 1},
                 "nativeToolCatalog": ["private"] * 40,
@@ -41,8 +42,9 @@ with tempfile.TemporaryDirectory() as directory:
     for index in range(changes):
         status = "failed" if index % 2 else "running"
         with sqlite3.connect(path) as db:
+            db.execute("BEGIN IMMEDIATE")
             put(db, "agent", "agent-0", {"id": "agent-0", "name": "Worker 0",
-                "status": status, "source": "managed", "error": "x" * 200,
+                "kind": "agent", "status": status, "source": "managed", "error": "x" * 200,
                 "prompt": "p" * 400, "contextUsage": {"tokens": index, "window": 200000, "at": 1}})
         for client in range(windows):
             with sqlite3.connect(path) as db:

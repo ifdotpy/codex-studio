@@ -1006,6 +1006,8 @@ class CoreResponseTests(unittest.TestCase):
         request.scope["studio_sync_entities_after"] = 0
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("CREATE TABLE sync_entities(collection, id, seq, payload, deleted)")
+            db.execute("CREATE TABLE sync_entity_meta(key, value)")
+            db.execute("INSERT INTO sync_entity_meta VALUES ('entity_tombstone_floor', '0')")
             db.execute("INSERT INTO sync_entities VALUES ('agent', 'a1', 1, '{}', 0)")
             with patch.object(self.context, "sync", return_value=SimpleNamespace(connect=lambda: db)):
                 first = self.context.send(request, value)
@@ -1014,6 +1016,7 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(json.loads(bytes(first.body)), {
             "paired": True,
+            "_syncEntitiesAfter": 0,
             "_syncEntities": [{"id": "entity:agent:a1", "seq": 1, "payload": "{}", "_deleted": False}],
         })
         self.assertEqual(bytes(second.body), b'{"paired":true}')

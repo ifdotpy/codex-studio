@@ -3497,16 +3497,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def sync_workspace_volatile(self, db):
         """Keep volatile workspace entity fields current with their live sources."""
+        owns_transaction = False
         try:
+            if not db.in_transaction:
+                db.execute("BEGIN IMMEDIATE")
+                owns_transaction = True
             row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
             if not row or row[1] or not row[0]:
+                if owns_transaction:
+                    db.commit()
                 return False
             from codex_sync_entities import put as sync_entity_put
             value = json.loads(row[0]).get("value") or {}
             changed = sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db, value))
+            if owns_transaction:
+                db.commit()
             self.__dict__["_workspace_entity_refresh_dirty"] = False
             return changed
         except sqlite3.OperationalError as error:
+            if owns_transaction and db.in_transaction:
+                db.rollback()
             busy = sqlite_busy(error)
             if busy:
                 self.__dict__["_workspace_entity_refresh_dirty"] = True
@@ -3515,6 +3525,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise
             return False
         except Exception as error:
+            if owns_transaction and db.in_transaction:
+                db.rollback()
             self._workspace_refresh_diagnostic(type(error).__name__)
             if self.__dict__.get("_strict_workspace_refresh_errors", False):
                 raise

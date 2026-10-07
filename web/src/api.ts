@@ -16,6 +16,7 @@ import type {
 } from "./apiContracts";
 import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
+import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
 
 type Method = "get" | "post";
 type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
@@ -369,12 +370,15 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
 
 type SyncEnvelope = {
   _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+  _syncEntitiesAfter?: number | null;
 };
 
 type SyncEntityDocument = components["schemas"]["SyncEntity"];
 type SyncEntityPersister = (
   workspaceId: string,
   documents: SyncEntityDocument[],
+  syncEntitiesAfter: number | null | undefined,
+  isPersistenceCurrent: () => boolean,
 ) => Promise<void>;
 let syncEntityPersister: SyncEntityPersister | undefined;
 const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
@@ -396,17 +400,24 @@ async function syncDocuments(
   const targetWorkspaceId = workspaceId ?? workspace;
   if (syncEntityPersister) {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let persistenceCurrent = true;
     try {
       await Promise.race([
-        syncEntityPersister(targetWorkspaceId, value._syncEntities),
+        syncEntityPersister(
+          targetWorkspaceId,
+          value._syncEntities,
+          value._syncEntitiesAfter,
+          () => persistenceCurrent,
+        ),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("IndexedDB persistence timed out")),
-            SYNC_ENTITY_PERSIST_TIMEOUT_MS,
-          );
+          timer = setTimeout(() => {
+            persistenceCurrent = false;
+            reject(new Error("IndexedDB persistence timed out"));
+          }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
         }),
       ]);
     } catch (error) {
+      persistenceCurrent = false;
       console.error("Mutation entity persistence failed", {
         workspaceId: targetWorkspaceId,
         error: error instanceof Error ? error.message : String(error),
@@ -415,6 +426,40 @@ async function syncDocuments(
       clearTimeout(timer);
     }
   }
+}
+
+function beginMutationEntityCoverage(
+  value: SyncEnvelope | null | undefined,
+  targetWorkspaceId: string,
+):
+  | {
+      checkpoint: NonNullable<
+        ReturnType<typeof getEntitySequenceCheckpointForWorkspace>
+      >;
+      token: number;
+    }
+  | undefined {
+  const rows = value?._syncEntities;
+  const after = value?._syncEntitiesAfter;
+  if (
+    !rows?.length ||
+    !syncEntityPersister ||
+    typeof after !== "number" ||
+    !Number.isSafeInteger(after) ||
+    typeof window === "undefined"
+  )
+    return undefined;
+  const entities = rows.filter((document) => document.id.startsWith("entity:"));
+  if (entities.length === 0) return undefined;
+  const through = Math.max(...entities.map((document) => document.seq));
+  const checkpoint = getEntitySequenceCheckpointForWorkspace(
+    targetWorkspaceId,
+    "state:entities:v1",
+    API_SCHEMA_HASH,
+  );
+  if (!checkpoint) return undefined;
+  const token = checkpoint.beginInFlightCoverage(after, through);
+  return token === undefined ? undefined : { checkpoint, token };
 }
 
 async function performGet<Path extends PathsFor<"get">>(
@@ -516,8 +561,18 @@ export async function post<Path extends PathsFor<"post">>(
     if (!("data" in result)) return undefined as PostResult<Path>;
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
-    await syncDocuments(result.data as PostResult<Path>, options.workspaceId);
-    return result.data as PostResult<Path>;
+    const data = result.data as PostResult<Path>;
+    const targetWorkspaceId = options.workspaceId ?? workspace;
+    const coverage = beginMutationEntityCoverage(
+      data as SyncEnvelope,
+      targetWorkspaceId,
+    );
+    try {
+      await syncDocuments(data as SyncEnvelope, options.workspaceId);
+    } finally {
+      if (coverage) coverage.checkpoint.settleInFlightCoverage(coverage.token);
+    }
+    return data;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;

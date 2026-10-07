@@ -104,6 +104,24 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const OriginalEventSource = window.EventSource;
         window.__entityFrames = [];
         window.__entityStreamUrls = [];
+        window.__entityPersisterCompletions = [];
+        window.__entityMutationDecodes = [];
+        const responseJson = Response.prototype.json;
+        Response.prototype.json = async function (...args) {
+          const value = await responseJson.apply(this, args);
+          if (
+            this.url &&
+            new URL(this.url).pathname === "/api/leads" &&
+            value?._syncEntities?.length
+          )
+            window.__entityMutationDecodes.push({
+              at: performance.timeOrigin + performance.now(),
+              sequences: value._syncEntities.map((row) => row.seq),
+            });
+          return value;
+        };
+        window.__studioSyncEntityPersisterProbe = (value) =>
+          window.__entityPersisterCompletions.push(value);
         window.EventSource = class extends OriginalEventSource {
           constructor(...args) {
             super(...args);
@@ -241,6 +259,55 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const createdBody = await created.json();
         assert.equal(created.status(), 200);
         assert.ok(createdBody._syncEntities?.length);
+        const createdEntity = createdBody._syncEntities.find(
+          (document) => document.id === `entity:agent:${createdBody.id}`,
+        );
+        assert.ok(
+          createdEntity,
+          "create response must include the new agent row",
+        );
+        const deliveredSequences = createdBody._syncEntities.map(
+          (doc) => doc.seq,
+        );
+        await pages[0].waitForFunction(
+          (sequences) =>
+            window.__entityPersisterCompletions.some((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            ),
+          deliveredSequences,
+          { timeout: 8000 },
+        );
+        const persisterDoneAt = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityPersisterCompletions.find((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            )?.at,
+          deliveredSequences,
+        );
+        assert.equal(typeof persisterDoneAt, "number");
+        const persisterCompletion = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityPersisterCompletions.find((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            ),
+          deliveredSequences,
+        );
+        const responseDecodedAt = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityMutationDecodes.find((decode) =>
+              sequences.every((sequence) =>
+                decode.sequences.includes(sequence),
+              ),
+            )?.at,
+          deliveredSequences,
+        );
+        assert.equal(typeof responseDecodedAt, "number");
         await pages[0]
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
@@ -249,8 +316,13 @@ test("committed entities propagate between renderer tabs @sync", async ({
           ok: true,
           entityId: createdBody.id,
           seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
-          deliveredSequences: createdBody._syncEntities.map((doc) => doc.seq),
+          entitySequence: createdEntity.seq,
+          deliveredSequences,
           responseReceivedAt,
+          responseDecodedAt,
+          persisterDoneAt,
+          persisterAdvanced: persisterCompletion.advanced,
+          persisterCompletion,
           collection: "agent",
           deleted: false,
         };
@@ -263,7 +335,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         pull.documents.find(
           (document) =>
             document.id === `entity:${params.collection}:${entityId}` &&
-            document.seq >= reply.seq &&
+            document.seq >= (reply.entitySequence ?? reply.seq) &&
             document._deleted === params.deleted,
         );
       const tabsToConfirm = params.operation === "chat" ? [1, 2] : [0, 1, 2];
@@ -361,6 +433,10 @@ test("committed entities propagate between renderer tabs @sync", async ({
         console.log(
           `ENTITY_MUTATION_ORDER ${JSON.stringify({
             responseReceivedAt: reply.responseReceivedAt,
+            responseDecodedAt: reply.responseDecodedAt,
+            persisterDoneAt: reply.persisterDoneAt,
+            persisterAdvanced: reply.persisterAdvanced,
+            persisterCompletion: reply.persisterCompletion,
             frameArrivals: actorFramesAfterMutation,
             actorPulls: actorPullTimings,
           })}`,
@@ -370,6 +446,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .filter((pull) =>
             pull.documents.some((row) => responseSequences.has(row.seq)),
           );
+        const actorPrePersisterPulls = actorDuplicatePulls.filter(
+          (pull) => pull.startedAt <= reply.persisterDoneAt,
+        );
+        const actorPostPersisterPulls = actorDuplicatePulls.filter(
+          (pull) => pull.startedAt > reply.persisterDoneAt,
+        );
         const duplicateCauses = actorDuplicatePulls.map((pull) => {
           const precedingStateFrame = actorFramesAfterMutation
             .filter(
@@ -399,28 +481,43 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   entitySequences: stateVersion?.entitySequences,
                 }
               : null,
-            permitted:
-              precedingStateFrame !== undefined &&
-              ["initial", "reconnect", "overflow", "workspace"].includes(
-                precedingStateFrame.reason,
-              ) &&
-              !stateVersion?.entitySequences?.length,
           };
         });
         console.log(
           `ENTITY_ACTOR_DUPLICATE_PULLS ${JSON.stringify({
             count: actorDuplicatePulls.length,
+            beforePersisterDone: actorPrePersisterPulls.length,
+            afterPersisterDone: actorPostPersisterPulls.length,
+            beforeResponseDecode: actorDuplicatePulls.filter(
+              (pull) => pull.startedAt <= reply.responseDecodedAt,
+            ).length,
+            afterResponseDecode: actorDuplicatePulls.filter(
+              (pull) => pull.startedAt > reply.responseDecodedAt,
+            ).length,
             causes: duplicateCauses,
+            responseDecodedAt: reply.responseDecodedAt,
             responseSequences: [...responseSequences],
           })}`,
         );
-        assert.ok(
-          actorDuplicatePulls.length <= 1,
-          `one create mutation must cause at most one redundant actor pull: ${JSON.stringify(duplicateCauses)}`,
+        assert.equal(
+          actorPostPersisterPulls.length,
+          0,
+          `create-chat actor pulls starting after the persister completed must not return rows already delivered in the mutation response: ${JSON.stringify(duplicateCauses)}`,
         );
         assert.ok(
-          duplicateCauses.every((cause) => cause.permitted),
-          `a redundant actor pull is permitted only after a baseline without entity ids: ${JSON.stringify(duplicateCauses)}`,
+          actorDuplicatePulls.every((pull) => {
+            const precedingFrame = actorFramesAfterMutation
+              .filter(
+                (frame) =>
+                  frame.at <= pull.startedAt &&
+                  frame.resources.some((resource) => resource.kind === "state"),
+              )
+              .at(-1);
+            return (
+              !!precedingFrame && precedingFrame.at < reply.responseDecodedAt
+            );
+          }),
+          `every remaining duplicate must be triggered by a frame handled before response decoding: ${JSON.stringify(duplicateCauses)}`,
         );
       }
       if (params.operation === "rename") {

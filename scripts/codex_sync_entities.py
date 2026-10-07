@@ -39,6 +39,7 @@ ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
 ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
+MAX_MUTATION_SYNC_ENTITIES = 500
 
 
 _DTO_MODELS = {
@@ -959,6 +960,8 @@ def sync_task_agent_change(db: sqlite3.Connection, agent_id: str, deleted: bool)
 
 
 def next_sequence(db: sqlite3.Connection) -> int:
+    if not db.in_transaction:
+        raise RuntimeError("Entity sequence allocation requires a write transaction")
     row = db.execute("""SELECT max(seq)+1 FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
         SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL
