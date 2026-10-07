@@ -12,7 +12,7 @@ import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Callable, cast
+from typing import BinaryIO, Callable, cast
 from unittest.mock import patch
 
 from fastapi import FastAPI, Request
@@ -156,6 +156,63 @@ class InsightsRouterTests(unittest.TestCase):
             )
 
         self.client = TestClient(self.app, raise_server_exceptions=False)
+
+    def test_actual_cost_snapshot_keeps_the_fingerprint_private_on_http(self) -> None:
+        from codex_costs import AccountCostReader as UntypedAccountCostReader
+        from codex_costs import CostReader as UntypedCostReader
+        from studio_api.insights.models import AccountCostResponse
+        from pydantic import ValidationError
+
+        now = time.time()
+        report = [{
+            "provider": "codex", "source": "local", "currencyCode": "USD",
+            "sessionCostUSD": 12.5, "last30DaysCostUSD": 100.25,
+            "sessionTokens": 1000, "last30DaysTokens": 4000,
+            "historyCoverageIsEstablished": True, "coverage": {"priced": 1, "unpriced": 0},
+            "daily": [{"date": time.strftime("%Y-%m-%d", time.localtime(now)), "modelsUsed": ["fixture"],
+                       "modelBreakdowns": [{"modelName": "fixture", "cost": 12.5, "totalTokens": 1000}]}],
+        }]
+
+        def scanner(_command: object, **options: object) -> object:
+            cast(BinaryIO, options["stdout"]).write(json.dumps(report).encode())
+            return SimpleNamespace(wait=lambda **_kwargs: 0)
+
+        with tempfile.TemporaryDirectory(prefix="studio-cost-response-") as folder:
+            root = Path(folder)
+            make_reader = cast(Callable[..., object], UntypedCostReader)
+            reader = make_reader(root, command=lambda: ["fixture-scanner"], clock=lambda: now)
+            close = cast(Callable[[], None], getattr(reader, "close"))
+            self.addCleanup(close)
+            with patch("codex_costs.subprocess.Popen", side_effect=scanner):
+                cast(Callable[[], None], getattr(reader, "_refresh"))()
+            state = cast(dict[str, JsonValue], getattr(reader, "state"))
+            fingerprint = state["sourceFingerprint"]
+            self.assertIsInstance(fingerprint, str)
+            accounts = SimpleNamespace(get=lambda _key: {
+                "status": "ready", "provider": "codex", "accountId": "account:fixture", "home": str(root),
+            })
+            make_accounts = cast(Callable[..., object], UntypedAccountCostReader)
+            account_reader = make_accounts(root, accounts, reader_factory=lambda *_args, **_kwargs: reader,
+                                           pricing=SimpleNamespace())
+            value = cast(Callable[[str], dict[str, JsonValue]], getattr(account_reader, "snapshot"))("fixture")
+            self.assertEqual(value["sourceFingerprint"], fingerprint)
+            expected = {key: item for key, item in value.items() if key != "sourceFingerprint"}
+            self.assertEqual(AccountCostResponse.model_validate(value).wire_dump(), expected)
+            context = ApiContext.for_schema()
+            setattr(context, "costs", lambda: account_reader)
+            app = FastAPI()
+            app.include_router(create_router(context))
+            with patch("studio_api.context.logging.Logger.error") as error_log:
+                response = TestClient(app).get("/api/costs?account_key=fixture")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), expected)
+            self.assertEqual(state["sourceFingerprint"], fingerprint)
+            self.assertEqual(response.json()["data"]["todayUSD"], 12.5)
+            error_log.assert_not_called()
+            for field, invalid in (("sourceFingerprint", 1), ("unknown", True)):
+                with self.subTest(field=field), self.assertRaises(ValidationError):
+                    AccountCostResponse.model_validate({**value, field: invalid})
+            close()
 
     def test_openapi_uses_the_typed_query_models(self) -> None:
         openapi = self.client.get("/openapi.json").json()

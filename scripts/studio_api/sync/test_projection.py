@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from collections.abc import Iterator
 from typing import Any, cast
+import json
 import unittest
 
 from pydantic import ValidationError
@@ -45,6 +46,38 @@ def historical_snapshot() -> dict[str, Any]:
 
 
 class SnapshotProjectionTests(unittest.TestCase):
+    def test_full_snapshot_omits_repair_payloads_and_keeps_wait_notice(self) -> None:
+        raw = historical_snapshot()
+        source = raw["threads"][0]
+        private = ("contextRepair", "contextRepairHistory", "lastContextRepairCheck", "lastContextRepairWait")
+        for field in private:
+            source[field] = [{"savedInput": "private input " * 10000}] if field.endswith("History") else {
+                "savedInput": "private input " * 10000,
+            }
+        source["contextRepairWait"] = {
+            "phase": "waiting", "reason": "native receipt", "error": "", "scope": "native",
+        }
+        projected = cast(dict[str, Any], project_snapshot(raw))
+        for agent in (projected["threads"][0], projected["nodes"][0], projected["runtime"]["agents"][0]):
+            self.assertTrue(all(field not in agent for field in private))
+            self.assertEqual(agent["contextRepairWait"], source["contextRepairWait"])
+        self.assertLess(len(json.dumps(projected)), len(json.dumps(raw)) // 20)
+        self.assertTrue(all(field in source for field in private))
+        StateSnapshot.model_validate(projected)
+
+    def test_projection_keeps_alias_fields_and_does_not_cache_between_requests(self) -> None:
+        raw = historical_snapshot()
+        runtime_agent = {**raw["threads"][0], "graphAlias": "runtime-alias"}
+        raw["runtime"]["agents"] = [runtime_agent]
+        first = cast(dict[str, Any], project_snapshot(raw))
+        self.assertNotIn("graphAlias", first["threads"][0])
+        self.assertEqual(first["runtime"]["agents"][0]["graphAlias"], "runtime-alias")
+        raw["threads"][0]["workerBaseBehindMain"] = 1
+        second = cast(dict[str, Any], project_snapshot(raw))
+        self.assertEqual(second["nodes"][0]["workerBaseBehindMain"], 1)
+        self.assertEqual(second["runtime"]["agents"][0]["workerBaseBehindMain"], 182)
+        self.assertEqual(first["threads"][0]["workerBaseBehindMain"], 182)
+
     def test_actual_context_projects_private_fields_and_keeps_public_history(self) -> None:
         raw = historical_snapshot()
 

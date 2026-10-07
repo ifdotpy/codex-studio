@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import json
+import io
 import os
 from pathlib import Path
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -13,6 +14,7 @@ import tempfile
 import threading
 import unittest
 from types import SimpleNamespace
+from types import ModuleType
 from unittest.mock import patch
 import urllib.error
 import urllib.request
@@ -563,6 +565,99 @@ class CanvasContract(unittest.TestCase):
             server.shutdown()
             server.server_close()
             thread.join()
+
+
+class ShutdownDiagnosticContract(unittest.TestCase):
+    def test_blocked_worker_stack_contains_only_code_locations(self):
+        ready, release = threading.Event(), threading.Event()
+
+        def blocked_worker():
+            private_payload = "private-input-must-not-be-logged"
+            ready.set()
+            release.wait()
+            return private_payload
+
+        worker = threading.Thread(target=blocked_worker, name="private-thread-name", daemon=False)
+        worker.start()
+        try:
+            self.assertTrue(ready.wait(2))
+            output = io.StringIO()
+            with patch.object(codex_canvas.sys, "stderr", output):
+                codex_canvas.record_shutdown_threads()
+            record = json.loads(output.getvalue())
+            self.assertEqual(record["event"], "backend_shutdown_threads")
+            self.assertEqual(record["pid"], os.getpid())
+            evidence = next(item for item in record["threads"] if item["threadId"] == worker.ident)
+            self.assertEqual(evidence["nativeThreadId"], worker.native_id)
+            self.assertTrue(any(frame["function"] == "blocked_worker" for frame in evidence["stack"]))
+            self.assertTrue(all(set(frame) == {"function", "file", "line"} for frame in evidence["stack"]))
+            self.assertNotIn("private-input-must-not-be-logged", output.getvalue())
+            self.assertNotIn("private-thread-name", output.getvalue())
+        finally:
+            release.set()
+            worker.join(2)
+        self.assertFalse(worker.is_alive())
+
+    def test_ordinary_close_has_no_thread_record_or_frame_read(self):
+        output = io.StringIO()
+        daemon = SimpleNamespace(daemon=True)
+        with patch.object(codex_canvas.threading, "enumerate", return_value=[threading.main_thread(), daemon]), \
+                patch.object(codex_canvas.sys, "_current_frames") as frames, \
+                patch.object(codex_canvas.sys, "stderr", output):
+            codex_canvas.record_shutdown_threads()
+        self.assertEqual(output.getvalue(), "")
+        frames.assert_not_called()
+
+    def test_thread_and_stack_limits_do_not_wait_or_start_workers(self):
+        frame = SimpleNamespace(f_code=SimpleNamespace(co_name="fixture", co_filename="fixture.py"), f_lineno=10)
+        frame.f_back = frame
+        threads = [SimpleNamespace(daemon=False, ident=index + 100, native_id=index + 200,
+                                   is_alive=lambda: True)
+                   for index in range(codex_canvas.SHUTDOWN_THREAD_LIMIT + 1)]
+        frames = {thread.ident: frame for thread in threads}
+        output = io.StringIO()
+        with patch.object(codex_canvas.threading, "enumerate", return_value=threads), \
+                patch.object(codex_canvas.sys, "_current_frames", return_value=frames), \
+                patch.object(codex_canvas.sys, "stderr", output), \
+                patch.object(codex_canvas.threading, "Thread", side_effect=AssertionError("Unexpected thread")), \
+                patch.object(codex_canvas.time, "sleep", side_effect=AssertionError("Unexpected wait")):
+            codex_canvas.record_shutdown_threads()
+        record = json.loads(output.getvalue())
+        self.assertEqual(len(record["threads"]), codex_canvas.SHUTDOWN_THREAD_LIMIT)
+        self.assertTrue(record["threadsTruncated"])
+        for thread in record["threads"]:
+            self.assertEqual(len(thread["stack"]), codex_canvas.SHUTDOWN_STACK_LIMIT)
+            self.assertTrue(thread["stackTruncated"])
+        self.assertEqual(frames, {})
+
+    def test_main_records_threads_after_close_and_keeps_signal_contract(self):
+        order = []
+        handlers = {}
+        runtime_module = ModuleType("codex_runtime")
+        runtime_module.Runtime = lambda _root: SimpleNamespace(close=lambda: order.append("runtime"))
+        updates_module = ModuleType("codex_live_updates")
+        updates_module.start = lambda _runtime: SimpleNamespace(close=lambda: order.append("updates"))
+
+        def serve(**_kwargs):
+            handlers[codex_canvas.signal.SIGTERM](codex_canvas.signal.SIGTERM, None)
+
+        server = SimpleNamespace(unix_server=None, server_port=0, serve_forever=serve,
+                                 server_close=lambda: order.append("server"))
+        output = io.StringIO()
+        with patch.dict(sys.modules, {"codex_runtime": runtime_module, "codex_live_updates": updates_module}), \
+                patch.object(codex_canvas, "Canvas", return_value=SimpleNamespace(root="fixture")), \
+                patch.object(codex_canvas, "make_server", return_value=server), \
+                patch.object(codex_canvas, "raise_open_file_limit"), \
+                patch.object(codex_canvas.signal, "signal", side_effect=lambda number, handler: handlers.update({number: handler})), \
+                patch.object(codex_canvas, "record_shutdown_threads", side_effect=lambda: order.append("diagnostic"), create=True), \
+                patch.object(codex_canvas.sys, "argv", ["codex-canvas"]), \
+                patch.object(codex_canvas.sys, "stderr", output), \
+                patch.object(codex_canvas.sys, "stdout", io.StringIO()):
+            codex_canvas.main()
+        self.assertEqual(order, ["updates", "server", "runtime", "diagnostic"])
+        record = json.loads(output.getvalue())
+        self.assertEqual(record["event"], "backend_shutdown")
+        self.assertEqual(record["signal"], codex_canvas.signal.SIGTERM)
 
 
 if __name__ == "__main__":

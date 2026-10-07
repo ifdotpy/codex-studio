@@ -5195,12 +5195,24 @@ export interface components {
     ExecutionAttempt: {
       /** Accountkey */
       accountKey?: string | null;
-      action?: components["schemas"]["ExecutionAction"] | null;
+      /** Action */
+      action?:
+        | components["schemas"]["ExecutionAction"]
+        | ("capacity" | "safety")
+        | null;
       actionIdentity?: components["schemas"]["ExecutionActionIdentity"] | null;
       /** Actionrequestid */
       actionRequestId?: string | null;
       /** Activeatreservation */
       activeAtReservation?: boolean | null;
+      /** Capacityretryid */
+      capacityRetryId?: string | null;
+      claudeInputRejection?:
+        | components["schemas"]["ExecutionInputRejection"]
+        | null;
+      claudeInputRequest?: components["schemas"]["ExecutionClaudeInput"] | null;
+      /** Clauderetryof */
+      claudeRetryOf?: string | null;
       /** Connectionid */
       connectionId?: string | null;
       /** Created */
@@ -5214,6 +5226,7 @@ export interface components {
       executionOutcome?: components["schemas"]["ExecutionStatus"] | null;
       /** Id */
       id: string;
+      modelSettings?: components["schemas"]["SnapshotModelSettingsDto"] | null;
       /** Nativeoperationid */
       nativeOperationId?: string | null;
       /** Notsubmittedreason */
@@ -5228,8 +5241,19 @@ export interface components {
       responseError?: string | null;
       /** Resultrunid */
       resultRunId?: string | null;
+      /** Reviewtarget */
+      reviewTarget?:
+        | (
+            | components["schemas"]["ReviewUncommittedTargetDto"]
+            | components["schemas"]["ReviewBaseBranchTargetDto"]
+            | components["schemas"]["ReviewCommitTargetDto"]
+            | components["schemas"]["ReviewCustomTargetDto"]
+          )
+        | null;
       /** Runid */
       runId?: string | null;
+      /** Settingsfixed */
+      settingsFixed?: boolean | null;
       submission?: components["schemas"]["ExecutionStatus"] | null;
       /** Submitted */
       submitted?: boolean | null;
@@ -5239,6 +5263,29 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
       turnStatus?: components["schemas"]["ExecutionStatus"] | null;
+    };
+    /** ExecutionClaudeInput */
+    ExecutionClaudeInput: {
+      /** Clientusermessageid */
+      clientUserMessageId: string;
+      /** Configuration */
+      configuration: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /** Events */
+      events: (components["schemas"]["ExecutionInputEvent"] | null)[];
+      /** Input */
+      input: {
+        [key: string]: components["schemas"]["JsonValue"];
+      }[];
+      /** Source */
+      source: {
+        [key: string]: components["schemas"]["JsonValue"];
+      };
+      /** Texthash */
+      textHash: string;
+      /** Transcriptitemid */
+      transcriptItemId: string;
     };
     /** ExecutionEffect */
     ExecutionEffect: {
@@ -5259,7 +5306,11 @@ export interface components {
       revision?: string | null;
       /** Runid */
       runId: string;
-      status?: components["schemas"]["ExecutionStatus"] | null;
+      /** Status */
+      status?:
+        | components["schemas"]["ExecutionStatus"]
+        | ("answered" | "expired" | "lost")
+        | null;
       /** Taskid */
       taskId?: string | null;
     };
@@ -5273,6 +5324,56 @@ export interface components {
       | "monitors"
       | "requests"
       | "task_submit";
+    /** ExecutionHeldOperation */
+    ExecutionHeldOperation: {
+      /** Id */
+      id: string;
+      /** Kind */
+      kind: string;
+      /** Label */
+      label: string;
+    };
+    /** ExecutionInputEvent */
+    ExecutionInputEvent: {
+      /** Assets */
+      assets: string[];
+      /** Created */
+      created: number;
+      /** Id */
+      id: string;
+      /** Kind */
+      kind: string;
+      /** Texthash */
+      textHash: string;
+    };
+    /** ExecutionInputRejection */
+    ExecutionInputRejection: {
+      /** Accountkey */
+      accountKey: string;
+      /** Agent */
+      agent: string;
+      /** Connectionid */
+      connectionId: string;
+      /** Epoch */
+      epoch: number;
+      /** Events */
+      events: string[];
+      /** Id */
+      id: string;
+      /** Nativeoperationid */
+      nativeOperationId: string;
+      /**
+       * Outcome
+       * @constant
+       */
+      outcome: "not_applied";
+      /** Retry */
+      retry: boolean;
+      /** Threadid */
+      threadId: string;
+      /** Turnid */
+      turnId: string | null;
+    };
     /** ExecutionLedger */
     ExecutionLedger: {
       /** Limit */
@@ -5287,7 +5388,12 @@ export interface components {
       /** Agentid */
       agentId?: string | null;
       /** Error */
-      error?: string | null;
+      error?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
       /** Id */
       id: string;
       kind: components["schemas"]["ExecutionNodeKind"];
@@ -5299,7 +5405,11 @@ export interface components {
       resultTurnId?: string | null;
       /** Runid */
       runId: string;
-      status?: components["schemas"]["ExecutionStatus"] | null;
+      /** Status */
+      status?:
+        | components["schemas"]["ExecutionStatus"]
+        | components["schemas"]["AgentStatus"]
+        | null;
       /** Threadid */
       threadId?: string | null;
       /** Turnid */
@@ -5316,8 +5426,14 @@ export interface components {
       accountKey?: string | null;
       /** At */
       at?: number | null;
+      /** Attemptid */
+      attemptId?: string | null;
+      /** Automatic */
+      automatic?: boolean | null;
       /** Autowake */
       autoWake?: boolean | null;
+      /** Completiondelivered */
+      completionDelivered?: boolean | null;
       /** Connectionid */
       connectionId?: string | null;
       /** Detail */
@@ -5325,9 +5441,31 @@ export interface components {
       /** Epoch */
       epoch?: number | null;
       /** Error */
-      error?: string | null;
+      error?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
+      /** Eventid */
+      eventId?: string | null;
+      /** Eventids */
+      eventIds?: string[] | null;
+      /** Heldat */
+      heldAt?: number | null;
+      /** Holdoperations */
+      holdOperations?: components["schemas"]["ExecutionHeldOperation"][] | null;
+      /** Observedat */
+      observedAt?: number | null;
       /** Outcome */
       outcome?: string | null;
+      /** Previouserror */
+      previousError?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
       /** Reason */
       reason?: string | null;
       /** Reattachedat */
@@ -5339,6 +5477,8 @@ export interface components {
       stage?: components["schemas"]["RecoveryStage"] | null;
       startAttempt?: components["schemas"]["ExecutionAttempt"] | null;
       status?: components["schemas"]["ExecutionStatus"] | null;
+      /** Supersededat */
+      supersededAt?: number | null;
       supervisor?: components["schemas"]["SupervisorIdentity"] | null;
       /** Threadid */
       threadId?: string | null;
@@ -5364,7 +5504,12 @@ export interface components {
       /** Epoch */
       epoch: number;
       /** Error */
-      error?: string | null;
+      error?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
       /** Finished */
       finished?: number | null;
       /** Firstattemptid */
@@ -5384,6 +5529,8 @@ export interface components {
       restartRecovery?: components["schemas"]["ExecutionRecovery"] | null;
       /** Result */
       result?: string | null;
+      /** Resultitemid */
+      resultItemId?: string | null;
       /** Rootattemptid */
       rootAttemptId: string | null;
       status: components["schemas"]["ExecutionStatus"];
@@ -5432,7 +5579,8 @@ export interface components {
       | "approval"
       | "paused"
       | "idle"
-      | "submitted";
+      | "submitted"
+      | "not_applied";
     /** FederationAck */
     FederationAck: {
       /** Hash */
@@ -7708,6 +7856,7 @@ export interface components {
      * @enum {string}
      */
     RecoveryStage:
+      | "input_restored"
       | "pending"
       | "superseded"
       | "finished"
@@ -10122,7 +10271,7 @@ export interface components {
      * SqliteTransactionState
      * @enum {string}
      */
-    SqliteTransactionState: "active" | "committed" | "rolledBack";
+    SqliteTransactionState: "active" | "committed" | "rolledBack" | "ended";
     /** StartOutcomeHoldDto */
     StartOutcomeHoldDto: {
       /** At */
@@ -10318,6 +10467,10 @@ export interface components {
       bufferedBytes: number;
       /** Id */
       id: string;
+      /** Persistenceerrors */
+      persistenceErrors?: {
+        [key: string]: string;
+      } | null;
       /** Pid */
       pid: number | null;
       /** Sequence */
@@ -10326,6 +10479,10 @@ export interface components {
       signature: string;
       /** Starttime */
       startTime: string | null;
+      /** Stdoutreaderalive */
+      stdoutReaderAlive?: boolean | null;
+      /** Stdoutreadererror */
+      stdoutReaderError?: string | null;
     };
     /** SupervisorHealth */
     SupervisorHealth: {
@@ -10335,6 +10492,8 @@ export interface components {
       handles: components["schemas"]["SupervisorHandle"][];
       /** Journallimitbytes */
       journalLimitBytes: number;
+      /** Outputlimitbytesperhandle */
+      outputLimitBytesPerHandle?: number | null;
       /** Protocol */
       protocol: number;
       recovery: components["schemas"]["SupervisorRecovery"];
@@ -11368,6 +11527,8 @@ export interface components {
       data?: components["schemas"]["UsageLimitsData"] | null;
       /** Error */
       error?: string | null;
+      /** Processedat */
+      processedAt?: number | null;
       /** Readat */
       readAt?: number | null;
     };

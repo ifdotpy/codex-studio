@@ -10,21 +10,14 @@ import {
 } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import {
-  Archive,
-  Pin,
-  PinOff,
-  ArchiveRestore,
   Users,
   FolderOpen,
   MoreHorizontal,
-  Pencil,
   SquarePen,
   Search,
   Folder,
   ChevronDown,
   Plus,
-  Trash2,
-  Mail,
   X,
 } from "lucide-react";
 import { post, errorText, save, saved } from "../api";
@@ -46,11 +39,8 @@ import {
   usePeerTeamMove,
 } from "./shell/messages/PeerTeams";
 
-import ChatStatus from "./agents/ChatStatus";
-import {
-  hasCompletedResult,
-  type ChatIndicator,
-} from "./chat-status/chatStatusModel";
+import SidebarRow from "./SidebarRow";
+import type { ChatIndicator } from "./chat-status/chatStatusModel";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type OrganizationRequest =
@@ -549,217 +539,84 @@ export default function Sidebar(p: Props) {
       visibleSharedRooms.some((r) => r.projectPath === group.path) ||
       `${group.path} ${group.name}`.toLowerCase().includes(query.toLowerCase()),
   );
-  const renderRow = (row: Agent) => {
-    const a = row;
-    return (
-      <div
-        className={`sidebar-row lead-row ${p.opened === row.id ? "selected" : ""}`}
-        key={row.id}
-        data-sidebar-item={row.id}
-      >
-        <UnstyledButton
-          {...sorting.dropBindings(
-            `convert:${row.id}`,
-            (source, event) => {
-              const chat = agents.find((a) => a.id === source.id);
-              const box = event.currentTarget.getBoundingClientRect();
-              return !!(
-                chat &&
-                chat.id !== row.id &&
-                teamFor(chat.id) &&
-                chat.cwd === row.cwd &&
-                source.group === chatGroup(chat) &&
-                !conversion &&
-                !organizationLock.current &&
-                !teamMove.blocked() &&
-                event.clientY > box.top + box.height * 0.25 &&
-                event.clientY < box.top + box.height * 0.75
-              );
-            },
-            ({ id }) =>
-              setConversion({
-                source: agents.find((a) => a.id === id)!,
-                target: row,
-                project: groupMap.get(row.cwd || "")!,
-              }),
-            sorting.bindings(
-              chatGroup(row),
-              row.id,
-              teamFor(row.id) || row.pinned
-                ? orderedAgents
-                    .filter((a) => chatGroup(a) === chatGroup(row))
-                    .map((a) => a.id)
-                : itemIds(
-                    groupMap.get(row.cwd || "")!,
-                    row.projectFolder || null,
-                  ),
-            ),
-          )}
-          title={row.name ?? undefined}
-          aria-description="Drag onto a team to join it, or onto the project name to leave. Drop a team chat in the center of another lead chat to make it a subagent. Drag to an edge to reorder. Alt + Up or Down also works."
-          className="chat-row"
-          data-chat={row.id}
-          onPointerEnter={() => p.prepareChat?.(row.id)}
-          onFocus={() => p.prepareChat?.(row.id)}
-          onPointerDown={() => p.prepareChat?.(row.id)}
-          onClick={() => p.open(row.id)}
-          aria-current={p.opened === row.id}
-        >
-          <span className="row-copy">
-            <strong>
-              {a?.pinned && <Pin size={11} className="chat-pin" />}
-              {row.name ?? ""}
-            </strong>
-          </span>
-          <ChatStatus
-            status={p.indicators.get(a.id)}
-            provider={a.provider ?? undefined}
-            model={a.model ?? undefined}
-          />
-        </UnstyledButton>
-        {renaming !== row.id && (
-          <ActionIcon
-            className="row-pin-action"
-            aria-label={`${row.pinned ? "Unpin" : "Pin"} ${row.name}`}
-            title={row.pinned ? "Unpin chat" : "Pin chat"}
-            disabled={organizing === row.id}
-            onClick={() => void organize(row.id, { pinned: !row.pinned })}
-          >
-            {row.pinned ? <PinOff size={14} /> : <Pin size={14} />}
-          </ActionIcon>
-        )}
-        {renaming === row.id ? (
-          <form
-            className="inline-rename"
-            onSubmit={(e) => void rename(e, row.id)}
-          >
-            <TextInput
-              aria-label="Chat name"
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              autoFocus
-              maxLength={80}
-              onKeyDown={(e) => {
-                if (e.key === "Escape") setRenaming(null);
-              }}
-            />
-            <Button type="submit" aria-label="Save name">
-              Save
-            </Button>
-            <Button onClick={() => setRenaming(null)}>Cancel</Button>
-          </form>
-        ) : (
-          <Menu position="bottom-end" withinPortal shadow="lg" width={220}>
-            <Menu.Target>
-              <ActionIcon
-                className="row-actions"
-                aria-label={`Actions for ${row.name}`}
-              >
-                <MoreHorizontal size={16} />
-              </ActionIcon>
-            </Menu.Target>
-            <Menu.Dropdown>
-              <Menu.Item
-                leftSection={<Pencil size={14} />}
-                onClick={() => {
-                  setName(row.name ?? "");
-                  setRenaming(row.id);
-                }}
-              >
-                Rename
-              </Menu.Item>
-              <Menu.Divider />
-              <Menu.Item
-                leftSection={<Mail size={14} />}
-                aria-label="Mark unread"
-                disabled={
-                  !a.readStateSupported ||
-                  !hasCompletedResult(a) ||
-                  p.markingRead.has(a.id)
-                }
-                onClick={() => p.markUnread(a)}
-              >
-                Mark unread
-                {(!a.readStateSupported ||
-                  !hasCompletedResult(a) ||
-                  p.markingRead.has(a.id)) && (
-                  <small className="menu-action-help">
-                    {!a.readStateSupported
-                      ? "Read status is unavailable for this chat."
-                      : !hasCompletedResult(a)
-                        ? "Available after an answer."
-                        : "The read status is changing."}
-                  </small>
-                )}
-              </Menu.Item>
-              {a && (
-                <>
-                  <Menu.Item
-                    leftSection={
-                      a.pinned ? <PinOff size={14} /> : <Pin size={14} />
-                    }
-                    onClick={() => void organize(a.id, { pinned: !a.pinned })}
-                  >
-                    {a.pinned ? "Unpin" : "Pin"}
-                  </Menu.Item>
-                  <Menu.Divider />
-                  {a.cwd && (
-                    <Menu.Item
-                      leftSection={<Folder size={14} />}
-                      onClick={() => {
-                        if (!requireProjectSupport()) return;
-                        const project = groupMap.get(a.cwd || "")!;
-                        setDialog({
-                          title: "Move chat",
-                          path: project.path,
-                          agentId: a.id,
-                        });
-                      }}
-                    >
-                      Move to folder
-                    </Menu.Item>
-                  )}
-                  {!compact && (
-                    <Menu.Item
-                      leftSection={<FolderOpen size={14} />}
-                      disabled={!!a.threadId || !!a.inFlight}
-                      onClick={() => p.changeProject(a)}
-                    >
-                      Change project directory
-                    </Menu.Item>
-                  )}
-                  <Menu.Divider />
-                  <Menu.Item
-                    leftSection={
-                      a.archived ? (
-                        <ArchiveRestore size={14} />
-                      ) : (
-                        <Archive size={14} />
-                      )
-                    }
-                    disabled={!!a.inFlight}
-                    onClick={() =>
-                      void organize(a.id, { archived: !a.archived })
-                    }
-                  >
-                    {a.archived ? "Restore chat" : "Archive"}
-                  </Menu.Item>
-                  <Menu.Divider />
-                </>
-              )}
-              <Menu.Item
-                color="red"
-                leftSection={<Trash2 size={14} />}
-                onClick={() => p.remove(row.id, false)}
-              >
-                Delete
-              </Menu.Item>
-            </Menu.Dropdown>
-          </Menu>
-        )}
-      </div>
-    );
-  };
+  const renderRow = (row: Agent) => (
+    <SidebarRow
+      key={row.id}
+      row={row}
+      selected={p.opened === row.id}
+      indicator={p.indicators.get(row.id)}
+      renaming={renaming === row.id}
+      name={renaming === row.id ? name : ""}
+      organizing={organizing === row.id}
+      compact={compact}
+      markingRead={p.markingRead.has(row.id)}
+      bindings={sorting.dropBindings(
+        `convert:${row.id}`,
+        (source, event) => {
+          const chat = agents.find((a) => a.id === source.id);
+          const box = event.currentTarget.getBoundingClientRect();
+          return !!(
+            chat &&
+            chat.id !== row.id &&
+            teamFor(chat.id) &&
+            chat.cwd === row.cwd &&
+            source.group === chatGroup(chat) &&
+            !conversion &&
+            !organizationLock.current &&
+            !teamMove.blocked() &&
+            event.clientY > box.top + box.height * 0.25 &&
+            event.clientY < box.top + box.height * 0.75
+          );
+        },
+        ({ id }) =>
+          setConversion({
+            source: agents.find((a) => a.id === id)!,
+            target: row,
+            project: groupMap.get(row.cwd || "")!,
+          }),
+        sorting.bindings(
+          chatGroup(row),
+          row.id,
+          teamFor(row.id) || row.pinned
+            ? orderedAgents
+                .filter((a) => chatGroup(a) === chatGroup(row))
+                .map((a) => a.id)
+            : itemIds(groupMap.get(row.cwd || "")!, row.projectFolder || null),
+        ),
+      )}
+      actions={{
+        prepare: () => p.prepareChat?.(row.id),
+        open: () => p.open(row.id),
+        pin: () => {
+          void organize(row.id, { pinned: !row.pinned });
+        },
+        rename: (event) => {
+          void rename(event, row.id);
+        },
+        name: setName,
+        cancelRename: () => setRenaming(null),
+        beginRename: () => {
+          setName(row.name ?? "");
+          setRenaming(row.id);
+        },
+        unread: () => p.markUnread(row),
+        move: () => {
+          if (!requireProjectSupport()) return;
+          const project = groupMap.get(row.cwd || "")!;
+          setDialog({
+            title: "Move chat",
+            path: project.path,
+            agentId: row.id,
+          });
+        },
+        changeProject: () => p.changeProject(row),
+        archive: () => {
+          void organize(row.id, { archived: !row.archived });
+        },
+        remove: () => p.remove(row.id, false),
+      }}
+    />
+  );
   const renderPeerTeam = (
     group: NavigableProject & { chats: Agent[] },
     team: (typeof peerTeams)[number],

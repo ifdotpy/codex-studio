@@ -267,6 +267,7 @@ class UsageLimitsResponse(ResponseModel):
     error: str | None = None
     readAt: float | None = None
     checkedAt: float | None = None
+    processedAt: float | None = None
 
 
 class LimitResetResponse(ResponseModel):

@@ -5,14 +5,13 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from studio_api.system.models import SupervisorIdentity
-
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
     JsonValue,
     ResponseModel,
     SyncEntity as SyncEntity,
+    SupervisorIdentity,
 )
 
 

@@ -3461,6 +3461,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         or owner.get("epoch") != receipt.get("epoch")
                         or owner.get("deletedAt")):
                     continue
+                from codex_context_repair import settle_completed_compaction_task
+                if settle_completed_compaction_task(self, db, owner, record):
+                    continue
                 record.update(status=receipt["status"], error=receipt.get("error"))
                 if receipt.get("finished") is None:
                     record.pop("finished", None)

@@ -84,6 +84,118 @@ class StaleTaskWait(f.ContextWait):
         item.update(changes)
         self.server.items = [{'turnId':task['turnId'], 'item':item}]
 
+    def ended_compaction_run(self, task, *, completed=True, **changes):
+        run = {'id':'fixture-compaction-run', 'agent':self.a['id'], 'accountKey':'default',
+            'epoch':self.a['epoch'], 'threadId':self.tid, 'turnId':task['turnId'],
+            'created':1, 'finished':2, 'status':'interrupted'}
+        run.update(changes)
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_execution_runs WHERE id=?', (run['id'],))
+            db.execute('DELETE FROM runtime_completed_turns WHERE id=?',
+                       (self.a['id'] + ':' + task['turnId'],))
+            if completed:
+                db.execute('INSERT INTO runtime_completed_turns VALUES (?)',
+                           (self.a['id'] + ':' + task['turnId'],))
+            db.execute('INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?)',
+                (run['id'], run['agent'], run['accountKey'], run['epoch'], run['threadId'],
+                 run['turnId'], run['created'], json.dumps(run)))
+
+    def test_ended_compaction_releases_existing_wait_without_resending_input(self):
+        task = self.task('contextCompaction')
+        receipt = self.receipt(task, outcome='unknown')
+        self.wait(task, expected_jobs=0)
+        before = self.runtime.agent(self.a['id'])
+        self.ended_compaction_run(task)
+        calls = copy.deepcopy(self.server.calls)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.a['id'], db)
+            current['contextRepairWait']['nextCheckAt'] = 0
+            job = repair.claim_context_wait(self.runtime, db, current)
+            self.assertEqual(job['kind'], 'turn')
+            self.assertEqual(job['attempt'], before['startAttempt'])
+            self.assertEqual([row['id'] for row in job['rows']], ['stale-task-input'])
+            self.assertEqual(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                ('stale-task-input',)).fetchone()[:], ('reserved', None))
+            self.assertEqual(self.runtime.tool_request(receipt['id'], db), receipt)
+            self.assertIsNone(repair.claim_context_wait(self.runtime, db, current))
+        self.assertEqual(self.saved_task(task), {**task, 'status':'interrupted', 'finished':2})
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt'], before['startAttempt'])
+        self.assertIs(current['startAttempt']['submitted'], False)
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(current['status'], 'starting')
+        self.assertEqual(self.server.calls, calls)
+
+    def test_compaction_wait_keeps_nonterminal_missing_or_changed_identity(self):
+        task = self.task('contextCompaction')
+        self.wait(task, expected_jobs=0)
+        for completed, changes in ((False, {}), (True, {'status':'running'}),
+                (True, {'finished':None}), (True, {'accountKey':'other'}),
+                (True, {'threadId':'other'}), (True, {'epoch':self.a['epoch'] + 1}),
+                (True, {'turnId':'other'}), (True, {'agent':'other'})):
+            with self.subTest(completed=completed, changes=changes):
+                self.ended_compaction_run(task, completed=completed, **changes)
+                with self.runtime.lock, self.runtime.db() as db:
+                    agent = self.runtime.agent(self.a['id'], db)
+                    agent['contextRepairWait']['nextCheckAt'] = 0
+                    result = repair.claim_context_wait(self.runtime, db, agent)
+                    self.assertEqual(result, {'waiting':True})
+                    self.assertEqual(self.runtime.agent(self.a['id'], db)['startAttempt'],
+                                     agent['startAttempt'])
+                    self.assertEqual(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                        ('stale-task-input',)).fetchone()[:], ('pending', None))
+                self.assertEqual(self.saved_task(task), task)
+                self.assertFalse(self.jobs)
+        self.assertFalse(any(method == 'turn/start' for method, params in self.server.calls))
+
+    def test_compaction_wait_keeps_changed_task_identity_and_duplicate_run(self):
+        task = self.task('contextCompaction')
+        self.wait(task, expected_jobs=0)
+        self.ended_compaction_run(task)
+        for changes in ({'itemId':'other'}, {'accountKey':'other'}, {'threadId':'other'},
+                        {'epoch':self.a['epoch'] + 1}, {'processId':'native-command'}):
+            with self.subTest(changes=changes):
+                changed = {**task, **changes}
+                self.put('tasks', changed)
+                with self.runtime.lock, self.runtime.db() as db:
+                    agent = self.runtime.agent(self.a['id'], db)
+                    with self.assertRaisesRegex(ValueError, 'Context repair waits for tasks'):
+                        repair._local_idle(self.runtime, db, agent, agent['startAttempt']['id'])
+                self.assertEqual(self.saved_task(task), changed)
+        self.put('tasks', task)
+        with self.runtime.lock, self.runtime.db() as db:
+            run = db.execute('SELECT * FROM runtime_execution_runs WHERE id=?',
+                             ('fixture-compaction-run',)).fetchone()
+            duplicate = list(run)
+            duplicate[0] = 'duplicate-compaction-run'
+            db.execute('INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?)', duplicate)
+            agent = self.runtime.agent(self.a['id'], db)
+            with self.assertRaisesRegex(ValueError, 'Context repair waits for tasks'):
+                repair._local_idle(self.runtime, db, agent, agent['startAttempt']['id'])
+        self.assertEqual(self.saved_task(task), task)
+
+    def test_compaction_backlog_reconciliation_has_a_transaction_bound(self):
+        task = self.task('contextCompaction')
+        self.wait(task, expected_jobs=0)
+        tasks = [task]
+        for index in range(repair.COMPACTION_SETTLE_LIMIT):
+            item = 'compaction-' + str(index)
+            tasks.append(self.task('contextCompaction', id=self.a['id'] + ':' + item,
+                itemId=item, turnId='ended-turn-' + str(index)))
+        for index, saved in enumerate(tasks):
+            self.ended_compaction_run(saved, id='fixture-ended-compaction-' + str(index))
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.a['id'], db)
+            with self.assertRaisesRegex(ValueError, 'Context repair waits for tasks'):
+                repair._local_idle(self.runtime, db, agent, agent['startAttempt']['id'])
+            running = db.execute("SELECT count(*) FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                "AND json_extract(record,'$.status')='running'", (self.a['id'],)).fetchone()[0]
+            self.assertEqual(running, 1)
+            self.assertEqual(repair._local_idle(self.runtime, db, agent, agent['startAttempt']['id']), [])
+            self.assertEqual(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                ('stale-task-input',)).fetchone()[:], ('pending', None))
+        self.assertFalse(any(method == 'turn/start' for method, params in self.server.calls))
+
     def test_exact_old_epoch_tool_receipt_resumes_same_input_once(self):
         task = self.task()
         receipt = self.receipt(task)

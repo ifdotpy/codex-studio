@@ -115,7 +115,7 @@ export function applyEntityRows(
       ? (prior.runtime as any)[`${name}s`] || []
       : [...(state.values.get(name)?.values() || [])];
   const agents = list("agent");
-  const chats = list("chat");
+  const chats = prior && !changed.has("chat") ? prior.chats : list("chat");
   const runtime: Record<string, any> = prior ? { ...prior.runtime } : {};
   const keys: Record<string, string> = {
     agent: "agents",
@@ -147,7 +147,10 @@ export function applyEntityRows(
           stateDir: workspace.stateDir || "",
           threads: agents,
           chats,
-          nodes: [...agents, ...chats],
+          nodes:
+            prior && !changed.has("agent") && !changed.has("chat")
+              ? prior.nodes
+              : [...agents, ...chats],
           edges:
             changed.has("edge") || !prior
               ? [...(state.values.get("edge")?.values() || [])]

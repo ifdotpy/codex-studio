@@ -527,6 +527,7 @@ class AccountCostData(ContractModel):
 class AccountCostResponse(ResponseModel):
     at: int | float | None
     checkedAt: float | None = None
+    sourceFingerprint: str | None = Field(default=None, exclude=True)
     error: str | None
     data: AccountCostData | None
     refreshing: bool

@@ -187,7 +187,7 @@ class SessionCostSnapshotContract(unittest.TestCase):
                                          name + " history snapshot must be released before prices")
                     self.assertFalse(connections[-1].in_transaction)
                     projection = next(index for index, sql in enumerate(statements)
-                                      if "CREATE TEMP TABLE session_cost_thread_models" in sql)
+                                      if "CREATE TEMP TABLE session_cost_usage" in sql)
                     final_select = next(index for index, sql in enumerate(statements)
                                         if "WITH priced AS MATERIALIZED" in sql)
                     commit = max(index for index, sql in enumerate(statements[:final_select])

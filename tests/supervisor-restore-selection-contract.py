@@ -78,6 +78,56 @@ class SupervisorRestoreSelectionContract(unittest.TestCase):
             return json.loads(db.execute(f'SELECT record FROM runtime_{table} WHERE id=?',
                                          (key,)).fetchone()[0])
 
+    def ended_compaction(self, **changes):
+        owner = self.owner
+        task = self.record(owner['id'] + ':compaction', kind='tool',
+            type='contextCompaction', itemId='compaction', processId=None)
+        run = {'id':'fixture-compaction-run', 'agent':owner['id'], 'accountKey':'default',
+            'epoch':owner['epoch'], 'threadId':owner['threadId'], 'turnId':task['turnId'],
+            'created':1, 'finished':41, 'status':'interrupted'}
+        run.update(changes)
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',
+                       (owner['id'] + ':' + task['turnId'],))
+            db.execute('INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?)',
+                (run['id'], run['agent'], run['accountKey'], run['epoch'], run['threadId'],
+                 run['turnId'], run['created'], json.dumps(run)))
+        return task
+
+    def test_terminal_compaction_cannot_return_to_running_after_reattachment(self):
+        task = self.ended_compaction()
+        self.store('tasks', task)
+        self.restore()
+        saved = self.stored('tasks', task['id'])
+        self.assertEqual(saved, {**task, 'status':'interrupted', 'finished':41})
+        self.restore()
+        self.assertEqual(self.stored('tasks', task['id']), saved)
+
+    def test_compaction_restore_keeps_active_missing_or_changed_scope_unconfirmed(self):
+        for changes in ({'status':'running'}, {'finished':None}, {'accountKey':'other'},
+                        {'threadId':'other'}, {'epoch':4}, {'turnId':'other'},
+                        {'agent':'other'}):
+            with self.subTest(changes=changes):
+                with self.runtime.db() as db:
+                    db.execute('DELETE FROM runtime_execution_runs')
+                    db.execute('DELETE FROM runtime_completed_turns')
+                    db.execute('DELETE FROM runtime_tasks')
+                task = self.ended_compaction(**changes)
+                self.store('tasks', task)
+                self.restore()
+                self.assertEqual(self.stored('tasks', task['id'])['status'], 'running')
+        for kind in ('commandExecution', 'dynamicToolCall'):
+            with self.subTest(kind=kind):
+                with self.runtime.db() as db:
+                    db.execute('DELETE FROM runtime_execution_runs')
+                    db.execute('DELETE FROM runtime_completed_turns')
+                    db.execute('DELETE FROM runtime_tasks')
+                task = self.ended_compaction()
+                task.update(type=kind, kind='command' if kind == 'commandExecution' else 'tool')
+                self.store('tasks', task)
+                self.restore()
+                self.assertEqual(self.stored('tasks', task['id'])['status'], 'running')
+
     def restore(self, account='default', connection='fixture-connection', resumed=True):
         self.runtime.supervisor_reattached(account, connection, resumed)
 

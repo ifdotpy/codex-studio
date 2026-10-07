@@ -6,6 +6,8 @@ from typing import Annotated, Literal
 from pydantic import Field
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
+from studio_api.models import SupervisorIdentity as SupervisorIdentity
+from studio_api.sync.models import AgentStatus, ReviewTargetDto, SnapshotModelSettingsDto
 
 
 class NativeRuntimeState(ContractStrEnum):
@@ -206,6 +208,9 @@ class SupervisorHandle(ContractModel):
     acknowledged: int
     bufferedBytes: int
     backpressure: bool
+    stdoutReaderAlive: bool | None = None
+    stdoutReaderError: str | None = None
+    persistenceErrors: dict[str, str] | None = None
 
 
 class SupervisorHealth(ContractModel):
@@ -213,6 +218,7 @@ class SupervisorHealth(ContractModel):
     stateDir: str
     handles: list[SupervisorHandle]
     journalLimitBytes: int
+    outputLimitBytesPerHandle: int | None = None
     durability: str
     recovery: SupervisorRecovery
 
@@ -345,6 +351,7 @@ class SqliteTransactionState(ContractStrEnum):
     ACTIVE = "active"
     COMMITTED = "committed"
     ROLLED_BACK = "rolledBack"
+    ENDED = "ended"
 
 
 class SqliteDatabase(ContractStrEnum):
@@ -596,6 +603,7 @@ class ExecutionStatus(ContractStrEnum):
     PAUSED = "paused"
     IDLE = "idle"
     SUBMITTED = "submitted"
+    NOT_APPLIED = "not_applied"
 
 
 class ExecutionAction(ContractStrEnum):
@@ -609,10 +617,36 @@ class ExecutionActionIdentity(ContractModel):
     epoch: int
 
 
-class SupervisorIdentity(ContractModel):
-    stateDir: str
-    handle: str
-    generation: int
+class ExecutionInputEvent(ContractModel):
+    id: str
+    kind: str
+    created: float
+    assets: list[str]
+    textHash: str
+
+
+class ExecutionClaudeInput(ContractModel):
+    input: list[dict[str, JsonValue]]
+    source: dict[str, JsonValue]
+    clientUserMessageId: str
+    configuration: dict[str, JsonValue]
+    events: list[ExecutionInputEvent | None]
+    transcriptItemId: str
+    textHash: str
+
+
+class ExecutionInputRejection(ContractModel):
+    id: str
+    epoch: int
+    accountKey: str
+    threadId: str
+    connectionId: str
+    nativeOperationId: str
+    events: list[str]
+    agent: str
+    turnId: str | None
+    outcome: Literal["not_applied"]
+    retry: bool
 
 
 class ExecutionAttempt(ContractModel):
@@ -621,11 +655,18 @@ class ExecutionAttempt(ContractModel):
     runId: str | None = None
     epoch: int | None = None
     activeAtReservation: bool | None = None
+    settingsFixed: bool | None = None
+    claudeRetryOf: str | None = None
+    claudeInputRequest: ExecutionClaudeInput | None = None
+    claudeInputRejection: ExecutionInputRejection | None = None
     accountKey: str | None = None
     events: list[str] | None = None
     submitted: bool | None = None
     created: float | None = None
-    action: ExecutionAction | None = None
+    action: ExecutionAction | Literal["capacity", "safety"] | None = None
+    capacityRetryId: str | None = None
+    reviewTarget: ReviewTargetDto | None = None
+    modelSettings: SnapshotModelSettingsDto | None = None
     actionRequestId: str | None = None
     actionIdentity: ExecutionActionIdentity | None = None
     nativeOperationId: str | None = None
@@ -656,8 +697,8 @@ class ExecutionNode(ContractModel):
     kind: ExecutionNodeKind
     threadId: str | None = None
     turnId: str | None = None
-    status: ExecutionStatus | None = None
-    error: str | None = None
+    status: ExecutionStatus | AgentStatus | None = None
+    error: str | dict[str, JsonValue] | None = None
     result: str | None = None
     parentTurnId: str | None = None
     agentId: str | None = None
@@ -679,7 +720,7 @@ class ExecutionEffect(ContractModel):
     referenceId: str
     attemptId: str | None = None
     requestId: str | None = None
-    status: ExecutionStatus | None = None
+    status: ExecutionStatus | Literal["answered", "expired", "lost"] | None = None
     outcome: str | None = None
     resultReference: str | None = None
     taskId: str | None = None
@@ -687,12 +728,19 @@ class ExecutionEffect(ContractModel):
 
 
 class RecoveryStage(ContractStrEnum):
+    INPUT_RESTORED = "input_restored"
     PENDING = "pending"
     SUPERSEDED = "superseded"
     FINISHED = "finished"
     CONTINUED = "continued"
     REATTACHED = "reattached"
     HELD = "held"
+
+
+class ExecutionHeldOperation(ContractModel):
+    id: str
+    kind: str
+    label: str
 
 
 class ExecutionRecovery(ContractModel):
@@ -704,16 +752,26 @@ class ExecutionRecovery(ContractModel):
     at: float | None = None
     stage: RecoveryStage | None = None
     startAttempt: ExecutionAttempt | None = None
+    attemptId: str | None = None
+    eventIds: list[str] | None = None
+    previousError: str | dict[str, JsonValue] | None = None
     connectionId: str | None = None
     supervisor: SupervisorIdentity | None = None
     source: str | None = None
     outcome: str | None = None
     status: ExecutionStatus | None = None
-    error: str | None = None
+    error: str | dict[str, JsonValue] | None = None
     reason: str | None = None
     detail: str | None = None
     reattachedAt: float | None = None
     reconciledAt: float | None = None
+    observedAt: float | None = None
+    heldAt: float | None = None
+    supersededAt: float | None = None
+    eventId: str | None = None
+    automatic: bool | None = None
+    completionDelivered: bool | None = None
+    holdOperations: list[ExecutionHeldOperation] | None = None
 
 
 class ExecutionRun(ContractModel):
@@ -730,7 +788,8 @@ class ExecutionRun(ContractModel):
     latestAttemptId: str | None
     finished: float | None = None
     result: str | None = None
-    error: str | None = None
+    resultItemId: str | None = None
+    error: str | dict[str, JsonValue] | None = None
     reconciled: bool | None = None
     restartRecovery: ExecutionRecovery | None = None
     disconnectRecovery: ExecutionRecovery | None = None

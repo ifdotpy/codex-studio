@@ -819,6 +819,36 @@ it("reuses unchanged runtime lists and edges, but replaces changed collections",
   assert.equal(changedWorkspace.runtime.custom, "new");
 });
 
+it("retains graph nodes while another collection changes", () => {
+  const state = emptyEntityProjection();
+  const rows = [
+    entityRow("agent", "a", { id: "a", name: "A" }, 1),
+    entityRow("chat", "c", { id: "c", name: "C" }, 2),
+    entityRow("rule", "r", { id: "r", checks: 0 }, 3),
+  ];
+  const initial = applyEntityRows(state, rows, true);
+  const changed = applyEntityRows(
+    state,
+    [rows[0], rows[1], entityRow("rule", "r", { id: "r", checks: 1 }, 4)],
+    true,
+  );
+  assert.equal(changed.nodes, initial.nodes);
+  assert.equal(changed.threads, initial.threads);
+  assert.equal(changed.chats, initial.chats);
+  assert.equal(changed.runtime.rules[0].checks, 1);
+  const renamed = applyEntityRows(
+    state,
+    [
+      rows[0],
+      entityRow("chat", "c", { id: "c", name: "Renamed" }, 5),
+      entityRow("rule", "r", { id: "r", checks: 1 }, 4),
+    ],
+    true,
+  );
+  assert.notEqual(renamed.nodes, changed.nodes);
+  assert.equal(renamed.nodes[1].name, "Renamed");
+});
+
 it("bounds retained tombstones after deletes and missing rows", () => {
   const explicit = emptyEntityProjection();
   const rows = Array.from({ length: 4097 }, (_, index) =>

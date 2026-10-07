@@ -13,7 +13,7 @@ import sys
 import shutil
 import tempfile
 import threading
-from typing import Protocol, cast
+from typing import Callable, Protocol, cast
 from uuid import uuid4
 from unittest.mock import patch
 
@@ -57,6 +57,49 @@ from .models import (
 
 
 class AccountsModelTests(unittest.TestCase):
+    def test_limits_accept_the_actual_notification_timestamp_and_cached_route(self) -> None:
+        from contextlib import closing, nullcontext
+        import sqlite3
+        from types import SimpleNamespace
+        from codex_runtime import Runtime
+
+        rate_limits_for = cast(Callable[..., dict[str, JsonValue]], Runtime.rate_limits_for)
+        store = cast(Callable[..., bool], Runtime.store_rate_limits)
+        notification = cast(Callable[..., None], Runtime.notification)
+        with closing(sqlite3.connect(":memory:")) as db:
+            runtime = SimpleNamespace(
+                rate_limits={"accountKey": "default", "data": None, "at": None, "error": None},
+                rate_limits_by_account={}, connection_current=lambda *_args: True,
+                db=lambda: nullcontext(db), analytics_safe=lambda *_args: None,
+                analytics_limit=lambda *_args: None, usage_resume_limits_changed=lambda *_args: None,
+                _stage_resource_change=lambda *_args: None,
+            )
+            runtime.rate_limits_for = lambda key: rate_limits_for(runtime, key)
+            runtime.store_rate_limits = lambda key, value: store(runtime, key, value)
+            runtime.limits = lambda *_args: self.fail("Cached limits must not start a native read")
+            with patch("codex_runtime.consume_native_notification", return_value=False), \
+                    patch("codex_sync_entities.patch"), patch("codex_runtime.time.time", return_value=10.0):
+                notification(runtime, {
+                    "method": "account/rateLimits/updated", "_studioReceivedAt": 5.0,
+                    "params": {"rateLimits": {"limitId": "codex", "primary": {"usedPercent": 27.0}}},
+                }, "fixture-account")
+            value = rate_limits_for(runtime, "fixture-account")
+            validated = UsageLimitsResponse.model_validate(value)
+            self.assertEqual(validated.processedAt, 10.0)
+            self.assertEqual(validated.at, 5.0)
+            context = ApiContext.for_schema()
+            setattr(context.canvas, "runtime", runtime)
+            app = FastAPI()
+            app.include_router(create_router(context))
+            with patch("studio_api.context.logging.Logger.error") as error_log:
+                response = TestClient(app).get("/api/limits?account_key=fixture-account&cached=1")
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json(), value)
+            error_log.assert_not_called()
+            for field, invalid in (("processedAt", "10"), ("unknown", True)):
+                with self.subTest(field=field), self.assertRaises(ValidationError):
+                    UsageLimitsResponse.model_validate({**value, field: invalid})
+
     def test_account_contract_never_accepts_credential_material(self) -> None:
         good = Account.model_validate({
             "id": "default", "home": "/profiles/default", "label": "Codex",

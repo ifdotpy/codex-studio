@@ -27,6 +27,8 @@ WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
+SHUTDOWN_THREAD_LIMIT = 16
+SHUTDOWN_STACK_LIMIT = 32
 
 
 HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
@@ -602,6 +604,45 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
 
     return create_server(canvas, port, public_origin, unix_socket)
 
+def record_shutdown_threads():
+    """Keep code locations for threads that can prevent process exit."""
+    try:
+        main_thread = threading.main_thread()
+        threads = [thread for thread in threading.enumerate()
+                   if thread is not main_thread and not thread.daemon
+                   and thread.ident is not None and thread.is_alive()]
+        if not threads:
+            return
+        frames = sys._current_frames()
+        records = []
+        try:
+            for thread in threads[:SHUTDOWN_THREAD_LIMIT]:
+                frame = frames.get(thread.ident)
+                stack = []
+                while frame is not None and len(stack) < SHUTDOWN_STACK_LIMIT:
+                    stack.append({"function": frame.f_code.co_name,
+                                  "file": frame.f_code.co_filename,
+                                  "line": frame.f_lineno})
+                    frame = frame.f_back
+                records.append({"threadId": thread.ident,
+                                "nativeThreadId": thread.native_id,
+                                "stack": stack, "stackTruncated": frame is not None})
+                frame = None
+        finally:
+            frames.clear()
+        print(json.dumps({"event": "backend_shutdown_threads", "pid": os.getpid(),
+                          "at": time.time(), "threads": records,
+                          "threadsTruncated": len(threads) > SHUTDOWN_THREAD_LIMIT}),
+              file=sys.stderr, flush=True)
+    except Exception:
+        # Evidence must not change the existing shutdown result or lease rules.
+        try:
+            print(json.dumps({"event": "backend_shutdown_thread_diagnostic_failed",
+                              "pid": os.getpid()}), file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
 def main():
     raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
@@ -644,3 +685,4 @@ def main():
             server.server_close()
         if runtime:
             runtime.close()
+        record_shutdown_threads()

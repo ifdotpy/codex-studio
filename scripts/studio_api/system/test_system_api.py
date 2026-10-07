@@ -25,10 +25,16 @@ from .models import (
     DesktopResponse,
     DiagnosticsResponse,
     DirectoriesResponse,
+    ExecutionAttempt,
+    ExecutionAction,
+    ExecutionRecovery,
+    ExecutionEffect,
     MigrationStatus,
     NativeProviderAccount,
     ProcessRecord,
     ProviderVersions,
+    SqliteTransaction,
+    SupervisorHealth,
 )
 from .router import create_router
 
@@ -74,11 +80,25 @@ class FakeRemote:
         return "http://testserver"
 
 
+def supervisor_health() -> dict[str, JsonValue]:
+    return {
+        "protocol": 1, "stateDir": "/fixture", "journalLimitBytes": 1024,
+        "outputLimitBytesPerHandle": 1024, "durability": "sqlite-full-sync-per-request",
+        "recovery": {"degraded": False, "fallbackReady": False, "blocked": None},
+        "handles": [{
+            "id": "native:fixture", "pid": 10, "signature": "fixture-signature",
+            "startTime": "fixture-start", "sequence": 2, "acknowledged": 1,
+            "bufferedBytes": 64, "backpressure": False, "stdoutReaderAlive": True,
+            "stdoutReaderError": None, "persistenceErrors": {"stdout": "OSError: fixture"},
+        }],
+    }
+
+
 class SystemApiTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(prefix="studio-system-api-")
         self.addCleanup(self.temporary.cleanup)
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.context = FakeContext(self.root)
         app = FastAPI()
         app.include_router(create_router(cast("ApiContext", self.context)))
@@ -144,7 +164,8 @@ class SystemApiTests(unittest.TestCase):
                     "checkedAt": 11.0, "providers": [], "warnings": [],
                 }), \
                 patch("codex_browser.diagnostics", return_value=None) as browser, \
-                patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "0"}, clear=False):
+                patch("codex_process_supervisor.status", return_value=supervisor_health()), \
+                patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "1"}, clear=False):
             self.context.canvas.runtime = runtime
             native.return_value = native_status
             self.context.remote.origin = lambda: None
@@ -156,6 +177,7 @@ class SystemApiTests(unittest.TestCase):
         self.assertIsNone(body["publicOrigin"])
         self.assertEqual(body["nativeRuntime"]["selected"]["version"], "1.2.3")
         self.assertEqual(body["liveUpdate"], {"status": "idle", "pid": 3})
+        self.assertEqual(body["supervisor"], supervisor_health())
         native.assert_called_once_with(runtime)
         browser.assert_called_once_with(runtime, "fixture-account")
 
@@ -195,11 +217,16 @@ class SystemApiTests(unittest.TestCase):
             "status": "checking", "selected": None, "candidates": [], "accounts": {},
         }
         with patch("codex_native_runtime.status", return_value=valid_native_status), \
-                patch("codex_browser.diagnostics", return_value=None):
+                patch("codex_browser.diagnostics", return_value=None), \
+                patch("codex_process_supervisor.status", return_value=supervisor_health()), \
+                patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "1"}, clear=False), \
+                patch("studio_api.context.logging.Logger.error") as error_log:
             accepted = client.get("/api/desktop")
 
         self.assertEqual(accepted.status_code, 200)
         self.assertEqual(accepted.json()["nativeRuntime"], valid_native_status)
+        self.assertEqual(accepted.json()["supervisor"], supervisor_health())
+        error_log.assert_not_called()
         self.assertEqual(accepted.json()["providerVersions"]["providers"], [])
         self.assertEqual(accepted.json()["providerVersions"]["warnings"], [])
         self.assertNotIn("outcome", accepted.json())
@@ -324,8 +351,10 @@ class SystemApiTests(unittest.TestCase):
         self.assertEqual(response.json()["supervisor"]["mode"], False)
 
     def test_diagnostics_models_accept_actual_snapshot_producer_shape(self) -> None:
+        from codex_claude_input_recovery import capture_input as untyped_capture_input
         from codex_diagnostics import snapshot as untyped_snapshot
         from codex_execution import ensure_tables as untyped_ensure_tables
+        from codex_execution import observe_native as untyped_observe_native
 
         snapshot = cast(
             Callable[[object, int, str], dict[str, JsonValue]],
@@ -334,14 +363,30 @@ class SystemApiTests(unittest.TestCase):
         ensure_tables = cast(Callable[[sqlite3.Connection], None], untyped_ensure_tables)
 
         db = sqlite3.connect(":memory:")
+        db.row_factory = sqlite3.Row
         self.addCleanup(db.close)
         ensure_tables(db)
-        db.execute("CREATE TABLE runtime_events(status TEXT)")
+        db.execute("CREATE TABLE runtime_events(id TEXT,agent TEXT,epoch INTEGER,kind TEXT,text TEXT,created REAL,status TEXT)")
+        db.execute("CREATE TABLE runtime_event_meta(id TEXT,record TEXT)")
+        db.execute("CREATE TABLE runtime_items(id TEXT,agent TEXT,created REAL,record TEXT)")
+        db.execute("INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?)",
+                   ("input:fixture", "agent:fixture", 1, "user", "fixture input", 1.0, "pending"))
+        db.execute("INSERT INTO runtime_event_meta VALUES (?,?)",
+                   ("input:fixture", json.dumps({"assets": ["asset:fixture"]})))
         run: dict[str, object] = {
             "id": "run:fixture", "agent": "agent:fixture", "accountKey": "default",
-            "epoch": 1, "threadId": "thread:fixture", "turnId": None, "created": 1.0,
+            "epoch": 1, "threadId": "thread:fixture", "turnId": "turn:fixture", "created": 1.0,
             "status": "pending", "firstAttemptId": "attempt:fixture",
             "rootAttemptId": None, "latestAttemptId": "attempt:fixture",
+            "resultItemId": "item:fixture",
+            "connectionRecovery": {
+                "source": "transport_attach", "at": 2.0, "attemptId": "attempt:fixture",
+                "eventIds": ["input:fixture"], "previousError": {"message": "fixture disconnect"},
+                "outcome": "input_restored", "automatic": True, "completionDelivered": False,
+                "holdOperations": [{"id": "task:fixture", "kind": "runtime_tasks", "label": "fixture task"}],
+            },
+            "restartRecovery": {"stage": "input_restored", "observedAt": 2.0,
+                                "heldAt": 3.0, "supersededAt": 4.0, "eventId": "event:fixture"},
         }
         db.execute(
             "INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?)",
@@ -352,12 +397,38 @@ class SystemApiTests(unittest.TestCase):
             "id": "attempt:fixture", "runId": "run:fixture", "submission": "unsent",
             "epoch": 1, "events": [], "submitted": False,
             "supervisorIdentity": {"stateDir": "/fixture", "handle": "native", "generation": 2},
+            "settingsFixed": True,
+            "action": "capacity", "capacityRetryId": "capacity:fixture",
+            "reviewTarget": {"type": "custom", "instructions": "Review the fixture."},
+            "modelSettings": {
+                "id": "attempt:fixture", "epoch": 1, "accountKey": "default",
+                "threadId": "thread:fixture", "connectionId": "connection:fixture",
+                "settings": {"model": "fixture-model", "effort": "high", "nativeEffort": "high",
+                             "fastMode": False, "yoloMode": False, "role": "reviewer",
+                             "profileInstructions": "", "daybreakEnabled": False,
+                             "cyberAccessProgram": "standard"},
+                "status": "acknowledged",
+            },
         }
+        capture_input = cast(Callable[..., dict[str, object]], untyped_capture_input)
+        attempt["claudeInputRequest"] = capture_input(
+            db,
+            {"id": "agent:fixture", "cwd": "/fixture", "rootId": "agent:fixture",
+             "role": "lead", "isLead": True, "model": "claude-fixture", "compactions": 0},
+            [{"id": "input:fixture", "agent": "agent:fixture", "epoch": 1}],
+            {"input": [{"type": "text", "text": "fixture input"}],
+             "clientUserMessageId": "input:fixture", "threadId": "thread:fixture",
+             "sandboxPolicy": {"type": "workspaceWrite"}},
+            "fixture input",
+        )
+        run["disconnectRecovery"] = {"startAttempt": attempt}
+        db.execute("UPDATE runtime_execution_runs SET record=? WHERE id=?",
+                   (json.dumps(run), run["id"]))
         db.execute("INSERT INTO runtime_execution_attempts VALUES (?,?,?)",
                    (attempt["id"], run["id"], json.dumps(attempt)))
         node: dict[str, object] = {
             "id": "worker:fixture", "runId": "run:fixture", "kind": "managed_worker",
-            "agentId": "agent:child", "status": "queued",
+            "agentId": "agent:child", "status": "waiting",
         }
         db.execute("INSERT INTO runtime_execution_nodes VALUES (?,?,?)",
                    (node["id"], run["id"], json.dumps(node)))
@@ -367,6 +438,21 @@ class SystemApiTests(unittest.TestCase):
         }
         db.execute("INSERT INTO runtime_execution_effects VALUES (?,?,?,?,?)",
                    (effect["id"], run["id"], effect["kind"], effect["referenceId"], json.dumps(effect)))
+        item = {"id": "item:fixture", "turnId": "turn:fixture", "role": "assistant",
+                "text": "fixture final"}
+        db.execute("INSERT INTO runtime_items VALUES (?,?,?,?)",
+                   (item["id"], "agent:fixture", 2.0, json.dumps(item)))
+        observe_native = cast(Callable[..., None], untyped_observe_native)
+        native_error = {"message": "fixture native error", "codexErrorInfo": {"type": "other"}}
+        actor = {"id": "agent:fixture", "accountKey": "default", "epoch": 1,
+                 "threadId": "thread:fixture", "turnId": "turn:fixture"}
+        observe_native(db, actor, "turn/completed", {
+            "parentTurnId": "turn:fixture",
+            "turn": {"id": "child-turn:fixture", "status": "failed", "error": native_error},
+        })
+        observe_native(db, actor, "turn/completed", {
+            "turn": {"id": "turn:fixture", "status": "failed", "error": native_error},
+        })
         runtime = SimpleNamespace(
             lock=threading.RLock(),
             servers={},
@@ -384,13 +470,123 @@ class SystemApiTests(unittest.TestCase):
             "availableMemoryBytes": None,
         }):
             result = snapshot(runtime, 10, "10 1 1024 0.0 codex-canvas")
-        result["supervisor"] = {"mode": False, "fallback": False, "notice": None}
+        result["supervisor"] = {
+            "mode": True, "fallback": False, "notice": None, "health": supervisor_health(),
+        }
 
-        validated = DiagnosticsResponse.model_validate_json(json.dumps(result))
+        validated = DiagnosticsResponse.model_validate(result)
         identity = validated.executions.runs[0].attempts[0].supervisorIdentity
         self.assertIsNotNone(identity)
         assert identity is not None
         self.assertEqual(identity.generation, 2)
+        actual_run = validated.executions.runs[0]
+        assert actual_run.restartRecovery is not None
+        assert actual_run.restartRecovery.stage is not None
+        self.assertEqual(actual_run.restartRecovery.stage.value, "input_restored")
+        self.assertEqual(actual_run.attempts[0].action, "capacity")
+        self.assertEqual(actual_run.attempts[0].capacityRetryId, "capacity:fixture")
+        self.assertIsNotNone(actual_run.attempts[0].reviewTarget)
+        settings = actual_run.attempts[0].modelSettings
+        assert settings is not None
+        self.assertEqual(settings.status, "acknowledged")
+        self.assertEqual(next(node for node in actual_run.nodes if node.kind.value == "managed_worker").status,
+                         "waiting")
+        self.assertEqual(actual_run.resultItemId, "item:fixture")
+        self.assertEqual(actual_run.error, native_error)
+        self.assertEqual(next(node for node in actual_run.nodes if node.kind.value == "native_child").error,
+                         native_error)
+        recovery = actual_run.connectionRecovery
+        disconnected = actual_run.disconnectRecovery
+        assert recovery is not None and disconnected is not None
+        assert disconnected.startAttempt is not None
+        self.assertEqual(recovery.eventIds, ["input:fixture"])
+        self.assertEqual(recovery.previousError, {"message": "fixture disconnect"})
+        self.assertFalse(recovery.completionDelivered)
+        self.assertTrue(disconnected.startAttempt.settingsFixed)
+        request = actual_run.attempts[0].claudeInputRequest
+        self.assertIsNotNone(request)
+        assert request is not None
+        self.assertEqual(request.clientUserMessageId, "input:fixture")
+        event = request.events[0]
+        assert event is not None
+        self.assertEqual(event.assets, ["asset:fixture"])
+        with patch("codex_diagnostics.snapshot", return_value=result), \
+                patch("codex_process_supervisor.status", return_value=supervisor_health()), \
+                patch.dict(os.environ, {"CODEX_AGENTS_SUPERVISOR_MODE": "1"}, clear=False):
+            self.context.canvas.runtime = runtime
+            response = self.client.get("/api/diagnostics")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["executions"], result["executions"])
+
+    def test_system_models_keep_new_fields_strict(self) -> None:
+        health = supervisor_health()
+        health["unexpected"] = True
+        with self.assertRaises(ValidationError):
+            SupervisorHealth.model_validate(health)
+        health.pop("unexpected")
+        health["outputLimitBytesPerHandle"] = "1024"
+        with self.assertRaises(ValidationError):
+            SupervisorHealth.model_validate(health)
+        for field, value in (("settingsFixed", "true"), ("claudeRetryOf", 1),
+                             ("claudeInputRequest", []), ("capacityRetryId", 1),
+                             ("reviewTarget", {"type": "unknown"}), ("modelSettings", {}),
+                             ("action", "unknown"), ("unknown", True)):
+            with self.subTest(field=field), self.assertRaises(ValidationError):
+                ExecutionAttempt.model_validate({"id": "attempt:fixture", field: value})
+        with self.assertRaises(ValueError):
+            ExecutionAction("capacity")
+        self.assertEqual(ExecutionAttempt.model_validate({"id": "attempt:fixture", "action": "safety"}).action,
+                         "safety")
+        with self.assertRaises(ValueError):
+            ExecutionAction("safety")
+        with self.assertRaises(ValidationError):
+            ExecutionRecovery.model_validate({"stage": "unknown"})
+        for status in ("answered", "expired", "lost"):
+            effect = ExecutionEffect.model_validate({
+                "id": "effect:fixture", "runId": "run:fixture", "kind": "requests",
+                "referenceId": "request:fixture", "status": status,
+            })
+            self.assertEqual(effect.status, status)
+        with self.assertRaises(ValidationError):
+            ExecutionEffect.model_validate({
+                "id": "effect:fixture", "runId": "run:fixture", "kind": "requests",
+                "referenceId": "request:fixture", "status": "unknown-status",
+            })
+        rejected = {
+            "id": "attempt:fixture", "epoch": 1, "accountKey": "default",
+            "threadId": "thread:fixture", "connectionId": "connection:fixture",
+            "nativeOperationId": "operation:fixture", "events": ["input:fixture"],
+            "agent": "agent:fixture", "turnId": None, "outcome": "not_applied", "retry": True,
+        }
+        attempt = ExecutionAttempt.model_validate({
+            "id": "attempt:fixture", "executionOutcome": "not_applied",
+            "claudeRetryOf": "previous:fixture", "claudeInputRejection": rejected,
+        })
+        self.assertEqual(attempt.model_dump(exclude_unset=True)["claudeInputRejection"], rejected)
+        rejected["retry"] = "true"
+        with self.assertRaises(ValidationError):
+            ExecutionAttempt.model_validate({"id": "attempt:fixture", "claudeInputRejection": rejected})
+
+    def test_sqlite_transaction_model_accepts_real_sql_completion(self) -> None:
+        import codex_sqlite_traces
+        from codex_sqlite import connect as untyped_connect
+
+        connect = cast(Callable[..., sqlite3.Connection], untyped_connect)
+        db = connect(":memory:", site="system-api-fixture")
+        self.addCleanup(db.close)
+        history = cast(Callable[[], dict[str, object]], codex_sqlite_traces.history)
+        with patch.object(codex_sqlite_traces, "SLOW_MS", 0.0), \
+                patch.object(codex_sqlite_traces, "_ACTIVE", {}), \
+                patch.object(codex_sqlite_traces, "_RECENT", []), \
+                patch.object(codex_sqlite_traces, "_LONGEST", []):
+            db.execute("BEGIN")
+            db.execute("COMMIT")
+            result = cast(list[dict[str, JsonValue]], history()["recent"])[-1]
+        validated = SqliteTransaction.model_validate(result)
+        self.assertEqual(validated.state.value, "ended")
+        result["state"] = "unknown"
+        with self.assertRaises(ValidationError):
+            SqliteTransaction.model_validate(result)
 
     def test_openapi_declares_json_success_models_for_owned_paths(self) -> None:
         schemas = self.app.openapi()["components"]["schemas"]

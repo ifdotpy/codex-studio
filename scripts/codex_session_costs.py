@@ -601,6 +601,8 @@ class SessionCostReader:
                    input_uncached
               FROM records
         """, (root,))
+        # Only TEMP rows are needed after the compact history capture.
+        db.commit()
         status = db.execute("SELECT MAX(model IS NULL),MAX(NOT has_response) FROM session_cost_usage").fetchone()
         missing_models, missing_responses = (bool(value) for value in status)
         if missing_responses:
@@ -722,6 +724,16 @@ class SessionCostReader:
                     # Log metadata can change without changing billable usage.
                     cached_matches = bool(cached and "claudeUsageSignature" in cached[2]
                         and {**cached[2], "claudeSignature": cache_source["claudeSignature"]} == cache_source)
+                if not cached_matches:
+                    # Build receipt keys before opening the final history
+                    # snapshot. A retry must replace the previous attempt's keys.
+                    # Bound the private TEMP cache only for an actual rebuild.
+                    db.execute("PRAGMA temp.cache_size=-16384")
+                    db.execute("DROP TABLE IF EXISTS temp.session_cost_claude_messages")
+                    db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id)) WITHOUT ROWID")
+                    db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
+                                   claude_messages.keys())
+                    db.commit()
                 db.execute("BEGIN")
                 if (self._usage_state(db, root) != usage_state
                         or self._agent_signature(self._root_agents(db, agent_id, root)) != agents_signature):
@@ -738,9 +750,6 @@ class SessionCostReader:
             tier_used = False
             from codex_pricing import _scoped_pricer
             price = _scoped_pricer(catalog, price=price_usage)
-            db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
-            db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
-                           claude_messages.keys())
             try:
                 groups = self._cost_usage_groups(db, root)
             except sqlite3.OperationalError as error:
