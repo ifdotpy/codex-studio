@@ -11,7 +11,8 @@ Copy this folder to `/opt/codex-studio/vm/guest`. Copy these runtime files to
 - `codex_process_supervisor.py`
 - `codex_open_file_limit.py`
 
-Install Python 3.11 or later, rsync, btrfs-progs, git, util-linux, procps, and lsof.
+Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
+and lsof.
 Mount the btrfs data disk at `/var/lib/codex-studio`. Use the
 `user_subvol_rm_allowed` mount option. Run `install.sh` as root.
 

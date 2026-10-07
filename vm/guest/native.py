@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import closing
 import json
 import os
@@ -12,6 +13,10 @@ import sys
 import uuid
 
 from common import GuestError, MAX_LINE, atomic_json, integer, private_dir, require
+
+INLINE_EVENT_BYTES = 64 * 1024
+MAX_EVENT_BYTES = 256 * 1024 * 1024
+MAX_EVENT_CHUNK_BYTES = 1024 * 1024
 
 
 class Native:
@@ -146,11 +151,64 @@ class Native:
         result = await self.call("open", handle=handle, command=config["argv"], env=config["env"], cwd=config["cwd"])
         return {**self.info(handle), **result, "transport": "native"}
 
+    def event_page(self, handle, cursor, limit):
+        """Read bounded metadata and inline payloads from one journal snapshot."""
+        path = self.root / "supervisor.sqlite3"
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+            db.execute("BEGIN")
+            row = db.execute("SELECT sequence,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
+            if row is None:
+                raise GuestError("not_found", "The native provider handle does not exist")
+            cursor = integer(cursor, None, row[1], row[0])
+            rows = db.execute("SELECT rowid,sequence,kind,size,generation FROM events "
+                              "WHERE handle=? AND sequence>? ORDER BY sequence LIMIT ?", (handle, cursor, limit)).fetchall()
+            events, page_bytes = [], 0
+            for rowid, sequence, kind, size, generation in rows:
+                require(type(size) is int and 0 <= size <= MAX_EVENT_BYTES, "The native event exceeds its size limit")
+                event = {"sequence": sequence, "kind": kind, "payload": None, "generation": generation}
+                if size <= INLINE_EVENT_BYTES:
+                    with db.blobopen("events", "payload", rowid, readonly=True) as blob:
+                        require(len(blob) == size, "The native event size differs from its journal receipt")
+                        event["payload"] = blob.read(size).decode("utf-8")
+                else:
+                    event["payloadBytes"] = size
+                encoded_bytes = len(json.dumps(event).encode())
+                if page_bytes + encoded_bytes > MAX_LINE - 4096:
+                    break
+                page_bytes += encoded_bytes
+                events.append(event)
+        return {"events": events, "sequence": row[0], "acknowledged": row[1],
+                "hasMore": bool(events) and events[-1]["sequence"] < row[0]}
+
+    def event_read(self, handle, params):
+        sequence = integer(params.get("sequence"), None, 1, 2**63 - 1)
+        offset = integer(params.get("offset"), None, 0, MAX_EVENT_BYTES)
+        maximum = integer(params.get("maxBytes"), 256 * 1024, 1, MAX_EVENT_CHUNK_BYTES)
+        path = self.root / "supervisor.sqlite3"
+        with closing(sqlite3.connect(path.as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
+            db.execute("BEGIN")
+            row = db.execute("SELECT rowid,size,generation FROM events WHERE handle=? AND sequence=?",
+                             (handle, sequence)).fetchone()
+            if row is None:
+                raise GuestError("not_found", "The native event is missing or already acknowledged")
+            rowid, size, generation = row
+            require(type(size) is int and 0 <= size <= MAX_EVENT_BYTES, "The native event exceeds its size limit")
+            require(offset <= size, "The native event offset is beyond its payload")
+            with db.blobopen("events", "payload", rowid, readonly=True) as blob:
+                require(len(blob) == size, "The native event size differs from its journal receipt")
+                blob.seek(offset)
+                data = blob.read(min(maximum, size - offset))
+        end = offset + len(data)
+        return {"sequence": sequence, "generation": generation, "offset": offset,
+                "nextOffset": end, "bytes": size, "data": base64.b64encode(data).decode(), "eof": end == size}
+
     async def rpc(self, params):
         action = params.get("action")
-        require(action in {"write", "operationStatus", "ack", "replay", "status", "next", "detach", "info", "responseStatus"},
+        require(action in {"write", "operationStatus", "ack", "replay", "status", "next", "detach", "info", "responseStatus", "eventRead"},
                 "The native supervisor action is not supported")
         handle = params["handle"]
+        if action == "eventRead":
+            return self.event_read(handle, params)
         if action == "info":
             return self.info(handle)
         if action == "responseStatus":
@@ -182,24 +240,16 @@ class Native:
                 self.save_exit(handle, info["exitCode"])
             if isinstance(values["sequence"], int) and 0 <= values["sequence"] <= info["acknowledged"]:
                 return {"acknowledged": info["acknowledged"]}
-        if action == "replay":
-            info = self.info(handle)
-            cursor = integer(values["cursor"], None, info["acknowledged"], info["sequence"])
+        if action in {"replay", "next"}:
+            status = await self.call("status", handle=handle)
             limit = integer(params.get("limit"), 128, 1, 128)
-            with closing(sqlite3.connect((self.root / "supervisor.sqlite3").as_uri() + "?mode=ro", uri=True, timeout=2)) as db:
-                rows = db.execute("SELECT sequence,kind,payload,generation FROM events WHERE handle=? AND sequence>? ORDER BY sequence LIMIT ?",
-                                  (handle, cursor, limit)).fetchall()
-            events = []
-            size = 0
-            for sequence, kind, payload, generation in rows:
-                event = {"sequence": sequence, "kind": kind, "payload": payload, "generation": generation}
-                size += len(json.dumps(event).encode())
-                if size > MAX_LINE - 4096:
-                    break
-                events.append(event)
-            return {"events": events, "sequence": info["sequence"], "acknowledged": info["acknowledged"],
-                    "backpressure": bool((await self.call("status", handle=handle)).get("backpressure")),
-                    "hasMore": bool(rows) and (not events or events[-1]["sequence"] < info["sequence"])}
+            page = self.event_page(handle, values["cursor"], limit if action == "replay" else 1)
+            if status.get("returnCode") is not None:
+                self.save_exit(handle, status["returnCode"])
+            if action == "next":
+                return {"event": page["events"][0] if page["events"] else None,
+                        "returnCode": status["returnCode"], "backpressure": status.get("backpressure", False)}
+            return {**page, "backpressure": status.get("backpressure", False)}
         result = await self.call(action, handle=handle, **values)
         if result.get("returnCode") is not None:
             self.save_exit(handle, result["returnCode"])

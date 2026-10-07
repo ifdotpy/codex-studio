@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import fcntl
 import json
 import os
 from pathlib import Path, PurePosixPath
@@ -67,7 +68,11 @@ def extract_tree(archive: Path, destination: Path):
             else:
                 # Duplicate files and link/file collisions fail instead of replacing a path.
                 with target.open("xb") as output, source.extractfile(item) as input_file:
-                    shutil.copyfileobj(input_file, output, 1024 * 1024)
+                    while block := input_file.read(1024 * 1024):
+                        tree_space(destination, len(block))
+                        output.write(block)
+                    output.flush()
+                    os.fsync(output.fileno())
                 os.chmod(target, 0o600 | (item.mode & 0o177))
     for target, link in links:
         require(target.parent.resolve().is_relative_to(destination), "The symlink parent is outside the tree")
@@ -81,6 +86,29 @@ def extract_tree(archive: Path, destination: Path):
         except RuntimeError as exc:
             raise GuestError("invalid_params", "The tree has a symlink cycle") from exc
     return expanded
+
+
+def prepare_tree(archive, destination, expected):
+    """Restart extraction only after taking the surviving worker's file lease."""
+    require(destination == archive.parent / "expanded", "The extraction destination differs from the upload directory")
+    with (archive.parent / "extract.lock").open("a+") as lease:
+        try:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError as exc:
+            raise GuestError("busy", "The upload extraction is still in progress") from exc
+        with archive.open("rb") as source:
+            actual = hashlib.file_digest(source, "sha256").hexdigest()
+        require(actual == sha(expected), "The archive checksum differs")
+        if destination.is_symlink() or destination.is_file():
+            destination.unlink()
+        elif destination.exists():
+            shutil.rmtree(destination)
+        destination.mkdir(mode=0o700)
+        try:
+            return extract_tree(archive, destination)
+        except BaseException:
+            shutil.rmtree(destination, ignore_errors=True)
+            raise
 
 
 class Uploads:
@@ -188,12 +216,8 @@ if __name__ == "__main__":
     archive, destination, expected = sys.argv[1:]
     try:
         archive = Path(archive)
-        with archive.open("rb") as source:
-            actual = hashlib.file_digest(source, "sha256").hexdigest()
-        require(actual == sha(expected), "The archive checksum differs")
         destination = Path(destination)
-        destination.mkdir(mode=0o700)
-        expanded = extract_tree(archive, destination)
+        expanded = prepare_tree(archive, destination, expected)
         print(json.dumps({"bytes": expanded}))
     except GuestError as exc:
         print(json.dumps({"error": exc.object()}))
