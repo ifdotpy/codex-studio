@@ -117,11 +117,15 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertEqual(record['imageWorkspacePhase'], 'read_only')
         self.assertEqual(record['cwd'], str(self.repo / 'project'))
         self.assertEqual(self.rt.turn_permissions(record), {
-            'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'readOnly'}})
+            'approvalPolicy': 'never', 'sandboxPolicy': {
+                'type': 'workspaceWrite',
+                'writableRoots': [self.rt.image_workspace_temp(record)],
+                'networkAccess': False}})
         with self.rt.db() as db:
             text = db.execute('SELECT text FROM runtime_events WHERE id=?',
                               (worker + ':initial',)).fetchone()[0]
         self.assertIn('read-only until Studio sends a workspace-ready notice', text)
+        self.assertIn('Read the source folder at ' + record['cwd'] + ' by its absolute path', text)
 
     def test_folder_outside_git_gets_an_image_when_supported(self):
         folder = self.root / 'plain-folder'
@@ -213,6 +217,11 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertEqual(params['approvalPolicy'], 'never')
         self.assertEqual(params['sandbox'], 'read-only')
         self.assertEqual(params['claude']['permissionMode'], 'plan')
+        self.assertEqual(params['studioImageWorkspaceTempDir'],
+                         self.rt.image_workspace_temp(worker))
+        worker.update(imageWorkspaceReady=True, cwd=str(self.root / 'image-copy'))
+        ready = self.rt.new_thread_params(worker)
+        self.assertIsNone(ready['studioImageWorkspaceTempDir'])
 
     def test_codex_initial_thread_uses_read_only_without_approval_wait(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
@@ -221,7 +230,9 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         worker.update(yoloMode=True)
         params = self.rt.new_thread_params(worker)
         self.assertEqual(params['approvalPolicy'], 'never')
-        self.assertEqual(params['sandbox'], 'read-only')
+        self.assertEqual(params['sandbox'], 'workspace-write')
+        self.assertEqual(params['cwd'], self.rt.image_workspace_temp(worker))
+        self.assertNotEqual(params['cwd'], worker['cwd'])
 
     def test_codex_protocol_switches_from_read_only_to_the_image_path(self):
         eventually = fixture.f.eventually
@@ -239,7 +250,11 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                                for method, params in self.rt.server.calls))
         first = [params for method, params in self.rt.server.calls if method == 'turn/start'
                  and params['threadId'] == self.rt.agent(worker_id)['threadId']][-1]
-        self.assertEqual(first['sandboxPolicy'], {'type': 'readOnly'})
+        temp_dir = self.rt.image_workspace_temp(self.rt.agent(worker_id))
+        self.assertEqual(first['cwd'], temp_dir)
+        self.assertEqual(first['sandboxPolicy'], {
+            'type': 'workspaceWrite', 'writableRoots': [temp_dir],
+            'networkAccess': False})
         eventually(lambda: self.rt.agent(worker_id)['turnId'] is not None)
         self.rt.server.complete(self.rt.agent(worker_id)['threadId'],
                                 self.rt.agent(worker_id)['turnId'])

@@ -60,6 +60,7 @@ export function query({prompt,options}){
  if(options.systemPrompt&&!(options.disallowedTools||[]).includes('Agent'))throw new Error('Native subagents must stay disabled');
  let abort=new AbortController();
  let outputTotal=0;
+ if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
@@ -336,6 +337,21 @@ class Bridge(unittest.TestCase):
         self.assertEqual(starts[1]['resume'], starts[0]['sessionId'])
         self.assertEqual(len(self.call('thread/read', {'threadId': self.thread,
                                                      'includeTurns': True})['thread']['turns']), 2)
+
+    def test_image_workspace_temp_dir_reaches_claude_with_plan_mode(self):
+        temp_dir = self.root / 'private-image-temp'
+        temp_dir.mkdir()
+        started = self.call('thread/start', {
+            'cwd': str(self.root),
+            'claude': {'permissionMode': 'plan'},
+            'studioImageWorkspaceTempDir': str(temp_dir),
+        })
+        self.thread = started['thread']['id']
+        self.turn('read-only probe', 'image-temp')
+        self.assertEqual(self.completed()['status'], 'completed')
+        options = json.loads((self.root / '.probe-options').read_text())
+        self.assertEqual(options['tmpdir'], str(temp_dir))
+        self.assertEqual(options['permissionMode'], 'plan')
 
     def test_unsubscribe_evicts_then_reload_preserves_request_identity(self):
         original = self.turn('hello', 'stable-request')
