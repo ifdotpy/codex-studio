@@ -563,8 +563,8 @@ class CanvasContract(unittest.TestCase):
                 self.assertEqual(response.read(), payload[100:110])
         finally:
             server.shutdown()
-            server.server_close()
             thread.join()
+            server.server_close()
 
 
 class ShutdownDiagnosticContract(unittest.TestCase):
@@ -642,6 +642,7 @@ class ShutdownDiagnosticContract(unittest.TestCase):
             handlers[codex_canvas.signal.SIGTERM](codex_canvas.signal.SIGTERM, None)
 
         server = SimpleNamespace(unix_server=None, server_port=0, serve_forever=serve,
+                                 shutdown=lambda: None,
                                  server_close=lambda: order.append("server"))
         output = io.StringIO()
         with patch.dict(sys.modules, {"codex_runtime": runtime_module, "codex_live_updates": updates_module}), \
