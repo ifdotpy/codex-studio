@@ -442,15 +442,39 @@ def _copy_exact_paths(source_root: Path, target_root: Path, paths: set[str], bac
         safe_paths.append(value)
     if not safe_paths:
         return
-    script = '''import json, os, pathlib, shutil, sys
+    script = '''import json, os, pathlib, shutil, stat, sys
 src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+selected = set()
 for name in json.loads(sys.stdin.read()):
+    parent = src
+    for component in pathlib.Path(name).parts[:-1]:
+        parent = parent / component
+        try:
+            mode = parent.lstat().st_mode
+        except FileNotFoundError:
+            break
+        if not stat.S_ISDIR(mode):
+            name = parent.relative_to(src).as_posix()
+            break
+    selected.add(name)
+for name in sorted(selected):
     source, target = src / name, dst / name
-    if not source.parent.resolve().is_relative_to(src.resolve()):
-        raise RuntimeError("source path escapes workspace root")
+    parent = src
+    for component in pathlib.Path(name).parts[:-1]:
+        parent = parent / component
+        try:
+            mode = parent.lstat().st_mode
+        except FileNotFoundError:
+            break
+        if not stat.S_ISDIR(mode):
+            raise RuntimeError("source parent changed during workspace copy")
     if not target.parent.resolve().is_relative_to(dst.resolve()):
         raise RuntimeError("target path escapes workspace root")
-    if not source.exists() and not source.is_symlink():
+    try:
+        mode = source.lstat().st_mode
+    except FileNotFoundError:
+        mode = None
+    if mode is None:
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         else:
@@ -461,19 +485,19 @@ for name in json.loads(sys.stdin.read()):
             parent = parent.parent
         continue
     target.parent.mkdir(parents=True, exist_ok=True)
-    if source.is_symlink():
+    if stat.S_ISLNK(mode):
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         else:
             target.unlink(missing_ok=True)
         target.symlink_to(os.readlink(source))
-    elif source.is_file():
+    elif stat.S_ISREG(mode):
         if target.is_dir() and not target.is_symlink():
             shutil.rmtree(target)
         elif target.is_symlink():
             target.unlink()
         shutil.copy2(source, target)
-    elif source.is_dir() and not target.is_dir():
+    elif stat.S_ISDIR(mode) and not target.is_dir():
         target.unlink(missing_ok=True)
         target.mkdir()
 '''
