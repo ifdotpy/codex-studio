@@ -22,7 +22,6 @@ GET_PATHS = frozenset(
         "/api/sync/protocol",
         "/api/sync/pull",
         "/api/sync/stream",
-        "/api/worktree-disk",
         "/api/costs",
         "/api/session-cost",
         "/api/desktop",

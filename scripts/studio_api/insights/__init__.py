@@ -1,1 +1,1 @@
-"""Analytics, cost estimate, and worktree disk API routes."""
+"""Analytics and cost estimate API routes."""

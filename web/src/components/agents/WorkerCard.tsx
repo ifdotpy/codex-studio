@@ -11,11 +11,9 @@ import {
   statusLabel,
   type Agent,
 } from "../../types";
-import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
 import ChatStatus from "./ChatStatus";
 import TokenRate from "../TokenRate";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
-import { WorkerDiskLabel } from "../WorktreeDisk";
 
 function WorkerExcerpt({
   agentId,
@@ -76,7 +74,6 @@ function WorkerExcerpt({
 
 export default function WorkerCard({
   agent,
-  disk,
   selected,
   awaitingAnswer,
   deferred,
@@ -86,7 +83,6 @@ export default function WorkerCard({
   remove,
 }: {
   agent: Agent;
-  disk?: WorktreeDiskSnapshot["workers"][string];
   selected: boolean;
   awaitingAnswer: boolean;
   deferred: boolean;
@@ -165,7 +161,6 @@ export default function WorkerCard({
               </span>
               <TokenRate agent={agent} variant="worker" />
             </span>
-            <WorkerDiskLabel agent={agent} disk={disk} />
             {Boolean(agent.error) && (
               <span
                 className={stopReason ? "worker-stop-reason" : "worker-error"}

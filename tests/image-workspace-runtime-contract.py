@@ -519,9 +519,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             report = worktree_maintenance_report(self.rt, self.lead['id'])
         self.assertIn(worker, [row['id'] for row in report['workspaces']])
 
-    def test_maintenance_and_disk_reports_include_workspace_and_base_bytes(self):
+    def test_maintenance_report_does_not_measure_workspace_or_base_sizes(self):
         from codex_agent_management import worktree_maintenance_report
-        from codex_worktree_disk import WorktreeDiskScanner
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
         worker = self.spawn()['id']
@@ -534,20 +533,18 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             lead['imageWorkspaceBaseRepo'] = str(self.repo)
             self.rt.put(db, 'agents', lead)
         engine = types.ModuleType('codex_workspace_images')
-        engine.workspace_bytes = Mock(return_value=40)
-        engine.base_bytes = Mock(return_value=20)
+        engine.workspace_bytes = Mock(side_effect=AssertionError('Unexpected workspace size check'))
+        engine.base_bytes = Mock(side_effect=AssertionError('Unexpected base size check'))
         engine.list_workspaces = Mock(return_value=[{'agentId': worker, 'state': 'archived',
                                                        'mount': '/retained/image'}])
         engine.base_status = Mock(return_value={'state': 'ready', 'version': 'v1', 'error': None})
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
-            disk = WorktreeDiskScanner(self.rt.root).snapshot()
             maintenance = worktree_maintenance_report(self.rt, self.lead['id'], self.lead['epoch'])
-        self.assertEqual(disk['workers'][worker]['bytes'], 40)
-        self.assertEqual(disk['baseBytes'], 20)
-        self.assertEqual(disk['storageBytes'], 60)
         self.assertEqual(maintenance['bases'][0]['state'], 'ready')
-        self.assertEqual(maintenance['bases'][0]['bytes'], 20)
+        self.assertNotIn('bytes', maintenance['bases'][0])
         self.assertEqual(maintenance['workspaces'][0]['state'], 'archived')
+        engine.workspace_bytes.assert_not_called()
+        engine.base_bytes.assert_not_called()
 
 
 if __name__ == '__main__':

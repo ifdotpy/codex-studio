@@ -503,43 +503,28 @@ class CanvasContract(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "cannot read"):
             self.canvas.threads()
 
-    def test_worktree_disk_route_forwards_priority_ids(self):
-        class RecordingScanner:
-            def __init__(self):
-                self.priority_ids = None
-
-            def snapshot(self, priority_ids=()):
-                self.priority_ids = list(priority_ids)
-                return {
-                    "workers": {}, "totalBytes": 0, "baseBytes": 0, "storageBytes": 0,
-                    "bases": {}, "limitBytes": 0,
-                    "warning": False, "scanning": False, "error": None,
-                    "measure": "allocated blocks",
-                }
-
+    def test_removed_worktree_disk_route_does_not_scan_folders(self):
         server = make_server(self.canvas)
         server._context._maintenance_last = time.monotonic()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
-        self.canvas.runtime = SimpleNamespace(
-            root=self.root, lock=threading.RLock(), records=lambda *_args, **_kwargs: [],
-        )
-        scanner = RecordingScanner()
-        with patch("codex_worktree_disk.scanner", return_value=scanner) as get_scanner:
-            try:
-                with urllib.request.urlopen(
+        try:
+            with (
+                patch("os.scandir", side_effect=AssertionError("Unexpected folder scan")),
+                patch("os.walk", side_effect=AssertionError("Unexpected folder walk")),
+                self.assertRaises(urllib.error.HTTPError) as raised,
+            ):
+                urllib.request.urlopen(
                     base + "/api/worktree-disk?workers=worker-one%2Cworker-two",
                     timeout=5,
-                ) as response:
-                    payload = json.loads(response.read())
-                self.assertEqual(scanner.priority_ids, ["worker-one", "worker-two"])
-                self.assertEqual(payload["workers"], {})
-                get_scanner.assert_called_once_with(self.canvas.root)
-            finally:
-                server.shutdown()
-                server.server_close()
-                thread.join(timeout=5)
+                )
+            self.assertEqual(raised.exception.code, 404)
+            raised.exception.close()
+        finally:
+            server.shutdown()
+            thread.join(timeout=5)
+            server.server_close()
 
     def test_http_local_origin_token_and_routes(self):
         server = make_server(self.canvas)

@@ -113,7 +113,7 @@ class FakeBackend:
         shutil.rmtree(path, ignore_errors=True)
 
     def private_bytes(self, path):
-        return images._allocated_bytes(path)
+        raise AssertionError('Workspace removal must not check its size')
 
     def exec_prefix(self):
         return []
@@ -189,7 +189,9 @@ class WorkspaceCopyTests(unittest.TestCase):
         images._write_json(state_path, state)
         images.ensure_mounted('archive-test')
         self.assertEqual(images._read_json(state_path, {})['state'], 'creating')
-        self.assertEqual(images.remove_workspace('archive-test')['state'], 'removed')
+        removed = images.remove_workspace('archive-test')
+        self.assertEqual(removed['state'], 'removed')
+        self.assertIsNone(removed['freedBytes'])
         self.assertFalse(image.exists())
 
     def test_copy_delta_helper_replaces_a_destination_symlink(self):

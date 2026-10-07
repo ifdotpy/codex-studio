@@ -15,22 +15,6 @@ class AnalyticsScope(ContractStrEnum):
     ALL = "all"
 
 
-class DiskMeasure(ContractStrEnum):
-    PRIVATE_ON_APFS = "private on APFS"
-    PRIVATE_WORKSPACE_BYTES = "private workspace bytes"
-    PRIVATE_BASE_BYTES = "private base bytes"
-    ALLOCATED_BLOCKS = "allocated blocks"
-    MIXED_MEASURES = "mixed measures"
-    UNMEASURED = "unmeasured"
-
-
-class DiskWorkerState(ContractStrEnum):
-    READY = "ready"
-    MISSING = "missing"
-    UNAVAILABLE = "unavailable"
-    UNMEASURED = "unmeasured"
-
-
 class LegacyQueryModel(ContractModel):
     """Strict declared query fields while retaining the old ignored-extra behavior."""
 
@@ -568,31 +552,6 @@ class SessionCostResponse(ResponseModel):
     refreshing: bool
     claudeHistoryIncomplete: bool | None = None
     method: str | None = None
-
-
-class WorktreeDiskWorker(ContractModel):
-    state: DiskWorkerState
-    bytes: int | None = None
-    scannedAt: int | float | None = None
-    measure: DiskMeasure | None = None
-    error: str | None = None
-
-
-class WorktreeDiskResponse(ResponseModel):
-    workers: dict[str, WorktreeDiskWorker]
-    totalBytes: int
-    baseBytes: int
-    storageBytes: int
-    bases: dict[str, WorktreeDiskWorker]
-    limitBytes: int
-    warning: bool
-    scanning: bool
-    error: str | None
-    measure: DiskMeasure
-
-
-class WorktreeDiskQuery(LegacyQueryModel):
-    workers: str = ""
 
 
 class AccountCostQuery(LegacyQueryModel):

@@ -12,8 +12,6 @@ from studio_api.insights.models import (
     AnalyticsQuery,
     AnalyticsScope,
     SessionCostResponse,
-    WorktreeDiskQuery,
-    WorktreeDiskResponse,
 )
 
 
@@ -35,14 +33,6 @@ class InsightsModelTests(unittest.TestCase):
         self.assertEqual(
             AnalyticsQuery.model_validate({"legacyUnknown": "ignored"}).service_options(),
             {},
-        )
-
-    def test_worktree_query_keeps_comma_delimited_ids(self) -> None:
-        self.assertEqual(
-            WorktreeDiskQuery.model_validate(
-                {"workers": "worker-a,worker-b", "legacyUnused": "ignored"}
-            ).workers,
-            "worker-a,worker-b",
         )
 
     def test_cost_responses_keep_nulls_and_reject_unknown_fields(self) -> None:
@@ -350,62 +340,6 @@ class InsightsModelTests(unittest.TestCase):
         rate_limit_data = response.rateLimits[0].data
         assert isinstance(rate_limit_data, dict)
         self.assertEqual(rate_limit_data["rateLimits"], {"primary": {"usedPercent": 25}})
-
-    def test_worktree_response_uses_closed_states_and_measures(self) -> None:
-        result = WorktreeDiskResponse.model_validate(
-            {
-                "workers": {
-                    "worker-a": {
-                        "state": "ready",
-                        "bytes": 42,
-                        "scannedAt": 5.0,
-                        "measure": "allocated blocks",
-                    },
-                    "worker-b": {
-                        "state": "unavailable",
-                        "measure": "allocated blocks",
-                        "error": "permission denied",
-                    },
-                },
-                "totalBytes": 42,
-                "baseBytes": 11,
-                "storageBytes": 53,
-                "bases": {
-                    "/repo": {
-                        "state": "ready",
-                        "bytes": 11,
-                        "measure": "private base bytes",
-                    },
-                },
-                "limitBytes": 100,
-                "warning": False,
-                "scanning": False,
-                "error": None,
-                "measure": "allocated blocks",
-            }
-        )
-        self.assertEqual(result.workers["worker-a"].bytes, 42)
-        self.assertEqual(result.workers["worker-a"].scannedAt, 5.0)
-        self.assertEqual(result.workers["worker-b"].state.value, "unavailable")
-        self.assertEqual(result.baseBytes, 11)
-        self.assertEqual(result.storageBytes, 53)
-        self.assertEqual(result.bases["/repo"].bytes, 11)
-        with self.assertRaises(ValidationError):
-            WorktreeDiskResponse.model_validate(
-                {
-                    "workers": {},
-                    "totalBytes": 0,
-                    "baseBytes": 0,
-                    "storageBytes": 0,
-                    "bases": {},
-                    "limitBytes": 0,
-                    "warning": False,
-                    "scanning": False,
-                    "error": None,
-                    "measure": "unexpected",
-                }
-            )
-
 
 if __name__ == "__main__":
     unittest.main()

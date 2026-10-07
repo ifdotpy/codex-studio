@@ -1042,7 +1042,7 @@ class CleanedImageWorkspaceRecord(TypedDict):
     branch: NotRequired[str]
     head: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
-    bytes: NotRequired[int]
+    bytes: NotRequired[int | None]
     phase: NotRequired[str]
     freedBytes: NotRequired[int]
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]

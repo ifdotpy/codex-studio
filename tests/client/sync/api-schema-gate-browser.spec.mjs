@@ -463,12 +463,24 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     });
 
     const networkShellMarker = `schema-gate-network-shell-${Date.now()}`;
-    const updatedWorker = originalWorker.replace(
-      'headers.set("x-schema-gate-shell-source", "network");',
-      `headers.set("x-schema-gate-shell-source", "network");\n          // ${networkShellMarker}`,
+    await writeFile(
+      workerPath,
+      originalWorker.replace(
+        'event.respondWith(fetch(new Request(request, { cache: "reload" })));',
+        `event.respondWith(
+        fetch(new Request(request, { cache: "reload" })).then((response) => {
+          const headers = new Headers(response.headers);
+          headers.set("x-schema-gate-shell-source", "network");
+          return new Response(response.body, {
+            status: response.status,
+            statusText: response.statusText,
+            headers,
+          });
+        }),
+      );`,
+      ),
     );
-    assert.notEqual(originalWorker, updatedWorker);
-    await writeFile(workerPath, updatedWorker);
+    assert.notEqual(originalWorker, await readFile(workerPath, "utf8"));
     workerChanged = true;
     await writeFile(
       indexPath,
@@ -850,23 +862,6 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
           ),
         });
       }
-      if (url.pathname === "/api/worktree-disk")
-        return route.fulfill({
-          status: 200,
-          headers: { [API_SCHEMA_HASH_HEADER]: rendererHash },
-          json: {
-            baseBytes: 0,
-            bases: {},
-            error: null,
-            limitBytes: 0,
-            measure: "unmeasured",
-            scanning: false,
-            storageBytes: 0,
-            totalBytes: 0,
-            warning: false,
-            workers: {},
-          },
-        });
       if (
         route.request().method() === "POST" &&
         url.pathname === "/api/projects"
