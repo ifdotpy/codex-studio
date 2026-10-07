@@ -383,6 +383,12 @@ class Client:
         with self._lock(_remaining(deadline, 15)):
             if self.status()['state'] != 'stopped':
                 raise LinuxVMError('Stop the Linux VM before changing its resource limits.')
+            # A backend termination can leave its private image staging directory.
+            # The client lock proves that no other create operation uses it.
+            for abandoned in self.state_dir.glob('create-*'):
+                _remaining(deadline, 1)
+                if abandoned.is_dir() and not abandoned.is_symlink():
+                    shutil.rmtree(abandoned)
             manifest = self.state_dir / 'config.json'
             if manifest.exists():
                 current = json.loads(manifest.read_text())
