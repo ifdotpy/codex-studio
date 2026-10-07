@@ -23,6 +23,10 @@ def git(root, *arguments):
     return subprocess.check_output(['git', '-C', str(root), *arguments], text=True).strip()
 
 
+def progress(name):
+    print('Studio VM check: ' + name, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', required=True)
@@ -104,6 +108,7 @@ def main():
             assert command(worker, 'git', 'status', '--porcelain') == git(project, 'status', '--porcelain')
             assert command(worker, 'cat', 'tracked') == 'dirty'
             metrics['sourceIndexAndDirtyFiles'] = True
+            progress('source index and dirty files')
             (project / 'deleted').unlink()
             (project / 'tracked').write_text('later\n')
             build_base(runtime, project)
@@ -112,6 +117,7 @@ def main():
             assert command(later, 'python3', '-c', 'from pathlib import Path;print(Path("deleted").exists())') == 'False'
             assert command(worker, 'cat', 'tracked') == 'dirty'
             metrics['sourceDeltaAndSnapshotIsolation'] = True
+            progress('source delta and snapshot isolation')
             server = runtime.connect_agent(worker)
             catalog = server.call('model/list', {}, timeout=30)
             selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
@@ -145,6 +151,7 @@ def main():
             assert command(worker, 'git', 'branch', '--show-current') == 'result'
             assert command(worker, 'git', 'status', '--porcelain') == ''
             metrics['codexNativeModelCommit'] = True
+            progress('native Codex model commit')
             runtime.notification = notification
             handle = 'linux-worker:' + worker['id']
             before = remote.request('provider.rpc', {'handle':handle, 'action':'info'})
@@ -157,6 +164,7 @@ def main():
             assert before['pid'] == after['pid'] and before['generation'] == after['generation']
             restored_server.call('thread/read', {'threadId':worker['threadId']}, timeout=30)
             metrics['studioRestartSameNativeProcess'] = True
+            progress('Studio restart with the same native process')
             metrics['codexThreadId'] = worker['threadId']
             commit = command(worker, 'git', 'rev-parse', 'HEAD')
             fetch(remote, worker['id'], worker['cwd'], 'result', project)
@@ -164,6 +172,7 @@ def main():
             assert git(project, 'rev-parse', 'HEAD') == original_head
             assert (project / 'tracked').read_text() == 'later\n'
             metrics['guestCommitAndHostFetch'] = commit
+            progress('guest commit and host fetch')
             report = resources(runtime)
             assert report['allocatedDiskBytes'] > 0 and report['memory']['totalBytes'] > 0
             assert report['disk']['freeBytes'] > 0
@@ -180,6 +189,7 @@ def main():
             assert runtime.agent(worker['id'])['status'] == 'paused'
             assert command(worker, 'git', 'rev-parse', 'HEAD') == commit
             metrics['archiveAndRestore'] = True
+            progress('archive and restore')
             if args.claude:
                 from codex_claude import auth_metadata
                 account = {'provider':'claude', 'claudeOptions':{}}
@@ -194,6 +204,7 @@ def main():
                         runtime.put(db, 'agents', current)
                     bridge = runtime.connect_agent(runtime.agent(claude['id']))
                     catalog = bridge.call('model/list', {}, timeout=30)
+                    runtime.catalog = lambda key='default': catalog if key == 'native-claude' else fixture.CATALOG
                     selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
                     effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
                     with runtime.lock, runtime.db() as db:
@@ -218,6 +229,7 @@ def main():
                     assert completed.wait(360), 'The native Claude turn did not complete'
                     assert not runtime.agent(claude['id']).get('nativeFailureHold'), 'The Claude turn failed'
                     metrics['claudeNativeModelTurn'] = True
+                    progress('native Claude model turn')
                     runtime.notification = notification
         finally:
             for worker_id in workers:
