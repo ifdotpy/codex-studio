@@ -689,6 +689,64 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(len(self.forks()), 1)
         self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
 
+    def test_native_history_wait_becomes_local_monitor_wait_then_resumes_once(self):
+        from codex_runtime import ResponseTimeout
+        original = self.server.call
+        unavailable = [True]
+        def call(method, params, timeout=10):
+            if unavailable[0] and method == 'thread/items/list':
+                raise ResponseTimeout('thread/items/list response timed out; outcome unknown')
+            return original(method, params, timeout)
+        self.server.call = call
+        source = self.path.read_bytes()
+        self.runtime.send(self.a['id'], 'Continue while the server stays running.',
+                          message_id='native-then-monitor-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertEqual(waiting['contextRepairWait']['scope'], 'native')
+        attempt_id = waiting['startAttempt']['id']
+        unavailable[0] = False
+        self.monitor()
+        self.due()
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertIn('monitors: exact-active-monitor', waiting['error'])
+        self.assertEqual(waiting['contextRepairWait']['scope'], 'local')
+        self.assertFalse(waiting['startAttempt']['submitted'])
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['id'], attempt_id)
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(source, self.path.read_bytes())
+        with self.runtime.db() as db:
+            monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                           ('exact-active-monitor',)).fetchone()[0])
+            self.assertEqual(monitor, {'id':'exact-active-monitor', 'agent':self.a['id'],
+                                       'status':'running'})
+            self.assertEqual(tuple(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                              ('native-then-monitor-user',)).fetchone()),
+                             ('delivered', 'resumed-turn'))
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'native-then-monitor-user')
+
+    def test_unclassified_retry_error_preserves_native_wait_scope(self):
+        self.runtime.send(self.a['id'], 'Preserve the native wait.', message_id='unclassified-wait-user')
+        with patch.object(repair, '_optional_monitor_repair', return_value=False), \
+             patch.object(repair, '_local_idle', side_effect=repair._waiting('Native receipt pending', 'native')):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        with patch.object(repair, '_local_idle', side_effect=ValueError('The native thread is closed')):
+            self.due()
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['contextRepairWait']['scope'], 'native')
+        self.assertFalse(current['startAttempt']['submitted'])
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+
     def test_interrupted_receipt_requires_exact_old_turn_native_terminal_item(self):
         record = {'id':'missing-receipt','agent':self.a['id'],'stage':'interrupted','outcome':'unknown',
                   'threadId':self.tid,'accountKey':self.a['accountKey'],'turnId':'old-turn','callId':'old-call'}

@@ -1808,6 +1808,9 @@ def claim_context_wait(rt, db, agent):
             _local_idle(rt, db, agent, attempt['id'])
     except ValueError as error:
         wait.update(error=str(error), nextCheckAt=time.time() + 2)
+        detail = getattr(error, 'contextRepairWait', None)
+        if isinstance(detail, dict):
+            wait['scope'] = detail.get('scope', 'local')
         agent['error'] = str(error)
         rt.put(db, 'agents', agent)
         _schedule_task_wait_check(rt, db, agent, error)
