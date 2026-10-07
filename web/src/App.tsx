@@ -5,7 +5,6 @@ import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
-import { useWorktreeDisk } from "./hooks/useWorktreeDisk";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import { accountLimits } from "./usage/accountUsage";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
@@ -579,11 +578,6 @@ export default function App() {
   useTeamTokenRateStream(
     lead?.id,
     Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
-  );
-  const worktreeDisk = useWorktreeDisk(
-    Boolean(data?.stateDir),
-    workers.map((a) => a.id),
-    teamOpen || wideTeamOpen,
   );
   const readState = useChatReadState(
     data,
@@ -1500,7 +1494,6 @@ export default function App() {
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
       <WorkerCard
         agent={a}
-        disk={worktreeDisk?.workers[a.id]}
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
         deferred={deferredIds.has(a.id)}
@@ -1574,7 +1567,6 @@ export default function App() {
         workers={workers}
         answers={answerIds}
         deferred={deferredIds}
-        disk={worktreeDisk}
       />
       {/* The lead link is only useful from a worker chat. */}
       {lead && opened !== lead.id && (

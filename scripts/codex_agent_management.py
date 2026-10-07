@@ -12,7 +12,7 @@ def management_tools(tool, text):
     return [tool('orchestration_agent_manage',
         'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. '
         'archive hides an inactive worker, detaches and retains its image workspace, or removes a safe Studio Git worktree. It reports why a workspace stays. '
-        'archive_finished archives finished descendants with safe workspaces and reports freed bytes and kept workers. '
+        'archive_finished archives finished descendants with safe workspaces and reports kept workers. '
         'For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. '
         'Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. '
         'Retry archive with a new tool call after an image detach interruption or partial Git removal. The exact original Git link and archive ref are required. '
@@ -20,7 +20,7 @@ def management_tools(tool, text):
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
         'restore reattaches an archived image or recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its image. '
-        'list and list_archived are paged and include workspace disk use. inspect includes a worker size and team total. '
+        'list and list_archived are paged. '
         'maintenance_report lists old archived or deleted workspaces, bases, and Git worktrees; it does not remove them. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
         'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
@@ -69,18 +69,17 @@ def _team_agents(rt, db, root_id, *, include_deleted=False):
 
 
 def _cleanup_image_workspace(rt, agent_id):
-    from codex_workspace_images import archive_workspace, workspace_bytes
+    from codex_workspace_images import archive_workspace
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
     saved = agent.get('cleanedImageWorkspace') or {}
     retry_archive = saved.get('phase') == 'archiving'
     try:
         if not retry_archive:
-            before = workspace_bytes(agent_id)
             saved = {'source': agent.get('imageWorkspaceRepo'),
                      'path': agent.get('cwd'), 'mount': agent.get('imageWorkspaceMount'),
                      'createdAt': agent.get('imageWorkspaceCreatedAt'),
-                     'bytes': before, 'phase': 'archiving'}
+                     'bytes': None, 'phase': 'archiving'}
             with rt.lock, rt.db() as db:
                 current = rt.agent(agent_id, db)
                 current.update(imageWorkspacePhase='archiving',
@@ -95,7 +94,7 @@ def _cleanup_image_workspace(rt, agent_id):
                            imageWorkspacePhase='archived', cleanedImageWorkspace=saved)
             current['imageWorkspace'] = True
             rt.put(db, 'agents', current)
-        return {'state': 'archived', 'bytes': saved['bytes'],
+        return {'state': 'archived', 'bytes': saved.get('bytes'),
                 'freedBytes': saved['freedBytes']}
     except Exception as error:
         with rt.lock, rt.db() as db:
@@ -556,18 +555,6 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
     try:
         if info.get('registrationRepair') and _worktree_registration(repo, root) is None:
             _repair_worktree_registration(info)
-        # du can be slow on Chromium trees. A timeout leaves the byte count unknown.
-        try:
-            size = subprocess.run(['du', '-sk', root], check=True, capture_output=True,
-                                  timeout=180)
-            measured = int(size.stdout.split()[0]) * 1024
-        except (OSError, ValueError, subprocess.SubprocessError):
-            measured = None
-        with rt.lock, rt.db() as db:
-            a = rt.agent(agent_id, db)
-            if a.get('worktreeCleanup') == info:
-                a['worktreeCleanup']['bytes'] = measured
-                rt.put(db, 'agents', a)
         with rt.lock, rt.db() as db:
             a = rt.agent(agent_id, db)
             _authorize(rt, db, actor_id, epoch, a)
@@ -606,7 +593,7 @@ def _cleanup_worktree(rt, actor_id, agent_id, epoch, checked=None):
         a['cleanedWorktree'] = a['worktreeCleanup']
         a.pop('worktreeCleanup', None)
         rt.put(db, 'agents', a)
-    return {'state': 'removed', 'bytes': measured}
+    return {'state': 'removed', 'bytes': None}
 
 
 def _finished(a):
@@ -887,7 +874,7 @@ def worktree_maintenance_report(rt, actor_id, epoch=None):
                        ('worktree folder missing' if info and info.get('missing') else 'removable'),
                        'folderMissing': folder_missing})
     try:
-        from codex_workspace_images import base_bytes, base_status, list_workspaces
+        from codex_workspace_images import base_status, list_workspaces
     except ImportError:
         return {'worktrees': report, 'workspaces': [], 'bases': []}
     workspace_rows = []
@@ -908,12 +895,7 @@ def worktree_maintenance_report(rt, actor_id, epoch=None):
     bases = []
     for repo in sorted(repos):
         status = base_status(repo)
-        try:
-            size = base_bytes(repo)
-        except (OSError, RuntimeError, ValueError) as error:
-            size = None
-            status = {**status, 'error': status.get('error') or str(error)[:300]}
-        bases.append({'repo': repo, **status, 'bytes': size})
+        bases.append({'repo': repo, **status})
     return {'worktrees': report, 'workspaces': workspace_rows, 'bases': bases}
 
 
@@ -1057,24 +1039,18 @@ def manage_agent(rt, actor_id, args, epoch=None):
     with rt.lock, rt.db() as db:
         actor = _authorize(rt, db, actor_id, epoch)
         if action == 'list':
-            from codex_worktree_disk import management_view
             agents = [a for a in _team_agents(rt, db, actor['rootId'])
                       if a['id'] != actor_id
                       and not a.get('deletedAt')]
-            sizes, disk = management_view(rt, agents, db=db)
             rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
             page = rt.model_page(rows, args, [actor['rootId'], 'workers'])
-            page['items'] = [{**row, 'worktreeDisk': sizes[row['id']]} for row in page['items']]
-            return {**page, 'disk': disk}
+            return page
         if action == 'list_archived':
-            from codex_worktree_disk import management_view
             agents = [a for a in _team_agents(rt, db, actor['rootId'], include_deleted=True)
                       if a.get('agentArchive') and a.get('deletedAt')]
-            sizes, disk = management_view(rt, agents, db=db)
             rows = sorted((_brief(a) for a in agents), key=lambda x: x['id'])
             page = rt.model_page(rows, args, [actor['rootId'], 'archived_workers'])
-            page['items'] = [{**row, 'worktreeDisk': sizes[row['id']]} for row in page['items']]
-            return {**page, 'disk': disk}
+            return page
         target = rt.agent(args.get('agent_id'), db)
         _authorize(rt, db, actor_id, epoch, target)
         archived = target.get('agentArchive')
@@ -1131,14 +1107,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 return {'status': 'restored', 'agent': _brief(target), 'next': 'Use orchestration_send to resume with an instruction'}
             restore_identity = (target['epoch'], target['deletedAt'])
         if action == 'inspect':
-            from codex_worktree_disk import management_view
-            team = [a for a in _team_agents(rt, db, actor['rootId'], include_deleted=True)
-                    if a['id'] != actor_id
-                    and (not a.get('deletedAt') or a['id'] == target['id'])]
-            sizes, disk = management_view(rt, team, db=db)
             blockers = [] if archived else _blockers(rt, db, target, unassign_work=unassign_work)
-            return {'agent': {**_brief(target), 'worktreeDisk': sizes[target['id']]},
-                    'disk': disk, 'canArchive': not archived and not blockers,
+            return {'agent': _brief(target), 'canArchive': not archived and not blockers,
                     'blockers': blockers, 'schedulerAlive': rt.scheduler.is_alive()}
         if archived and action not in {'restore', 'archive'}: raise ValueError('Restore this worker before recovery')
         request_recovery = (rt.reconcile_tool_requests(db, target['id'])

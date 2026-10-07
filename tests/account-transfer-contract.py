@@ -26,7 +26,7 @@ class TransferContract(f.AccountContracts):
         super().setUp()
         self.store = transfer_store(self.runtime)
         self.lead_agent = self.lead()
-        self.set_agent(self.lead_agent['id'], status='complete', inFlight=False, threadId='native-source', turnId=None)
+        self.set_agent(self.lead_agent['id'], status='completed', inFlight=False, threadId='native-source', turnId=None)
         # The fake fork copies this exact current catalog from its source.
         from codex_native_tools import mark_current
         with self.runtime.lock, self.runtime.db() as db:
@@ -332,10 +332,10 @@ class TransferContract(f.AccountContracts):
 
     def test_destinations_have_independent_native_receipt_slots(self):
         same = self.lead()
-        self.set_agent(same['id'], status='complete', threadId=None)
+        self.set_agent(same['id'], status='completed', threadId=None)
         same_op = self.store.request(same['id'], self.other_key, str(uuid.uuid4()))
         opposite = self.runtime.create({'cwd': str(self.root), 'prompt': '', 'account_key': self.other_key}, draft=True)
-        self.set_agent(opposite['id'], status='complete', threadId=None)
+        self.set_agent(opposite['id'], status='completed', threadId=None)
         other_op = self.store.request(opposite['id'], 'default', str(uuid.uuid4()))
         original = self.source_server.submit
         independent = []
@@ -468,7 +468,7 @@ class TransferContract(f.AccountContracts):
         self.set_agent(aid,status='running',inFlight=True)
         op=self.start_transfer();self.tick()
         self.assertEqual(self.pending,[])
-        self.set_agent(aid,status='complete',inFlight=False)
+        self.set_agent(aid,status='completed',inFlight=False)
         self.tick();self.until(lambda:len(self.pending)==1)
         for _ in range(5):self.tick()
         self.assertEqual(len(self.pending),1)
@@ -578,7 +578,7 @@ class TransferContract(f.AccountContracts):
                 'id': 'claude-fixture', 'provider': 'claude', 'home': str(self.root / 'claude-home'),
                 'label': 'Claude fixture', 'status': 'ready'}
         claude = self.runtime.create({'name': 'Claude worker', 'prompt': 'Task'}, parent=self.lead_agent['id'], defer=True)
-        self.set_agent(claude['id'], provider='claude', accountKey='claude-fixture', status='complete', inFlight=False)
+        self.set_agent(claude['id'], provider='claude', accountKey='claude-fixture', status='completed', inFlight=False)
         op = self.start_transfer()
         self.assertEqual(set(self.receipt(op['id'])['members']),
                          {self.lead_agent['id'], idle['id'], queued['id'], running['id'], claude['id']})
@@ -647,13 +647,14 @@ class TransferContract(f.AccountContracts):
                 'id': 'claude-fixture', 'provider': 'claude', 'home': str(self.root / 'claude-home'),
                 'label': 'Claude fixture', 'status': 'ready'}
         self.set_agent(self.lead_agent['id'], provider='claude', accountKey='claude-fixture',
-                       workerDefaults={'accountKey': 'default'})
+                       workerDefaults={**self.runtime.agent(self.lead_agent['id'])['workerDefaults'],
+                                       'accountKey': 'default'})
         codex = self.runtime.create({'name': 'Codex worker', 'prompt': 'Task'},
                                     parent=self.lead_agent['id'], defer=True)
-        self.set_agent(codex['id'], status='complete', inFlight=False, threadId='native-codex', turnId=None)
+        self.set_agent(codex['id'], status='completed', inFlight=False, threadId='native-codex', turnId=None)
         claude = self.runtime.create({'name': 'Claude worker', 'prompt': 'Task'},
                                      parent=self.lead_agent['id'], defer=True)
-        self.set_agent(claude['id'], provider='claude', accountKey='claude-fixture', status='complete',
+        self.set_agent(claude['id'], provider='claude', accountKey='claude-fixture', status='completed',
                        inFlight=False, threadId='native-claude', turnId=None)
         request_id = str(uuid.uuid4())
         op = self.store.request(self.lead_agent['id'], self.other_key, request_id, scope='subagents')
@@ -690,7 +691,7 @@ class TransferContract(f.AccountContracts):
         self.assertEqual(self.runtime.agent(self.lead_agent['id'])['accountKey'], self.other_key)
         worker = self.runtime.create({'name': 'Old worker', 'prompt': 'Task'},
                                      parent=self.lead_agent['id'], defer=True)
-        self.set_agent(worker['id'], accountKey='default', status='complete', inFlight=False,
+        self.set_agent(worker['id'], accountKey='default', status='completed', inFlight=False,
                        threadId='native-worker', turnId=None)
         op = self.store.request(self.lead_agent['id'], self.other_key, str(uuid.uuid4()))
         self.assertEqual(op['members'][self.lead_agent['id']]['phase'], 'completed')

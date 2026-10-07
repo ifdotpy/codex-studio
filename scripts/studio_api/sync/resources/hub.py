@@ -37,7 +37,6 @@ from studio_api.sync.resources.models import (
     TranscriptsResource,
     TokenRateSnapshot,
     VoiceResource,
-    WorktreeDiskResource,
     WorkspaceResource,
 )
 
@@ -93,8 +92,6 @@ def _key(resource: ResourceRef) -> ResourceKey:
             return "voice", identity
         case SessionCostResource(agentId=identity):
             return "session-cost", identity
-        case WorktreeDiskResource(agentId=identity):
-            return "worktree-disk", identity
         case RoomResource(roomId=identity):
             return "room", identity
         case (TerminalsResource() | AccountsResource() | ModelsResource() | CostsResource()

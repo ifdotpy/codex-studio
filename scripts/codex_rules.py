@@ -69,6 +69,9 @@ class RulesMixin:
         db.execute(
             "CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)"
         )
+        db.execute("CREATE INDEX IF NOT EXISTS runtime_rule_ready_tick "
+                   "ON runtime_rules(json_extract(record,'$.status')) "
+                   "WHERE NOT COALESCE(json_extract(record,'$.inFlight'),0)")
         for r in self.records(db, "rules"):
             if r.get("kind") == "file" and "fileActivityAt" not in r:
                 r.update(fileActivityAt=time.time(), fileGeneration=0, stallWakeGeneration=-1,
@@ -299,7 +302,10 @@ class RulesMixin:
         snapshots = []
         with self.read_db() as db:
             read_owner = owner_reader(db)
-            for r in self.records(db, "rules"):
+            for (raw,) in db.execute(
+                    "SELECT record FROM runtime_rules WHERE json_extract(record,'$.status')='active' "
+                    "AND NOT COALESCE(json_extract(record,'$.inFlight'),0) ORDER BY rowid").fetchall():
+                r = json.loads(raw)
                 if r["status"] == "active" and not r.get("inFlight"):
                     a = read_owner(r["agent"])
                     snapshots.append((r, {field: a.get(field) for field in owner_fields}))
@@ -315,9 +321,9 @@ class RulesMixin:
             if self.closed:
                 return
             read_owner = owner_reader(db)
-            current_rules = {r["id"]: r for r in self.records(db, "rules")}
             for snapshot, owner in snapshots:
-                r = current_rules.get(snapshot["id"])
+                row = db.execute("SELECT record FROM runtime_rules WHERE id=?", (snapshot["id"],)).fetchone()
+                r = json.loads(row[0]) if row else None
                 # Another tick, edit, or stop invalidates the sampled configuration.
                 if r != snapshot:
                     continue

@@ -1,4 +1,4 @@
-"""Route tests for the analytics/cost/disk vertical slice."""
+"""Route tests for analytics and cost estimates."""
 
 from __future__ import annotations
 
@@ -332,28 +332,13 @@ class InsightsRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["totalUSD"], 7.5)
         self.assertFalse(response.json()["refreshing"])
 
-    def test_disk_query_is_validated_before_scanner_side_effect(self) -> None:
-        scanner = SimpleNamespace(
-            snapshot=lambda ids: {
-                "workers": {key: {"state": "ready", "bytes": 3, "measure": "allocated blocks"} for key in ids},
-                "totalBytes": 3,
-                "baseBytes": 0,
-                "storageBytes": 3,
-                "bases": {},
-                "limitBytes": 100,
-                "warning": False,
-                "scanning": False,
-                "error": None,
-                "measure": "allocated blocks",
-            }
-        )
-        with patch("codex_worktree_disk.scanner", return_value=scanner) as get_scanner:
+    def test_removed_disk_route_does_not_scan_worktrees(self) -> None:
+        with (
+            patch("os.scandir", side_effect=AssertionError("Unexpected folder scan")),
+            patch("os.walk", side_effect=AssertionError("Unexpected folder walk")),
+        ):
             response = self.client.get("/api/worktree-disk?workers=worker-a,worker-b")
-
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(set(response.json()["workers"]), {"worker-a", "worker-b"})
-        self.assertEqual(response.json()["storageBytes"], 3)
-        get_scanner.assert_called_once_with(Path("/state"))
+        self.assertEqual(response.status_code, 404)
 
     def test_export_stream_preserves_legacy_attachment_headers_and_json(self) -> None:
         response = self.client.get("/api/analytics?export=1")

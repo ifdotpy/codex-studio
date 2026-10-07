@@ -72,12 +72,6 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
     "imageWorkspaceRepo", "imageWorkspaceBaseRepo", "imageWorkspaceCreatedAt",
 )
-WORKTREE_DISK_AGENT_RESOURCE_FIELDS = (
-    "cwd", "worktree", "worktreeReady", "deletedAt", "imageWorkspace",
-    "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceRepo",
-    "imageWorkspaceBaseRepo", "imageWorkspaceCreatedAt",
-)
-
 
 @dataclass(frozen=True)
 class TokenRateObservation:
@@ -3088,7 +3082,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
-                ResourceRef, RoomResource, TaskResource, WorkspaceResource, WorktreeDiskResource,
+                ResourceRef, RoomResource, TaskResource, WorkspaceResource,
             )
 
             if table == "agents":
@@ -3098,13 +3092,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if workspace_agent_resource_changed(previous, record):
                     self._stage_resource_change(
                         db, ResourceRef(WorkspaceResource(kind="workspace", agentId=agent_id))
-                    )
-                if previous is None or any(
-                    previous.get(field) != record.get(field)
-                    for field in WORKTREE_DISK_AGENT_RESOURCE_FIELDS
-                ):
-                    self._stage_resource_change(
-                        db, ResourceRef(WorktreeDiskResource(kind="worktree-disk", agentId=agent_id))
                     )
                 if previous is not None and any(
                     previous.get(field) != record.get(field)

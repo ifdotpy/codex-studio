@@ -442,7 +442,9 @@ class AccountTransfers:
         rt = self.rt
         with rt.lock, rt.db() as db:
             referenced = set()
-            pending = [o for o in rt.records(db, 'account_transfers') if o.get('status') == 'pending']
+            pending = [json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_account_transfers "
+                "WHERE json_extract(record,'$.status')='pending' ORDER BY rowid")]
             # Read only agent records that can reference a pending transfer.
             transfer_agents = (db.execute(
                 "SELECT record FROM runtime_agents WHERE "

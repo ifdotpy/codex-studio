@@ -1,6 +1,4 @@
 import type { Agent, Snapshot } from "../../types";
-import type { WorktreeDiskSnapshot } from "../../hooks/useWorktreeDisk";
-import { TeamDiskTotal } from "../WorktreeDisk";
 
 type Request = NonNullable<Snapshot["runtime"]>["requests"][number];
 
@@ -55,12 +53,10 @@ export function TeamSummary({
   workers,
   answers,
   deferred,
-  disk,
 }: {
   workers: Agent[];
   answers: Set<string>;
   deferred: Set<string>;
-  disk?: WorktreeDiskSnapshot;
 }) {
   const count = (state: string) =>
     workers.filter((agent) => workerState(agent, answers, deferred) === state)
@@ -77,7 +73,6 @@ export function TeamSummary({
           ),
         )}
       </dl>
-      <TeamDiskTotal workers={workers} disk={disk} />
     </div>
   );
 }

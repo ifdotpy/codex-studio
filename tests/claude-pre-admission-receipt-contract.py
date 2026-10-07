@@ -67,12 +67,17 @@ class PreAdmission(fixture.Bridge):
 
     def assert_rejected(self, completed, status='failed'):
         self.assertEqual(completed['status'], status)
-        self.assertEqual(completed['error'].get('data'), {'turnStartOutcome': 'not_applied'})
+        data = completed['error']['data']
+        self.assertEqual(data['turnStartOutcome'], 'not_applied')
+        self.assertIn(data['claudePreparationPhase'], {
+            'catalog_flags', 'catalog_account_initialize', 'catalog_account_reinitialize',
+            'account_initialize', 'account_reinitialize'})
+        self.assertGreaterEqual(data['claudePreparationElapsedMs'], self.preparation_timeout_ms - 50)
         self.assertEqual(completed.get('startOutcome'), 'not_applied')
         saved = self.history()[0]
         self.assertEqual(saved['id'], completed['id'])
         self.assertEqual(saved['startOutcome'], 'not_applied')
-        self.assertEqual(saved['error']['data'], {'turnStartOutcome': 'not_applied'})
+        self.assertEqual(saved['error']['data'], data)
         self.assertEqual(self.admissions(), [])
         return saved
 

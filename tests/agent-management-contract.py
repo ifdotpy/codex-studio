@@ -122,18 +122,19 @@ class Contract(unittest.TestCase):
     def test_only_active_lead_can_manage_its_own_workers(self):
         for actor,target,epoch in [('worker','worker',1),('lead','foreign',1),('lead','lead',1),('lead','worker',0)]:
             with self.assertRaises(ValueError):manage_agent(self.rt,actor,{'action':'archive','agent_id':target,'reason':'x'},epoch)
-    def test_list_and_inspect_include_cached_worktree_disk_use(self):
-        disk = {'totalBytes': 4096, 'allWorkersBytes': 8192, 'limitBytes': 8192,
-                'warning': True, 'unmeasured': 0}
-        def view(_runtime, agents, **_kwargs):
-            return ({a['id']: {'state': 'ready', 'bytes': 4096} for a in agents}, disk)
-        with patch('codex_worktree_disk.management_view', side_effect=view):
+    def test_list_and_inspect_do_not_measure_worktree_sizes(self):
+        with (
+            patch('os.scandir', side_effect=AssertionError('Unexpected folder scan')),
+            patch('os.walk', side_effect=AssertionError('Unexpected folder walk')),
+        ):
             listed = self.call('list')
+            archived = self.call('list_archived')
             inspected = self.call('inspect')
-        self.assertEqual(listed['items'][0]['worktreeDisk']['bytes'], 4096)
-        self.assertEqual(listed['disk'], disk)
-        self.assertEqual(inspected['agent']['worktreeDisk']['bytes'], 4096)
-        self.assertEqual(inspected['disk'], disk)
+        self.assertNotIn('worktreeDisk', listed['items'][0])
+        self.assertNotIn('disk', listed)
+        self.assertNotIn('disk', archived)
+        self.assertNotIn('worktreeDisk', inspected['agent'])
+        self.assertNotIn('disk', inspected)
         with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):
             manage_agent(self.rt, 'worker', {'action': 'list'}, 1)
     def test_each_unfinished_operation_blocks_archive(self):
@@ -659,15 +660,14 @@ finally:
         self.assertEqual(cache.read_bytes(), b'old cache')
         self.assertNotIn(str(root.resolve()), self.git('worktree', 'list', '--porcelain'))
 
-    def test_tracked_change_during_slow_size_check_never_reaches_git_remove(self):
+    def test_tracked_change_before_removal_never_reaches_git_remove(self):
         import codex_agent_management as management
         root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
-        run = management.subprocess.run
-        def gated(command, **kwargs):
-            if command[:2] == ['du', '-sk']:
-                (root / 'tracked.txt').write_text('new user data')
-            return run(command, **kwargs)
-        with patch.object(management.subprocess, 'run', side_effect=gated):
+        check = management._worktree_removal_check
+        def gated(info):
+            (root / 'tracked.txt').write_text('new user data')
+            return check(info)
+        with patch.object(management, '_worktree_removal_check', side_effect=gated):
             result = self.call('archive')
         self.assertEqual(result['worktree']['state'], 'kept')
         self.assertEqual((root / 'tracked.txt').read_text(), 'new user data')
@@ -677,13 +677,12 @@ finally:
         import codex_agent_management as management
         root = self.repo / '.worktrees' / 'codex-agents' / 'worker'
         admin = Path((root / '.git').read_text().strip().split(': ', 1)[1])
-        run = management.subprocess.run
-        def gated(command, **kwargs):
-            if command[:2] == ['du', '-sk']:
-                (root / 'tracked.txt').write_text('new user data')
-                shutil.rmtree(admin)
-            return run(command, **kwargs)
-        with patch.object(management.subprocess, 'run', side_effect=gated):
+        check = management._worktree_removal_check
+        def gated(info):
+            (root / 'tracked.txt').write_text('new user data')
+            shutil.rmtree(admin)
+            return check(info)
+        with patch.object(management, '_worktree_removal_check', side_effect=gated):
             first = self.call('archive')
         self.assertEqual(first['worktree']['state'], 'kept')
         second = self.call('archive')
@@ -738,7 +737,7 @@ finally:
         _mount, image_repo, engine = self.image_workspace()
         (image_repo / 'draft.txt').write_text('unfinished')
         engine.archive_workspace = Mock(return_value={'freedBytes': 0, 'state': 'archived'})
-        engine.workspace_bytes = Mock(return_value=4096)
+        engine.workspace_bytes = Mock(side_effect=AssertionError('Unexpected folder size check'))
         calls = []
         def observe_archive(agent_id):
             with self.rt.db() as db:
@@ -754,8 +753,9 @@ finally:
         engine.archive_workspace.assert_called_once_with('worker')
         with self.rt.db() as db:
             saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
-        self.assertEqual(saved['bytes'], 4096)
+        self.assertIsNone(saved['bytes'])
         self.assertEqual(saved['freedBytes'], 0)
+        engine.workspace_bytes.assert_not_called()
 
     def test_archive_crash_retry_finishes_detach_without_losing_saved_record(self):
         mount, image_repo, engine = self.image_workspace()
@@ -781,9 +781,15 @@ finally:
         head = self.git('rev-parse', 'HEAD', cwd=path)
         (path / 'build').mkdir()
         (path / 'build' / 'cache').write_text('ignored bytes')
-        result = self.call('archive')
+        import codex_agent_management as management
+        run = management.subprocess.run
+        def no_measurement(command, **kwargs):
+            self.assertNotEqual(command[0], 'du', 'Archive must not measure its folder')
+            return run(command, **kwargs)
+        with patch.object(management.subprocess, 'run', side_effect=no_measurement):
+            result = self.call('archive')
         self.assertEqual(result['worktree']['state'], 'removed')
-        self.assertGreater(result['worktree']['bytes'], 0)
+        self.assertIsNone(result['worktree']['bytes'])
         self.assertFalse(path.exists())
         self.assertEqual(self.git('rev-parse', 'refs/codex-agents/archive/worker'), head)
         self.assertEqual(self.git('rev-parse', 'refs/heads/codex-agent/worker'), head)

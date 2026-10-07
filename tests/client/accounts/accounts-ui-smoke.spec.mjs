@@ -413,14 +413,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     }
     if (url.pathname === "/api/voice/records")
       return json({ records: [], delivered: [], cursor: 0 });
-    if (url.pathname === "/api/worktree-disk")
-      return json({
-        workers: {},
-        totalBytes: 0,
-        limitBytes: 0,
-        warning: false,
-        scanning: false,
-      });
     if (url.pathname.startsWith("/api/sync/")) {
       res.statusCode = 404;
       return json({ error: "Fixture uses HTTP snapshots" });

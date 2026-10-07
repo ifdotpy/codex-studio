@@ -1034,48 +1034,13 @@ def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
     if not state:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(agent_dir / '.workspace.lock'):
-        before = workspace_bytes(agent_id)
         mount = Path(state.get('mount') or _mount_path(agent_id))
         _get_backend().unmount_workspace(mount, force=True)
         _get_backend().remove_layer(agent_dir)
         shutil.rmtree(mount, ignore_errors=True)
         if state.get('repoKey'):
             _prune_base_versions(state['repoKey'])
-    return {'freedBytes': before or 0, 'state': 'removed'}
-
-
-def _allocated_bytes(path: Path):
-    if not path.exists():
-        return 0
-    total = 0
-    for current, dirs, files in os.walk(path, followlinks=False):
-        for name in dirs + files:
-            entry = Path(current) / name
-            try:
-                info = entry.lstat()
-            except OSError:
-                continue
-            if not entry.is_dir() or entry.is_symlink():
-                total += getattr(info, 'st_blocks', 0) * 512 or info.st_size
-    return total
-
-
-def workspace_bytes(agent_id) -> int:
-    state = _read_json(_agent_state_path(_safe_id(agent_id)), {}) or {}
-    if not state or not state.get('image'):
-        return 0
-    result = _get_backend().private_bytes(Path(state['image']))
-    return int(result) if result is not None else _allocated_bytes(Path(state['image']))
-
-
-def base_bytes(root) -> int:
-    folder = _root_path(root)
-    state = _read_json(_base_state_path(_repo_key(folder)), {}) or {}
-    if not state.get('image'):
-        return 0
-    image = Path(state['image'])
-    result = _get_backend().private_bytes(image)
-    return int(result) if result is not None else _allocated_bytes(image)
+    return {'freedBytes': None, 'state': 'removed'}
 
 
 def list_workspaces() -> list[dict[str, Any]]:

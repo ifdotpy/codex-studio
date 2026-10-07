@@ -61,7 +61,8 @@ class RolloutPathCache(unittest.TestCase):
             self.assertEqual(len(visits), count)
             self.clock[0] = 66.0
             self.assertEqual(self.lookup(), (self.path, None))
-            self.assertGreater(len(visits), count)
+            self.assertEqual(self.runtime._analytics_history_paths[str(self.home)][0], 66.0)
+            self.assertEqual(len(visits), count)
 
     def test_missing_file_is_found_after_cache_refresh(self):
         self.path.unlink()

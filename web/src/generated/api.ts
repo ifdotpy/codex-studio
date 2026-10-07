@@ -2019,23 +2019,6 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
-  "/api/worktree-disk": {
-    parameters: {
-      query?: never;
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    /** Worktree Disk */
-    get: operations["worktree_disk_api_worktree_disk_get"];
-    put?: never;
-    post?: never;
-    delete?: never;
-    options?: never;
-    head?: never;
-    patch?: never;
-    trace?: never;
-  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -5100,22 +5083,6 @@ export interface components {
       /** Path */
       path: string;
     };
-    /**
-     * DiskMeasure
-     * @enum {string}
-     */
-    DiskMeasure:
-      | "private on APFS"
-      | "private workspace bytes"
-      | "private base bytes"
-      | "allocated blocks"
-      | "mixed measures"
-      | "unmeasured";
-    /**
-     * DiskWorkerState
-     * @enum {string}
-     */
-    DiskWorkerState: "ready" | "missing" | "unavailable" | "unmeasured";
     /** DraftDocumentInput */
     DraftDocumentInput: {
       /**
@@ -8069,7 +8036,6 @@ export interface components {
       | components["schemas"]["SessionCostResource"]
       | components["schemas"]["CostsResource"]
       | components["schemas"]["DesktopResource"]
-      | components["schemas"]["WorktreeDiskResource"]
       | components["schemas"]["RoomResource"]
       | components["schemas"]["StateResource"]
       | components["schemas"]["DraftsResource"]
@@ -12168,55 +12134,6 @@ export interface components {
       tasksHistoryLimit?: number | null;
       /** Work */
       work?: components["schemas"]["WorkItem"][] | null;
-    };
-    /** WorktreeDiskResource */
-    WorktreeDiskResource: {
-      /** Agentid */
-      agentId: string;
-      /**
-       * @description discriminator enum property added by openapi-typescript
-       * @enum {string}
-       */
-      kind: "worktree-disk";
-    };
-    /** WorktreeDiskResponse */
-    WorktreeDiskResponse: {
-      /** Syncentities */
-      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
-      /** Basebytes */
-      baseBytes: number;
-      /** Bases */
-      bases: {
-        [key: string]: components["schemas"]["WorktreeDiskWorker"];
-      };
-      /** Error */
-      error: string | null;
-      /** Limitbytes */
-      limitBytes: number;
-      measure: components["schemas"]["DiskMeasure"];
-      /** Scanning */
-      scanning: boolean;
-      /** Storagebytes */
-      storageBytes: number;
-      /** Totalbytes */
-      totalBytes: number;
-      /** Warning */
-      warning: boolean;
-      /** Workers */
-      workers: {
-        [key: string]: components["schemas"]["WorktreeDiskWorker"];
-      };
-    };
-    /** WorktreeDiskWorker */
-    WorktreeDiskWorker: {
-      /** Bytes */
-      bytes?: number | null;
-      /** Error */
-      error?: string | null;
-      measure?: components["schemas"]["DiskMeasure"] | null;
-      /** Scannedat */
-      scannedAt?: number | null;
-      state: components["schemas"]["DiskWorkerState"];
     };
   };
   responses: never;
@@ -20948,46 +20865,6 @@ export interface operations {
         };
       };
       /** @description Bad Request */
-      400: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-      /** @description Local origin and session token required */
-      403: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["ErrorResponse"];
-        };
-      };
-    };
-  };
-  worktree_disk_api_worktree_disk_get: {
-    parameters: {
-      query?: {
-        workers?: string;
-      };
-      header?: never;
-      path?: never;
-      cookie?: never;
-    };
-    requestBody?: never;
-    responses: {
-      /** @description Successful Response */
-      200: {
-        headers: {
-          [name: string]: unknown;
-        };
-        content: {
-          "application/json": components["schemas"]["WorktreeDiskResponse"];
-        };
-      };
-      /** @description Invalid request */
       400: {
         headers: {
           [name: string]: unknown;

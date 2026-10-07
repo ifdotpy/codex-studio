@@ -1,4 +1,4 @@
-"""FastAPI routes for analytics, cost estimates, and worktree disk use."""
+"""FastAPI routes for analytics and cost estimates."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ import math
 import re
 import sqlite3
 from collections.abc import AsyncGenerator, Generator, Iterator
-from pathlib import Path
-from typing import TYPE_CHECKING, Annotated, Callable, Protocol, cast
+from typing import TYPE_CHECKING, Annotated, Protocol, cast
 from urllib.parse import parse_qs, urlsplit
 
 import anyio
@@ -22,8 +21,6 @@ from studio_api.insights.models import (
     AnalyticsResponse,
     SessionCostResponse,
     SessionCostQuery,
-    WorktreeDiskQuery,
-    WorktreeDiskResponse,
 )
 from studio_api.models import JsonValue
 
@@ -32,9 +29,6 @@ if TYPE_CHECKING:
 
 ANALYTICS_EXPORT_FILENAME = "codex-studio-analytics.json"
 ANALYTICS_CONTENT_TYPE = "application/json; charset=utf-8"
-MAX_WORKTREE_QUERY_LENGTH = 24_000
-MAX_WORKTREE_IDS = 500
-MAX_WORKER_ID_LENGTH = 128
 AGENT_ID_PATTERN = r"[A-Za-z0-9._:/-]{1,200}\Z"
 _END = object()
 
@@ -45,10 +39,6 @@ class AnalyticsRuntime(Protocol):
     def analytics_export_chunks(
         self, **options: str
     ) -> Generator[bytes, None, None]: ...
-
-
-class WorktreeScanner(Protocol):
-    def snapshot(self, priority_ids: list[str]) -> dict[str, JsonValue]: ...
 
 
 class CostSnapshotReader(Protocol):
@@ -193,32 +183,6 @@ def create_router(context: ApiContext) -> APIRouter:
         try:
             reader = cast(SessionCostSnapshotReader, context.session_costs())
             result = reader.snapshot(agent_id)
-        except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
-            return _error(context, request, error)
-        return context.send(request, result)
-
-    @router.get("/api/worktree-disk", response_model=WorktreeDiskResponse)
-    def worktree_disk(
-        request: Request, _query_schema: Annotated[WorktreeDiskQuery, Query()]
-    ) -> Response:
-        if context.runtime is None:
-            return _error(context, request, ValueError("Not found"), 404)
-        values = _query_first_values(request)
-        values["workers"] = values.get("workers", "")[:MAX_WORKTREE_QUERY_LENGTH]
-        try:
-            query = WorktreeDiskQuery.model_validate(values)
-        except ValidationError as error:
-            return _error(context, request, ValueError(str(error)))
-        worker_ids = [
-            value
-            for value in query.workers.split(",")
-            if value and len(value) <= MAX_WORKER_ID_LENGTH
-        ][:MAX_WORKTREE_IDS]
-        try:
-            from codex_worktree_disk import scanner
-
-            get_scanner = cast(Callable[[str | Path], WorktreeScanner], scanner)
-            result = get_scanner(context.canvas.root).snapshot(worker_ids)
         except (ValueError, RuntimeError, OSError, sqlite3.Error) as error:
             return _error(context, request, error)
         return context.send(request, result)
