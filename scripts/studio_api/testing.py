@@ -136,6 +136,13 @@ def read_runtime_state(runtime: Any, *, include_work: bool = True, db: Any = Non
     return state
 
 
+def read_runtime_records(runtime: Any, table: str) -> list[dict[str, Any]]:
+    """Read durable runtime records when a test is about storage semantics."""
+    with runtime.read_db() as db:
+        rows = db.execute(f"SELECT record FROM runtime_{table}").fetchall()
+    return [json.loads(row[0]) for row in rows]
+
+
 def read_session_token(get_json: JsonReader) -> str:
     """Read the CSRF token from the session endpoint."""
     token = get_json("/api/session")["token"]

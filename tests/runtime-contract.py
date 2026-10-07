@@ -192,7 +192,7 @@ class RuntimeContract(unittest.TestCase):
         )))
 
         store = SyncStore(self.runtime.db, lambda _agent: {})
-        store.generation_state()
+        store._ensure_versions()
         with self.runtime.db() as db:
             tables = {row[0] for row in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"

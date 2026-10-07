@@ -14,10 +14,7 @@ def _rooms(db):
 
 def _save(runtime, db, room):
     room['updated'] = time.time()
-    if hasattr(runtime, 'chat_rooms'):
-        runtime.put(db, 'rooms', room)
-    else:
-        runtime.put(db, 'rooms', room)
+    runtime.put(db, 'rooms', room)
 
 
 def _valid(runtime, db, room, ready=False):

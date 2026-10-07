@@ -740,28 +740,6 @@ class EntityFieldProducers(unittest.TestCase):
             release.set()
             thread.join(2)
 
-    def test_legacy_complaint_snapshot_order_stays_stable(self):
-        base = {"leadId": self.lead["id"], "author": self.lead["id"], "status": "open",
-                "created": 1.0, "readAt": None, "text": "T", "responses": [],
-                "recipient": "user", "version": 1}
-        records = [
-            {**base, "id": "A-plain-open", "updated": 10.0},
-            {**base, "id": "B-usertask-open-user-responded", "updated": 20.0,
-             "sourceType": "user_task", "responses": [{"id": "r", "author": "user", "text": "t",
-             "status": "in_progress", "at": 1.0}]},
-            {**base, "id": "C-plain-open", "updated": 30.0},
-            {**base, "id": "D-usertask-open", "updated": 5.0, "sourceType": "user_task"},
-            {**base, "id": "E-plain-responded", "updated": 40.0, "status": "in_progress",
-             "responses": [{"id": "r", "author": "user", "text": "t",
-                            "status": "in_progress", "at": 1.0}]},
-            {**base, "id": "F-to-lead-open", "updated": 15.0, "recipient": "lead"},
-        ]
-        with self.runtime.lock, self.runtime.db() as db:
-            for record in records:
-                self.runtime.put(db, "complaints", record)
-            summaries = self.runtime.complaint_summaries(db)
-            self.assertEqual([value["id"][0] for value in summaries], ["C", "B", "F", "A", "D", "E"])
-
     def test_workspace_notice_trim_refreshes_the_entity_after_the_trim(self):
         connection_id = "notice-trim-connection"
         self.runtime.connection_ids["default"] = connection_id

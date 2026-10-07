@@ -31,7 +31,7 @@ def runtime_fixture():
 
 
 class CanvasChatSeedContract(unittest.TestCase):
-    def test_seed_and_current_reseed_do_not_build_a_snapshot(self):
+    def test_seed_and_current_reseed_do_not_duplicate_entities(self):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-builder-") as directory:
             root = Path(directory)
@@ -41,8 +41,6 @@ class CanvasChatSeedContract(unittest.TestCase):
                                draft=True, defer=True)
                 canvas = Canvas(root)
                 canvas.runtime = runtime
-                runtime.snapshot = lambda **_kwargs: (_ for _ in ()).throw(AssertionError("snapshot called"))
-
                 with runtime.lock, runtime.db() as db:
                     db.execute("BEGIN IMMEDIATE")
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
@@ -341,25 +339,49 @@ class CanvasChatSeedContract(unittest.TestCase):
                        "orchestratorId": "missing-orchestrator", "orchestratorName": "Old orchestrator",
                        "runId": "run-1"}
                 wave_path.write_text(json.dumps([row]))
-                bad_path = root / "codex-swarm-status.unreadable.json"
-                bad_path.write_text("{")
+                second_path = root / "codex-swarm-status.s8b.json"
+                second_row = {"name": "Second wave worker", "threadId": "second-wave-thread",
+                              "turnStatus": "running", "runId": "run-2"}
+                second_path.write_text(json.dumps([second_row]))
+                bad_path = second_path
                 with runtime.lock, runtime.db() as db:
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    wave_entities = {
+                        json.loads(payload)["value"]["name"]: (key, json.loads(payload)["value"])
+                        for key, payload in db.execute(
+                            "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0"
+                        )
+                        if json.loads(payload)["value"].get("source") == "app-server"
+                    }
+                    self.assertEqual(set(wave_entities), {"Wave worker", "Second wave worker"})
+                    wave_id = wave_entities["Wave worker"][0]
+                    second_id = wave_entities["Second wave worker"][0]
+                    ref_id = next(
+                        key for key, payload in db.execute(
+                            "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0"
+                        )
+                        if json.loads(payload)["value"].get("source") == "orchestrator-reference"
+                    )
+                    bad_path.write_text("{")
                     from codex_sync_entities import _REPORTED_BAD_ENTITIES
                     _REPORTED_BAD_ENTITIES.discard(("agent", bad_path.name, "RuntimeError"))
+                    row.update(turnStatus="failed", orchestratorName="Updated orchestrator")
+                    wave_path.write_text(json.dumps([row]))
+                    db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
                     with self.assertLogs("codex_sync_entities", level="WARNING") as logged:
                         seed(db, runtime_owner=runtime, canvas_owner=canvas)
                     self.assertEqual(sum(bad_path.name in record.getMessage()
                                          for record in logged.records), 1)
-                    wave_id = next(value[0] for value in db.execute(
-                        "SELECT id,payload FROM sync_entities WHERE collection='agent'"
-                    ) if json.loads(value[1])["value"].get("source") == "app-server")
-                    ref_id = next(value[0] for value in db.execute(
-                        "SELECT id,payload FROM sync_entities WHERE collection='agent'"
-                    ) if json.loads(value[1])["value"].get("source") == "orchestrator-reference")
-                    row.update(turnStatus="failed", orchestratorName="Updated orchestrator")
-                    wave_path.write_text(json.dumps([row]))
-                    db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
-                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    wave_row = db.execute(
+                        "SELECT deleted,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (wave_id,),
+                    ).fetchone()
+                    second_row_stored = db.execute(
+                        "SELECT deleted,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (second_id,),
+                    ).fetchone()
+                    self.assertEqual(wave_row[0], 0)
+                    self.assertEqual(second_row_stored[0], 0)
                     wave_value = json.loads(db.execute(
                         "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (wave_id,)
                     ).fetchone()[0])["value"]
@@ -369,7 +391,21 @@ class CanvasChatSeedContract(unittest.TestCase):
                     self.assertEqual(wave_value["name"], "Wave worker")
                     self.assertEqual(wave_value["status"], "failed")
                     self.assertEqual(ref_value["name"], "Updated orchestrator")
-                    seq = db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0]
+                    self.assertEqual(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'"
+                    ).fetchone()[0], "2")
+
+                    second_row.update(turnStatus="completed")
+                    second_path.write_text(json.dumps([second_row]))
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    refreshed_second = json.loads(db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (second_id,)
+                    ).fetchone()[0])["value"]
+                    self.assertEqual(refreshed_second["status"], "completed")
+                    self.assertEqual(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'"
+                    ).fetchone()[0], "3")
+
                     wave_path.unlink()
                     db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
@@ -378,8 +414,6 @@ class CanvasChatSeedContract(unittest.TestCase):
                     ).fetchone()
                     self.assertIsNotNone(tombstone)
                     self.assertEqual(tombstone[0], 1)
-                    bad_path.unlink()
-                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
                     seq = db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0]
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
                     self.assertEqual(db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0], seq)

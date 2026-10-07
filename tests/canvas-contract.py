@@ -491,7 +491,7 @@ class CanvasContract(unittest.TestCase):
         self.assertTrue(self.canvas.transcript(key)["truncated"])
         self.assertEqual(self.canvas.transcript(key)["items"][0]["text"], "Tail")
 
-    def test_bad_status_is_skipped_and_legacy_board_is_ignored(self):
+    def test_bad_status_fails_visibly_and_legacy_board_is_ignored(self):
         alternate = Path(self.temp.name) / "other-board"
         alternate.mkdir()
         (alternate / "codex-board.json").write_text('{"claims":{"native":{"worker":"unknown","at":1}}}')
@@ -500,7 +500,8 @@ class CanvasContract(unittest.TestCase):
             self.assertNotIn("board", self.graph())
             self.assertNotIn("boardError", self.graph())
         (self.root / "codex-swarm-status.one.json").write_text("broken")
-        self.assertFalse(any(thread.get("name") == "broken" for thread in self.canvas.threads()))
+        with self.assertRaisesRegex(RuntimeError, "cannot read"):
+            self.canvas.threads()
 
     def test_worktree_disk_route_forwards_priority_ids(self):
         class RecordingScanner:

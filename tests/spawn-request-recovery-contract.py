@@ -14,7 +14,7 @@ import time
 import unittest
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from studio_api.testing import read_runtime_state
+from studio_api.testing import read_runtime_records
 from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location('spawn_fixture', Path(__file__).with_name('workspace-contract.py'))
@@ -49,7 +49,7 @@ class SpawnRequestRecovery(unittest.TestCase):
         return json.loads(result['contentItems'][0]['text'])
 
     def children(self):
-        return [a for a in read_runtime_state(self.runtime)['agents']
+        return [a for a in read_runtime_records(self.runtime, 'agents')
                 if a.get('parentId') == self.actor['id']]
 
     def request(self, action='get', request_id='batch-1'):

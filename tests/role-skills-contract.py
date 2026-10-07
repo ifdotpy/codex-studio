@@ -12,7 +12,7 @@ from unittest.mock import patch
 spec = importlib.util.spec_from_file_location("role_fixture", Path(__file__).with_name("workspace-contract.py"))
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
-from studio_api.testing import read_runtime_state
+from studio_api.testing import read_runtime_records, read_runtime_state
 
 
 class RoleSkillsContract(unittest.TestCase):
@@ -140,12 +140,12 @@ class RoleSkillsContract(unittest.TestCase):
         self.assertFalse(read_runtime_state(self.runtime)["requests"])
         self.runtime.request({"id": "permission", "method": "item/commandExecution/requestApproval", "params": {
             "threadId": worker["threadId"], "itemId": "cmd", "command": "restricted-command"}})
-        request = read_runtime_state(self.runtime)["requests"][-1]
+        request = read_runtime_records(self.runtime, "requests")[-1]
         self.assertEqual(request["rpcId"], "permission")
         self.assertEqual(request["status"], "pending")
         self.runtime.request({"id": "lead-question", "method": "item/tool/requestUserInput", "params": {
             "threadId": lead["threadId"], "questions": [{"id": "q", "question": "Choose scope"}]}})
-        self.assertTrue(any(r["rpcId"] == "lead-question" for r in read_runtime_state(self.runtime)["requests"]))
+        self.assertTrue(any(r["rpcId"] == "lead-question" for r in read_runtime_records(self.runtime, "requests")))
 
     def test_structured_worker_question_routes_once_to_lead(self):
         lead = self.start(self.lead())
@@ -169,7 +169,7 @@ class RoleSkillsContract(unittest.TestCase):
         message["params"]["threadId"] = lead["threadId"]
         message["params"]["turnId"] = lead["turnId"]
         self.runtime.notification(message)
-        request = read_runtime_state(self.runtime)["requests"][-1]
+        request = read_runtime_records(self.runtime, "requests")[-1]
         self.assertEqual(request["agent"], lead["id"])
         self.assertEqual(request["method"], "agent/asyncQuestion")
         self.assertTrue(request["params"]["questions"][0]["multiSelect"])

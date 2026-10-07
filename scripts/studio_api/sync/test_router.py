@@ -72,11 +72,6 @@ class StoreStub:
     def generation(self) -> int:
         return 3
 
-    def generation_state(self) -> dict[str, object]:
-        return {"protocol": 2, "workspaceId": "workspace-a", "generations": {
-            "state": 1, "transcripts": 1, "drafts": 1,
-        }}
-
     def draft_sequence(self) -> int:
         return self.drafts_revision
 
@@ -212,6 +207,10 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_request: Request, error: RequestValidationError) -> JSONResponse:
+        return JSONResponse({"error": str(error)}, status_code=400)
+
+    @app.exception_handler(ValueError)
+    async def service_error(_request: Request, error: ValueError) -> JSONResponse:
         return JSONResponse({"error": str(error)}, status_code=400)
 
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
@@ -379,6 +378,12 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
         self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 9, 20, False, 0, False, None))
 
+    def test_pull_without_scope_defaults_to_entity_scope(self) -> None:
+        context = ContextStub()
+        response = make_client(context).get("/api/sync/pull")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 0, 100, False, 0, False, None))
+
     def test_legacy_pull_scopes_return_bad_request(self) -> None:
         client = make_client(ContextStub())
         for scope in ("state", "state:chat"):
@@ -472,7 +477,8 @@ class SyncRouterTests(unittest.TestCase):
         response = make_client(ContextStub(), raise_server_exceptions=False).get(
             "/api/sync/pull?after=invalid&after=9"
         )
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
+        self.assertNotEqual(response.json(), {"error": "Invalid sync scope"})
 
     def test_entity_pull_reset_has_its_own_complete_response_variant(self) -> None:
         context = ContextStub()

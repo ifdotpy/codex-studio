@@ -115,22 +115,5 @@ class ToolRequestHTTP(unittest.TestCase):
         self.assertEqual((cancelled['stage'], cancelled['outcome']), ('cancelled', 'not_applied'))
         self.assertFalse(self.runtime.begin_tool_request(cancelled['id']))
 
-    def test_cli_list_and_get_do_not_fetch_full_state(self):
-        self.runtime.dynamic(self.message())
-        executable = Path(__file__).resolve().parents[1] / 'scripts' / 'codex-control'
-        with patch.object(self.canvas, 'snapshot', side_effect=AssertionError('The full state endpoint must not be used')) as snapshot:
-            for extra in [[], ['batch-1']]:
-                output = subprocess.run([sys.executable, str(executable), '--url', self.base, 'requests', self.actor['id'], *extra],
-                                        capture_output=True, text=True, timeout=5)
-                self.assertEqual(output.returncode, 0, output.stderr)
-                value = json.loads(output.stdout)
-                if extra:
-                    self.assertEqual(value['outcome'], 'applied')
-                    self.assertEqual(len(value['agents']), 2)
-                else:
-                    self.assertEqual(len(value['requests']), 1)
-            snapshot.assert_not_called()
-
-
 if __name__ == '__main__':
     unittest.main()

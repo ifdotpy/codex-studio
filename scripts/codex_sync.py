@@ -77,31 +77,6 @@ class SyncStore:
         with self._version_lock:  # type: ignore[attr-defined]  # typed-narrowing: lazily initialized with version reader
             return self._version_reader.execute('PRAGMA data_version').fetchone()[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 pragma result is dynamically typed
 
-    def generation_state(self) -> dict[str, Any]:
-        generation = self.generation()
-        revisions = self.transcript_revisions(generation)
-        return {"protocol": 2, **self.identity(), "generations": {
-            "state": generation, "transcripts": generation,
-            "drafts": self.draft_sequence()},
-            **({"transcriptRevisions": revisions} if revisions is not None else {})}
-
-    def transcript_revisions(self, generation: int) -> dict[str, int] | None:
-        """Read compact chat revisions once per committed database change."""
-        with self._version_lock:  # type: ignore[attr-defined]  # typed-narrowing: lazily initialized with version reader
-            cached = getattr(self, '_transcript_revisions_cache', None)
-            if cached is not None and cached[0] == generation:
-                return cached[1]  # type: ignore[no-any-return]  # typed-narrowing: legacy cache is lazily populated as revisions
-            try:
-                rows = self._version_reader.execute(
-                    "SELECT a.id,COALESCE(r.revision,0) FROM runtime_agents a "
-                    "LEFT JOIN runtime_transcript_revisions r ON r.agent=a.id",
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return None
-            revisions = {agent: int(revision) for agent, revision in rows}
-            self._transcript_revisions_cache = (generation, revisions)
-            return revisions
-
     def entity_sequence(self) -> int:
         from codex_sync_entities import max_seq
         with self.connection("SyncStore.entity_sequence") as db:

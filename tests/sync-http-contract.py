@@ -49,25 +49,7 @@ with tempfile.TemporaryDirectory() as directory:
                 raise AssertionError(f'removed route still exists: {removed}')
             except urllib.error.HTTPError as error:
                 assert error.code in (404, 405)
-        status_file = Path(directory) / 'codex-swarm-status.legacy-contract.json'
-        status_file.write_text(json.dumps([{
-            'name': 'Legacy fixture', 'threadId': 'a' * 36, 'runId': 'b' * 36,
-            'wave': 'legacy-contract', 'launcherPid': os.getpid(),
-            'turnStatus': 'running', 'cwd': directory,
-        }]))
-        deadline = time.monotonic() + 5
-        projection = get('/api/sync/pull?scope=state')
-        while time.monotonic() < deadline:
-            payload = json.loads(projection['documents'][0]['payload'])
-            if any(row['name'] == 'Legacy fixture' for row in payload['threads']):
-                break
-            time.sleep(.05)
-            projection = get('/api/sync/pull?scope=state')
-        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
-        payload = json.loads(projection['documents'][0]['payload'])
-        assert 'runtime' in payload and 'threads' in payload and 'token' not in payload
-        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
-        assert projection['workspaceId'] == identity['workspaceId']
+        # Status-file changes after initial seed are not entity-store writes.
         entities = get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100')
         assert entities['workspaceId'] == identity['workspaceId']
         assert entities['documents'] and all(row['id'].startswith('entity:') for row in entities['documents'])

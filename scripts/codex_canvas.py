@@ -142,20 +142,21 @@ class Canvas:
         finally:
             db.close()
 
-    def threads(self, runtime_agents=None, db=None):
+    def threads(self, runtime_agents=None, db=None, *, status_errors=None):
         if db is None:
             with self.connect() as own:
                 own.execute("PRAGMA query_only=ON")
                 own.execute("BEGIN")
-                return self.threads(runtime_agents, db=own)
+                return self.threads(runtime_agents, db=own, status_errors=status_errors)
         rows = []
         for path in sorted(self.root.glob("codex-swarm-status.*.json")):
             wave = path.name.removeprefix("codex-swarm-status.").removesuffix(".json")
             try:
                 rows.extend(read_threads(self.root, wave))
             except Exception as error:
-                from codex_sync_entities import _report_bad_entity
-                _report_bad_entity("agent", path.name, error)
+                if status_errors is None:
+                    raise
+                status_errors.append((path.name, error))
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
             row["status"] = effective_status(row)

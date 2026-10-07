@@ -90,9 +90,10 @@ class FakeRuntime:
         self.send_calls = []
         self.receipt_error = None
 
-    def snapshot(self, *, include_work=True):
-        return {
-            "agents": [{
+    def records(self, _db, table, *, shared=False):
+        if table != "agents":
+            return []
+        return [{
                 "id": "managed-agent",
                 "rootId": "managed-agent",
                 "name": "Managed agent",
@@ -102,10 +103,6 @@ class FakeRuntime:
                 "canSend": True,
                 "launcherAlive": True,
             }]
-        }
-
-    def records(self, _db, table, *, shared=False):
-        return self.snapshot().get(table, [])
 
     def agent_entity_view(self, _db, record):
         return record

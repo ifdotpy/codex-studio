@@ -104,6 +104,20 @@ class Conversion(unittest.TestCase):
             self.assertEqual(self.rt.records(db, 'monitors')[0]['agent'], worker['id'])
             self.assertEqual(json.loads(db.execute("SELECT record FROM runtime_items WHERE agent=? AND json_extract(record,'$.text')=?", (self.a["id"], "The original report")).fetchone()[0])["text"], 'The original report')
 
+    def test_conversion_tombstones_private_room_with_deleted_member(self):
+        deleted = self.rt.create({'name': 'Deleted member', 'cwd': self.path, 'prompt': 'Unused'}, defer=True)
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'rooms', {'id': 'unavailable-private', 'rootId': self.a['id'],
+                'kind': 'private', 'updated': 1, 'members': [deleted['id']]})
+        self.change(deleted['id'], deletedAt=1)
+        manage(self.rt, self.body)
+        with self.rt.db() as db:
+            row = db.execute(
+                "SELECT deleted FROM sync_entities WHERE collection='room' AND id='unavailable-private'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], 1)
+
     def test_busy_descendants_commands_permissions_watches_and_transfer_records(self):
         self.change(self.a['id'], autoWake=True)
         worker = self.rt.create({'name': 'Child', 'prompt': 'Child', 'role': 'reviewer'}, parent=self.a['id'], defer=True)

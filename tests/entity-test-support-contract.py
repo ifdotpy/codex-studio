@@ -11,16 +11,17 @@ from pathlib import Path
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from entity_test_support import capacity_retry, context_repair_wait, usage_resume
-from studio_api.sync.models import CapacityRetryDto, ContextRepairWaitDto, UsageResumeDto
+from studio_api.sync.models import AgentEntityContextRepairWaitDto, CapacityRetryDto, UsageResumeDto
 
 
 class EntityTestSupportContract(unittest.TestCase):
     def test_context_repair_wait_fixture_matches_persisted_model(self):
         value = context_repair_wait(stage="pending", reason="fixture marker")
-        parsed = ContextRepairWaitDto.model_validate(value)
+        parsed = AgentEntityContextRepairWaitDto.model_validate({
+            "error": value["error"], "scope": value["scope"],
+        })
         self.assertEqual(parsed.error, value["error"])
         self.assertEqual(parsed.scope, value["scope"])
-        self.assertEqual(parsed.model_dump(mode="json", exclude_unset=True)["events"], value["events"])
 
     def test_capacity_retry_fixture_matches_persisted_model(self):
         parsed = CapacityRetryDto.model_validate(capacity_retry())

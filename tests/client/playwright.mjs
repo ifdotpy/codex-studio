@@ -192,7 +192,6 @@ export const browserExecutablePath =
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
-/** @typedef {SyncIdentityResponse & { chatState: true }} FixtureSyncIdentityResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceChangeEvent"]} ResourceChangeEvent */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
@@ -630,7 +629,7 @@ function entityValuesFromSnapshot(snapshot) {
   return values;
 }
 
-/** @param {string} [workspaceId] @returns {FixtureSyncIdentityResponse} */
+/** @param {string} [workspaceId] @returns {SyncIdentityResponse} */
 export function syncIdentityFixture(
   workspaceId = randomUUID().replaceAll("-", ""),
 ) {
@@ -638,7 +637,7 @@ export function syncIdentityFixture(
     throw new Error(
       "Sync fixture workspaceId must match the server's 32-hex identity",
     );
-  return { workspaceId, syncProtocol: 2, chatState: true };
+  return { workspaceId, syncProtocol: 2 };
 }
 
 /** @param {{ unixSocket?: boolean }} [options] @returns {SyncProtocolResponse} */
@@ -954,34 +953,6 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       checkpoint: { seq: after < high ? high : after },
     };
   }
-  if (scope === "state") {
-    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
-    const document = generatedSyncEntity({
-      id: "state",
-      seq: 1,
-      payload: JSON.stringify(snapshot),
-      _deleted: false,
-    });
-    return {
-      generation,
-      documents: after < 1 ? [document].slice(0, limit) : [],
-      checkpoint: { seq: after < 1 ? 1 : after },
-    };
-  }
-  if (scope === "state:chat") {
-    const limit = Math.min(100, Math.max(1, options.limit ?? 100));
-    const document = generatedSyncEntity({
-      id: "state:chat",
-      seq: 1,
-      payload: JSON.stringify(snapshot),
-      _deleted: false,
-    });
-    return {
-      generation,
-      documents: after < 1 ? [document].slice(0, limit) : [],
-      checkpoint: { seq: after < 1 ? 1 : after },
-    };
-  }
   if (scope !== "state:entities:v1")
     throw new Error(`Unsupported fixture pull scope: ${scope}`);
 
@@ -1078,8 +1049,6 @@ export function validateSyncPullRequest(requestUrl) {
     numbers[key] = Number(raw);
   }
   const supportedScope =
-    scope === "state" ||
-    scope === "state:chat" ||
     scope === "state:entities:v1" ||
     scope === "drafts" ||
     (scope.startsWith("transcript:") && scope.length < 300);

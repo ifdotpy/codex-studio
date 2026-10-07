@@ -8066,29 +8066,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "responder": "user", "response": response}, ensure_ascii=False), "complaint-response:" + key)
             return self.save_receipt(db, key, signature, c)
 
-    def complaint_summaries(self, db):
-        complaints = self.records(db, "complaints")
-        agent_ids = sorted({value for complaint in complaints
-                            for value in (complaint.get("author"), complaint.get("leadId"))
-                            if isinstance(value, str) and value != "user"})
-        agents = {}
-        if agent_ids:
-            marks = ",".join("?" for _ in agent_ids)
-            agents = {agent["id"]: agent for agent in
-                      (json.loads(row[0]) for row in db.execute(
-                          f"SELECT record FROM runtime_agents WHERE id IN ({marks})", agent_ids))}
-        result = [self.complaint_entity_view(db, c, agents) | {"text": c["text"], "responses": c["responses"]}
-                  for c in complaints]
-        for summary, source in zip(result, complaints):
-            # Keep the legacy snapshot payload stable; needsUserResponse is an
-            # entity-only, viewer-independent replacement for the old rule.
-            summary.pop("needsUserResponse", None)
-            summary["needsResponse"] = self.complaint_needs_response(source)
-            lead = agents.get(source.get("leadId"), {})
-            summary["leadStopped"] = not lead.get("autoWake", False)
-            summary["leadDeleted"] = bool(lead.get("deletedAt"))
-        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
-
     def complaint_entity_view(self, db, complaint, agents=None):
         """Build viewer-independent complaint entity fields from their named sources."""
         if agents is None:

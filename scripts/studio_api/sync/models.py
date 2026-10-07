@@ -5,8 +5,6 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
-from studio_api.system.models import SupervisorIdentity
-
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -53,15 +51,6 @@ class AgentRole(ContractStrEnum):
     AGENT = "agent"
     IMPLEMENTER = "implementer"
     REVIEWER = "reviewer"
-
-
-class GoalStatus(ContractStrEnum):
-    ACTIVE = "active"
-    COMPLETE = "complete"
-    BLOCKED = "blocked"
-    PAUSED = "paused"
-    BUDGET_LIMITED = "budgetLimited"
-    USAGE_LIMITED = "usageLimited"
 
 
 class AgentMode(ContractStrEnum):
@@ -159,16 +148,6 @@ class ReadStateDto(ContractModel):
     turnId: str
     read: bool
     revision: int
-
-
-class ContextRepairWaitDto(ContractModel):
-    model_config = ConfigDict(extra="allow", strict=True)
-    __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
-    error: str
-    scope: str
-    at: float | None = None
-    readOnly: bool | None = None
-    action: str | None = None
 
 
 class ConnectionCheckDto(ContractModel):
@@ -485,41 +464,6 @@ class CapacityRetrySettingsDto(ExecutionSettingsDto):
     role: AgentRole | None = None
 
 
-class NativeActionIdentityDto(ContractModel):
-    accountKey: str
-    threadId: str
-    epoch: int
-
-
-class ReviewUncommittedTargetDto(ContractModel):
-    type: Literal["uncommittedChanges"]
-
-
-class ReviewBaseBranchTargetDto(ContractModel):
-    type: Literal["baseBranch"]
-    branch: str
-
-
-class ReviewCommitTargetDto(ContractModel):
-    type: Literal["commit"]
-    sha: str
-    title: str | None = None
-
-
-class ReviewCustomTargetDto(ContractModel):
-    type: Literal["custom"]
-    instructions: str
-
-
-ReviewTargetDto = Annotated[
-    ReviewUncommittedTargetDto
-    | ReviewBaseBranchTargetDto
-    | ReviewCommitTargetDto
-    | ReviewCustomTargetDto,
-    Field(discriminator="type"),
-]
-
-
 class AgentOverview(ContractModel):
     task: str | None = None
     taskTruncated: bool | None = None
@@ -632,24 +576,6 @@ class AgentEntityDto(ContractModel):
     lastEvent: str | None = None
     accountTransferId: str | None = None
     workspaceOperation: str | None = None
-
-
-class StartOutcomeHoldDto(ContractModel):
-    stage: Literal["held"]
-    at: float
-    attemptId: str
-    threadId: str
-    connectionId: str
-    evidence: Literal["complete_history_absent_idle_twice_journal_drained"]
-
-
-class TurnRecoveryDto(ContractModel):
-    at: float
-    turnId: str | None
-    outcome: Literal["input_absent", "idle", "completed", "failed", "interrupted"]
-    source: Literal["replaced_native_child", "native_thread_read"]
-    attemptId: str | None = None
-    latestTurnId: str | None = None
 
 
 class RoomKind(ContractStrEnum):

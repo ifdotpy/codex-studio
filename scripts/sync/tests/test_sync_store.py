@@ -47,14 +47,11 @@ class SyncStoreTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_identity_and_generation_state_match_production_api(self):
+    def test_identity_has_no_legacy_chat_state_flag(self):
         identity = self.store.identity()
         self.assertEqual(identity["syncProtocol"], 2)
         self.assertIn("workspaceId", identity)
         self.assertNotIn("chatState", identity)
-        state = self.store.generation_state()
-        self.assertEqual(state["generations"]["state"], state["generations"]["transcripts"])
-        self.assertIn("transcriptRevisions", state)
 
     def test_legacy_state_scopes_are_rejected(self):
         for scope in ("state", "state:chat"):
@@ -81,18 +78,6 @@ class SyncStoreTests(unittest.TestCase):
                 "AND name LIKE 'sync_transcript_revision_%'"
             )}
         self.assertEqual(second, first)
-
-    def test_runtime_item_churn_advances_shared_generation_and_agent_revision(self):
-        with self.connect() as db:
-            db.execute("INSERT INTO runtime_agents VALUES ('chat','{}')")
-        before = self.store.generation_state()
-        with self.connect() as db:
-            db.execute("INSERT INTO runtime_items VALUES ('item','chat','{}',1)")
-
-        after = self.store.generation_state()
-        self.assertGreater(after["generations"]["state"], before["generations"]["state"])
-        self.assertEqual(after["generations"]["state"], after["generations"]["transcripts"])
-        self.assertEqual(after["transcriptRevisions"]["chat"], 1)
 
     def test_transcript_pull_produces_full_then_sparse_delta(self):
         first = self.store.pull("transcript:chat")

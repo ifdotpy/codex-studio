@@ -374,9 +374,7 @@ class WorkspaceContract(unittest.TestCase):
         self.assertEqual(scoped["tasksHistoryLimit"], 100)
         self.assertFalse(any({"tail", "arguments", "error"} & item.keys() for item in scoped["tasks"]))
         global_state = self.runtime.workspace_snapshot()
-        runtime_state = read_runtime_state(self.runtime)
         for field in ["tasks", "monitors"]:
-            self.assertEqual(global_state[field], runtime_state[field])
             self.assertEqual(len(global_state[field]), 102)
             self.assertEqual({item["agent"] for item in global_state[field] if item["status"] != "running"}, {other["id"]})
 
