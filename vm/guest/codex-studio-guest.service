@@ -1,0 +1,32 @@
+[Unit]
+Description=Codex Studio Linux guest service
+After=local-fs.target network-online.target codex-studio-grow.service
+Requires=codex-studio-grow.service
+Wants=network-online.target
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathIsMountPoint=/var/lib/codex-studio
+
+[Service]
+Type=notify
+User=studio
+Group=studio
+Environment=HOME=/home/studio
+Environment=CODEX_WORKSPACE_STORE=/var/lib/codex-studio/workspaces
+WorkingDirectory=@REPO@
+ExecStart=/usr/bin/python3 @REPO@/vm/guest/service.py
+Restart=on-failure
+RestartSec=2
+TimeoutStartSec=15
+TimeoutStopSec=10
+# Detached provider owners and mount namespaces survive a service restart.
+KillMode=process
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=full
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
