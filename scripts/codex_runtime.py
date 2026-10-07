@@ -4837,6 +4837,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return root, directory, prefix
 
     def image_base_completed(self, agent_id, status):
+        with self.lock:
+            guard = self.prepare_locks.setdefault(agent_id, threading.Lock())
+        # Directory and permission changes must follow the exact native receipt.
+        # The guard also covers preparation before its operation is registered.
+        with guard:
+            with self.lock:
+                operation = self.preparations.get(agent_id)
+                if operation and not operation["future"].done():
+                    if not operation.get("imageBaseCompletionPending"):
+                        operation["imageBaseCompletionPending"] = True
+                        operation["future"].add_done_callback(
+                            lambda done: self.pool.submit(self.image_base_completed, agent_id, status)
+                            if not self.closed else None)
+                    return
+            self.complete_image_workspace(agent_id, status)
+
+    def complete_image_workspace(self, agent_id, status):
         workspace = None
         workspace_attempted = False
         try:
@@ -5234,7 +5251,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             try:
                 self.start_image_base(a["imageWorkspaceRepo"], a["id"])
             except Exception as error:
-                self.image_base_completed(a["id"], {"state": "failed", "error": str(error)})
+                self.pool.submit(self.image_base_completed, a["id"],
+                                 {"state": "failed", "error": str(error)})
         elif a.get("imageWorkspacePhase") == "fallback" and not a.get("imageWorkspaceNoticeSent"):
             fallback = ("Studio will use a Git worktree." if a.get("imageWorkspaceHasGit")
                         else "Studio will use the original folder.")
