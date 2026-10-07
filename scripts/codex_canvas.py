@@ -29,6 +29,8 @@ AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
 SHUTDOWN_THREAD_LIMIT = 16
 SHUTDOWN_STACK_LIMIT = 32
+SHUTDOWN_TIMEOUT_SECONDS = 60
+SHUTDOWN_POLL_SECONDS = 0.05
 
 
 HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
@@ -643,46 +645,104 @@ def record_shutdown_threads():
             pass
 
 
+class BackendShutdown:
+    """Defer signal work and bound the entire process shutdown."""
+
+    def __init__(self):
+        self.request = None
+        self.logged = False
+        self.finished = False
+        self.timeout_seconds = SHUTDOWN_TIMEOUT_SECONDS
+
+    def terminate(self, number, _frame):
+        # A signal can interrupt a response, a lock, or stderr itself.
+        # Do not raise, log, or acquire a lock in this handler.
+        if self.request is None:
+            self.request = (number, time.monotonic())
+
+    def requested(self):
+        request = self.request
+        if request is None:
+            return False
+        if not self.logged:
+            self.logged = True
+            print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                              "signal": request[0], "at": time.time(),
+                              "timeoutSeconds": self.timeout_seconds}),
+                  file=sys.stderr, flush=True)
+        return True
+
+    def watch(self):
+        while True:
+            request = self.request
+            if request is not None:
+                if time.monotonic() - request[1] >= self.timeout_seconds:
+                    # Cleanup, the event loop, or interpreter thread joins can
+                    # stall. Keep this path independent of their locks and logs.
+                    os._exit(1)
+            elif self.finished:
+                return
+            time.sleep(SHUTDOWN_POLL_SECONDS)
+
+
 def main():
     raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
-    def terminate(_signal, _frame):
-        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
-                          "signal": _signal, "at": time.time()}), file=sys.stderr, flush=True)
-        raise KeyboardInterrupt
-    signal.signal(signal.SIGTERM, terminate)
+    shutdown = BackendShutdown()
+    # Prepare the watchdog before signals can request shutdown. A daemon still
+    # runs while Python waits for non-daemon threads after main returns.
+    threading.Thread(target=shutdown.watch, name="backend-shutdown", daemon=True).start()
+    previous_handlers = {number: signal.getsignal(number)
+                         for number in (signal.SIGTERM, signal.SIGINT)}
+    for number in previous_handlers:
+        signal.signal(number, shutdown.terminate)
     runtime = None
     server = None
     updates = None
+    unix_thread = None
     try:
         from codex_runtime import Runtime
+        if shutdown.requested():
+            return
         canvas = Canvas()
         # Bind first so a port collision cannot disturb an existing runtime.
         server = make_server(canvas, args.port, unix_socket=True)
+        if shutdown.requested():
+            return
         if server.unix_server:
             unix_thread = threading.Thread(target=server.unix_server.serve_forever,
-                                           kwargs={"poll_interval": 0.5}, daemon=True)
+                                           kwargs={"poll_interval": 0.5,
+                                                   "shutdown_requested": shutdown.requested}, daemon=True)
             unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
+        if shutdown.requested():
+            return
         from codex_live_updates import start as start_updates
         updates = start_updates(runtime)
         print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
-        server.serve_forever(poll_interval=0.5)
+        server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
-        if updates:
-            updates.close()
-        if server:
-            if server.unix_server:
-                server.unix_server.shutdown()
-                server.unix_server.server_close()
-            server.server_close()
-        if runtime:
-            runtime.close()
-        record_shutdown_threads()
+        try:
+            shutdown.requested()
+            if server:
+                server.shutdown()
+            if unix_thread:
+                unix_thread.join(timeout=15)
+            if updates:
+                updates.close()
+            if server:
+                server.server_close()
+            if runtime:
+                runtime.close()
+            record_shutdown_threads()
+        finally:
+            shutdown.finished = True
+            for number, handler in previous_handlers.items():
+                signal.signal(number, handler)
