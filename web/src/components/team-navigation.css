@@ -36,7 +36,7 @@
   padding: 5px 4px;
   border-radius: 6px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   white-space: nowrap;
   text-align: center;
 }
@@ -68,12 +68,12 @@
   margin: 0;
   padding: 4px 8px 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   font-weight: 500;
 }
 
 .team-status-group h3 span {
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -91,7 +91,7 @@
   margin: 0;
   padding: 2px 8px 12px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 1.5;
 }
 
@@ -107,15 +107,15 @@
 }
 
 .team-overview dl {
-  display: grid;
-  gap: 3px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
   margin: 0;
 }
 
 .team-overview dl > div {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 4px;
 }
 
 .team-overview dt {
@@ -176,7 +176,7 @@
 .worker-excerpt {
   min-width: 0;
   padding-left: 12px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 1.5;
 }
 
@@ -201,12 +201,12 @@
   gap: 4px;
   margin-bottom: 2px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 
 .worker-excerpt-preview {
   display: -webkit-box;
-  -webkit-line-clamp: 2;
+  -webkit-line-clamp: 1;
   -webkit-box-orient: vertical;
   overflow: hidden;
   overflow-wrap: anywhere;
@@ -234,13 +234,13 @@
   margin: 0;
   padding-left: 12px;
   color: var(--muted);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
 }
 
 .team-button-count {
   margin-left: 6px;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   font-variant-numeric: tabular-nums;
 }
 
@@ -248,7 +248,7 @@
 #team .worker-error,
 #team .worker-stop-reason {
   color: light-dark(#a52c3c, #e7a0a6);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 1.5;
   margin-top: 8px;
   display: -webkit-box;
@@ -263,7 +263,7 @@
 .worker-stop-details {
   min-width: 0;
   padding-left: 12px;
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
 }
 .worker-error-details summary,
@@ -282,16 +282,16 @@
   border-radius: 8px;
   color: var(--text);
   background: var(--surface);
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   line-height: 1.5;
   user-select: text;
 }
 #team .worker-entry {
-  padding: 12px;
-  margin-bottom: 8px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: var(--surface);
+  padding: 8px 7px;
+  margin-bottom: 2px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
 }
 #team .worker-text strong {
   font-weight: 550;
@@ -301,4 +301,11 @@
 }
 #team.team-compact .team-heading {
   padding-bottom: 16px;
+}
+
+#team .worker-model-summary {
+  font-size: var(--studio-text-meta);
+}
+#team .worker-heading {
+  align-items: center;
 }

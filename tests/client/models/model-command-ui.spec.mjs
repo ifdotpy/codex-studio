@@ -183,6 +183,9 @@ db.close()`;
     const open = async (text = "/model", send = false, worker = false) => {
       openedBySend = send;
       await composer.fill(text);
+      await expect(
+        page.getByText("No matching skills", { exact: true }),
+      ).toHaveCount(0);
       if (send) await page.locator("#send").click();
       else await composer.press("Enter");
       await dialog(worker).waitFor();

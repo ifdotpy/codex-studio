@@ -157,6 +157,57 @@ class ContextWait(f.NativeActionRepair):
         self.agent_update(a, contextRepairWait=a['contextRepairWait'])
         self.runtime.dispatch()
 
+    def test_terminal_history_without_callback_resumes_exact_start_once(self):
+        source = self.path.read_bytes()
+        self.server.status = 'notLoaded'
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        self.runtime.send(self.a['id'], 'Keep this exact new input.', message_id='after-lost-terminal')
+        with patch.object(repair, 'WAIT_SECONDS', .1):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn'
+                       or self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        current = self.runtime.agent(self.a['id'])
+        self.assertFalse(current.get('contextRepairWait'), current.get('error'))
+        self.assertEqual(current['turnId'], 'resumed-turn')
+        self.assertEqual(current['startAttempt']['events'], ['after-lost-terminal'])
+        self.assertEqual(len(self.forks()), 1)
+        proof = current['contextRepair']['nativeTerminalReceipt']
+        self.assertEqual(proof['turnId'], 'turn')
+        self.assertEqual(proof['source']['attemptId'], current['startAttempt']['id'])
+        self.assertEqual(proof['source']['threadId'], self.tid)
+        with self.runtime.db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                        (self.a['id'] + ':turn',)).fetchone())
+            self.assertEqual(tuple(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                             ('after-lost-terminal',)).fetchone()), ('delivered', 'resumed-turn'))
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'after-lost-terminal')
+        self.assertEqual(len(self.forks()), 1)
+        self.assertEqual(source, self.path.read_bytes())
+
+    def test_terminal_history_without_callback_preserves_historical_uncertainty(self):
+        rows = self.legacy_uncertain()
+        self.agent_update(self.a, startAttempt={'id':'safe-attempt','submitted':False,'events':[]})
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        with patch.object(repair, 'WAIT_SECONDS', .1):
+            result = repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(result['contextRepair']['phase'], 'completed')
+        self.assertEqual(result['contextRepair']['historicalInputProof']['deliveryOutcome'], 'unknown')
+        self.assertEqual(result['startAttempt']['id'], 'safe-attempt')
+        self.assertFalse(result['startAttempt']['submitted'])
+        with self.runtime.db() as db:
+            for row in rows:
+                self.assertEqual(tuple(db.execute('SELECT * FROM runtime_events WHERE id=?',
+                                                 (row[0],)).fetchone()), row)
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                        (self.a['id'] + ':turn',)).fetchone())
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
+        self.assertEqual(len(self.forks()), 1)
+
     def test_active_monitor_does_not_block_normal_input_after_compaction(self):
         source = self.path.read_bytes()
         self.agent_update(self.a, compactions=1, contextRepair={
@@ -472,7 +523,7 @@ class ContextWait(f.NativeActionRepair):
 
     def test_recovery_does_not_restore_completed_turn_activity(self):
         self.uncertain_input('recover-completed',
-            [{'id':'native-turn','status':'completed','clientUserMessageId':'recover-completed'}])
+            [{'id':'native-turn','status':'completed','clientUserMessageId':'recover-completed','items':[]}])
         with self.runtime.db() as db:
             db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (self.a['id'] + ':native-turn',))
         result = repair.recover_unconfirmed_inputs(self.runtime, self.a['id'])
@@ -645,6 +696,64 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(a['startAttempt']['events'], ['read-timeout-user'])
         self.assertEqual(len(self.forks()), 1)
         self.assertEqual(len([m for m,p in self.server.calls if m == 'turn/start']), 1)
+
+    def test_native_history_wait_becomes_local_monitor_wait_then_resumes_once(self):
+        from codex_runtime import ResponseTimeout
+        original = self.server.call
+        unavailable = [True]
+        def call(method, params, timeout=10):
+            if unavailable[0] and method == 'thread/items/list':
+                raise ResponseTimeout('thread/items/list response timed out; outcome unknown')
+            return original(method, params, timeout)
+        self.server.call = call
+        source = self.path.read_bytes()
+        self.runtime.send(self.a['id'], 'Continue while the server stays running.',
+                          message_id='native-then-monitor-user')
+        self.runtime.dispatch()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertEqual(waiting['contextRepairWait']['scope'], 'native')
+        attempt_id = waiting['startAttempt']['id']
+        unavailable[0] = False
+        self.monitor()
+        self.due()
+        waiting = self.runtime.agent(self.a['id'])
+        self.assertIn('monitors: exact-active-monitor', waiting['error'])
+        self.assertEqual(waiting['contextRepairWait']['scope'], 'local')
+        self.assertFalse(waiting['startAttempt']['submitted'])
+        self.due()
+        eventually(lambda: self.runtime.agent(self.a['id']).get('turnId') == 'resumed-turn')
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['id'], attempt_id)
+        self.assertEqual(current['threadId'], self.tid)
+        self.assertFalse(current.get('contextRepairWait'))
+        self.assertEqual(self.forks(), [])
+        self.assertEqual(source, self.path.read_bytes())
+        with self.runtime.db() as db:
+            monitor = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                           ('exact-active-monitor',)).fetchone()[0])
+            self.assertEqual(monitor, {'id':'exact-active-monitor', 'agent':self.a['id'],
+                                       'status':'running'})
+            self.assertEqual(tuple(db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?',
+                                              ('native-then-monitor-user',)).fetchone()),
+                             ('delivered', 'resumed-turn'))
+        self.runtime.dispatch()
+        starts = [p for m,p in self.server.calls if m == 'turn/start']
+        self.assertEqual(len(starts), 1)
+        self.assertEqual(starts[0]['clientUserMessageId'], 'native-then-monitor-user')
+
+    def test_unclassified_retry_error_preserves_native_wait_scope(self):
+        self.runtime.send(self.a['id'], 'Preserve the native wait.', message_id='unclassified-wait-user')
+        with patch.object(repair, '_optional_monitor_repair', return_value=False), \
+             patch.object(repair, '_local_idle', side_effect=repair._waiting('Native receipt pending', 'native')):
+            self.runtime.dispatch()
+            eventually(lambda: self.runtime.agent(self.a['id']).get('contextRepairWait'))
+        with patch.object(repair, '_local_idle', side_effect=ValueError('The native thread is closed')):
+            self.due()
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['contextRepairWait']['scope'], 'native')
+        self.assertFalse(current['startAttempt']['submitted'])
+        self.assertFalse(any(m == 'turn/start' for m,p in self.server.calls))
 
     def test_interrupted_receipt_requires_exact_old_turn_native_terminal_item(self):
         record = {'id':'missing-receipt','agent':self.a['id'],'stage':'interrupted','outcome':'unknown',
@@ -821,10 +930,6 @@ class ContextWait(f.NativeActionRepair):
         with self.runtime.db() as db:
             db.execute('INSERT INTO runtime_event_meta VALUES (?,?)',(self.event['id'],json.dumps({'modelEventProjection':1})))
             db.execute('DELETE FROM runtime_completed_turns')
-        with self.assertRaisesRegex(ValueError,'exact terminal callback receipt'):
-            repair.repair_idle(self.runtime,a['id'])
-        with self.runtime.db() as db:
-            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',(a['id']+':turn',))
         self.records[-1]['payload']['completed_at']=1
         self.write_records()
         with self.assertRaisesRegex(ValueError,'later confirmed native terminal'):

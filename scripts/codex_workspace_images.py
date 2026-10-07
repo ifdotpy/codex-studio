@@ -1,9 +1,4 @@
-"""Platform-neutral image workspace engine.
-
-Platform backends implement :class:`WorkspaceBackend`. Git object setup and
-agent commit collection stay in this module so every backend has identical
-merge semantics.
-"""
+"""Private folder copies for image workspaces."""
 
 from __future__ import annotations
 
@@ -11,6 +6,8 @@ import fcntl
 import hashlib
 import json
 import os
+import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -50,48 +47,19 @@ class WorkspaceDelta(TypedDict):
 
 
 class WorkspaceBackend(Protocol):
-    """Storage operations required by the common workspace engine."""
-
-    def supported(self, repo_root: Path) -> tuple[bool, str]: ...
-
-    def current_event_id(self, repo_root: Path) -> str | int | None: ...
-
-    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> WorkspaceBaseStaging: ...
-
-    def copy_base_tree(self, repo_root: Path, destination: Path, *, excludes: tuple[str, ...]) -> None: ...
-
-    def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging: ...
-
-    def clone_workspace(self, base_image: Path, agent_dir: Path) -> Path: ...
-
-    def mount_workspace(self, layer: Path, mount: Path, *,
-                        base_image: Path | None = None) -> WorkspaceMount: ...
-
-    def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *,
-                   excludes: tuple[str, ...]) -> WorkspaceDelta: ...
-
+    def supported(self, root: Path) -> tuple[bool, str]: ...
+    def current_event_id(self, root: Path) -> Any: ...
+    def open_base_staging(self, root: Path, key: str, version: str) -> dict[str, Any]: ...
+    def copy_base_tree(self, root: Path, destination: Path, *, excludes: tuple[str, ...]) -> None: ...
+    def seal_base(self, staging: dict[str, Any]) -> dict[str, Any]: ...
+    def clone_workspace(self, image: Path, agent_dir: Path) -> Path: ...
+    def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> dict[str, Any]: ...
+    def sync_delta(self, root: Path, target: Path, token: Any, *, excludes: tuple[str, ...]) -> Any: ...
     def unmount_workspace(self, mount: Path, *, force: bool = False) -> None: ...
-
     def remove_layer(self, agent_dir: Path) -> None: ...
-
     def remove_base_version(self, path: Path) -> None: ...
-
     def private_bytes(self, path: Path) -> int: ...
-
     def exec_prefix(self) -> list[str]: ...
-
-
-def _backend() -> WorkspaceBackend:
-    """Load the host backend lazily so importing this module is portable."""
-    import sys
-
-    if sys.platform == "darwin":
-        from codex_workspace_macos import Backend
-    elif sys.platform.startswith("linux"):
-        from codex_workspace_linux import Backend
-    else:
-        raise RuntimeError("Image workspaces are not supported on this platform")
-    return Backend()
 
 
 _STORE_OVERRIDE = 'CODEX_WORKSPACE_STORE'
@@ -100,8 +68,17 @@ _backend_instance: WorkspaceBackend | None = None
 _backend_lock = threading.Lock()
 _build_lock = threading.Lock()
 _build_threads: dict[str, threading.Thread] = {}
-_build_callbacks: dict[str, list[Callable[[JsonObject], object]]] = {}
-_BASE_REFRESH_DELTA_RATIO = 0.35
+_build_callbacks: dict[str, list] = {}
+
+
+def _backend() -> WorkspaceBackend:
+    if sys.platform == 'darwin':
+        from codex_workspace_macos import Backend
+    elif sys.platform.startswith('linux'):
+        from codex_workspace_linux import Backend
+    else:
+        raise RuntimeError('Image workspaces are not supported on this platform')
+    return Backend()
 
 
 def _get_backend() -> WorkspaceBackend:
@@ -117,40 +94,591 @@ def _store() -> Path:
     return Path(os.environ.get(_STORE_OVERRIDE) or _DEFAULT_STORE).expanduser().resolve()
 
 
-def _repo_root(path: str | Path) -> Path:
-    result = subprocess.run(['git', '-C', str(path), 'rev-parse', '--show-toplevel'],
-                            capture_output=True, text=True, timeout=30)
-    if result.returncode == 0:
-        return Path(result.stdout.strip()).resolve()
-    return Path(path).expanduser().resolve()
+def _root_path(path) -> Path:
+    root = Path(path).expanduser().resolve()
+    if not root.is_dir():
+        raise ValueError(f'Workspace folder does not exist: {root}')
+    return root
 
 
 def _repo_key(root: Path) -> str:
     return hashlib.sha256(os.fsencode(root.resolve())).hexdigest()[:32]
 
 
-def _workspace_excludes(repo_root: Path, repositories: Iterable[tuple[str, Path]] = (), *, exclude_git_metadata: bool = False) -> tuple[str, ...]:
-    root = Path(repo_root).resolve()
+def _workspace_excludes(root: Path) -> tuple[str, ...]:
     values = {'.worktrees'}
-    try:
-        store_relative = _store().relative_to(root)
-    except ValueError:
-        pass
-    else:
-        values.add(store_relative.as_posix())
-    for _relative_repo, repo in repositories:
-        marker_path = Path(_relative_repo) / '.git'
-        if exclude_git_metadata:
-            values.add(marker_path.as_posix())
+    configured_store = Path(os.environ.get(_STORE_OVERRIDE) or _DEFAULT_STORE).expanduser()
+    configured_store = Path(os.path.abspath(configured_store))
+    for store in (configured_store, _store()):
         try:
-            object_path = _object_dir(repo).relative_to(root)
-        except (RuntimeError, ValueError):
-            continue
-        values.add(object_path.as_posix())
+            values.add(store.relative_to(root).as_posix())
+        except ValueError:
+            pass
     return tuple(sorted(values))
 
 
-def _safe_id(value: object) -> str:
+def _git_repositories(root: Path) -> list[tuple[str, Path]]:
+    """Find Git work trees below root without following links or entering .git."""
+    root = Path(root).resolve()
+    excluded = _workspace_excludes(root)
+    found = []
+    for current, directories, _files in os.walk(root, followlinks=False):
+        directory = Path(current)
+        git_path = directory / '.git'
+        directories[:] = [name for name in directories
+                          if name != '.git' and not (directory / name).is_symlink()
+                          and not any((directory / name).relative_to(root).as_posix() == value
+                                      or (directory / name).relative_to(root).as_posix().startswith(
+                                          value + '/') for value in excluded)]
+        if not git_path.is_symlink() and (git_path.is_dir() or git_path.is_file()):
+            probe = subprocess.run(['git', '-C', str(directory), 'rev-parse', '--show-toplevel'],
+                                   stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+            if probe.returncode == 0 and Path(os.fsdecode(probe.stdout).strip()).resolve() == directory.resolve():
+                relative = directory.relative_to(root).as_posix()
+                found.append(('.' if relative == '.' else relative, directory))
+    return found
+
+
+def _git(repo: Path, *arguments: str, input_data: bytes | None = None,
+         accepted=(0,), timeout=1800, prefix=(), readonly=False) -> bytes:
+    env = os.environ.copy()
+    if readonly:
+        env['GIT_OPTIONAL_LOCKS'] = '0'
+    result = subprocess.run([*prefix, 'git', '-C', str(repo), *arguments], input=input_data,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            timeout=timeout, check=False, env=env)
+    if result.returncode not in accepted:
+        detail = result.stderr.decode(errors='replace')[-2000:]
+        raise RuntimeError(f"git {' '.join(arguments)} failed in {repo}: {detail}")
+    return result.stdout
+
+
+def _git_index_path(repo: Path, *, require_inside=False, inside_root: Path | None = None,
+                    prefix=()) -> Path:
+    value = os.fsdecode(_git(repo, 'rev-parse', '--git-path', 'index', prefix=prefix)).strip()
+    index = Path(value)
+    if not index.is_absolute():
+        index = repo / index
+    index = index.resolve()
+    allowed_root = inside_root if inside_root is not None else repo
+    if require_inside and not index.is_relative_to(allowed_root.resolve()):
+        raise RuntimeError(f'Git index is outside the image copy: {index}')
+    return index
+
+
+def _index_fingerprint(repo: Path) -> str | None:
+    try:
+        value = _git_index_path(repo).stat()
+    except FileNotFoundError:
+        return None
+    # Git writes index.lock and atomically renames it over index. Stat data gives
+    # an O(1) change check and avoids reading a large index on every workspace start.
+    identity = (value.st_dev, value.st_ino, value.st_size,
+                value.st_mtime_ns, value.st_ctime_ns)
+    return hashlib.sha256(json.dumps(identity).encode()).hexdigest()
+
+
+def _index_entries(repo: Path, *, paths=None, prefix=()) -> dict[bytes, tuple[tuple[bytes, bytes, bytes], ...]]:
+    if paths is not None and not paths:
+        return {}
+    arguments = ['--literal-pathspecs', 'ls-files', '--stage', '-z']
+    if paths:
+        arguments.extend(['--', *sorted(os.fsdecode(path) for path in paths)])
+    raw = _git(repo, *arguments, prefix=prefix)
+    entries: dict[bytes, list[tuple[bytes, bytes, bytes]]] = {}
+    for record in raw.split(b'\0'):
+        if not record:
+            continue
+        metadata, path = record.split(b'\t', 1)
+        mode, oid, stage = metadata.split(b' ', 2)
+        entries.setdefault(path, []).append((mode, oid, stage))
+    return {path: tuple(sorted(values)) for path, values in entries.items()}
+
+
+def _index_state(repo: Path):
+    """Read staged entries from a stable index without refreshing or writing it."""
+    for _attempt in range(3):
+        before = _index_fingerprint(repo)
+        entries = _index_entries(repo)
+        after = _index_fingerprint(repo)
+        if before == after:
+            return after, entries
+    raise RuntimeError(f'Git index changed while it was read: {repo}')
+
+
+def _git_head(repo: Path) -> str | None:
+    result = subprocess.run(['git', '-C', str(repo), 'rev-parse', 'HEAD'],
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            check=False, env={**os.environ, 'GIT_OPTIONAL_LOCKS': '0'})
+    return os.fsdecode(result.stdout).strip() if result.returncode == 0 else None
+
+
+def _git_dirty_paths(repo: Path) -> set[str]:
+    raw = _git(repo, 'status', '--porcelain=v1', '-z', '--untracked-files=all', readonly=True)
+    records = raw.split(b'\0')
+    paths = set()
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        paths.add(os.fsdecode(record[3:]))
+        if record[:2].strip() in {b'R', b'C'} and index < len(records):
+            paths.add(os.fsdecode(records[index]))
+            index += 1
+    return paths
+
+
+def _repo_snapshots(root: Path, known_repositories=None) -> list[dict[str, Any]]:
+    fast_discovery = (known_repositories is not None
+                      and any(item.get('path') == '.' for item in known_repositories))
+    if not fast_discovery:
+        repositories = _git_repositories(root)
+    else:
+        repositories = []
+        excluded = _workspace_excludes(root)
+        known_paths = set()
+        dirty_paths = {}
+
+        def add_repository(relative, repo):
+            if relative in known_paths:
+                return True
+            current = repo
+            while current != root:
+                if current.is_symlink() or not current.is_relative_to(root):
+                    return False
+                current = current.parent
+            git_path = repo / '.git'
+            if git_path.is_symlink() or not (git_path.is_dir() or git_path.is_file()):
+                return False
+            result = subprocess.run(['git', '-C', str(repo), 'rev-parse', '--show-toplevel'],
+                                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    check=False)
+            if result.returncode or Path(os.fsdecode(result.stdout).strip()).resolve() != repo.resolve():
+                return False
+            if relative not in known_paths:
+                known_paths.add(relative)
+                repositories.append((relative, repo))
+            return True
+
+        add_repository('.', root)
+        for item in known_repositories:
+            relative = item.get('path')
+            if not relative or relative == '.':
+                continue
+            add_repository(relative, root / relative)
+
+        visited = set()
+        cursor = 0
+        while cursor < len(repositories):
+            relative, repo = repositories[cursor]
+            cursor += 1
+            dirty = _git_dirty_paths(repo)
+            dirty_paths[relative] = dirty
+            for name in dirty:
+                path = repo / name
+                if not path.is_dir():
+                    path = path.parent
+                while path != repo and path.is_relative_to(repo):
+                    candidate = path.relative_to(root).as_posix()
+                    if candidate not in visited:
+                        visited.add(candidate)
+                        if not any(candidate == value or candidate.startswith(value + '/')
+                                   for value in excluded):
+                            add_repository(candidate, path)
+                    path = path.parent
+
+    records = []
+    for relative, repo in repositories:
+        fingerprint = _index_fingerprint(repo)
+        records.append({'path': relative, 'head': _git_head(repo),
+                        'dirtyPaths': sorted(dirty_paths[relative] if fast_discovery
+                                             else _git_dirty_paths(repo)),
+                        'indexFingerprint': fingerprint,
+                        'gitMetadataFingerprint': _git_metadata_fingerprint(repo)})
+    return records
+
+
+def _git_metadata_fingerprint(repo: Path) -> str:
+    """Fingerprint small, user-visible Git metadata without walking object storage."""
+    refs = _git(repo, 'for-each-ref', '--format=%(refname)%00%(objectname)', readonly=True)
+    git_dir = Path(os.fsdecode(_git(repo, 'rev-parse', '--absolute-git-dir',
+                                    readonly=True)).strip())
+    common_dir_text = os.fsdecode(_git(repo, 'rev-parse', '--git-common-dir', readonly=True)).strip()
+    common_dir = Path(common_dir_text)
+    if not common_dir.is_absolute():
+        common_dir = repo / common_dir
+    git_dirs = sorted({path.resolve() for path in (git_dir, common_dir)})
+    state = []
+    for path in git_dirs:
+        relative = str(path)
+        state.extend(_metadata_tree_fingerprint(path, relative))
+        alternates = path / 'objects' / 'info' / 'alternates'
+        try:
+            state.append((str(alternates), _metadata_file_fingerprint(alternates)))
+        except FileNotFoundError:
+            state.append((str(alternates), None))
+    return hashlib.sha256(refs + json.dumps(state, separators=(',', ':')).encode()).hexdigest()
+
+
+def _metadata_file_fingerprint(path: Path, value=None):
+    value = value or path.lstat()
+    if stat.S_ISDIR(value.st_mode):
+        return ('directory', value.st_mode)
+    if path.is_symlink():
+        content = os.fsencode(os.readlink(path))
+    elif path.is_file():
+        content = path.read_bytes()
+    else:
+        content = b''
+    return (value.st_mode, value.st_size, value.st_mtime_ns, value.st_ctime_ns,
+            hashlib.sha256(content).hexdigest())
+
+
+def _metadata_tree_fingerprint(root: Path, label: str):
+    if not root.exists():
+        return [(label, None)]
+    result = []
+    for current, directories, files in os.walk(root, followlinks=False):
+        directory = Path(current)
+        relative = directory.relative_to(root).as_posix()
+        result.append((f'{label}/{relative}', _metadata_file_fingerprint(directory)))
+        kept_directories = []
+        for name in sorted(directories):
+            path = directory / name
+            if path.is_symlink():
+                result.append((f'{label}/{path.relative_to(root).as_posix()}',
+                               _metadata_file_fingerprint(path)))
+            elif name != 'objects':
+                kept_directories.append(name)
+        directories[:] = kept_directories
+        for name in sorted(files):
+            if name in {'index', 'objects'}:
+                continue
+            path = directory / name
+            result.append((f'{label}/{path.relative_to(root).as_posix()}',
+                           _metadata_file_fingerprint(path)))
+    return result
+
+
+def _repositories_for_records(root: Path, records: list[dict[str, Any]]):
+    return [(record['path'], root if record['path'] == '.' else root / record['path'])
+            for record in records]
+
+
+def _target_prefix(backend=None):
+    return tuple((backend or _get_backend()).exec_prefix())
+
+
+def _detected_paths(root: Path, baseline: dict[str, Any], current_repositories=None
+                    ) -> tuple[set[str], list[dict[str, Any]]]:
+    """Read Git state only from the source, and return paths changed since the baseline."""
+    baseline_repos = {item['path']: item for item in baseline.get('repositories', [])}
+    current_repos = current_repositories if current_repositories is not None else _repo_snapshots(root)
+    changed: set[str] = set()
+    current_by_path = {item['path']: item for item in current_repos}
+    for relative, repo in _repositories_for_records(root, current_repos):
+        before = baseline_repos.get(relative, {})
+        prefix = '' if relative == '.' else relative + '/'
+        current_head = current_by_path[relative].get('head')
+        if before.get('head') and current_head and before['head'] != current_head:
+            output = _git(repo, 'diff', '--no-renames', '--name-only', '-z',
+                          before['head'], current_head,
+                          readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        elif not before.get('head') and current_head:
+            output = _git(repo, 'ls-files', '-z', readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        elif before.get('head') and not current_head:
+            output = _git(repo, 'ls-files', '-z', readonly=True)
+            changed.update(prefix + os.fsdecode(path) for path in output.split(b'\0') if path)
+        changed.update(prefix + path for path in before.get('dirtyPaths', []))
+        changed.update(prefix + path for path in current_by_path[relative].get('dirtyPaths', []))
+    return changed, current_repos
+
+
+def _copy_exact_paths(source_root: Path, target_root: Path, paths: set[str], backend) -> None:
+    safe_paths = []
+    for value in sorted(paths):
+        path = Path(value)
+        if path.is_absolute() or '..' in path.parts or value in {'', '.'}:
+            if value in {'', '.'}:
+                continue
+            raise RuntimeError(f'Unsafe workspace delta path: {value!r}')
+        if any(part == '.git' for part in path.parts):
+            continue
+        safe_paths.append(value)
+    if not safe_paths:
+        return
+    script = '''import json, os, pathlib, shutil, sys
+src, dst = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
+for name in json.loads(sys.stdin.read()):
+    source, target = src / name, dst / name
+    if not source.parent.resolve().is_relative_to(src.resolve()):
+        raise RuntimeError("source path escapes workspace root")
+    if not target.parent.resolve().is_relative_to(dst.resolve()):
+        raise RuntimeError("target path escapes workspace root")
+    if not source.exists() and not source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        parent = target.parent
+        while parent != dst and parent.is_dir() and not any(parent.iterdir()):
+            parent.rmdir()
+            parent = parent.parent
+        continue
+    target.parent.mkdir(parents=True, exist_ok=True)
+    if source.is_symlink():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        else:
+            target.unlink(missing_ok=True)
+        target.symlink_to(os.readlink(source))
+    elif source.is_file():
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        elif target.is_symlink():
+            target.unlink()
+        shutil.copy2(source, target)
+    elif source.is_dir() and not target.is_dir():
+        target.unlink(missing_ok=True)
+        target.mkdir()
+'''
+    subprocess.run([*_target_prefix(backend), sys.executable, '-c', script,
+                    str(source_root), str(target_root)],
+                   input=json.dumps(safe_paths).encode(), stdout=subprocess.PIPE,
+                   stderr=subprocess.PIPE, check=True)
+
+
+def _sync_git_directories(source_root: Path, target_root: Path, backend, *, repositories=None,
+                          sync_metadata=True) -> None:
+    prefix = _target_prefix(backend)
+    repositories = _git_repositories(source_root) if repositories is None else repositories
+    git_dirs = []
+    for relative, source_repo in repositories:
+        source_git = Path(os.fsdecode(_git(source_repo, 'rev-parse', '--absolute-git-dir',
+                                           readonly=True)).strip()).resolve()
+        git_dirs.append((relative, source_repo, source_git))
+    for relative, source_repo, source_git in git_dirs:
+        target_repo = target_root if relative == '.' else target_root / relative
+        target_repo.mkdir(parents=True, exist_ok=True)
+        if not source_git.is_relative_to(source_root.resolve()):
+            raise RuntimeError(f'Git metadata is outside the source copy: {source_git}')
+        target_git = target_root / source_git.relative_to(source_root.resolve())
+        target_git.parent.mkdir(parents=True, exist_ok=True)
+        source_entry = source_repo / '.git'
+        target_entry = target_repo / '.git'
+        if source_entry.is_dir():
+            if target_entry.is_symlink() or target_entry.is_file():
+                target_entry.unlink()
+            target_entry.mkdir(exist_ok=True)
+        elif source_entry.is_file():
+            if not source_entry.read_text().startswith('gitdir: '):
+                raise RuntimeError(f'Invalid Git directory pointer: {source_entry}')
+            pointer = os.path.relpath(target_git, target_repo)
+            target_entry.write_text(f'gitdir: {pointer}\n')
+        if not target_git.resolve().is_relative_to(target_root.resolve()):
+            raise RuntimeError(f'Git metadata is outside the image copy: {target_git}')
+        if sync_metadata:
+            args = [*prefix, 'rsync', '-a', '--delete', '--exclude=/index']
+            for _nested, _repo, nested_git in git_dirs:
+                try:
+                    nested_relative = nested_git.relative_to(source_git)
+                except ValueError:
+                    continue
+                if nested_relative.parts:
+                    args.append(f'--exclude=/{nested_relative.as_posix()}/index')
+            args.extend([str(source_git) + '/', str(target_git) + '/'])
+            subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+        target_top = Path(os.fsdecode(_git(target_repo, 'rev-parse', '--show-toplevel',
+                                           prefix=prefix)).strip()).resolve()
+        if target_top != target_repo.resolve():
+            raise RuntimeError(f'Git repository is missing from the image copy: {relative}')
+        resolved_target_git = Path(os.fsdecode(_git(
+            target_repo, 'rev-parse', '--absolute-git-dir', prefix=prefix)).strip()).resolve()
+        if resolved_target_git != target_git.resolve():
+            raise RuntimeError(f'Git metadata path changed in the image copy: {relative}')
+
+
+def _sync_detected(root: Path, target: Path, baseline: dict[str, Any], excludes, backend,
+                   current_repositories=None, repair_pointers=False):
+    paths, current_repositories = _detected_paths(root, baseline, current_repositories)
+    excluded = [Path(value) for value in excludes]
+    paths = {value for value in paths
+             if not any(Path(value) == item or item in Path(value).parents for item in excluded)}
+    known = {item['path'] for item in baseline.get('repositories', [])}
+    known.update(item['path'] for item in current_repositories)
+    if '.' in known:
+        _copy_exact_paths(root, target, paths, backend)
+    else:
+        # A non-Git folder has no cheap reliable change log. Copy its current tree once.
+        args = [*_target_prefix(backend), 'rsync', '-a', '--delete']
+        for value in excludes:
+            suffix = '' if value.endswith('/.git/index') or value == '.git/index' else '/***'
+            args.append(f'--exclude=/{value}{suffix}')
+        args.extend([str(root) + '/', str(target) + '/'])
+        subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=True)
+    baseline_repos = {item['path']: item for item in baseline.get('repositories', [])}
+    needs_git_sync = any(
+        baseline_repos.get(item['path'], {}).get('gitMetadataFingerprint')
+        != item.get('gitMetadataFingerprint') for item in current_repositories)
+    if needs_git_sync or repair_pointers:
+        _sync_git_directories(root, target, backend,
+                              repositories=_repositories_for_records(root, current_repositories),
+                              sync_metadata=needs_git_sync)
+    return {'changedPaths': sorted(paths), 'repositories': current_repositories}
+
+
+def _copy_index_entries(source: Path, target: Path, source_entries=None, *, paths=None,
+                        image_root=None, prefix=()) -> set[str]:
+    _git_index_path(target, require_inside=True, inside_root=image_root, prefix=prefix)
+    source_entries = source_entries if source_entries is not None else _index_entries(source, paths=paths)
+    target_entries = _index_entries(target, paths=paths, prefix=prefix)
+    changed = {path for path in source_entries.keys() | target_entries.keys()
+               if source_entries.get(path) != target_entries.get(path)}
+    if not changed:
+        return set()
+    for entries in source_entries.items():
+        path, values = entries
+        if path not in changed:
+            continue
+        for _mode, oid, _stage in values:
+            present = subprocess.run([*prefix, 'git', '-C', str(target), 'cat-file', '-e',
+                                       os.fsdecode(oid)], stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, check=False).returncode == 0
+            if present:
+                continue
+            kind = _git(source, 'cat-file', '-t', os.fsdecode(oid), readonly=True).strip()
+            body = _git(source, 'cat-file', os.fsdecode(kind), os.fsdecode(oid), readonly=True)
+            copied = _git(target, 'hash-object', '-w', '-t', os.fsdecode(kind), '--stdin',
+                          input_data=body, prefix=prefix).strip()
+            if copied != oid:
+                raise RuntimeError(f'Git object changed while copying index entry {os.fsdecode(path)!r}')
+    records = []
+    for path in sorted(changed):
+        for _mode, oid, stage in target_entries.get(path, ()):
+            records.append(b'0 ' + oid + b' ' + stage + b'\t' + path + b'\0')
+    for path in sorted(changed):
+        for mode, oid, stage in source_entries.get(path, ()):
+            records.append(mode + b' ' + oid + b' ' + stage + b'\t' + path + b'\0')
+    _git(target, 'update-index', '-z', '--index-info', input_data=b''.join(records), prefix=prefix)
+    return {os.fsdecode(path) for path in changed}
+
+
+def _refresh_index(repo: Path, paths=None, *, image_root=None, prefix=()):
+    _git_index_path(repo, require_inside=True, inside_root=image_root, prefix=prefix)
+    arguments = ['--literal-pathspecs', 'update-index', '--refresh', '-q']
+    if paths:
+        arguments.extend(['--', *sorted(paths)])
+    # Return code 1 means at least one work tree file differs from its index.
+    _git(repo, *arguments, accepted=(0, 1), prefix=prefix)
+
+
+def _index_excludes(root: Path, repositories=None) -> tuple[str, ...]:
+    root = Path(root).resolve()
+    values = []
+    repositories = _git_repositories(root) if repositories is None else repositories
+    for relative, _repo in repositories:
+        prefix = '' if relative == '.' else relative + '/'
+        values.append(prefix + '.git/index')
+    return tuple(values)
+
+
+def _delta_excludes(root: Path, excludes, repositories=None) -> tuple[str, ...]:
+    return tuple(sorted(set(excludes) | set(_index_excludes(root, repositories))))
+
+
+def _repo_index_metadata(source_root: Path, copy_root: Path, previous=None, *, refresh_all=True,
+                         backend=None, repository_records=None, candidate_paths=None):
+    previous = previous or {}
+    repository_records = (_repo_snapshots(source_root) if repository_records is None
+                          else repository_records)
+    candidates = {os.fsencode(path) for path in (candidate_paths or ())}
+    records = []
+    changed_paths = {}
+    worktree_paths = set()
+    fingerprints = {}
+    repo_paths = [item['path'] for item in repository_records]
+    for relative, source in _repositories_for_records(source_root, repository_records):
+        target = copy_root if relative == '.' else copy_root / relative
+        snapshot = next(item for item in repository_records if item['path'] == relative)
+        fingerprint = snapshot.get('indexFingerprint')
+        prior = previous.get(relative)
+        changed = set()
+        if prior is None or prior.get('indexFingerprint') != fingerprint:
+            prefix = b'' if relative == '.' else os.fsencode(relative + '/')
+            repo_candidates = None if not candidates else {
+                path[len(prefix):] for path in candidates
+                if (not prefix or path.startswith(prefix)) and
+                (not prefix or path[len(prefix):])}
+            if repo_candidates is not None:
+                child_prefixes = [os.fsencode((path if relative == '.' else
+                                               path[len(relative) + 1:]) + '/')
+                                  for path in repo_paths if path != '.' and path.startswith(
+                                      '' if relative == '.' else relative + '/') and path != relative]
+                if child_prefixes:
+                    repo_candidates = {path for path in repo_candidates
+                                       if not any(path.startswith(child) for child in child_prefixes)}
+            if repo_candidates is not None and not repo_candidates:
+                fingerprints[relative] = fingerprint
+                continue
+            source_entries = _index_entries(source, paths=repo_candidates)
+            if _index_fingerprint(source) != fingerprint:
+                fingerprint, source_entries = _index_state(source)
+                repo_candidates = None
+            changed = _copy_index_entries(source, target, source_entries, paths=repo_candidates,
+                                          image_root=copy_root, prefix=_target_prefix(backend))
+        fingerprints[relative] = fingerprint
+        if changed:
+            changed_paths[relative] = changed
+            prefix = '' if relative == '.' else relative + '/'
+            worktree_paths.update(prefix + path for path in changed)
+    if worktree_paths:
+        _copy_exact_paths(source_root, copy_root, worktree_paths, backend or _get_backend())
+    for relative, source in _repositories_for_records(source_root, repository_records):
+        target = copy_root if relative == '.' else copy_root / relative
+        if refresh_all:
+            _refresh_index(target, image_root=copy_root, prefix=_target_prefix(backend))
+        records.append({'path': relative, 'indexFingerprint': fingerprints[relative]})
+    return records, changed_paths
+
+
+def _refresh_changed_paths(root: Path, target_root: Path, changed_paths, index_changes, backend=None,
+                           repository_records=None):
+    paths = set(changed_paths or ())
+    # A path whose index entry just changed already has the correct staged content.
+    # Let the first status refresh its copied stat data instead of parsing the full index here.
+    paths.difference_update(index_changes or ())
+    repository_records = _repo_snapshots(root) if repository_records is None else repository_records
+    for relative, _source in _repositories_for_records(root, repository_records):
+        repo_paths = set()
+        prefix = '' if relative == '.' else relative + '/'
+        for path in paths:
+            if path in {'.', ''}:
+                repo_paths.add('.')
+            elif not prefix:
+                repo_paths.add(path)
+            elif path.startswith(prefix):
+                repo_paths.add(path[len(prefix):])
+        repo_paths = {path for path in repo_paths
+                      if path not in {'', '.git'} and not path.startswith('.git/')}
+        if repo_paths:
+            target = target_root if relative == '.' else target_root / relative
+            index_args = {'image_root': target_root, 'prefix': _target_prefix(backend)}
+            git_args = {'prefix': _target_prefix(backend)}
+            if '.' in repo_paths:
+                _refresh_index(target, **index_args)
+                continue
+            tracked = _git(target, 'ls-files', '-z', '--',
+                           *[f':(literal){path}' for path in sorted(repo_paths)], **git_args)
+            tracked_paths = {os.fsdecode(path) for path in tracked.split(b'\0') if path}
+            if tracked_paths:
+                _refresh_index(target, tracked_paths, **index_args)
+
+
+def _safe_id(value) -> str:
     value = str(value)
     if not value or any(c not in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-' for c in value):
         raise ValueError('Invalid workspace identifier')
@@ -215,21 +743,21 @@ def _mount_path(agent_id: str) -> Path:
     return _store() / 'mnt' / _safe_id(agent_id)
 
 
-def supported(repo_root: object) -> tuple[bool, str]:
-    return _get_backend().supported(Path(repo_root).expanduser().resolve())
+def supported(root) -> tuple[bool, str]:
+    return _get_backend().supported(_root_path(root))
 
 
-def base_status(repo_root: object) -> JsonObject:
-    root = _repo_root(repo_root)
-    state = _read_json(_base_state_path(_repo_key(root)), {})
-    if not state:
+def base_status(root) -> dict[str, Any]:
+    folder = _root_path(root)
+    state = _read_json(_base_state_path(_repo_key(folder)), {})
+    if not state or state.get('schema') != 2 or state.get('changeDetector') != 'git-v1':
         return {'state': 'missing', 'version': None, 'error': None}
     return {key: state.get(key) for key in ('state', 'version', 'error')}
 
 
-def start_base_build(repo_root: object, on_done: Callable[[JsonObject], object] | None = None) -> JsonObject:
-    root = _repo_root(repo_root)
-    ok, reason = supported(root)
+def start_base_build(root, on_done=None, *, retry_failed=False) -> dict[str, Any]:
+    folder = _root_path(root)
+    ok, reason = supported(folder)
     if not ok:
         result = {'state': 'failed', 'version': None, 'error': reason}
         if on_done:
@@ -238,8 +766,9 @@ def start_base_build(repo_root: object, on_done: Callable[[JsonObject], object] 
     exclude_store = getattr(_get_backend(), 'exclude_store', None)
     if exclude_store:
         exclude_store(_store())
-    key = _repo_key(root)
-    status = base_status(root)
+    key = _repo_key(folder)
+    status = base_status(folder)
+    retrying_failed = status['state'] == 'failed'
     if status['state'] == 'ready':
         if on_done:
             _call_callback(on_done, status)
@@ -248,15 +777,18 @@ def start_base_build(repo_root: object, on_done: Callable[[JsonObject], object] 
             with _build_lock:
                 thread = _build_threads.get(key)
                 if thread is None or not thread.is_alive():
-                    thread = threading.Thread(target=_check_base_refresh, args=(root, key, status['version']),
+                    thread = threading.Thread(target=_check_base_refresh,
+                                              args=(folder, key, status['version']),
                                               name='studio-workspace-refresh-' + key[:8], daemon=True)
                     _build_threads[key] = thread
                     thread.start()
         return status
     if status['state'] == 'failed':
-        if on_done:
-            _call_callback(on_done, status)
-        return status
+        failed_at = float((_read_json(_base_state_path(key), {}) or {}).get('failedAt') or 0)
+        if not retry_failed and time.time() - failed_at < 300:
+            if on_done:
+                _call_callback(on_done, status)
+            return status
     if on_done:
         with _build_lock:
             if key not in _build_threads or not _build_threads[key].is_alive():
@@ -265,11 +797,21 @@ def start_base_build(repo_root: object, on_done: Callable[[JsonObject], object] 
     with _build_lock:
         thread = _build_threads.get(key)
         if thread is None or not thread.is_alive():
-            thread = threading.Thread(target=_build_base, args=(root, key, None),
+            thread = threading.Thread(target=_build_base, args=(folder, key, None),
                                       name='studio-workspace-base-' + key[:8], daemon=True)
             _build_threads[key] = thread
             thread.start()
-    return base_status(root)
+    current = base_status(folder)
+    if current['state'] == 'failed' and retrying_failed:
+        return {'state': 'building', 'version': current.get('version'), 'error': None}
+    return current
+
+
+def _call_callback(callback, result):
+    try:
+        callback(result)
+    except BaseException:
+        pass
 
 
 def _check_base_refresh(root: Path, key: str, expected_version: str) -> None:
@@ -278,7 +820,6 @@ def _check_base_refresh(root: Path, key: str, expected_version: str) -> None:
         if (state.get('state') == 'ready' and state.get('version') == expected_version
                 and _get_backend().base_needs_refresh(root, state)):  # type: ignore[attr-defined]  # typed-narrowing: the preceding feature probe guards this optional backend hook
             _build_base(root, key, expected_version)
-            return
     except BaseException as exc:
         state = _read_json(_base_state_path(key), {}) or {}
         if state.get('state') == 'ready':
@@ -291,7 +832,87 @@ def _check_base_refresh(root: Path, key: str, expected_version: str) -> None:
                 _build_threads.pop(key, None)
 
 
-def _schedule_base_refresh(root: Path, version: str) -> None:
+def _build_base(root: Path, key: str, refresh_from=None):
+    result = {}
+    staging = None
+    base_root = _base_dir(key)
+    try:
+        with _file_lock(base_root / '.build.lock'):
+            prior = _read_json(_base_state_path(key), {}) or {}
+            if (prior.get('schema') == 2 and prior.get('changeDetector') == 'git-v1'
+                    and prior.get('state') == 'ready'
+                    and Path(prior.get('image', '')).exists()
+                    and (refresh_from is None or prior.get('version') != refresh_from)):
+                result = prior
+            else:
+                version = f'v-{time.time_ns()}'
+                if refresh_from is None:
+                    _write_json(_base_state_path(key), {
+                        'schema': 2, 'state': 'building', 'repoRoot': str(root), 'repoKey': key,
+                        'version': version, 'error': None, 'startedAt': time.time(),
+                    })
+                else:
+                    prior['refreshingVersion'] = version
+                    _write_json(_base_state_path(key), prior)
+                backend = _get_backend()
+                staging = backend.open_base_staging(root, key, version)
+                excludes = _workspace_excludes(root)
+                baseline = {'repositories': _repo_snapshots(root)}
+                delta_excludes = _delta_excludes(
+                    root, excludes, _repositories_for_records(root, baseline['repositories']))
+                token = staging.get('token')
+                backend.copy_base_tree(root, Path(staging['root']), excludes=excludes)
+                delta = _sync_detected(root, Path(staging['root']), baseline,
+                                       delta_excludes, backend, repair_pointers=True)
+                index_records, _index_changes = _repo_index_metadata(
+                    root, Path(staging['root']), refresh_all=True, backend=backend,
+                    repository_records=delta['repositories'],
+                    candidate_paths=delta['changedPaths'])
+                fingerprints = {item['path']: item['indexFingerprint'] for item in index_records}
+                repositories = [dict(item, indexFingerprint=fingerprints.get(item['path']))
+                                for item in delta['repositories']]
+                sealed = backend.seal_base(staging)
+                result = {
+                    'schema': 2, 'state': 'ready', 'repoRoot': str(root), 'repoKey': key,
+                    'changeDetector': 'git-v1',
+                    'version': version, 'error': None,
+                    'image': str(sealed['image']),
+                    'versionPath': str(sealed['versionPath']),
+                    'token': token,
+                    'excludes': list(delta_excludes),
+                    'repositories': repositories,
+                    'createdAt': time.time(),
+                }
+                _write_json(_base_dir(key) / 'versions' / version / 'version.json', result)
+                _write_json(_base_state_path(key), result)
+                try:
+                    _prune_base_versions(key)
+                except BaseException as exc:
+                    result['pruneError'] = str(exc)[:1000]
+                    _write_json(_base_state_path(key), result)
+    except BaseException as exc:
+        current = _read_json(_base_state_path(key), {}) or {}
+        if refresh_from and current.get('state') == 'ready':
+            result = {key: value for key, value in current.items() if key != 'refreshingVersion'}
+            result.update({'refreshError': str(exc)[:2000], 'refreshFailedAt': time.time()})
+            _write_json(_base_state_path(key), result)
+        else:
+            result = {**current, 'state': 'failed', 'error': str(exc)[:2000], 'failedAt': time.time()}
+            _write_json(_base_state_path(key), result)
+        if staging:
+            try:
+                _get_backend().remove_base_version(Path(staging['versionPath']))
+            except BaseException:
+                pass
+    finally:
+        with _build_lock:
+            callbacks = _build_callbacks.pop(key, [])
+            _build_threads.pop(key, None)
+    for callback in callbacks:
+        _call_callback(callback, {key: result.get(key) for key in ('state', 'version', 'error')})
+
+
+def _schedule_base_refresh(root: Path, version: str):
     key = _repo_key(root)
     with _build_lock:
         thread = _build_threads.get(key)
@@ -303,729 +924,153 @@ def _schedule_base_refresh(root: Path, version: str) -> None:
         thread.start()
 
 
-def _call_callback(callback: Callable[[JsonObject], object], result: JsonObject) -> None:
-    try:
-        callback(result)
-    except BaseException:
-        # A runtime observer must not turn a completed base build into failure.
-        pass
-
-
-def _build_base(root: Path, key: str, refresh_from: str | None = None) -> None:
-    callbacks = []
-    base_root = _base_dir(key)
-    staging = None
-    protected = []
-    base_id = None
-    try:
-        with _file_lock(base_root / '.build.lock'):
-            state = _read_json(_base_state_path(key), {})
-            if (state.get('state') == 'ready' and Path(state.get('image', '')).exists()
-                    and (refresh_from is None or state.get('version') != refresh_from)):
-                result = state
-            else:
-                if state.get('state') == 'building' and state.get('version'):
-                    stale_path = base_root / 'versions' / state['version']
-                    try:
-                        _get_backend().remove_base_version(stale_path)
-                    except BaseException:
-                        pass
-                    stale_ref = 'refs/studio/base/' + key + '-' + state['version'][2:]
-                    for _rel, user_repo in _git_repositories(root):
-                        _git(user_repo, 'update-ref', '-d', stale_ref, check=False)
-                if state.get('refreshingVersion'):
-                    stale_path = base_root / 'versions' / state['refreshingVersion']
-                    try:
-                        _get_backend().remove_base_version(stale_path)
-                    except BaseException:
-                        pass
-                    stale_ref = 'refs/studio/base/' + key + '-' + state['refreshingVersion'][2:]
-                    for _rel, user_repo in _git_repositories(root):
-                        _git(user_repo, 'update-ref', '-d', stale_ref, check=False)
-                version = f'v-{time.time_ns()}'
-                base_id = key + '-' + version[2:]
-                backend = _get_backend()
-                if refresh_from is None:
-                    _write_json(_base_state_path(key), {
-                        'state': 'building', 'repoRoot': str(root), 'repoKey': key,
-                        'version': version, 'error': None, 'pid': os.getpid(),
-                        'startedAt': time.time(), 'token': None
-                    })
-                else:
-                    state['refreshingVersion'] = version
-                    _write_json(_base_state_path(key), state)
-                source_repos = _git_repositories(root)
-                repository_paths = [str(rel) for rel, _repo in source_repos]
-                excludes = _workspace_excludes(root, source_repos)
-                base_excludes = _workspace_excludes(root, source_repos, exclude_git_metadata=True)
-                ref = 'refs/studio/base/' + base_id
-                # Pin the current heads before a long tree copy can overlap git gc.
-                # Materialize nested repository metadata before root status visits gitlinks.
-                for rel, user_repo in sorted(source_repos, key=lambda pair: len(pair[0].parts), reverse=True):
-                    head = _git(user_repo, 'rev-parse', 'HEAD').strip()
-                    _git(user_repo, 'update-ref', ref, head)
-                    protected.append({'path': str(rel), 'head': head, 'ref': ref})
-                if refresh_from and state.get('state') == 'ready':
-                    staging = backend.open_base_refresh(root, key, version, state)  # type: ignore[attr-defined]  # typed-suspect: Linux Backend has no refresh staging method
-                else:
-                    staging = backend.open_base_staging(root, key, version)
-                token = staging.get('token')
-                if refresh_from is None:
-                    _write_json(_base_state_path(key), {
-                        'state': 'building', 'repoRoot': str(root), 'repoKey': key,
-                        'version': version, 'error': None, 'pid': os.getpid(),
-                        'startedAt': time.time(), 'token': token
-                    })
-                base_repo = Path(staging['root'])
-                if staging.get('refresh'):
-                    delta = backend.sync_delta(root, base_repo, token,
-                                               excludes=excludes)
-                    token = delta.get('token', token) if isinstance(delta, dict) else delta
-                    staging['token'] = token
-                else:
-                    backend.copy_base_tree(root, base_repo, excludes=base_excludes)
-                dirty_paths = {}
-                for rel, user_repo in sorted(source_repos, key=lambda pair: len(pair[0].parts), reverse=True):
-                    base_repo_path = base_repo / rel
-                    status = _prepare_repo(base_repo_path, user_repo, refresh=True)
-                    dirty_paths[str(rel)] = _status_paths(status)
-                    copied_head = _git(base_repo_path, 'rev-parse', 'HEAD').strip()
-                    _git(user_repo, 'update-ref', ref, copied_head)
-                    entry = next((value for value in protected if value['path'] == str(rel)), None)
-                    if entry:
-                        entry['head'] = copied_head
-                sealed = backend.seal_base(staging)
-                image = str(sealed['image'])
-                result = {
-                    'state': 'ready', 'repoRoot': str(root), 'repoKey': key,
-                    'version': version, 'error': None, 'image': image,
-                    'versionPath': str(sealed['versionPath']),
-                    'head': _git(root, 'rev-parse', 'HEAD').strip() if _is_git_repo(root) else None,
-                    'token': sealed.get('token', token), 'protectedRefs': protected,
-                    'repositories': repository_paths, 'dirtyPaths': dirty_paths,
-                    'excludes': list(excludes), 'baseExcludes': list(base_excludes),
-                    'baseId': base_id, 'createdAt': time.time(),
-                }
-                _write_json(_base_state_path(key), result)
-                _write_json(Path(sealed['versionPath']) / 'version.json', result)
-                # Older versions are retained while an agent refers to them.
-                try:
-                    _prune_base_versions(key)
-                except BaseException as exc:
-                    result['pruneError'] = str(exc)[:1000]
-                    _write_json(_base_state_path(key), result)
-    except BaseException as exc:
-        current = _read_json(_base_state_path(key), {})
-        if refresh_from and current.get('state') == 'ready':
-            result = {key: value for key, value in current.items() if key != 'refreshingVersion'}
-            result.update({'refreshError': str(exc)[:2000], 'refreshFailedAt': time.time()})
-        else:
-            result = {**current, 'state': 'failed', 'error': str(exc)[:2000], 'failedAt': time.time()}
-        _write_json(_base_state_path(key), result)
-        if staging:
-            try:
-                _get_backend().remove_base_version(Path(staging['versionPath']))
-            except BaseException:
-                pass
-        if base_id:
-            for item in protected:
-                _git(Path(root) / item['path'], 'update-ref', '-d', item['ref'], check=False)
-    finally:
-        with _build_lock:
-            callbacks = _build_callbacks.pop(key, [])
-            _build_threads.pop(key, None)
-    for callback in callbacks:
-        _call_callback(callback, {key: result.get(key) for key in ('state', 'version', 'error')})
-
-
-def _prune_base_versions(key: str) -> None:
-    # Keep the current base. Retention is deliberately conservative because
-    # agent layers can still refer to older versions after a refresh.
-    root = _base_dir(key)
-    current = _read_json(_base_state_path(key), {})
-    current_version = current.get('version')
+def _prune_base_versions(key: str):
+    state = _read_json(_base_state_path(key), {}) or {}
     used = set()
-    for agent_state in (_store() / 'agents').glob('*/agent.json'):
-        value = _read_json(agent_state, {}) or {}
+    for path in (_store() / 'agents').glob('*/agent.json'):
+        value = _read_json(path, {}) or {}
         if value.get('repoKey') == key and value.get('baseVersion'):
             used.add(value['baseVersion'])
-    versions = root / 'versions'
+    versions = _base_dir(key) / 'versions'
     if not versions.exists():
         return
     for candidate in versions.iterdir():
-        if candidate.name == current_version or candidate.name in used:
+        if candidate.name in used or candidate.name == state.get('version') or candidate.name == state.get('refreshingVersion'):
             continue
-        metadata = _read_json(candidate / 'version.json', {}) or {}
-        for item in metadata.get('protectedRefs', []):
-            user_repo = Path(metadata.get('repoRoot', '')) / item.get('path', '.')
-            if _is_git_repo(user_repo):
-                _git(user_repo, 'update-ref', '-d', item['ref'], check=False)
         _get_backend().remove_base_version(candidate)
 
 
-def _command(args: list[str], *, view: bool = False, check: bool = False,
-             timeout: float = 120, input: bytes | None = None) -> subprocess.CompletedProcess[bytes]:
-    prefix = _get_backend().exec_prefix() if view else []
-    result = subprocess.run([*prefix, *args], input=input,
-                            capture_output=True, timeout=timeout, check=False)
-    if check and result.returncode:
-        detail = result.stderr.decode(errors='replace')
-        raise RuntimeError(f"command {' '.join(map(str, args))} failed: {detail[-3000:]}")
-    return result
+def _base_metadata(key: str, version: str):
+    path = _base_dir(key) / 'versions' / version / 'version.json'
+    value = _read_json(path, {}) or {}
+    return value if (value.get('schema') == 2 and value.get('changeDetector') == 'git-v1'
+                     and value.get('version') == version) else None
 
 
-def _git(repo: Path, *args: str, check: bool = True, timeout: float = 120,
-         input: bytes | None = None, view: bool = False) -> str:
-    result = _command(['git', '-C', str(repo), *args], input=input,
-                      timeout=timeout, view=view)
-    if check and result.returncode:
-        raise RuntimeError(f"git {' '.join(args)} failed in {repo}: " +
-                           result.stderr.decode(errors='replace')[-3000:])
-    return result.stdout.decode(errors='surrogateescape')
-
-
-def _is_git_repo(path: Path, *, view: bool = False) -> bool:
-    result = _command(['git', '-C', str(path), 'rev-parse', '--show-toplevel'],
-                      timeout=20, view=view)
-    return result.returncode == 0
-
-
-def _git_repositories(root: Path) -> list[tuple[Path, Path]]:
-    root = Path(root).resolve()
-    results = []
-    excluded = {Path(value) for value in _workspace_excludes(root)}
-    if _is_git_repo(root):
-        results.append((Path('.'), root))
-    for current, dirs, files in os.walk(root, followlinks=False):
-        here = Path(current)
-        rel_here = here.relative_to(root)
-        is_excluded = any(rel_here == item or item in rel_here.parents for item in excluded)
-        if not is_excluded and ('.git' in dirs or '.git' in files):
-            if here != root and _is_git_repo(here):
-                try:
-                    top = Path(_git(here, 'rev-parse', '--show-toplevel').strip()).resolve()
-                    if top == here.resolve():
-                        results.append((here.relative_to(root), here))
-                except (RuntimeError, ValueError):
-                    pass
-        dirs[:] = [name for name in dirs if name != '.git' and name not in {'node_modules', '.cache'}
-                   and not any((rel_here / name) == item or item in (rel_here / name).parents
-                               for item in excluded)]
-    return list(dict.fromkeys(results))
-
-
-def _object_dir(repo: Path) -> Path:
-    value = _git(repo, 'rev-parse', '--path-format=absolute', '--git-path', 'objects').strip()
-    return Path(value).resolve()
-
-
-def _prepare_repo(target: Path, source: Path, *, refresh: bool = False, view: bool = False,
-                  copy_index: bool = False, return_head: bool = False) -> str:
-    code = r'''import json,pathlib,re,shutil,subprocess,sys
-source,target=map(pathlib.Path,sys.argv[1:3]); refresh=sys.argv[3]=="1"
-copy_index=sys.argv[4]=="1"; return_head=sys.argv[5]=="1"
-source_marker=source/".git"; target_marker=target/".git"
-if source_marker.is_file():
-    value=source_marker.read_text().strip()
-    if not value.startswith("gitdir:"): raise RuntimeError("invalid source gitdir marker")
-    gitdir=(source/value.split(":",1)[1].strip()).resolve()
-else: gitdir=source_marker
-common=gitdir
-common_file=gitdir/"commondir"
-if common_file.exists(): common=(gitdir/common_file.read_text().strip()).resolve()
-needs_private=(refresh or not target_marker.is_dir() or (target_marker/"commondir").exists()
-               or not any(target_marker.iterdir()))
-if needs_private:
-    if target_marker.is_dir(): shutil.rmtree(target_marker)
-    elif target_marker.exists(): target_marker.unlink()
-    target_marker.mkdir(parents=True,exist_ok=True)
-    def copy_tree(src,dst):
-        for item in src.iterdir():
-            if item.name in {"objects","worktrees","commondir","gitdir"}: continue
-            out=dst/item.name
-            if item.is_dir() and not item.is_symlink():
-                out.mkdir(exist_ok=True); copy_tree(item,out)
-            elif item.is_symlink():
-                if out.exists() or out.is_symlink(): out.unlink()
-                out.symlink_to(item.resolve())
-            else: shutil.copy2(item,out)
-    copy_tree(common,target_marker)
-    if gitdir != common: copy_tree(gitdir,target_marker)
-else:
-    source_config=common/"config"
-    if source_config.is_file(): shutil.copy2(source_config,target_marker/"config")
-paths=subprocess.run(["git","-C",str(source),"rev-parse","--path-format=absolute",
-                      "--git-path","objects","--git-path","index","HEAD"],
-                     capture_output=True,text=True,check=True).stdout.splitlines()
-source_objects=pathlib.Path(paths[0]).resolve(); source_index=pathlib.Path(paths[1]).resolve(); head=paths[2]
-objects=target_marker/"objects"; objects.mkdir(parents=True,exist_ok=True)
-alternate=objects/"info"/"alternates"; alternate.parent.mkdir(parents=True,exist_ok=True)
-alternate.write_text(str(source_objects)+"\n")
-if copy_index and source_index.is_file(): shutil.copy2(source_index,target_marker/"index")
-for config in (target_marker/"config",target_marker/"config.worktree"):
-    if not config.exists(): config.touch()
-    lines=config.read_text(errors="replace").splitlines()
-    kept=[]; section=""
-    for line in lines:
-        match=re.match(r"\s*\[([^]]+)\]",line)
-        if match: section=match.group(1).split()[0].lower()
-        if section=="core" and re.match(r"\s*(checkstat|trustctime|worktree)\s*=",line,re.I): continue
-        kept.append(line)
-    kept.extend(("[core]","\tcheckStat = minimal","\ttrustctime = false"))
-    config.write_text("\n".join(kept)+"\n")
-print(json.dumps({"objects":str(objects),"head":head}))
-'''
-    args = [sys.executable, '-c', code, str(source), str(target),
-            '1' if refresh else '0', '1' if copy_index else '0', '1' if return_head else '0']
-    if view:
-        output = _command(args, view=True, check=True, timeout=60).stdout.decode()
-    else:
-        output = subprocess.run(args, check=True, capture_output=True, text=True,
-                                timeout=60).stdout
-    details = json.loads(output)
-    if refresh:
-        return _git(target, 'status', '--porcelain=v1', '-z', timeout=300, view=view)
-    if return_head:
-        return details['head']
-    return ''
-
-
-def _status_paths(output: str) -> list[str]:
-    """Read Git's NUL-delimited porcelain status and return changed paths."""
-    paths = set()
-    fields = output.split('\0')
-    index = 0
-    while index < len(fields):
-        entry = fields[index]
-        index += 1
-        if len(entry) < 4:
-            continue
-        paths.add(entry[3:])
-        if 'R' in entry[:2] or 'C' in entry[:2]:
-            if index < len(fields):
-                paths.add(fields[index])
-                index += 1
-    return sorted(paths)
-
-
-def _copy_index(source: Path, target: Path, *, view: bool = False) -> None:
-    source_index = _git(source, 'rev-parse', '--path-format=absolute', '--git-path', 'index').strip()
-    target_index = target / '.git' / 'index'
-    code = 'import shutil,sys; shutil.copy2(sys.argv[1],sys.argv[2])'
-    _command([sys.executable, '-c', code, source_index, str(target_index)],
-             view=view, check=True, timeout=60)
-
-
-def _tree_paths(repo: Path, commit: str, pathspecs: Iterable[str], *, view: bool = False) -> set[str]:
-    if not pathspecs:
-        return set()
-    output = _git(repo, 'ls-tree', '-r', '-z', commit, '--', *pathspecs, view=view)
-    result = set()
-    for record in output.split('\0'):
-        if '\t' in record:
-            result.add(record.split('\t', 1)[1])
-    return result
-
-
-def _stageable_paths(repo: Path, paths: Iterable[str | Path], *, view: bool = False) -> list[Path]:
-    if not paths:
-        return []
-    pathspecs = [f':(literal){Path(value).as_posix()}' for value in paths]
-    candidates: set[Path] = set()
-    for offset in range(0, len(pathspecs), 256):
-        output = _git(repo, 'ls-files', '--cached', '--others', '--exclude-standard', '-z',
-                      '--', *pathspecs[offset:offset + 256], view=view)
-        candidates.update(Path(value) for value in output.split('\0') if value)
-    return sorted(candidates,
-                  key=lambda path: path.as_posix())
-
-
-def _checkout_changed_paths(target: Path, source_head: str, target_head: str,
-                            extra_paths: Iterable[str | Path], *, view: bool = False) -> None:
-    changed = _git(target, 'diff', '--no-renames', '--name-only', '-z',
-                   source_head, target_head, view=view).split('\0')
-    paths = {Path(value) for value in changed if value}
-    paths.update(Path(value) for value in extra_paths)
-    paths = {path for path in paths if path != Path('.') and not path.is_absolute()
-             and '..' not in path.parts and '.git' not in path.parts
-             and '.worktrees' not in path.parts}
-    if not paths:
-        return
-    ordered = sorted(paths, key=lambda path: path.as_posix())
-    pathspecs = [f':(literal){path.as_posix()}' for path in ordered]
-    target_paths = _tree_paths(target, target_head, pathspecs, view=view)
-    source_paths = _tree_paths(target, source_head, pathspecs, view=view)
-
-    def matches(candidate, entries):  # type: (Path, set[str]) -> bool
-        value = candidate.as_posix().rstrip('/')
-        return any(entry == value or entry.startswith(value + '/') for entry in entries)
-
-    checkout = [spec for path, spec in zip(ordered, pathspecs) if matches(path, target_paths)]
-    tracked_remove = [spec for path, spec in zip(ordered, pathspecs)
-                      if not matches(path, target_paths) and matches(path, source_paths)]
-    staged_remove = [spec for path, spec in zip(ordered, pathspecs)
-                     if not matches(path, target_paths) and not matches(path, source_paths)]
-    if checkout:
-        _git(target, 'checkout', '--force', target_head, '--', *checkout, view=view)
-    if tracked_remove:
-        _git(target, 'rm', '-r', '-f', '--ignore-unmatch', '--', *tracked_remove, view=view)
-    if staged_remove:
-        _git(target, 'rm', '-r', '-f', '--cached', '--ignore-unmatch', '--',
-             *staged_remove, view=view)
-        _git(target, 'clean', '-f', '-d', '--', *staged_remove, view=view)
-
-
-def _sync_refs(target: Path, source: Path, agent_id: str, *, view: bool = False) -> None:
-    format_arg = '--format=%(refname) %(objectname) %(symref)'
-    source_refs = _git(source, 'for-each-ref', format_arg).splitlines()
-    target_refs = _git(target, 'for-each-ref', format_arg, view=view).splitlines()
-    agent_ref = 'refs/heads/codex-agent/' + agent_id
-
-    def parse(lines):  # type: (str) -> dict[str, str]
-        refs = {}
-        for line in lines:
-            try:
-                name, oid, symref = line.split(' ', 2)
-            except ValueError:
-                continue
-            if symref or name.startswith('refs/studio/') or name == agent_ref:
-                continue
-            refs[name] = oid
-        return refs
-
-    source_map, target_map = parse(source_refs), parse(target_refs)
-    commands = ['start']
-    commands.extend(f'update {name} {oid}' for name, oid in source_map.items())
-    commands.extend(f'delete {name}' for name in target_map if name not in source_map)
-    commands.extend(('prepare', 'commit'))
-    _git(target, 'update-ref', '--stdin', input=('\n'.join(commands) + '\n').encode(), view=view)
-
-
-def _base_for_agent(state: JsonObject) -> str:
-    value = _read_json(_base_state_path(state['repoKey']), {}) or {}
-    if value.get('version') != state.get('baseVersion'):
-        # Keep agent's exact version in the state and locate it by version name.
-        base = _base_dir(state['repoKey']) / 'versions' / str(state.get('baseVersion'))
-        return base / 'base.asif'
-    return Path(value['image'])
-
-
-def _repo_state_list(root: Path, mount_repo: Path, known_paths: Iterable[str], delta: WorkspaceDelta) -> list[JsonObject]:
-    """Resolve repositories known at base time plus those named by delta events."""
-    candidates = {Path(value) for value in known_paths}
-    for value in delta.get('changedPaths', ()):
-        relative = Path(value)
-        parts = relative.parts
-        for index, part in enumerate(parts):
-            if part == '.git':
-                candidates.add(Path(*parts[:index]) if index else Path('.'))
-                break
-        if relative == Path('.'):
-            candidates.add(Path('.'))
-    items = []
-    for rel in sorted(candidates, key=lambda path: (len(path.parts), str(path))):
-        if any(part in {'.worktrees', 'objects'} for part in rel.parts):
-            continue
-        target = mount_repo / rel
-        source = root / rel
-        if not (source / '.git').exists():
-            continue
-        head = _prepare_repo(target, source, view=True, copy_index=True, return_head=True)
-        items.append({'path': str(rel), 'startCommit': head,
-                      'snapshotCommit': None, 'branch': None})
-    return items
-
-
-def _git_repository_paths_under(relative_root: Path, absolute_root: Path) -> list[Path]:
-    if not absolute_root.is_dir():
-        return set()
-    found = set()
-    for current, dirs, files in os.walk(absolute_root, followlinks=False):
-        here = Path(current)
-        rel = here.relative_to(absolute_root)
-        if '.git' in dirs or '.git' in files:
-            repo_rel = relative_root / rel
-            if '.worktrees' not in repo_rel.parts:
-                found.add(repo_rel)
-        dirs[:] = [name for name in dirs if name != '.git' and name not in {'node_modules', '.cache', '.worktrees'}]
-    return found
-
-
-def _snapshot_paths(repo_rel: Path, dirty_paths: Iterable[str], delta: WorkspaceDelta, nested_repositories: Iterable[str] = ()) -> list[str]:
-    paths = {Path(value) for value in dirty_paths}
-    repo_parts = repo_rel.parts
-    nested_repositories = tuple(Path(value) for value in nested_repositories if Path(value) != repo_rel)
-
-    def add_delta_path(value):  # type: (str) -> None
-        path = Path(value)
-        parts = path.parts
-        if any(part in {'.worktrees'} for part in parts):
-            return
-        if repo_rel == Path('.'):
-            for nested in nested_repositories:
-                if parts[:len(nested.parts)] == nested.parts:
-                    paths.add(nested)
-                    return
-            if '.git' in parts:
-                index = parts.index('.git')
-                # Nested repository changes must update the parent's gitlink.
-                if index:
-                    paths.add(Path(*parts[:index]))
-                return
-            paths.add(path)
-            return
-        if parts[:len(repo_parts)] == repo_parts:
-            local = parts[len(repo_parts):]
-            if '.git' in local:
-                return
-            paths.add(Path(*local) if local else Path('.'))
-
-    for value in delta.get('changedPaths', ()):
-        add_delta_path(value)
-    for value in delta.get('scanPaths', ()):
-        scan = Path(value)
-        if any(part == '.worktrees' for part in scan.parts):
-            continue
-        scan_parts = scan.parts
-        if repo_rel == Path('.'):
-            add_delta_path(value)
-        elif scan_parts[:len(repo_parts)] == repo_parts:
-            paths.add(Path(*scan_parts[len(repo_parts):]) if len(scan_parts) > len(repo_parts)
-                      else Path('.'))
-        elif repo_parts[:len(scan_parts)] == scan_parts:
-            paths.add(Path('.'))
-    return sorted((path for path in paths if path != Path('.git') and '.git' not in path.parts),
-                  key=lambda path: path.as_posix())
-
-
-def create_workspace(repo_root: object, agent_id: object, *, start_commit: str | None = None,
-                     restore_heads: dict[str, str] | None = None) -> ImageWorkspaceMount:
-    root = _repo_root(repo_root)
+def create_workspace(root, agent_id) -> dict[str, str]:
+    folder = _root_path(root)
     agent_id = _safe_id(agent_id)
-    if restore_heads is not None and start_commit is not None:
-        raise ValueError('start_commit and restore_heads cannot be used together')
-    restore_mode = restore_heads is not None
-    if restore_heads is not None:
-        normalized_heads = {}
-        for relative, commit in restore_heads.items():
-            path = Path(relative)
-            if path.is_absolute() or '..' in path.parts:
-                raise ValueError('Restore repository paths must be relative')
-            normalized_heads[path.as_posix()] = str(commit)
-        restore_heads = normalized_heads
-    key = _repo_key(root)
+    key = _repo_key(folder)
+    agent_dir = _agent_dir(agent_id)
     state_path = _agent_state_path(agent_id)
     mount = _mount_path(agent_id)
-    agent_dir = _agent_dir(agent_id)
     with _file_lock(agent_dir / '.workspace.lock'):
         state = _read_json(state_path, {}) or {}
+        if state and state.get('schema') != 2:
+            _get_backend().unmount_workspace(mount, force=False)
+            _get_backend().remove_layer(agent_dir)
+            shutil.rmtree(mount, ignore_errors=True)
+            state = {}
         if state and state.get('repoKey') != key:
-            raise ValueError('Agent id is already reserved for another repository')
-        if state and state.get('state') != 'ready' and restore_heads is None:
-            saved_heads = state.get('restoreHeads')
-            if saved_heads is not None:
-                restore_heads = saved_heads
-                restore_mode = True
-        if state.get('state') == 'ready':
+            raise ValueError('Workspace identifier is already used by another folder')
+        if state.get('state') in {'ready', 'archived'}:
             already_ready = True
         else:
             already_ready = False
-        if already_ready:
-            # Release the reservation lock before ensure_mounted takes it.
-            pass
-        else:
-            base = _read_json(_base_state_path(key), {}) or {}
-            if base.get('state') != 'ready':
-                raise RuntimeError('Image workspace base is not ready')
-            if not state:
+            base = (_base_metadata(key, state.get('baseVersion'))
+                    if state.get('baseVersion') else None)
+            if base is None:
+                base = _read_json(_base_state_path(key), {}) or {}
+                if state.get('image'):
+                    _get_backend().unmount_workspace(mount, force=False)
+                    _get_backend().remove_layer(agent_dir)
+                    agent_dir.mkdir(parents=True, exist_ok=True)
+                if base.get('state') != 'ready':
+                    raise RuntimeError('Image workspace base is not ready')
                 state = {
-                    'repoRoot': str(root), 'repoKey': key, 'agentId': agent_id,
+                    'schema': 2, 'repoRoot': str(folder), 'repoKey': key, 'agentId': agent_id,
                     'baseVersion': base['version'], 'baseImage': base['image'],
-                    'startCommit': start_commit, 'snapshotCommit': None,
-                    'restoreHeads': restore_heads,
-                    'branch': 'codex-agent/' + agent_id, 'image': None,
-                    'mount': str(mount), 'state': 'creating', 'repositories': [],
+                    'image': None, 'mount': str(mount), 'state': 'creating',
                     'createdAt': time.time(),
                 }
                 _write_json(state_path, state)
-            image = _get_backend().clone_workspace(Path(state['baseImage']), agent_dir)
-            state['image'] = str(image)
+            if base.get('state') != 'ready':
+                raise RuntimeError('Reserved image workspace base is not ready')
+            if not state.get('image'):
+                image = _get_backend().clone_workspace(Path(base['image']), agent_dir)
+                state['image'] = str(image)
+                state['baseImage'] = base['image']
+                _write_json(state_path, state)
+            _get_backend().mount_workspace(Path(state['image']), mount,
+                                          base_image=Path(state.get('baseImage') or base['image']))
+            workspace_root = mount / 'repo'
+            current_repositories = _repo_snapshots(folder, base.get('repositories', []))
+            excludes = _delta_excludes(
+                folder, tuple(base.get('excludes') or _workspace_excludes(folder)),
+                _repositories_for_records(folder, current_repositories))
+            backend = _get_backend()
+            delta = _sync_detected(folder, workspace_root, base, excludes, backend,
+                                   current_repositories=current_repositories)
+            base_repositories = {item.get('path'): item for item in base.get('repositories', [])
+                                 if isinstance(item, dict)}
+            repositories, index_changes = _repo_index_metadata(
+                folder, workspace_root, base_repositories, refresh_all=False, backend=backend,
+                repository_records=delta['repositories'], candidate_paths=delta['changedPaths'])
+            changed_index_paths = set()
+            for relative, paths in index_changes.items():
+                prefix = '' if relative == '.' else relative + '/'
+                changed_index_paths.update(prefix + path for path in paths)
+            _refresh_changed_paths(folder, workspace_root,
+                                   delta.get('changedPaths'), changed_index_paths, backend,
+                                   repository_records=delta['repositories'])
+            state.update({'path': str(workspace_root), 'mount': str(mount),
+                          'state': 'ready', 'mounted': True,
+                          'repositories': repositories,
+                          'deltaFallbackReason': None})
             _write_json(state_path, state)
-            _get_backend().mount_workspace(image, mount, base_image=Path(state['baseImage']))
-            mount_repo = mount / 'repo'
-            token = base.get('token')
-            excludes = tuple(base.get('excludes') or _workspace_excludes(root))
-            delta = _get_backend().sync_delta(root, mount_repo, token, excludes=excludes)
-            if not isinstance(delta, dict):
-                delta = {'token': delta, 'changedPaths': []}
-            state['token'] = delta.get('token', token)
-            _write_json(state_path, state)
-            repos = _repo_state_list(root, mount_repo, base.get('repositories', ['.']), delta)
-            for item in repos:
-                rel = Path(item['path'])
-                target = mount_repo / rel
-                source = root / rel
-                restore_head = restore_heads.get(item['path']) if restore_heads is not None else None
-                source_head = item['startCommit']
-                start = (restore_head or (start_commit if rel == Path('.') and start_commit else source_head))
-                item['startCommit'] = start
-                item['branch'] = 'codex-agent/' + agent_id
-                nested_repositories = [value['path'] for value in repos]
-                paths = _snapshot_paths(rel, base.get('dirtyPaths', {}).get(item['path'], []),
-                                        delta, nested_repositories)
-                verify = _command(['git', '-C', str(target), 'show-ref', '--verify', '--quiet',
-                                   'refs/heads/' + item['branch']], view=True, timeout=30)
-                prior_snapshot = None
-                if verify.returncode == 0:
-                    prior_tip = _git(target, 'rev-parse', 'refs/heads/' + item['branch'], view=True).strip()
-                    message = _git(target, 'show', '-s', '--format=%s', prior_tip, view=True).strip()
-                    parents = _git(target, 'rev-list', '--parents', '-n', '1', prior_tip, view=True).split()
-                    if (not start_commit and message == 'studio snapshot' and len(parents) == 2
-                            and parents[1] == start):
-                        prior_snapshot = prior_tip
-                branch_tip = prior_snapshot if prior_snapshot and not restore_mode else start
-                _sync_refs(target, source, agent_id, view=True)
-                _git(target, 'update-ref', 'refs/heads/' + item['branch'], branch_tip, view=True)
-                _git(target, 'symbolic-ref', 'HEAD', 'refs/heads/' + item['branch'], view=True)
-                if start != source_head:
-                    _checkout_changed_paths(target, source_head, start, paths, view=True)
-                if restore_mode:
-                    item['snapshotCommit'] = None
-                    continue
-                if prior_snapshot:
-                    item['snapshotCommit'] = prior_snapshot
-                paths = _stageable_paths(target, paths, view=True)
-                if paths:
-                    pathspecs = [f':(literal){path.as_posix()}' for path in paths]
-                    _git(target, 'add', '-A', '--', *pathspecs, view=True)
-                staged = (_command(['git', '-C', str(target), 'diff', '--cached', '--quiet', 'HEAD', '--',
-                                    *(f':(literal){path.as_posix()}' for path in paths)], view=True, timeout=60)
-                          if paths else None)
-                if staged and staged.returncode == 1:
-                    tree = _git(target, 'write-tree', view=True).strip()
-                    snapshot = _git(
-                        target, '-c', 'user.name=Codex Studio', '-c',
-                        'user.email=studio@localhost', 'commit-tree', tree,
-                        '-p', branch_tip, '-m', 'studio snapshot', timeout=300,
-                        view=True).strip()
-                    _git(target, 'update-ref', 'refs/heads/' + item['branch'],
-                         snapshot, branch_tip, view=True)
-                    item['snapshotCommit'] = snapshot
-            state.update({'repositories': repos, 'snapshotCommit': next(
-                (x['snapshotCommit'] for x in repos if x['path'] == '.'), None),
-                'startCommit': start_commit or next((x['startCommit'] for x in repos if x['path'] == '.'), None),
-                'mount': str(mount), 'repoPath': str(mount_repo), 'state': 'ready',
-                'mounted': True})
-            _write_json(state_path, state)
-            if delta.get('refreshBase'):
-                _schedule_base_refresh(root, base['version'])
     if already_ready:
         return ensure_mounted(agent_id)
-    return {'mount': str(mount), 'repoPath': str(mount / 'repo'), 'branch': state['branch'],
-            'startCommit': state['startCommit'], 'snapshotCommit': state['snapshotCommit']}
+    return {'mount': str(mount), 'path': str(mount / 'repo')}
 
 
-def ensure_mounted(agent_id: object) -> ImageWorkspaceMount:
+def ensure_mounted(agent_id) -> dict[str, str]:
     agent_id = _safe_id(agent_id)
     state = _read_json(_agent_state_path(agent_id), {}) or {}
     if not state or not state.get('image'):
         raise ValueError('Unknown image workspace')
     mount = Path(state.get('mount') or _mount_path(agent_id))
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
-        mounted = _get_backend().mount_workspace(Path(state['image']), mount,
-                                                   base_image=Path(state.get('baseImage') or _base_for_agent(state)))
-        state['state'] = 'ready'
+        _get_backend().mount_workspace(Path(state['image']), mount,
+                                       base_image=Path(state.get('baseImage') or _base_metadata(
+                                           state['repoKey'], state['baseVersion'])['image']))
+        if state.get('state') == 'archived':
+            state['state'] = 'ready'
         state['mounted'] = True
-        state['repoPath'] = str(mount / 'repo')
+        state['path'] = str(mount / 'repo')
         _write_json(_agent_state_path(agent_id), state)
-    return {'mount': str(mount), 'repoPath': str(mount / 'repo'), 'branch': state.get('branch'),
-            'startCommit': state.get('startCommit'), 'snapshotCommit': state.get('snapshotCommit')}
+    return {'mount': str(mount), 'path': str(mount / 'repo')}
 
 
-def _fetch_and_replay(user_repo: Path, agent_repo: Path, branch: str, snapshot: str | None,
-                      start_commit: str | None, agent_id: str) -> JsonObject:
-    raw_ref = f'refs/studio/agents/{agent_id}/raw'
-    result_ref = f'refs/heads/codex-agent/{agent_id}'
-    _git(user_repo, 'fetch', str(agent_repo), f'{branch}:{raw_ref}', timeout=300, view=True)
-    raw_tip = _git(user_repo, 'rev-parse', raw_ref).strip()
-    base_commit = (_git(user_repo, 'rev-parse', f'{snapshot}^').strip() if snapshot
-                   else _git(user_repo, 'rev-parse', start_commit or 'HEAD').strip())
-    current = base_commit
-    commits = _git(user_repo, 'rev-list', '--reverse', f'{snapshot or base_commit}..{raw_tip}').split()
-    for commit in commits:
-        parent = _git(user_repo, 'rev-parse', f'{commit}^').strip()
-        tree_result = subprocess.run(['git', '-C', str(user_repo), 'merge-tree', '--write-tree',
-                                      '--merge-base', parent, current, commit],
-                                     capture_output=True, text=True, timeout=300)
-        if tree_result.returncode:
-            return {'state': 'conflict', 'conflict': tree_result.stdout[-5000:],
-                    'rawRef': raw_ref, 'branch': result_ref}
-        tree = tree_result.stdout.splitlines()[0].strip()
-        message = _git(user_repo, 'show', '-s', '--format=%B', commit).encode()
-        new_commit = _git(user_repo, 'commit-tree', tree, '-p', current, input=message).strip()
-        current = new_commit
-    if current != base_commit:
-        update = subprocess.run(['git', '-C', str(user_repo), 'update-ref', result_ref,
-                                 current, _git(user_repo, 'rev-parse', result_ref, check=False).strip() or '0' * 40],
-                                capture_output=True, text=True)
-        if update.returncode:
-            # First update has a zero old value; retry as create only if still absent.
-            check = subprocess.run(['git', '-C', str(user_repo), 'show-ref', '--verify', '--quiet', result_ref])
-            if check.returncode:
-                _git(user_repo, 'update-ref', result_ref, current)
-            else:
-                raise RuntimeError(update.stderr.strip())
-    return {'state': 'collected', 'branch': result_ref, 'rawRef': raw_ref,
-            'commit': current, 'commits': len(commits)}
-
-
-def collect(agent_id: object) -> ImageWorkspaceCollectResultRecord:
+def archive_workspace(agent_id) -> dict[str, Any]:
     agent_id = _safe_id(agent_id)
     state = _read_json(_agent_state_path(agent_id), {}) or {}
     if not state:
-        raise ValueError('Unknown image workspace')
-    mount = Path(state.get('mount') or _mount_path(agent_id))
-    ensure_mounted(agent_id)
+        return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
-        result: ImageWorkspaceCollectResultRecord = {'state': 'collected', 'repositories': []}
-        for item in sorted(state.get('repositories', []), key=lambda row: len(Path(row['path']).parts), reverse=True):
-            rel = Path(item['path'])
-            user_repo = Path(state['repoRoot']) / rel
-            agent_repo = mount / 'repo' / rel
-            if not _is_git_repo(user_repo) or not _is_git_repo(agent_repo, view=True):
-                continue
-            nested = _fetch_and_replay(user_repo, agent_repo, item['branch'],
-                                       item.get('snapshotCommit'), item.get('startCommit'), agent_id)
-            head = nested.get('commit')
-            if nested['state'] == 'conflict':
-                head = _git(user_repo, 'rev-parse', nested['rawRef']).strip()
-            repo_result = {**nested, 'path': item['path'], 'branch': item['branch'], 'head': head}
-            result['repositories'].append(repo_result)
-            if nested['state'] == 'conflict':
-                return {'state': 'conflict', 'path': item['path'], 'conflict': nested.get('conflict'),
-                        'rawRef': nested['rawRef'], 'repositories': result['repositories']}
-        result['branch'] = 'codex-agent/' + agent_id
-        return result
+        mount = Path(state.get('mount') or _mount_path(agent_id))
+        _get_backend().unmount_workspace(mount, force=True)
+        state['state'] = 'archived'
+        state['mounted'] = False
+        _write_json(_agent_state_path(agent_id), state)
+    return {'freedBytes': 0, 'state': 'archived'}
 
 
-def remove_workspace(agent_id: object, *, force: bool = False) -> ImageWorkspaceRemovalResultRecord:
+def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
+    del force
     agent_id = _safe_id(agent_id)
     agent_dir = _agent_dir(agent_id)
-    state_path = _agent_state_path(agent_id)
-    state = _read_json(state_path, {}) or {}
+    state = _read_json(_agent_state_path(agent_id), {}) or {}
     if not state:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(agent_dir / '.workspace.lock'):
-        mount = Path(state.get('mount') or _mount_path(agent_id))
         before = workspace_bytes(agent_id)
-        _get_backend().unmount_workspace(mount, force=force)
+        mount = Path(state.get('mount') or _mount_path(agent_id))
+        _get_backend().unmount_workspace(mount, force=True)
         _get_backend().remove_layer(agent_dir)
-        cleanup = ('import pathlib,shutil,sys; '
-                   'shutil.rmtree(pathlib.Path(sys.argv[1]),ignore_errors=True)')
-        _command([sys.executable, '-c', cleanup, str(mount)], view=True, timeout=60)
+        shutil.rmtree(mount, ignore_errors=True)
         if state.get('repoKey'):
             _prune_base_versions(state['repoKey'])
-        return {'freedBytes': before or 0, 'state': 'removed'}
+    return {'freedBytes': before or 0, 'state': 'removed'}
 
 
 def _allocated_bytes(path: Path) -> int:
@@ -1052,8 +1097,9 @@ def workspace_bytes(agent_id: object) -> int:
     return int(result) if result is not None else _allocated_bytes(Path(state['image']))
 
 
-def base_bytes(repo_root: object) -> int:
-    state = _read_json(_base_state_path(_repo_key(_repo_root(repo_root))), {}) or {}
+def base_bytes(root) -> int:
+    folder = _root_path(root)
+    state = _read_json(_base_state_path(_repo_key(folder)), {}) or {}
     if not state.get('image'):
         return 0
     image = Path(state['image'])

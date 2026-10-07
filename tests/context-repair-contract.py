@@ -113,6 +113,9 @@ class ContextRepair(unittest.TestCase):
         self.records.append({'type':'event_msg','payload':{'type':'task_complete','turn_id':'turn'}})
         self.write_records()
         self.server = Server(self.path, self.tid)
+        self.initial_servers = dict(self.runtime.servers)
+        self.runtime.servers['default'] = self.server
+        self.runtime.connection_ids.setdefault('default', 'fixture-connection')
         self.patches = [patch.object(self.runtime, 'connect', return_value=self.server),
                         patch.object(self.runtime.accounts, 'home', return_value=self.home),
                         patch.object(self.runtime, 'connection_current', return_value=True)]
@@ -120,6 +123,8 @@ class ContextRepair(unittest.TestCase):
             p.start()
 
     def tearDown(self):
+        self.runtime.servers.clear()
+        self.runtime.servers.update(self.initial_servers)
         for p in self.patches:
             p.stop()
         f.WorkspaceContract.tearDown(self)
@@ -487,6 +492,123 @@ class ContextRepair(unittest.TestCase):
         self.assertFalse(current['startAttempt']['submitted'])
         self.assertEqual(repair.repair_before_start(self.runtime, current)['threadId'], 'new-native')
         self.assertEqual(len(self.forks()), 1)
+
+    def test_terminal_history_observation_rechecks_native_state(self):
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        reads = []
+        def before_read():
+            reads.append(True)
+            if len(reads) == 2:
+                self.server.status = 'active'
+        self.server.before_read = before_read
+        with self.assertRaisesRegex(ValueError, 'unchanged terminal native history'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(self.forks(), [])
+        self.assertFalse(self.runtime.agent(self.a['id'])['contextRepair'].get('nativeTerminalReceipt'))
+
+    def test_terminal_history_observation_rechecks_latest_turn(self):
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        call = self.server.call
+        turns = []
+        def changed_turn(method, params, timeout=10):
+            result = call(method, params, timeout)
+            if method == 'thread/turns/list':
+                turns.append(True)
+                if len(turns) == 2:
+                    result['data'][0]['id'] = 'later-turn'
+            return result
+        self.server.call = changed_turn
+        with self.assertRaisesRegex(ValueError, 'unchanged terminal native history'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(self.forks(), [])
+
+    def test_terminal_history_observation_rechecks_native_queue(self):
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        reads = []
+        def queued_input():
+            reads.append(True)
+            if len(reads) == 2:
+                self.server.queue = [{'id':'new-native-input'}]
+        self.server.before_read = queued_input
+        with self.assertRaisesRegex(ValueError, 'native commands and queued input'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        self.assertEqual(self.forks(), [])
+        self.assertFalse(self.runtime.agent(self.a['id'])['contextRepair'].get('nativeTerminalReceipt'))
+
+    def test_terminal_history_observation_preserves_stop(self):
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        reads = []
+        def stop():
+            if reads:
+                return
+            reads.append(True)
+            self.agent_update(self.a, epoch=self.a['epoch'] + 1, status='paused', autoWake=False,
+                              error='Keep the stop.')
+        self.server.before_read = stop
+        with self.assertRaisesRegex(ValueError, 'agent changed'):
+            repair.repair_idle(self.runtime, self.a['id'])
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['status'], 'paused')
+        self.assertEqual(current['error'], 'Keep the stop.')
+        self.assertEqual(self.forks(), [])
+        self.assertFalse(current['contextRepair'].get('nativeTerminalReceipt'))
+
+    def test_terminal_history_observation_checks_full_start_attempt(self):
+        a = self.agent_update(self.a, inFlight=True, status='starting', startAttempt={
+            'id':'same-start', 'submitted':False, 'events':[], 'actionRequestId':'original-action'})
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        reads = []
+        def changed_attempt():
+            if reads:
+                return
+            reads.append(True)
+            self.agent_update(a, startAttempt={**a['startAttempt'], 'actionRequestId':'changed-action'})
+        self.server.before_read = changed_attempt
+        with self.assertRaisesRegex(ValueError, 'agent changed'):
+            repair.repair_before_start(self.runtime, a)
+        self.assertEqual(self.forks(), [])
+        current = self.runtime.agent(self.a['id'])
+        self.assertEqual(current['startAttempt']['actionRequestId'], 'changed-action')
+        self.assertFalse(current['contextRepair'].get('nativeTerminalReceipt'))
+
+    def test_terminal_history_observation_checks_original_connection(self):
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        original = self.runtime.connection_ids['default']
+        reads = []
+        def changed_connection():
+            if reads:
+                return
+            reads.append(True)
+            self.runtime.connection_ids['default'] = 'replacement-connection'
+        self.server.before_read = changed_connection
+        with patch.object(self.runtime, 'connection_current', side_effect=lambda account, connection:
+                          self.runtime.connection_ids.get(account) == connection):
+            with self.assertRaisesRegex(ValueError, 'agent changed'):
+                repair.repair_idle(self.runtime, self.a['id'])
+        self.assertNotEqual(self.runtime.connection_ids['default'], original)
+        self.assertEqual(self.forks(), [])
+        self.assertFalse(self.runtime.agent(self.a['id'])['contextRepair'].get('nativeTerminalReceipt'))
+
+    def test_terminal_history_observation_keeps_legacy_repair_waiting(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            a = self.runtime.agent(self.a['id'], db)
+            op = {'id':'legacy-preparing', 'agent':a['id'], 'source':repair._identity(a),
+                  'settings':self.runtime.preparation_settings(a), 'phase':'preparing',
+                  'connectionId':self.runtime.connection_ids['default']}
+            repair._save(self.runtime, db, a, op)
+            db.execute('DELETE FROM runtime_completed_turns')
+        native = repair._native_idle(self.server, self.tid)
+        with patch.object(repair, 'WAIT_SECONDS', .01):
+            with self.assertRaisesRegex(ValueError, 'exact terminal callback receipt'):
+                repair._reconcile_thread_receipts(self.runtime, op, native, None)
+        self.assertFalse(self.runtime.agent(self.a['id'])['contextRepair'].get('nativeTerminalReceipt'))
+        self.assertEqual(self.forks(), [])
 
 
 if __name__ == '__main__':

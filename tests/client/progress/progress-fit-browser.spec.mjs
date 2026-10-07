@@ -104,8 +104,22 @@ test("progress-fit-browser", async ({ browser, page }) => {
       window.activeReports = 0;
       window.maxActiveReports = 0;
       const original = window.fetch;
-      window.fetch = (input, options = {}) => {
-        const url = new URL(String(input), location.href);
+      window.fetch = async (input, options = {}) => {
+        const request = input instanceof Request ? input : null;
+        const url = new URL(
+          request ? request.url : String(input),
+          location.href,
+        );
+        if (request)
+          options = {
+            ...options,
+            method: request.method,
+            signal: request.signal,
+            body:
+              request.method === "GET"
+                ? undefined
+                : await request.clone().text(),
+          };
         if (url.pathname === "/api/panel")
           return Promise.resolve(
             new Response(
@@ -472,7 +486,7 @@ test("progress-fit-browser", async ({ browser, page }) => {
     ]) {
       await change(unsupported);
       await panel
-        .getByText("Progress format is unsupported.", { exact: true })
+        .getByText("Open PROGRESS.md to view this format.", { exact: true })
         .waitFor();
       assert.equal(await current.count(), 0);
       assert.equal(

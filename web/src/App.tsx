@@ -1,3 +1,6 @@
+import SearchOverlay from "./components/shell/SearchOverlay";
+import { SettingsSection, SettingsRow } from "./components/ui/primitives";
+import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
@@ -165,7 +168,6 @@ import {
   workerState,
   TEAM_PANEL_STATES,
 } from "./components/agents/WorkerOverview";
-import { TeamDiskTotal } from "./components/WorktreeDisk";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
 import { watchResourceChanges } from "./sync/resourceEvents";
 const ClaudeSettings = lazy(() =>
@@ -411,6 +413,7 @@ export default function App() {
     [sidebar, setSidebar] = useState(false),
     [teamOpen, setTeamOpen] = useState(false),
     [tasksOpen, setTasksOpen] = useState(false),
+    [searchOpen, setSearchOpen] = useState(false),
     [workspaceOpen, setWorkspaceOpen] = useState(false),
     [tasksRendered, setTasksRendered] = useState(false),
     [workspaceRendered, setWorkspaceRendered] = useState(false),
@@ -989,8 +992,8 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
-        setWorkspaceSection("search");
-        setWorkspaceOpen(true);
+        setSidebar(false);
+        setSearchOpen(true);
       }
       if (e.key === "Escape") {
         setModal(null);
@@ -1503,7 +1506,10 @@ export default function App() {
       schemaMismatchDialog
     ) : (
       <main className="startup" aria-label="Studio startup">
-        <p role={error ? "alert" : "status"}>
+        <p
+          role={error ? "alert" : "status"}
+          className={error ? "studio-recovery-banner" : undefined}
+        >
           {error || "Connecting to Codex Studio…"}
         </p>
         {error && <a href="/">Reload Studio</a>}
@@ -1593,27 +1599,24 @@ export default function App() {
         >
           <X size={16} />
         </ActionIcon>
-        <span>
-          {workers.length} {workers.length === 1 ? "subagent" : "subagents"}
-        </span>
       </div>
-      {!smallTeam && (
-        <TeamSummary
-          workers={workers}
-          answers={answerIds}
-          deferred={deferredIds}
-          disk={worktreeDisk}
-        />
-      )}
-      {smallTeam && <TeamDiskTotal workers={workers} disk={worktreeDisk} />}
+      <TeamSummary
+        workers={workers}
+        answers={answerIds}
+        deferred={deferredIds}
+        disk={worktreeDisk}
+      />
       {/* The lead link is only useful from a worker chat. */}
       {lead && opened !== lead.id && (
         <Button
           id="lead-row"
+          variant="subtle"
+          size="compact-sm"
+          title={lead.name || "Main agent"}
           leftSection={<ArrowLeft size={13} />}
           onClick={() => open(lead.id)}
         >
-          {lead.name || "Main agent"}
+          Back to main agent
         </Button>
       )}
       {showTeamFilters && (
@@ -1623,7 +1626,7 @@ export default function App() {
             id="worker-search"
             type="search"
             aria-label="Find a subagent"
-            placeholder="Find a subagent"
+            placeholder="Find a worker"
             value={workerQuery}
             onChange={(e) => setWorkerQuery(e.target.value)}
           />
@@ -1683,8 +1686,8 @@ export default function App() {
         {!shown.length && (
           <p className="team-empty" role="status">
             {query
-              ? "No subagents match your search."
-              : "No subagents in this group."}
+              ? "No workers match your search."
+              : "No workers in this group."}
           </p>
         )}
       </div>
@@ -1706,7 +1709,10 @@ export default function App() {
         open={open}
         prepareChat={prepareChat}
         newChat={(path, folder) => void newChat(path, folder)}
-        newSharedChat={(path) => setSharedCreate({ path })}
+        newSharedChat={(path) => {
+          setSidebar(false);
+          setSharedCreate({ path });
+        }}
         addProject={() => {
           setSidebar(false);
           setModal({
@@ -1766,8 +1772,7 @@ export default function App() {
         collapsed={sidebarCollapsed}
         onSearch={() => {
           setSidebar(false);
-          setWorkspaceSection("search");
-          setWorkspaceOpen(true);
+          setSearchOpen(true);
         }}
         close={() => {
           if (mobileClient) setSidebar(false);
@@ -1806,12 +1811,17 @@ export default function App() {
             }
             modeControl={
               lead?.source === "managed" && !mobileClient ? (
-                <SubagentConcurrencyControl
-                  lead={lead}
-                  stateDir={data.stateDir}
-                  workspaceId={workspaceId}
-                  refresh={refresh}
-                />
+                <span className="header-mode-summary">
+                  {lead.concurrency === 0 ||
+                  (lead.concurrency == null &&
+                    lead.agentModeSupported &&
+                    lead.agentMode === "single")
+                    ? "Single agent"
+                    : lead.concurrency != null ||
+                        (lead.agentModeSupported && lead.agentMode === "multi")
+                      ? "Multi agent"
+                      : "Mode unavailable"}
+                </span>
               ) : undefined
             }
             statusText={
@@ -1847,7 +1857,7 @@ export default function App() {
             title="Studio settings"
             onClick={() => setStudioSettingsOpen(true)}
           >
-            <Settings2 size={18} />
+            <Settings size={18} />
           </ActionIcon>
           <div id="conversation-header-tools" />
           {!room?.radio && (
@@ -1857,7 +1867,7 @@ export default function App() {
               title="Chat settings"
               onClick={() => setSettingsOpen(true)}
             >
-              <Settings size={20} />
+              <Settings2 size={18} />
             </ActionIcon>
           )}
           {!!workers.length && (
@@ -1909,22 +1919,26 @@ export default function App() {
                 </ActionIcon>
               </Menu.Target>
               <Menu.Dropdown>
+                <Menu.Label>Views</Menu.Label>
                 {(
                   [
                     ["changes", "Changes", FileDiff],
                     ["plan", "Plan", BookOpen],
-                    ["rules", "Rules", Clock3],
+                    ["rules", "Wake rules", Clock3],
                     ["search", "Search", Search],
                   ] as const
                 ).map(([section, label, Icon]) => (
                   <Menu.Item
                     key={section}
-                    aria-label={label}
+                    aria-label={section === "rules" ? "Rules" : label}
                     data-workspace-section={section}
                     leftSection={<Icon size={14} />}
                     onClick={() => {
-                      setWorkspaceSection(section);
-                      setWorkspaceOpen(true);
+                      if (section === "search") setSearchOpen(true);
+                      else {
+                        setWorkspaceSection(section);
+                        setWorkspaceOpen(true);
+                      }
                     }}
                   >
                     {label}
@@ -1939,9 +1953,10 @@ export default function App() {
                     setTasksOpen(true);
                   }}
                 >
-                  Activity {taskCount || ""}
+                  Background activity {taskCount || ""}
                 </Menu.Item>
                 <Menu.Divider />
+                <Menu.Label>Chat</Menu.Label>
                 <Menu.Item
                   id="chat-actions-settings"
                   aria-label="Chat settings"
@@ -1982,36 +1997,6 @@ export default function App() {
                 )}
                 {agent?.source === "managed" && (
                   <>
-                    <Menu.Divider />
-                    {(
-                      [
-                        ["compact", "Compact", Minimize2],
-                        ["review", "Review", ShieldCheck],
-                      ] as const
-                    )
-                      .filter(([action]) =>
-                        menuActions(agent.provider ?? undefined).includes(
-                          action,
-                        ),
-                      )
-                      .map(([action, label, Icon]) => (
-                        <Menu.Item
-                          key={action}
-                          data-action={action}
-                          leftSection={<Icon size={14} />}
-                          disabled={
-                            busy.has(agent.status ?? "") ||
-                            !!agent.inFlight ||
-                            !!nativeThreadError(agent) ||
-                            !agent.threadId
-                          }
-                          onClick={() => {
-                            void run(() => submitNativeAction(agent, action));
-                          }}
-                        >
-                          {label}
-                        </Menu.Item>
-                      ))}
                     {(!!agent.inFlight ||
                       team.some(
                         (member) =>
@@ -2035,6 +2020,48 @@ export default function App() {
                         Stop team
                       </Menu.Item>
                     )}
+                    <Menu.Divider />
+                    <Menu.Label>Model actions</Menu.Label>
+                    {(
+                      [
+                        ["compact", "Compact", Minimize2],
+                        ["review", "Review", ShieldCheck],
+                      ] as const
+                    )
+                      .filter(([action]) =>
+                        menuActions(agent.provider ?? undefined).includes(
+                          action,
+                        ),
+                      )
+                      .map(([action, label, Icon]) => (
+                        <Menu.Item
+                          key={action}
+                          aria-label={label}
+                          data-action={action}
+                          leftSection={<Icon size={14} />}
+                          disabled={
+                            busy.has(agent.status ?? "") ||
+                            !!agent.inFlight ||
+                            !!nativeThreadError(agent) ||
+                            !agent.threadId
+                          }
+                          onClick={() => {
+                            void run(() => submitNativeAction(agent, action));
+                          }}
+                        >
+                          {label}
+                          {(!agent.threadId ||
+                            agent.inFlight ||
+                            busy.has(agent.status ?? "") ||
+                            !!nativeThreadError(agent)) && (
+                            <small className="menu-action-help">
+                              {!agent.threadId
+                                ? "Available after the chat starts."
+                                : "Wait until the chat is ready."}
+                            </small>
+                          )}
+                        </Menu.Item>
+                      ))}
                   </>
                 )}
               </Menu.Dropdown>
@@ -2289,6 +2316,18 @@ export default function App() {
           <TerminalDock data={data} agent={agent || lead} notify={notify} />
         </Suspense>
       )}
+      <SearchOverlay
+        opened={searchOpen}
+        onClose={() => setSearchOpen(false)}
+        data={chatData!}
+        onSelect={open}
+        navigate={(section, id) => {
+          if (id) open(id);
+          setSearchOpen(false);
+          setWorkspaceSection(section);
+          setWorkspaceOpen(true);
+        }}
+      />
       {(workspaceRendered || workspaceOpen) && (
         <Suspense fallback={null}>
           <Workspace
@@ -2338,7 +2377,9 @@ export default function App() {
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
         onClose={() => setStudioSettingsOpen(false)}
+        size={modalSizes.settings}
         title="Studio settings"
+        classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
           <Tabs defaultValue="accounts" className="studio-settings-tabs">
@@ -2350,11 +2391,6 @@ export default function App() {
             </Tabs.List>
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
-                <h2>Accounts</h2>
-                <p className="settings-help">
-                  Manage accounts and choose the default for new chats. Existing
-                  chats keep their account.
-                </p>
                 <Accounts
                   managerOnly
                   onModalOpenChange={setAccountModalOpen}
@@ -2367,8 +2403,7 @@ export default function App() {
               <div className="studio-appearance-groups">
                 <section className="settings-group" aria-label="Theme">
                   <h2>Theme</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Color scheme</span>
+                  <SettingsRow label="Color scheme">
                     <NativeSelect
                       aria-label="Studio theme"
                       value={studioPreferences.theme}
@@ -2385,21 +2420,20 @@ export default function App() {
                         })
                       }
                     />
-                  </div>
+                  </SettingsRow>
                 </section>
                 <section className="settings-group" aria-label="Fonts">
                   <h2>Fonts</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Text style</span>
+                  <SettingsRow label="Text style">
                     <NativeSelect
                       aria-label="Studio text style"
                       value={studioPreferences.typography}
                       data={[
                         {
                           value: "original",
-                          label: "Original fonts and sizes",
+                          label: "Default text",
                         },
-                        { value: "custom", label: "Custom fonts and sizes" },
+                        { value: "custom", label: "Custom text" },
                       ]}
                       onChange={(event) =>
                         updateStudioPreferences({
@@ -2410,13 +2444,10 @@ export default function App() {
                       }
                     />
                     <small>
-                      Original uses the previous fonts and separate sizes for
-                      titles, text, and status labels. Custom keeps your font
-                      settings.
+                      Select Custom text to change the font and text sizes.
                     </small>
-                  </div>
-                  <div className="settings-field">
-                    <span className="settings-label">Font family</span>
+                  </SettingsRow>
+                  <SettingsRow label="Font family">
                     <NativeSelect
                       aria-label="Studio font family"
                       disabled={studioPreferences.typography === "original"}
@@ -2432,57 +2463,66 @@ export default function App() {
                         })
                       }
                     />
-                  </div>
-                  <label className="studio-range-field">
-                    <span>
-                      Sidebar text{" "}
-                      <output>{studioPreferences.sidebarFontSize}px</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Sidebar font size"
-                      disabled={studioPreferences.typography === "original"}
-                      min={12}
-                      max={24}
-                      step={1}
-                      value={studioPreferences.sidebarFontSize}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          sidebarFontSize: value,
-                        })
-                      }
-                    />
-                  </label>
-                  <label className="studio-range-field">
-                    <span>
-                      Main text{" "}
-                      <output>{studioPreferences.mainFontSize}px</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Main font size"
-                      disabled={studioPreferences.typography === "original"}
-                      min={12}
-                      max={24}
-                      step={1}
-                      value={studioPreferences.mainFontSize}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          mainFontSize: value,
-                        })
-                      }
-                    />
-                  </label>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Sidebar text{" "}
+                        <output>{studioPreferences.sidebarFontSize}px</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Sidebar font size"
+                        disabled={studioPreferences.typography === "original"}
+                        min={12}
+                        max={24}
+                        step={1}
+                        value={studioPreferences.sidebarFontSize}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            sidebarFontSize: value,
+                          })
+                        }
+                      />
+                    </div>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Main text{" "}
+                        <output>{studioPreferences.mainFontSize}px</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Main font size"
+                        disabled={studioPreferences.typography === "original"}
+                        min={12}
+                        max={24}
+                        step={1}
+                        value={studioPreferences.mainFontSize}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            mainFontSize: value,
+                          })
+                        }
+                      />
+                    </div>
+                  </SettingsRow>
                 </section>
-                <section className="settings-group" aria-label="Column">
-                  <h2>Column</h2>
-                  <div className="settings-field">
-                    <span className="settings-label">Chat width</span>
+                <section className="settings-group" aria-label="Chat layout">
+                  <h2>Chat layout</h2>
+                  <SettingsRow label="Width">
                     <NativeSelect
                       aria-label="Chat width layout"
                       value={studioPreferences.contentLayout}
                       data={[
-                        { value: "original", label: "Original width" },
+                        { value: "original", label: "Default width" },
                         { value: "custom", label: "Custom width" },
                       ]}
                       onChange={(event) =>
@@ -2493,38 +2533,59 @@ export default function App() {
                         })
                       }
                     />
-                    <small>
-                      Original limits message width. Custom uses a percentage of
-                      the window.
-                    </small>
-                  </div>
-                  <label className="studio-range-field">
-                    <span>
-                      Transcript width{" "}
-                      <output>{studioPreferences.contentWidth}%</output>
-                    </span>
-                    <Slider
-                      thumbLabel="Transcript width"
-                      disabled={studioPreferences.contentLayout === "original"}
-                      min={60}
-                      max={100}
-                      step={1}
-                      value={studioPreferences.contentWidth}
-                      onChange={(value) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          contentWidth: value,
-                        })
-                      }
-                    />
-                    <small>
-                      Applies to messages, progress, and composer. Narrow
-                      screens use the full available width.
-                    </small>
-                  </label>
+                    <small>Select Custom width to change the chat width.</small>
+                  </SettingsRow>
+                  <SettingsRow
+                    label={
+                      <span className="studio-range-label">
+                        Custom width{" "}
+                        <output>{studioPreferences.contentWidth}%</output>
+                      </span>
+                    }
+                  >
+                    <div className="studio-range-field">
+                      <Slider
+                        thumbLabel="Transcript width"
+                        disabled={
+                          studioPreferences.contentLayout === "original"
+                        }
+                        min={60}
+                        max={100}
+                        step={1}
+                        value={studioPreferences.contentWidth}
+                        onChange={(value) =>
+                          updateStudioPreferences({
+                            ...studioPreferences,
+                            contentWidth: value,
+                          })
+                        }
+                      />
+                      <small>
+                        Applies to messages, progress, and composer. Narrow
+                        screens use the full available width.
+                      </small>
+                    </div>
+                  </SettingsRow>
                 </section>
                 <section className="settings-group" aria-label="Messages">
                   <h2>Messages</h2>
+                  <label className="settings-field studio-preference-toggle">
+                    <span className="settings-label">Show message avatars</span>
+                    <input
+                      aria-label="Show message avatars"
+                      type="checkbox"
+                      checked={studioPreferences.showMessageAvatars}
+                      onChange={(event) =>
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          showMessageAvatars: event.currentTarget.checked,
+                        })
+                      }
+                    />
+                  </label>
+                </section>
+                <section className="settings-group" aria-label="Maintenance">
+                  <h2>Maintenance</h2>
                   <Button
                     loading={removingAllSending}
                     onClick={async () => {
@@ -2548,20 +2609,6 @@ export default function App() {
                   >
                     Remove all sending messages
                   </Button>
-                  <label className="settings-field studio-preference-toggle">
-                    <span className="settings-label">Show message avatars</span>
-                    <input
-                      aria-label="Show message avatars"
-                      type="checkbox"
-                      checked={studioPreferences.showMessageAvatars}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          showMessageAvatars: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                  </label>
                 </section>
               </div>
             </Tabs.Panel>
@@ -2579,56 +2626,71 @@ export default function App() {
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">
                 <h2>Keyboard shortcut</h2>
-                <div className="settings-field">
-                  <span className="settings-label">Toggle sidebar</span>
-                  <TextInput
-                    aria-label="Toggle sidebar shortcut"
-                    readOnly
-                    value={formatSidebarShortcut(
-                      studioPreferences.sidebarShortcut,
-                    )}
-                    onKeyDown={(event) => {
-                      if (event.key === "Tab" || event.key === "Escape") {
+                <SettingsRow label="Toggle sidebar">
+                  <div className="studio-shortcut-control">
+                    <TextInput
+                      className="studio-shortcut-input"
+                      aria-describedby="studio-shortcut-hint"
+                      aria-label="Toggle sidebar shortcut"
+                      readOnly
+                      value={formatSidebarShortcut(
+                        studioPreferences.sidebarShortcut,
+                      )}
+                      onKeyDown={(event) => {
+                        if (event.key === "Tab" || event.key === "Escape") {
+                          setSidebarShortcutError("");
+                          return;
+                        }
+                        if (
+                          ["Control", "Meta", "Alt", "Shift"].includes(
+                            event.key,
+                          )
+                        )
+                          return;
+                        if (event.ctrlKey || event.metaKey)
+                          event.stopPropagation();
+                        event.preventDefault();
+                        const mods = [
+                          event.metaKey ? "Meta" : "",
+                          event.ctrlKey ? "Control" : "",
+                          event.altKey ? "Alt" : "",
+                          event.shiftKey ? "Shift" : "",
+                        ].filter(Boolean);
+                        const candidate = [...mods, event.key].join("+");
+                        if (!parseSidebarShortcut(candidate)) {
+                          setSidebarShortcutError(
+                            "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
+                          );
+                          return;
+                        }
                         setSidebarShortcutError("");
-                        return;
-                      }
-                      if (
-                        ["Control", "Meta", "Alt", "Shift"].includes(event.key)
-                      )
-                        return;
-                      if (event.ctrlKey || event.metaKey)
-                        event.stopPropagation();
-                      event.preventDefault();
-                      const mods = [
-                        event.metaKey ? "Meta" : "",
-                        event.ctrlKey ? "Control" : "",
-                        event.altKey ? "Alt" : "",
-                        event.shiftKey ? "Shift" : "",
-                      ].filter(Boolean);
-                      const candidate = [...mods, event.key].join("+");
-                      if (!parseSidebarShortcut(candidate)) {
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          sidebarShortcut: candidate,
+                        });
+                      }}
+                      onFocus={() =>
                         setSidebarShortcutError(
-                          "Choose a letter or number with Ctrl or ⌘. Browser-reserved shortcuts cannot be used.",
-                        );
-                        return;
+                          "Press a modifier and a letter or number to set the shortcut.",
+                        )
                       }
-                      setSidebarShortcutError("");
-                      updateStudioPreferences({
-                        ...studioPreferences,
-                        sidebarShortcut: candidate,
-                      });
-                    }}
-                    onFocus={() =>
-                      setSidebarShortcutError(
-                        "Press a modifier and a letter or number to set the shortcut.",
-                      )
-                    }
-                    onBlur={() => setSidebarShortcutError("")}
-                  />
+                      onBlur={() => setSidebarShortcutError("")}
+                    />
+                    <div className="studio-shortcut-tokens" aria-hidden="true">
+                      {formatSidebarShortcut(studioPreferences.sidebarShortcut)
+                        .split("+")
+                        .map((key, index) => (
+                          <kbd key={`${key}:${index}`}>{key}</kbd>
+                        ))}
+                    </div>
+                  </div>
+                  <small id="studio-shortcut-hint">
+                    Select the field. Press a modifier and a letter or number.
+                  </small>
                   {sidebarShortcutError && (
                     <small role="status">{sidebarShortcutError}</small>
                   )}
-                </div>
+                </SettingsRow>
               </section>
             </Tabs.Panel>
           </Tabs>
@@ -2649,30 +2711,25 @@ export default function App() {
         }
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
+        size={modalSizes.settings}
       >
         <div className="chat-settings-panel">
-          <section
-            className="settings-group"
-            aria-label="Conversation settings"
-          >
-            <h2>Conversation</h2>
-            {mobileClient && lead?.source === "managed" && (
-              <div className="settings-field">
-                <span className="settings-label">Subagent parallelism</span>
+          <SettingsSection title="Conversation">
+            {lead?.source === "managed" && (
+              <SettingsRow label="Subagent parallelism">
                 <SubagentConcurrencyControl
                   lead={lead}
                   stateDir={data.stateDir}
                   workspaceId={workspaceId}
                   refresh={refresh}
                 />
-              </div>
+              </SettingsRow>
             )}
             <BrowserAccessNotice
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}
             />
-            <div className="settings-field">
-              <span className="settings-label">Account</span>
+            <SettingsRow label="Account">
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
@@ -2709,10 +2766,9 @@ export default function App() {
                   }
                 }}
               />
-            </div>
+            </SettingsRow>
             {agent?.cwd && (
-              <div className="settings-field">
-                <span className="settings-label">Project</span>
+              <SettingsRow label="Project">
                 <Button
                   id="project"
                   className="project-picker"
@@ -2725,18 +2781,17 @@ export default function App() {
                   }}
                 >
                   {projectName}
+                  <span className="settings-change-label">Change</span>
                 </Button>
-              </div>
+              </SettingsRow>
             )}
-          </section>
-          <section
-            className="settings-group settings-models"
-            aria-label="Model settings"
-          >
-            <h2>Models</h2>
+          </SettingsSection>
+          <SettingsSection title="Models">
             {agent?.source === "managed" && (
               <ExecutionSettings
                 key={"execution:" + agent.id}
+                permissionsTargetId="chat-settings-permissions"
+                inline
                 onOpenChange={setMainSettingsOpen}
                 agent={agent}
                 catalog={agentModels}
@@ -2746,6 +2801,7 @@ export default function App() {
             {lead?.isLead && (
               <ExecutionSettings
                 key={"defaults:" + lead.id}
+                inline
                 onOpenChange={setSubagentSettingsOpen}
                 agent={lead}
                 catalog={workerModels}
@@ -2755,7 +2811,8 @@ export default function App() {
                 teamDefaults
               />
             )}
-          </section>
+          </SettingsSection>
+          <div id="chat-settings-permissions" />
           {agent?.provider === "claude" && (
             <Suspense fallback={null}>
               <ClaudeSettings
@@ -2769,18 +2826,20 @@ export default function App() {
             </Suspense>
           )}
           {agent?.cwd && (
-            <Button
-              variant="subtle"
-              className="settings-new-chat"
-              leftSection={<Plus size={14} />}
-              disabled={creating}
-              onClick={() => {
-                setSettingsOpen(false);
-                void newChat(agent.cwd ?? undefined);
-              }}
-            >
-              New chat in this project
-            </Button>
+            <div className="chat-settings-footer">
+              <Button
+                variant="default"
+                className="settings-new-chat"
+                leftSection={<Plus size={14} />}
+                disabled={creating}
+                onClick={() => {
+                  setSettingsOpen(false);
+                  void newChat(agent.cwd ?? undefined);
+                }}
+              >
+                New chat in this project
+              </Button>
+            </div>
           )}
         </div>
       </Modal>

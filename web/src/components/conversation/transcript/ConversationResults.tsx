@@ -1,3 +1,4 @@
+import { PanelHeader } from "../../ui/primitives";
 import { Button, Modal } from "@mantine/core";
 import {
   ChevronRight,
@@ -60,16 +61,23 @@ export default memo(function ConversationResults({
       className="conversation-results"
       aria-label="Results in these messages"
     >
-      <button
-        type="button"
-        className="conversation-results-toggle"
-        aria-expanded={open}
-        onClick={() => setOpen(!open)}
-      >
-        <ChevronRight size={13} className={open ? "expanded" : ""} />
-        <span>Results</span>
-        <span className="conversation-results-count">{results.length}</span>
-      </button>
+      <PanelHeader
+        title={`Results (${results.length})`}
+        actions={
+          <Button
+            variant="subtle"
+            className="conversation-results-toggle"
+            aria-label="Results"
+            aria-expanded={open}
+            onClick={() => setOpen(!open)}
+            leftSection={
+              <ChevronRight size={14} className={open ? "expanded" : ""} />
+            }
+          >
+            {open ? "Hide" : "Show"}
+          </Button>
+        }
+      />
       {open && (
         <div className="conversation-results-list">
           {visible.map((result) => (
@@ -97,13 +105,13 @@ export default memo(function ConversationResults({
             </button>
           ))}
           {results.length > 3 && (
-            <button
-              type="button"
+            <Button
+              variant="subtle"
               className="conversation-results-more"
               onClick={() => setAll(!all)}
             >
               {all ? "Show fewer" : `Show ${results.length - 3} more`}
-            </button>
+            </Button>
           )}
         </div>
       )}

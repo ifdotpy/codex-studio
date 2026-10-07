@@ -351,7 +351,82 @@ def tick(runtime):
         manager(runtime).maybe_check()
 
 
-def executable_for(runtime):
+def retained_executable(runtime, account_key, home, selected):
+    """Keep an approved, exact live child without changing the selected update."""
+    if account_key is None or os.environ.get('CODEX_AGENTS_SUPERVISOR_MODE') != '1':
+        return None
+    from codex_process_supervisor import (native_launch_environment, retained_native_launch,
+                                          supervisor_launch_snapshot)
+    command = [selected['path'], 'app-server', '--listen', 'stdio://']
+    env = os.environ.copy()
+    if home is not None:
+        env['CODEX_HOME'] = str(home)
+    if account_key != 'default':
+        command.extend(['-c', 'cli_auth_credentials_store="file"'])
+        env.pop('OPENAI_API_KEY', None)
+        env.pop('CODEX_API_KEY', None)
+    import sys
+    if sys.platform.startswith('linux'):
+        from codex_runtime import provider_process_command
+        command = provider_process_command(command)
+    handle = 'account:' + account_key
+    if supervisor_launch_snapshot(runtime.root, handle) is None:
+        return None
+    try:
+        native_launch_environment(runtime.root, handle, command, env, None)
+    except RuntimeError as error:
+        if str(error) != 'Supervisor native launch settings changed; existing work was preserved':
+            raise
+    else:
+        # Preserve the existing path for an unchanged accepted command. This
+        # also supports interpreters and Linux namespace launch wrappers.
+        return None
+    proof = retained_native_launch(runtime.root, handle, command, env)
+    if proof is None:
+        return None
+    path = Path(proof['command'][0])
+    if path == Path(selected['path']):
+        # An unchanged binary uses the original supervised launch path.
+        return None
+    builds = Path(runtime.root).resolve() / 'native-runtime' / 'builds'
+    if (path.name != 'codex' or not re.fullmatch('[0-9a-f]{64}', path.parent.name)
+            or path.parent.parent != builds or path.parent.is_symlink()
+            or path.resolve() != path):
+        raise RuntimeError('The retained native executable is outside the approved bundle store')
+    hashes = {}
+    for name in ('codex', *REQUIRED_COMPANIONS):
+        import stat
+        current = path.with_name(name)
+        if current.is_symlink() or not os.access(current, os.X_OK):
+            raise RuntimeError('The retained native bundle contains an invalid executable')
+        fd = os.open(current, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            before = os.fstat(fd)
+            if not stat.S_ISREG(before.st_mode):
+                raise RuntimeError('The retained native bundle contains an invalid executable')
+            os.set_blocking(fd, True)
+            with os.fdopen(fd, 'rb', closefd=False) as stream:
+                hashes[name] = hashlib.file_digest(stream, 'sha256').hexdigest()
+            descriptor_after = os.fstat(fd)
+        finally:
+            os.close(fd)
+        after = current.stat()
+        identity = lambda info: (info.st_dev, info.st_ino, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        if identity(before) != identity(after) or identity(before) != identity(descriptor_after):
+            raise RuntimeError('The retained native executable changed during verification')
+    if bundle_digest(hashes) != path.parent.name:
+        raise RuntimeError('The retained native bundle has an unexpected digest')
+    # Hashes do not authorize a different child. Repeat the exact launch proof
+    # after file I/O; ProcessProxy repeats it before attaching without open.
+    if retained_native_launch(runtime.root, handle, command, env) != proof:
+        raise RuntimeError('The retained native child changed during verification')
+    return {'path': str(path), 'sha256': hashes['codex'], 'bundleSha256': path.parent.name,
+            'companions': {name: {'path': str(path.with_name(name)), 'sha256': hashes[name]}
+                           for name in REQUIRED_COMPANIONS},
+            'retainedSupervisor': proof}
+
+
+def executable_for(runtime, *, account_key=None, home=None):
     updates = manager(runtime)
     updates.maybe_check()
     selected = updates.selected()
@@ -360,7 +435,7 @@ def executable_for(runtime):
         selected = updates.selected()
     if selected is None:
         raise RuntimeError(updates.status().get('error') or 'Codex compatibility check is in progress')
-    return selected
+    return retained_executable(runtime, account_key, home, selected) or selected
 
 
 def status(runtime):

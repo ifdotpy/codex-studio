@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Validate fresh native account metadata before admitting a Claude input."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
+import importlib.util
+import json
+from pathlib import Path
+import time
+import unittest
+
+spec = importlib.util.spec_from_file_location('fresh_account_fixture', Path(__file__).with_name('claude-pre-admission-receipt-contract.py'))
+f = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(f)
+NORMAL = {'email': 'test@example.test', 'subscriptionType': 'Claude Max', 'apiProvider': 'firstParty', 'apiKeySource': 'none'}
+SDK = f.SDK.replace('let abort=new AbortController();', '''let abort=new AbortController();
+ const cachedAccount=fs.existsSync(options.cwd+'/.cached-account.json')
+  ?JSON.parse(fs.readFileSync(options.cwd+'/.cached-account.json','utf8'))
+  :{email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty',apiKeySource:'none'};''')
+SDK = SDK.replace("return {email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'};", 'return cachedAccount;')
+SDK = SDK.replace('initializationResult:async()=>', r'''reinitialize:async()=>{
+  fs.appendFileSync(options.cwd+'/.account-refreshes','fresh\n');
+  if(fs.existsSync(options.cwd+'/.refresh-hang'))return new Promise(()=>{});
+  if(fs.existsSync(options.cwd+'/.refresh-gate')){
+   fs.writeFileSync(options.cwd+'/.refresh-entered','yes');
+   while(!fs.existsSync(options.cwd+'/.refresh-release'))await new Promise(resolve=>setTimeout(resolve,5));
+  }
+  if(fs.existsSync(options.cwd+'/.refresh-throw'))throw new Error('The fixture account read failed');
+  return {account:fs.existsSync(options.cwd+'/.fresh-account.json')?JSON.parse(fs.readFileSync(options.cwd+'/.fresh-account.json','utf8')):cachedAccount};
+ },initializationResult:async()=>''')
+
+
+class FreshAccount(f.PreAdmission):
+    def setUp(self):
+        before = f.SDK
+        f.SDK = (SDK.replace('reinitialize:async()=>', 'unavailableReinitialize:async()=>')
+                 if self._testMethodName == 'test_sdk_without_fresh_control_keeps_not_applied' else SDK)
+        try:
+            super().setUp()
+        finally:
+            f.SDK = before
+
+    def accounts(self, cached, fresh):
+        (self.root / '.cached-account.json').write_text(json.dumps(cached))
+        (self.root / '.fresh-account.json').write_text(json.dumps(fresh))
+
+    def refreshes(self):
+        p = self.root / '.account-refreshes'
+        return p.read_text().splitlines() if p.exists() else []
+
+    def test_missing_cached_email_uses_fresh_exact_identity_before_one_input(self):
+        self.accounts({key: value for key, value in NORMAL.items() if key != 'email'}, NORMAL)
+        turn = self.turn('fixture input', 'original-account-input')['turn']['id']
+        completed = self.completed()
+        self.assertEqual(completed['status'], 'completed')
+        self.assertEqual(self.refreshes(), ['fresh'])
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertEqual(self.turn('fixture input', 'original-account-input')['turn']['id'], turn)
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertEqual(len((self.root / '.queries').read_text().splitlines()), 1)
+
+    def test_ready_cached_metadata_does_not_reinitialize(self):
+        self.accounts(NORMAL, {**NORMAL, 'email': 'a-different-account@example.test'})
+        self.turn('fixture input', 'ready-input')
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertEqual(self.refreshes(), [])
+        self.assertEqual(len(self.admissions()), 1)
+
+    def test_fresh_foreign_missing_and_api_key_proofs_reject_all_original_inputs(self):
+        cached = {key: value for key, value in NORMAL.items() if key != 'email'}
+        for index, fresh in enumerate((None, cached, {**NORMAL, 'email': 'a-different-account@example.test'},
+                                       {**NORMAL, 'apiProvider': 'bedrock'}, {**NORMAL, 'subscriptionType': ''},
+                                       {**NORMAL, 'subscriptionType': 'Claude Pro'},
+                                       {key: value for key, value in NORMAL.items() if key != 'apiKeySource'},
+                                       {**NORMAL, 'apiKeySource': 'environment'})):
+            with self.subTest(index=index):
+                self.accounts(cached, fresh)
+                self.turn('fixture input', 'rejected-fresh-' + str(index))
+                completed = self.completed()
+                self.assertEqual(completed['status'], 'failed')
+                self.assertEqual(completed['startOutcome'], 'not_applied')
+                self.assertEqual(completed['error']['data']['turnStartOutcome'], 'not_applied')
+                self.assertEqual(completed['error']['data']['claudePreparationFailure'], 'account_validation')
+                self.assertEqual(self.admissions(), [])
+        self.assertEqual(len(self.refreshes()), 8)
+
+    def test_known_foreign_identity_does_not_reinitialize(self):
+        for index, cached in enumerate(({**NORMAL, 'email': 'a-different-account@example.test'},
+                                        {'email': 'a-different-account@example.test'})):
+            with self.subTest(index=index):
+                self.accounts(cached, NORMAL)
+                self.turn('fixture input', 'known-foreign-' + str(index))
+                completed = self.completed()
+                self.assertEqual(completed['status'], 'failed')
+                self.assertEqual(completed['error']['data']['claudeAccountFailure'], 'identity_mismatch')
+                self.assertEqual(self.refreshes(), [])
+                self.assertEqual(self.admissions(), [])
+
+    def test_sdk_without_fresh_control_keeps_not_applied(self):
+        self.accounts({}, NORMAL)
+        self.turn('fixture input', 'unsupported-fresh-control')
+        completed = self.completed()
+        self.assertEqual(completed['startOutcome'], 'not_applied')
+        self.assertEqual(completed['error']['data']['claudePreparationFailure'], 'account_validation')
+        self.assertEqual(self.refreshes(), [])
+        self.assertEqual(self.admissions(), [])
+
+    def test_known_foreign_provider_or_api_key_cannot_use_fresh_metadata(self):
+        cached = {key: value for key, value in NORMAL.items() if key != 'email'}
+        for index, account in enumerate(({**cached, 'apiProvider': 'bedrock'},
+                                         {**cached, 'apiKeySource': 'environment'})):
+            with self.subTest(index=index):
+                self.accounts(account, NORMAL)
+                self.turn('fixture input', 'known-foreign-provider-' + str(index))
+                self.assertEqual(self.completed()['startOutcome'], 'not_applied')
+                self.assertEqual(self.refreshes(), [])
+                self.assertEqual(self.admissions(), [])
+
+    def test_catalog_returns_verified_fresh_metadata_without_a_prompt(self):
+        state = self.root / 'state'
+        (state / '.cached-account.json').write_text(json.dumps({}))
+        (state / '.fresh-account.json').write_text(json.dumps(NORMAL))
+        account = self.call('account/read', {})['account']
+        self.assertEqual(account['email'], NORMAL['email'])
+        self.assertEqual(account['planType'], NORMAL['subscriptionType'])
+        self.assertTrue(self.call('model/list', {})['data'])
+        self.assertEqual((state / '.account-refreshes').read_text().splitlines(), ['fresh'])
+        self.assertEqual(self.admissions(), [])
+
+    def test_fresh_read_error_keeps_structural_unsubmitted_proof(self):
+        self.accounts({}, NORMAL)
+        (self.root / '.refresh-throw').touch()
+        self.turn('fixture input', 'failed-fresh-read')
+        completed = self.completed()
+        self.assertEqual(completed['startOutcome'], 'not_applied')
+        self.assertEqual(completed['error']['data']['claudePreparationFailure'], 'account_validation')
+        self.assertEqual(self.admissions(), [])
+        self.assertEqual(self.refreshes(), ['fresh'])
+
+    def test_fresh_read_timeout_uses_the_same_deadline(self):
+        self.accounts({}, NORMAL)
+        (self.root / '.refresh-hang').touch()
+        began = time.monotonic()
+        self.turn('fixture input', 'fresh-read-timeout')
+        self.assert_rejected(self.completed())
+        self.assertLess(time.monotonic() - began, 1.8)
+        self.assertEqual(self.refreshes(), ['fresh'])
+
+    def test_stop_during_fresh_read_never_admits_late_valid_proof(self):
+        self.accounts({}, NORMAL)
+        (self.root / '.refresh-gate').touch()
+        turn = self.turn('fixture input', 'stopped-fresh-read')['turn']['id']
+        self.wait_file(self.root / '.refresh-entered')
+        self.call('turn/interrupt', {'threadId': self.thread, 'turnId': turn})
+        (self.root / '.refresh-release').touch()
+        self.assertEqual(self.completed()['status'], 'interrupted')
+        self.assertEqual(self.admissions(), [])
+        self.assertEqual(self.refreshes(), ['fresh'])
+
+    def test_resume_and_settings_during_fresh_read_keep_exact_query_settings(self):
+        self.accounts({}, NORMAL)
+        (self.root / '.refresh-gate').touch()
+        self.turn('fixture input', 'exact-query-source')
+        self.wait_file(self.root / '.refresh-entered')
+        with self.assertRaisesRegex(ValueError, 'Pause Claude'):
+            self.call('claude/settings', {'threadId': self.thread, 'settings': {'thinking': False}})
+        resumed = self.call('thread/resume', {'threadId': self.thread, 'excludeTurns': True, 'model': 'sonnet'})
+        self.assertTrue(resumed['reattached'])
+        self.assertEqual(resumed['model'], 'default')
+        (self.root / '.refresh-release').touch()
+        self.assertEqual(self.completed()['status'], 'completed')
+        self.assertEqual(len(self.admissions()), 1)
+        self.assertEqual(self.refreshes(), ['fresh'])
+
+
+if __name__ == '__main__':
+    suite = unittest.TestSuite(FreshAccount(name) for name in FreshAccount.__dict__ if name.startswith('test_'))
+    raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())

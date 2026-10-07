@@ -51,6 +51,9 @@ function ParticipantFields({
       : {}),
     isDefault: row.isDefault === true,
   }));
+  const selectedAccount = accounts.accounts.find(
+    (account) => account.id === value.account_key,
+  );
   const info = catalog.models.find((row) => row.model === value.model);
   const reasoningEfforts = Array.isArray(info?.supportedReasoningEfforts)
     ? info.supportedReasoningEfforts.flatMap((item: JsonValue) => {
@@ -83,7 +86,18 @@ function ParticipantFields({
     <fieldset className="shared-create-participant" disabled={frozen}>
       <legend>Agent {index + 1}</legend>
       <NativeSelect
-        label={`Account for agent ${index + 1}`}
+        label="Account"
+        description={
+          selectedAccount
+            ? [
+                selectedAccount.provider === "claude" ? "Claude" : "Codex",
+                selectedAccount.email,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : undefined
+        }
+        aria-label={`Account for agent ${index + 1}`}
         value={value.account_key}
         data={[
           { value: "", label: "Select an account" },
@@ -91,7 +105,7 @@ function ParticipantFields({
             .filter((a) => !a.disconnected && a.status === "ready")
             .map((a) => ({
               value: a.id,
-              label: `${a.provider === "claude" ? "Claude" : "Codex"} · ${a.email || a.label}`,
+              label: a.label || a.email || "Account name unavailable",
             })),
         ]}
         onChange={(e) =>
@@ -100,6 +114,7 @@ function ParticipantFields({
       />
       <ModelPicker
         label={`Model for agent ${index + 1}`}
+        visibleLabel="Model"
         value={value.model}
         disabled={frozen || catalog.loading || !!catalog.error}
         placeholder={catalog.loading ? "Loading models…" : "Select a model"}
@@ -108,7 +123,8 @@ function ParticipantFields({
       />
       {!!reasoningEfforts.length && (
         <NativeSelect
-          label={`Reasoning for agent ${index + 1}`}
+          label="Reasoning"
+          aria-label={`Reasoning for agent ${index + 1}`}
           value={value.effort || ""}
           data={[
             {
@@ -262,7 +278,9 @@ export default function SharedChatCreate({
           return [
             [
               projectPath,
-              typeof label === "string" && label ? label : projectPath,
+              typeof label === "string" && label
+                ? label
+                : projectPath.split("/").filter(Boolean).pop() || projectPath,
             ] as const,
           ];
         }),
@@ -294,6 +312,7 @@ export default function SharedChatCreate({
         data={[{ value: "", label: "Select a project" }, ...projects]}
         onChange={(e) => setPath(e.currentTarget.value)}
       />
+      {path && <small className="shared-create-path">{path}</small>}
       <TextInput
         label="Chat name"
         placeholder="Optional"
@@ -302,27 +321,29 @@ export default function SharedChatCreate({
         maxLength={80}
         onChange={(e) => setName(e.currentTarget.value)}
       />
-      {participants.map((value, index) => (
-        <ParticipantFields
-          key={index}
-          index={index}
-          value={value}
-          accounts={accounts}
-          frozen={!!attempt}
-          change={(next) =>
-            setParticipants((old) =>
-              old.map((p, i) => (i === index ? next : p)),
-            )
-          }
-          valid={(ready) =>
-            setValid((old) =>
-              old[index] === ready
-                ? old
-                : old.map((v, i) => (i === index ? ready : v)),
-            )
-          }
-        />
-      ))}
+      <div className="shared-create-participants">
+        {participants.map((value, index) => (
+          <ParticipantFields
+            key={index}
+            index={index}
+            value={value}
+            accounts={accounts}
+            frozen={!!attempt}
+            change={(next) =>
+              setParticipants((old) =>
+                old.map((p, i) => (i === index ? next : p)),
+              )
+            }
+            valid={(ready) =>
+              setValid((old) =>
+                old[index] === ready
+                  ? old
+                  : old.map((v, i) => (i === index ? ready : v)),
+              )
+            }
+          />
+        ))}
+      </div>
       {!readyAccounts.length && (
         <p role="alert">Connect an account before you create a shared chat.</p>
       )}
@@ -336,26 +357,31 @@ export default function SharedChatCreate({
               : "Waiting for confirmation. A retry uses the same request."}
         </p>
       )}
-      <Button
-        type="submit"
-        loading={pending}
-        disabled={
-          pending ||
-          (!attempt &&
-            (!path ||
-              !valid.every(Boolean) ||
-              participants.some((p) => !p.model) ||
-              participants.some(
-                (p) => !readyAccounts.some((a) => a.id === p.account_key),
-              )))
-        }
-      >
-        {attempt
-          ? attempt.roomId || attempt.rejected
-            ? "Refresh"
-            : "Retry creation"
-          : "Create shared chat"}
-      </Button>
+      <div className="shared-create-footer">
+        <Button
+          variant="filled"
+          color="indigo"
+          aria-label={attempt ? undefined : "Create"}
+          type="submit"
+          loading={pending}
+          disabled={
+            pending ||
+            (!attempt &&
+              (!path ||
+                !valid.every(Boolean) ||
+                participants.some((p) => !p.model) ||
+                participants.some(
+                  (p) => !readyAccounts.some((a) => a.id === p.account_key),
+                )))
+          }
+        >
+          {attempt
+            ? attempt.roomId || attempt.rejected
+              ? "Refresh"
+              : "Retry creation"
+            : "Create"}
+        </Button>
+      </div>
     </form>
   );
 }

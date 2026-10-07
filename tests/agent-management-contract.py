@@ -724,82 +724,58 @@ finally:
         subprocess.run(['git', 'clone', '-q', '--shared', str(self.repo), str(image_repo)], check=True)
         self.worker(cwd=str(image_repo), worktree=False, worktreeReady=False,
                     imageWorkspace=True, imageWorkspaceReady=True, imageWorkspacePhase='ready',
-                    imageWorkspaceRepo=str(self.repo), imageWorkspaceRelative='.',
+                    imageWorkspaceRepo=str(self.repo),
                     imageWorkspaceMount=str(mount))
         engine = ModuleType('codex_workspace_images')
         engine.workspace_bytes = lambda _agent: 4096
-        engine.ensure_mounted = lambda _agent: {'mount': str(mount), 'repoPath': str(image_repo)}
+        engine.ensure_mounted = lambda _agent: {'mount': str(mount), 'path': str(image_repo)}
         engine.exec_prefix = lambda: []
-        engine.collect = lambda _agent: {'state': 'collected'}
-        engine.remove_workspace = lambda _agent: {'freedBytes': 4096}
+        engine.list_workspaces = lambda: [{'id': 'worker', 'repositories': [{'path': '.'}]}]
+        engine.archive_workspace = lambda _agent: {'freedBytes': 0, 'state': 'archived'}
         return mount, image_repo, engine
 
-    def test_image_archive_keeps_uncommitted_and_untracked_changes(self):
+    def test_image_archive_detaches_without_git_status_or_collect(self):
         from unittest.mock import Mock
-        mount, image_repo, engine = self.image_workspace()
+        _mount, image_repo, engine = self.image_workspace()
         (image_repo / 'draft.txt').write_text('unfinished')
-        engine.collect = Mock(return_value={'state': 'collected'})
-        engine.remove_workspace = Mock(return_value={'freedBytes': 4096})
+        engine.archive_workspace = Mock(return_value={'freedBytes': 0, 'state': 'archived'})
+        engine.workspace_bytes = Mock(return_value=4096)
+        calls = []
+        def observe_archive(agent_id):
+            with self.rt.db() as db:
+                saved = self.rt.agent(agent_id, db)['cleanedImageWorkspace']
+            calls.append(saved)
+            return {'freedBytes': 0, 'state': 'archived'}
+        engine.archive_workspace.side_effect = observe_archive
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             result = self.call('archive')
-        self.assertEqual(result['workspace']['state'], 'kept')
-        self.assertIn('uncommitted or untracked', result['workspace']['reason'])
+        self.assertEqual(result['workspace']['state'], 'archived')
+        self.assertEqual(calls[0]['phase'], 'archiving')
         self.assertTrue((image_repo / 'draft.txt').is_file())
-        engine.collect.assert_called_once_with('worker')
-        engine.remove_workspace.assert_not_called()
+        engine.archive_workspace.assert_called_once_with('worker')
+        with self.rt.db() as db:
+            saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
+        self.assertEqual(saved['bytes'], 4096)
+        self.assertEqual(saved['freedBytes'], 0)
 
-    def test_conflict_archive_restores_from_the_collected_raw_head(self):
-        from unittest.mock import Mock
+    def test_archive_crash_retry_finishes_detach_without_losing_saved_record(self):
         mount, image_repo, engine = self.image_workspace()
-        (self.repo / 'raw-only.txt').write_text('raw result\n')
-        self.git('add', 'raw-only.txt')
-        self.git('commit', '-qm', 'raw agent commit')
-        raw_head = self.git('rev-parse', 'HEAD')
-        self.git('update-ref', 'refs/studio/agents/worker/raw', raw_head)
-        nested_repo = self.repo / 'sub'
-        nested_repo.mkdir()
-        self.git('init', '-q', str(nested_repo))
-        self.git('config', 'user.name', 'Fixture', cwd=nested_repo)
-        self.git('config', 'user.email', 'fixture@example.test', cwd=nested_repo)
-        (nested_repo / 'nested.txt').write_text('nested worker commit\n')
-        self.git('add', '.', cwd=nested_repo)
-        self.git('commit', '-qm', 'nested worker commit', cwd=nested_repo)
-        nested_head = self.git('rev-parse', 'HEAD', cwd=nested_repo)
-        self.git('update-ref', 'refs/studio/agents/worker/raw', nested_head, cwd=nested_repo)
-        self.git('add', 'sub')
-        self.git('commit', '-qm', 'add nested repository')
-        engine.collect = Mock(return_value={
-            'state': 'conflict', 'path': 'sub', 'conflict': 'nested.txt',
-            'rawRef': 'refs/studio/agents/worker/raw',
-            'repositories': [
-                {'path': '.', 'state': 'collected', 'branch': 'codex-agent/worker',
-                 'head': raw_head},
-                {'path': 'sub', 'state': 'conflict', 'branch': 'codex-agent/worker',
-                 'rawRef': 'refs/studio/agents/worker/raw'},
-            ]})
-        engine.remove_workspace = Mock(return_value={'freedBytes': 4096})
+        engine.workspace_bytes = lambda _agent: 123
+        from unittest.mock import Mock
+        engine.archive_workspace = Mock(side_effect=[RuntimeError('injected detach failure'),
+                                                       {'freedBytes': 0, 'state': 'archived'}])
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
-            archived = self.call('archive')
-            self.assertEqual(archived['workspace']['state'], 'conflict')
+            first = self.call('archive')
+            self.assertEqual(first['workspace']['state'], 'kept')
             with self.rt.db() as db:
                 saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
-            self.assertEqual(saved['head'], raw_head)
-            self.assertEqual(saved['restoreHeads'], {'.': raw_head, 'sub': nested_head})
-            restored_repo = Path(self.tmp.name) / 'restored' / 'repo'
-            restored_repo.mkdir(parents=True)
-            engine.create_workspace = Mock(return_value={
-                'mount': str(restored_repo.parent), 'repoPath': str(restored_repo),
-                'branch': 'codex-agent/worker', 'snapshotCommit': None})
-            engine.exec_prefix = Mock(return_value=['nsenter', '-t', '42', '-U', '-m', '--'])
-            with patch('codex_agent_management.subprocess.run',
-                       return_value=subprocess.CompletedProcess([], 0)) as path_check:
-                restored = self.call('restore')
-            path_check.assert_called_once_with(
-                ['nsenter', '-t', '42', '-U', '-m', '--', 'test', '-d', str(restored_repo)],
-                capture_output=True, timeout=30)
-        self.assertEqual(restored['status'], 'restored')
-        engine.create_workspace.assert_called_once_with(
-            str(self.repo), 'worker', restore_heads={'.': raw_head, 'sub': nested_head})
+                self.assertEqual(saved['phase'], 'archiving')
+            retry = self.call('archive')
+        self.assertEqual(retry['workspace']['state'], 'archived')
+        self.assertEqual(engine.archive_workspace.call_count, 2)
+        with self.rt.db() as db:
+            saved = self.rt.agent('worker', db)['cleanedImageWorkspace']
+        self.assertEqual(saved['phase'], 'archived')
 
     def test_clean_archive_keeps_ref_and_restore_recreates_checkout(self):
         path = self.repo / '.worktrees' / 'codex-agents' / 'worker'

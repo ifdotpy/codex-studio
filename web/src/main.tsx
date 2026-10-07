@@ -9,10 +9,14 @@ import "./workspace-layout.css";
 import "./appearance.css";
 import "./studio-preferences.css";
 
-createRoot(document.getElementById("root")!).render(
-  <UIErrorBoundary label="Studio" fullPage>
-    <MantineProvider theme={theme} defaultColorScheme="auto">
-      <App />
-    </MantineProvider>
-  </UIErrorBoundary>,
-);
+const container = document.getElementById("root")!;
+if (container.dataset.studioMounted !== "true") {
+  container.dataset.studioMounted = "true";
+  createRoot(container).render(
+    <UIErrorBoundary label="Studio" fullPage>
+      <MantineProvider theme={theme} defaultColorScheme="auto">
+        <App />
+      </MantineProvider>
+    </UIErrorBoundary>,
+  );
+}

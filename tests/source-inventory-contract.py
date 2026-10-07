@@ -1,6 +1,9 @@
 """Live-update hashes include implementation but exclude colocated tests."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import sys
 import tempfile
 from pathlib import Path

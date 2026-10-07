@@ -70,10 +70,8 @@ export default function ClaudeProfile({
     }
   };
   return (
-    <details className="account-register">
-      <summary>
-        {account ? "Configure Claude" : "Add a Claude Code profile"}
-      </summary>
+    <details className="account-register claude-profile">
+      <summary>{account ? "Configure Claude" : "Claude"}</summary>
       <form
         onChange={() => setSaved(false)}
         onSubmit={(event) => {
@@ -82,6 +80,12 @@ export default function ClaudeProfile({
         }}
       >
         <Stack gap="sm" w="100%">
+          <small>
+            {account
+              ? "To change these paths, add another profile."
+              : "Sign in to this Claude Code configuration with your subscription before you add it."}
+          </small>
+          {account && <strong>{account.email || account.label}</strong>}
           <TextInput
             label="Profile name"
             value={label}
@@ -106,44 +110,48 @@ export default function ClaudeProfile({
             readOnly={!!account}
             disabled={busy}
           />
-          <small>
-            {account
-              ? "To change these paths, add another profile."
-              : "Sign in to this Claude Code configuration with your subscription before you add it."}
-          </small>
-          <NumberInput
-            label="Automatic compaction threshold (tokens)"
-            placeholder="Claude default"
-            value={window}
-            onChange={setWindow}
-            min={100000}
-            max={1000000}
-            allowDecimal={false}
-            disabled={busy}
-          />
-          <Textarea
-            label="Custom models"
-            description="One model ID per line. Add | and a display name if needed."
-            value={models}
-            onChange={(event) => setModels(event.currentTarget.value)}
-            autosize
-            minRows={2}
-            disabled={busy}
-          />
-          <TextInput
-            label="Launch arguments"
-            placeholder="--add-dir /path/to/project"
-            value={launchArgs}
-            onChange={(event) => setLaunchArgs(event.currentTarget.value)}
-            disabled={busy}
-          />
+          <fieldset className="claude-advanced">
+            <legend>Advanced</legend>
+            <NumberInput
+              label="Automatic compaction threshold (tokens)"
+              placeholder="Claude default"
+              value={window}
+              onChange={setWindow}
+              min={100000}
+              max={1000000}
+              allowDecimal={false}
+              disabled={busy}
+            />
+            <Textarea
+              label="Custom models"
+              description="One model ID per line. Add | and a display name if needed."
+              value={models}
+              onChange={(event) => setModels(event.currentTarget.value)}
+              autosize
+              minRows={2}
+              disabled={busy}
+            />
+            <TextInput
+              label="Launch arguments"
+              placeholder="--add-dir /path/to/project"
+              value={launchArgs}
+              onChange={(event) => setLaunchArgs(event.currentTarget.value)}
+              disabled={busy}
+            />
+          </fieldset>
           {error && (
             <p className="account-action-error" role="alert">
               {error}
             </p>
           )}
           {saved && <p role="status">Claude profile saved.</p>}
-          <Button type="submit" loading={busy} disabled={!label.trim() || busy}>
+          <Button
+            variant="filled"
+            color="indigo"
+            type="submit"
+            loading={busy}
+            disabled={!label.trim() || busy}
+          >
             {account ? "Save Claude profile" : "Add Claude profile"}
           </Button>
         </Stack>

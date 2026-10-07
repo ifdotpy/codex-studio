@@ -145,14 +145,14 @@ test("dialog-drafts-ui", async ({ page: fixturePage }) => {
       null,
     );
     const useFolder = page.getByRole("button", {
-      name: "Use this folder",
+      name: "Add project",
       exact: true,
     });
     await useFolder.waitFor();
     await page.waitForFunction(
       () => !document.querySelector(".directory-footer button")?.disabled,
     );
-    await page.getByRole("button", { name: "Go", exact: true }).click();
+    await page.getByRole("button", { name: "Open path", exact: true }).click();
     await page.waitForFunction(
       () => !document.querySelector(".directory-footer button")?.disabled,
     );

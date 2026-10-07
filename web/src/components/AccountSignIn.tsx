@@ -118,14 +118,16 @@ export default function AccountSignIn({
     >
       <div className="account-add-heading">
         <div>
-          <strong>{targetAccount ? "Sign in again" : "Add an account"}</strong>
+          <strong>{targetAccount ? "Sign in again" : "Codex"}</strong>
           <p>
             {targetAccount
               ? `Use ${targetAccount.email || targetAccount.label}. Your chats keep this account.`
-              : "Run another team with its own login and limits."}
+              : "Use a separate login and account limits."}
           </p>
         </div>
         <Button
+          variant="filled"
+          color="indigo"
           leftSection={<Plus size={15} />}
           loading={busy === "start"}
           disabled={
@@ -133,7 +135,7 @@ export default function AccountSignIn({
           }
           onClick={() => void start()}
         >
-          {targetAccount ? "Start sign-in" : "Sign in to another account"}
+          {targetAccount ? "Start sign-in" : "Sign in"}
         </Button>
       </div>
       {receipt && (
@@ -183,7 +185,10 @@ export default function AccountSignIn({
                     </Button>
                   </div>
                   <Button
+                    variant="filled"
+                    color="indigo"
                     component="a"
+                    c="white"
                     href={url}
                     target="_blank"
                     rel="noopener noreferrer"

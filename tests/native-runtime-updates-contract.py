@@ -74,11 +74,12 @@ class Runtime(fixture.Runtime):
         self.servers = {"default": self.server}
         self.offline_accounts = set()
         self.offline = False
+        self._publish_desktop_resource = lambda: None
         home = self.home
         self.providers = {"default": "codex"}
         self.accounts = type("Accounts", (), {
             "get": lambda _, key: {"id": key, "provider": self.providers.get(key, "codex")},
-            "home": lambda _, key: home,
+            "home": lambda _, key, **_kwargs: home,
         })()
 
 
@@ -406,15 +407,17 @@ class Contract(unittest.TestCase):
 
         self.rt.start_lock = DisconnectBeforeAcquire()
 
-        def select(runtime):
+        def select(runtime, *, account_key, home):
             self.assertIs(runtime, self.rt)
             self.assertIn("default", runtime.offline_accounts)
             self.assertFalse(runtime.start_lock.held, "Resolve executable outside the connection lock")
+            self.assertEqual(account_key, "default")
+            self.assertEqual(home, runtime.home)
             return copy.deepcopy(self.selected)
 
         with patch("codex_runtime.AppServer", factory), patch("codex_native_runtime.executable_for", side_effect=select) as choose:
             result = ProductionRuntime.connect(self.rt, "default")
-        choose.assert_called_once_with(self.rt)
+        choose.assert_called_once_with(self.rt, account_key="default", home=self.rt.home)
         old.close.assert_called_once_with()
         self.assertIs(result, replacement)
         self.assertIs(self.rt.servers["default"], replacement)
@@ -480,7 +483,8 @@ class Contract(unittest.TestCase):
         self.manager.check()
         before = self.rt.agent("chat-1")
         self.rt.notification({"method": "thread/started", "params": {}}, "default", "connection-1")
-        self.rt.request({"id": 9, "method": "currentTime/read", "params": {}}, "default", "connection-1")
+        with self.assertRaisesRegex(ConnectionError, "not admitted"):
+            self.rt.request({"id": 9, "method": "currentTime/read", "params": {}}, "default", "connection-1")
         self.rt.disconnected("default", "connection-1")
         self.assertEqual(self.rt.agent("chat-1"), before)
         self.assertEqual(self.rt.offline_accounts, set())

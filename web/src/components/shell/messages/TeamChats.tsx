@@ -329,7 +329,7 @@ export default function TeamChats({
         <div className="team-room-search">
           <TextInput
             aria-label="Search chats"
-            placeholder="Search chats"
+            placeholder="Search message rooms"
             leftSection={<Search size={16} />}
             value={query}
             onChange={(event) => {

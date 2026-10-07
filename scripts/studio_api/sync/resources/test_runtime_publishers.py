@@ -181,7 +181,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                     ({"imageWorkspaceReady": True, "imageWorkspacePhase": "ready"}, True),
                     ({"imageWorkspaceReady": True, "imageWorkspacePhase": "ready"}, False),
                     ({"updated": 2, "tokensUsed": 99}, False),
-                    ({"imageWorkspaceCollect": {"branch": "saved-worker", "commit": "abc"}}, True),
+                    ({"imageWorkspaceCreatedAt": 3.0}, True),
                 ):
                     staged[connection] = {}
                     with (

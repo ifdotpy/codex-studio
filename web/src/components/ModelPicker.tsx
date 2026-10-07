@@ -14,6 +14,7 @@ export type ModelOption = {
 
 type ModelPickerProps = {
   label: string;
+  visibleLabel?: string;
   options: ModelOption[];
   value: string;
   onChange: (value: string) => void;
@@ -40,6 +41,7 @@ const keepOpen = (event: SyntheticEvent) => event.stopPropagation();
 
 export function ModelPicker({
   label,
+  visibleLabel,
   options,
   value,
   onChange,
@@ -90,7 +92,8 @@ export function ModelPicker({
           type="button"
           id={id}
           className={className}
-          label={label}
+          label={visibleLabel || label}
+          aria-label={label}
           description={description}
           pointer
           disabled={disabled}

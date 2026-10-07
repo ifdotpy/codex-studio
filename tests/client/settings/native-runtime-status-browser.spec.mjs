@@ -22,6 +22,7 @@ test("Native runtime status", async ({ context }) => {
     plugins: [
       {
         name: "native-runtime-fixture",
+        enforce: "pre",
         configureServer(server) {
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
@@ -30,10 +31,19 @@ test("Native runtime status", async ({ context }) => {
             );
           });
         },
-        resolveId(id) {
+        resolveId(id, importer) {
+          if (
+            id === "../sync/resourceEvents" &&
+            importer?.endsWith("watchResourceReads.ts")
+          )
+            return "virtual:runtime-resource-events";
           if (id === "/native-runtime-fixture.tsx") return entry;
         },
         load(id) {
+          if (id === "virtual:runtime-resource-events")
+            return `const subscribers=new Map();
+window.emitRuntimeChange=(kind)=>{for(const callback of subscribers.get(kind)||[])callback({epoch:'fixture',revision:Date.now()});};
+export function watchResourceChanges(resource,callback){let group=subscribers.get(resource.kind);if(!group)subscribers.set(resource.kind,group=new Set());group.add(callback);callback({epoch:'fixture',revision:0});return()=>group.delete(callback);}`;
           if (id !== entry) return;
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';
   import NativeRuntimeStatus from '/src/components/NativeRuntimeStatus.tsx';import Accounts from '/src/components/Accounts.tsx';import '/src/studio-theme.css';import '/src/appearance.css';
@@ -135,9 +145,11 @@ test("Native runtime status", async ({ context }) => {
     await page.clock.runFor(12000);
     assert.equal(reads, 0, "Closed panel must not read diagnostics");
     await page.evaluate(() => window.setRuntimeOpen(true));
+    await page.getByText("Version details", { exact: true }).click();
     const panel = page.getByRole("region", { name: "Codex runtime" });
     const providerPanel = page.getByRole("region", {
       name: "Provider versions",
+      exact: true,
     });
     await panel.waitFor();
     await providerPanel.waitFor();
@@ -147,11 +159,8 @@ test("Native runtime status", async ({ context }) => {
       /lowest recorded tested version/,
     );
     assert.match(await providerPanel.innerText(), /continue at your own risk/);
-    assert.match(await providerPanel.innerText(), /Running: 0\.153\.3/);
-    assert.match(
-      await providerPanel.innerText(),
-      /Lowest repo-tested version: 0\.153\.4/,
-    );
+    assert.match(await providerPanel.innerText(), /Running version: 0\.153\.3/);
+    assert.match(await providerPanel.innerText(), /Tested minimum: 0\.153\.4/);
     assert.match(await panel.innerText(), /1 account pending/);
     assert.match(await panel.innerText(), /Personal/);
     assert.match(await panel.innerText(), /Waiting for active turns to finish/);
@@ -175,17 +184,29 @@ test("Native runtime status", async ({ context }) => {
       name: "Warnings",
       exact: true,
     });
-    await warningsDialog.getByText("Codex account version warning").waitFor();
+    await warningsDialog
+      .locator("p")
+      .getByText("Codex account version warning")
+      .waitFor();
     assert.equal(
-      await warningsDialog.getByText("Claude account version warning").count(),
+      await warningsDialog
+        .locator("p")
+        .getByText("Claude account version warning")
+        .count(),
       0,
     );
     await page.keyboard.press("Escape");
     await page.evaluate(() => window.setWarningAccount("claude"));
     await page.getByRole("button", { name: "Warnings", exact: true }).click();
-    await warningsDialog.getByText("Claude account version warning").waitFor();
+    await warningsDialog
+      .locator("p")
+      .getByText("Claude account version warning")
+      .waitFor();
     assert.equal(
-      await warningsDialog.getByText("Codex account version warning").count(),
+      await warningsDialog
+        .locator("p")
+        .getByText("Codex account version warning")
+        .count(),
       0,
     );
     await page.keyboard.press("Escape");
@@ -197,7 +218,7 @@ test("Native runtime status", async ({ context }) => {
       },
     };
     const readsBeforeRefresh = reads;
-    await page.clock.runFor(10100);
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-accounts")
@@ -211,7 +232,7 @@ test("Native runtime status", async ({ context }) => {
         accounts: { work: { status: "failed", reason: "Handshake failed" } },
       },
     };
-    await page.clock.runFor(10100);
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -230,7 +251,7 @@ test("Native runtime status", async ({ context }) => {
       },
       providerVersions: { checkedAt: 1790092590, providers: [] },
     };
-    await page.clock.runFor(10100);
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".native-runtime-status")
@@ -257,18 +278,18 @@ test("Native runtime status", async ({ context }) => {
         warnings: [],
       },
     };
-    await page.clock.runFor(10100);
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await panel.waitFor({ state: "detached" });
     await providerPanel.waitFor();
     assert.match(
       await providerPanel.innerText(),
       /Claude Code · Claude profile/,
     );
-    assert.match(await providerPanel.innerText(), /Running: Unknown/);
+    assert.match(await providerPanel.innerText(), /Running version: Unknown/);
     assert.match(await providerPanel.innerText(), /Claude Code 2\.1\.277/);
     assert.match(await providerPanel.innerText(), /Running version unknown/);
     body = { providerVersions: { checkedAt: 1790092610, providers: [] } };
-    await page.clock.runFor(10100);
+    await page.evaluate(() => window.emitRuntimeChange("desktop"));
     await page.waitForFunction(() =>
       document
         .querySelector(".provider-version-status")
@@ -300,6 +321,7 @@ test("Native runtime status", async ({ context }) => {
     await page.waitForFunction(() => window.delayedRuntimeSignal.aborted);
     body = { nativeRuntime: initial };
     await page.evaluate(() => window.setRuntimeOpen(true));
+    await page.getByText("Version details", { exact: true }).click();
     await panel.waitFor();
     await page.evaluate(() =>
       window.finishOldRuntimeRead(
@@ -334,6 +356,10 @@ test("Native runtime status", async ({ context }) => {
     await page.evaluate(() => window.showAccounts());
     await page.getByTestId("account-picker").click();
     await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
+    await page
+      .getByRole("dialog", { name: "Accounts", exact: true })
+      .getByText("Version details", { exact: true })
+      .click();
     await page
       .getByRole("dialog", { name: "Accounts", exact: true })
       .getByRole("region", { name: "Codex runtime" })

@@ -1114,7 +1114,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     await page
       .getByRole("button", { name: "Search chats", exact: true })
       .click();
-    const drawer = page.locator(".mantine-Drawer-content:visible");
+    const drawer = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
     await drawer
       .getByRole("textbox", { name: "Search all conversations" })
       .fill("Find focused history");

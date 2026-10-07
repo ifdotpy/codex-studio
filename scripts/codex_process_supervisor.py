@@ -234,6 +234,19 @@ def process_start_matches(pid, expected, *, allow_legacy=False):
     return legacy == expected
 
 
+def _valid_process_start(value):
+    if not isinstance(value, str) or not value:
+        return False
+    parts = value.split('.')
+    if (len(parts) == 2 and all(part.isascii() and part.isdigit() for part in parts)
+            and int(parts[0]) > 0 and len(parts[1]) == 6):
+        return True
+    try:
+        return time.strptime(value, '%a %b %d %H:%M:%S %Y').tm_year >= 1970
+    except ValueError:
+        return False
+
+
 class Child:
     def __init__(self, handle, process, signature):
         self.handle, self.process, self.signature = handle, process, signature
@@ -430,7 +443,7 @@ class Supervisor:
                 stopped_in_process = False
             recovered = stopped_in_process
             with self.journal.db() as db:
-                saved = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
+                saved = db.execute("SELECT signature,pid,closed_at,closed_reason FROM handles WHERE id=?", (handle,)).fetchone()
                 if saved and not stopped_in_process:
                     if saved["closed_at"] is None or self.recovery.get("blocked"):
                         raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
@@ -440,7 +453,13 @@ class Supervisor:
                             "JOIN child_identities c ON c.handle=d.handle "
                             "WHERE d.handle=? AND d.prior_pid=? AND c.pid=d.prior_pid "
                             "AND c.start_time=d.start_time", (handle, saved["pid"])).fetchone()
-                        if not proof or process_start_matches(saved["pid"], proof[0], allow_legacy=True):
+                        if (not proof and saved["closed_reason"]
+                                == "Closed by operator after verified test/unknown-client ownership"):
+                            proof = db.execute(
+                                "SELECT start_time FROM child_identities WHERE handle=? AND pid=?",
+                                (handle, saved["pid"])).fetchone()
+                        if (not proof or not _valid_process_start(proof[0])
+                                or process_start_matches(saved["pid"], proof[0], allow_legacy=True)):
                             raise RuntimeError("Supervisor handle is orphaned; native outcome remains unknown")
                     recovered = True
                 elif not saved:
@@ -851,6 +870,111 @@ class _Input:
         self.process.detach()
 
 
+def process_launch_command(pid):
+    """Read bounded OS arguments without executing or changing the process."""
+    if sys.platform == 'darwin':
+        import ctypes
+        import struct
+        libc = ctypes.CDLL(None, use_errno=True)
+        mib = (ctypes.c_int * 3)(1, 49, pid)
+        size = ctypes.c_size_t()
+        if libc.sysctl(mib, 3, None, ctypes.byref(size), None, 0):
+            raise OSError(ctypes.get_errno(), 'Cannot read native process launch')
+        if not 4 <= size.value <= 4 * 1024 * 1024:
+            raise ValueError('Native process launch data exceeds its limit')
+        buffer = ctypes.create_string_buffer(size.value)
+        if libc.sysctl(mib, 3, buffer, ctypes.byref(size), None, 0):
+            raise OSError(ctypes.get_errno(), 'Cannot read native process launch')
+        raw = buffer.raw[:size.value]
+        argc = struct.unpack('i', raw[:4])[0]
+        if not 0 < argc <= 4096:
+            raise ValueError('Invalid native process argument count')
+        position = raw.index(b'\0', 4) + 1
+        while position < len(raw) and raw[position] == 0:
+            position += 1
+        command = []
+        for _ in range(argc):
+            end = raw.index(b'\0', position)
+            command.append(os.fsdecode(raw[position:end]))
+            position = end + 1
+    elif sys.platform.startswith('linux'):
+        with (Path('/proc') / str(pid) / 'cmdline').open('rb') as stream:
+            raw = stream.read(4 * 1024 * 1024 + 1)
+        if len(raw) > 4 * 1024 * 1024 or not raw.endswith(b'\0'):
+            raise ValueError('Invalid native process launch data')
+        command = [os.fsdecode(part) for part in raw[:-1].split(b'\0')]
+        if not 0 < len(command) <= 4096:
+            raise ValueError('Invalid native process argument count')
+    else:
+        raise RuntimeError('Cannot verify a retained native launch on this platform')
+    if not command or not command[0]:
+        raise ValueError('Invalid native executable')
+    return command
+
+
+def supervisor_launch_snapshot(root, handle):
+    """Read one exact handle and its saved process identity."""
+    path = Path(root) / 'supervisor.sqlite3'
+    if not path.exists():
+        return None
+    db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=.25)
+    db.row_factory = sqlite3.Row
+    try:
+        row = db.execute('SELECT h.signature,h.pid,h.generation,h.closed_at,h.init_result,'
+                         'h.sequence,h.acknowledged,c.pid AS identity_pid,c.start_time '
+                         'FROM handles h LEFT JOIN child_identities c ON c.handle=h.id '
+                         'WHERE h.id=?', (handle,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        db.close()
+
+
+def retained_native_launch(root, handle, command, env, cwd=None):
+    """Prove an existing launch before selecting its executable for reattachment."""
+    saved = supervisor_launch_snapshot(root, handle)
+    if not saved or saved['closed_at'] is not None:
+        return None
+    pid, started = saved['pid'], saved['start_time']
+    if started and pid == saved['identity_pid'] and process_start_time(pid) is None:
+        return None
+    if not started or pid != saved['identity_pid'] or not process_start_matches(pid, started, allow_legacy=True):
+        raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
+    actual = process_launch_command(pid)
+    if actual[1:] != command[1:]:
+        raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
+    native_launch_environment(root, handle, actual, env, cwd)
+    current = supervisor_launch_snapshot(root, handle)
+    keys = ('signature', 'pid', 'identity_pid', 'start_time', 'generation', 'closed_at')
+    if (current is None or any(current[key] != saved[key] for key in keys)
+            or not process_start_matches(pid, started, allow_legacy=True)):
+        raise RuntimeError('Cannot verify the retained supervisor child; native outcome remains unknown')
+    return {'command': actual, 'handle': handle, **{key: current[key] for key in keys}}
+
+
+def retained_open_receipt(proxy, expected, command, env, cwd):
+    """Use the existing status action, which cannot create a native process."""
+    if expected.get('handle') != proxy.handle:
+        raise RuntimeError('Cannot verify the retained supervisor handle')
+    status = proxy.call('status')
+    saved = supervisor_launch_snapshot(proxy.root, proxy.handle)
+    keys = ('signature', 'pid', 'identity_pid', 'start_time', 'generation', 'closed_at')
+    if (saved is None or any(saved[key] != expected.get(key) for key in keys)
+            or saved['closed_at'] is not None or status.get('pid') != saved['pid']
+            or status.get('returnCode') is not None
+            or Supervisor.signature(command, env, cwd) != saved['signature']
+            or process_launch_command(saved['pid']) != command
+            or not process_start_matches(saved['pid'], saved['start_time'], allow_legacy=True)):
+        raise RuntimeError('Cannot verify the retained supervisor child; native outcome remains unknown')
+    try:
+        initialized = json.loads(saved['init_result'])
+    except (TypeError, ValueError):
+        initialized = None
+    if not isinstance(initialized, dict):
+        raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
+    return {'resumed': True, 'initResult': initialized, 'generation': saved['generation'],
+            'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
+
+
 def process_launch_environment(pid):
     """Read a verified child's launch environment without saving credentials."""
     import sys
@@ -951,7 +1075,7 @@ def native_launch_environment(root, handle, command, env, cwd):
 
 class ProcessProxy:
     """Popen-shaped transport consumed by codex_runtime.AppServer."""
-    def __init__(self, root, handle, command, env, cwd, stderr_sink):
+    def __init__(self, root, handle, command, env, cwd, stderr_sink, expected=None):
         self.root = Path(root).resolve()
         self.handle = handle
         self.backend_id = os.environ.setdefault("CODEX_AGENTS_BACKEND_ID", str(uuid.uuid4()))
@@ -974,7 +1098,10 @@ class ProcessProxy:
             raise RuntimeError("Supervisor attach failed: " + hello["error"])
         try:
             env = native_launch_environment(self.root, handle, command, env, cwd)
-            opened = self.call("open", command=command, env=env, cwd=cwd)
+            if expected is not None:
+                opened = retained_open_receipt(self, expected, command, env, cwd)
+            else:
+                opened = self.call("open", command=command, env=env, cwd=cwd)
         except Exception:
             self.reader.close()
             self.socket.close()
@@ -1190,7 +1317,7 @@ class _Stdout:
         raise OSError("Supervisor output is a message channel")
 
 
-def attach(root, handle, command, env, cwd=None, *, stderr_sink=None):
+def attach(root, handle, command, env, cwd=None, *, stderr_sink=None, expected=None):
     if os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") != "1":
         return None
     root = Path(root).expanduser().resolve()
@@ -1201,7 +1328,7 @@ def attach(root, handle, command, env, cwd=None, *, stderr_sink=None):
             + " but CODEX_AGENTS_STATE_DIR selects " + str(Path(configured).expanduser().resolve())
             + ". Start Studio with matching state settings; refusing to contact another supervisor."
         )
-    return ProcessProxy(root, handle, command, env, cwd, stderr_sink)
+    return ProcessProxy(root, handle, command, env, cwd, stderr_sink, expected=expected)
 
 
 def status(root):
@@ -1226,7 +1353,8 @@ def status(root):
 
 def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature):
     root = Path(root).expanduser().resolve()
-    client = _connect(root / "supervisor.sock", timeout=2)
+    # The owner can wait three seconds for TERM and two seconds for KILL.
+    client = _connect(root / "supervisor.sock", timeout=10)
     reader = client.makefile("r", encoding="utf-8")
     try:
         _send(client, {"protocol": PROTOCOL, "stateDir": str(root), "operator": True, "probe": True})

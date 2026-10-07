@@ -504,8 +504,10 @@ class AgentEntityDto(ContractModel):
     imageWorkspaceError: str | None = None
     imageWorkspaceRepo: str | None = None
     imageWorkspaceBaseRepo: str | None = None
-    imageWorkspaceRelative: str | None = None
-    imageWorkspaceStartCommit: str | None = None
+    imageWorkspaceSubpath: str | None = None
+    imageWorkspaceBaseRef: str | None = None
+    imageWorkspaceHasGit: bool | None = None
+    imageWorkspaceCreatedAt: float | None = None
     created: float | None = None
     updated: float | None = None
     turnId: str | None = None
@@ -815,6 +817,7 @@ class RuleKind(ContractStrEnum):
 class RuleStatus(ContractStrEnum):
     ACTIVE = "active"
     PAUSED = "paused"
+    COMPLETED = "completed"
 
 
 class ProjectFolder(ContractModel):
@@ -886,6 +889,7 @@ class WorkEntityDto(ContractModel):
     agent: str | None = None
     status: Literal["ready", "running", "blocked", "review", "accepted", "cancelled"] | None = None
     title: str | None = None
+    archive: JsonValue | None = None
 
 
 class WorkResultDto(ContractModel):
@@ -947,6 +951,8 @@ class AccountRateLimitsDto(ContractModel):
     accountKey: str
     at: float | None
     readAt: float | None = None
+    processedAt: float | None = None
+    checkedAt: float | None = None
     data: RateLimitsDataDto | None = None
     error: str | None = None
 

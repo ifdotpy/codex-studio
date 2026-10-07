@@ -85,7 +85,7 @@ test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
       name: "Account limits details",
       exact: true,
     });
-    await details.getByText("API cost estimate", { exact: true }).waitFor();
+    await details.getByText("Estimated API cost", { exact: true }).waitFor();
     await details.getByText("$12.50", { exact: true }).waitFor();
     await page.waitForTimeout(11000);
     assert.equal(

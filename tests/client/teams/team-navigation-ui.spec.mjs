@@ -288,15 +288,13 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     );
     await row(39).click();
     assert.equal(await row(39).getAttribute("aria-current"), "page");
-    await page
-      .getByRole("button", { name: "Back to main agent", exact: true })
-      .click();
+    await page.locator("#back-lead").click();
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       "Release lead",
     );
     await search.fill("no matching worker");
-    await team.getByText("No subagents match your search.").waitFor();
+    await team.getByText("No workers match your search.").waitFor();
     await search.fill("");
     assert.equal(
       await team
@@ -310,11 +308,13 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     await team.getByRole("button", { name: "All", exact: true }).click();
     await row(2).click();
     assert.equal(await row(2).getAttribute("aria-current"), "page");
+    assert.equal(await page.locator("#back-lead").count(), 1);
     assert.equal(
       await page
         .getByRole("button", { name: "Back to main agent", exact: true })
         .count(),
-      1,
+      2,
+      "the header and Team use the same return label",
     );
     assert.equal(
       await page
@@ -376,9 +376,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
     await page.screenshot({ path: join(root, "team-narrow.png") });
     await row(2).click();
     await team.waitFor({ state: "hidden" });
-    await page
-      .getByRole("button", { name: "Back to main agent", exact: true })
-      .click();
+    await page.locator("#back-lead").click();
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       "Release lead",
@@ -496,9 +494,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         .getByRole("button", { name: "Close", exact: true })
         .click();
       await page.getByRole("dialog").waitFor({ state: "hidden" });
-      await page
-        .getByRole("button", { name: "Back to main agent", exact: true })
-        .click();
+      await page.locator("#back-lead").click();
       assert.equal(
         await page.locator("#message").inputValue(),
         `Lead draft ${width}`,

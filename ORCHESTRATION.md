@@ -509,28 +509,42 @@ maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
 `orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
-is the lead's folder. On supported platforms, an implementer receives an image workspace
-for the repository that contains `cwd`. The lead's Multi agent switch starts the repository
-base build. Until the base is ready, a new implementer starts in `cwd` with read-only
-permissions, whatever the YOLO setting. Studio then creates the image workspace, switches
-the worker to its project path with write access, and sends one notice with the path and
-snapshot commit. If the platform does not support image workspaces, Studio uses a Git
-worktree at `.worktrees/codex-agents/<agent-id>`, on branch `codex-agent/<agent-id>`.
-An agent can set `base_ref` to a branch, tag, or commit. Otherwise Studio uses the closest
-project's **Default worker base ref**, then the repository HEAD. Studio resolves and records
-the commit when it creates the worker. Retries use the same saved commit. The result and the
-worker's first input report the commit and its distance behind main when it is behind.
-With no selected base ref, the image workspace includes the parent's current uncommitted changes
-in its snapshot commit. Collect leaves that snapshot commit out of `codex-agent/<agent-id>`.
-An explicit `base_ref` or project default starts from that commit and does not include those edits.
-Outside a Git repository the implementer works directly in `cwd`, and Studio shows a warning.
-After each image workspace turn, Studio saves a checkpoint and collects the worker branch as
-`codex-agent/<agent-id>` in the user's repository. The lead merges it as usual. A collect
-conflict appears in the worker result with the raw branch reference.
+is the lead's folder. On supported platforms, an implementer receives an image copy of the
+Git root that contains `cwd`, or of `cwd` when it is outside Git. The copy includes
+uncommitted changes. Multi agent mode starts the image base build. Before sealing the base,
+Studio applies one change-detection pass and refreshes each copied Git index. Git workspaces
+use HEAD differences, current status paths, and paths that were dirty when the base was made.
+Studio reads source status once per known repository and reuses that snapshot. It finds new
+nested repositories from dirty directory paths. It reads only candidate staged paths when an
+index changes. It skips index parsing when the index fingerprint matches.
+It mirrors Git directories with `rsync -a --delete`, excluding `index`, only when refs or Git
+metadata change. It copies newly staged objects by object ID. Plain folders use
+`rsync -a --delete`. Git-ignored files changed after
+base creation stay at the base version. These Git operations do not change the user's Git
+metadata. Studio does not stage, commit, replay, or collect agent changes. Agent Git settings
+stay at their defaults. Until the base is ready, the worker has read-only access, whatever the
+YOLO setting. Studio then switches the worker
+to the copy path and sends a notice with the path and copy time. Unsupported platforms use a
+Git worktree when the folder is in Git, or the original folder otherwise.
+On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
+200,000 files with no staged source change. After source `git add`, it took 3.757 s and
+10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
+and 4.013 s after `git add`. At 200,000 files, staged start used 5.365 s for source Git status,
+0.618 s for path copy, 0.610 s for index entry reads, and 1.857 s for index changes. It did not
+mirror Git metadata or restat paths. The base build took 361.245 s, including 87.022 s for file
+copy and 223.949 s for index handling. These step times overlap.
+The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
+earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
+An agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
+resolved commit to the worker in its first input. The worker checks it out. Studio does not
+run Git checkpoints or collect worker changes inside image copies. The worker result includes
+the copy path, source path, copy time, and confirmation that uncommitted changes were copied.
+Ask the worker to commit on a named branch. Integrate its changes by reading files from the
+copy or fetching the branch, for example `git fetch <path> <branch>`.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
 Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
 The lead owns review and integration. The runtime never merges worker changes.
-The archive action collects and removes an image workspace, or removes a safe Git worktree.
+The archive action detaches and retains an image workspace, or removes a safe Git worktree.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
@@ -885,11 +899,12 @@ Archive requires a reason. It hides a worker through the existing tombstone filt
 and stores an archive receipt with its actor, time, epoch, and unknown tool request IDs.
 Active work blocks archive. A finished worker can keep unknown tool outcomes when
 no operation can still run. A command with a completed turn and a missing process
-is marked lost; its outcome stays unknown. Studio collects and removes image
-workspaces after it saves the worker branch in the user's repository. A Git
+is marked lost; its outcome stays unknown. Studio detaches and retains image
+workspaces. A Git
 worktree is removed only when Studio can verify its registration and archive ref.
 Dirty and nested worktrees stay with an exact reason. Restore recreates the saved
-image workspace or Git worktree from its saved branch. History and native threads remain.
+image workspace by reattaching it, or recreates a Git worktree from its saved branch. Deleting
+the worker removes its image. History and native threads remain.
 Archive children before their parent. A later user deletion or stop invalidates
 the archive receipt. Repeated calls keep the same request result.
 
@@ -902,7 +917,7 @@ tasks to the unassigned ready backlog. The archive and task changes commit in on
 transaction. Task results and decisions remain. The default keeps the
 `assigned_work` blocker. Active work and all other blockers still prevent archive.
 
-After partial Git removal, make a new `archive` call to retry cleanup. Studio
+After an image detach interruption, make a new `archive` call to finish detaching. After partial Git removal, make a new `archive` call to retry cleanup. Studio
 preserves the failed cleanup record and Git error. It can repair the exact saved
 Git registration without changing worktree files. Modified or untracked files
 stay. A missing or changed original `.git` file leaves the folder for inspection.
