@@ -260,10 +260,12 @@
   gap: 4px;
   min-width: 0;
 }
+/* Fit the label ("3 / 12" or "Search chat"); clip only past 140px. */
 .conversation-prompt-navigation-slot {
-  flex: 0 0 72px;
-  width: 72px;
-  min-width: 0;
+  flex: 0 0 auto;
+  width: auto;
+  min-width: 72px;
+  max-width: 140px;
 }
 .conversation-prompt-navigation-slot .prompt-navigation-compact {
   width: 100%;
