@@ -104,6 +104,23 @@ The total is 302 tests across the selected suites.
 Python 3.14 emitted unclosed SQLite connection ResourceWarnings in the supervisor suite. The suite returned exit code 0.
 Those warnings were not resolved by this change.
 
+## Integration with newer main
+
+The change was rebased without conflicts onto `50135d53f322d11d783ed25d45ca5c21360dfa63`.
+Git range-diff confirmed the implementation patch was unchanged.
+The newer base adds a Claude temporary-directory contract, which raises that suite to 45 tests.
+The bridge, turn recovery, Claude input recovery, and connection recovery suites passed on this base.
+
+Main commit `0458f1e0` hides `lastContextRepairWait` and `lastContextRepairCheck` from both public API views.
+The connection contract still expected these fields in the full view.
+Its test now checks that both fields remain internal and are absent from both public views.
+The recovery receipt equality check remains unchanged. All 23 connection tests passed after this correction.
+
+The restart suite then passed all 62 tests. The supervisor fixture exposed a scheduler race in its notice setup.
+The fixture now gates the scheduler until it consumes that exact notice, then releases normal scheduling.
+The original completion, output, and no-replay checks remain. The corrected supervisor suite passed all 59 tests.
+The response-map suite passed all 6 tests. With the unchanged 37 bridge unit tests, the selected total is now 303.
+
 ## Limits
 
 All process tests use isolated state and fixture providers. No paid model request was sent.

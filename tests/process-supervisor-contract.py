@@ -822,14 +822,21 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertIsInstance(receipt, (int, float), 'Journal the supervisor receipt time before replay')
 
         entered, release_restore, constructed = threading.Event(), threading.Event(), threading.Event()
+        scheduler_entered, release_scheduler = threading.Event(), threading.Event()
         observed, result, errors = [], [], []
         original_restore = Runtime.supervisor_reattached
+        original_schedule = Runtime.schedule
         def restore(runtime, *args):
             observed.append(runtime)
             entered.set()
             if not release_restore.wait(4):
                 raise RuntimeError('The fixture restore gate timed out')
             return original_restore(runtime, *args)
+        def gated_schedule(runtime):
+            scheduler_entered.set()
+            if not release_scheduler.wait(5):
+                raise RuntimeError('The fixture scheduler gate timed out')
+            return original_schedule(runtime)
         def construct():
             try:
                 with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
@@ -838,7 +845,8 @@ class ProcessSupervisorContract(unittest.TestCase):
                 errors.append(error)
             finally:
                 constructed.set()
-        with patch.object(Runtime, 'supervisor_reattached', restore):
+        with patch.object(Runtime, 'supervisor_reattached', restore), \
+                patch.object(Runtime, 'schedule', gated_schedule):
             worker = threading.Thread(target=construct)
             worker.start()
             try:
@@ -856,6 +864,8 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(errors, [])
         second = result[0]
         self.addCleanup(second.close)
+        self.addCleanup(release_scheduler.set)
+        self.assertTrue(scheduler_entered.wait(3), 'The fixture scheduler must reach its gate')
         with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
             replacement = second.connect()
         self.assertTrue(replacement.supervisor_resumed)
@@ -889,6 +899,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             delivered = db.execute("UPDATE runtime_events SET status='delivered' "
                                    "WHERE id='monitor:native-monitor' AND status='pending'")
             self.assertEqual(delivered.rowcount, 1)
+        release_scheduler.set()
         wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
         partial = self._stored_runtime_item(second, agent['id'], 'long-item')
         self.assertEqual(partial['text'], 'buffered-')

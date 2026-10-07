@@ -598,6 +598,9 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 'source': {'id': self.key, 'threadId': 'native-thread'},
                 'supersededReason': 'No native fork was submitted.',
             })
+            internal = self.runtime.agent(self.key)
+            self.assertEqual(internal['lastContextRepairWait']['status'], 'superseded')
+            self.assertEqual(internal['lastContextRepairCheck']['status'], 'superseded')
             for view in ('full', 'chat'):
                 with self.subTest(view=view):
                     status, snapshot = request('/api/state?view=' + view)
@@ -605,10 +608,7 @@ class ConnectionRecoveryContract(unittest.TestCase):
                     agent = next(a for a in snapshot['runtime']['agents'] if a['id'] == self.key)
                     self.assertEqual(agent['connectionRecovery'], receipt)
                     for field in ('lastContextRepairWait', 'lastContextRepairCheck'):
-                        if view == 'full':
-                            self.assertEqual(agent[field], self.runtime.agent(self.key)[field])
-                        else:
-                            self.assertNotIn(field, agent)
+                        self.assertNotIn(field, agent)
         finally:
             server.shutdown()
             thread.join(5)
