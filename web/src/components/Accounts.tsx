@@ -378,19 +378,25 @@ export function AccountTransferStatus({
     transfer.status !== "pending" &&
     !left.length &&
     !blocked.length &&
-    !showCompleted
+    (!showCompleted ||
+      !Number(transfer.moved ?? transfer.completed ?? 0) ||
+      !targetLabel)
   )
     return null;
   return (
     <div className="account-menu-note" role="status">
       <ArrowRightLeft size={14} />
       <div>
-        <div>
-          {transfer.moved ?? transfer.completed ?? 0} moved to {targetLabel}
-          {transfer.status === "pending" &&
-            waiting > 0 &&
-            ` · ${waiting} waiting`}
-        </div>
+        {Number(transfer.moved ?? transfer.completed ?? 0) > 0 &&
+          targetLabel && (
+            <div>
+              Moved {transfer.moved ?? transfer.completed} subagents to{" "}
+              {targetLabel}.
+            </div>
+          )}
+        {transfer.status === "pending" && waiting > 0 && (
+          <div>{waiting} waiting</div>
+        )}
         {!!transfer.nativeHistoryPending && (
           <small>
             History transfer in progress: {transfer.nativeHistoryPending}{" "}

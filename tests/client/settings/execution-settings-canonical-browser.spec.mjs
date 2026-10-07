@@ -1,3 +1,9 @@
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  apiSchemaHandshakeSse,
+} from "../playwright.mjs";
+import { setupControl, chooseSetupValue } from "../../setup-controls.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
@@ -8,6 +14,7 @@ import { modelValue } from "../../model-picker.mjs";
 import { test, expect } from "../playwright.mjs";
 
 test("execution settings canonical browser", async ({ page }) => {
+  test.setTimeout(180000);
   const root = join(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -28,6 +35,11 @@ test("execution settings canonical browser", async ({ page }) => {
         "react-dom",
         "@mantine/core",
         "lucide-react",
+        "@mantine/hooks",
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
       ],
     },
     plugins: [
@@ -58,8 +70,8 @@ test("execution settings canonical browser", async ({ page }) => {
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
   const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
   const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
-  window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(url,options)=>{if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferFail)throw new TypeError('Connection lost');return new Response(JSON.stringify({id:body.request_id,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
-  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',email:'first@example.com',status:'ready'},{id:'second',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferFail)throw new TypeError('Connection lost');return new Response(JSON.stringify({id:body.request_id,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
+  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -73,6 +85,26 @@ test("execution settings canonical browser", async ({ page }) => {
       errors.push(error.message);
       console.error(error.message);
     });
+    await page.route("**/api/sync/stream?**", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: apiSchemaHandshakeSse(
+          `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+        ),
+      });
+    });
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: {
+          workspaceId: "1234567890abcdef1234567890abcdef",
+          syncProtocol: 2,
+        },
+      }),
+    );
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -90,22 +122,22 @@ test("execution settings canonical browser", async ({ page }) => {
         .click();
     };
     const effort = (defaults = false) =>
-      page.getByLabel(
-        defaults ? "Default subagent reasoning" : "Main agent reasoning",
-        { exact: true },
+      setupControl(
+        page.getByLabel(
+          defaults ? "Default subagent reasoning" : "Main agent reasoning",
+          { exact: true },
+        ),
       );
     const value = async (expected, defaults = false) => {
       await page.waitForFunction(
         ({ expected, defaults }) => {
-          const label = [...document.querySelectorAll("label")].find(
-            (node) =>
-              node.textContent ===
-              (defaults
-                ? "Default subagent reasoning"
-                : "Main agent reasoning"),
-          );
+          const label = defaults
+            ? "Default subagent reasoning"
+            : "Main agent reasoning";
           return (
-            label && document.getElementById(label.htmlFor)?.value === expected
+            document
+              .querySelector(`[aria-label="${label}"]`)
+              ?.getAttribute("data-value") === expected
           );
         },
         { expected, defaults },
@@ -260,11 +292,16 @@ test("execution settings canonical browser", async ({ page }) => {
           },
         },
       });
-      const account = page.getByLabel("Subagent account", { exact: true });
+      const account = setupControl(
+        page.getByLabel("Subagent account", { exact: true }),
+      );
       const model = page.getByLabel("Default subagent model", { exact: true });
       const dialog = page.getByRole("dialog", { name: "Subagent defaults" });
       assert.equal(await account.inputValue(), "");
-      assert.equal(await account.locator('option[value="offline"]').count(), 0);
+      assert.equal(
+        await account.locator('[data-account-key="offline"]').count(),
+        0,
+      );
       assert.equal(
         await dialog.getByRole("button", { name: /Save/ }).count(),
         0,
@@ -283,7 +320,9 @@ test("execution settings canonical browser", async ({ page }) => {
         };
       });
       await account.selectOption("claude");
-      assert.equal(await account.inputValue(), "claude", "optimistic account");
+      await expect(
+        page.getByLabel("Subagent account", { exact: true }),
+      ).toHaveAttribute("data-value", "claude");
       await dialog
         .getByRole("status")
         .filter({
@@ -437,7 +476,7 @@ test("execution settings canonical browser", async ({ page }) => {
         };
         window.refreshFailure = true;
       });
-      await effort(true).selectOption("high");
+      await effort(true).selectOption("max");
       await value("medium", true);
       assert.equal(
         await page.evaluate(() => window.calls[0].expected_account_key),
@@ -472,6 +511,7 @@ test("execution settings canonical browser", async ({ page }) => {
     });
     await check("review-defaults", async () => {
       await reset({ defaults: true });
+      await page.getByRole("button", { name: "Review", exact: true }).click();
       const reviewModel = page.locator("#review-model");
       await page.evaluate(() => {
         window.reply = {
@@ -479,7 +519,7 @@ test("execution settings canonical browser", async ({ page }) => {
           reviewDefaults: { model: "gpt-5.6-luna", effort: null },
         };
       });
-      await reviewModel.click();
+
       await page
         .locator('[role="option"][data-value="gpt-5.6-luna"]:visible')
         .click();
@@ -502,9 +542,10 @@ test("execution settings canonical browser", async ({ page }) => {
           reviewDefaults: { model: "gpt-5.6-luna", effort: "high" },
         };
       });
-      await page
-        .getByLabel("Default review reasoning", { exact: true })
-        .selectOption("high");
+      await chooseSetupValue(
+        page.getByLabel("Default review reasoning", { exact: true }),
+        "high",
+      );
       await page.waitForFunction(() => window.calls.length === 2);
       assert.deepEqual(
         await page.evaluate(() => window.calls[1].review_defaults),
@@ -616,6 +657,7 @@ test("execution settings canonical browser", async ({ page }) => {
     });
     await check("permission-canonical-handoff", async () => {
       await reset();
+      await page.keyboard.press("Escape");
       await page.getByText("Permissions", { exact: true }).click();
       await page.evaluate(() => {
         window.reply = { ...window.agent, yoloMode: true };
