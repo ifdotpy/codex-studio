@@ -17,4 +17,12 @@ describe("account names", () => {
     expect(accountDisplayName({ label: "", email: null })).toBe("Account");
     expect(accountTooltip({ email: null })).toBe("");
   });
+  it("shows only the part before @ when the label is an email", () => {
+    expect(
+      accountDisplayName({
+        label: "ifdotpy@gmail.com",
+        email: "ifdotpy@gmail.com",
+      }),
+    ).toBe("ifdotpy");
+  });
 });
