@@ -111,6 +111,7 @@ let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
+const matchingSchemaListeners = new Set<() => void>();
 let schemaMismatch = false;
 let matchingSchemaResponseGeneration = 0;
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
@@ -141,6 +142,12 @@ export function isApiSchemaMismatch() {
 
 export function matchingApiSchemaResponseGeneration() {
   return matchingSchemaResponseGeneration;
+}
+
+export function onMatchingApiSchemaResponse(listener: () => void) {
+  matchingSchemaListeners.add(listener);
+  if (matchingSchemaResponseGeneration > 0 && !schemaMismatch) listener();
+  return () => matchingSchemaListeners.delete(listener);
 }
 
 export function onApiSchemaMismatch(listener: () => void) {
@@ -240,11 +247,21 @@ export const client = createClient<paths, "application/json">({
     if (
       response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
       (serverHash && serverHash !== API_SCHEMA_HASH)
-    )
+    ) {
       markApiSchemaMismatch();
-    else if (serverHash === API_SCHEMA_HASH) {
+      // Do not let a response from another contract reach a projection or
+      // mutation persister. The update gate is still raised before rejection.
+      throw new ApiSchemaMismatchError(true);
+    } else if (serverHash === API_SCHEMA_HASH) {
       matchingSchemaResponseGeneration++;
       clearSchemaUpdateAttemptAfterMatch();
+      for (const listener of matchingSchemaListeners) {
+        try {
+          listener();
+        } catch {
+          // Schema confirmation observers must not break a successful request.
+        }
+      }
     }
     return response;
   },

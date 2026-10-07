@@ -16,6 +16,8 @@ import {
   saved,
   save,
   setWorkspace,
+  isApiSchemaMismatch,
+  onMatchingApiSchemaResponse,
   registerSyncEntityPersister,
   type GetResult,
 } from "../api";
@@ -98,6 +100,8 @@ async function open() {
   const initialIdentity = identify();
   let grace: ReturnType<typeof setTimeout> | undefined;
   let identity: Awaited<ReturnType<typeof identify>> | null = null;
+  let cleanupScheduled = false;
+  let stopSchemaMatchCleanup = () => {};
   try {
     identity = await (hasCache
       ? Promise.race([
@@ -109,6 +113,7 @@ async function open() {
       : initialIdentity);
   } catch (error) {
     const unavailable =
+      isApiSchemaMismatch() ||
       error instanceof TypeError ||
       (error instanceof ApiError &&
         (error.status >= 500 || [408, 429].includes(error.status)));
@@ -118,6 +123,12 @@ async function open() {
   }
   const workspaceId = identity?.workspaceId || cached;
   if (identity) save("codex-sync-workspace", workspaceId);
+  const cleanupOtherSchemaCaches = () => {
+    if (cleanupScheduled || isApiSchemaMismatch()) return;
+    cleanupScheduled = true;
+    stopSchemaMatchCleanup();
+    deleteOtherEntityProjectionDatabases(workspaceId, API_SCHEMA_HASH);
+  };
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
@@ -184,7 +195,13 @@ async function open() {
     },
   });
   Object.defineProperty(db, "projections", { value: projections });
-  deleteOtherEntityProjectionDatabases(workspaceId, currentProjectionDatabase);
+  if (isApiSchemaMismatch()) stopSchemaMatchCleanup();
+  else {
+    stopSchemaMatchCleanup = onMatchingApiSchemaResponse(
+      cleanupOtherSchemaCaches,
+    );
+    if (cleanupScheduled) stopSchemaMatchCleanup();
+  }
   db.projections.$.subscribe((event) => {
     const doc = event.documentData;
     if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)

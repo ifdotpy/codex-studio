@@ -25,6 +25,22 @@ export type EntityRow = {
 };
 
 type EntityCollection = SyncEntityPayload["collection"];
+const ENTITY_COLLECTIONS = new Set<string>([
+  "agent",
+  "room",
+  "task",
+  "monitor",
+  "complaint",
+  "request",
+  "rule",
+  "project",
+  "peerTeam",
+  "chat",
+  "edge",
+  "event",
+  "work",
+  "workspace",
+]);
 type EntityFor<C extends EntityCollection> = Extract<
   SyncEntityPayload,
   { collection: C }
@@ -65,10 +81,29 @@ function emptyEntityValues(): EntityValues {
 
 /**
  * The schema-versioned cache contains payloads from this renderer contract.
- * JSON parsing remains guarded because storage corruption can still damage a row.
+ * Shape validation remains necessary because a mismatched server response or
+ * storage corruption can still damage a row before it reaches the cache.
  */
-function parseEntityPayload(payload: string): SyncEntityPayload {
-  return JSON.parse(payload) as SyncEntityPayload;
+function parseEntityPayload(payload: string): SyncEntityPayload | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(payload);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed))
+    return null;
+  const candidate = parsed as Record<string, unknown>;
+  if (
+    typeof candidate.collection !== "string" ||
+    !ENTITY_COLLECTIONS.has(candidate.collection) ||
+    typeof candidate.id !== "string" ||
+    candidate.value === null ||
+    typeof candidate.value !== "object" ||
+    Array.isArray(candidate.value)
+  )
+    return null;
+  return candidate as unknown as SyncEntityPayload;
 }
 
 function entityValues<C extends EntityCollection>(
@@ -202,14 +237,12 @@ export function applyEntityRows(
       addedTombstone = true;
       continue;
     }
-    let payload: SyncEntityPayload;
-    try {
-      payload = parseEntityPayload(row.payload);
-    } catch {
+    const payload = parseEntityPayload(row.payload);
+    if (!payload) {
       if (state.invalidReportedSeq.get(row.id) !== row.seq) {
         state.invalidReportedSeq.set(row.id, row.seq);
         console.error(
-          `Skipping sync entity row with invalid JSON for document "${row.id}"`,
+          `Skipping sync entity row with invalid payload for document "${row.id}"`,
           { id: row.id, seq: row.seq },
         );
       }

@@ -862,19 +862,6 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     await expect
       .poll(() => entityFullPulls.length)
       .toBeGreaterThan(fullPullsBeforeUpdate);
-    const cachedState = await page.evaluate(async () => {
-      const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      return {
-        workspace: localStorage.getItem("codex-sync-workspace"),
-        ready: (await db.projections.findOne("state:entities:ready").exec())
-          ?.payload,
-        checkpoint: (
-          await db.projections.findOne("state:entities:checkpoint").exec()
-        )?.seq,
-      };
-    });
-    expect(cachedState.ready).toBe("ready");
-    expect(cachedState.checkpoint).toBeGreaterThan(0);
     expect(entityFullPulls.at(-1)).toContain("after=0");
     expect(entityFullPulls).toHaveLength(fullPullsBeforeUpdate + 1);
     expect(errors).toEqual([]);
