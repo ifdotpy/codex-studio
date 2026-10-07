@@ -329,11 +329,26 @@ class AnalyticsHistoryMixin:
             for folder in ("sessions", "archived_sessions"):
                 root = home / folder
                 if root.is_dir():
-                    for path in root.rglob("*.jsonl"):
-                        # Native UUID suffix. Do not infer another account home.
-                        suffix = path.stem[-36:]
-                        paths.setdefault(suffix, []).append(path)
-            cache = (now, paths)
+                    pending = [root]
+                    while pending:
+                        directory = pending.pop()
+                        try:
+                            with os.scandir(directory) as scanner:
+                                entries = list(scanner)
+                        except OSError:
+                            continue
+                        for entry in entries:
+                            if entry.name.endswith(".jsonl"):
+                                path = Path(entry.path)
+                                # Native UUID suffix. Keep the managed account home.
+                                suffix = path.stem[-36:]
+                                paths.setdefault(suffix, []).append(path)
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    pending.append(Path(entry.path))
+                            except OSError:
+                                continue
+            cache = (time.monotonic(), paths)
             self._analytics_history_paths[str(home)] = cache
         matches = cache[1].get(thread_id, [])
         if len(matches) != 1:
@@ -348,9 +363,12 @@ class AnalyticsHistoryMixin:
 
     def analytics_history_step(self, max_bytes=1048576, max_records=128):
         """Import one fair batch. Return whether complete lines advanced."""
-        if not self._analytics_history_guard.acquire(blocking=False):
-            return False
+        background = getattr(self, 'analytics_history_thread', None) is threading.current_thread()
+        started = (time.monotonic(), time.thread_time()) if background else None
+        acquired = self._analytics_history_guard.acquire(blocking=False)
         try:
+            if not acquired:
+                return False
             with _history_step_connections(self):
                 if not getattr(self, "_analytics_history_schema_ready", False):
                     with self.analytics_history_db() as db:
@@ -528,7 +546,16 @@ class AnalyticsHistoryMixin:
                     state.update(status="unreadable", error="Cannot read the managed account's native rollout")
                     return self._analytics_history_save(key, a, state)
         finally:
-            self._analytics_history_guard.release()
+            if acquired:
+                self._analytics_history_guard.release()
+            if started is not None:
+                # Each batch repays its CPU time after every import scope closes.
+                deadline = started[0] + max(0, time.thread_time() - started[1]) / .15
+                while not self.closed:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(.1, remaining))
 
     def _analytics_history_save(self, key, a, state):
         with self.analytics_history_db() as db:

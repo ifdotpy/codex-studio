@@ -87,6 +87,15 @@ class SessionCostReader:
         encoded = json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def _pricing_snapshot(self):
+        from codex_pricing import PricingCatalog
+        if type(self.pricing) is PricingCatalog:
+            return self.pricing.snapshot_with_signature()
+        # Test and custom providers can edit a snapshot in place. Their content
+        # must still be hashed on every read, without an identity cache.
+        catalog = self.pricing.snapshot()
+        return catalog, self._catalog_signature(catalog)
+
     @staticmethod
     def _usage_state(db, root):
         try:
@@ -374,7 +383,7 @@ class SessionCostReader:
         finally:
             db.rollback()  # End the explicit read snapshot before instrumented close.
             db.close()
-        pricing_signature = self._catalog_signature(self.pricing.snapshot())
+        _, pricing_signature = self._pricing_snapshot()
         agent_signature = self._agent_signature(agents)
         if not wait:
             return self._display_snapshot(agent_id, root, usage_state, pricing_signature,
@@ -650,13 +659,12 @@ class SessionCostReader:
     def _compute(self, agent_id, root):
         db = self._connect()
         try:
-            catalog = self.pricing.snapshot()
+            catalog, catalog_signature = self._pricing_snapshot()
             if catalog is None:
                 return {"rootId": root, "totalUSD": None, "pricedSamples": 0,
                         "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
                         "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
                         "method": "Loading public API prices."}
-            catalog_signature = self._catalog_signature(catalog)
             # Account and filesystem preparation can wait for unrelated work.
             # Keep those waits outside the history snapshot, then check its
             # exact usage and agent identities before materializing price rows.

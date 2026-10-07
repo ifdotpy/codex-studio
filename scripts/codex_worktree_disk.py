@@ -22,6 +22,32 @@ _scanners = {}
 _scanners_lock = threading.Lock()
 _apfs_api_lock = threading.Lock()
 _apfs_api = None
+_scan_cpu_state = threading.local()
+
+
+def _scan_pause(pause, *, force=False):
+    """Limit the background disk walker to 15 percent of one CPU core."""
+    if threading.current_thread().name != 'studio-worktree-disk':
+        return False
+    window = getattr(_scan_cpu_state, 'window', None)
+    if window is None:
+        _scan_cpu_state.window = (time.monotonic(), time.thread_time())
+        _scan_cpu_state.entries = 0
+        return True
+    _scan_cpu_state.entries += 1
+    if not force and _scan_cpu_state.entries % 64:
+        return True
+    now, cpu = time.monotonic(), time.thread_time()
+    elapsed, used = now - window[0], cpu - window[1]
+    if used >= .005:
+        delay = used / .15 - elapsed
+        if delay > 0:
+            pause(delay)
+        _scan_cpu_state.window = (time.monotonic(), time.thread_time())
+    elif elapsed >= .2:
+        # An idle scanner must not collect credit for a later CPU burst.
+        _scan_cpu_state.window = (now, cpu)
+    return True
 
 
 def _publish_worktree_disk(state_dir: str | Path, agent_ids: Iterable[str]) -> None:
@@ -90,6 +116,9 @@ def _apfs_private_bytes(path):
     """Return ATTR_CMNEXT_PRIVATESIZE, or None when the volume lacks it."""
     if sys.platform != 'darwin':
         return None
+    # Existing walkers resolve this function for each entry. This also limits a
+    # scan that started before a function-only update installed the budget.
+    _scan_pause(time.sleep)
     try:
         getattrlist = _getattrlist_api()
         attrs = _AttrList(5, 0, 0, 0, 0, 0, ATTR_CMNEXT_PRIVATESIZE)
@@ -135,7 +164,9 @@ def _tree_bytes(root, value_for, *, excluded=(), pause=time.sleep):
                 if is_dir:
                     pending.append(entry_path)
                 count += 1
-                if count % 500 == 0:
+                if count % 64 == 0:
+                    _scan_pause(pause, force=True)
+                if count % 500 == 0 and not _scan_pause(pause, force=True):
                     pause(.01)
     return total
 
@@ -231,6 +262,19 @@ class WorktreeDiskScanner:
             db.close()
 
     def scan_once(self, priority_ids=()):
+        # A retained legacy run loop can still wake every minute after a live
+        # update. Its next call must not start an unrequested full scan.
+        if not priority_ids and threading.current_thread().name == 'studio-worktree-disk':
+            with self.lock:
+                last_scan = getattr(self, 'last_scan_at', None)
+                if last_scan is None:
+                    # An old active scan frame can finish without writing the
+                    # new timestamp. Its measured rows retain the real times.
+                    last_scan = max((row['scannedAt'] for row in self.cache.values()
+                                     if isinstance(row.get('scannedAt'), (int, float))),
+                                    default=None)
+                if last_scan is not None and self.clock() - last_scan < CACHE_TTL:
+                    return []
         workers = self._workers()
         ids = list(workers)
         priorities = set(priority_ids)

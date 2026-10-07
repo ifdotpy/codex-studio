@@ -127,7 +127,8 @@ class WorkerTests(unittest.TestCase):
         self.assertIn('OperationalError', self.f.analytics_history_health['error'])
         self.assertIn('Fixture storage failure', self.f.analytics_history_health['errorPersistenceError'])
         self.f.db = original_db
-        eventually(lambda: len(self.f.captured()) == 1)
+        eventually(lambda: len(self.f.captured()) == 1
+                   and self.f.analytics_history_health['status'] == 'running')
         self.assertIs(self.f.analytics_history_thread, worker)
         self.assertEqual(self.f.analytics_history_health['status'], 'running')
 
