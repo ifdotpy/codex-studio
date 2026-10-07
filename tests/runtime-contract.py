@@ -19,7 +19,6 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
-from studio_api.testing import read_legacy_snapshot_field
 
 # Keep general protocol fixtures independent of host image support. Dedicated
 # image workspace contracts exercise the supported path with explicit mocks.
@@ -192,8 +191,8 @@ class RuntimeContract(unittest.TestCase):
                          'thread_token_usage': usage}},
         )))
 
-        store = SyncStore(self.runtime.db, lambda: {}, lambda _agent: {})
-        store.generation_state()
+        store = SyncStore(self.runtime.db, lambda _agent: {})
+        store._ensure_versions()
         with self.runtime.db() as db:
             tables = {row[0] for row in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -609,7 +608,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len(first['responses']), 1)
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE agent=? AND kind='complaint_response'", (child['id'],)).fetchone()[0], 1)
-        self.assertFalse(read_legacy_snapshot_field(self.snapshot, 'complaints', 0, 'needsResponse'))
+        self.assertFalse(self.snapshot()['complaints'][0]['needsUserResponse'])
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.complaint_detail(c['id'])['status'], 'resolved')
@@ -632,7 +631,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertFalse(stopped['autoWake'])
         self.assertEqual(stopped['status'], 'failed')
         self.assertIn('Three turns', stopped['error'])
-        self.assertTrue(read_legacy_snapshot_field(self.snapshot, 'complaints', 0, 'needsResponse'))
+        self.assertFalse(self.snapshot()['complaints'][0]['needsUserResponse'])
         self.runtime.send(lead['id'], 'Read the complaint and act')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         a = self.runtime.agent(lead['id'])
@@ -680,8 +679,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.notification({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':42,'windowDurationMins':300}}}})
         self.assertEqual(self.runtime.rate_limits['data']['accountId'], 'test-account')
         self.assertEqual(self.runtime.rate_limits['data']['rateLimitResetCredits']['availableCount'], 3)
-        self.assertEqual(read_legacy_snapshot_field(
-            self.snapshot, 'rateLimits', 'data', 'rateLimits', 'primary', 'usedPercent'), 42)
+        self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
@@ -740,7 +738,8 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.rename(room, 'Review chat', 'room-rename')
         self.assertEqual(self.runtime.rename(room, 'Review chat', 'room-rename')['name'], 'Review chat')
         self.runtime.hide_room(room)
-        self.assertEqual(self.snapshot()['rooms'], [])
+        self.assertEqual(len(self.snapshot()['rooms']), 1)
+        self.assertTrue(self.snapshot()['rooms'][0]['userHidden'])
         self.assertEqual(len(self.runtime.chat_read(room,a['id'])['messages']), 1)
         self.runtime.chat_message(a['id'], b['id'], 'New message', 'rename-next')
         self.assertEqual(self.snapshot()['rooms'][0]['name'], 'Review chat')

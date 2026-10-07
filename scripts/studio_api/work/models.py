@@ -11,11 +11,11 @@ from studio_api.history.models import CheckpointSummary, TranscriptAsset
 from studio_api.sync.models import (
     MonitorEntityDto,
     ComplaintResponseDto,
+    ComplaintStatus,
     RuleKind,
     RuleStatus,
-    SnapshotComplaintDto,
-    SnapshotRoomDto,
-    SnapshotTaskDto,
+    RoomEntityDto,
+    TaskEntityDto,
     TaskKind,
     TaskStatus,
     TaskEntityDto,
@@ -482,7 +482,7 @@ class ChatMessage(ContractModel):
 
 
 class ChatRead(ResponseModel):
-    room: SnapshotRoomDto
+    room: "RoomDetailDto"
     messages: list[ChatMessage]
     nextBefore: StrictInt | None = None
     nextAfter: StrictInt | None = None
@@ -589,20 +589,62 @@ class AnnotationReceipt(AnnotationRecord, ResponseModel):
     pass
 
 
-class ComplaintDetailResponse(SnapshotComplaintDto, ResponseModel):
+class RoomDetailDto(RoomEntityDto):
+    federated: StrictBool | None = None
+    peerId: StrictStr | None = None
+    remoteMembers: list["RemoteRoomMemberDto"] | None = None
+    localParticipants: list["LocalRoomParticipantDto"] | None = None
+    customName: StrictStr | None = None
+
+
+class RemoteRoomMemberDto(ContractModel):
     id: StrictStr
+    name: StrictStr | None = None
+    role: StrictStr | None = None
+    status: StrictStr | None = None
+
+
+class LocalRoomParticipantDto(ContractModel):
+    id: StrictStr
+    role: Literal["lead", "agent"]
+    name: StrictStr | None = None
+    status: StrictStr | None = None
+
+
+class ComplaintDetailResponse(ResponseModel):
+    id: StrictStr
+    leadId: StrictStr | None = None
+    author: StrictStr | None = None
+    authorName: StrictStr | None = None
+    leadName: StrictStr | None = None
+    title: StrictStr | None = None
+    status: ComplaintStatus | None = None
+    needsResponse: StrictBool | None = None
+    created: StrictInt | StrictFloat | None = None
+    readAt: StrictInt | StrictFloat | None = None
+    leadStopped: StrictBool | None = None
+    leadDeleted: StrictBool | None = None
+    recipient: Literal["user", "lead"] | None = None
     version: StrictInt
     text: StrictStr
     responses: list[ComplaintResponseDto]
+    updated: StrictInt | StrictFloat | None = None
 
 
-class TaskDetailResponse(SnapshotTaskDto, ResponseModel):
+class TaskDetailResponse(TaskEntityDto, ResponseModel):
+    agent: StrictStr
+    kind: TaskKind
+    status: TaskStatus
+    created: StrictInt | StrictFloat
     type: StrictStr | None = None
     itemId: StrictStr | None = None
     startedAtMs: StrictInt | StrictFloat | None = None
     completedAtMs: StrictInt | StrictFloat | None = None
     server: StrictStr | None = None
     outputTruncated: StrictBool | None = None
+    arguments: StrictStr | None = None
+    tail: StrictStr | None = None
+    error: StrictStr | None = None
 
 
 class WorkspaceTaskRecord(TaskEntityDto):

@@ -10,6 +10,7 @@ import tempfile
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_sync import SyncStore
+from codex_sync_entities import put as put_entity
 from codex_sqlite import connect as instrumented_connect, diagnostics as sqlite_diagnostics
 
 PAGE = 4096
@@ -36,8 +37,7 @@ def measure(name, action, setup=lambda db: None):
                         yield db
                 finally:
                     db.close()
-            store = SyncStore(connect, lambda: {'body': BODY, 'tick': tick[0]},
-                              lambda _: {'body': BODY, 'tick': tick[0]})
+            store = SyncStore(connect, lambda _: {'body': BODY, 'tick': tick[0]})
             tick = [0]
             anchor.execute('PRAGMA wal_checkpoint(TRUNCATE)')
             start = os.stat(str(path) + '-wal').st_size
@@ -66,7 +66,7 @@ def version(connect, store, index):
     with connect() as db:
         db.execute('INSERT INTO runtime_agents VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record',
                    ('a', str(index)))
-    store.pull('state')
+        put_entity(db, 'agent', 'a', {'id': 'a', 'kind': 'agent', 'tokensUsed': index})
 
 
 def history(connect, store, index):

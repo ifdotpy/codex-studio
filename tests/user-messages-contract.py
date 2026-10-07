@@ -69,8 +69,8 @@ class UserMessages(unittest.TestCase):
         self.store_tasks(task)
         with self.runtime.db() as db:
             migrate(self.runtime, db)
-            summary = next(item for item in self.runtime.complaint_summaries(db) if item['id'] == task['id'])
-            self.assertFalse(summary['needsResponse'])
+            complaint = next(item for item in self.runtime.records(db, 'complaints') if item['id'] == task['id'])
+            self.assertFalse(self.runtime.complaint_needs_response(complaint))
 
     def test_returned_migrated_request_needs_new_reply(self):
         lead = self.lead()
@@ -79,8 +79,8 @@ class UserMessages(unittest.TestCase):
         self.store_tasks(task)
         with self.runtime.db() as db:
             migrate(self.runtime, db)
-            summary = next(item for item in self.runtime.complaint_summaries(db) if item['id'] == task['id'])
-            self.assertTrue(summary['needsResponse'])
+            complaint = next(item for item in self.runtime.records(db, 'complaints') if item['id'] == task['id'])
+            self.assertTrue(self.runtime.complaint_needs_response(complaint))
 
     def test_collision_fails_before_any_migration_write(self):
         lead = self.lead()

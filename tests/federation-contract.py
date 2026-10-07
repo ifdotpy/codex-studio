@@ -163,8 +163,6 @@ class FederationContract(unittest.TestCase):
         return room_id
 
     def test_room_producers_emit_only_named_local_participant_fields(self):
-        from studio_api.sync.models import SnapshotRoomDto
-
         cases = (
             (self._room(), {"id", "role", "name"}, {"lead"}),
             (self._room(share_names=True, share_status=True, include_child=True),
@@ -177,14 +175,7 @@ class FederationContract(unittest.TestCase):
                         "SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)
                     ).fetchone()
                 record = json.loads(row[0])
-                dto = SnapshotRoomDto.model_validate({
-                    "id": room_id,
-                    "localParticipants": record["localParticipants"],
-                })
-                participants = [
-                    participant.model_dump(mode="json", exclude_unset=True)
-                    for participant in dto.localParticipants or []
-                ]
+                participants = record["localParticipants"]
                 self.assertEqual({participant["role"] for participant in participants}, expected_roles)
                 self.assertTrue(all(set(participant) == expected_keys for participant in participants))
                 with service.runtime.read_db() as db:

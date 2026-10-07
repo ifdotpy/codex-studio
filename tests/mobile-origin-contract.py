@@ -93,7 +93,7 @@ class MobileOriginContract(unittest.TestCase):
         self.assertEqual(self.request(headers, {"rows": []}, "/api/sync/drafts")[0], 409)
         headers["X-Canvas-Workspace"] = identity["workspaceId"]
         self.assertEqual(self.request(headers, {"rows": []}, "/api/sync/drafts"), (200, []))
-        _, pull = self.request(path="/api/sync/pull?scope=state")
+        _, pull = self.request(path="/api/sync/pull?scope=state%3Aentities%3Av1")
         self.assertEqual(pull["workspaceId"], identity["workspaceId"])
         self.assertNotIn("token", json.loads(pull["documents"][0]["payload"]))
 

@@ -51,13 +51,8 @@ class HttpRequestTracesContract(unittest.TestCase):
         finished.start()
         self.addCleanup(finished.stop)
         self.canvas = Canvas(self.root)
-        self.canvas.snapshot = lambda **_kwargs: {"threads": [], "stateDir": str(self.root)}
         self.canvas.transcript = self.blocked_transcript
         self.server = make_server(self.canvas)
-        # Retain the injected stream fixture so this legacy instrumentation
-        # contract keeps its base-branch failure mode on the FastAPI server.
-        self.server.RequestHandlerClass.stream_sync = lambda handler: handler.send(
-            b'event: resources\ndata: {}\n\n', content_type="text/event-stream")
         self.addCleanup(self.server.server_close)
         self.server.handle_error = self.record_server_error
         self.server_thread = threading.Thread(target=self.server.serve_forever,

@@ -341,56 +341,9 @@ class ApiContext:
         with self._lock:
             if self._sync_store is None:
                 from codex_sync import SyncStore
-
-                def state_signature() -> tuple[object, ...] | None:
-                    runtime = self.runtime
-                    connected = False
-                    volatile = None
-                    if runtime:
-                        if not runtime.start_lock.acquire(blocking=False):
-                            return None
-                        try:
-                            if not runtime.lock.acquire(blocking=False):
-                                return None
-                            try:
-                                connected = bool(set(runtime.servers) - runtime.offline_accounts) and not runtime.closed
-                                monitor = getattr(runtime, "provider_version_monitor", None)
-                                warnings = monitor.status()["warnings"] if monitor else []
-                                volatile = json.dumps({
-                                    "rateLimits": runtime.rate_limits,
-                                    "rateLimitsByAccount": {
-                                        key: runtime.rate_limits_for(key)
-                                        for key in runtime.rate_limits_by_account
-                                    },
-                                    "connectionIds": runtime.connection_ids,
-                                    "providerWarnings": warnings,
-                                }, sort_keys=True, separators=(",", ":"))
-                            finally:
-                                runtime.lock.release()
-                        finally:
-                            runtime.start_lock.release()
-                    files = []
-                    for path in sorted(self.canvas.root.glob("codex-swarm-status.*.json")):
-                        try:
-                            stat = path.stat()
-                        except FileNotFoundError:
-                            continue
-                        files.append((path.name, stat.st_ino, stat.st_size, stat.st_mtime_ns))
-                    from codex_state import process_is_alive, read_threads
-
-                    liveness = tuple(sorted((
-                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))  # type: ignore[redundant-cast]  # typed-narrowing: guarded pid has integer type
-                        for row in read_threads(self.canvas.root)
-                        if row.get("launcherPid") is not None
-                    ), key=lambda item: str(item[0])))
-                    return connected, volatile, tuple(files), liveness
-
                 self._sync_store = SyncStore(
                     self.canvas.connect,
-                    self.snapshot,
                     self.canvas.transcript,
-                    chat_snapshot=self.chat_snapshot,
-                    state_signature=state_signature,
                     runtime=self.runtime,
                     canvas=self.canvas,
                 )
@@ -437,19 +390,6 @@ class ApiContext:
         if not self.schema_only:
             self.sync()
             self.resource_hub()
-
-    def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
-        if self.runtime:
-            with self.runtime.read_db() as db:
-                runtime_value = self.runtime.snapshot(include_work=include_work, db=db)
-                return cast(dict[str, JsonValue], {
-                    **self.canvas.snapshot(runtime_snapshot=runtime_value, db=db),
-                    "runtime": runtime_value,
-                })
-        return cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None})
-
-    def chat_snapshot(self) -> dict[str, JsonValue]:
-        return self.snapshot(include_work=False)
 
     def entity_sequence(self) -> int | None:
         """Read the sync cursor without constructing services or mutating state."""

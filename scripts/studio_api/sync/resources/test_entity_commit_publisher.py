@@ -412,7 +412,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
                     self.database,
                     "agent",
                     "continuous-agent",
-                    {"id": "continuous-agent", "tokensUsed": index + 1},
+                    {"id": "continuous-agent", "kind": "agent", "tokensUsed": index + 1},
                 )
             commit_times.append(time.monotonic())
         burst_ended_at = time.monotonic()

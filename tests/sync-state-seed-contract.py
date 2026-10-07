@@ -8,6 +8,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import time
 import unittest
 import uuid
 
@@ -18,7 +19,6 @@ from codex_runtime import Runtime
 from codex_sync import SyncStore
 from studio_api.context import ApiContext
 from studio_api.testing import read_runtime_state
-from studio_api.testing import read_legacy_snapshot_field
 from codex_sync_entities import seed
 
 
@@ -31,7 +31,7 @@ def runtime_fixture():
 
 
 class CanvasChatSeedContract(unittest.TestCase):
-    def test_seed_and_current_reseed_do_not_build_a_snapshot(self):
+    def test_seed_and_current_reseed_do_not_duplicate_entities(self):
         fixture = runtime_fixture()
         with tempfile.TemporaryDirectory(prefix="sync-state-seed-builder-") as directory:
             root = Path(directory)
@@ -41,8 +41,6 @@ class CanvasChatSeedContract(unittest.TestCase):
                                draft=True, defer=True)
                 canvas = Canvas(root)
                 canvas.runtime = runtime
-                runtime.snapshot = lambda **_kwargs: (_ for _ in ()).throw(AssertionError("snapshot called"))
-
                 with runtime.lock, runtime.db() as db:
                     db.execute("BEGIN IMMEDIATE")
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
@@ -115,17 +113,32 @@ class CanvasChatSeedContract(unittest.TestCase):
                     store = context.sync()
                 first = store.pull("state:entities:v1", fresh=True, reset_support=True)
                 self.assertTrue(first["documents"])
+                deadline = time.monotonic() + 10
+                while store.entity_prune_status["status"] in {"running", "waitingForLock"}:
+                    if time.monotonic() >= deadline:
+                        self.fail("tombstone pruner did not finish")
+                    time.sleep(0.01)
                 with runtime.db() as db:
                     self.assertIsNone(db.execute(
                         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone())
-                blocker = sqlite3.connect(runtime.db_path, timeout=0)
-                blocker.execute("BEGIN IMMEDIATE")
-                try:
-                    for _ in range(5):
-                        store.pull("state:entities:v1", fresh=True, reset_support=True)
-                finally:
-                    blocker.rollback()
-                    blocker.close()
+                # The scheduler lazily creates persistent indexes on its first
+                # wake, which can race this timeout=0 lock assertion. Pull has
+                # already run above; stop the scheduler so only SyncStore's
+                # read-lock behavior is measured here.
+                runtime.closed = True
+                runtime.changed.set()
+                runtime.scheduler.join(timeout=5)
+                self.assertFalse(runtime.scheduler.is_alive())
+                runtime.closed = False
+                with runtime.lock:
+                    blocker = sqlite3.connect(runtime.db_path, timeout=0)
+                    blocker.execute("BEGIN IMMEDIATE")
+                    try:
+                        for _ in range(5):
+                            store.pull("state:entities:v1", fresh=True, reset_support=True)
+                    finally:
+                        blocker.rollback()
+                        blocker.close()
                 self.assertIsNone(store.runtime)
                 with runtime.db() as db:
                     before = {row[0]: row[1] for row in db.execute(
@@ -298,7 +311,7 @@ class CanvasChatSeedContract(unittest.TestCase):
                 canvas.runtime = runtime
                 chat_id = str(uuid.uuid4())
                 canvas.create_chat("Planning", [lead["id"]], chat_id)
-                store = SyncStore(canvas.connect, lambda: {}, lambda _key: {}, runtime=runtime, canvas=canvas)
+                store = SyncStore(canvas.connect, canvas.transcript, runtime=runtime, canvas=canvas)
                 store.pull("state:entities:v1", fresh=True, reset_support=True)
 
                 with canvas.connect() as db:
@@ -326,18 +339,49 @@ class CanvasChatSeedContract(unittest.TestCase):
                        "orchestratorId": "missing-orchestrator", "orchestratorName": "Old orchestrator",
                        "runId": "run-1"}
                 wave_path.write_text(json.dumps([row]))
+                second_path = root / "codex-swarm-status.s8b.json"
+                second_row = {"name": "Second wave worker", "threadId": "second-wave-thread",
+                              "turnStatus": "running", "runId": "run-2"}
+                second_path.write_text(json.dumps([second_row]))
+                bad_path = second_path
                 with runtime.lock, runtime.db() as db:
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
-                    wave_id = next(value[0] for value in db.execute(
-                        "SELECT id,payload FROM sync_entities WHERE collection='agent'"
-                    ) if json.loads(value[1])["value"].get("source") == "app-server")
-                    ref_id = next(value[0] for value in db.execute(
-                        "SELECT id,payload FROM sync_entities WHERE collection='agent'"
-                    ) if json.loads(value[1])["value"].get("source") == "orchestrator-reference")
+                    wave_entities = {
+                        json.loads(payload)["value"]["name"]: (key, json.loads(payload)["value"])
+                        for key, payload in db.execute(
+                            "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0"
+                        )
+                        if json.loads(payload)["value"].get("source") == "app-server"
+                    }
+                    self.assertEqual(set(wave_entities), {"Wave worker", "Second wave worker"})
+                    wave_id = wave_entities["Wave worker"][0]
+                    second_id = wave_entities["Second wave worker"][0]
+                    ref_id = next(
+                        key for key, payload in db.execute(
+                            "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0"
+                        )
+                        if json.loads(payload)["value"].get("source") == "orchestrator-reference"
+                    )
+                    bad_path.write_text("{")
+                    from codex_sync_entities import _REPORTED_BAD_ENTITIES
+                    _REPORTED_BAD_ENTITIES.discard(("agent", bad_path.name, "RuntimeError"))
                     row.update(turnStatus="failed", orchestratorName="Updated orchestrator")
                     wave_path.write_text(json.dumps([row]))
                     db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
-                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    with self.assertLogs("codex_sync_entities", level="WARNING") as logged:
+                        seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    self.assertEqual(sum(bad_path.name in record.getMessage()
+                                         for record in logged.records), 1)
+                    wave_row = db.execute(
+                        "SELECT deleted,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (wave_id,),
+                    ).fetchone()
+                    second_row_stored = db.execute(
+                        "SELECT deleted,payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (second_id,),
+                    ).fetchone()
+                    self.assertEqual(wave_row[0], 0)
+                    self.assertEqual(second_row_stored[0], 0)
                     wave_value = json.loads(db.execute(
                         "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (wave_id,)
                     ).fetchone()[0])["value"]
@@ -347,9 +391,55 @@ class CanvasChatSeedContract(unittest.TestCase):
                     self.assertEqual(wave_value["name"], "Wave worker")
                     self.assertEqual(wave_value["status"], "failed")
                     self.assertEqual(ref_value["name"], "Updated orchestrator")
+                    self.assertEqual(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'"
+                    ).fetchone()[0], "2")
+
+                    second_row.update(turnStatus="completed")
+                    second_path.write_text(json.dumps([second_row]))
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    refreshed_second = json.loads(db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?", (second_id,)
+                    ).fetchone()[0])["value"]
+                    self.assertEqual(refreshed_second["status"], "completed")
+                    self.assertEqual(db.execute(
+                        "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'"
+                    ).fetchone()[0], "3")
+
+                    wave_path.unlink()
+                    db.execute("UPDATE sync_entity_meta SET value='2' WHERE key='agent_organization_fields'")
+                    seed(db, runtime_owner=runtime, canvas_owner=canvas)
+                    tombstone = db.execute(
+                        "SELECT deleted FROM sync_entities WHERE collection='agent' AND id=?", (wave_id,)
+                    ).fetchone()
+                    self.assertIsNotNone(tombstone)
+                    self.assertEqual(tombstone[0], 1)
                     seq = db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0]
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
                     self.assertEqual(db.execute("SELECT MAX(seq) FROM sync_entities").fetchone()[0], seq)
+            finally:
+                runtime.close()
+
+    def test_room_write_tombstones_private_room_when_member_is_deleted(self):
+        fixture = runtime_fixture()
+        with tempfile.TemporaryDirectory(prefix="sync-room-deleted-member-") as directory:
+            root = Path(directory)
+            runtime = Runtime(root, fixture.FakeServer)
+            try:
+                lead = runtime.create({"name": "Lead", "cwd": str(root), "prompt": ""},
+                                      draft=True, defer=True)
+                worker = runtime.create({"name": "Worker", "cwd": str(root), "prompt": ""},
+                                        parent=lead["id"], draft=True, defer=True)
+                with runtime.lock, runtime.db() as db:
+                    room = {"id": "deleted-member-room", "kind": "private",
+                            "members": [lead["id"], worker["id"]], "updated": 1.0}
+                    runtime.put(db, "rooms", room)
+                    runtime.put(db, "agents", {**worker, "deletedAt": 2.0})
+                    runtime.put(db, "rooms", {**room, "userHidden": True, "updated": 3.0})
+                    row = db.execute("SELECT deleted FROM sync_entities WHERE collection='room' AND id=?",
+                                     (room["id"],)).fetchone()
+                    self.assertIsNotNone(row)
+                    self.assertEqual(row[0], 1)
             finally:
                 runtime.close()
 
@@ -395,7 +485,7 @@ class CanvasChatSeedContract(unittest.TestCase):
     def test_malformed_stored_entity_is_skipped_and_reported_once_on_pull(self):
         with tempfile.TemporaryDirectory(prefix="sync-state-malformed-") as directory:
             canvas = Canvas(Path(directory))
-            store = SyncStore(canvas.connect, lambda: {}, lambda _key: {}, canvas=canvas)
+            store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
             with canvas.connect() as db:
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3')")
@@ -410,7 +500,7 @@ class CanvasChatSeedContract(unittest.TestCase):
     def test_malformed_row_does_not_advance_a_short_filtered_page_to_high_water(self):
         with tempfile.TemporaryDirectory(prefix="sync-state-page-corrupt-") as directory:
             canvas = Canvas(Path(directory))
-            store = SyncStore(canvas.connect, lambda: {}, canvas.transcript, canvas=canvas)
+            store = SyncStore(canvas.connect, canvas.transcript, canvas=canvas)
             with canvas.connect() as db:
                 from codex_sync_entities import put
                 db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1')")
@@ -483,14 +573,16 @@ class CanvasChatSeedContract(unittest.TestCase):
                     with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
                         seed(db, runtime_owner=runtime, canvas_owner=canvas)
                     self.assertGreaterEqual(len(captured.records), 5)
+                    self.assertIsNone(db.execute(
+                        "SELECT 1 FROM sync_entities WHERE collection='room' AND id='bad-members-room'"
+                    ).fetchone())
                     self.assertEqual(db.execute(
                         "SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0],
                         "3")
                     db.execute("DELETE FROM sync_entity_meta WHERE key IN ('seeded','agent_organization_fields')")
                     db.execute("DELETE FROM sync_entities")
                     seed(db, runtime_owner=runtime, canvas_owner=canvas)
-                store = SyncStore(canvas.connect, lambda: {}, canvas.transcript,
-                                  runtime=runtime, canvas=canvas)
+                store = SyncStore(canvas.connect, canvas.transcript, runtime=runtime, canvas=canvas)
                 self.assertIn("documents", store.pull("state:entities:v1", fresh=True))
             finally:
                 with runtime.lock, runtime.db() as db:
@@ -541,18 +633,10 @@ class CanvasChatSeedContract(unittest.TestCase):
 
                 self.assertEqual(expected, "accepted.md")
                 snapshot = read_runtime_state(runtime, include_work=False)
-                self.assertEqual(read_legacy_snapshot_field(
-                    lambda: snapshot, "agents",
-                    next(index for index, agent in enumerate(snapshot["agents"])
-                         if agent["id"] == worker_id),
-                    "overview", "resultFile"), expected)
+                self.assertEqual(next(agent for agent in snapshot["agents"] if agent["id"] == worker_id)["overview"]["resultFile"], expected)
                 self.assertNotIn("work", snapshot)
                 full_snapshot = read_runtime_state(runtime, include_work=True)
-                self.assertEqual(read_legacy_snapshot_field(
-                    lambda: full_snapshot, "agents",
-                    next(index for index, agent in enumerate(full_snapshot["agents"])
-                         if agent["id"] == worker_id),
-                    "overview", "resultFile"), expected)
+                self.assertEqual(next(agent for agent in full_snapshot["agents"] if agent["id"] == worker_id)["overview"]["resultFile"], expected)
                 work_ids = {work["id"] for work in full_snapshot["work"]}
                 self.assertEqual(work_ids, {"review-result", "accepted-result", "inactive-result"})
             finally:

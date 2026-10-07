@@ -34,16 +34,15 @@ class EntityReadLockContract(unittest.TestCase):
             CREATE TABLE runtime_projects(id TEXT PRIMARY KEY,record TEXT NOT NULL);
             CREATE TABLE runtime_events(id TEXT PRIMARY KEY,agent TEXT,kind TEXT,status TEXT,
                                         created REAL,error TEXT);''')
-        self.agent = {'id': 'owner', 'rootId': 'owner', 'name': 'Owner', 'status': 'paused', 'deletedAt': None}
+        self.agent = {'id': 'owner', 'kind': 'agent', 'rootId': 'owner', 'name': 'Owner', 'status': 'paused', 'deletedAt': None}
         self.monitor = {'id': 'monitor', 'agent': 'owner', 'status': 'running', 'created': 1, 'tail': 'First output'}
         self.anchor.execute('INSERT INTO runtime_agents VALUES (?,?)', ('owner', json.dumps(self.agent)))
         self.anchor.execute('INSERT INTO runtime_monitors VALUES (?,?)', ('monitor', json.dumps(self.monitor)))
         self.anchor.commit()
         self.statements = []
-        self.builds = []
         class RuntimeView:
             def agent_entity_view(_self, _db, record):
-                return record
+                return {**record, 'kind': 'agent'}
 
             def complaint_entity_view(_self, _db, record):
                 return record
@@ -67,17 +66,9 @@ class EntityReadLockContract(unittest.TestCase):
             def edges(_self, agents, db=None):
                 return []
 
-        class SnapshotOwner:
-            def __init__(_self):
-                _self.runtime = RuntimeView()
-
-            def snapshot(_self):
-                self.builds.append(True)
-                return {'runtime': {'agents': [self.agent], 'monitors': [self.monitor]}}
-
-        self.snapshot_owner = SnapshotOwner()
-        self.store = SyncStore(self.connect, lambda: self.snapshot_owner.snapshot(), lambda _key: {},
-                               runtime=self.snapshot_owner.runtime, canvas=CanvasView())
+        self.runtime_view = RuntimeView()
+        self.store = SyncStore(self.connect, lambda _key: {},
+                               runtime=self.runtime_view, canvas=CanvasView())
         with self.connect() as db:
             install_bypass_triggers(db)
         self.initial = self.store.pull('state:entities:v1')
@@ -111,7 +102,7 @@ class EntityReadLockContract(unittest.TestCase):
     def values(self, response):
         return {row['id']: json.loads(row['payload'])['value'] for row in response['documents']}
 
-    def test_unchanged_pull_and_fresh_snapshot_remain_readable_with_an_unrelated_writer(self):
+    def test_unchanged_pull_and_fresh_entities_remain_readable_with_an_unrelated_writer(self):
         with patch.object(self.store, '_schedule_entity_pruning') as prune, self.writer():
             delta = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
             fresh = self.store.pull('state:entities:v1', fresh=True)
@@ -122,7 +113,6 @@ class EntityReadLockContract(unittest.TestCase):
         self.assertEqual(fresh['initialHigh'], self.initial['maxSeq'])
         self.assertEqual(self.writes(), [])
         prune.assert_not_called()
-        self.assertEqual(len(self.builds), 0)
 
     def test_changed_monitor_requires_maintenance_and_publishes_the_exact_source(self):
         changed = {**self.monitor, 'status': 'completed', 'tail': 'The final output'}
@@ -169,8 +159,7 @@ class EntityReadLockContract(unittest.TestCase):
     def test_boot_markers_still_require_seed_and_window_repairs(self):
         for marker in ('seeded', 'agent_organization_fields', 'task_window_migrated', 'event_window_seq'):
             with self.subTest(marker=marker):
-                self.store.runtime = (self.snapshot_owner.runtime if marker == 'agent_organization_fields'
-                                      else None)
+                self.store.runtime = self.runtime_view
                 with self.connect() as db:
                     db.execute('DELETE FROM sync_entity_meta WHERE key=?', (marker,))
                 with self.writer(), self.assertRaisesRegex(sqlite3.OperationalError, 'database is locked'):
@@ -180,38 +169,13 @@ class EntityReadLockContract(unittest.TestCase):
                 with self.connect() as db:
                     self.assertIsNotNone(db.execute('SELECT value FROM sync_entity_meta WHERE key=?', (marker,)).fetchone())
 
-    def test_plain_builder_waits_for_runtime_then_upgrades_once(self):
-        with self.connect() as db:
-            db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) VALUES('seeded','1')")
-            db.execute("INSERT OR REPLACE INTO sync_entity_meta(key,value) "
-                       "VALUES('agent_organization_fields','1')")
-        builds_before = len(self.builds)
+    def test_current_markers_allow_pull_without_runtime_or_writer_lock(self):
         self.store.runtime = None
         self.statements.clear()
         with self.writer():
             unchanged = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         self.assertEqual(self.writes(), [])
-        self.assertEqual(len(self.builds), builds_before)
         self.assertEqual(unchanged['documents'], [])
-
-        self.store.runtime = self.snapshot_owner.runtime
-        upgraded = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
-        with self.connect() as db:
-            marker = db.execute("SELECT value FROM sync_entity_meta WHERE key='agent_organization_fields'").fetchone()[0]
-            sequence = db.execute("SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0]
-        self.assertEqual(marker, '3')
-        self.assertEqual(len(self.builds), builds_before)
-        self.assertEqual(upgraded['documents'], [])
-
-        self.statements.clear()
-        with self.writer():
-            stable = self.store.pull('state:entities:v1', upgraded['checkpoint']['seq'])
-        self.assertEqual(stable['documents'], [])
-        self.assertEqual(self.writes(), [])
-        self.assertEqual(len(self.builds), builds_before)
-        with self.connect() as db:
-            self.assertEqual(db.execute(
-                "SELECT seq FROM sync_entities WHERE collection='agent' AND id='owner'").fetchone()[0], sequence)
 
     def test_concurrent_commit_cannot_move_a_read_cursor_past_unseen_changes(self):
         original = self.store.entity_maintenance_needed

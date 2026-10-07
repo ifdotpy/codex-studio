@@ -150,8 +150,8 @@ class ProviderVersionContract(unittest.TestCase):
             monitor_lock_was_available = monitor.lock.acquire(blocking=False)
             if monitor_lock_was_available:
                 monitor.lock.release()
-            # This mirrors Runtime.snapshot: runtime.lock is held while status
-            # calls tick() and then reads the monitor's status. Avoid blocking
+            # runtime.lock is held while the monitor ticks and the test reads
+            # its status. Avoid blocking
             # in a broken lock order so a regression fails instead of hanging.
             if monitor_lock_was_available:
                 monitor.tick(runtime)

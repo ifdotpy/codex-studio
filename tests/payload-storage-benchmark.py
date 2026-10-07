@@ -20,7 +20,6 @@ from codex_payloads import ensure_payload_schema
 from codex_state import state_dir
 from codex_transcript_history import history_rows
 from codex_runtime import Runtime
-from codex_workspace import WorkspaceMixin
 
 
 def percent(values, q):
@@ -51,42 +50,6 @@ def timed(operation, repetitions=35):
             "maxMs": round(max(values), 3)}
 
 
-class SnapshotProbe:
-    closed = False
-    servers = {"default": object()}
-    offline_accounts = set()
-    rate_limits = {}
-    rate_limits_by_account = {}
-
-    @staticmethod
-    def records(db, table, shared=False):
-        return [json.loads(row[0]) for row in db.execute(f"SELECT record FROM runtime_{table}")]
-
-    @staticmethod
-    def empty_lead(db, agent):
-        return False
-
-    @staticmethod
-    def projects(db=None):
-        return {"items": []}
-
-    @staticmethod
-    def recent_tasks(db, root=None):
-        return WorkspaceMixin.recent_tasks(SnapshotProbe(), db, root)
-
-    @staticmethod
-    def recent_monitors(db, root=None):
-        return WorkspaceMixin.recent_monitors(SnapshotProbe(), db, root)
-
-    @staticmethod
-    def chat_rooms(db):
-        return []
-
-    @staticmethod
-    def complaint_summaries(db):
-        return []
-
-
 def copy_sample(source_path: Path, destination: Path):
     source = sqlite3.connect(source_path.resolve().as_uri() + "?mode=ro", uri=True, timeout=3)
     source.row_factory = sqlite3.Row
@@ -113,7 +76,7 @@ def copy_sample(source_path: Path, destination: Path):
       CREATE TABLE runtime_rules(id TEXT PRIMARY KEY,record TEXT NOT NULL);
       CREATE TABLE runtime_rooms(id TEXT PRIMARY KEY,record TEXT NOT NULL);
       CREATE TABLE runtime_complaints(id TEXT PRIMARY KEY,record TEXT NOT NULL);
-      CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE runtime_payload_migrations(name TEXT PRIMARY KEY,cursor INTEGER NOT NULL DEFAULT 0,complete INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',updated REAL,error TEXT);
     """)
 
     agent_candidates = [json.loads(row[0])["id"] for row in source.execute(
@@ -129,18 +92,7 @@ def copy_sample(source_path: Path, destination: Path):
 
     task_samples = sample_rows(source, "runtime_tasks", "id,record", 5000)
     target.executemany("INSERT OR IGNORE INTO runtime_tasks VALUES (?,?)", task_samples)
-    task_agents = {json.loads(row[1]).get("agent") for row in task_samples}
     feed_agent = Counter(json.loads(row[1]).get("agent") for row in task_samples).most_common(1)[0][0]
-    if transcript_agent:
-        task_agents.add(transcript_agent)
-    for agent in task_agents:
-        row = source.execute("SELECT id,record FROM runtime_agents WHERE id=?", (agent,)).fetchone()
-        if row:
-            target.execute("INSERT OR IGNORE INTO runtime_agents VALUES (?,?)", tuple(row))
-    # Keep enough metadata to exercise the real snapshot projection.
-    for (identity, record) in source.execute("SELECT id,record FROM runtime_agents LIMIT 1000"):
-        target.execute("INSERT OR IGNORE INTO runtime_agents VALUES (?,?)", (identity, record))
-
     for table, column in (("runtime_checkpoints", "record"),
                           ("runtime_tool_requests", "record"),
                           ("runtime_tool_results", "result")):
@@ -156,63 +108,52 @@ def main():
     with tempfile.TemporaryDirectory(prefix="codex-payload-bench-") as temporary:
         target, transcript_agent, feed_agent, item_count, task_count = copy_sample(
             state / "canvas.sqlite3", Path(temporary) / "partial.sqlite3")
-        import codex_runtime
-        previous_notices = codex_runtime.account_notices
-        codex_runtime.account_notices = lambda runtime, db: {}
-        try:
-            def transcript():
-                rows, limit = history_rows(target, transcript_agent, limit=120)
-                return [json.loads(row["record"]) for row in rows[:limit]]
+        def transcript():
+            rows, limit = history_rows(target, transcript_agent, limit=120)
+            return [json.loads(row["record"]) for row in rows[:limit]]
 
-            def task_feed():
-                rows = Runtime._workspace_task_rows(target, [feed_agent], order="created", limit=100)
-                return [Runtime._workspace_task_summary(row[2]) for row in rows[:100]]
+        def task_feed():
+            rows = Runtime._workspace_task_rows(target, [feed_agent], order="created", limit=100)
+            return [Runtime._workspace_task_summary(row[2]) for row in rows[:100]]
 
-            def snapshot():
-                return Runtime._snapshot_from_db(SnapshotProbe(), target, False)
-
-            before = {"transcriptPage": timed(transcript), "taskFeed": timed(task_feed),
-                      "snapshot": timed(snapshot)}
-            table_names = ["checkpoints", "tool_requests", "tool_results", "tasks"]
-            migration_times, migration_times_by_table = [], {name: [] for name in table_names}
-            total_bytes, total_rows = 0, 0
-            started = time.perf_counter()
-            while True:
-                pending = False
-                for table in table_names:
-                    # Entity sync work can make task row updates much costlier
-                    # than blob-reference updates. Keep those write locks to a
-                    # single task while batching the other tables.
-                    result = migrate_batch(Path(temporary), target, table,
-                                           batch_rows=1 if table == "tasks" else 8)
-                    migration_times.append(result["lockMs"])
-                    migration_times_by_table[table].append(result["lockMs"])
-                    total_bytes += result["movedBytes"]
-                    total_rows += result["rows"]
-                    pending |= not result["done"]
-                if not pending:
-                    break
-            elapsed = time.perf_counter() - started
-            after = {"transcriptPage": timed(transcript), "taskFeed": timed(task_feed),
-                     "snapshot": timed(snapshot)}
-            report = {"fixture": "partial-copy from read-only live SQLite samples; automatically deleted",
-                      "transcriptAgent": transcript_agent, "transcriptItems": item_count,
-                      "taskRows": task_count, "migrationRowsScanned": total_rows,
-                      "rowBytesReduced": total_bytes, "migrationSeconds": round(elapsed, 3),
-                      "migrationBytesPerSecond": round(total_bytes / elapsed) if elapsed else 0,
-                      "migrationLockMs": {"p50": round(percent(migration_times, .50), 3),
-                                          "p95": round(percent(migration_times, .95), 3),
-                                          "max": round(max(migration_times, default=0), 3)},
-                      "migrationLockMsByTable": {
-                          table: {"p50": round(percent(values, .50), 3),
-                                  "p95": round(percent(values, .95), 3),
-                                  "max": round(max(values, default=0), 3)}
-                          for table, values in migration_times_by_table.items()},
-                      "before": before, "after": after}
-            print(json.dumps(report, sort_keys=True))
-        finally:
-            codex_runtime.account_notices = previous_notices
-            target.close()
+        before = {"transcriptPage": timed(transcript), "taskFeed": timed(task_feed)}
+        table_names = ["checkpoints", "tool_requests", "tool_results", "tasks"]
+        migration_times, migration_times_by_table = [], {name: [] for name in table_names}
+        total_bytes, total_rows = 0, 0
+        started = time.perf_counter()
+        while True:
+            pending = False
+            for table in table_names:
+                # Entity sync work can make task row updates much costlier
+                # than blob-reference updates. Keep those write locks to a
+                # single task while batching the other tables.
+                result = migrate_batch(Path(temporary), target, table,
+                                       batch_rows=1 if table == "tasks" else 8)
+                migration_times.append(result["lockMs"])
+                migration_times_by_table[table].append(result["lockMs"])
+                total_bytes += result["movedBytes"]
+                total_rows += result["rows"]
+                pending |= not result["done"]
+            if not pending:
+                break
+        elapsed = time.perf_counter() - started
+        after = {"transcriptPage": timed(transcript), "taskFeed": timed(task_feed)}
+        report = {"fixture": "partial-copy from read-only live SQLite samples; automatically deleted",
+                  "transcriptAgent": transcript_agent, "transcriptItems": item_count,
+                  "taskRows": task_count, "migrationRowsScanned": total_rows,
+                  "rowBytesReduced": total_bytes, "migrationSeconds": round(elapsed, 3),
+                  "migrationBytesPerSecond": round(total_bytes / elapsed) if elapsed else 0,
+                  "migrationLockMs": {"p50": round(percent(migration_times, .50), 3),
+                                      "p95": round(percent(migration_times, .95), 3),
+                                      "max": round(max(migration_times, default=0), 3)},
+                  "migrationLockMsByTable": {
+                      table: {"p50": round(percent(values, .50), 3),
+                              "p95": round(percent(values, .95), 3),
+                              "max": round(max(values, default=0), 3)}
+                      for table, values in migration_times_by_table.items()},
+                  "before": before, "after": after}
+        print(json.dumps(report, sort_keys=True))
+        target.close()
 
 
 if __name__ == "__main__":

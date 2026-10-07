@@ -142,13 +142,21 @@ class Canvas:
         finally:
             db.close()
 
-    def threads(self, runtime_agents=None, db=None):
+    def threads(self, runtime_agents=None, db=None, *, status_errors=None):
         if db is None:
             with self.connect() as own:
                 own.execute("PRAGMA query_only=ON")
                 own.execute("BEGIN")
-                return self.threads(runtime_agents, db=own)
-        rows = read_threads(self.root)
+                return self.threads(runtime_agents, db=own, status_errors=status_errors)
+        rows = []
+        for path in sorted(self.root.glob("codex-swarm-status.*.json")):
+            wave = path.name.removeprefix("codex-swarm-status.").removesuffix(".json")
+            try:
+                rows.extend(read_threads(self.root, wave))
+            except Exception as error:
+                if status_errors is None:
+                    raise
+                status_errors.append((path.name, error))
         for row in rows:
             row["id"] = identity(row["wave"], row.get("runId"), row["threadId"], row["name"])
             row["status"] = effective_status(row)
@@ -159,8 +167,13 @@ class Canvas:
             row["kind"] = "agent"
             row["source"] = "app-server"
         if self.runtime:
-            rows.extend(dict(agent) for agent in (runtime_agents if runtime_agents is not None
-                                                else self.runtime.snapshot(include_work=False)["agents"]))
+            if runtime_agents is None:
+                runtime_agents = [
+                    self.runtime.agent_entity_view(db, agent)
+                    for agent in self.runtime.records(db, "agents", shared=True)
+                    if not agent.get("deletedAt")
+                ]
+            rows.extend(dict(agent) for agent in runtime_agents)
         else:
             if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_agents'").fetchone():
                 for key, raw in db.execute("SELECT id,record FROM runtime_agents"):
@@ -371,17 +384,6 @@ class Canvas:
                             {"id": key, "source": source, "target": target, "kind": "chat"},
                             deleted=not connected)
         return {'id': key, 'connected': connected}
-
-    def snapshot(self, runtime_snapshot=None, db=None):
-        if db is None:
-            with self.connect() as own:
-                own.execute("PRAGMA query_only=ON")
-                own.execute("BEGIN")
-                return self.snapshot(runtime_snapshot, db=own)
-        threads = self.threads(runtime_snapshot["agents"] if runtime_snapshot is not None else None, db=db)
-        chats = self.chats(db=db)
-        return {"threads": threads, "chats": chats, 'nodes': threads + chats,
-                'edges': self.edges(threads, db=db), "at": time.time(), "stateDir": str(self.root)}
 
     def thread(self, key):
         matches = [t for t in self.threads() if t["id"] == key]

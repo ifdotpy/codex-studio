@@ -331,7 +331,7 @@ class WorkerDefaults(unittest.TestCase):
         lead = self.runtime.prepare(self.lead)
         self.defaults("worker", "high", True)
         self.assertEqual(
-            self.runtime.team(lead["id"])["workerDefaults"],
+            self.runtime.agent(lead["id"])["workerDefaults"],
             {"model": "worker", "effort": "high", "fastMode": True,
              "daybreakEnabled": False, "cyberAccessProgram": "standard"},
         )

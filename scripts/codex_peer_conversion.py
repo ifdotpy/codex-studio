@@ -245,7 +245,7 @@ def convert(runtime: "Runtime", data: Any) -> Any:
         from codex_peer_teams import sync_entities as sync_peer_team_entities
         sync_peer_team_entities(runtime, db, {path})
         for room in affected_rooms:
-            runtime.sync_room_entity(db, room['id'])
+            runtime.sync_room_entity(db, room['id'], tombstone_unavailable=True)
         result = {'id': source_id, 'parentId': target_id, 'rootId': target_id,
                   'movedAgents': [a['id'] for a in moving], 'peerTeamsRevision': revision + 1}
         runtime.save_receipt(db, receipt, signature, result)

@@ -599,17 +599,14 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 'source': {'id': self.key, 'threadId': 'native-thread'},
                 'supersededReason': 'No native fork was submitted.',
             })
-            for view in ('full', 'chat'):
-                with self.subTest(view=view):
-                    status, snapshot = request('/api/state?view=' + view)
-                    self.assertEqual(status, 200, snapshot)
-                    agent = next(a for a in snapshot['runtime']['agents'] if a['id'] == self.key)
-                    self.assertEqual(agent['connectionRecovery'], receipt)
-                    for field in ('lastContextRepairWait', 'lastContextRepairCheck'):
-                        if view == 'full':
-                            self.assertEqual(agent[field], self.runtime.agent(self.key)[field])
-                        else:
-                            self.assertNotIn(field, agent)
+            # Full and chat snapshots used to expose these private recovery
+            # receipts. The entity DTO deliberately carries renderer fields only.
+            from studio_api.testing import read_runtime_state
+            entity = next(item for item in read_runtime_state(self.runtime)['agents']
+                          if item['id'] == self.key)
+            self.assertNotIn('connectionRecovery', entity)
+            self.assertNotIn('lastContextRepairWait', entity)
+            self.assertNotIn('lastContextRepairCheck', entity)
         finally:
             server.shutdown()
             thread.join(5)

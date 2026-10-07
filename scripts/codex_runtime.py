@@ -2799,12 +2799,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Return the single durable renderer projection for any room kind."""
         row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
         if row is not None:
-            try:
-                stored = json.loads(row[0])
-                if not isinstance(stored, dict):
-                    raise TypeError("room record is not an object")
-            except (TypeError, ValueError):
-                raise
+            stored = json.loads(row[0])
+            if not isinstance(stored, dict):
+                raise TypeError("room record is not an object")
             if stored.get("kind") == "broadcast" and stored.get("rootId") != "all":
                 return self.broadcast_room(db, stored)  # type: ignore[no-any-return]  # typed-narrowing: runtime room JSON is narrowed above
         return next(iter(self.chat_rooms(db, room_id=room_id, include_last_message=True,
@@ -2902,8 +2899,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def agent_entity_view(
         self, db: sqlite3.Connection, record: "AgentRecord",
     ) -> dict[str, object]:
-        # Match the renderer-facing fields added by snapshot(), so later
-        # internal agent writes cannot erase visible source/team details.
+        # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
         block = native_thread_block(record)  # type: ignore[no-untyped-call]
         view.update(kind="agent", source="managed", canSend=not bool(block),
@@ -2932,54 +2928,54 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return view
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["complaints"], record: "ComplaintRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["complaints"], record: "ComplaintRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["projects"], record: "ProjectRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["projects"], record: "ProjectRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["account_transfers"], record: "AccountTransferRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["account_transfers"], record: "AccountTransferRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["workspace_operations"], record: "WorkspaceOperationRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["workspace_operations"], record: "WorkspaceOperationRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True) -> None: ...
 
     @overload
-    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True, include_last_message: bool = False) -> None: ...
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True) -> None: ...
 
-    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True, include_last_message: bool = False) -> None:
+    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True) -> None:
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
@@ -3000,7 +2996,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         }.get(table)
         if collection:
             if table == "rooms":
-                self.sync_room_entity(db, str(record["id"]))
+                self.sync_room_entity(db, str(record["id"]), tombstone_unavailable=True)
             elif table == "agents":
                 sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),  # type: ignore[no-untyped-call]
                                 bool(record.get("deletedAt")))
@@ -8070,29 +8066,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "responder": "user", "response": response}, ensure_ascii=False), "complaint-response:" + key)
             return self.save_receipt(db, key, signature, c)
 
-    def complaint_summaries(self, db):
-        complaints = self.records(db, "complaints")
-        agent_ids = sorted({value for complaint in complaints
-                            for value in (complaint.get("author"), complaint.get("leadId"))
-                            if isinstance(value, str) and value != "user"})
-        agents = {}
-        if agent_ids:
-            marks = ",".join("?" for _ in agent_ids)
-            agents = {agent["id"]: agent for agent in
-                      (json.loads(row[0]) for row in db.execute(
-                          f"SELECT record FROM runtime_agents WHERE id IN ({marks})", agent_ids))}
-        result = [self.complaint_entity_view(db, c, agents) | {"text": c["text"], "responses": c["responses"]}
-                  for c in complaints]
-        for summary, source in zip(result, complaints):
-            # Keep the legacy snapshot payload stable; needsUserResponse is an
-            # entity-only, viewer-independent replacement for the old rule.
-            summary.pop("needsUserResponse", None)
-            summary["needsResponse"] = self.complaint_needs_response(source)
-            lead = agents.get(source.get("leadId"), {})
-            summary["leadStopped"] = not lead.get("autoWake", False)
-            summary["leadDeleted"] = bool(lead.get("deletedAt"))
-        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
-
     def complaint_entity_view(self, db, complaint, agents=None):
         """Build viewer-independent complaint entity fields from their named sources."""
         if agents is None:
@@ -9747,128 +9720,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return {"work": [self.work_view(w, works) for w in works
                                  if w["rootId"] in ids and (not root or w["rootId"] == root)]}
             raise ValueError("Unknown workspace view")
-
-    def snapshot(self, *, include_work=True, db=None):
-        if db is None:
-            with self.read_db() as own:
-                return self._snapshot_from_db(own, include_work)
-        return self._snapshot_from_db(db, include_work)
-
-    def _snapshot_from_db(self, db, include_work):
-        from codex_peer_teams import snapshot as peer_snapshot
-        from codex_project_folders import sidebar_order
-        agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
-        agent_ids = {a["id"] for a in agents}
-        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
-        team_names = {a["id"]: a["name"] for a in agents}
-        work_records = self.records(db, "work") if include_work else []
-        work_result_files = {}
-        if worker_ids:
-            if include_work:
-                result_records = iter(sorted(
-                    work_records,
-                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
-                                        record.get("status") or ""),
-                ))
-            else:
-                rows = db.execute(
-                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
-                    "(SELECT value FROM json_each(?)) "
-                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
-                    (json.dumps(sorted(worker_ids)),),
-                )
-                result_records = (json.loads(row[0]) for row in rows)
-            for record in result_records:
-                owner = record.get("owner")
-                if owner not in worker_ids:
-                    continue
-                for result in record.get("results", []):
-                    if result.get("agent") != owner or not result.get("resultFile"):
-                        continue
-                    created = result.get("created", 0)
-                    prior = work_result_files.get(owner)
-                    if prior is None or created > prior[0]:
-                        work_result_files[owner] = (created, result["resultFile"])
-        for a in agents:
-            a["nextTurnSettingsSupported"] = True
-            a["readStateSupported"] = True
-            a["empty"] = self.empty_lead(db, a)
-            if not a.get("isLead"):
-                task = str(a.get("prompt") or "")
-                # A completed message can be commentary. Publish the last report
-                # only once the current turn has completed successfully.
-                result = str(a.get("lastAnswer") or "") if (
-                    a.get("lastCompletedTurn") and not a.get("turnId")
-                    and not a.get("inFlight") and a.get("status") == "completed"
-                ) else ""
-                result_file = work_result_files.get(a['id'], (None, None))[1]
-                a["overview"] = {
-                    "task": task[:4000], "taskTruncated": len(task) > 4000,
-                    "result": result[:4000], "resultTruncated": len(result) > 4000,
-                    "resultTurnId": a.get("lastCompletedTurn") if result else None,
-                    "resultFile": result_file,
-                }
-            for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
-                ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
-                 "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
-            ):
-                a.pop(private, None)
-            block = native_thread_block(a)
-            if block:
-                a["nativeThreadBlock"] = block
-            a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                     wave="Team: " + team_names.get(a["rootId"], "Team"))
-        from codex_entity_contracts import event_records
-        from codex_sync_entities import project
-        events = [project("event", record) for record in event_records(db)]
-        return {
-            "agents": agents,  # type: ignore[call-arg]  # typed-update
-            "projects": self.projects(db=db)["items"],
-            "projectOrganizationVersion": 1,
-            "sidebarOrder": sidebar_order(db),
-            "peerTeamsVersion": 1,
-            "peerTeams": peer_snapshot(self, db),
-            "tasks": self.recent_tasks(db),
-            "tasksHistoryLimit": 100,
-            "monitors": [
-                m
-                for m in self.recent_monitors(db)
-                if m["agent"] in agent_ids
-            ],
-            "requests": [
-                r
-                for r in self.records(db, "requests")
-                if r["status"] == "pending"
-                and r.get("agent") in agent_ids
-            ],
-            "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
-            "complaints": self.complaint_summaries(db),
-            # The chat view reads work through /api/work when opened.
-            # Omit it before the database read so old result histories do
-            # not delay every chat update.
-            **({"work": [
-                w
-                for w in work_records
-                if w["rootId"] in agent_ids
-            ]} if include_work else {}),
-            "rules": [
-                r
-                for r in self.records(db, "rules")
-                if r["agent"] in agent_ids
-            ],
-            "rateLimits": self.rate_limits.copy(),
-            "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],
-            "rateLimitsByAccount": {k: value.copy() for k, value in self.rate_limits_by_account.copy().items()},
-            "events": events,
-            "connected": bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
-        }
-
-    def team(self, root):
-        state = self.snapshot(include_work=False)
-        agents = [a for a in state["agents"] if a["rootId"] == root]
-        return {"workerDefaults": self.worker_defaults(self.agent(root)),
-                "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
-                "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
 
     def transcript(self, key, before=None, around=None, limit=120, after=None):
         with self.db() as db:

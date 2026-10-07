@@ -14,7 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from studio_api.testing import read_runtime_state, read_legacy_snapshot_field
+from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -547,16 +547,18 @@ class NativeErrorContract(unittest.TestCase):
 
     def test_account_warning_before_thread_is_durable_and_scoped(self):
         self.runtime.notification({'method': 'configWarning', 'params': {'summary': 'Invalid setting', 'details': 'Check config.toml'}}, 'default', self.connection)
-        notices = read_legacy_snapshot_field(lambda: read_runtime_state(self.runtime), 'nativeNotices')
+        notices = read_runtime_state(self.runtime)['nativeNotices']
         self.assertEqual(notices[0]['accountKey'], 'default')
         self.assertEqual(notices[0]['message'], 'Invalid setting')
         self.assertFalse(any(m.get('nativeNotice') for m in self.messages()))
         self.runtime.notification({'method': 'mcpServer/startupStatus/updated', 'params': {'name': 'Search', 'status': 'failed', 'error': 'Missing command'}}, 'default', self.connection)
-        self.assertEqual(len(read_legacy_snapshot_field(lambda: read_runtime_state(self.runtime), 'nativeNotices')), 2)
+        self.assertEqual(len(read_runtime_state(self.runtime)['nativeNotices']), 2)
         self.runtime.notification({'method': 'mcpServer/startupStatus/updated', 'params': {'name': 'Search', 'status': 'ready'}}, 'default', self.connection)
-        self.assertEqual(len(read_legacy_snapshot_field(lambda: read_runtime_state(self.runtime), 'nativeNotices')), 1)
+        self.assertEqual(len(read_runtime_state(self.runtime)['nativeNotices']), 1)
         self.runtime.connection_ids['default'] = 'replacement'
-        self.assertEqual(read_legacy_snapshot_field(lambda: read_runtime_state(self.runtime), 'nativeNotices'), [])
+        from codex_native_errors import account_notices
+        with self.runtime.db() as db:
+            self.assertEqual(account_notices(self.runtime, db), [])
 
     def test_provider_version_advisory_uses_existing_account_warning_channel(self):
         warning = {'id': 'provider-version:default', 'accountKey': 'default',
@@ -564,7 +566,7 @@ class NativeErrorContract(unittest.TestCase):
                    'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.'}
         with patch('codex_provider_versions.monitor', return_value=SimpleNamespace(
                 status=lambda: {'warnings': [warning]})):
-            notices = read_legacy_snapshot_field(lambda: read_runtime_state(self.runtime), 'nativeNotices')
+            notices = read_runtime_state(self.runtime)['nativeNotices']
         self.assertEqual([item for item in notices if item['id'] == warning['id']], [warning])
 
     def test_steer_rejection_does_not_poison_active_turn(self):

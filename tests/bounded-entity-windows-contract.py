@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The /api/state bounded runtime collections match their entity-sync materialization."""
+"""Bounded runtime collections match their entity-sync materialization."""
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -32,7 +32,7 @@ def materialized(db, collection):
 
 
 def assert_state(runtime, db, stage):
-    # This is the runtime object placed directly under `runtime` by GET /api/state.
+    # The shared fixture reads current materialized entity values.
     state = read_runtime_state(runtime, include_work=False, db=db)
     for public_key, collection in (("tasks", "task"), ("monitors", "monitor"), ("events", "event")):
         expected = {str(row["id"]): project(collection, row) for row in state[public_key]}

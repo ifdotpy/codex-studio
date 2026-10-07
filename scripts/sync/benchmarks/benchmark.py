@@ -12,6 +12,7 @@ import time
 import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from codex_sync import SyncStore
+from codex_sync_entities import ensure_tables, put
 
 
 def percentile(values, percent):
@@ -31,16 +32,10 @@ def run(iterations):
             finally:
                 db.close()
         with connect() as db:
-            db.executescript("CREATE TABLE groups(id TEXT PRIMARY KEY, name TEXT, members TEXT); CREATE TABLE analytics_usage(id TEXT PRIMARY KEY, record TEXT); CREATE VIRTUAL TABLE search_fts USING fts5(text);")
-        state_builds = 0
-        def state():
-            nonlocal state_builds
-            state_builds += 1
-            with connect() as db:
-                group_count = db.execute("SELECT count(*) FROM groups").fetchone()[0]
-            return {"agents": [], "groupCount": group_count, "largeProjection": "x" * 3_000_000}
-        store = SyncStore(connect, state, lambda key: {"items": []})
-        first = store.pull("state")
+            db.executescript("CREATE TABLE analytics_usage(id TEXT PRIMARY KEY, record TEXT); CREATE VIRTUAL TABLE search_fts USING fts5(text);")
+            ensure_tables(db)
+        store = SyncStore(connect, lambda key: {"items": []})
+        first = store.pull("state:entities:v1")
         after = first["checkpoint"]["seq"]
         timings = {"analyticsChurn": [], "uiWrites": []}
         bytes_out = {"analyticsChurn": 0, "uiWrites": 0}
@@ -50,14 +45,16 @@ def run(iterations):
                 db.execute("INSERT INTO analytics_usage VALUES (?, '{}')", (f"a{i}",))
                 db.execute("INSERT INTO search_fts VALUES (?)", (f"search {i}",))
             started = time.perf_counter_ns()
-            result = store.pull("state", after)
+            result = store.pull("state:entities:v1", after)
             timings["analyticsChurn"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["analyticsChurn"] += sum(len(row["payload"].encode()) for row in result["documents"])
             documents["analyticsChurn"] += len(result["documents"])
             with connect() as db:
-                db.execute("INSERT OR REPLACE INTO groups VALUES (?, 'team', '[]')", (f"g{i}",))
+                put(db, "project", f"project-{i}", {
+                    "id": f"project-{i}", "path": f"/benchmark/project-{i}", "name": "team",
+                })
             started = time.perf_counter_ns()
-            result = store.pull("state", after)
+            result = store.pull("state:entities:v1", after)
             timings["uiWrites"].append((time.perf_counter_ns() - started) / 1e6)
             bytes_out["uiWrites"] += sum(len(row["payload"].encode()) for row in result["documents"])
             documents["uiWrites"] += len(result["documents"])
@@ -67,12 +64,11 @@ def run(iterations):
             "benchmark": "sync_production_store",
             "iterations": iterations,
             "payloadBytes": bytes_out,
-            "stateDocuments": documents,
+            "entityDocuments": documents,
             "latencyMs": {name: {"p50": percentile(values, .50), "p95": percentile(values, .95), "p99": percentile(values, .99)} for name, values in timings.items()},
-            "stateBuildCount": state_builds,
-            "legacyBroadGeneration": store.generation(),
-            "expectedAnalyticsStateDocuments": 0,
-            "expectedUiStateDocuments": iterations,
+            "databaseGeneration": store.generation(),
+            "expectedAnalyticsEntityDocuments": 0,
+            "expectedProjectEntityDocuments": iterations,
         }
 
 
@@ -86,10 +82,10 @@ def main():
         parser.error("--iterations must be between 1 and 5000")
     result = run(2 if args.check else args.iterations)
     expected_iterations = 2 if args.check else args.iterations
-    if result["stateDocuments"]["analyticsChurn"] != result["expectedAnalyticsStateDocuments"]:
-        raise SystemExit("Analytics-only writes changed the state projection")
-    if result["stateDocuments"]["uiWrites"] != result["expectedUiStateDocuments"]:
-        raise SystemExit("UI writes did not produce the expected state documents")
+    if result["entityDocuments"]["analyticsChurn"] != result["expectedAnalyticsEntityDocuments"]:
+        raise SystemExit("Analytics-only writes changed the entity projection")
+    if result["entityDocuments"]["uiWrites"] != result["expectedProjectEntityDocuments"]:
+        raise SystemExit("Project writes did not produce the expected entity documents")
     payload = json.dumps(result, indent=2, sort_keys=True)
     if args.output:
         args.output.write_text(payload + "\n", encoding="utf-8")

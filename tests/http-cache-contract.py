@@ -18,6 +18,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from studio_api.testing import read_session_token
 import codex_canvas
+from codex_runtime import Runtime
 
 
 class HttpCacheContract(unittest.TestCase):
@@ -33,15 +34,24 @@ class HttpCacheContract(unittest.TestCase):
         self.web = patch.object(codex_canvas, 'WEB', web)
         self.web.start()
         canvas = codex_canvas.Canvas(root)
-        canvas.snapshot = lambda **kwargs: {'stateDir': str(root), 'example': 'repeat ' * 20000}
+        self.runtime = Runtime(root)
+        canvas.runtime = self.runtime
         self.server = codex_canvas.make_server(canvas)
         self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.thread.start()
+        with self.runtime.lock, self.runtime.db() as db:
+            for number in range(40):
+                self.runtime.put(db, 'agents', {
+                    'id': f'compression-agent-{number}', 'kind': 'agent',
+                    'source': 'managed', 'status': 'idle',
+                    'name': 'Repeated renderer-visible agent name ' * 8,
+                })
 
     def tearDown(self):
         self.server.shutdown()
         self.server.server_close()
         self.thread.join()
+        self.runtime.close()
         self.web.stop()
         self.temp.cleanup()
 
@@ -50,45 +60,48 @@ class HttpCacheContract(unittest.TestCase):
         try:
             connection.request('GET', path, headers=headers or {})
             response = connection.getresponse()
-            return response.status, dict(response.getheaders()), response.read()
+            return response.status, {key.lower(): value for key, value in response.getheaders()}, response.read()
         finally:
             connection.close()
 
     def test_json_gzip_preserves_content_and_does_not_cache_token(self):
-        code, plain_headers, plain = self.get('/api/state')
-        code, headers, encoded = self.get('/api/state', {'Accept-Encoding': 'gzip'})
+        path = '/api/sync/pull?scope=state:entities:v1&limit=100'
+        code, plain_headers, plain = self.get(path)
+        code, headers, encoded = self.get(path, {'Accept-Encoding': 'gzip'})
         self.assertEqual(code, 200)
-        self.assertEqual(gzip.decompress(encoded), plain)
+        compressed_json = json.loads(gzip.decompress(encoded))
+        plain_json = json.loads(plain)
+        self.assertEqual(compressed_json["documents"], plain_json["documents"])
         self.assertLess(len(encoded), len(plain) / 5)
-        self.assertEqual(headers['Content-Length'], str(len(encoded)))
-        self.assertEqual(headers['Content-Encoding'], 'gzip')
-        self.assertEqual(headers['Vary'], 'Accept-Encoding')
-        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(headers['content-length'], str(len(encoded)))
+        self.assertEqual(headers['content-encoding'], 'gzip')
+        self.assertEqual(headers['vary'], 'Accept-Encoding')
+        self.assertEqual(headers['cache-control'], 'no-store')
         _, session_headers, session = self.get('/api/session')
         token = read_session_token(lambda path: json.loads(self.get(path)[2]))
         self.assertEqual(json.loads(session)['token'], token)
-        self.assertEqual(json.loads(plain)['token'], token)
-        self.assertEqual(session_headers['Cache-Control'], 'no-store')
+        self.assertNotIn(token, plain.decode())
+        self.assertEqual(session_headers['cache-control'], 'no-store')
         self.assertLess(len(session), 100)
 
     def test_encoding_negotiation(self):
         for value in ['gzip;q=0, *;q=1', 'br', 'gzip;q=invalid', 'identity']:
             with self.subTest(encoding=value):
                 _, headers, body = self.get('/assets/main-Abcd1234.js', {'Accept-Encoding': value})
-                self.assertNotIn('Content-Encoding', headers)
+                self.assertNotIn('content-encoding', headers)
                 self.assertEqual(body, self.script)
         _, headers, body = self.get('/assets/main-Abcd1234.js', {'Accept-Encoding': 'br, gzip;q=0.5'})
         self.assertEqual(gzip.decompress(body), self.script)
 
     def test_only_fingerprinted_assets_are_cached(self):
         _, headers, body = self.get('/assets/main-Abcd1234.js', {'Accept-Encoding': 'gzip'})
-        self.assertIn('immutable', headers['Cache-Control'])
-        self.assertIn('private', headers['Cache-Control'])
+        self.assertIn('immutable', headers['cache-control'])
+        self.assertIn('private', headers['cache-control'])
         self.assertEqual(gzip.decompress(body), self.script)
         for path in ['/', '/assets/panel-ui.js', '/assets/missing-Abcd1234.js']:
             with self.subTest(path=path):
                 _, headers, _ = self.get(path)
-                self.assertEqual(headers['Cache-Control'], 'no-store')
+                self.assertEqual(headers['cache-control'], 'no-store')
 
     def test_parallel_module_requests_preserve_all_responses(self):
         barrier = threading.Barrier(32)
@@ -104,7 +117,7 @@ class HttpCacheContract(unittest.TestCase):
     def test_origin_gate_precedes_asset_cache(self):
         code, headers, _ = self.get('/assets/main-Abcd1234.js', {'Origin': 'https://evil.example'})
         self.assertEqual(code, 403)
-        self.assertEqual(headers['Cache-Control'], 'no-store')
+        self.assertEqual(headers['cache-control'], 'no-store')
         code, _, _ = self.get('/api/session', {'Origin': 'https://evil.example'})
         self.assertEqual(code, 403)
 

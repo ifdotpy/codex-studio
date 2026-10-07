@@ -153,6 +153,23 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
     if model is None:
         _report_bad_entity(collection, str(record.get("id", "")), ValueError("unknown entity collection"))
         return None
+    key = record.get("id")
+    entity_key = key if isinstance(key, str) else ""
+    if collection in {"agent", "room"} and (not isinstance(key, str) or not key):
+        _report_bad_entity(collection, "", ValueError("entity id is required"))
+        return None
+    structural_error = (
+        collection == "agent" and record.get("kind") != "agent"
+    ) or (
+        collection == "room" and (
+            not isinstance(record.get("kind"), str)
+            or not isinstance(record.get("members"), list)
+            or not all(isinstance(member, str) for member in cast(list[JsonValue], record.get("members", [])))
+        )
+    )
+    if structural_error:
+        _report_bad_entity(collection, entity_key, ValueError("entity is missing or has invalid structural fields"))
+        return None
     fields = AGENT_FIELDS if collection == "agent" else COLLECTION_FIELDS[collection]
     result = {
         key: _bounded(value, key)
@@ -180,7 +197,9 @@ def project(collection: str, record: JsonValue) -> JsonValue | None:
                 key: release[key] for key in ("phase", "resetPending") if key in release
             }
         overview = record.get("overview")
-        if not isinstance(overview, dict) and ("prompt" in record or "lastAnswer" in record):
+        if record.get("isLead"):
+            overview = None
+        elif not isinstance(overview, dict) and ("prompt" in record or "lastAnswer" in record):
             task = str(record.get("prompt") or "")
             overview_result = str(record.get("lastAnswer") or "") if (
                 record.get("lastCompletedTurn") and not record.get("turnId")
@@ -403,7 +422,7 @@ def _stored_record(collection: str, key: str, raw: str) -> JsonObject | None:
 
 
 def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | None",
-                              canvas_owner: "Canvas | None") -> int:
+                              canvas_owner: "Canvas | None") -> tuple[int, bool]:
     """Project stored records through the same views used by Runtime.put."""
     changed = 0
     agent_rows = _rows(db, "runtime_agents")
@@ -431,21 +450,27 @@ def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | 
     # Wave and registered threads are stored by Canvas/file sources, not in
     # runtime_agents. Refresh their current views on seed and versioned upgrade.
     current_canvas_agents: set[str] = set()
-    canvas_agents_ok = False
+    canvas_agents_ok = canvas_owner is None
+    canvas_threads: list[dict[str, object]] = []
     if canvas_owner is not None:
+        canvas_agents_ok = False
+        status_errors: list[tuple[str, Exception]] = []
         try:
-            canvas_threads = canvas_owner.threads(runtime_agents=managed_views)
-            canvas_agents_ok = True
-        except Exception as error:
-            _report_bad_entity("agent", "canvas", error)
+            canvas_threads = canvas_owner.threads(
+                runtime_agents=managed_views, status_errors=status_errors)
+        except Exception as canvas_error:
+            _report_bad_entity("agent", "canvas", canvas_error)
             canvas_threads = []
+        for path, status_error in status_errors:
+            _report_bad_entity("agent", path, status_error)
+        canvas_agents_ok = not status_errors
         for value in canvas_threads:
             if value.get("source") == "managed":
                 continue
-            key = value.get("id")
-            if isinstance(key, str) and key:
-                current_canvas_agents.add(key)
-                changed += bool(put(db, "agent", key, value))
+            canvas_id = value.get("id")
+            if isinstance(canvas_id, str) and canvas_id:
+                current_canvas_agents.add(canvas_id)
+                changed += bool(put(db, "agent", canvas_id, value))
     if canvas_owner is not None and canvas_agents_ok:
         for key, payload in db.execute(
             "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0").fetchall():
@@ -541,8 +566,7 @@ def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | 
                 if key not in current_chats:
                     changed += bool(put(db, "chat", str(key), {}, deleted=True))
         try:
-            agents = canvas_owner.threads(runtime_agents=managed_views)
-            edges = canvas_owner.edges(agents, db=db)
+            edges = canvas_owner.edges(canvas_threads, db=db)
             edges_ok = True
         except Exception as error:
             _report_bad_entity("edge", "canvas", error)
@@ -552,7 +576,7 @@ def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | 
         for value in edges:
             if value.get("id"):
                 changed += bool(put(db, "edge", str(value["id"]), value))
-        if edges_ok:
+        if edges_ok and canvas_agents_ok:
             for (key,) in db.execute(
                     "SELECT id FROM sync_entities WHERE collection='edge' AND deleted=0").fetchall():
                 if key not in current_edges:
@@ -581,7 +605,7 @@ def _refresh_runtime_entities(db: sqlite3.Connection, runtime_owner: "Runtime | 
     workspace_value.setdefault("peerTeamsVersion", 1)
     workspace_value.setdefault("tasksHistoryLimit", 100)
     changed += bool(put(db, "workspace", "current", workspace_value))
-    return changed
+    return changed, canvas_agents_ok
 
 
 def upgrade_agent_organization(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
@@ -611,8 +635,15 @@ def upgrade_agent_organization(db: sqlite3.Connection, runtime_owner: "Runtime |
             db.execute("UPDATE sync_entity_meta SET value=? WHERE key='agent_organization_fields'",
                        (original_marker,))
         return changed
-    changed += _refresh_runtime_entities(db, runtime_owner, canvas_owner)
-    if runtime_owner is not None and canvas_owner is not None:
+    refreshed, canvas_complete = _refresh_runtime_entities(db, runtime_owner, canvas_owner)
+    changed += refreshed
+    if canvas_owner is not None and not canvas_complete:
+        if original_marker is None:
+            db.execute("DELETE FROM sync_entity_meta WHERE key='agent_organization_fields'")
+        else:
+            db.execute("UPDATE sync_entity_meta SET value=? WHERE key='agent_organization_fields'",
+                       (original_marker,))
+    elif runtime_owner is not None and canvas_owner is not None:
         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3') "
                    "ON CONFLICT(key) DO UPDATE SET value='3'")
     elif runtime_owner is not None:
@@ -633,9 +664,9 @@ def seed(db: sqlite3.Connection, runtime_owner: "Runtime | None" = None,
     if seeded:
         upgrade_agent_organization(db, runtime_owner, canvas_owner)
         return
-    _refresh_runtime_entities(db, runtime_owner, canvas_owner)
+    _, canvas_complete = _refresh_runtime_entities(db, runtime_owner, canvas_owner)
     db.execute("INSERT INTO sync_entity_meta VALUES ('seeded','1')")
-    if runtime_owner is not None and canvas_owner is not None:
+    if runtime_owner is not None and canvas_owner is not None and canvas_complete:
         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('agent_organization_fields','3') "
                    "ON CONFLICT(key) DO UPDATE SET value='3'")
     elif runtime_owner is not None:

@@ -50,7 +50,7 @@ class RuntimeReadLock(unittest.TestCase):
             db.execute("INSERT INTO runtime_chat_messages "
                        "(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        ("fixture-message", self.room, self.lead["id"], "hello", time.time(), "{}"))
-        SyncStore(self.runtime.db, lambda: {}, lambda _key: {})
+        SyncStore(self.runtime.db, lambda _key: {})
 
     def tearDown(self):
         self.runtime.close()
@@ -96,11 +96,11 @@ class RuntimeReadLock(unittest.TestCase):
         self.assertTrue(entered.wait(2))
         try:
             began = time.monotonic()
-            state = context.snapshot(include_work=False)
+            state = read_runtime_state(self.runtime, include_work=False)
             chat = self.runtime.chat_read(self.room)
             peers = self.runtime.peers(self.lead["id"])
             self.assertLess(time.monotonic() - began, 2)
-            self.assertEqual(state["runtime"]["agents"][0]["id"], self.lead["id"])
+            self.assertEqual(state["agents"][0]["id"], self.lead["id"])
             self.assertEqual(chat["messages"][0]["text"], "hello")
             self.assertEqual(peers["self"], self.lead["id"])
         finally:

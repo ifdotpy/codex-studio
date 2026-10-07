@@ -28,18 +28,12 @@ class SyncStoreTests(unittest.TestCase):
         self.builds = 0
         self.transcripts = {"chat": {"agent": {"id": "chat"}, "items": [{"id": "one", "text": "first"}]}}
 
-        def snapshot():
-            self.builds += 1
-            with self.connect() as db:
-                groups = db.execute("SELECT count(*) FROM groups").fetchone()[0]
-            return {"groups": groups, "large": "x" * 1000}
-
         def transcript(key):
             if key not in self.transcripts:
                 raise ValueError("Gone")
             return self.transcripts[key]
 
-        self.store = SyncStore(self.connect, snapshot, transcript)
+        self.store = SyncStore(self.connect, transcript)
 
     def tearDown(self):
         self.temp.cleanup()
@@ -53,65 +47,16 @@ class SyncStoreTests(unittest.TestCase):
         finally:
             db.close()
 
-    def test_identity_and_generation_state_match_production_api(self):
+    def test_identity_has_no_legacy_chat_state_flag(self):
         identity = self.store.identity()
         self.assertEqual(identity["syncProtocol"], 2)
         self.assertIn("workspaceId", identity)
         self.assertNotIn("chatState", identity)
-        state = self.store.generation_state()
-        self.assertEqual(state["generations"]["state"], state["generations"]["transcripts"])
-        self.assertIn("transcriptRevisions", state)
 
-    def test_state_pull_uses_production_snapshot_and_database_invalidation(self):
-        first = self.store.pull("state")
-        self.assertEqual(self.builds, 1)
-        self.assertEqual(json.loads(first["documents"][0]["payload"])["groups"], 0)
-        checkpoint = first["checkpoint"]["seq"]
-
-        # Production observes committed database changes through data_version,
-        # including unrelated writes, and rebuilds the cached projection.
-        with self.connect() as db:
-            db.execute("INSERT INTO analytics_usage VALUES ('usage','{}')")
-        unrelated = self.store.pull("state", checkpoint)
-        self.assertEqual(unrelated["documents"], [])
-        self.assertEqual(self.builds, 2)
-
-        with self.connect() as db:
-            db.execute("CREATE TABLE runtime_search_pending(id TEXT PRIMARY KEY, version INTEGER, due_at REAL)")
-            db.execute("INSERT INTO runtime_search_pending VALUES ('item',1,1)")
-        index_only = self.store.pull("state", checkpoint)
-        self.assertEqual(index_only["documents"], [])
-        self.assertEqual(self.builds, 3)
-
-        with self.connect() as db:
-            db.execute("INSERT INTO groups VALUES ('g','team','[]')")
-        updated = self.store.pull("state", checkpoint)
-        self.assertEqual(json.loads(updated["documents"][0]["payload"])["groups"], 1)
-        self.assertGreater(updated["checkpoint"]["seq"], checkpoint)
-        self.assertEqual(self.builds, 4)
-
-    def test_late_created_state_source_invalidates_cached_snapshot(self):
-        def late_snapshot():
-            self.builds += 1
-            with self.connect() as db:
-                exists = db.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='late_state'"
-                ).fetchone()
-                rows = ([row[0] for row in db.execute("SELECT id FROM late_state ORDER BY id")]
-                        if exists else [])
-            return {"late": rows}
-
-        store = SyncStore(self.connect, late_snapshot, self.store.transcript)
-        initial = store.pull("state")
-        checkpoint = initial["checkpoint"]["seq"]
-        with self.connect() as db:
-            db.execute("CREATE TABLE late_state(id TEXT PRIMARY KEY)")
-            db.execute("INSERT INTO late_state VALUES ('offline-row')")
-
-        updated = store.pull("state", checkpoint)
-        self.assertEqual(json.loads(updated["documents"][0]["payload"]), {"late": ["offline-row"]})
-        self.assertGreater(updated["checkpoint"]["seq"], checkpoint)
-        self.assertEqual(self.builds, 2)
+    def test_legacy_state_scopes_are_rejected(self):
+        for scope in ("state", "state:chat"):
+            with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, "Invalid sync scope"):
+                self.store.pull(scope)
 
     def test_lazy_version_schema_initialization_is_idempotent(self):
         self.store._ensure_versions()
@@ -133,63 +78,6 @@ class SyncStoreTests(unittest.TestCase):
                 "AND name LIKE 'sync_transcript_revision_%'"
             )}
         self.assertEqual(second, first)
-
-    def test_runtime_item_churn_advances_shared_generation_and_agent_revision(self):
-        with self.connect() as db:
-            db.execute("INSERT INTO runtime_agents VALUES ('chat','{}')")
-        before = self.store.generation_state()
-        with self.connect() as db:
-            db.execute("INSERT INTO runtime_items VALUES ('item','chat','{}',1)")
-
-        after = self.store.generation_state()
-        self.assertGreater(after["generations"]["state"], before["generations"]["state"])
-        self.assertEqual(after["generations"]["state"], after["generations"]["transcripts"])
-        self.assertEqual(after["transcriptRevisions"]["chat"], 1)
-
-    def test_external_state_signature_invalidates_shared_generations(self):
-        signature = [{"connected": False, "rateLimits": {}, "connectionIds": {}}]
-        store = SyncStore(
-            self.connect,
-            lambda: signature[0],
-            self.store.transcript,
-            state_signature=lambda: json.dumps(signature[0], sort_keys=True),
-        )
-        before = store.generation_state()
-        for key, value in (
-            ("connected", True),
-            ("rateLimits", {"default": {"remaining": 3}}),
-            ("connectionIds", {"default": "connection-2"}),
-        ):
-            prior = store.generation_state()
-            signature[0][key] = value
-            current = store.generation_state()
-            self.assertGreater(current["generations"]["state"], prior["generations"]["state"])
-            self.assertEqual(current["generations"]["state"], current["generations"]["transcripts"])
-        self.assertIn("transcriptRevisions", before)
-
-    def test_unavailable_state_signature_is_deferred_without_blocking(self):
-        lock = threading.Lock()
-        signature = [0]
-
-        def read_signature():
-            if not lock.acquire(blocking=False):
-                return None
-            try:
-                return signature[0]
-            finally:
-                lock.release()
-
-        store = SyncStore(self.connect, lambda: {}, self.store.transcript, state_signature=read_signature)
-        before = store.generation_state()["generations"]["state"]
-        signature[0] = 1
-        lock.acquire()
-        try:
-            started = time.monotonic()
-            self.assertEqual(store.generation_state()["generations"]["state"], before)
-            self.assertLess(time.monotonic() - started, 0.2)
-        finally:
-            lock.release()
-        self.assertGreater(store.generation_state()["generations"]["state"], before)
 
     def test_transcript_pull_produces_full_then_sparse_delta(self):
         first = self.store.pull("transcript:chat")

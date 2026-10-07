@@ -1,4 +1,4 @@
-"""Exercise both state snapshot variants through the isolated UI fixture."""
+"""Exercise entity sync against isolated UI fixtures."""
 
 from __future__ import annotations
 
@@ -12,12 +12,11 @@ import tempfile
 import threading
 import time
 import unittest
-from uuid import uuid4
 from pathlib import Path
 from typing import cast
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
-
-from studio_api.sync.models import SnapshotAgentDto, SnapshotChatGroupDto, StateSnapshot
+from uuid import uuid4
 
 
 class StateFixtureResponseTests(unittest.TestCase):
@@ -30,31 +29,26 @@ class StateFixtureResponseTests(unittest.TestCase):
     def setUpClass(cls) -> None:
         repository = Path(__file__).resolve().parents[3]
         cache = Path(os.environ.get("TMPDIR", "/tmp"))
-        cls.temporary = tempfile.TemporaryDirectory(prefix="sync-state-fixture-", dir=cache)
-        state_directory = str(Path(cls.temporary.name) / "state")
+        cls.temporary = tempfile.TemporaryDirectory(prefix="sync-entities-fixture-", dir=cache)
         environment = os.environ.copy()
         environment["PYTHONPATH"] = os.pathsep.join((str(repository / "scripts"), str(repository / "tests")))
-        environment["TMPDIR"] = str(cache)
         cls.process = subprocess.Popen(
-            [sys.executable, "-B", str(repository / "tests" / cls.fixture_name), state_directory, "0"],
-            cwd=repository,
-            env=environment,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
+            [sys.executable, "-B", str(repository / "tests" / cls.fixture_name),
+             str(Path(cls.temporary.name) / "state"), "0"],
+            cwd=repository, env=environment, stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT, text=True, bufsize=1,
         )
         output = cls.process.stdout
         if output is None:
             cls._stop_fixture()
-            raise RuntimeError("The isolated state fixture did not expose startup output")
+            raise RuntimeError("The isolated entity fixture did not expose startup output")
         lines: queue.Queue[str] = queue.Queue()
 
         def collect_output() -> None:
             for line in output:
                 lines.put(line)
 
-        threading.Thread(target=collect_output, name="state-fixture-output", daemon=True).start()
+        threading.Thread(target=collect_output, name="entity-fixture-output", daemon=True).start()
         observed: list[str] = []
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -69,7 +63,7 @@ class StateFixtureResponseTests(unittest.TestCase):
                 cls.port = int(line)
                 return
         cls._stop_fixture()
-        raise RuntimeError("The isolated state fixture failed to start: " + " | ".join(observed[-8:]))
+        raise RuntimeError("The isolated entity fixture failed to start: " + " | ".join(observed[-8:]))
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -92,157 +86,85 @@ class StateFixtureResponseTests(unittest.TestCase):
             cls.temporary.cleanup()
             cls.temporary = None
 
-    def test_full_and_chat_state_responses_validate_actual_runtime(self) -> None:
-        base = f"http://127.0.0.1:{self.port}"
-        with urlopen(f"{base}/api/limits", timeout=20) as response:
-            self.assertEqual(response.status, 200)
-        with urlopen(f"{base}/api/state", timeout=20) as response:
-            initial = StateSnapshot.model_validate_json(response.read())
-        with urlopen(f"{base}/api/sync/protocol", timeout=20) as response:
-            protocol = json.loads(response.read())
-        self.assertEqual(protocol["supportedVersions"], [3])
-        self.assertIsNotNone(initial.runtime)
-        assert initial.runtime is not None
-        self.assertIsNotNone(initial.runtime.rateLimits.readAt)
-        self.assertIsNotNone(initial.runtime.rateLimitsByAccount["default"].readAt)
-        self.assertGreaterEqual(len(initial.threads), 2)
-        chat_id = "00000000-0000-4000-8000-000000000001"
-        create_chat = Request(
-            f"{base}/api/chats",
-            data=json.dumps({
-                "id": chat_id,
-                "name": "Snapshot fixture chat",
-                "members": [initial.threads[0].id, initial.threads[1].id],
-            }).encode(),
-            headers={"Content-Type": "application/json", "X-Canvas-Token": initial.token},
-            method="POST",
-        )
-        with urlopen(create_chat, timeout=20) as response:
-            self.assertEqual(response.status, 200)
+    def get(self, path: str) -> tuple[int, dict[str, object]]:
+        try:
+            response = urlopen(f"http://127.0.0.1:{self.port}{path}", timeout=20)
+        except HTTPError as error:
+            response = error
+        with response:
+            body = response.read()
+            value = json.loads(body) if body else {}
+            return response.status, value if isinstance(value, dict) else {}
 
-        snapshots: dict[str, StateSnapshot] = {}
-        for name, path in (("full", "/api/state"), ("chat", "/api/state?view=chat")):
-            with self.subTest(view=name), urlopen(f"{base}{path}", timeout=20) as response:
-                self.assertEqual(response.status, 200)
-                snapshot = StateSnapshot.model_validate_json(response.read())
-                self.assertIsNotNone(snapshot.runtime)
-                self.assertTrue(snapshot.threads)
-                self.assertEqual([chat.id for chat in snapshot.chats], [chat_id])
-                self.assertTrue(snapshot.nodes)
-                self.assertTrue(any(isinstance(node, SnapshotAgentDto) for node in snapshot.nodes))
-                self.assertTrue(any(isinstance(node, SnapshotChatGroupDto) for node in snapshot.nodes))
-                snapshots[name] = snapshot
-        full_runtime = snapshots["full"].runtime
-        chat_runtime = snapshots["chat"].runtime
-        assert full_runtime is not None
-        assert chat_runtime is not None
-        self.assertIsNotNone(full_runtime.work)
-        self.assertIsNone(chat_runtime.work)
+    def entities(self) -> tuple[str, dict[str, dict[str, object]]]:
+        status, session = self.get("/api/session")
+        self.assertEqual(status, 200)
+        token = str(session["token"])
+        status, pull = self.get("/api/sync/pull?scope=state:entities:v1&limit=500")
+        self.assertEqual(status, 200)
+        result: dict[str, dict[str, object]] = {}
+        documents = cast(list[dict[str, object]], pull["documents"])
+        for document in documents:
+            entity = json.loads(cast(str, document["payload"]))
+            if not document["_deleted"]:
+                result[f"{entity['collection']}:{entity['id']}"] = entity["value"]
+        return token, result
+
+    def test_entities_are_available_and_legacy_state_interfaces_are_removed(self) -> None:
+        _, entities = self.entities()
+        self.assertTrue(any(key.startswith("agent:") for key in entities))
+        self.assertIn("workspace:current", entities)
+        self.assertEqual(self.get("/api/state")[0], 404)
+        for scope in ("state", "state:chat"):
+            status, response = self.get("/api/sync/pull?scope=" + scope)
+            self.assertEqual(status, 400)
+            self.assertEqual(response, {"error": "Invalid sync scope"})
 
 
 class SidebarProjectStateFixtureTests(StateFixtureResponseTests):
     fixture_name = "sidebar-drag-fixture.py"
 
-    def test_full_and_chat_state_responses_validate_actual_runtime(self) -> None:
-        with urlopen(f"http://127.0.0.1:{self.port}/api/state", timeout=20) as response:
-            snapshot = StateSnapshot.model_validate_json(response.read())
-        self.assertIsNotNone(snapshot.runtime)
-
-    def test_project_and_peer_team_producer_fields_validate_over_http(self) -> None:
-        with urlopen(f"http://127.0.0.1:{self.port}/api/state", timeout=20) as response:
-            snapshot = StateSnapshot.model_validate_json(response.read())
-        runtime = snapshot.runtime
-        self.assertIsNotNone(runtime)
-        assert runtime is not None
-        project = next((item for item in runtime.projects if item.peerTeams), None)
-        self.assertIsNotNone(project)
-        assert project is not None
-        self.assertIsNotNone(project.updated)
-        assert project.peerTeams is not None
-        self.assertTrue(project.peerTeams)
-        peer_team = next((item for item in runtime.peerTeams if item.id == project.peerTeams[0].id), None)
-        self.assertIsNotNone(peer_team)
-        assert peer_team is not None
-        self.assertEqual(peer_team.revision, 1)
-
-    def test_z_peer_conversion_state_response_validates_over_http(self) -> None:
-        base = f"http://127.0.0.1:{self.port}"
-        with urlopen(f"{base}/api/state", timeout=20) as response:
-            initial = StateSnapshot.model_validate_json(response.read())
-        runtime = initial.runtime
-        self.assertIsNotNone(runtime)
-        assert runtime is not None
-        agents = {agent.name: agent for agent in runtime.agents}
-        source = agents["Team source"]
-        destination = agents["Destination"]
-        project = next(item for item in runtime.projects if item.peerTeams)
-        request_id = str(uuid4())
-        conversion = Request(
-            f"{base}/api/peer-teams",
-            data=json.dumps({
-                "action": "convert",
-                "path": project.path,
-                "member": source.id,
-                "target": destination.id,
-                "expected_revision": project.peerTeamsRevision,
-                "request_id": request_id,
-            }).encode(),
-            headers={
-                "Content-Type": "application/json",
-                "X-Canvas-Token": initial.token,
-                "Origin": base,
-            },
-            method="POST",
-        )
-        with urlopen(conversion, timeout=20) as response:
-            self.assertEqual(response.status, 200)
-        with urlopen(f"{base}/api/state", timeout=20) as response:
-            snapshot = StateSnapshot.model_validate_json(response.read())
-
-        converted = next(agent for agent in snapshot.threads if agent.id == source.id)
-        self.assertIsNotNone(converted.convertedFromLead)
-        assert converted.convertedFromLead is not None
-        self.assertEqual(converted.convertedFromLead.requestId, request_id)
-        self.assertEqual(converted.convertedFromLead.by, "user")
-        self.assertEqual(converted.convertedFromLead.oldRootId, source.id)
-        self.assertEqual(converted.convertedFromLead.rootId, destination.id)
+    def test_project_and_peer_team_entities_are_current(self) -> None:
+        _, entities = self.entities()
+        projects = [value for key, value in entities.items() if key.startswith("project:")]
+        teams = [value for key, value in entities.items() if key.startswith("peerTeam:")]
+        project = next(item for item in projects if item.get("peerTeams"))
+        self.assertIsInstance(project.get("updated"), int | float)
+        peer_ids = cast(list[dict[str, object] | str], project["peerTeams"])
+        self.assertTrue(peer_ids)
+        peer_id = peer_ids[0]["id"] if isinstance(peer_ids[0], dict) else peer_ids[0]
+        team = next(item for item in teams if item.get("id") == peer_id)
+        self.assertEqual(team.get("revision"), 1)
 
 
 class RenamedAgentStateFixtureTests(StateFixtureResponseTests):
-    """Exercise manual-name records emitted by Runtime.snapshot after rename."""
+    """Exercise manual-name entity fields after a rename."""
 
-    def test_renamed_lead_state_response_validates_over_http(self) -> None:
-        base = f"http://127.0.0.1:{self.port}"
-        with urlopen(f"{base}/api/state", timeout=20) as response:
-            initial = StateSnapshot.model_validate_json(response.read())
+    def test_renamed_lead_entity_is_current(self) -> None:
+        token, _ = self.entities()
         assert self.temporary is not None
         project_path = str((Path(self.temporary.name) / "manual-name-project").resolve())
         Path(project_path).mkdir()
 
-        def post(path: str, body: dict[str, object]) -> dict[str, object]:
+        def post(path: str, body: dict[str, object]) -> None:
             request = Request(
-                f"{base}{path}",
+                f"http://127.0.0.1:{self.port}{path}",
                 data=json.dumps(body).encode(),
-                headers={
-                    "Content-Type": "application/json",
-                    "X-Canvas-Token": initial.token,
-                    "Origin": base,
-                },
+                headers={"Content-Type": "application/json", "X-Canvas-Token": token,
+                         "Origin": f"http://127.0.0.1:{self.port}"},
                 method="POST",
             )
             with urlopen(request, timeout=20) as response:
-                return cast(dict[str, object], json.loads(response.read()))
+                self.assertEqual(response.status, 200)
 
         post("/api/projects", {"path": project_path})
         agent_id = str(uuid4())
         post("/api/leads", {"id": agent_id, "cwd": project_path})
         post("/api/rename", {"id": agent_id, "name": "Evidence reviewer"})
-        with urlopen(f"{base}/api/state", timeout=20) as response:
-            snapshot = StateSnapshot.model_validate_json(response.read())
-
-        renamed = next(agent for agent in snapshot.threads if agent.id == agent_id)
-        self.assertEqual(renamed.name, "Evidence reviewer")
-        self.assertIs(renamed.manualName, True)
+        _, entities = self.entities()
+        renamed = entities[f"agent:{agent_id}"]
+        self.assertEqual(renamed.get("name"), "Evidence reviewer")
+        self.assertIs(renamed.get("manualName"), True)
 
 
 if __name__ == "__main__":

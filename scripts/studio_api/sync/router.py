@@ -189,7 +189,7 @@ def create_router(context: ApiContext) -> APIRouter:
         reset: str | None = None,
         priorityId: str | None = None,
     ) -> object:
-        scope = _first(request, "scope", "state") or "state"
+        scope = _first(request, "scope", "state:entities:v1") or "state:entities:v1"
         after = _query_int(request, "after", 0)
         limit = _query_int(request, "limit", SYNC_BATCH_LIMIT)
         initial_high = _query_int(request, "initialHigh", 0)
