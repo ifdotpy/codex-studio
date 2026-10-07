@@ -259,6 +259,13 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const createdBody = await created.json();
         assert.equal(created.status(), 200);
         assert.ok(createdBody._syncEntities?.length);
+        const createdEntity = createdBody._syncEntities.find(
+          (document) => document.id === `entity:agent:${createdBody.id}`,
+        );
+        assert.ok(
+          createdEntity,
+          "create response must include the new agent row",
+        );
         const deliveredSequences = createdBody._syncEntities.map(
           (doc) => doc.seq,
         );
@@ -309,6 +316,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           ok: true,
           entityId: createdBody.id,
           seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
+          entitySequence: createdEntity.seq,
           deliveredSequences,
           responseReceivedAt,
           responseDecodedAt,
@@ -327,7 +335,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         pull.documents.find(
           (document) =>
             document.id === `entity:${params.collection}:${entityId}` &&
-            document.seq >= reply.seq &&
+            document.seq >= (reply.entitySequence ?? reply.seq) &&
             document._deleted === params.deleted,
         );
       const tabsToConfirm = params.operation === "chat" ? [1, 2] : [0, 1, 2];
