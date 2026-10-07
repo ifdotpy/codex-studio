@@ -252,7 +252,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(row["payload"], legacy)
         self.assertEqual(body["documents"][2]["payload"], workspace)
 
-    def test_entity_pull_keeps_invalid_public_data_failure(self) -> None:
+    def test_entity_pull_fails_open_and_logs_invalid_public_data(self) -> None:
         context = ContextStub()
         projection = {"workspaceId": "workspace-a", "documents": [{
             "id": "entity:agent:a", "seq": 1, "_deleted": False,
@@ -260,10 +260,13 @@ class SyncRouterTests(unittest.TestCase):
                 "id": "a", "kind": "chat", "name": 42,
             }}),
         }], "checkpoint": {"seq": 1}, "maxSeq": 1}
-        with patch.object(context.store, "pull", return_value=projection):
+        with patch.object(context.store, "pull", return_value=projection), \
+                self.assertLogs("studio_api.sync.router", level="ERROR") as logs:
             response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
-        self.assertEqual(response.status_code, 500)
-        self.assertEqual(response.json(), {"error": "Invalid sync entity payload"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["documents"][0]["payload"], projection["documents"][0]["payload"])
+        self.assertFalse(response.json()["documents"][0]["_deleted"])
+        self.assertIn("entity:agent:a", logs.output[0])
 
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()

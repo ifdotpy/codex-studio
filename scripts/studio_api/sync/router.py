@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
@@ -205,8 +206,14 @@ def create_router(context: ApiContext) -> APIRouter:
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
                 try:
                     document["payload"], document["_deleted"] = response_entity_payload(payload)
-                except ValidationError:
-                    return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
+                except ValidationError as error:
+                    # Fail open: one stored entity with a field outside its DTO
+                    # must not block every client pull. Send it unchanged and
+                    # log the exact mismatch for a DTO correction.
+                    logging.getLogger(__name__).error(
+                        "Sync entity contract mismatch for %s: %s",
+                        document.get("id"), str(error)[:4000],
+                    )
         return context.send(request, {**projection, "generation": store.generation()})
 
     @router.get(
