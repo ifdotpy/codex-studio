@@ -277,7 +277,7 @@ class TurnRecoveryMixin:
         if attempt.get('connectionId') != connection and not replaced_child:
             return {'status': 'unconfirmed'}
         message = attempt['events'][0]
-        cursor, seen = None, set()
+        cursor, seen, turn = None, set(), None
         deadline = time.monotonic() + 20
         try:
             while True:
@@ -289,32 +289,44 @@ class TurnRecoveryMixin:
                 if cursor is not None:
                     params['cursor'] = cursor
                 page = server.call('thread/turns/list', params, timeout=min(5, remaining))
-                matches = [turn for turn in page.get('data', [])
-                           if turn.get('startOutcome') not in {'preparing', 'not_applied'} and (
-                               turn.get('clientUserMessageId') == message or any(
+                if not isinstance(page, dict) or not isinstance(page.get('data'), list):
+                    raise ValueError('Native start history returned an invalid page')
+                matches = [candidate for candidate in page['data']
+                           if candidate.get('startOutcome') not in {'preparing', 'not_applied'} and (
+                               candidate.get('clientUserMessageId') == message or any(
                                item.get('type') == 'userMessage' and item.get('clientId') == message
                                and item.get('deliveryStatus') not in {'preparing', 'not_applied'}
-                               for item in turn.get('items', [])))]
+                               for item in candidate.get('items', [])))]
                 if len(matches) > 1:
                     raise ValueError('Native history has conflicting start receipts')
                 if matches:
-                    turn = matches[0]
-                    if not isinstance(turn.get('id'), str) or not turn['id']:
+                    candidate = matches[0]
+                    if not isinstance(candidate.get('id'), str) or not candidate['id']:
                         raise ValueError('The native start receipt has no turn identity')
+                    if turn is None:
+                        turn = candidate
+                    elif turn.get('id') != candidate['id']:
+                        raise ValueError('Native history has conflicting start receipts')
+                    elif turn != candidate:
+                        raise ValueError('Native history changed the exact start receipt')
+                next_cursor = page.get('nextCursor')
+                if next_cursor is None:
                     break
-                cursor = page.get('nextCursor')
-                if not cursor:
-                    # A replaced native child cannot finish an old request. A
-                    # live child can still accept its request after this read.
-                    if replaced_child:
-                        return self.restore_absent_start(server, expected, connection)
-                    if not (a.get('startOutcomeHold') or {}).get('stage') and (
-                            time.time() - attempt.get('created', time.time()) >= UNKNOWN_START_HOLD_SECONDS):
-                        return self.hold_unknown_start(server, expected, connection)
-                    return {'status': 'unconfirmed'}
-                if cursor in seen:
+                if not isinstance(next_cursor, str) or not next_cursor:
+                    raise ValueError('Native start history returned an invalid page cursor')
+                if next_cursor in seen:
                     raise ValueError('Native start history repeated its page cursor')
-                seen.add(cursor)
+                seen.add(next_cursor)
+                cursor = next_cursor
+            if turn is None:
+                # A replaced native child cannot finish an old request. A
+                # live child can still accept its request after this read.
+                if replaced_child:
+                    return self.restore_absent_start(server, expected, connection)
+                if not (a.get('startOutcomeHold') or {}).get('stage') and (
+                        time.time() - attempt.get('created', time.time()) >= UNKNOWN_START_HOLD_SECONDS):
+                    return self.hold_unknown_start(server, expected, connection)
+                return {'status': 'unconfirmed'}
             result = Future()
             def apply():
                 try:
