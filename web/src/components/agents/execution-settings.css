@@ -1,4 +1,4 @@
-.workspace-header .execution-menu {
+.execution-menu {
   height: 32px;
   min-height: 32px;
   padding: 0 28px 0 10px;
@@ -77,4 +77,107 @@
 .execution-permissions p {
   color: var(--muted);
   font-size: 12px;
+}
+
+.setup-roles,
+.setup-modes {
+  display: flex;
+  gap: 4px;
+}
+.setup-roles > button,
+.setup-modes > button {
+  flex: 1;
+  padding-inline: 8px;
+}
+.setup-models {
+  display: grid;
+  gap: 2px;
+}
+.setup-models button {
+  justify-content: flex-start;
+  width: 100%;
+  height: 36px;
+  padding-inline: 10px;
+}
+.setup-models .mantine-Button-inner,
+.setup-models .mantine-Button-label {
+  width: 100%;
+}
+.setup-models .mantine-Button-label {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.setup-models small {
+  color: var(--mantine-color-dimmed);
+  font-size: 12px;
+  font-weight: 400;
+}
+.setup-roles [data-selected],
+.setup-models [data-selected],
+.setup-modes [data-selected] {
+  background: light-dark(
+    var(--mantine-color-gray-1),
+    var(--mantine-color-dark-5)
+  );
+  color: var(--text);
+}
+.execution-menu .execution-selected {
+  margin-left: 7px;
+}
+.execution-dropdown .notice {
+  font-size: 12px;
+}
+.setup-sheet .mantine-Drawer-content {
+  max-height: 92dvh;
+  border-radius: 14px 14px 0 0;
+}
+.setup-sheet .execution-dropdown {
+  max-width: none;
+  padding: 0;
+  max-height: none;
+}
+@media (max-width: 760px) {
+  .setup-models button,
+  .setup-roles button,
+  .setup-modes button {
+    min-height: 44px;
+  }
+  .setup-sheet .mantine-SegmentedControl-label {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding-inline: 7px;
+  }
+}
+
+.setup-roles > button:first-child {
+  flex: 1.35;
+}
+
+.setup-reasoning .mantine-SegmentedControl-label {
+  padding-inline: 5px;
+  font-size: 12px;
+}
+
+.setup-modes > button {
+  border: 1px solid var(--line);
+  border-radius: 18px;
+}
+.setup-models [data-inherited] {
+  color: var(--muted);
+  border: 0;
+  background: transparent;
+}
+.setup-models [data-inherited][data-selected] {
+  background: var(--hover);
+}
+.execution-menu {
+  max-width: 100%;
+}
+.execution-selected {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }

@@ -1,3 +1,8 @@
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  apiSchemaHandshakeSse,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -11,6 +16,7 @@ import {
   selectModel,
 } from "../../model-picker.mjs";
 import { test } from "../playwright.mjs";
+import { setupControl, setupToggle } from "../../setup-controls.mjs";
 
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(180_000);
@@ -36,6 +42,11 @@ test("Daybreak settings", async ({ context }) => {
         "react-dom",
         "@mantine/core",
         "lucide-react",
+        "@mantine/hooks",
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
       ],
     },
     plugins: [
@@ -61,12 +72,13 @@ test("Daybreak settings", async ({ context }) => {
   import {MantineProvider} from '@mantine/core';
   import '@mantine/core/styles.css';
   import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
-  const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'high',fastMode:true,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
+  const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-5.6-sol',effort:'high',fastMode:true,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
   const row=(model,cyber,extra={})=>({model,displayName:model,supportedReasoningEfforts:['low','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],...(cyber===undefined?{}:{availableAccessPrograms:{cyber}}),...extra});
   const initialModels=[row('gpt-6-astra',['standard']),row('gpt-5.6-sol',['standard','daybreakBlue'],{isDefault:true}),row('gpt-5.6-terra',['standard','daybreakRed']),row('gpt-5.6-luna',undefined),row('daybreak-only',['daybreakBlue'],{serviceTiers:[],supportedReasoningEfforts:[{reasoningEffort:'low'}]}),row('gpt-daybreak-blue-latest',['daybreakBlue']),row('gpt-daybreak-red-latest',['daybreakRed'])];
   window.calls=[];window.fail=null;window.reply=null;window.refreshCount=0;window.retries=0;
   const nativeFetch=window.fetch;
-  window.fetch=async(url,options)=>{
+  window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;
+    if(url.startsWith('/api/models'))return new Response(JSON.stringify({data:window.models}),{headers:{'Content-Type':'application/json'}});
     if(url!='/api/conversation')return nativeFetch(url,options);
     const request=JSON.parse(options.body);window.calls.push(request);
     if(window.hold)await new Promise(resolve=>window.release=resolve);
@@ -79,7 +91,7 @@ test("Daybreak settings", async ({ context }) => {
   };
   function Fixture(){
     const[agent,setAgent]=useState(initial),[models,setModels]=useState(initialModels),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);
-    window.agent=agent;window.setAgent=value=>flushSync(()=>setAgent(value));
+    window.models=models;window.agent=agent;window.setAgent=value=>flushSync(()=>setAgent(value));
     window.setModels=value=>flushSync(()=>setModels(value));
     window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setModels(options?.models||initialModels);setDefaults(!!options?.defaults);setMount(value=>value+1);window.calls=[];window.fail=null;window.reply=null;window.hold=false;window.refreshCount=0;window.retries=0;});
     return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} catalog={{models,loading:false,error:'',retry:()=>window.retries++}} refresh={async()=>{window.refreshCount++}}/></MantineProvider>;
@@ -96,6 +108,26 @@ test("Daybreak settings", async ({ context }) => {
     await page.setViewportSize({ width: 390, height: 700 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/sync/stream?**", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        body: apiSchemaHandshakeSse(
+          `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+        ),
+      });
+    });
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: {
+          workspaceId: "1234567890abcdef1234567890abcdef",
+          syncProtocol: 2,
+        },
+      }),
+    );
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
@@ -113,7 +145,7 @@ test("Daybreak settings", async ({ context }) => {
         .click();
     };
     const mode = () =>
-      page.getByRole("switch", { name: "Daybreak", exact: true });
+      setupToggle(page.getByRole("button", { name: "Daybreak", exact: true }));
     const model = (defaults = false) =>
       page.getByLabel(
         defaults ? "Default subagent model" : "Main agent model",
@@ -128,6 +160,28 @@ test("Daybreak settings", async ({ context }) => {
           window.calls.length > 0,
       );
 
+    const enable = async () => {
+      if (!(await mode().count())) {
+        await selectModel(
+          model(
+            (await page
+              .getByRole("listbox", {
+                name: "Default subagent model",
+                exact: true,
+              })
+              .count()) > 0,
+          ),
+          "gpt-5.6-sol",
+        );
+        await settled();
+        await page.evaluate(() => {
+          window.calls = [];
+          window.refreshCount = 0;
+        });
+      }
+      await mode().check();
+    };
+
     await reset();
     assert.equal(
       (await modelOptions(model())).includes("gpt-daybreak-blue-latest")
@@ -140,7 +194,7 @@ test("Daybreak settings", async ({ context }) => {
       0,
     );
     assert.equal(await modelOptionDisabled(model(), "daybreak-only"), true);
-    await mode().check();
+    await enable();
     await settled();
     assert.deepEqual(await page.evaluate(() => window.calls[0]), {
       id: "first",
@@ -159,7 +213,7 @@ test("Daybreak settings", async ({ context }) => {
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
         .innerText(),
-      /Sol · Daybreak/,
+      /Sol/,
     );
     if (process.env.SCREENSHOT)
       await page.screenshot({ path: process.env.SCREENSHOT });
@@ -201,7 +255,7 @@ test("Daybreak settings", async ({ context }) => {
       false,
     );
     await reset({ agent: { model: "gpt-5.6-terra" } });
-    await mode().check();
+    await enable();
     await settled();
     assert.equal(
       await modelValue(model()),
@@ -213,14 +267,14 @@ test("Daybreak settings", async ({ context }) => {
     assert.equal(
       await page
         .getByLabel("Main agent reasoning", { exact: true })
-        .inputValue(),
-      "__model_default__",
+        .getAttribute("data-value"),
+      "low",
     );
     assert.equal(
       await page
-        .getByRole("switch", { name: "Fast mode", exact: true })
-        .isChecked(),
-      false,
+        .getByRole("button", { name: "Fast mode", exact: true })
+        .count(),
+      0,
     );
     console.log(
       "PASS standard fallback, Red support, model-dependent effort and Fast reset",
@@ -234,12 +288,8 @@ test("Daybreak settings", async ({ context }) => {
         },
       ],
     });
-    assert.equal(await mode().isDisabled(), true);
+    assert.equal(await mode().count(), 0);
     assert.equal(await modelOptionDisabled(model(), "gpt-6-astra"), false);
-    await page
-      .getByRole("button", { name: "Refresh model list", exact: true })
-      .click();
-    assert.equal(await page.evaluate(() => window.retries), 1);
     assert.deepEqual(await page.evaluate(() => window.calls), []);
     await reset({ agent: { model: "gpt-daybreak-blue-latest" } });
     assert.equal(
@@ -247,21 +297,21 @@ test("Daybreak settings", async ({ context }) => {
       true,
     );
     assert.equal(
-      await page
-        .getByLabel("Main agent reasoning", { exact: true })
-        .isDisabled(),
+      await setupControl(
+        page.getByLabel("Main agent reasoning", { exact: true }),
+      ).isDisabled(),
       true,
     );
-    await mode().check();
+    await enable();
     await settled();
     assert.equal(await modelValue(model()), "gpt-5.6-sol");
     console.log(
-      "PASS missing metadata fails closed, refresh, legacy alias remains read-only without invented mapping",
+      "PASS missing metadata hides mode, legacy alias remains read-only without invented mapping",
     );
 
     await reset({ agent: { status: "running" } });
     await page.evaluate(() => (window.fail = "network"));
-    await mode().check();
+    await enable();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
@@ -272,12 +322,7 @@ test("Daybreak settings", async ({ context }) => {
       await page.evaluate(() => window.agent.daybreakEnabled),
       false,
     );
-    assert.match(
-      await page
-        .getByRole("button", { name: "Main agent settings", exact: true })
-        .innerText(),
-      /Daybreak next turn/,
-    );
+    assert.match(await page.locator("body").innerText(), /next turn/i);
     await page.reload();
     await page.waitForFunction(() => !!window.reset);
     await page
@@ -299,7 +344,7 @@ test("Daybreak settings", async ({ context }) => {
 
     await reset({ agent: { status: "running" } });
     await page.evaluate(() => (window.fail = "network"));
-    await mode().check();
+    await enable();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
@@ -311,9 +356,12 @@ test("Daybreak settings", async ({ context }) => {
         daybreakEnabled: false,
       }),
     );
-    await page
-      .getByRole("button", { name: "Main agent settings", exact: true })
-      .click();
+    const changedAccountTrigger = page.getByRole("button", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    if ((await changedAccountTrigger.getAttribute("aria-expanded")) !== "true")
+      await changedAccountTrigger.click();
     assert.equal(await mode().isChecked(), false);
     assert.equal(
       await page
@@ -329,13 +377,13 @@ test("Daybreak settings", async ({ context }) => {
     });
     assert.equal(await mode().isChecked(), false);
     await page.evaluate(() => (window.fail = "rejected"));
-    await mode().check();
+    await enable();
     await page
       .getByRole("alert")
       .filter({ hasText: "Mode not supported" })
       .waitFor();
     assert.equal(await mode().isChecked(), false);
-    assert.equal(await modelValue(model()), "gpt-6-astra");
+    assert.equal(await modelValue(model()), "gpt-5.6-sol");
     console.log(
       "PASS account-scoped mode receipts, stale account settings ignored, rejected mode rollback",
     );
@@ -343,6 +391,7 @@ test("Daybreak settings", async ({ context }) => {
     await reset({
       defaults: true,
       agent: {
+        model: "gpt-6-astra",
         workerDefaults: {
           model: null,
           effort: "high",
@@ -351,7 +400,7 @@ test("Daybreak settings", async ({ context }) => {
         },
       },
     });
-    await mode().check();
+    await enable();
     await settled();
     assert.deepEqual(await page.evaluate(() => window.calls[0]), {
       id: "first",

@@ -1,3 +1,4 @@
+import { AccountTiles } from "./AccountTiles";
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
@@ -51,9 +52,6 @@ function ParticipantFields({
       : {}),
     isDefault: row.isDefault === true,
   }));
-  const selectedAccount = accounts.accounts.find(
-    (account) => account.id === value.account_key,
-  );
   const info = catalog.models.find((row) => row.model === value.model);
   const reasoningEfforts = Array.isArray(info?.supportedReasoningEfforts)
     ? info.supportedReasoningEfforts.flatMap((item: JsonValue) => {
@@ -85,32 +83,15 @@ function ParticipantFields({
   return (
     <fieldset className="shared-create-participant" disabled={frozen}>
       <legend>Agent {index + 1}</legend>
-      <NativeSelect
-        label="Account"
-        description={
-          selectedAccount
-            ? [
-                selectedAccount.provider === "claude" ? "Claude" : "Codex",
-                selectedAccount.email,
-              ]
-                .filter(Boolean)
-                .join(" · ")
-            : undefined
-        }
-        aria-label={`Account for agent ${index + 1}`}
+      <AccountTiles
+        visibleLabel="Account"
+        label={`Account for agent ${index + 1}`}
+        accounts={accounts.accounts.filter(
+          (account) => !account.disconnected && account.status === "ready",
+        )}
         value={value.account_key}
-        data={[
-          { value: "", label: "Select an account" },
-          ...accounts.accounts
-            .filter((a) => !a.disconnected && a.status === "ready")
-            .map((a) => ({
-              value: a.id,
-              label: a.label || a.email || "Account name unavailable",
-            })),
-        ]}
-        onChange={(e) =>
-          change({ account_key: e.currentTarget.value, model: "" })
-        }
+        disabled={frozen}
+        onChange={(account_key) => change({ account_key, model: "" })}
       />
       <ModelPicker
         label={`Model for agent ${index + 1}`}

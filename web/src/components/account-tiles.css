@@ -1,0 +1,61 @@
+.account-tiles {
+  display: grid;
+  gap: 9px;
+  margin-block: 8px;
+}
+.setup-provider {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+}
+.setup-accounts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+}
+.setup-account {
+  position: relative;
+  height: 44px;
+  padding-bottom: 7px;
+  border: 1px solid transparent;
+}
+.setup-account[data-selected] {
+  border-color: var(--mantine-primary-color-filled);
+}
+.setup-account[data-exhausted] {
+  opacity: 0.5;
+}
+.setup-account .mantine-Button-label {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.setup-limit {
+  position: absolute;
+  bottom: 5px;
+  left: 8px;
+  right: 8px;
+  height: 3px;
+  border-radius: 3px;
+  background: var(--mantine-color-default-hover);
+}
+.setup-limit > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+}
+
+@media (max-width: 760px) {
+  .account-tiles .mantine-SegmentedControl-label {
+    min-height: 44px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+  }
+}
+
+.account-tiles-label {
+  font-size: 14px;
+  font-weight: 500;
+}

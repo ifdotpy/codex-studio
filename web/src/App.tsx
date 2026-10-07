@@ -138,7 +138,8 @@ import UIErrorBoundary from "./components/UIErrorBoundary";
 import ProjectAccount from "./components/ProjectAccount";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
-import { ExecutionSettings } from "./components/agents/ExecutionSettings";
+import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
+import { AccountTiles } from "./components/AccountTiles";
 import { FederationSettings } from "./components/FederationSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
@@ -248,7 +249,6 @@ export default function App() {
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [codexLoginKey, setCodexLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
-  const [subagentSettingsOpen, setSubagentSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
@@ -614,11 +614,6 @@ export default function App() {
   const agentModels = useWorkerModels(
     accountKey,
     !!agent && agent.source === "managed",
-  );
-  const workerModels = useWorkerModels(
-    lead?.accountKey || "default",
-    !!lead?.isLead,
-    true,
   );
   const limitsRequests = useRef(new Map<string, Promise<void>>());
   const selectedAccount =
@@ -2196,6 +2191,7 @@ export default function App() {
             />
           ) : (
             <Conversation
+              accountsState={accounts}
               syncWorkspaceId={workspaceId}
               id={opened}
               agent={agent}
@@ -2665,12 +2661,8 @@ export default function App() {
       </Modal>
       <Modal
         opened={settingsOpen}
-        closeOnEscape={
-          !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
-        }
-        closeOnClickOutside={
-          !accountModalOpen && !mainSettingsOpen && !subagentSettingsOpen
-        }
+        closeOnEscape={!accountModalOpen && !mainSettingsOpen}
+        closeOnClickOutside={!accountModalOpen && !mainSettingsOpen}
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
         size={modalSizes.settings}
@@ -2706,6 +2698,19 @@ export default function App() {
                       (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
                     )[0]?.accountKeys ?? undefined
                 }
+                renderPicker={(selectAccount, disabled) => (
+                  <AccountTiles
+                    showLabel={false}
+                    label="Account"
+                    accounts={accounts.data.accounts.filter(
+                      (account) =>
+                        !account.disconnected && account.status === "ready",
+                    )}
+                    value={accountKey}
+                    disabled={disabled}
+                    onChange={selectAccount}
+                  />
+                )}
                 state={accounts}
                 agent={agent || lead}
                 accountKey={accountKey}
@@ -2750,27 +2755,17 @@ export default function App() {
           </SettingsSection>
           <SettingsSection title="Models">
             {agent?.source === "managed" && (
-              <ExecutionSettings
+              <UnifiedAgentSettings
                 key={"execution:" + agent.id}
+                state={accounts}
+                notify={notify}
                 permissionsTargetId="chat-settings-permissions"
                 inline
                 onOpenChange={setMainSettingsOpen}
                 agent={agent}
                 catalog={agentModels}
-                refresh={refresh}
-              />
-            )}
-            {lead?.isLead && (
-              <ExecutionSettings
-                key={"defaults:" + lead.id}
-                inline
-                onOpenChange={setSubagentSettingsOpen}
-                agent={lead}
-                catalog={workerModels}
-                accounts={accounts.data.accounts}
                 team={data?.runtime?.agents || []}
                 refresh={refresh}
-                teamDefaults
               />
             )}
           </SettingsSection>

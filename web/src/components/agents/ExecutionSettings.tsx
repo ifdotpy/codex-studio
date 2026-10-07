@@ -1,4 +1,4 @@
-import { Button, Popover, NativeSelect, Switch } from "@mantine/core";
+import { Button, Popover, Drawer, Switch } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -18,7 +18,14 @@ import {
   type WorkerModelInfo,
 } from "./WorkerModelPicker";
 import { AccountTransferStatus, type Account } from "../Accounts";
-import { ModelPicker, type ModelOption } from "../ModelPicker";
+import type { ModelOption } from "../ModelPicker";
+import { ProviderMark, setupAccountName } from "../AccountTiles";
+import { useMediaQuery } from "@mantine/hooks";
+import {
+  AgentSetupPicker,
+  setupModelName,
+  type SetupRole,
+} from "./AgentSetupPicker";
 import "./execution-settings.css";
 import { SettingsSection } from "../ui/primitives";
 
@@ -52,17 +59,7 @@ const infoFor = (catalog: Catalog, model: string) =>
     (row) => row.model === model || row.resolvedModel === model,
   );
 const fastTier = (info?: WorkerModelInfo) =>
-  info?.serviceTiers.find((tier) => tier.id === "priority");
-const effortOptions = (info?: WorkerModelInfo) => [
-  {
-    value: DEFAULT,
-    label: `Default${info?.defaultReasoningEffort ? ` (${info.defaultReasoningEffort})` : ""}`,
-  },
-  ...(info?.supportedReasoningEfforts || []).map((row) => ({
-    value: row.reasoningEffort,
-    label: title(row.reasoningEffort),
-  })),
-];
+  info?.serviceTiers?.find((tier) => tier.id === "priority");
 export function shortModel(model: string) {
   return (
     (
@@ -94,6 +91,8 @@ type SettingsProps = {
   inline?: boolean;
   permissionsOnly?: boolean;
   permissionsTargetId?: string;
+  onAccountChange?: (key: string) => void;
+  accountDisabled?: boolean;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
   agent.accountKey || "default";
@@ -169,13 +168,28 @@ const jsonObject = (value: unknown): Json | null => {
 };
 
 export function ExecutionSettings(props: SettingsProps) {
-  // Account transfers reuse the same agent ID in the conversation view.
-  const scope = JSON.stringify([
-    props.agent.id,
-    accountOf(props.agent),
-    !!props.teamDefaults,
-  ]);
-  return <ScopedExecutionSettings key={scope} {...props} />;
+  const [role, setRole] = useState<SetupRole>(
+    props.teamDefaults ? "worker" : "orchestrator",
+  );
+  const [opened, setOpened] = useState(false);
+  useEffect(() => {
+    if ((props.openRequest || 0) > 0) {
+      setRole("orchestrator");
+      setOpened(true);
+    }
+  }, [props.openRequest]);
+  const scope = JSON.stringify([props.agent.id, accountOf(props.agent), role]);
+  return (
+    <ScopedExecutionSettings
+      key={scope}
+      {...props}
+      teamDefaults={role !== "orchestrator"}
+      role={role}
+      onRole={setRole}
+      opened={opened}
+      setOpened={setOpened}
+    />
+  );
 }
 
 function ScopedExecutionSettings({
@@ -187,11 +201,20 @@ function ScopedExecutionSettings({
   teamDefaults = false,
   nextTurnSupported,
   onOpenChange,
-  openRequest = 0,
-  inline = false,
   permissionsOnly = false,
   permissionsTargetId,
-}: SettingsProps) {
+  onAccountChange,
+  accountDisabled = false,
+  role,
+  onRole,
+  opened,
+  setOpened,
+}: SettingsProps & {
+  role: SetupRole;
+  onRole: (role: SetupRole) => void;
+  opened: boolean;
+  setOpened: (opened: boolean) => void;
+}) {
   const [permissionsTarget, setPermissionsTarget] =
     useState<HTMLElement | null>(null);
   useLayoutEffect(() => {
@@ -210,10 +233,6 @@ function ScopedExecutionSettings({
     nextTurnSupported ??
     (agent as Agent & { nextTurnSettingsSupported?: boolean })
       .nextTurnSettingsSupported === true;
-  const [opened, setOpened] = useState(false);
-  useEffect(() => {
-    if (openRequest > 0) setOpened(true);
-  }, [openRequest]);
   useEffect(() => {
     onOpenChange?.(opened);
     return () => onOpenChange?.(false);
@@ -278,11 +297,14 @@ function ScopedExecutionSettings({
     kind: "saving" | "saved";
     text: string;
   } | null>(null);
-  const label = teamDefaults
-    ? "Subagent defaults"
-    : agent.isLead
-      ? "Main agent settings"
-      : "Subagent settings";
+  const label =
+    role === "review"
+      ? "Review settings"
+      : teamDefaults
+        ? "Subagent defaults"
+        : agent.isLead
+          ? "Main agent settings"
+          : "Subagent settings";
   const prefix = teamDefaults
     ? "Default subagent"
     : agent.isLead
@@ -302,29 +324,39 @@ function ScopedExecutionSettings({
   const current = accountPending
     ? { ...settled, account_key: accountPending.target }
     : settled;
+  const effectiveAccount =
+    role === "review" ? agent.workerDefaults?.accountKey : current.account_key;
   const accountCatalog = useWorkerModels(
-    current.account_key || accountOf(agent),
-    teamDefaults && opened && !!current.account_key,
+    effectiveAccount || accountOf(agent),
+    teamDefaults && opened,
+    !effectiveAccount,
   );
-  const catalog =
-    teamDefaults && current.account_key ? accountCatalog : parentCatalog;
-  const accountOptions = accounts
-    .filter((account) => !account.disconnected && account.status === "ready")
-    .map((account) => ({
-      value: account.id,
-      label: account.email || account.label || account.id,
-    }));
-  if (
-    current.account_key &&
-    !accountOptions.some((row) => row.value === current.account_key)
-  )
-    accountOptions.push({
-      value: current.account_key,
-      label: `${current.account_key} (unavailable)`,
-    });
-  const accountLabel = (key: string | null | undefined) => {
-    const account = accounts.find((row) => row.id === key);
-    return account?.email || account?.label || key || "Automatic";
+  const catalog = teamDefaults ? accountCatalog : parentCatalog;
+  const connectedAccounts = accounts.filter(
+    (account) =>
+      !account.disconnected && !account.deleted && account.status === "ready",
+  );
+  const activeAccount = accounts.find(
+    (account) => account.id === (effectiveAccount || accountOf(agent)),
+  );
+  const automaticProvider =
+    infoFor(catalog, current.model || agent.model || "")?.provider ||
+    activeAccount?.provider ||
+    agent.provider ||
+    "codex";
+  const [browsedProvider, setBrowsedProvider] = useState<string | null>(null);
+  const pickerProvider =
+    role === "review"
+      ? "codex"
+      : browsedProvider ||
+        (effectiveAccount ? activeAccount?.provider : automaticProvider) ||
+        "codex";
+  const pickerProviders = [
+    ...new Set(connectedAccounts.map((account) => account.provider || "codex")),
+  ].filter((provider) => role !== "review" || provider === "codex");
+  const chooseAccount = (key: string | null) => {
+    if (teamDefaults) void changeAccount(key);
+    else if (key) onAccountChange?.(key);
   };
   useEffect(() => {
     // The optimistic account stays until the snapshot carries the change.
@@ -381,8 +413,6 @@ function ScopedExecutionSettings({
     row: WorkerModelInfo | undefined,
     enabled = daybreakEnabled,
   ) => supportsDaybreakMode(row, enabled);
-  const canEnableDaybreak = models.some((row) => supportsMode(row, true));
-  const canDisableDaybreak = models.some((row) => supportsMode(row, false));
   const modeSupported = supportsMode(info);
   const modeQueued =
     !teamDefaults &&
@@ -412,11 +442,6 @@ function ScopedExecutionSettings({
       label: shortModel(selectedModel),
       disabled: true,
     });
-  // The current tag marks the model in use now, not a queued choice.
-  const currentModel = teamDefaults ? stored.model || DEFAULT : agent.model;
-  const options = effortOptions(info);
-  if (current.effort && !options.some((row) => row.value === current.effort))
-    options.push({ value: current.effort, label: title(current.effort) });
   const reviewModels = catalog.models.filter(
     (row) =>
       row.model.startsWith("gpt-") &&
@@ -447,15 +472,6 @@ function ScopedExecutionSettings({
       value: reviewCurrent.model,
       label: shortModel(reviewCurrent.model),
       disabled: true,
-    });
-  const reviewEfforts = effortOptions(reviewInfo);
-  if (
-    reviewCurrent.effort &&
-    !reviewEfforts.some((row) => row.value === reviewCurrent.effort)
-  )
-    reviewEfforts.push({
-      value: reviewCurrent.effort,
-      label: title(reviewCurrent.effort),
     });
   const submit = async (
     request: ConversationBody,
@@ -589,31 +605,23 @@ function ScopedExecutionSettings({
     setRetryTarget(null);
     void refresh().catch(() => {});
   };
-  const providerOf = (member: Agent) =>
-    member.provider ||
-    accounts.find((row) => row.id === (member.accountKey || "default"))
-      ?.provider ||
-    "codex";
-  const targetProvider = accountPending
-    ? accounts.find((row) => row.id === accountPending.target)?.provider ||
-      "codex"
-    : "";
+  const targetProvider =
+    accounts.find((account) => account.id === accountPending?.target)
+      ?.provider || "codex";
   const members = team.filter(
     (member) =>
       member.id !== agent.id && member.rootId === agent.id && !member.deletedAt,
   );
-  const preview = {
-    moving: members.filter((member) => providerOf(member) === targetProvider),
-    staying: members.filter((member) => providerOf(member) !== targetProvider),
-    stayingProvider: "",
-  };
-  preview.stayingProvider = preview.staying.length
-    ? providerOf(preview.staying[0])
-    : "";
+  const moving = members.filter(
+    (member) => (member.provider || "codex") === targetProvider,
+  );
+  const staying = members.filter(
+    (member) => (member.provider || "codex") !== targetProvider,
+  );
   const checkedModel = useRef("");
   useEffect(() => {
     if (
-      !teamDefaults ||
+      role !== "worker" ||
       !opened ||
       saving ||
       accountPending ||
@@ -644,7 +652,7 @@ function ScopedExecutionSettings({
     void submit(
       { id: agent.id, worker_defaults: next },
       next,
-      `${shortModel(wanted)} is not available on ${accountLabel(stored.account_key)}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
+      `${shortModel(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
     );
   });
   const storedTransfer = jsonObject(agent.accountTransfer);
@@ -841,169 +849,121 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
+  const mobile = useMediaQuery("(max-width: 760px)");
+  const pickerModels = (role === "review" ? reviewOptions : modelOptions)
+    .filter((row) => {
+      if (row.value === DEFAULT) return role !== "orchestrator";
+      const model = infoFor(catalog, row.value);
+      return (
+        !!model &&
+        !model.hidden &&
+        (role === "review" ||
+          (model.provider ||
+            activeAccount?.provider ||
+            agent.provider ||
+            "codex") === pickerProvider)
+      );
+    })
+    .map((row) => ({
+      ...row,
+      label:
+        row.value === DEFAULT
+          ? role === "review"
+            ? "Same as caller"
+            : "Same as main agent"
+          : setupModelName(infoFor(catalog, row.value), row.value),
+    }));
+  const pickerInfo = role === "review" ? reviewInfo : info;
+  const pickerEfforts = (pickerInfo?.supportedReasoningEfforts || []).map(
+    (row) => ({
+      value: row.reasoningEffort,
+      label: title(row.reasoningEffort),
+    }),
+  );
+  const selectedEffort =
+    (role === "review" ? reviewCurrent.effort : current.effort) ||
+    pickerInfo?.defaultReasoningEffort ||
+    pickerEfforts[0]?.value ||
+    "";
   const controls = (
     <>
-      <ModelPicker
-        id={teamDefaults ? undefined : "model"}
-        label={prefix + " model"}
-        visibleLabel={inline ? "Model" : undefined}
-        options={modelOptions}
-        value={current.model || DEFAULT}
-        currentValue={currentModel || ""}
-        disabled={disabled}
-        onChange={(value) =>
-          void change({ model: value === DEFAULT ? null : value })
+      <AgentSetupPicker
+        role={role}
+        onRole={onRole}
+        roles={
+          agent.isLead ? ["orchestrator", "worker", "review"] : ["orchestrator"]
         }
+        provider={pickerProvider}
+        providers={pickerProviders}
+        onProvider={setBrowsedProvider}
+        accounts={connectedAccounts}
+        accountKey={teamDefaults ? current.account_key || "" : accountOf(agent)}
+        onAccount={chooseAccount}
+        automaticAccount={role === "worker"}
+        accountDisabled={
+          saving || accountDisabled || (!teamDefaults && !onAccountChange)
+        }
+        models={pickerModels}
+        model={
+          role === "review"
+            ? reviewCurrent.model || DEFAULT
+            : current.model || DEFAULT
+        }
+        modelLabel={
+          role === "review" ? "Default review model" : prefix + " model"
+        }
+        onModel={(value) => {
+          if (role === "review")
+            void changeReview({ model: value === DEFAULT ? null : value });
+          else void change({ model: value === DEFAULT ? null : value });
+        }}
+        efforts={pickerEfforts}
+        effort={selectedEffort}
+        effortLabel={
+          role === "review" ? "Default review reasoning" : prefix + " reasoning"
+        }
+        onEffort={(value) => {
+          if (role === "review") void changeReview({ effort: value });
+          else void change({ effort: value });
+        }}
+        effortDisabled={role !== "review" && !modeSupported}
+        disabled={disabled || catalog.loading || !!catalog.error}
+        fastAvailable={!!fastTier(info)}
+        fast={current.fast_mode}
+        onFast={() => void change({ fast_mode: !current.fast_mode })}
+        daybreakAvailable={
+          selectedProvider !== "claude" &&
+          (daybreakEnabled || supportsMode(info, true))
+        }
+        daybreak={daybreakEnabled}
+        onDaybreak={() => void change({ daybreak_enabled: !daybreakEnabled })}
       />
-      {selectedProvider !== "claude" &&
-        !catalog.loading &&
-        !catalog.error &&
-        !canEnableDaybreak && (
-          <Button
-            className="model-refresh"
-            variant="subtle"
-            size="compact-xs"
-            onClick={catalog.retry}
-          >
-            Refresh model list
-          </Button>
-        )}
-      <NativeSelect
-        label={inline ? "Reasoning" : prefix + " reasoning"}
-        aria-label={prefix + " reasoning"}
-        data={options}
-        value={current.effort || DEFAULT}
-        disabled={disabled || !modeSupported}
-        description={
-          !modeSupported ? "Unavailable for this model and mode." : undefined
-        }
-        onChange={(event) =>
-          void change({
-            effort:
-              event.currentTarget.value === DEFAULT
-                ? null
-                : event.currentTarget.value,
-          })
-        }
-      />
-      {teamDefaults && (
-        <NativeSelect
-          label="Subagent account"
-          description="Automatic uses the main account when it supports the model, then the application default."
-          data={[{ value: "", label: "Automatic" }, ...accountOptions]}
-          value={current.account_key || ""}
-          disabled={saving}
-          onChange={(event) =>
-            void changeAccount(event.currentTarget.value || null)
-          }
-        />
-      )}
-      {teamDefaults && accountPending && (
-        <p className="notice" role="status">
-          {preview.moving.length
-            ? `Moving ${plural(preview.moving.length, "subagent")} to ${accountLabel(accountPending.target)}.`
-            : "No subagents to move."}
-          {preview.staying.length > 0 &&
-            ` ${plural(preview.staying.length, "subagent")} ${preview.staying.length === 1 ? "stays" : "stay"} on ${preview.stayingProvider}: ${preview.staying
-              .map((member) => member.name)
-              .join(", ")}.`}
-        </p>
-      )}
-      {teamDefaults && !accountPending && shownTransfer && (
-        <AccountTransferStatus
-          transfer={shownTransfer}
-          showCompleted
-          targetLabel={accountLabel(
-            typeof shownTransfer.targetAccountKey === "string"
-              ? shownTransfer.targetAccountKey
-              : undefined,
-          )}
-          pending={saving}
-          onAction={(action) => void runTeamTransferAction(action)}
-        />
-      )}
-      {teamDefaults && agent.provider !== "claude" && (
-        <>
-          <ModelPicker
-            id="review-model"
-            label="Default review model"
-            description="Same as caller uses the model of the agent that requests the review."
-            options={reviewOptions}
-            value={reviewCurrent.model || DEFAULT}
-            disabled={disabled}
-            onChange={(value) =>
-              void changeReview({ model: value === DEFAULT ? null : value })
-            }
-          />
-          <NativeSelect
-            label="Default review reasoning"
-            data={reviewEfforts}
-            value={reviewCurrent.effort || DEFAULT}
-            disabled={disabled || !reviewCurrent.model || !reviewInfo}
-            description={
-              !reviewCurrent.model
-                ? "Uses the caller’s reasoning when no review model is selected."
-                : undefined
-            }
-            onChange={(event) =>
-              void changeReview({
-                effort:
-                  event.currentTarget.value === DEFAULT
-                    ? null
-                    : event.currentTarget.value,
-              })
-            }
-          />
-        </>
-      )}
-      <SettingsSection title="Optional modes">
-        {selectedProvider !== "claude" && (
-          <Switch
-            label="Daybreak"
-            aria-label="Daybreak"
-            checked={daybreakEnabled}
-            disabled={
-              disabled ||
-              (daybreakEnabled ? !canDisableDaybreak : !canEnableDaybreak)
-            }
-            description={
-              canEnableDaybreak
-                ? "Use Daybreak with supported models."
-                : "Not available for this account."
-            }
-            onChange={(event) =>
-              void change({ daybreak_enabled: event.currentTarget.checked })
-            }
-          />
-        )}
-        {!catalog.loading && !catalog.error && !modeSupported && (
-          <p className="notice" role="status">
-            {isDaybreakAlias(selectedModel)
-              ? "This chat uses a Daybreak model alias. Select a model and enable Daybreak to use the separate mode."
-              : "The selected model does not support this mode in the account model list. Select another model or change the mode."}
-          </p>
-        )}
-        <Switch
-          label="Fast mode"
-          aria-label="Fast mode"
-          checked={current.fast_mode}
-          disabled={
-            disabled ||
-            !modeSupported ||
-            (!current.fast_mode && !fastTier(info))
-          }
-          description={
-            fastTier(info)?.description || "Unavailable for this model"
-          }
-          onChange={(event) =>
-            void change({ fast_mode: event.currentTarget.checked })
-          }
-        />
-      </SettingsSection>
-      {teamDefaults && (
+      {role === "worker" && (
         <p className="notice">
           For new subagents. An account change also moves existing ones.
         </p>
+      )}
+      {role === "worker" && accountPending && (
+        <p className="notice" role="status">
+          {moving.length
+            ? `Moving ${plural(moving.length, "subagent")} to ${setupAccountName(accounts.find((account) => account.id === accountPending.target))}.`
+            : "No subagents to move."}
+          {staying.length > 0 &&
+            ` ${plural(staying.length, "subagent")} ${staying.length === 1 ? "stays" : "stay"} on ${staying[0].provider || "codex"}: ${staying.map((member) => member.name).join(", ")}.`}
+        </p>
+      )}
+      {teamDefaults && shownTransfer && (
+        <AccountTransferStatus
+          transfer={shownTransfer}
+          targetLabel={setupAccountName(
+            accounts.find(
+              (account) => account.id === shownTransfer.targetAccountKey,
+            ),
+          )}
+          showCompleted
+          pending={saving}
+          onAction={(action) => void runTeamTransferAction(action)}
+        />
       )}
       {status && (
         <p role="status" className="notice execution-status">
@@ -1068,7 +1028,7 @@ function ScopedExecutionSettings({
   );
   const permissions = (
     <>
-      {!teamDefaults && agent.isLead && agent.provider !== "claude" && (
+      {agent.isLead && agent.provider !== "claude" && (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>
           <Switch
@@ -1097,6 +1057,10 @@ function ScopedExecutionSettings({
       )}
     </>
   );
+  const mainSettings =
+    role === "orchestrator" ? current : settingsFor(agent, false);
+  const mainModel = mainSettings.model || agent.model || "";
+  const mainInfo = infoFor(parentCatalog, mainModel);
   const trigger = (
     <Button
       className="execution-menu"
@@ -1115,57 +1079,64 @@ function ScopedExecutionSettings({
         setOpened(!opened);
       }}
     >
-      {inline && (
-        <span className="execution-role">
-          {teamDefaults ? "Subagents" : "Main agent"}
-        </span>
-      )}
+      <ProviderMark provider={agent.provider || "codex"} />
       <span className="execution-selected">
-        {selectedProvider === "claude"
-          ? info?.displayName || shortModel(selectedModel)
-          : shortModel(selectedModel)}
-        {(daybreakEnabled || modeQueued) &&
-          ` · ${modeLabel}${modeQueued ? " next turn" : ""}`}
+        {setupModelName(mainInfo, mainModel)} ·{" "}
+        {title(
+          mainSettings.effort || mainInfo?.defaultReasoningEffort || "Default",
+        )}
+        {connectedAccounts.filter(
+          (account) =>
+            (account.provider || "codex") === (agent.provider || "codex"),
+        ).length > 1 &&
+          ` · ${setupAccountName(accounts.find((account) => account.id === accountOf(agent)))}`}
       </span>
     </Button>
   );
   if (permissionsOnly) return permissions;
-  if (inline)
+  if (mobile)
     return (
-      <div className="execution-inline">
+      <>
         {trigger}
         {permissionsTarget && createPortal(permissions, permissionsTarget)}
-        {opened && (
-          <div
-            className="execution-inline-body"
-            role="region"
-            aria-label={label}
-          >
+        <Drawer
+          opened={opened}
+          onClose={() => setOpened(false)}
+          position="bottom"
+          size="auto"
+          title={label}
+          className="setup-sheet"
+          withinPortal
+        >
+          <div className="execution-dropdown" role="region" aria-label={label}>
             {controls}
           </div>
-        )}
-      </div>
+        </Drawer>
+      </>
     );
   return (
-    <Popover
-      opened={opened}
-      onChange={setOpened}
-      position="top-start"
-      width={340}
-      shadow="md"
-      middlewares={{ flip: true, shift: true, size: true }}
-      closeOnEscape={false}
-      trapFocus
-      returnFocus
-    >
-      <Popover.Target>{trigger}</Popover.Target>
-      <Popover.Dropdown
-        className="execution-dropdown"
-        role="dialog"
-        aria-label={label}
+    <>
+      {permissionsTarget && createPortal(permissions, permissionsTarget)}
+      <Popover
+        opened={opened}
+        onChange={setOpened}
+        position="top-start"
+        width={340}
+        shadow="md"
+        middlewares={{ flip: true, shift: true, size: true }}
+        closeOnEscape={false}
+        trapFocus
+        returnFocus
       >
-        {controls}
-      </Popover.Dropdown>
-    </Popover>
+        <Popover.Target>{trigger}</Popover.Target>
+        <Popover.Dropdown
+          className="execution-dropdown"
+          role="dialog"
+          aria-label={label}
+        >
+          {controls}
+        </Popover.Dropdown>
+      </Popover>
+    </>
   );
 }

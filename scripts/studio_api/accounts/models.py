@@ -322,6 +322,17 @@ class DeleteAccountRequest(RequiredAccountKeyRequest):
     request_id: RequestUUID
 
 
+def _account_name(value: str) -> str:
+    if len(value.strip()) > 32:
+        raise ValueError("The account name must contain at most 32 characters")
+    return value
+
+
+class AccountNameRequest(RequiredAccountKeyRequest):
+    label: Annotated[str, AfterValidator(_account_name)]
+    request_id: RequestUUID
+
+
 class LoginRequest(ContractModel):
     request_id: RequestUUID
     account_key: str | None = None

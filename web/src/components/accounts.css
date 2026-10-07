@@ -430,3 +430,43 @@
 .account-row-actions .account-destructive-action {
   color: light-dark(var(--mantine-color-red-7), var(--mantine-color-red-4));
 }
+
+.account-name,
+.account-name-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.account-name-label {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+.account-name > button {
+  max-width: 100%;
+  height: auto;
+  min-height: var(--studio-action-size);
+}
+.account-name > button .mantine-Button-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.account-name-form {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 8px;
+  width: 100%;
+}
+.account-name-form > .mantine-TextInput-root {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+@media (max-width: 600px) {
+  .account-name button {
+    min-height: 44px;
+  }
+  .account-name-form input {
+    font-size: 16px;
+  }
+}

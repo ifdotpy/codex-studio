@@ -1,4 +1,5 @@
-import { Button, Checkbox, NativeSelect, TextInput } from "@mantine/core";
+import { Button, TextInput } from "@mantine/core";
+import { AccountTiles } from "./AccountTiles";
 import { useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
 import type { Snapshot } from "../types";
@@ -56,61 +57,45 @@ export default function ProjectAccount({
       }}
     >
       <p style={{ overflowWrap: "anywhere" }}>{path}</p>
-      <Checkbox.Group
+      <AccountTiles
         label="Accounts shown first for this project"
+        multiple
+        providers={[
+          ...new Set(
+            [
+              ...activeAccounts.filter(
+                (account) => !account.disconnected || keys.includes(account.id),
+              ),
+              ...archivedMemberships,
+            ].map((account) => account.provider || "codex"),
+          ),
+        ]}
+        accounts={[
+          ...activeAccounts.filter(
+            (account) => !account.disconnected || keys.includes(account.id),
+          ),
+          ...archivedMemberships,
+        ]}
         value={keys}
+        disabled={save.pending || save.frozen}
+        accountDisabled={(account) =>
+          account.status !== "ready" && !keys.includes(account.id)
+        }
         onChange={(next) => {
           setKeys(next);
           if (!next.includes(key)) setKey("");
         }}
-      >
-        <div style={{ display: "grid", gap: 12, margin: "12px 0 20px" }}>
-          {activeAccounts
-            .filter(
-              (account) => !account.disconnected || keys.includes(account.id),
-            )
-            .map((account) => (
-              <Checkbox
-                key={account.id}
-                value={account.id}
-                label={`${account.email || account.label || account.id}${account.disconnected ? " (disconnected)" : ""}`}
-                disabled={
-                  save.pending ||
-                  save.frozen ||
-                  (account.status !== "ready" && !keys.includes(account.id))
-                }
-              />
-            ))}
-          {archivedMemberships.map((account) => (
-            <Checkbox
-              key={account.id}
-              value={account.id}
-              label={`${account.email || account.label || account.id} (deleted, remove from project)`}
-              disabled={save.pending || save.frozen}
-            />
-          ))}
-        </div>
-      </Checkbox.Group>
+      />
       <p className="notice">Shown first in the chat account menu.</p>
-      <NativeSelect
+      <AccountTiles
         label="Default account for new chats"
+        accounts={activeAccounts.filter((account) => keys.includes(account.id))}
         value={displayedKey}
         disabled={save.pending || save.frozen}
-        onChange={(event) => setKey(event.currentTarget.value)}
-        data={[
-          {
-            value: "",
-            label: "Select a connected project account",
-            disabled: true,
-          },
-          ...activeAccounts
-            .filter((account) => keys.includes(account.id))
-            .map((account) => ({
-              value: account.id,
-              label: account.email || account.label || account.id,
-              disabled: account.status !== "ready" || !!account.disconnected,
-            })),
-        ]}
+        accountDisabled={(account) =>
+          account.status !== "ready" || !!account.disconnected
+        }
+        onChange={setKey}
       />
       <p className="notice">New chats in this project use this account.</p>
       {!ready && !save.frozen && (
