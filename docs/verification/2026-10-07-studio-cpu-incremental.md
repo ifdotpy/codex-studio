@@ -78,8 +78,8 @@ The separate supervisor owns the native stdin and stdout pipes.
 It has no code reload or pipe handoff action.
 Its restart recovery sends TERM, and can send KILL, to surviving native process groups.
 Replacing backend functions cannot change that daemon's Journal objects.
-The new supervisor source therefore applies at its next safe start.
-It does not reduce the current daemon's CPU use.
+The first live update stages the supervisor source for its next safe start.
+It does not reduce that original daemon's CPU use.
 
 The live backend uses the legacy protocol 2 constructor.
 The applied backend release retains that constructor, process identity, native work, and state-directory identity.
@@ -113,8 +113,8 @@ The scheduler thread reports 21.78% before and 16.65% after.
 History and disk threads still report 15.05% and 13.64% after.
 Their remaining work includes history steps and physical APFS file measurements.
 The compact roster and grouped paths reduce only part of that work.
-The supervisor connection pool remains staged for a future safe start.
-It is not active in the current supervisor daemon.
+The supervisor connection pool remains inactive during these first measurements.
+A later [authorized restart](2026-10-07-authorized-supervisor-restart.md) activates it and verifies chat recovery.
 
 Private source evidence:
 
