@@ -60,6 +60,7 @@ class SettingsRuntime(Runtime):
         while not self.closed:
             self.changed.wait(0.1)
             self.changed.clear()
+            self._publish_committed_resource_changes()
 
 runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') or os.environ.get('TOKEN_RATE_WORKER_COUNT') else Runtime
 c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)

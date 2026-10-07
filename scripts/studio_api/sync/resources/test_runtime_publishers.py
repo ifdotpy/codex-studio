@@ -635,6 +635,56 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 hub.close()
                 connection.close()
 
+    async def test_scheduler_publishes_committed_queue_and_receipt_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            runtime = Runtime.__new__(Runtime)
+            runtime.root = state_dir
+            runtime.lock = threading.RLock()
+            runtime._rate_cache_lock = threading.RLock()
+            runtime.changed = threading.Event()
+            runtime.changed.set()
+            runtime.closed = False
+            runtime._committed_resource_changes = {}
+            runtime._committed_resource_overflow = False
+            runtime._committed_resource_lock = threading.Lock()
+            local = threading.local()
+            runtime._callback_db = local
+            connection = object()
+            staged = {connection: {}}
+            overflowed = {connection: False}
+            local.after_commit_resources = staged
+            local.after_commit_resource_overflow = overflowed
+
+            hub = ResourceHub("workspace-a")
+            register_resource_hub(state_dir, hub)
+            queue = hub.subscribe(
+                [ResourceRef(QueueResource(kind="queue", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            receipts = hub.subscribe(
+                [ResourceRef(ReceiptsResource(kind="receipts", agentId="agent-a"))],
+                loop=asyncio.get_running_loop(),
+            )
+            runtime._retry_dirty_workspace_refresh = lambda: None
+            runtime.monitors_tick = lambda: None
+            runtime.rules_tick = lambda: None
+            runtime.capacity_tick = lambda: None
+            runtime.usage_resume_tick = lambda: None
+            runtime.dispatch = lambda: setattr(runtime, "closed", True)
+            try:
+                runtime._stage_event_resources(connection, "agent-a")
+                runtime._queue_staged_resource_changes(staged, overflowed, connection)
+                runtime.schedule()
+                for subscription in (queue, receipts):
+                    event = await subscription.next_event(timeout=1)
+                    self.assertIsNotNone(event)
+            finally:
+                queue.close()
+                receipts.close()
+                unregister_resource_hub(state_dir, hub)
+                hub.close()
+
     async def test_runtime_event_sql_writes_are_commit_only_and_deduped(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             state_dir = Path(temporary)
