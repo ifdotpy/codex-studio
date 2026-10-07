@@ -9,11 +9,13 @@ import json
 import os
 from pathlib import Path
 import signal
+import socket
 import sqlite3
 import sys
 import tarfile
 import tempfile
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
 from common import GuestError, process_identity
@@ -166,6 +168,80 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         result = await self.call("exec", params, "lost-exec")
         self.assertEqual(result["exitCode"], 0)
         self.assertEqual(len(self.service.list_providers()), 1)
+
+    async def test_idle_timeout_starts_after_operation_result_and_reconnect_replays(self):
+        socket_path = self.root / "guest.sock"
+        server = await asyncio.start_unix_server(self.service.client, path=str(socket_path))
+        self.servers.append(server)
+        reader, writer = await asyncio.open_unix_connection(str(socket_path))
+        marker = self.home / "long-exec"
+        params = self.command(f"import time; time.sleep(.25); open({str(marker)!r},'a').write('once'); print('done')")
+        request = {"id": "long-exec", "method": "exec", "params": params}
+        received = []
+        with patch("service.CLIENT_IDLE_SECONDS", 0.05):
+            writer.write(json.dumps(request).encode() + b"\n")
+            await writer.drain()
+            while True:
+                line = await asyncio.wait_for(reader.readline(), 5)
+                self.assertTrue(line, "The idle timeout closed a connection with an active operation")
+                response = json.loads(line)
+                received.append(response)
+                if "result" in response:
+                    self.assertEqual(response["result"]["exitCode"], 0)
+                    break
+            self.assertEqual(await asyncio.wait_for(reader.readline(), 2), b"")
+        writer.close()
+        await writer.wait_closed()
+        # The same durable request ID retrieves the complete result after idle close.
+        reader, writer = await asyncio.open_unix_connection(str(socket_path))
+        writer.write(json.dumps(request).encode() + b"\n")
+        await writer.drain()
+        replay = []
+        while True:
+            response = json.loads(await asyncio.wait_for(reader.readline(), 5))
+            replay.append(response)
+            if "result" in response:
+                break
+        writer.close()
+        await writer.wait_closed()
+        self.assertEqual(replay, received)
+        self.assertEqual(marker.read_text(), "once")
+
+    async def test_native_recovers_dead_supervisor_socket(self):
+        await self.service.native.ensure()
+        previous = self.service.native.process
+        previous.terminate()
+        await asyncio.to_thread(previous.wait, timeout=5)
+        self.assertTrue(self.service.native.socket.exists())
+        await self.service.native.ensure()
+        self.assertNotEqual(self.service.native.process.pid, previous.pid)
+        await self.service.native.call("health")
+        record = json.loads((self.service.native.root / "supervisor.lock").read_text())
+        self.assertEqual(record["pid"], self.service.native.process.pid)
+
+    async def test_native_never_replaces_unresponsive_live_or_unproven_owner(self):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from codex_process_supervisor import process_start_time
+        # A bound socket without listen refuses connections. The lease owns this
+        # test process, so recovery must not create or replace a supervisor.
+        with socket.socket(socket.AF_UNIX) as stale:
+            stale.bind(str(self.service.native.socket))
+            before = self.service.native.socket.stat().st_ino
+            lease = self.service.native.root / "supervisor.lock"
+            lease.write_text(json.dumps({"pid": os.getpid(), "startTime": process_start_time(os.getpid())}))
+            try:
+                with self.assertRaises(GuestError) as error:
+                    await self.service.native.ensure()
+                self.assertEqual(error.exception.code, "outcome_unknown")
+                self.assertIsNone(self.service.native.process)
+                self.assertEqual(self.service.native.socket.stat().st_ino, before)
+                lease.write_text("invalid")
+                with self.assertRaises(GuestError):
+                    await self.service.native.ensure()
+                self.assertIsNone(self.service.native.process)
+            finally:
+                # This test lease names the test runner, not a test supervisor.
+                lease.unlink()
 
     async def test_pending_receipt_is_never_repeated(self):
         from common import digest

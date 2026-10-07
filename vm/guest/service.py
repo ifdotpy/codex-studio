@@ -28,6 +28,7 @@ READ_METHODS = {"health", "workspace.status", "provider.attach", "provider.list"
 METHODS = READ_METHODS | {"exec", "sync.push", "workspace.startBase", "workspace.create",
                           "workspace.archive", "workspace.remove", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
+CLIENT_IDLE_SECONDS = 60
 
 
 class Service:
@@ -550,6 +551,7 @@ class Service:
         self.clients += 1
         output_lock = asyncio.Lock()
         connection_tasks = set()
+        read_task = None
 
         async def send(value):
             try:
@@ -576,10 +578,21 @@ class Service:
 
         try:
             while not writer.is_closing():
-                try:
-                    line = await asyncio.wait_for(reader.readline(), 60)
-                except (ValueError, asyncio.LimitOverrunError, asyncio.TimeoutError):
+                if read_task is None:
+                    read_task = asyncio.create_task(reader.readline())
+                # Start the idle deadline only after every operation has sent its result.
+                done, _ = await asyncio.wait({read_task, *connection_tasks},
+                    timeout=None if connection_tasks else CLIENT_IDLE_SECONDS,
+                    return_when=asyncio.FIRST_COMPLETED)
+                if not done:
                     break
+                if read_task not in done:
+                    continue
+                try:
+                    line = read_task.result()
+                except (ValueError, asyncio.LimitOverrunError):
+                    break
+                read_task = None
                 if not line:
                     break
                 if len(line) > MAX_LINE or not line.endswith(b"\n"):
@@ -600,6 +613,9 @@ class Service:
                 task.add_done_callback(connection_tasks.discard)
         finally:
             self.clients -= 1
+            if read_task is not None:
+                read_task.cancel()
+                await asyncio.gather(read_task, return_exceptions=True)
             # Do not cancel operations. They finish and save their receipts after disconnect.
             writer.close()
 

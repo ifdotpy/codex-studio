@@ -148,6 +148,9 @@ restart preserves the supervisor and journals. On reconnect, call `provider.list
 and `provider.attach`. A VM reboot ends its processes; saved exit or lost-state
 records remain visible. Stdio journals have a 64 MiB output limit per process. Native providers use the
 existing supervisor journal limit and acknowledgement backpressure.
+After a reboot, the service verifies the saved native supervisor lease. The
+maintained supervisor replaces the socket only after it proves the owner is dead
+and takes the exclusive lease. A live or unproven owner prevents replacement.
 `outputLimitBytes` can reduce the stdio limit, from 1 byte to 64 MiB. Exceeding
 that limit stops the process with `reason:"output_limit"`. Completed journals and
 request receipts remain until an operator removes the guest state. `exec` uses
@@ -157,7 +160,9 @@ Errors use `invalid_request`, `invalid_params`, `not_found`, `id_conflict`,
 `outcome_unknown`, `timeout`, `busy`, `output_limit`, or `internal`.
 Clients must report `outcome_unknown` and inspect saved state. They must not retry
 the operation with a new ID. Socket input and output have bounded deadlines.
-The guest accepts at most 32 connections and 16 concurrent operations.
+The guest accepts at most 32 connections and 16 concurrent operations. A
+connection closes after 60 seconds with no request only when it has no operation
+in progress. The idle deadline starts after the last operation sends its result.
 Resource locks have a 30-second deadline. Internal helper deadlines remain
 active after the service exits. Bundle transfer uses `file.stat` and `file.read`,
 then verifies the whole file checksum on the Mac. It does not use stdout journals. Slow readers receive

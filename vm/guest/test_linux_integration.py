@@ -4,9 +4,12 @@ import base64
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import signal
 import socket
 import subprocess
+import sys
 import tarfile
 import tempfile
 import time
@@ -68,6 +71,17 @@ def main(path):
         client.call("upload.chunk", {"uploadId": identity, "seq": sequence,
                                     "data": base64.b64encode(data[offset:offset + 1024**2]).decode()})
     client.call("upload.commit", {"uploadId": identity})
+    marker = root + "/long-exec-proof"
+    long_params = {"argv": ["python3", "-c", f"import time; time.sleep(65); open({marker!r},'a').write('once'); print('done')"],
+                   "cwd": root, "timeoutSeconds": 90}
+    started = time.monotonic()
+    long_result, long_events = client.call("exec", long_params, "long-exec:" + identity)
+    long_elapsed = time.monotonic() - started
+    assert long_elapsed >= 65 and long_result["exitCode"] == 0, (long_elapsed, long_result)
+    # A fresh connection retrieves the saved result without executing the command again.
+    repeated, repeated_events = client.call("exec", long_params, "long-exec:" + identity)
+    assert (repeated, repeated_events) == (long_result, long_events)
+    assert client.exec(["cat", marker], root) == b"once"
     base, _ = client.call("workspace.startBase", {"root": root})
     assert base["state"] == "ready", base
     agent = "linux-" + identity
@@ -126,10 +140,31 @@ def main(path):
     duplicate, _ = client.call("provider.rpc", {**write, "nativeId": 19, "message": {**write["message"], "id": 19}})
     assert duplicate["duplicate"] and duplicate["remoteId"] == 1
     client.call("provider.stop", {"handle": native["handle"]})
+    # A reboot leaves the same lease and socket files, with a dead owner.
+    lease = Path(health["state"]) / "native" / "supervisor.lock"
+    saved_owner = json.loads(lease.read_text())
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from codex_process_supervisor import process_start_time
+    assert process_start_time(saved_owner["pid"]) == saved_owner["startTime"]
+    os.kill(saved_owner["pid"], signal.SIGTERM)
+    deadline = time.monotonic() + 10
+    while process_start_time(saved_owner["pid"]) == saved_owner["startTime"]:
+        assert time.monotonic() < deadline, "The test supervisor did not stop"
+        time.sleep(0.05)
+    assert lease.with_name("supervisor.sock").exists()
+    subprocess.run(["sudo", "systemctl", "restart", "codex-studio-guest.service"], check=True, timeout=20)
+    recovered, _ = client.call("provider.start", native_params)
+    current_owner = json.loads(lease.read_text())
+    assert current_owner["pid"] != saved_owner["pid"]
+    assert process_start_time(current_owner["pid"]) == current_owner["startTime"]
+    assert recovered["state"] == "running" and recovered["generation"] > native["generation"]
+    client.call("provider.stop", {"handle": recovered["handle"]})
     client.call("workspace.archive", {"agentId": agent})
     client.call("workspace.remove", {"agentId": agent})
     print(json.dumps({"uid": health["uid"], "filesystem": health["filesystem"], "commit": commit,
-                      "fetchMatched": True, "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True, "archiveRemoved": True}))
+                      "fetchMatched": True, "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
+                      "longExecSeconds": round(long_elapsed, 2), "longExecReconnectReplay": True,
+                      "deadNativeSocketRecovered": True, "archiveRemoved": True}))
 
 
 if __name__ == "__main__":

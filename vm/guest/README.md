@@ -49,6 +49,9 @@ python3 vm/guest/test_linux_integration.py --socket /var/lib/codex-studio/guest/
 
 The test checks a btrfs base, a private workspace, a Git commit, and bundle fetch.
 It also checks raw and native provider processes across a real systemd restart.
+An exec command runs for 65 seconds and returns its result through the same
+connection. A retry on a new connection retrieves its saved result. The test also
+checks recovery of a dead native supervisor with its lease and socket on disk.
 The native check uses a local JSON provider fixture. It sends no model request.
 Remove the test machine after the test. Production uses vsock only.
 
