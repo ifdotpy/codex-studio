@@ -77,6 +77,21 @@ test("mutation projections propagate between pages sharing one browser context @
       await page.addInitScript(() => {
         const OriginalEventSource = window.EventSource;
         window.__entityPersisterCompletions = [];
+        window.__entityMutationDecodes = [];
+        const responseJson = Response.prototype.json;
+        Response.prototype.json = async function (...args) {
+          const value = await responseJson.apply(this, args);
+          if (
+            this.url &&
+            new URL(this.url).pathname === "/api/leads" &&
+            value?._syncEntities?.length
+          )
+            window.__entityMutationDecodes.push({
+              at: performance.timeOrigin + performance.now(),
+              sequences: value._syncEntities.map((row) => row.seq),
+            });
+          return value;
+        };
         window.__studioSyncEntityPersisterProbe = (value) =>
           window.__entityPersisterCompletions.push(value);
         window.__entityFrames = [];
@@ -219,6 +234,14 @@ test("mutation projections propagate between pages sharing one browser context @
           ),
         body._syncEntities.map((row) => row.seq),
       );
+      const responseDecodedAt = await page.evaluate(
+        (sequences) =>
+          window.__entityMutationDecodes.find((decode) =>
+            sequences.every((sequence) => decode.sequences.includes(sequence)),
+          )?.at,
+        body._syncEntities.map((row) => row.seq),
+      );
+      assert.equal(typeof responseDecodedAt, "number");
       if (completion.advanced) {
         assert.equal(
           completion.advanced,
@@ -296,13 +319,22 @@ test("mutation projections propagate between pages sharing one browser context @
           coveringPull,
           "an earlier entity pull must account for the already-covered response rows",
         );
+        const pullStartedAt =
+          pulls[coveringPull.tab][coveringPull.ordinal].startedAt;
         assert.ok(
-          coveringPull.ordinal < pullCountsBeforeMutation[coveringPull.tab],
-          `covering pull must predate this mutation: ${JSON.stringify(coveringPull)}`,
+          pullStartedAt < responseDecodedAt,
+          `already-covered pull dispatched after mutation response decode: ${JSON.stringify({ ...coveringPull, pullStartedAt, responseDecodedAt })}`,
         );
         console.log(
           "MUTATION_ROWS_ALREADY_COVERED",
-          JSON.stringify({ ...coveringPull, highestSequence }),
+          JSON.stringify({
+            ...coveringPull,
+            pullStartedAt,
+            responseDecodedAt,
+            highestSequence,
+            pullPredatedMutationSnapshot:
+              coveringPull.ordinal < pullCountsBeforeMutation[coveringPull.tab],
+          }),
         );
       }
       await page
@@ -312,9 +344,8 @@ test("mutation projections propagate between pages sharing one browser context @
       return body.id;
     };
 
-    // Pull start is timestamped in Node from Playwright's request event, while
-    // persister completion is timestamped in the renderer page; do not compare
-    // those clocks. This test checks observed rows and pull counts directly.
+    // Pull start is timestamped by Playwright and response decode in the
+    // renderer; their clocks may have small skew, so compare ordering only.
     const pullsBeforeFirst = [...countPulls];
     const firstId = await createChat(pages[0], pullsBeforeFirst);
     await pages[1].locator(`[data-chat="${firstId}"]`).waitFor();
