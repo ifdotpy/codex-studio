@@ -4,10 +4,12 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import copy
+import concurrent.futures
 import importlib.util
 import subprocess
 import sys
 import tempfile
+import threading
 import types
 import unittest
 from pathlib import Path
@@ -117,11 +119,15 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertEqual(record['imageWorkspacePhase'], 'read_only')
         self.assertEqual(record['cwd'], str(self.repo / 'project'))
         self.assertEqual(self.rt.turn_permissions(record), {
-            'approvalPolicy': 'never', 'sandboxPolicy': {'type': 'readOnly'}})
+            'approvalPolicy': 'never', 'sandboxPolicy': {
+                'type': 'workspaceWrite',
+                'writableRoots': [self.rt.image_workspace_temp(record)],
+                'networkAccess': False}})
         with self.rt.db() as db:
             text = db.execute('SELECT text FROM runtime_events WHERE id=?',
                               (worker + ':initial',)).fetchone()[0]
         self.assertIn('read-only until Studio sends a workspace-ready notice', text)
+        self.assertIn('Read the source folder at ' + record['cwd'] + ' by its absolute path', text)
 
     def test_folder_outside_git_gets_an_image_when_supported(self):
         folder = self.root / 'plain-folder'
@@ -213,6 +219,11 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertEqual(params['approvalPolicy'], 'never')
         self.assertEqual(params['sandbox'], 'read-only')
         self.assertEqual(params['claude']['permissionMode'], 'plan')
+        self.assertEqual(params['studioImageWorkspaceTempDir'],
+                         self.rt.image_workspace_temp(worker))
+        worker.update(imageWorkspaceReady=True, cwd=str(self.root / 'image-copy'))
+        ready = self.rt.new_thread_params(worker)
+        self.assertIsNone(ready['studioImageWorkspaceTempDir'])
 
     def test_codex_initial_thread_uses_read_only_without_approval_wait(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
@@ -221,7 +232,9 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         worker.update(yoloMode=True)
         params = self.rt.new_thread_params(worker)
         self.assertEqual(params['approvalPolicy'], 'never')
-        self.assertEqual(params['sandbox'], 'read-only')
+        self.assertEqual(params['sandbox'], 'workspace-write')
+        self.assertEqual(params['cwd'], self.rt.image_workspace_temp(worker))
+        self.assertNotEqual(params['cwd'], worker['cwd'])
 
     def test_codex_protocol_switches_from_read_only_to_the_image_path(self):
         eventually = fixture.f.eventually
@@ -239,7 +252,11 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                                for method, params in self.rt.server.calls))
         first = [params for method, params in self.rt.server.calls if method == 'turn/start'
                  and params['threadId'] == self.rt.agent(worker_id)['threadId']][-1]
-        self.assertEqual(first['sandboxPolicy'], {'type': 'readOnly'})
+        temp_dir = self.rt.image_workspace_temp(self.rt.agent(worker_id))
+        self.assertEqual(first['cwd'], temp_dir)
+        self.assertEqual(first['sandboxPolicy'], {
+            'type': 'workspaceWrite', 'writableRoots': [temp_dir],
+            'networkAccess': False})
         eventually(lambda: self.rt.agent(worker_id)['turnId'] is not None)
         self.rt.server.complete(self.rt.agent(worker_id)['threadId'],
                                 self.rt.agent(worker_id)['turnId'])
@@ -267,6 +284,136 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.assertEqual(notice_turn['cwd'], str(project))
             self.assertEqual(notice_turn['sandboxPolicy']['type'], 'workspaceWrite')
             self.assertIn(str(project), notice_turn['input'][0]['text'])
+
+    def test_ready_base_during_initial_preparation_preserves_thread_and_input(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.schedule_fast_dispatch = lambda *args, **kwargs: None
+        mount = self.root / 'race-mount'
+        project = mount / 'repo' / 'project'
+        project.mkdir(parents=True)
+        engine = types.ModuleType('codex_workspace_images')
+        callbacks = []
+        def start(repo, on_done=None, retry_failed=False):
+            if on_done:
+                callbacks.append(on_done)
+            return {'state': 'ready'}
+        engine.start_base_build = Mock(side_effect=start)
+        engine.create_workspace = Mock(return_value={
+            'mount': str(mount), 'path': str(mount / 'repo')})
+        engine.ensure_mounted = Mock(return_value={
+            'mount': str(mount), 'path': str(mount / 'repo')})
+        engine.exec_prefix = Mock(return_value=[])
+        native = concurrent.futures.Future()
+        requested = threading.Event()
+        self.rt.connect()
+        original_submit = self.rt.server.submit
+        def submit(method, params):
+            if method == 'thread/start':
+                self.rt.server.calls.append((method, copy.deepcopy(params)))
+                requested.set()
+                return native
+            return original_submit(method, params)
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
+                patch.object(self.rt.server, 'submit', side_effect=submit):
+            worker = self.spawn('Ready preparation race')['id']
+            self.rt.dispatch(worker)
+            self.assertTrue(requested.wait(3))
+            operation = self.rt.preparations[worker]
+            # The base engine calls this immediately when its base is ready.
+            callbacks[0]({'state': 'ready'}).result(3)
+            callbacks[0]({'state': 'ready'}).result(3)
+            self.assertFalse(self.rt.agent(worker)['imageWorkspaceReady'])
+            engine.create_workspace.assert_not_called()
+            native.set_result({'thread': {'id': 'race-thread'}})
+            self.assertEqual(operation['future'].result(3)['threadId'], 'race-thread')
+            fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspaceReady'])
+            fixture.f.eventually(lambda: self.rt.delivery_receipt(worker + ':initial')['status'] == 'delivered')
+            record = self.rt.agent(worker)
+            self.assertIsNone(record['error'])
+            self.assertEqual(record['threadId'], 'race-thread')
+            self.rt.server.complete('race-thread', record['turnId'])
+            fixture.f.eventually(lambda: not self.rt.agent(worker)['inFlight'])
+            self.rt.dispatch(worker)
+            fixture.f.eventually(lambda: self.rt.delivery_receipt(
+                'image-workspace-ready:' + worker)['status'] == 'delivered')
+            starts = [params for method, params in self.rt.server.calls if method == 'thread/start']
+            resumes = [params for method, params in self.rt.server.calls if method == 'thread/resume']
+            turns = [params for method, params in self.rt.server.calls if method == 'turn/start']
+            self.assertEqual(len(starts), 1)
+            self.assertEqual(resumes[-1]['threadId'], 'race-thread')
+            self.assertEqual(resumes[-1]['cwd'], str(project))
+            self.assertEqual(turns[-1]['cwd'], str(project))
+            self.assertEqual(sum(p['clientUserMessageId'] == worker + ':initial' for p in turns), 1)
+            engine.create_workspace.assert_called_once()
+
+    def test_base_exception_during_preparation_waits_without_native_replay(self):
+        from codex_runtime import PreparationPending
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.schedule_fast_dispatch = lambda *args, **kwargs: None
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn('Preparation fallback')['id']
+        self.rt.start_image_base.side_effect = RuntimeError('base unavailable')
+        self.rt.preparation_wait_seconds = .01
+        native = concurrent.futures.Future()
+        self.rt.connect()
+        original_submit = self.rt.server.submit
+        requests = []
+        def submit(method, params):
+            if method == 'thread/start':
+                requests.append(params)
+                return native
+            return original_submit(method, params)
+        with patch.object(self.rt.server, 'submit', side_effect=submit):
+            waits = []
+            for _ in range(2):
+                with self.assertRaises(PreparationPending) as pending:
+                    self.rt.prepare(self.rt.agent(worker))
+                waits.append(pending.exception.future)
+            self.assertIs(waits[0], waits[1])
+            self.assertEqual(len(requests), 1)
+            native.set_result({'thread': {'id': 'fallback-thread'}})
+            self.assertEqual(waits[0].result(3)['threadId'], 'fallback-thread')
+            fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspacePhase'] == 'fallback')
+            record = self.rt.agent(worker)
+            self.assertTrue(record['worktree'])
+            self.assertEqual(record['threadId'], 'fallback-thread')
+            self.assertIsNone(record['error'])
+            self.assertNotIn(worker, self.rt.loaded)
+
+    def test_ready_callback_waits_for_preparation_before_operation_registration(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.schedule_fast_dispatch = lambda *args, **kwargs: None
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker = self.spawn('Before operation registration')['id']
+        mount = self.root / 'registration-mount'
+        (mount / 'repo' / 'project').mkdir(parents=True)
+        engine = types.ModuleType('codex_workspace_images')
+        engine.create_workspace = Mock(return_value={
+            'mount': str(mount), 'path': str(mount / 'repo')})
+        engine.exec_prefix = Mock(return_value=[])
+        entered, release = threading.Event(), threading.Event()
+        original_params = self.rt.new_thread_params
+        def params(agent):
+            result = original_params(agent)
+            entered.set()
+            if not release.wait(3):
+                raise RuntimeError('Preparation parameter gate timed out')
+            return result
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
+                patch.object(self.rt, 'new_thread_params', side_effect=params), \
+                patch.object(self.rt, '_send_image_workspace_notice'):
+            prepared = self.rt.pool.submit(self.rt.prepare, self.rt.agent(worker))
+            self.assertTrue(entered.wait(3))
+            callback = self.rt.pool.submit(self.rt.image_base_completed, worker, {'state': 'ready'})
+            try:
+                self.assertFalse(callback.done())
+                self.assertFalse(self.rt.agent(worker)['imageWorkspaceReady'])
+            finally:
+                release.set()
+            self.assertIsNotNone(prepared.result(3)['threadId'])
+            callback.result(3)
+            fixture.f.eventually(lambda: self.rt.agent(worker)['imageWorkspaceReady'])
+            self.assertIsNone(self.rt.agent(worker)['error'])
 
     def test_ready_image_workspace_keeps_existing_worktree_permissions(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
