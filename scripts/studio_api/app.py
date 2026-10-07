@@ -1,6 +1,7 @@
 """FastAPI application assembly and shared API error mapping."""
 from __future__ import annotations
 
+import logging
 import mimetypes
 import sqlite3
 from typing import TYPE_CHECKING
@@ -128,7 +129,11 @@ def create_app(context: ApiContext) -> FastAPI:
         return error_response(context, request, message, error.status_code, headers=error.headers)
 
     @app.exception_handler(ResponseValidationError)
-    async def response_error(request: Request, _error: ResponseValidationError) -> Response:
+    async def response_error(request: Request, error: ResponseValidationError) -> Response:
+        logging.getLogger(__name__).error(
+            "Response contract failure for %s %s: %s",
+            request.method, request.url.path, str(error.errors())[:4000],
+        )
         return error_response(context, request, "The server could not validate its response", 500)
 
     @app.exception_handler(ValueError)
