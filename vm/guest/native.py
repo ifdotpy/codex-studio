@@ -24,7 +24,10 @@ class Native:
         self.process = None
 
     async def call(self, action, *, operator=False, **params):
-        reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.socket), limit=MAX_LINE + 1), 2)
+        try:
+            reader, writer = await asyncio.wait_for(asyncio.open_unix_connection(str(self.socket), limit=MAX_LINE + 1), 2)
+        except (OSError, asyncio.TimeoutError) as exc:
+            raise GuestError("outcome_unknown", "The native supervisor connection is unavailable") from exc
         try:
             writer.write(json.dumps({"protocol": 1, "stateDir": str(self.root),
                                      "backendId": self.backend, "operator": operator}).encode() + b"\n")
@@ -57,8 +60,25 @@ class Native:
                     await self.call("health")
                     return
                 except GuestError:
-                    # A socket with an unproven owner must not start another supervisor.
+                    pass
+            lease = self.root / "supervisor.lock"
+            if lease.exists():
+                try:
+                    record = json.loads(lease.read_text())
+                    pid, started = record["pid"], record["startTime"]
+                    if type(pid) is not int or pid <= 0 or not isinstance(started, str) or not started:
+                        raise ValueError("Invalid supervisor lease")
+                    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+                    from codex_process_supervisor import process_start_time
+                    current = await asyncio.to_thread(process_start_time, pid)
+                except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
+                    raise GuestError("outcome_unknown", "The native supervisor lease cannot be verified") from exc
+                if current == started:
                     raise GuestError("outcome_unknown", "The existing native supervisor is unavailable")
+            elif self.socket.exists():
+                raise GuestError("outcome_unknown", "The native supervisor socket has no proven owner")
+            # The maintained supervisor takes the exclusive lease and checks the old
+            # process identity again before it replaces the dead owner's socket.
             script = Path(__file__).resolve().parents[2] / "scripts" / "codex_process_supervisor.py"
             self.process = subprocess.Popen(
                 [sys.executable, str(script), "--state", str(self.root)],
@@ -70,8 +90,11 @@ class Native:
                 if self.process.poll() is not None:
                     raise GuestError("internal", "The native supervisor failed to start")
                 if self.socket.exists():
-                    await self.call("health")
-                    return
+                    try:
+                        await asyncio.wait_for(self.call("health"), max(0.001, deadline - asyncio.get_running_loop().time()))
+                        return
+                    except (GuestError, asyncio.TimeoutError):
+                        pass
                 await asyncio.sleep(0.025)
             raise GuestError("timeout", "The native supervisor did not become ready")
 
