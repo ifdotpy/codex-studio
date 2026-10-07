@@ -31,7 +31,7 @@ class Credentials(unittest.TestCase):
 
     def auth(self, expires=None, label='old'):
         value = {'tokens': {'access_token': token(expires or time.time()+3600, label),
-                           'refresh_token': 'never-export-this-refresh-token', 'account_id': 'fixture-account'}}
+                           'refresh_token': 'never-export-this-refresh-token', 'id_token':'never-export-this-id-token', 'account_id': 'fixture-account'}}
         (self.home / 'auth.json').write_text(json.dumps(value))
         return value
 
@@ -58,6 +58,22 @@ class Credentials(unittest.TestCase):
         self.assertEqual(set(payload), {'type','accessToken','chatgptAccountId'})
         self.assertNotIn('never-export', json.dumps(payload))
         self.assertEqual(self.client.request.call_count,1)
+
+    def test_api_key_login_preserves_only_the_pinned_api_key(self):
+        import hashlib
+        value='fixture-api-key'
+        self.account['accountId']=None
+        self.account['_credentialIdentity']='api:'+hashlib.sha256(value.encode()).hexdigest()
+        (self.home/'auth.json').write_text(json.dumps({'OPENAI_API_KEY':value,
+            'tokens':{'refresh_token':'never-export-this-refresh-token'}}))
+        guest=Mock()
+        bootstrap_codex(self.runtime,guest,'host-account')
+        self.assertEqual(guest.call.call_args.args[1],{'type':'apiKey','apiKey':value})
+        self.host.call.assert_not_called()
+        (self.home/'auth.json').write_text(json.dumps({'OPENAI_API_KEY':'different-key'}))
+        with self.assertRaises(ValueError):
+            sync_credentials(self.runtime,self.client,'host-account')
+        self.client.request.assert_not_called()
 
     def test_host_refresh_changes_sync_identity_and_guest_access(self):
         self.auth()

@@ -13,7 +13,7 @@ workspaces ([workspace-images.md](workspace-images.md)), because Xcode and Swift
 3. The code lives inside the VM. The base is copied once; later changes use the existing change
    detector (git status and HEAD diff, rsync for folders without git), not FSEvents.
 4. Agents (Codex and Claude, Linux builds) run inside the VM. Studio on the Mac talks to a guest
-   service over vsock. Account credentials are copied into the VM and refreshed.
+   service over vsock. Only access credentials are copied into the VM. The host refreshes OAuth tokens.
 5. Studio and the lead get results with `git fetch` from the agent path inside the VM, over the
    guest channel (a `git` remote helper or ssh over vsock).
 6. VM CPU, RAM and disk limits are Studio settings with safe defaults.
@@ -222,6 +222,10 @@ the preceding upload are excluded. A regression transfers less than 64 KiB
 from a source with a 12 MiB existing object store. Each source has a stable guest
 root. Pending uploads keep their archive, checksum, chunk sequence, and request
 IDs outside the checkout. A retry uses the same content and identities.
+Source archives preserve symlinks literally, including absolute and outside
+targets. The host checks each parent with `lstat` and never reads a link target.
+A tracked child below a replacement link causes the archive to contain the
+link itself. The guest rejects writes through existing symlink parents.
 
 The guest runs the maintained native supervisor. Studio uses
 `provider.start` with `transport: "native"` and the stable caller handle

@@ -120,7 +120,7 @@ def archive_source(root, archive_path, baseline=None):
     else:
         selected, _ = _detected_paths(root, baseline, current)
         selected = {p for p in selected if not excluded(p)}
-        deleted = {p for p in selected if not (root / p).exists() and not (root / p).is_symlink()}
+        deleted = set()
         before = {r['path']: r for r in baseline.get('repositories', [])}
         for repo in current:
             prior = before.get(repo['path'], {})
@@ -186,9 +186,16 @@ def archive_source(root, archive_path, baseline=None):
             parent = root
             for component in Path(relative).parts[:-1]:
                 parent = parent / component
-                value = parent.lstat()
-                if stat.S_ISLNK(value.st_mode):
-                    raise ValueError('A source path passes through a symlink: ' + relative)
+                try:
+                    value = parent.lstat()
+                except FileNotFoundError:
+                    deleted.add(relative)
+                    return
+                if not stat.S_ISDIR(value.st_mode):
+                    # Preserve the replacement link itself. Never inspect the
+                    # selected child through its new link or file parent.
+                    add(parent.relative_to(root).as_posix())
+                    return
                 parent_relative = parent.relative_to(root).as_posix()
                 identities.setdefault(parent_relative, (value.st_dev, value.st_ino, value.st_size,
                     value.st_mtime_ns, value.st_ctime_ns))
@@ -198,15 +205,10 @@ def archive_source(root, archive_path, baseline=None):
             except FileNotFoundError:
                 deleted.add(relative)
                 return
-            if stat.S_ISLNK(mode):
-                if not path.resolve().is_relative_to(root):
-                    raise ValueError('A source link points outside the project: ' + relative)
-            elif not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
+            if not stat.S_ISLNK(mode) and not stat.S_ISDIR(mode) and not stat.S_ISREG(mode):
                 raise ValueError('The source contains a special file: ' + relative)
             if stat.S_ISLNK(mode):
                 info = archive.gettarinfo(str(path), arcname=relative)
-                if os.path.isabs(info.linkname):
-                    info.linkname = os.path.relpath(path.resolve(), path.parent)
                 archive.addfile(info)
             else:
                 archive.add(path, arcname=relative, recursive=False)

@@ -120,12 +120,19 @@ def main():
         git(project, 'config', 'user.email', 'studio-test@example.invalid')
         (project / 'tracked').write_text('base\n')
         (project / 'deleted').write_text('delete me\n')
-        git(project, 'add', 'tracked', 'deleted')
+        (project / 'dir').mkdir()
+        (project / 'dir/file').write_text('tracked directory file\n')
+        git(project, 'add', 'tracked', 'deleted', 'dir/file')
         git(project, 'commit', '-m', 'Create test source')
         (project / 'tracked').write_text('staged\n')
         git(project, 'add', 'tracked')
         (project / 'tracked').write_text('dirty\n')
         (project / 'untracked').write_text('host only\n')
+        outside = root / 'outside'
+        outside.mkdir()
+        (outside / 'file').write_text('outside content must not be copied\n')
+        (project / 'absolute-link').symlink_to(outside)
+        (project / 'relative-link').symlink_to('../outside')
         original_head = git(project, 'rev-parse', 'HEAD')
         runtime = fixture.ControlledRuntime(root / 'runtime', fixture.f.FakeServer)
         runtime._linux_vm_client = remote
@@ -165,17 +172,27 @@ def main():
             worker = spawn(lead)
             assert command(worker, 'git', 'status', '--porcelain') == git(project, 'status', '--porcelain')
             assert command(worker, 'cat', 'tracked') == 'dirty'
+            for link in ('absolute-link', 'relative-link'):
+                assert command(worker, 'python3', '-c', 'import os,sys;print(os.readlink(sys.argv[1]))', link) == os.readlink(project/link)
+            metrics['literalExternalSymlinks'] = True
             metrics['sourceIndexAndDirtyFiles'] = True
             progress('source index and dirty files')
             (project / 'deleted').unlink()
             (project / 'tracked').write_text('later-staged\n')
             git(project, 'add', 'tracked')
             (project / 'tracked').write_text('later\n')
+            (project / 'dir/file').unlink()
+            (project / 'dir').rmdir()
+            (project / 'dir').symlink_to(outside)
+            with (project / '.git/info/exclude').open('a') as output:
+                output.write('\ndir\n')
             build_base(runtime, project)
             later = spawn(lead)
             assert command(later, 'cat', 'tracked') == 'later'
             assert command(later, 'git', 'status', '--porcelain=v2') == git(project, 'status', '--porcelain=v2')
             assert command(later, 'git', 'diff', '--cached') == git(project, 'diff', '--cached')
+            assert command(later, 'python3', '-c', 'import os;print(os.readlink("dir"))') == str(outside)
+            metrics['deltaReplacesDirectoryWithLiteralLink'] = True
             metrics['deltaPreservesStagedIndex'] = True
             assert command(later, 'python3', '-c', 'from pathlib import Path;print(Path("deleted").exists())') == 'False'
             assert command(worker, 'cat', 'tracked') == 'dirty'
@@ -279,6 +296,8 @@ def main():
         finally:
             for worker_id in workers:
                 dispose(runtime, worker_id, remove=True)
+                assert remote.request('workspace.status', {'agentId':worker_id})['workspaces'] == []
+            metrics['workspacesRemoved'] = True
             runtime.close()
     print(json.dumps(metrics, sort_keys=True))
 

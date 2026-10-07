@@ -1,4 +1,4 @@
-"""Source transfer archives preserve Git and reject external file references."""
+"""Source transfer archives preserve Git and links without reading link targets."""
 from pathlib import Path
 import subprocess
 import tarfile
@@ -157,24 +157,50 @@ class SourceArchives(unittest.TestCase):
         self.assertIn(b' D dir/file', self.git('status', '--porcelain').stdout)
         original = tarfile.TarFile.add
         def guarded(archive, name, *args, **kwargs):
-            if Path(name).is_file():
+            self.assertFalse(Path(name).resolve().is_relative_to(outside))
+            if Path(name).is_relative_to(self.repo) and Path(name).is_file():
                 self.assertTrue(Path(name).resolve().is_relative_to(self.repo))
             return original(archive, name, *args, **kwargs)
         with patch.object(tarfile.TarFile, 'add', guarded):
-            with self.assertRaisesRegex(ValueError, 'outside the project|passes through a symlink'):
-                self.archive('bad-delta.tar.gz', baseline)
+            result, names = self.archive('links-delta.tar.gz', baseline)
+        self.assertIn('dir', names)
+        self.assertNotIn('dir/file', names)
+        with tarfile.open(self.root / 'links-delta.tar.gz') as archive:
+            self.assertTrue(archive.getmember('dir').issym())
+            self.assertEqual(archive.getmember('dir').linkname, str(outside))
 
-    def test_external_symlink_is_rejected(self):
-        (self.repo / 'link').symlink_to(self.root / 'outside')
-        with self.assertRaisesRegex(ValueError, 'outside the project'):
-            self.archive('bad.tar.gz')
+    def test_external_symlinks_are_preserved_without_reading_targets(self):
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'private').write_text('private outside data')
+        for name, target in [('absolute', str(outside)), ('relative', '../outside')]:
+            (self.repo / name).symlink_to(target)
+        _, names = self.archive('links.tar.gz')
+        self.assertNotIn('absolute/private', names)
+        self.assertNotIn('relative/private', names)
+        with tarfile.open(self.root / 'links.tar.gz') as archive:
+            for name, target in [('absolute', str(outside)), ('relative', '../outside')]:
+                self.assertTrue(archive.getmember(name).issym())
+                self.assertEqual(archive.getmember(name).linkname, target)
 
-    def test_absolute_contained_symlink_becomes_guest_relative(self):
+    def test_delta_removes_a_file_when_its_parent_directory_is_missing(self):
+        directory = self.repo / 'dir'
+        directory.mkdir()
+        (directory / 'file').write_text('tracked source')
+        self.git('add', 'dir/file')
+        self.git('commit', '-qm', 'Track directory')
+        baseline, _ = self.archive('first.tar.gz')
+        shutil.rmtree(directory)
+        result, names = self.archive('deleted-dir.tar.gz', baseline)
+        self.assertIn('dir/file', result['deletePaths'])
+        self.assertNotIn('dir/file', names)
+
+    def test_absolute_contained_symlink_is_preserved_literally(self):
         (self.repo / 'link').symlink_to(self.repo / 'one')
         path = self.root / 'links.tar.gz'
         archive_source(self.repo, path)
         with tarfile.open(path) as archive:
-            self.assertEqual(archive.getmember('link').linkname, 'one')
+            self.assertEqual(archive.getmember('link').linkname, str(self.repo / 'one'))
 
     def test_non_git_copy_refreshes_the_complete_tree(self):
         (self.repo / '.git').rename(self.root / 'old-git')
