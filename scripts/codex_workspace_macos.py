@@ -572,7 +572,7 @@ class Backend:
             raise RuntimeError(f'Cannot find the disk image device for mounted workspace: {mount}')
         eject_timed_out = False
         try:
-            result = _run(['diskutil', 'eject', device], timeout=4, check=False)
+            result = _run(['diskutil', 'eject', device], timeout=20, check=False)
         except subprocess.TimeoutExpired:
             result = None
             eject_timed_out = True

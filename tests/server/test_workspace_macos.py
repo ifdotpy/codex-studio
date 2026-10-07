@@ -26,7 +26,7 @@ class MacBackendUnmountTests(unittest.TestCase):
                 patch.object(macos, "_run", return_value=eject) as run:
             result = backend.unmount_workspace(Path("/workspace/mount"), force=True)
         self.assertEqual(result, {"method": "eject", "terminatedPids": 0})
-        self.assertEqual(run.call_args.kwargs["timeout"], 4)
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
         self.assertNotIn("lsof", run.call_args.args[0])
 
     def test_busy_eject_bounds_lsof_then_force_unmounts(self):
@@ -47,7 +47,7 @@ class MacBackendUnmountTests(unittest.TestCase):
         backend = macos.Backend()
         busy = subprocess.CompletedProcess([], 1, b"", b"busy")
         detached = subprocess.CompletedProcess([], 0, b"", b"")
-        outputs = [subprocess.TimeoutExpired("diskutil", 4),
+        outputs = [subprocess.TimeoutExpired("diskutil", 20),
                    subprocess.TimeoutExpired("lsof", 2), busy, detached, detached]
         with patch.object(macos, "_mounted", side_effect=[True, False]), \
                 patch.object(macos, "_device_for_mount", return_value="/dev/disk1"), \
@@ -118,7 +118,7 @@ class MacBackendUnmountIntegrationTests(unittest.TestCase):
         started = time.monotonic()
         result = action()
         elapsed = time.monotonic() - started
-        self.assertLess(elapsed, 30, f"workspace operation took {elapsed:.2f}s")
+        self.assertLess(elapsed, 35, f"workspace operation took {elapsed:.2f}s")
         return result, elapsed
 
     def test_tiny_image_archive_and_remove_with_open_file_holder(self):
