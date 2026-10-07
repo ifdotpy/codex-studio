@@ -79,9 +79,14 @@ class ImageWorkspaceRuntimeMacE2E(unittest.TestCase):
                     first = [params for method, params in rt.server.calls if method == 'turn/start' and
                              params.get('threadId') == rt.agent(worker_id).get('threadId')][-1]
                     self.assertEqual(first['approvalPolicy'], 'never')
-                    self.assertEqual(first['sandboxPolicy'], {'type': 'readOnly'})
+                    temp_dir = rt.image_workspace_temp(rt.agent(worker_id))
+                    self.assertEqual(first['sandboxPolicy'], {
+                        'type': 'workspaceWrite', 'writableRoots': [temp_dir],
+                        'networkAccess': False})
                     self.assertIn('read-only until Studio sends a workspace-ready notice',
                                   first['input'][0]['text'])
+                    self.assertIn('Read the source folder at ' + str(project)
+                                  + ' by its absolute path', first['input'][0]['text'])
                     wait_for(lambda: rt.agent(worker_id).get('turnId') is not None)
                     agent = rt.agent(worker_id)
                     rt.server.complete(agent['threadId'], agent['turnId'], 'Read-only turn complete')

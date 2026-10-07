@@ -4749,6 +4749,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def turn_permissions(self, a):
         if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
+            if a.get("provider") != "claude":
+                temp_dir = self.image_workspace_temp(a)
+                return {"approvalPolicy": "never", "sandboxPolicy": {
+                    "type": "workspaceWrite", "writableRoots": [temp_dir],
+                    "networkAccess": False}}
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
@@ -4760,6 +4765,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 sandbox = {"type": "workspaceWrite", "writableRoots": roots, "networkAccess": False}
             return {"approvalPolicy": "on-request", "sandboxPolicy": sandbox}
         return {}
+
+    def image_workspace_temp(self, a):
+        """Return a private, stable writable directory for one image worker."""
+        state_root = self.root.resolve()
+        temp_root = state_root / "image-workspace-temp"
+        if temp_root.is_symlink():
+            raise ValueError("Image workspace temporary directory must not be a symlink")
+        temp_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+        if temp_root.resolve().parent != state_root:
+            raise ValueError("Image workspace temporary directory must stay inside Studio state")
+        name = uuid.uuid5(uuid.NAMESPACE_URL, str(a["id"])).hex
+        temp_dir = temp_root / name
+        if temp_dir.is_symlink():
+            raise ValueError("Image worker temporary directory must not be a symlink")
+        temp_dir.mkdir(mode=0o700, exist_ok=True)
+        if temp_dir.resolve().parent != temp_root.resolve():
+            raise ValueError("Image worker temporary directory must stay inside Studio state")
+        return str(temp_dir.resolve())
 
     @staticmethod
     def image_workspace_support(repo_root):
@@ -4996,9 +5019,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
             # Never wait for an approver during the read-only phase. Claude uses
             # plan mode because never otherwise maps to bypass permissions.
-            params.update(approvalPolicy="never", sandbox="read-only")
             if a.get("provider") == "claude":
+                params.update(approvalPolicy="never", sandbox="read-only")
                 params["claude"] = {**a.get("claudeOptions", {}), "permissionMode": "plan"}
+            else:
+                params.update(approvalPolicy="never", sandbox="workspace-write")
+                params["cwd"] = self.image_workspace_temp(a)
         elif a.get("yoloMode") is True:
             params.update(approvalPolicy="never", sandbox="danger-full-access")
         elif a.get("yoloMode") is False:
@@ -5015,6 +5041,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "Do not tell the user that an MCP server or connector needs authentication "
                 "unless the user asks for work that needs it.\n")
             params["claude"] = {**a.get("claudeOptions", {}), **params.get("claude", {})}
+            if a.get("imageWorkspace"):
+                params["studioImageWorkspaceTempDir"] = (
+                    self.image_workspace_temp(a) if not a.get("imageWorkspaceReady") else None)
         params["dynamicTools"] = self.tool_definitions(a)
         if a.get("portableHistory"):
             from codex_portable_history import history_context
@@ -6054,7 +6083,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 params = {
                     "threadId": a["threadId"],
                     "model": a["model"],
-                    "cwd": a["cwd"],
+                    "cwd": (self.image_workspace_temp(a)
+                            if a.get("imageWorkspace") and not a.get("imageWorkspaceReady")
+                            and a.get("provider") != "claude" else a["cwd"]),
                     "clientUserMessageId": rows[0]["id"],
                     "input": self.message_inputs(
                         a["id"], append_message_clocks(text, clocks), asset_ids
@@ -7455,7 +7486,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     text = child["prompt"]
                     if child.get("imageWorkspace"):
                         text += ("\n\n[Studio image workspace] Studio is building the base. "
-                                 "This turn is read-only until Studio sends a workspace-ready notice.")
+                                 "This turn is read-only until Studio sends a workspace-ready notice. "
+                                 "Read the source folder at " + child["cwd"]
+                                 + " by its absolute path. Do not write to that folder.")
                         image_base_jobs.append((child["imageWorkspaceRepo"], child["id"]))
                     elif child.get("imageWorkspaceError"):
                         fallback = ("Studio will use a Git worktree." if child.get("worktree")
