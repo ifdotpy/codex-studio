@@ -106,16 +106,24 @@ def _require_space(directory: Path, *, create: bool) -> int:
     return free
 
 
-def _version(executable: str, name: str) -> str:
-    output = _run([executable, '--version'], timeout=15)
+def _remaining(deadline: float, maximum: float) -> float:
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise LinuxVMError('The Linux VM operation exceeded its timeout.')
+    return min(maximum, remaining)
+
+
+def _version(executable: str, name: str, timeout: float = 15) -> str:
+    output = _run([executable, '--version'], timeout=timeout)
     match = re.search(r'(?<![\d.])(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)', output)
     if not match:
         raise LinuxVMError(f'Cannot identify the installed {name} CLI version.')
     return match[1]
 
 
-def _extract_raw(archive: Path, target: Path, maximum: int) -> None:
+def _extract_raw(archive: Path, target: Path, maximum: int, *, timeout: float = 180) -> None:
     """Extract only the raw disk; preserve zero extents without trusting tar paths."""
+    deadline = time.monotonic() + timeout
     with tarfile.open(archive, 'r:gz') as source:
         candidates = [member for member in source if member.isfile() and member.name.endswith('.img')]
         if len(candidates) != 1 or candidates[0].size > maximum:
@@ -124,7 +132,6 @@ def _extract_raw(archive: Path, target: Path, maximum: int) -> None:
         stream = source.extractfile(member)
         if stream is None:
             raise LinuxVMError('Cannot read the Ubuntu raw disk.')
-        deadline = time.monotonic() + 180
         with target.open('xb') as output:
             output.truncate(maximum)
             header = stream.read(1024 * 1024)
@@ -134,7 +141,7 @@ def _extract_raw(archive: Path, target: Path, maximum: int) -> None:
             block = header
             while remaining:
                 if time.monotonic() > deadline:
-                    raise LinuxVMError('Ubuntu raw disk extraction exceeded 180 seconds.')
+                    raise LinuxVMError('Ubuntu raw disk extraction exceeded its timeout.')
                 if not block:
                     raise LinuxVMError('The Ubuntu disk archive is truncated.')
                 if block.strip(b'\0'):
@@ -148,9 +155,9 @@ def _extract_raw(archive: Path, target: Path, maximum: int) -> None:
         target.chmod(0o600)
 
 
-def _download(url: str, checksum: str, target: Path, maximum: int, timeout: int) -> None:
+def _download(url: str, checksum: str, target: Path, maximum: int, timeout: float) -> None:
     _run(['curl', '--fail', '--location', '--silent', '--show-error', '--connect-timeout', '20',
-          '--max-time', str(timeout), '--max-filesize', str(maximum), '-o', str(target), url], timeout=timeout + 10)
+          '--max-time', str(timeout), '--max-filesize', str(maximum), '-o', str(target), url], timeout=timeout)
     with target.open('rb') as source:
         digest = hashlib.file_digest(source, 'sha256').hexdigest()
     if digest != checksum:
@@ -209,26 +216,34 @@ printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeo
 mkdir -p /var/lib/codex-studio
 apt-mark hold linux-generic linux-image-generic || true
 trap 'printf "%s\\n" "Provision failed at line $LINENO" > /var/lib/codex-studio/provision-error; echo "STUDIO_PROVISION_ERROR: line $LINENO failed" >&2' ERR
-timeout 15 timedatectl set-ntp true
-timeout 120 bash -c 'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'
-timeout 300 apt-get update
-timeout 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof
+timeout --kill-after=5 15 timedatectl set-ntp true
+timeout --kill-after=5 120 bash -c 'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'
+timeout --kill-after=5 300 apt-get update
+timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
 mkdir -p /var/lib/codex-studio
 if ! grep -q 'LABEL=studio-data' /etc/fstab; then echo 'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0' >> /etc/fstab; fi
-mount /var/lib/codex-studio
+mountpoint -q /var/lib/codex-studio || mount /var/lib/codex-studio
+if [ -f /var/lib/codex-studio/provision-ready ]; then exit 0; fi
+rm -f /var/lib/codex-studio/provision-error
 btrfs filesystem resize max /var/lib/codex-studio
 curl --fail --location --connect-timeout 20 --max-time 180 -o /tmp/node.tar.xz https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-arm64.tar.xz
 curl --fail --location --connect-timeout 20 --max-time 60 -o /tmp/node-sums https://nodejs.org/dist/v22.15.0/SHASUMS256.txt
 (cd /tmp && grep ' node-v22.15.0-linux-arm64.tar.xz$' node-sums | sed 's/node-v22.15.0-linux-arm64.tar.xz/node.tar.xz/' | sha256sum -c -)
 tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
 rm /tmp/node.tar.xz /tmp/node-sums
-timeout 300 npm --prefix /opt/codex-studio/claude_bridge ci --ignore-scripts --omit=optional --no-audit --no-fund
-timeout 300 npm install -g @openai/codex@{codex_version} @anthropic-ai/claude-code@{claude_version}
+export npm_config_fetch_timeout=30000 npm_config_fetch_retries=2
+export npm_config_fetch_retry_mintimeout=1000 npm_config_fetch_retry_maxtimeout=5000
+export npm_config_update_notifier=false
+timeout --kill-after=5 300 npm --prefix /opt/codex-studio/claude_bridge ci --ignore-scripts --omit=optional --no-audit --no-fund
+echo STUDIO_PROVISION_CODEX
+timeout --kill-after=5 180 npm install -g --foreground-scripts --no-audit --no-fund @openai/codex@{codex_version}
+echo STUDIO_PROVISION_CLAUDE
+timeout --kill-after=5 180 npm install -g --foreground-scripts --no-audit --no-fund @anthropic-ai/claude-code@{claude_version}
 test "$(codex --version)" = "codex-cli {codex_version}"
 test "$(claude --version | cut -d' ' -f1)" = "{claude_version}"
 # install.sh belongs to the guest component and defines its service boundary.
-timeout 120 bash /opt/codex-studio/vm/guest/install.sh
+timeout --kill-after=5 120 bash /opt/codex-studio/vm/guest/install.sh
 codex --version > /var/lib/codex-studio/provider-versions
 claude --version >> /var/lib/codex-studio/provider-versions
 touch /var/lib/codex-studio/provision-ready
@@ -236,10 +251,31 @@ rm -f /var/lib/codex-studio/provision-error
 echo STUDIO_PROVISION_READY
 '''
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
+    files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
+Description=Provision the Codex Studio Linux VM
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=!/var/lib/codex-studio/provision-ready
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/codex-studio/provision.sh
+TimeoutStartSec=1200
+TimeoutStopSec=5
+KillMode=control-group
+RemainAfterExit=yes
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=multi-user.target
+'''})
     return {'hostname': 'studio-linux', 'manage_etc_hosts': True, 'ssh_pwauth': False,
             'disable_root': True, 'users': [{'name': 'studio', 'lock_passwd': True,
                                           'shell': '/bin/bash'}],
-            'write_files': files, 'runcmd': [['timeout', '1200', 'bash', '/opt/codex-studio/provision.sh']]}
+            'write_files': files, 'runcmd': [['systemctl', 'daemon-reload'],
+                ['systemctl', 'enable', 'codex-studio-provision.service'],
+                ['timeout', '--kill-after=5', '1210', 'systemctl', 'start', 'codex-studio-provision.service']]}
 
 
 class Client:
@@ -338,10 +374,13 @@ class Client:
             result['freeHostBytes'] = shutil.disk_usage(self.state_dir).free
         return result
 
-    def create(self, settings: Settings | None = None) -> dict[str, Any]:
+    def create(self, settings: Settings | None = None, *, timeout: float = 1500) -> dict[str, Any]:
+        if not 0 < timeout <= 3600:
+            raise LinuxVMError('VM create timeout must be between 0 and 3600 seconds.')
+        deadline = time.monotonic() + timeout
         settings = settings or Settings(**self.get_settings())
         settings.validate()
-        with self._lock():
+        with self._lock(_remaining(deadline, 15)):
             if self.status()['state'] != 'stopped':
                 raise LinuxVMError('Stop the Linux VM before changing its resource limits.')
             manifest = self.state_dir / 'config.json'
@@ -358,19 +397,19 @@ class Client:
                 _atomic_json(manifest, asdict(settings))
                 return self.status()
             _require_space(self.state_dir, create=True)
-            codex_version = _version(os.environ.get('CODEX_BIN') or shutil.which('codex') or 'codex', 'Codex')
-            claude_version = _version(os.environ.get('CLAUDE_BIN') or shutil.which('claude') or 'claude', 'Claude')
+            codex_version = _version(os.environ.get('CODEX_BIN') or shutil.which('codex') or 'codex', 'Codex', _remaining(deadline, 15))
+            claude_version = _version(os.environ.get('CLAUDE_BIN') or shutil.which('claude') or 'claude', 'Claude', _remaining(deadline, 15))
             config = _cloud_config(self.guest_dir, codex_version, claude_version)
             staging = Path(tempfile.mkdtemp(prefix='create-', dir=self.state_dir))
             try:
                 archive = staging / 'ubuntu.tar.gz'
-                _download(_IMAGE_URL, _IMAGE_SHA256, archive, 1024 ** 3, 900)
-                _download(_KERNEL_URL, _KERNEL_SHA256, staging / 'vmlinuz', 64 * 1024 * 1024, 120)
-                _download(_INITRD_URL, _INITRD_SHA256, staging / 'initrd', 128 * 1024 * 1024, 120)
+                _download(_IMAGE_URL, _IMAGE_SHA256, archive, 1024 ** 3, _remaining(deadline, 900))
+                _download(_KERNEL_URL, _KERNEL_SHA256, staging / 'vmlinuz', 64 * 1024 * 1024, _remaining(deadline, 120))
+                _download(_INITRD_URL, _INITRD_SHA256, staging / 'initrd', 128 * 1024 * 1024, _remaining(deadline, 120))
                 (staging / 'kernel').write_bytes(_kernel_image((staging / 'vmlinuz').read_bytes()))
                 (staging / 'vmlinuz').unlink()
                 _require_space(self.state_dir, create=True)
-                _extract_raw(archive, staging / 'system.raw', settings.systemDiskBytes)
+                _extract_raw(archive, staging / 'system.raw', settings.systemDiskBytes, timeout=_remaining(deadline, 180))
                 archive.unlink()
                 with (staging / 'data.raw').open('xb') as disk:
                     disk.truncate(settings.dataDiskBytes)
@@ -380,7 +419,8 @@ class Client:
                 (seed / 'user-data').write_text('#cloud-config\n' + json.dumps(config))
                 (seed / 'meta-data').write_text('instance-id: studio-linux-v1\nlocal-hostname: studio-linux\n')
                 _run(['hdiutil', 'makehybrid', '-iso', '-joliet', '-default-volume-name', 'cidata',
-                      '-o', str(staging / 'seed.iso'), str(seed)], timeout=60)
+                      '-o', str(staging / 'seed.iso'), str(seed)], timeout=_remaining(deadline, 60))
+                _remaining(deadline, 1)
                 for name in ['system.raw', 'data.raw', 'seed.iso', 'kernel', 'initrd']:
                     os.replace(staging / name, self.state_dir / name)
                 _atomic_json(manifest, asdict(settings))
@@ -409,17 +449,20 @@ class Client:
         return asdict(settings)
 
     def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 1500) -> dict[str, Any]:
+        if not 0 < timeout <= 3600:
+            raise LinuxVMError('VM start timeout must be between 0 and 3600 seconds.')
         deadline = time.monotonic() + timeout
         if platform.system() != 'Darwin' or platform.machine() != 'arm64':
             raise LinuxVMError('Linux VM workspaces require macOS on Apple silicon.')
         if isinstance(settings, dict):
             settings = Settings(**settings)
         if not (self.state_dir / 'config.json').exists():
-            self.create(settings)
+            self.create(settings, timeout=_remaining(deadline, timeout))
         elif settings is not None and asdict(settings) != self.get_settings():
-            self.create(settings)
+            self.create(settings, timeout=_remaining(deadline, timeout))
         launched = None
-        with self._lock():
+        with self._lock(_remaining(deadline, 15)):
+            _remaining(deadline, 1)
             state = self.status()
             if state['state'] == 'stopped':
                 _require_space(self.state_dir, create=False)

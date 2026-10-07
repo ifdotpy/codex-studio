@@ -11,10 +11,12 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'scripts'))
-from codex_linux_vm import Client, Settings, _GIB
+from codex_linux_vm import Client, Settings, LinuxVMError, _GIB
+import codex_linux_vm
 
 
 def command(client, argv, cwd='/home/studio', *, agent_id=None):
@@ -77,8 +79,13 @@ def prove(client, temporary):
     handles = reattached.request('provider.list')['providers']
     assert any(row['handle'] == provider['handle'] for row in handles), handles
     reattached.request('provider.write', {'handle': provider['handle'], 'data': base64.b64encode(b'AFTER_RECONNECT\n').decode(), 'close': True})
-    frames = list(reattached.stream('provider.attach', {'handle': provider['handle'], 'afterSeq': 0, 'waitMs': 1000}, timeout=10))
-    output = b''.join(base64.b64decode(frame['data']['data']) for frame in frames if frame.get('event') == 'output')
+    deadline = time.monotonic() + 15
+    output = b''
+    after = 0
+    while time.monotonic() < deadline and b'AFTER_RECONNECT' not in output:
+        frames = list(reattached.stream('provider.attach', {'handle': provider['handle'], 'afterSeq': after, 'waitMs': 1000}, timeout=2))
+        output += b''.join(base64.b64decode(frame['data']['data']) for frame in frames if frame.get('event') == 'output')
+        after = next(frame['result']['nextSeq'] for frame in frames if 'result' in frame)
     assert b'AFTER_RECONNECT' in output, frames
     metrics['providerReconnect'] = True
     handle = 'codex-proof-' + uuid.uuid4().hex
@@ -111,11 +118,14 @@ def main():
     parser.add_argument('--helper', type=Path)
     parser.add_argument('--state-dir', type=Path)
     parser.add_argument('--keep-state', action='store_true')
+    parser.add_argument('--provision-restart-check', action='store_true')
     args = parser.parse_args()
     if args.keep_state and not (args.state_dir or args.existing_state):
         parser.error('--keep-state requires --state-dir or --existing-state')
     if args.state_dir and args.state_dir.exists():
         parser.error('--state-dir must identify a new directory')
+    if args.provision_restart_check and args.existing_state:
+        parser.error('--provision-restart-check requires a new VM')
     with tempfile.TemporaryDirectory(prefix='studio-vm-native-', dir='/tmp') as name:
         temporary = Path(name)
         helper = args.helper or temporary / 'studio-linux-vm'
@@ -126,13 +136,36 @@ def main():
         try:
             start = time.monotonic()
             if not args.existing_state:
-                client.create(Settings(cpus=2, memoryBytes=4*_GIB, systemDiskBytes=16*_GIB, dataDiskBytes=64*_GIB))
+                factory = codex_linux_vm._cloud_config
+                def fault_config(*values):
+                    config = factory(*values)
+                    if args.provision_restart_check:
+                        entry = next(row for row in config['write_files'] if row['path'] == '/opt/codex-studio/provision.sh')
+                        entry['content'] = entry['content'].replace('set -euo pipefail', '''set -euo pipefail
+if [ ! -f /opt/codex-studio/restart-proof ]; then
+  touch /opt/codex-studio/restart-proof
+  echo STUDIO_PROVISION_ERROR: injected-restart-check >&2
+  exit 1
+fi''', 1)
+                    return config
+                with patch.object(codex_linux_vm, '_cloud_config', side_effect=fault_config):
+                    client.create(Settings(cpus=2, memoryBytes=4*_GIB, systemDiskBytes=16*_GIB, dataDiskBytes=64*_GIB))
             create_seconds = time.monotonic() - start
             start = time.monotonic()
+            if args.provision_restart_check:
+                try:
+                    client.ensure_running(timeout=300)
+                except LinuxVMError as error:
+                    assert 'injected-restart-check' in str(error), str(error)
+                else:
+                    raise AssertionError('The injected first provision did not fail')
+                client.stop()
             ready = client.ensure_running(timeout=1500)
             boot_seconds = time.monotonic() - start
             metrics = prove(client, temporary)
             metrics.update(createSeconds=round(create_seconds,3), bootSeconds=round(boot_seconds,3), health=ready['health'])
+            if args.provision_restart_check:
+                metrics['provisionRestart'] = True
             print(json.dumps(metrics), flush=True)
         finally:
             if not args.existing_state and not args.keep_state:

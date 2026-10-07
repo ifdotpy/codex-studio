@@ -175,6 +175,17 @@ class ClientTests(unittest.TestCase):
                 self.client.request('provider.start', {}, **arguments)
             self.assertFalse(error.exception.uncertain)
 
+    def test_start_does_not_launch_after_create_consumes_deadline(self):
+        def slow_create(*args, **kwargs):
+            time.sleep(0.03)
+        with patch.object(vm.platform, 'system', return_value='Darwin'), \
+             patch.object(vm.platform, 'machine', return_value='arm64'), \
+             patch.object(self.client, 'create', side_effect=slow_create), \
+             patch.object(vm.subprocess, 'Popen') as launch:
+            with self.assertRaisesRegex(vm.LinuxVMError, 'exceeded its timeout'):
+                self.client.ensure_running(timeout=0.01)
+            launch.assert_not_called()
+
     def test_payload_excludes_cache_and_credentials(self):
         guest = self.directory / 'vm/guest'
         guest.mkdir(parents=True)
@@ -193,7 +204,7 @@ class ClientTests(unittest.TestCase):
         config = vm._cloud_config(guest, '1.2.3', '4.5.6')
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 7)
+        self.assertEqual(len(paths), 8)
         self.assertNotIn('credentials', json.dumps(config))
 
 
