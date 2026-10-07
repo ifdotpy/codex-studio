@@ -272,7 +272,7 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
             or agent.get('nativeFailureHold') or agent.get('accountTransferId')
             or agent.get('workspaceOperation') or native_thread_block(agent)
             or attempt is not agent.get('startAttempt') or attempt.get('submitted') is not True
-            or attempt.get('action') or attempt.get('activeAtReservation')
+            or attempt.get('action')
             or not isinstance(attempt.get('id'), str) or not attempt['id']
             or type(attempt.get('epoch')) is not int or attempt['epoch'] != agent.get('epoch')
             or agent.get('turnEpoch', agent['epoch']) != agent['epoch']
@@ -297,6 +297,7 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
                 or not isinstance(turn['error'].get('data'), dict)
                 or turn['error']['data'].get('turnStartOutcome') != 'not_applied'
                 or ('inputSubmitted' in turn and turn['inputSubmitted'] is not False)
+                or (attempt.get('activeAtReservation') and turn.get('clientUserMessageId') != events[0])
                 or turn.get('clientUserMessageId', events[0]) != events[0]):
             return None
         turn_id = turn['id']
@@ -307,7 +308,8 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
                 or (agent.get('turnId') is None and agent.get('lastCompletedTurn') != turn_id)):
             return None
     else:
-        if (not isinstance(error, NativeRpcError) or type(error.code) is not int or error.code != -32000
+        if (attempt.get('activeAtReservation') or not isinstance(error, NativeRpcError)
+                or type(error.code) is not int or error.code != -32000
                 or not isinstance(error.data, dict)
                 or error.data.get('turnStartOutcome') != 'not_applied'
                 or ('inputSubmitted' in error.data and error.data['inputSubmitted'] is not False)
@@ -315,7 +317,8 @@ def recover_rejected_start(runtime, db, agent, attempt, *, turn=None, error=None
             return None
         turn_id = None
     saved = _attempt_receipt(db, agent['id'], attempt)
-    if not saved or saved.get('claudeInputRejection') or not isinstance(saved.get('claudeInputRequest'), dict):
+    if (not saved or saved.get('activeAtReservation') != attempt.get('activeAtReservation')
+            or saved.get('claudeInputRejection') or not isinstance(saved.get('claudeInputRequest'), dict)):
         return None
     # The positive receipt must also agree with any recorded work from this turn.
     if turn_id:

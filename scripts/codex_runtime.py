@@ -5865,7 +5865,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if configuration != frozen_input['configuration']:
                         raise ClaudeRetryChanged('The proven Claude retry settings changed. Review the saved input before continuing')
                     params['input'] = frozen_input['input']
-                if a.get("provider") == "claude" and not busy_at_reservation:
+                if a.get("provider") == "claude":
                     from codex_claude_input_recovery import capture_input
                     current['startAttempt']['claudeInputRequest'] = capture_input(db, current, rows, params, text)
                 if a.get("provider") == "claude" and (not busy_at_reservation or frozen_input):

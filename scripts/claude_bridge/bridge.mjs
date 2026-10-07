@@ -719,7 +719,10 @@ async function finishTurn(s, active, result, error) {
       status: turn.status,
       error: turn.error,
       ...(turn.startOutcome === "not_applied"
-        ? { startOutcome: "not_applied" }
+        ? {
+            startOutcome: "not_applied",
+            clientUserMessageId: turn.clientUserMessageId,
+          }
         : {}),
     },
   });
