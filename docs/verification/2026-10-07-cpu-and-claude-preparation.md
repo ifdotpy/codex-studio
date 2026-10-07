@@ -27,6 +27,10 @@ Preparation errors now record the blocked phase and elapsed milliseconds.
 The receipt retains `turnStartOutcome: not_applied` when no input was submitted.
 Bridge version 21 preserves the existing checks before retirement of an idle process.
 
+Session cost calculations reuse parsed model rates within one calculation.
+The public pricing function retains its behavior. Token and tier arithmetic is unchanged.
+The calculation retains its catalog, usage checks, and fresh source identities.
+
 ## Controlled measurements
 
 Each measurement uses five trials. Values below are median CPU milliseconds.
@@ -38,11 +42,16 @@ Each comparison retains identical input and output state.
 | Twelve rule ticks, 1,024 historical records and eight active rules |   650.046 |  12.915 |
 | Twelve transfer ticks, 1,024 historical records                    |   670.526 |   4.907 |
 | History idle sweep, 512 actors                                     | 2,402.715 | 416.298 |
+| Pricing 33,943 usage groups from one catalog                       |   282.424 |  68.819 |
 
 The idle sweep opens 16 connections instead of 512.
 Its retained-state SHA-256 is identical in every trial.
 The benchmark disables the existing throttle sleep on both sides to measure CPU work.
 The application retains its CPU budget.
+
+The pricing measurement reduces rate lookups from 33,943 to five.
+Every trial retains the same output checksum.
+It measures the pricing loop, not the full history query.
 
 ## Verification
 
@@ -51,6 +60,11 @@ The UI build, TypeScript check, selected lint, formatting, and staged-content ho
 The new history and scheduler contracts pass with the existing related suites.
 The Claude change passes 110 checks across bridge, account, admission, phase, cache, and idle-retirement contracts.
 The old bridge fails the new refresh and phase assertions.
+
+The additional pricing change passes 102 related checks.
+Its new regression test fails on the old reader's repeated lookups.
+One unchanged invalidation fixture fails its team-root guard on both the baseline and the candidate.
+Both memory fixtures pass with 300,000 usage rows.
 
 The installed backend still uses protocol 2. Its update uses scoped changes against its exact installed source.
 The UI patch retains one module graph and updates the offline manifest.
@@ -81,6 +95,12 @@ They run, wait for work, or have completed their turns.
 Eleven command monitors remain active at that check.
 Restoration uses fixed input IDs and does not repeat commands with unknown outcomes.
 
+The pricing update then applies through the existing guarded loader without a restart.
+Its receipt confirms backend PID 86660 and the exact manifest hash on attempt one.
+The update retains two existing function objects, their globals, defaults, and pricing alias.
+The private fixture checks repeated apply, unknown code, wrong PID, and sampler failure.
+All seven native handle identities and all 25 resume-plan actor identities remain unchanged during this update.
+
 ## Limits and evidence
 
 The first cold Claude start still requires a catalog probe and the actual session process.
@@ -100,3 +120,7 @@ Private measurements and apply receipts are under `/private/tmp/studio-cpu-remov
 Private restart evidence is under the existing state directory at
 `diagnostics/interactive-supervisor-20261007-1791383659339547000`.
 The evidence includes exact source hashes, close receipts, registration readback, continuation IDs, and output checks.
+
+Pricing evidence is under `/private/tmp/studio-cpu-session-pricing-20261007`.
+Its benchmark and test report are `/private/tmp/studio-cost-scoped-pricing-benchmark-20261007.json`
+and `/private/tmp/studio-cost-scoped-pricing-verification-20261007.json`.
