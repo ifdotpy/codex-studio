@@ -98,7 +98,9 @@ class ImageWorkspaceRuntime(unittest.TestCase):
     def test_default_image_workspace_input_describes_copy_with_uncommitted_changes(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
         self.rt.start_image_base = Mock(return_value={'state': 'building'})
-        worker = self.spawn()['id']
+        spawned = self.spawn()
+        worker = spawned['id']
+        self.assertEqual(spawned['workspaceState'], 'building')
         with self.rt.db() as db:
             text = db.execute('SELECT text FROM runtime_events WHERE id=?',
                               (worker + ':initial',)).fetchone()[0]
@@ -154,6 +156,7 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         with self.rt.lock, self.rt.db() as db:
             worker = self.rt.agent(worker_id, db)
             worker.update(imageWorkspace=True, imageWorkspaceReady=True,
+                          imageWorkspaceError=None, imageWorkspaceBaseState='ready',
                           imageWorkspaceRepo=str(self.repo),
                           imageWorkspaceCreatedAt=123.0, cwd='/image/repo')
             self.rt.put(db, 'agents', worker)
@@ -163,7 +166,43 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         result = __import__('json').loads(event)
         self.assertEqual(result['workspace'], {
             'path': '/image/repo', 'source': str(self.repo),
+            'state': 'ready',
             'takenAt': '1970-01-01T00:02:03Z', 'includesUncommittedChanges': True})
+
+    def test_startup_restarts_all_read_only_image_builds_after_releasing_lock(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        workers = [self.spawn(name)['id'] for name in ('Restart one', 'Restart two')]
+        self.rt.close()
+
+        def start(runtime, repo, agent_id, *, retry_failed=False):
+            self.assertFalse(runtime.lock._is_owned())
+            self.assertEqual(repo, str(self.repo))
+            self.assertIn(agent_id, workers)
+
+        with patch.object(fixture.f.Runtime, 'start_image_base', autospec=True,
+                          side_effect=start) as resumed:
+            self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+        self.assertCountEqual([call.args[1:] for call in resumed.call_args_list],
+                              [(str(self.repo), worker) for worker in workers])
+
+    def test_child_result_shows_read_only_wait_and_fallback_error(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker_id = self.spawn()['id']
+        waiting = self.rt.image_workspace_summary(self.rt.agent(worker_id))
+        self.assertEqual(waiting['state'], 'building')
+
+        with self.rt.lock, self.rt.db() as db:
+            worker = self.rt.agent(worker_id, db)
+            worker.update(imageWorkspace=False, imageWorkspacePhase='fallback',
+                          imageWorkspaceBaseState='failed', imageWorkspaceError='disk full')
+            self.rt.parent_event(db, worker, 'turn-1', 'Stopped')
+            event = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                               (self.lead['id'],)).fetchone()[0]
+        result = __import__('json').loads(event)
+        self.assertEqual(result['workspace']['state'], 'failed')
+        self.assertEqual(result['workspace']['error'], 'disk full')
 
     def test_claude_initial_thread_stays_read_only_when_yolo_is_enabled(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
@@ -281,6 +320,13 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         self.assertIn('disk full', record['imageWorkspaceError'])
         self.assertIsNone(record['error'])
         submit.assert_called_once()
+        self.assertIn('disk full', submit.call_args.args[2])
+        with self.rt.db() as db:
+            event = db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='child_result'",
+                               (self.lead['id'],)).fetchone()[0]
+        result = __import__('json').loads(event)
+        self.assertEqual(result['workspace']['state'], 'failed')
+        self.assertEqual(result['workspace']['error'], 'disk full')
 
     def test_ready_callback_creates_writable_mount_and_one_notice(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
