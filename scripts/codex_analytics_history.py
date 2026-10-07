@@ -382,12 +382,23 @@ class AnalyticsHistoryMixin:
                 prepare_budget_migration(self)
                 with self.analytics_history_db() as db:
                     repair_terminal_errors(db)
-                    # Decode all agents once per round, not once per step. Each
-                    # step reads only its own agent under the shared lock.
+                    # Runtime.put stores object records with unique JSON keys.
+                    # Project roster fields once per round; read each actor fresh.
                     ids = getattr(self, "_analytics_history_ids", None)
                     if not ids or self._analytics_history_cursor % len(ids) == 0:
-                        ids = self._analytics_history_ids = [
-                            a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                        from sqlite3 import sqlite_version_info
+                        if sqlite_version_info < (3, 38, 0):
+                            ids = [a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                        else:
+                            ids = []
+                            for raw_id, raw_thread in db.execute(
+                                    "SELECT record -> '$.id',record -> '$.threadId' "
+                                    "FROM runtime_agents ORDER BY rowid"):
+                                if raw_thread is not None and json.loads(raw_thread):
+                                    if raw_id is None:
+                                        raise KeyError("id")
+                                    ids.append(json.loads(raw_id))
+                        self._analytics_history_ids = ids
                     if not ids:
                         return False
                     self._analytics_history_cursor %= len(ids)

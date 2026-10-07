@@ -386,6 +386,8 @@ class WorktreeDiskScanner:
             db.close()
 
     def scan_once(self, priority_ids=()):
+        from heapq import heappop, heappush
+
         # A retained legacy run loop can still wake every minute after a live
         # update. Its next call must not start an unrequested full scan.
         if not priority_ids and threading.current_thread().name == 'studio-worktree-disk':
@@ -401,13 +403,23 @@ class WorktreeDiskScanner:
                     return []
         workers = self._workers()
         ids = list(workers)
-        priorities = set(priority_ids)
         with self.lock:
             self.scanning = True
             self.error = None
             previous_sizes = {key: dict(row) for key, row in self.sizes.items()}
-        paths = {key: str(path.absolute()) if path is not None else None
-                 for key, path in workers.items()}
+        roots = {path for path in workers.values() if path is not None}
+        root_paths = {path: str(path.absolute()) for path in roots}
+        paths = {key: root_paths.get(path) for key, path in workers.items()}
+        aliases = {}
+        for key, path_key in paths.items():
+            if path_key is not None:
+                aliases.setdefault(path_key, []).append(key)
+        exclusions = {path: set() for path in roots}
+        for path in roots:
+            for parent in path.parents:
+                if parent in exclusions:
+                    exclusions[parent].add(path)
+        exclusions = {path: frozenset(nested) for path, nested in exclusions.items()}
         live_paths = {path for path in paths.values() if path is not None}
         with self.lock:
             self.cache = {path: row for path, row in self.cache.items() if path in live_paths}
@@ -415,41 +427,58 @@ class WorktreeDiskScanner:
             self.sizes.update({key: {'state': 'missing'} for key, path in paths.items()
                                if path is None})
         todo = set(ids)
+        positions = {key: index for index, key in enumerate(ids)}
+        priority_order, prioritized = [], set()
+        cursor = 0
+        measured = {}
+
+        def prioritize(keys):
+            for key in keys:
+                if key in todo and key not in prioritized:
+                    heappush(priority_order, positions[key])
+                    prioritized.add(key)
+
+        prioritize(set(priority_ids))
         order = []
         while todo:
-            priorities.update(self._take_priority())
-            selected = next((key for key in ids if key in todo and key in priorities), None)
-            if selected is None:
-                selected = next(key for key in ids if key in todo)
+            prioritize(self._take_priority())
+            if priority_order:
+                selected = ids[heappop(priority_order)]
+            else:
+                while ids[cursor] not in todo:
+                    cursor += 1
+                selected = ids[cursor]
             todo.remove(selected)
             order.append(selected)
             path = workers[selected]
             if path is None:
                 continue
             path_key = paths[selected]
+            # Aliases share the first sample in this pass, including its time.
+            if path_key in measured:
+                continue
+            nested = exclusions[path]
             try:
                 signature = _change_signature(path)
                 with self.lock:
                     cached = self.cache.get(path_key)
-                if (cached and cached.get('signature') == signature
+                if (cached and cached.get('signature') == signature and cached.get('excluded') == nested
                         and self.clock() - cached['scannedAt'] < CACHE_TTL):
                     row = {key: value for key, value in cached.items()
-                           if key not in ('signature', 'path')}
+                           if key not in ('signature', 'path', 'excluded')}
                 else:
-                    nested = {other for other in workers.values()
-                              if other is not None and other != path and other.is_relative_to(path)}
                     byte_count, measure = _measure_worktree(path, excluded=nested, pause=self.pause)
                     row = {'state': 'ready', 'bytes': byte_count,
                            'scannedAt': self.clock(), 'measure': measure}
                     with self.lock:
-                        self.cache[path_key] = {**row, 'signature': signature, 'path': path_key}
+                        self.cache[path_key] = {**row, 'signature': signature, 'path': path_key, 'excluded': nested}
             except OSError as error:
                 row = {'state': 'unavailable', 'error': str(error)[:160],
                        'measure': 'allocated blocks'}
+            measured[path_key] = row
             with self.lock:
-                for agent_id, agent_path in paths.items():
-                    if agent_path == path_key:
-                        self.sizes[agent_id] = dict(row)
+                for agent_id in aliases[path_key]:
+                    self.sizes[agent_id] = dict(row)
         with self.lock:
             self.scanning = False
             self.last_scan_at = self.clock()

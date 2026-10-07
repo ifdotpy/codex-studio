@@ -81,7 +81,7 @@ class RosterCache(unittest.TestCase):
         db = sqlite3.connect(self.path)
         db.row_factory = sqlite3.Row
         db.set_trace_callback(lambda sql: self.scans.append(sql)
-                              if sql.startswith("SELECT id,record FROM runtime_agents WHERE") else None)
+                              if sql.startswith("SELECT id,record") and "FROM runtime_agents WHERE" in sql else None)
         self.connections.append(db)
         return db
 
@@ -247,7 +247,7 @@ class RosterCache(unittest.TestCase):
 
             def execute(self, sql, *args):
                 cursor = inner.execute(sql, *args)
-                return RowCursor(cursor) if sql.startswith("SELECT id,record FROM runtime_agents WHERE") else cursor
+                return RowCursor(cursor) if sql.startswith("SELECT id,record") and "FROM runtime_agents WHERE" in sql else cursor
 
         self.assertEqual(self.roster(Connection())[0]["name"], "agent")
         self.assertEqual(self.roster()[0]["name"], "new")
