@@ -133,7 +133,7 @@ def prepare_budget_migration(runtime):
 
 
 def migrate_budget_usage(db, agent, limit=64, budget_db=None):
-    """Import one idempotent page of stored usage into the durable budget ledger."""
+    """Import one idempotent page; open a supplied budget context only for rows."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
         return False
     key = "budgetUsageMigrationV1:" + agent["id"]
@@ -146,15 +146,21 @@ def migrate_budget_usage(db, agent, limit=64, budget_db=None):
         return False
     rows = db.execute("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
                       (agent["id"], state["cursor"], state["end"], limit)).fetchall()
-    for seq, raw in rows:
-        record = json.loads(raw)
-        payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
-                   "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
-                   "requestUsage": record.get("requestUsage"),
-                   "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
-                   "_analyticsTimestampSource": record.get("timestampSource")}
-        budget_capture(budget_db or db, agent, payload, at=record.get("at", 0), source="rollout")
-        state["cursor"] = seq
+    if rows:
+        from contextlib import AbstractContextManager
+        # An entered SQL connection retains the original caller-owned scope.
+        budget_scope = (budget_db if isinstance(budget_db, AbstractContextManager) and not hasattr(budget_db, "execute")
+                        else nullcontext(budget_db or db))
+        with budget_scope as writer:
+            for seq, raw in rows:
+                record = json.loads(raw)
+                payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
+                           "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
+                           "requestUsage": record.get("requestUsage"),
+                           "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
+                           "_analyticsTimestampSource": record.get("timestampSource")}
+                budget_capture(writer, agent, payload, at=record.get("at", 0), source="rollout")
+                state["cursor"] = seq
     if len(rows) < limit:
         state["cursor"] = state["end"]
     db.execute("INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -329,11 +335,26 @@ class AnalyticsHistoryMixin:
             for folder in ("sessions", "archived_sessions"):
                 root = home / folder
                 if root.is_dir():
-                    for path in root.rglob("*.jsonl"):
-                        # Native UUID suffix. Do not infer another account home.
-                        suffix = path.stem[-36:]
-                        paths.setdefault(suffix, []).append(path)
-            cache = (now, paths)
+                    pending = [root]
+                    while pending:
+                        directory = pending.pop()
+                        try:
+                            with os.scandir(directory) as scanner:
+                                entries = list(scanner)
+                        except OSError:
+                            continue
+                        for entry in entries:
+                            if entry.name.endswith(".jsonl"):
+                                path = Path(entry.path)
+                                # Native UUID suffix. Keep the managed account home.
+                                suffix = path.stem[-36:]
+                                paths.setdefault(suffix, []).append(path)
+                            try:
+                                if entry.is_dir(follow_symlinks=False):
+                                    pending.append(Path(entry.path))
+                            except OSError:
+                                continue
+            cache = (time.monotonic(), paths)
             self._analytics_history_paths[str(home)] = cache
         matches = cache[1].get(thread_id, [])
         if len(matches) != 1:
@@ -348,9 +369,12 @@ class AnalyticsHistoryMixin:
 
     def analytics_history_step(self, max_bytes=1048576, max_records=128):
         """Import one fair batch. Return whether complete lines advanced."""
-        if not self._analytics_history_guard.acquire(blocking=False):
-            return False
+        background = getattr(self, 'analytics_history_thread', None) is threading.current_thread()
+        started = (time.monotonic(), time.thread_time()) if background else None
+        acquired = self._analytics_history_guard.acquire(blocking=False)
         try:
+            if not acquired:
+                return False
             with _history_step_connections(self):
                 if not getattr(self, "_analytics_history_schema_ready", False):
                     with self.analytics_history_db() as db:
@@ -358,12 +382,23 @@ class AnalyticsHistoryMixin:
                 prepare_budget_migration(self)
                 with self.analytics_history_db() as db:
                     repair_terminal_errors(db)
-                    # Decode all agents once per round, not once per step. Each
-                    # step reads only its own agent under the shared lock.
+                    # Runtime.put stores object records with unique JSON keys.
+                    # Project roster fields once per round; read each actor fresh.
                     ids = getattr(self, "_analytics_history_ids", None)
                     if not ids or self._analytics_history_cursor % len(ids) == 0:
-                        ids = self._analytics_history_ids = [
-                            a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                        from sqlite3 import sqlite_version_info
+                        if sqlite_version_info < (3, 38, 0):
+                            ids = [a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                        else:
+                            ids = []
+                            for raw_id, raw_thread in db.execute(
+                                    "SELECT record -> '$.id',record -> '$.threadId' "
+                                    "FROM runtime_agents ORDER BY rowid"):
+                                if raw_thread is not None and json.loads(raw_thread):
+                                    if raw_id is None:
+                                        raise KeyError("id")
+                                    ids.append(json.loads(raw_id))
+                        self._analytics_history_ids = ids
                     if not ids:
                         return False
                     self._analytics_history_cursor %= len(ids)
@@ -378,8 +413,7 @@ class AnalyticsHistoryMixin:
                 key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
                 with self.analytics_history_db() as db:
                     if hasattr(self, "analytics_db"):
-                        with self.db() as budget_db:
-                            budget_advanced = migrate_budget_usage(db, a, budget_db=budget_db)
+                        budget_advanced = migrate_budget_usage(db, a, budget_db=self.db())
                     else:
                         budget_advanced = migrate_budget_usage(db, a)
                     row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
@@ -528,7 +562,16 @@ class AnalyticsHistoryMixin:
                     state.update(status="unreadable", error="Cannot read the managed account's native rollout")
                     return self._analytics_history_save(key, a, state)
         finally:
-            self._analytics_history_guard.release()
+            if acquired:
+                self._analytics_history_guard.release()
+            if started is not None:
+                # Each batch repays its CPU time after every import scope closes.
+                deadline = started[0] + max(0, time.thread_time() - started[1]) / .15
+                while not self.closed:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(.1, remaining))
 
     def _analytics_history_save(self, key, a, state):
         with self.analytics_history_db() as db:

@@ -22,6 +22,32 @@ _scanners = {}
 _scanners_lock = threading.Lock()
 _apfs_api_lock = threading.Lock()
 _apfs_api = None
+_scan_cpu_state = threading.local()
+
+
+def _scan_pause(pause, *, force=False):
+    """Limit the background disk walker to 15 percent of one CPU core."""
+    if threading.current_thread().name != 'studio-worktree-disk':
+        return False
+    window = getattr(_scan_cpu_state, 'window', None)
+    if window is None:
+        _scan_cpu_state.window = (time.monotonic(), time.thread_time())
+        _scan_cpu_state.entries = 0
+        return True
+    _scan_cpu_state.entries += 1
+    if not force and _scan_cpu_state.entries % 64:
+        return True
+    now, cpu = time.monotonic(), time.thread_time()
+    elapsed, used = now - window[0], cpu - window[1]
+    if used >= .005:
+        delay = used / .15 - elapsed
+        if delay > 0:
+            pause(delay)
+        _scan_cpu_state.window = (time.monotonic(), time.thread_time())
+    elif elapsed >= .2:
+        # An idle scanner must not collect credit for a later CPU burst.
+        _scan_cpu_state.window = (now, cpu)
+    return True
 
 
 def _publish_worktree_disk(state_dir: str | Path, agent_ids: Iterable[str]) -> None:
@@ -59,6 +85,128 @@ def _getattrlist_api():
         return _apfs_api
 
 
+def _getattrlistbulk_api():
+    global _apfs_bulk_api
+    if globals().get('_apfs_bulk_api') is not None:
+        return _apfs_bulk_api
+    with _apfs_api_lock:
+        if globals().get('_apfs_bulk_api') is None:
+            libc = ctypes.CDLL(None, use_errno=True)
+            function = libc.getattrlistbulk
+            function.argtypes = [ctypes.c_int, ctypes.POINTER(_AttrList),
+                                 ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint64]
+            function.restype = ctypes.c_int
+            _apfs_bulk_api = function
+        return _apfs_bulk_api
+
+
+def _parse_bulk_entries(raw, count):
+    """Read only complete PRIVATE records from the requested Darwin ABI."""
+    import struct
+
+    common = 0xa204000b  # RETURNED_ATTRS, ERROR, NAME, DEVID, OBJTYPE, FLAGS, FILEID.
+    if type(count) is not int or count <= 0 or count > len(raw) // 72:
+        raise ValueError('Invalid bulk entry count')
+    offset = 0
+    for _ in range(count):
+        if offset + 68 > len(raw):
+            raise ValueError('Truncated bulk entry')
+        length, = struct.unpack_from('=I', raw, offset)
+        if length < 72 or length % 8 or length > len(raw) - offset:
+            raise ValueError('Invalid bulk entry length')
+        returned = struct.unpack_from('=5I', raw, offset + 4)
+        if returned[0] != common or returned[1] or returned[4] != 8:
+            # In particular, an omitted PRIVATE attribute is not zero bytes.
+            raise ValueError('Unsupported bulk attributes')
+        error, name_offset, name_length, device, kind, flags, inode = (
+            struct.unpack_from('=IiIIIIQ', raw, offset + 24))
+        if error or kind not in range(1, 9):
+            raise ValueError('Invalid bulk object')
+        expected = (4, 0) if kind == 2 else (0, 1)
+        if returned[2:4] != expected:
+            raise ValueError('Unsupported bulk object attributes')
+        links_or_mount, private = struct.unpack_from('=Iq', raw, offset + 56)
+        if private < 0 or (kind != 2 and links_or_mount < 1):
+            raise ValueError('Invalid bulk size or link count')
+        start = offset + 28 + name_offset
+        if name_length < 2 or start < offset + 68 or start + name_length > offset + length:
+            raise ValueError('Invalid bulk name range')
+        name = raw[start:start + name_length]
+        if name[-1:] != b'\0' or b'\0' in name[:-1] or b'/' in name or name[:-1] in (b'.', b'..'):
+            raise ValueError('Invalid bulk name')
+        yield (os.fsdecode(name[:-1]), device, inode, kind,
+               links_or_mount, private, flags)
+        offset += length
+
+
+def _apfs_bulk_entries(directory, identity, *, pause=time.sleep):
+    """Use a separate directory descriptor and close it on every exit."""
+    api = _getattrlistbulk_api()
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError('Directory identity changed before bulk read')
+        attrs = _AttrList(5, 0, 0xa204000b, 0, 4, 1, ATTR_CMNEXT_PRIVATESIZE)
+        output = ctypes.create_string_buffer(65536)
+        while True:
+            _scan_pause(pause, force=True)
+            count = api(fd, ctypes.byref(attrs), output, ctypes.sizeof(output),
+                        FSOPT_ATTR_CMN_EXTENDED | 8)  # FSOPT_PACK_INVAL_ATTRS.
+            _scan_pause(pause, force=True)
+            if count < 0:
+                raise OSError(ctypes.get_errno(), 'Bulk attributes are unavailable')
+            if count == 0:
+                return
+            yield from _parse_bulk_entries(output.raw, count)
+    finally:
+        os.close(fd)
+
+
+def _apfs_bulk_bytes(root, private, *, excluded=(), pause=time.sleep):
+    """Count APFS bytes in batches; use the path walker for ambiguous metadata."""
+    import stat
+
+    try:
+        info = root.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        pending = [(root, (info.st_dev, info.st_ino))]
+        total, count = private, 0
+        hardlinks = set()
+        while pending:
+            directory, identity = pending.pop()
+            entries = _apfs_bulk_entries(directory, identity, pause=pause)
+            try:
+                for name, device, inode, kind, links_or_mount, value, flags in entries:
+                    path = directory / name
+                    if path in excluded:
+                        continue
+                    entry_identity = (device, inode)
+                    if flags & 0x00800000 or (kind == 2 and links_or_mount):
+                        # Bulk reports the underlying mount/firmlink, not its target.
+                        return None
+                    if kind == 2:
+                        child = path.lstat()
+                        if not stat.S_ISDIR(child.st_mode) or (child.st_dev, child.st_ino) != entry_identity:
+                            return None
+                        pending.append((path, entry_identity))
+                    if kind == 2 or links_or_mount <= 1 or entry_identity not in hardlinks:
+                        total += value
+                    if kind != 2 and links_or_mount > 1:
+                        hardlinks.add(entry_identity)
+                    count += 1
+                    if count % 64 == 0:
+                        _scan_pause(pause, force=True)
+                    if count % 500 == 0 and not _scan_pause(pause, force=True):
+                        pause(.01)
+            finally:
+                entries.close()
+        return total
+    except (AttributeError, ctypes.ArgumentError, OSError, TypeError, ValueError):
+        return None
+
+
 def disk_limit_bytes():
     value = os.environ.get('CODEX_WORKTREE_DISK_LIMIT_BYTES')
     if value is None:
@@ -90,6 +238,9 @@ def _apfs_private_bytes(path):
     """Return ATTR_CMNEXT_PRIVATESIZE, or None when the volume lacks it."""
     if sys.platform != 'darwin':
         return None
+    # Existing walkers resolve this function for each entry. This also limits a
+    # scan that started before a function-only update installed the budget.
+    _scan_pause(time.sleep)
     try:
         getattrlist = _getattrlist_api()
         attrs = _AttrList(5, 0, 0, 0, 0, 0, ATTR_CMNEXT_PRIVATESIZE)
@@ -135,7 +286,9 @@ def _tree_bytes(root, value_for, *, excluded=(), pause=time.sleep):
                 if is_dir:
                     pending.append(entry_path)
                 count += 1
-                if count % 500 == 0:
+                if count % 64 == 0:
+                    _scan_pause(pause, force=True)
+                if count % 500 == 0 and not _scan_pause(pause, force=True):
                     pause(.01)
     return total
 
@@ -149,8 +302,10 @@ def _allocated_bytes(root, *, excluded=(), pause=time.sleep):
 def _measure_worktree(root, *, excluded=(), pause=time.sleep):
     private = _apfs_private_bytes(root)
     if private is not None:
-        result = _tree_bytes(root, lambda path, _info: _apfs_private_bytes(path),
-                             excluded=excluded, pause=pause)
+        result = _apfs_bulk_bytes(root, private, excluded=excluded, pause=pause)
+        if result is None:
+            result = _tree_bytes(root, lambda path, _info: _apfs_private_bytes(path),
+                                 excluded=excluded, pause=pause)
         if result is not None:
             return result, 'private on APFS'
     return _allocated_bytes(root, excluded=excluded, pause=pause), 'allocated blocks'
@@ -231,15 +386,40 @@ class WorktreeDiskScanner:
             db.close()
 
     def scan_once(self, priority_ids=()):
+        from heapq import heappop, heappush
+
+        # A retained legacy run loop can still wake every minute after a live
+        # update. Its next call must not start an unrequested full scan.
+        if not priority_ids and threading.current_thread().name == 'studio-worktree-disk':
+            with self.lock:
+                last_scan = getattr(self, 'last_scan_at', None)
+                if last_scan is None:
+                    # An old active scan frame can finish without writing the
+                    # new timestamp. Its measured rows retain the real times.
+                    last_scan = max((row['scannedAt'] for row in self.cache.values()
+                                     if isinstance(row.get('scannedAt'), (int, float))),
+                                    default=None)
+                if last_scan is not None and self.clock() - last_scan < CACHE_TTL:
+                    return []
         workers = self._workers()
         ids = list(workers)
-        priorities = set(priority_ids)
         with self.lock:
             self.scanning = True
             self.error = None
             previous_sizes = {key: dict(row) for key, row in self.sizes.items()}
-        paths = {key: str(path.absolute()) if path is not None else None
-                 for key, path in workers.items()}
+        roots = {path for path in workers.values() if path is not None}
+        root_paths = {path: str(path.absolute()) for path in roots}
+        paths = {key: root_paths.get(path) for key, path in workers.items()}
+        aliases = {}
+        for key, path_key in paths.items():
+            if path_key is not None:
+                aliases.setdefault(path_key, []).append(key)
+        exclusions = {path: set() for path in roots}
+        for path in roots:
+            for parent in path.parents:
+                if parent in exclusions:
+                    exclusions[parent].add(path)
+        exclusions = {path: frozenset(nested) for path, nested in exclusions.items()}
         live_paths = {path for path in paths.values() if path is not None}
         with self.lock:
             self.cache = {path: row for path, row in self.cache.items() if path in live_paths}
@@ -247,41 +427,58 @@ class WorktreeDiskScanner:
             self.sizes.update({key: {'state': 'missing'} for key, path in paths.items()
                                if path is None})
         todo = set(ids)
+        positions = {key: index for index, key in enumerate(ids)}
+        priority_order, prioritized = [], set()
+        cursor = 0
+        measured = {}
+
+        def prioritize(keys):
+            for key in keys:
+                if key in todo and key not in prioritized:
+                    heappush(priority_order, positions[key])
+                    prioritized.add(key)
+
+        prioritize(set(priority_ids))
         order = []
         while todo:
-            priorities.update(self._take_priority())
-            selected = next((key for key in ids if key in todo and key in priorities), None)
-            if selected is None:
-                selected = next(key for key in ids if key in todo)
+            prioritize(self._take_priority())
+            if priority_order:
+                selected = ids[heappop(priority_order)]
+            else:
+                while ids[cursor] not in todo:
+                    cursor += 1
+                selected = ids[cursor]
             todo.remove(selected)
             order.append(selected)
             path = workers[selected]
             if path is None:
                 continue
             path_key = paths[selected]
+            # Aliases share the first sample in this pass, including its time.
+            if path_key in measured:
+                continue
+            nested = exclusions[path]
             try:
                 signature = _change_signature(path)
                 with self.lock:
                     cached = self.cache.get(path_key)
-                if (cached and cached.get('signature') == signature
+                if (cached and cached.get('signature') == signature and cached.get('excluded') == nested
                         and self.clock() - cached['scannedAt'] < CACHE_TTL):
                     row = {key: value for key, value in cached.items()
-                           if key not in ('signature', 'path')}
+                           if key not in ('signature', 'path', 'excluded')}
                 else:
-                    nested = {other for other in workers.values()
-                              if other is not None and other != path and other.is_relative_to(path)}
                     byte_count, measure = _measure_worktree(path, excluded=nested, pause=self.pause)
                     row = {'state': 'ready', 'bytes': byte_count,
                            'scannedAt': self.clock(), 'measure': measure}
                     with self.lock:
-                        self.cache[path_key] = {**row, 'signature': signature, 'path': path_key}
+                        self.cache[path_key] = {**row, 'signature': signature, 'path': path_key, 'excluded': nested}
             except OSError as error:
                 row = {'state': 'unavailable', 'error': str(error)[:160],
                        'measure': 'allocated blocks'}
+            measured[path_key] = row
             with self.lock:
-                for agent_id, agent_path in paths.items():
-                    if agent_path == path_key:
-                        self.sizes[agent_id] = dict(row)
+                for agent_id in aliases[path_key]:
+                    self.sizes[agent_id] = dict(row)
         with self.lock:
             self.scanning = False
             self.last_scan_at = self.clock()

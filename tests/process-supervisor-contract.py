@@ -14,7 +14,7 @@ import threading
 import time
 import unittest
 import uuid
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from unittest.mock import patch
 
 from test_isolation import isolate_supervisor_environment
@@ -1572,10 +1572,10 @@ class ProcessSupervisorContract(unittest.TestCase):
         result=server.wait(submitted)
         self.assertEqual(result['turn']['status'],'completed')
         # Stable client input identity maps to one durable supervisor receipt.
-        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+        with closing(sqlite3.connect(self.root/'supervisor.sqlite3')) as db:
             before=db.execute("SELECT count(*) FROM operations WHERE handle='account:default'").fetchone()[0]
         proxy.send_write({'id':999,'method':'turn/start','params':params},operation_id='turn:exact-turn')
-        with sqlite3.connect(self.root/'supervisor.sqlite3') as db:
+        with closing(sqlite3.connect(self.root/'supervisor.sqlite3')) as db:
             after=db.execute("SELECT count(*) FROM operations WHERE handle='account:default'").fetchone()[0]
         self.assertEqual(after,before)
         with self.assertRaisesRegex(RuntimeError,'different content'):

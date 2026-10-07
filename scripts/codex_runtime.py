@@ -1630,6 +1630,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                   created REAL NOT NULL, deliveries TEXT NOT NULL);
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
+            self.install_scheduler_change_tracking(db)
             from codex_execution import ensure_tables as ensure_execution_tables
             db.execute("BEGIN")
             ensure_execution_tables(db)
@@ -2663,19 +2664,213 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return {record["id"]: record for record in
                 (mode_fields(json.loads(row[0])) for row in rows)}
 
+    @staticmethod
+    def scheduler_change_schema():
+        """Keep a bounded per-ID journal, not a copy of agent payloads."""
+        schema = {
+            "runtime_scheduler_agent_changes": "CREATE TABLE runtime_scheduler_agent_changes ("
+                "id TEXT PRIMARY KEY,generation INTEGER NOT NULL CHECK(typeof(generation)='integer' AND generation>=0))",
+            "runtime_scheduler_agent_change_state": "CREATE TABLE runtime_scheduler_agent_change_state ("
+                "id INTEGER PRIMARY KEY CHECK(id=1),floor INTEGER NOT NULL,generation INTEGER NOT NULL,"
+                "entries INTEGER NOT NULL,total INTEGER NOT NULL)",
+            "runtime_scheduler_agent_change_generation": "CREATE INDEX runtime_scheduler_agent_change_generation "
+                "ON runtime_scheduler_agent_changes(generation)",
+        }
+        for action, reference, condition in (
+                ("insert", "NEW", "AFTER INSERT"),
+                ("update", "NEW", "AFTER UPDATE"),
+                ("delete", "OLD", "AFTER DELETE")):
+            name = "runtime_agent_record_generation_" + action
+            statements = ["UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1;"]
+            references = ("OLD", "NEW") if action == "update" else (reference,)
+            for reference in references:
+                changed_id = " AND OLD.id IS NOT NEW.id" if action == "update" and reference == "OLD" else ""
+                statements.append("UPDATE runtime_scheduler_agent_change_state SET "
+                    "entries=entries+CASE WHEN EXISTS(SELECT 1 FROM runtime_scheduler_agent_changes "
+                    f"WHERE id={reference}.id) THEN 0 ELSE 1 END,"
+                    "total=total-COALESCE((SELECT generation FROM runtime_scheduler_agent_changes "
+                    f"WHERE id={reference}.id),0)+(SELECT value FROM runtime_agent_record_generation WHERE id=1) "
+                    "WHERE id=1" + changed_id + ";")
+                statements.append("INSERT INTO runtime_scheduler_agent_changes(id,generation) "
+                    f"SELECT {reference}.id,value FROM runtime_agent_record_generation WHERE id=1" + changed_id +
+                    " ON CONFLICT(id) DO UPDATE SET generation=excluded.generation;")
+            statements.append("UPDATE runtime_scheduler_agent_change_state SET "
+                "generation=(SELECT value FROM runtime_agent_record_generation WHERE id=1) WHERE id=1;")
+            when = (" WHEN OLD.record IS NOT NEW.record OR OLD.id IS NOT NEW.id OR OLD.rowid IS NOT NEW.rowid"
+                    if action == "update" else "")
+            schema[name] = f"CREATE TRIGGER {name} {condition} ON runtime_agents{when} BEGIN " + " ".join(statements) + " END"
+        return schema
+
+    def install_scheduler_change_tracking(self, db, *, busy_timeout=.05):
+        """Install metadata-only tracking atomically, outside the runtime lock."""
+        if self.lock._is_owned():
+            raise RuntimeError("Scheduler change tracking must install outside Runtime.lock")
+        main = next((row[2] for row in db.execute("PRAGMA database_list") if row[1] == "main"), None)
+        if not main or Path(main).resolve() != Path(self.db_path).resolve():
+            raise RuntimeError("Scheduler change tracking database scope changed")
+        schema = self.scheduler_change_schema()
+        normalize = lambda sql: " ".join(sql.split()).replace(" IF NOT EXISTS ", " ")
+        previous_timeout = db.execute("PRAGMA busy_timeout").fetchone()[0]
+        if type(busy_timeout) not in (int, float) or not 0 <= busy_timeout <= .5:
+            raise ValueError("Invalid scheduler journal busy timeout")
+        db.execute("PRAGMA busy_timeout=" + str(int(busy_timeout * 1000)))
+        begun = False
+        try:
+            db.execute("SAVEPOINT scheduler_change_install")
+            begun = True
+            # Acquire the writer before reading the coverage floor.
+            db.execute("UPDATE runtime_agent_record_generation SET value=value WHERE id=1")
+            generation = db.execute("SELECT value FROM runtime_agent_record_generation WHERE id=1").fetchone()[0]
+            if type(generation) is not int or generation < 0:
+                raise RuntimeError("Invalid agent record generation")
+            existing = {row[0]: row[1] for row in db.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN (" + ",".join("?" * len(schema)) + ")", tuple(schema))}
+            for name, sql in schema.items():
+                if name.startswith("runtime_scheduler_"):
+                    if name in existing and normalize(existing[name]) != normalize(sql):
+                        raise RuntimeError("Foreign scheduler journal schema: " + name)
+                    if name not in existing:
+                        db.execute(sql)
+                elif name in existing and normalize(existing[name]) != normalize(sql):
+                    action = name.rsplit("_", 1)[1]
+                    when = " WHEN OLD.record IS NOT NEW.record" if action == "update" else ""
+                    phase = "AFTER UPDATE OF record" if action == "update" else "AFTER " + action.upper()
+                    old = f"CREATE TRIGGER {name} {phase} ON runtime_agents{when} BEGIN " \
+                          "UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; END"
+                    if normalize(existing[name]) != normalize(old):
+                        raise RuntimeError("Foreign agent generation trigger: " + name)
+            already_tracked = all(existing.get(name) and normalize(existing[name]) == normalize(sql)
+                                  for name, sql in schema.items())
+            if not already_tracked:
+                # No writes can cross the trigger replacement and its coverage floor.
+                db.execute("DELETE FROM runtime_scheduler_agent_changes")
+                db.execute("INSERT INTO runtime_scheduler_agent_change_state VALUES(1,?,?,0,0) "
+                           "ON CONFLICT(id) DO UPDATE SET floor=excluded.floor,generation=excluded.generation,entries=0,total=0",
+                           (generation, generation))
+                for name, sql in schema.items():
+                    if name.startswith("runtime_agent_record_generation_"):
+                        db.execute("DROP TRIGGER IF EXISTS " + name)
+                        db.execute(sql)
+            db.execute("RELEASE scheduler_change_install")
+        except BaseException:
+            if begun:
+                db.execute("ROLLBACK TO scheduler_change_install")
+                db.execute("RELEASE scheduler_change_install")
+            raise
+        finally:
+            db.execute("PRAGMA busy_timeout=" + str(previous_timeout))
+
+    def scheduler_changed_ids(self, db, before, after):
+        """Use exact journal coverage; unknown schema or missing rows require a full read."""
+        schema = self.scheduler_change_schema()
+        try:
+            existing = {row[0]: row[1] for row in db.execute(
+                "SELECT name,sql FROM sqlite_master WHERE name IN (" + ",".join("?" * len(schema)) + ")", tuple(schema))}
+            if any(" ".join((existing.get(name) or "").split()) != " ".join(sql.split())
+                   for name, sql in schema.items()):
+                return None
+            state = db.execute("SELECT floor,generation,entries,total "
+                               "FROM runtime_scheduler_agent_change_state WHERE id=1").fetchone()
+            if (state is None or any(type(value) is not int or value < 0 for value in state)
+                    or state[0] > before or state[1] != after or before > after):
+                return None
+            counts = db.execute("SELECT count(*),COALESCE(sum(generation),0),min(generation),max(generation) "
+                                "FROM runtime_scheduler_agent_changes").fetchone()
+            if (tuple(counts[:2]) != tuple(state[2:]) or (counts[0] and (
+                    counts[2] <= state[0] or counts[3] > after))):
+                return None
+            return [row[0] for row in db.execute("SELECT id FROM runtime_scheduler_agent_changes "
+                "WHERE generation>? AND generation<=?", (before, after))]
+        except sqlite3.DatabaseError:
+            return None
+
+    def scheduler_roster_key(self, db):
+        """Read the roster dependencies in one SQLite snapshot."""
+        transfers = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                               "AND name='runtime_account_transfers'").fetchone()
+        sql = ("SELECT 'agents',value FROM runtime_agent_record_generation WHERE id=1 "
+               "UNION ALL SELECT 'schema',schema_version FROM pragma_schema_version "
+               "UNION ALL SELECT name,sql FROM sqlite_master WHERE type='trigger' AND name IN "
+               "('runtime_agent_record_generation_insert','runtime_agent_record_generation_update',"
+               "'runtime_agent_record_generation_delete') "
+               "UNION ALL SELECT DISTINCT 'work',json_extract(record,'$.owner') FROM runtime_work "
+               "WHERE json_extract(record,'$.status') IN ('ready','running','blocked')")
+        if transfers:
+            sql += (" UNION ALL SELECT DISTINCT 'transfers',json_extract(record,'$.leadId') "
+                    "FROM runtime_account_transfers WHERE json_extract(record,'$.status')='pending'")
+        try:
+            dependencies = db.execute(sql).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        generation = next((value for kind, value in dependencies if kind == 'agents'), None)
+        if type(generation) is not int or generation < 0:
+            return None
+        # This proof shares the generation's snapshot. Never cache an unproved
+        # schema, including an uncommitted DDL era that rollback can reuse.
+        schema = self.scheduler_change_schema()
+        normalize = lambda value: " ".join(value.split()).replace(" IF NOT EXISTS ", " ")
+        for action in ("insert", "update", "delete"):
+            name = "runtime_agent_record_generation_" + action
+            actual = next((value for kind, value in dependencies if kind == name), None)
+            when = " WHEN OLD.record IS NOT NEW.record" if action == "update" else ""
+            phase = "AFTER UPDATE OF record" if action == "update" else "AFTER " + action.upper()
+            legacy = f"CREATE TRIGGER {name} {phase} ON runtime_agents{when} BEGIN " \
+                     "UPDATE runtime_agent_record_generation SET value=value+1 WHERE id=1; END"
+            if actual is None or normalize(actual) not in (normalize(schema[name]), normalize(legacy)):
+                return None
+        return self.__dict__.get("_agent_record_revision", 0), frozenset(
+            tuple(row) for row in dependencies if not row[0].startswith("runtime_agent_record_generation_"))
+
+    def scheduler_agent_rows(self, db, cached, query):
+        """Read changed membership in one snapshot, or use the complete predicate."""
+        own_snapshot = not db.in_transaction
+        if own_snapshot:
+            db.execute("SAVEPOINT scheduler_roster_read")
+        try:
+            key = self.scheduler_roster_key(db)
+            before = cached.get("key") if isinstance(cached, dict) else None
+            records = cached.get("records") if isinstance(cached, dict) else None
+            changes = None
+            if key is not None and before is not None and isinstance(records, dict):
+                dependencies = frozenset(row for row in key[1] if row[0] != "agents")
+                previous_dependencies = frozenset(row for row in before[1] if row[0] != "agents")
+                if dependencies == previous_dependencies:
+                    generation = next(value for kind, value in key[1] if kind == "agents")
+                    previous_generation = next(value for kind, value in before[1] if kind == "agents")
+                    changes = self.scheduler_changed_ids(db, previous_generation, generation)
+            if changes is None:
+                rows = db.execute(query + " ORDER BY rowid").fetchall()
+            else:
+                changed = set(changes)
+                current = {agent_id: row for agent_id, row in records.items() if agent_id not in changed}
+                # Bind small batches to stay below SQLite's variable limit.
+                for offset in range(0, len(changes), 256):
+                    batch = changes[offset:offset + 256]
+                    selected = db.execute(query + " AND id IN (" + ",".join("?" * len(batch)) + ")", batch).fetchall()
+                    current.update({row[0]: tuple(row) for row in selected})
+                rows = sorted(current.values(), key=lambda row: row[2])
+        except BaseException:
+            if own_snapshot:
+                db.execute("ROLLBACK TO scheduler_roster_read")
+            raise
+        finally:
+            if own_snapshot:
+                db.execute("RELEASE scheduler_roster_read")
+        final_key = self.scheduler_roster_key(db)
+        if changes is not None and final_key != key:
+            # A later commit must not leave a partial merge as the returned view.
+            return db.execute(query + " ORDER BY rowid").fetchall(), None, final_key
+        return rows, key, final_key
+
     def scheduler_agents(self, db: sqlite3.Connection) -> list["AgentRecord"]:
         """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
         guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
-        write_mark = write_generation(db)  # type: ignore[no-untyped-call]
-        revision = self.__dict__.get("_agent_record_revision", 0)
+        key = self.scheduler_roster_key(db)
         with guard:
             roster_cache = self.__dict__.get("_scheduler_agent_roster")
-            if roster_cache:
-                cached_db, cached_revision, cached_write_mark, cached_changes, cached_rows = roster_cache
-                if (cached_revision == revision and cached_write_mark == write_mark
-                        and (cached_db is not db or cached_changes == db.total_changes)):
-                    return copy.deepcopy(cached_rows)
+            if key is not None and isinstance(roster_cache, dict) and roster_cache.get("key") == key:
+                return copy.deepcopy(roster_cache["rows"])
         transfer_roots = ""
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                       "AND name='runtime_account_transfers'").fetchone():
@@ -2761,27 +2956,38 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "EXISTS (SELECT 1 FROM runtime_work WHERE "
             "json_extract(runtime_work.record,'$.owner')=json_extract(runtime_agents.record,'$.id') "
             "AND json_extract(runtime_work.record,'$.status') IN ('ready','running','blocked'))")
-        rows = db.execute("SELECT id,record FROM runtime_agents WHERE (" + filters + ") AND (" +
-                          LIVE_AGENT_SQL + " OR (json_extract(record,'$.deletedAt') IS NOT NULL AND (" +
-                          deleted_cleanup + ")))" ).fetchall()
+        query = ("SELECT id,record,rowid FROM runtime_agents WHERE (" + filters + ") AND (" +
+                 LIVE_AGENT_SQL + " OR (json_extract(record,'$.deletedAt') IS NOT NULL AND (" +
+                 deleted_cleanup + ")))")
+        rows, key, final_key = self.scheduler_agent_rows(db, roster_cache, query)
         cache = self.__dict__.setdefault("_scheduler_agent_cache", {})
         agents = []
+        decoded = []
         with guard:
-            selected = {agent_id for agent_id, _ in rows}
+            selected = {agent_id for agent_id, _, _ in rows}
             for agent_id in tuple(cache):
                 if agent_id not in selected:
                     cache.pop(agent_id, None)
-            for agent_id, raw in rows:
+            for agent_id, raw, _ in rows:
                 cached = cache.get(agent_id)
                 if cached is None or cached[0] != raw:
                     cached = (raw, mode_fields(json.loads(raw)))
                     cache[agent_id] = cached
+                decoded.append(cached[1])
                 agents.append(copy.deepcopy(cached[1]))
             while len(cache) > 4096:
                 cache.pop(next(iter(cache)))
-            self._scheduler_agent_roster = (
-                db, self.__dict__.get("_agent_record_revision", 0), write_generation(db),  # type: ignore[no-untyped-call]
-                db.total_changes, tuple(cache[agent_id][1] for agent_id, _ in rows))
+            # A rollback can reuse the counter in a different transaction.
+            # Publish only committed rows, even on this same connection.
+            if key is not None and final_key == key and not db.in_transaction:
+                entry = {"key": key, "rows": tuple(decoded),
+                         "records": {row[0]: tuple(row) for row in rows}}
+                current = self.__dict__.get("_scheduler_agent_roster")
+                generation = next(value for kind, value in key[1] if kind == "agents")
+                current_generation = next((value for kind, value in current.get("key", (None, ()))[1]
+                    if kind == "agents"), -1) if isinstance(current, dict) else -1
+                if current_generation <= generation:
+                    self._scheduler_agent_roster = entry
         return agents
 
     def broadcast_room(self, db, room):
@@ -5552,18 +5758,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         restart_wait_agents = []
 
         def current_agents(db):
-            # Reuse the roster within this database session. The revision and
-            # connection write count catch put() and direct SQL updates. Across
-            # sessions, retain the same snapshot when the agent watch is unchanged.
-            generation = (self._agent_record_revision, db.total_changes,
-                          write_generation(db))
-            same_session = decoded and decoded[0] is db
-            unchanged = (decoded and decoded[1][0] == generation[0]
-                         and decoded[1][2] == generation[2]
-                         and (not same_session or decoded[1][1] == generation[1]))
-            if not unchanged:
-                decoded[:] = [db, generation, self.scheduler_agents(db)]
-            return decoded[2]
+            key = self.scheduler_roster_key(db)
+            unchanged = key is not None and decoded and decoded[0] == key
+            if unchanged:
+                return decoded[1]
+            agents = self.scheduler_agents(db)
+            if key is not None and not db.in_transaction and self.scheduler_roster_key(db) == key:
+                decoded[:] = [key, agents]
+            else:
+                decoded.clear()
+            return agents
 
         with self.lock, self.db() as db:
             from codex_radio import tick as radio_tick

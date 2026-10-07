@@ -84,6 +84,9 @@ class Journal:
             raise OSError("Supervisor needs at least 272 MiB free before creating its bounded journal")
         self.path = root / "supervisor.sqlite3"
         self.lock = threading.RLock()
+        self._db_lock = threading.Lock()
+        self._db_idle = []
+        self._db_closed = False
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             db.execute("PRAGMA synchronous=FULL")
@@ -141,15 +144,46 @@ class Journal:
 
     @contextmanager
     def db(self):
-        db = sqlite3.connect(self.path, timeout=5)
-        db.row_factory = sqlite3.Row
+        with self._db_lock:
+            if self._db_closed:
+                raise RuntimeError("Supervisor journal is closed")
+            db = self._db_idle.pop() if self._db_idle else None
+        if db is None:
+            try:
+                db = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+                db.row_factory = sqlite3.Row
+                db.execute("PRAGMA synchronous=FULL")
+                db.execute("PRAGMA wal_autocheckpoint=100")
+            except BaseException:
+                if db is not None:
+                    db.close()
+                raise
+        failed = True
         try:
-            db.execute("PRAGMA synchronous=FULL")
-            db.execute("PRAGMA wal_autocheckpoint=100")
             with db:
                 yield db
+            failed = False
         finally:
+            with self._db_lock:
+                reuse = not failed and not self._db_closed and len(self._db_idle) < 4
+                if reuse:
+                    self._db_idle.append(db)
+            if not reuse:
+                db.close()
+
+    def close(self):
+        with self._db_lock:
+            self._db_closed = True
+            idle, self._db_idle = self._db_idle, []
+        # Active leases retain their transaction and close when they return.
+        for db in idle:
             db.close()
+
+    def __del__(self):
+        try:
+            self.close()
+        except BaseException:
+            pass
 
     def outstanding_bytes(self, db, handle):
         row = db.execute("SELECT COALESCE(sum(size),0) FROM events WHERE handle=?", (handle,)).fetchone()

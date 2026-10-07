@@ -95,6 +95,24 @@ class PricingCatalog:
                 threading.Thread(target=self._refresh, name="pricing-catalog", daemon=True).start()
             return artifact["catalog"] if artifact else None
 
+    def snapshot_with_signature(self, *, ttl=None):
+        """Pair the read-only catalog with its exact canonical content hash."""
+        import hashlib
+        with self.lock:
+            catalog = self.snapshot(ttl=ttl)
+            cached = self.__dict__.get("_signature_snapshot")
+            if cached is not None and cached[0] is catalog:
+                return cached
+            signature = None
+            if catalog is not None:
+                encoded = json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                signature = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            # Retain the object itself so a replaced catalog cannot reuse its id.
+            # Lazy state also supports native-preserved pre-update instances.
+            cached = (catalog, signature)
+            self._signature_snapshot = cached
+            return cached
+
     def refresh_missing(self):
         """Start an early refresh after a priced provider reports an unknown model."""
         self.snapshot(ttl=MISSING_TTL)
