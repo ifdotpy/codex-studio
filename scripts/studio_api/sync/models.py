@@ -1293,6 +1293,7 @@ class AccountRateLimitsDto(ContractModel):
     at: float | None
     readAt: float | None = None
     processedAt: float | None = None
+    checkedAt: float | None = None
     data: RateLimitsDataDto | None = None
     error: str | None = None
 

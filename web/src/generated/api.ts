@@ -2188,6 +2188,8 @@ export interface components {
       accountKey: string;
       /** At */
       at: number | null;
+      /** Checkedat */
+      checkedAt?: number | null;
       data?: components["schemas"]["RateLimitsDataDto"] | null;
       /** Error */
       error?: string | null;

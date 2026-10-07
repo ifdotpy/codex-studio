@@ -24,7 +24,7 @@ def historical_snapshot() -> dict[str, Any]:
         "nativeRelease": {"phase": "released", "targetEpoch": 0, "targetRootId": "lead-a"},
         "startAttempt": {"id": "attempt-a", "claudeInputRequest": {"input": [{"text": "private prompt"}]}},
     }
-    limits: dict[str, JsonValue] = {"accountKey": "default", "at": 1.0, "processedAt": 2.0}
+    limits: dict[str, JsonValue] = {"accountKey": "default", "at": 1.0, "processedAt": 2.0, "checkedAt": 3.0}
     return {
         "token": "test", "stateDir": "/isolated", "at": 1.0,
         "threads": [agent], "nodes": [agent], "chats": [], "edges": [],
@@ -37,6 +37,7 @@ def historical_snapshot() -> dict[str, Any]:
             "work": [{"id": "work-a", "archive": {"status": "kept"},
                       "archiveIntent": {"status": "pending"}, "releases": [{"agent": "worker-a"}]}],
             "rules": [{"id": "rule-a", "status": "completed", "lastExitCode": 0,
+                       "restartHoldNotified": {"epoch": 1, "reason": "restart"},
                        "lastOutput": "", "lastFinished": 2.0, "activeWorkers": 1,
                        "lastStallExitCode": 0, "stallProbe": False, "eventText": "event"}],
         },
