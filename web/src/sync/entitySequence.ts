@@ -1,4 +1,4 @@
-/** One object per entity scope for the lifetime of this renderer tab. */
+/** One object per schema hash and entity scope for this renderer tab. */
 const entitySequenceCheckpoints = new Map<string, EntitySequenceCheckpoint>();
 
 export class EntitySequenceCheckpoint {
@@ -90,12 +90,17 @@ export class EntitySequenceCheckpoint {
 export function getEntitySequenceCheckpoint(
   workspaceId: string,
   scope: string,
+  schemaHash: string,
 ): EntitySequenceCheckpoint {
   if (scope !== "state:entities:v1") return new EntitySequenceCheckpoint();
-  let checkpoint = entitySequenceCheckpoints.get(scope);
+  // Projection databases include the schema hash in their identity, so an
+  // in-memory checkpoint from a different generated API schema is not valid.
+  // Workspace changes keep this object and reset it through observeWorkspace.
+  const key = `${schemaHash}:${scope}`;
+  let checkpoint = entitySequenceCheckpoints.get(key);
   if (!checkpoint) {
     checkpoint = new EntitySequenceCheckpoint();
-    entitySequenceCheckpoints.set(scope, checkpoint);
+    entitySequenceCheckpoints.set(key, checkpoint);
   }
   checkpoint.observeWorkspace(workspaceId);
   return checkpoint;

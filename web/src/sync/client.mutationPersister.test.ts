@@ -36,6 +36,8 @@ vi.mock("../api", () => ({
       super(message);
     }
   },
+  isApiSchemaMismatch: vi.fn(() => false),
+  onMatchingApiSchemaResponse: vi.fn(() => () => {}),
   registerSyncEntityPersister: (persist: typeof mocks.persist) => {
     mocks.persist = persist;
     mocks.registerPersister(persist);
@@ -100,10 +102,11 @@ describe("registered mutation entity persister", () => {
         $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
       })),
     };
-    mocks.createRxDatabase.mockResolvedValue({
-      addCollections: vi.fn(async () => {}),
-      projections,
-    });
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
     mocks.syncGet.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),

@@ -24,23 +24,53 @@ describe("entity sequence checkpoint", () => {
     const pullCheckpoint = getEntitySequenceCheckpoint(
       "checkpoint-registry-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     const mutationCheckpoint = getEntitySequenceCheckpoint(
       "checkpoint-registry-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
 
     expect(mutationCheckpoint).toBe(pullCheckpoint);
+  });
+
+  it("keys entity checkpoints by API schema hash and scope", () => {
+    const currentSchemaCheckpoint = getEntitySequenceCheckpoint(
+      "schema-keying-test",
+      "state:entities:v1",
+      "schema-hash-current",
+    );
+    currentSchemaCheckpoint.assign(1024);
+
+    const otherSchemaCheckpoint = getEntitySequenceCheckpoint(
+      "schema-keying-test",
+      "state:entities:v1",
+      "schema-hash-other",
+    );
+
+    expect(otherSchemaCheckpoint).not.toBe(currentSchemaCheckpoint);
+    expect(otherSchemaCheckpoint.initialized).toBe(false);
+    expect(otherSchemaCheckpoint.value).toBe(-1);
+    expect(
+      getEntitySequenceCheckpoint(
+        "schema-keying-test",
+        "state:entities:v1",
+        "schema-hash-current",
+      ),
+    ).toBe(currentSchemaCheckpoint);
   });
 
   it("does not retain checkpoints for non-entity projection scopes", () => {
     const first = getEntitySequenceCheckpoint(
       "transcript-registry-test",
       "transcript:one",
+      "schema-hash-one",
     );
     const second = getEntitySequenceCheckpoint(
       "transcript-registry-test",
       "transcript:one",
+      "schema-hash-one",
     );
 
     expect(second).not.toBe(first);
@@ -50,6 +80,7 @@ describe("entity sequence checkpoint", () => {
     const pullCheckpoint = getEntitySequenceCheckpoint(
       "reacquire-while-persisting-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     pullCheckpoint.assign(950);
     const guards = captureEntitySequenceGuards(pullCheckpoint);
@@ -67,6 +98,7 @@ describe("entity sequence checkpoint", () => {
     const reacquiredCheckpoint = getEntitySequenceCheckpoint(
       "reacquire-while-persisting-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     expect(reacquiredCheckpoint).toBe(pullCheckpoint);
     resumePersistence?.();
@@ -80,6 +112,7 @@ describe("entity sequence checkpoint", () => {
     const beforeEpochChange = getEntitySequenceCheckpoint(
       "reacquire-while-persisting-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     expect(reacquiredCheckpoint.observeEpoch("after-restore")).toBe(true);
     expect(beforeEpochChange).toBe(reacquiredCheckpoint);
@@ -91,6 +124,7 @@ describe("entity sequence checkpoint", () => {
       getEntitySequenceCheckpoint(
         "reacquire-while-persisting-test",
         "state:entities:v1",
+        "schema-hash-one",
       ),
     ).toBe(beforeEpochChange);
     expect(beforeEpochChange.value).toBe(-1);
@@ -98,6 +132,7 @@ describe("entity sequence checkpoint", () => {
     const workspaceChangedCheckpoint = getEntitySequenceCheckpoint(
       "different-workspace-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     expect(workspaceChangedCheckpoint).toBe(pullCheckpoint);
     expect(pullCheckpoint.value).toBe(-1);
@@ -283,11 +318,13 @@ describe("entity sequence checkpoint", () => {
     const checkpoint = getEntitySequenceCheckpoint(
       "dispatch-race-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     checkpoint.assign(950);
     const mutationCheckpoint = getEntitySequenceCheckpoint(
       "dispatch-race-test",
       "state:entities:v1",
+      "schema-hash-one",
     );
     const guards = captureEntitySequenceGuards(mutationCheckpoint);
     let requests = 0;

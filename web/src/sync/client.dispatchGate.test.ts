@@ -35,6 +35,8 @@ vi.mock("../api", () => ({
       super(message);
     }
   },
+  isApiSchemaMismatch: vi.fn(() => false),
+  onMatchingApiSchemaResponse: vi.fn(() => () => {}),
   registerSyncEntityPersister: vi.fn(),
   save: vi.fn(),
   saved: (_key: string, fallback: unknown) => fallback,
@@ -109,10 +111,11 @@ async function setup() {
       $: { subscribe: vi.fn(() => subscription) },
     })),
   };
-  mocks.createRxDatabase.mockResolvedValue({
-    addCollections: vi.fn(async () => {}),
-    projections,
-  });
+  mocks.createRxDatabase
+    .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+    .mockResolvedValueOnce({
+      addCollections: vi.fn(async () => ({ projections })),
+    });
   mocks.syncGet.mockImplementation(async (path: string) => {
     if (path === "/api/sync/identity") return { workspaceId };
     throw new Error("unexpected sync pull");

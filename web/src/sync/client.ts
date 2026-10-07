@@ -256,6 +256,7 @@ if (typeof window !== "undefined")
       const checkpoint = getEntitySequenceCheckpoint(
         workspaceId,
         "state:entities:v1",
+        API_SCHEMA_HASH,
       );
       const checkpointGuards = captureEntitySequenceGuards(checkpoint);
       const entities = documents.filter((document) =>
@@ -787,7 +788,7 @@ async function acquireProjection(
     // first pull establishes that the local projection already has that row.
     const isEntityScope = remoteScope === "state:entities:v1";
     const latestEntitySequence = isEntityScope
-      ? getEntitySequenceCheckpoint(workspaceId, remoteScope)
+      ? getEntitySequenceCheckpoint(workspaceId, remoteScope, API_SCHEMA_HASH)
       : new EntitySequenceCheckpoint();
     if (
       remoteScope === "state:entities:v1" &&
