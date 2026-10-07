@@ -646,6 +646,12 @@ def _refresh_changed_paths(root: Path, target_root: Path, changed_paths, index_c
                            *[f':(literal){path}' for path in sorted(repo_paths)], **git_args)
             tracked_paths = {os.fsdecode(path) for path in tracked.split(b'\0') if path}
             if tracked_paths:
+                source = root if relative == '.' else root / relative
+                unstaged = _git(source, '--literal-pathspecs', 'diff-files', '--name-only', '-z',
+                                '--', *sorted(tracked_paths), readonly=True)
+                unstaged_paths = {os.fsdecode(path) for path in unstaged.split(b'\0') if path}
+                tracked_paths.difference_update(unstaged_paths)
+            if tracked_paths:
                 _refresh_index(target, tracked_paths, **index_args)
 
 
