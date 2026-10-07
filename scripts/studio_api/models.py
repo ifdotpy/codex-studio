@@ -86,6 +86,11 @@ class ResponseModel(ContractModel):
         alias="_syncEntities",
         serialization_alias="_syncEntities",
     )
+    sync_entities_after: int | None = Field(
+        default=None,
+        alias="_syncEntitiesAfter",
+        serialization_alias="_syncEntitiesAfter",
+    )
 
     def wire_dump(self) -> dict[str, JsonValue]:
         """Serialize set fields only, retaining omitted-versus-null semantics."""

@@ -484,6 +484,11 @@ class ApiContext:
                     {"id": f"entity:{row[0]}:{row[1]}", "seq": row[2], "payload": row[3], "_deleted": bool(row[4])}
                     for row in rows
                 ]
+                from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES, sync_request_checkpoint
+
+                checkpoint = sync_request_checkpoint()
+                if checkpoint is not None and len(rows) <= MAX_MUTATION_SYNC_ENTITIES:
+                    body_value["_syncEntitiesAfter"] = checkpoint
         if content_type.startswith(JSON_CONTENT_TYPE):
             try:
                 route = request.scope.get("route")

@@ -20,7 +20,17 @@ import {
   type GetResult,
 } from "../api";
 import type { Snapshot } from "../types";
-import { EntitySequenceCheckpoint } from "./entitySequence";
+import {
+  advanceEntitySequenceGuards,
+  canAcknowledgeEntitySequenceBatch,
+  captureEntitySequenceGuards,
+  entitySequenceInvalidationCovered,
+  entitySequenceGuardsCanAdvance,
+  entitySequenceGuardsMatch,
+  getEntitySequenceCheckpoint,
+  mutationEntityCheckpointAdvance,
+  pullUnlessEntitySequenceInvalidationCovered,
+} from "./entitySequence";
 import {
   acknowledgeEntitySequences,
   watchResourceChanges,
@@ -182,26 +192,133 @@ export function syncDatabase() {
 }
 
 if (typeof window !== "undefined")
-  registerSyncEntityPersister(async (targetWorkspaceId, documents) => {
-    const { db, workspaceId } = await syncDatabase();
-    if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
-    const entities = documents.filter((document) =>
-      document.id.startsWith("entity:"),
-    );
-    // Acknowledge the response envelope before the next coalesced state frame
-    // can schedule a redundant pull; a failed persistence triggers reconciliation.
-    acknowledgeEntitySequences(
-      entities.map((document) => document.seq),
+  registerSyncEntityPersister(
+    async (
       targetWorkspaceId,
-    );
-    try {
-      for (const document of entities)
-        await persistProjection(db.projections, document);
-    } catch (error) {
-      await refreshProjection().catch(() => {});
-      throw error;
-    }
-  });
+      documents,
+      syncEntitiesAfter,
+      isPersistenceCurrent,
+    ) => {
+      const { db, workspaceId } = await syncDatabase();
+      if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
+      const checkpoint = getEntitySequenceCheckpoint(
+        workspaceId,
+        "state:entities:v1",
+      );
+      const checkpointGuards = captureEntitySequenceGuards(checkpoint);
+      const entities = documents.filter((document) =>
+        document.id.startsWith("entity:"),
+      );
+      let checkpointAdvanced = false;
+      let checkpointBefore = 0;
+      let checkpointAfter = 0;
+      let checkpointAcknowledged = false;
+      let checkpointGuardsMatched = false;
+      try {
+        for (const document of entities)
+          await persistProjection(db.projections, document);
+        if (isPersistenceCurrent() && entities.length > 0) {
+          const [persistedCheckpoint] =
+            await db.projections.storageInstance.findDocumentsById(
+              ["state:entities:checkpoint"],
+              true,
+            );
+          checkpointBefore = persistedCheckpoint?.seq ?? 0;
+          checkpointAfter = checkpointBefore;
+          const highestSequence = Math.max(
+            ...entities.map((document) => document.seq),
+          );
+          const advanceTo = mutationEntityCheckpointAdvance(
+            checkpointBefore,
+            syncEntitiesAfter,
+            highestSequence,
+            isPersistenceCurrent(),
+            typeof syncEntitiesAfter === "number" &&
+              (checkpointGuardsMatched = entitySequenceGuardsCanAdvance(
+                checkpointGuards,
+                syncEntitiesAfter,
+              )),
+          );
+          if (advanceTo !== undefined) {
+            await persistProjection(db.projections, {
+              id: "state:entities:checkpoint",
+              payload: persistedCheckpoint?.payload ?? "{}",
+              seq: advanceTo,
+            });
+            if (
+              isPersistenceCurrent() &&
+              advanceEntitySequenceGuards(
+                checkpointGuards,
+                checkpointBefore,
+                advanceTo,
+              )
+            ) {
+              checkpoint.markDurableCheckpointValid();
+              checkpointAdvanced = true;
+              checkpointAfter = advanceTo;
+            }
+          }
+          const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
+            checkpointAfter,
+            highestSequence,
+            isPersistenceCurrent(),
+            checkpointAdvanced ||
+              entitySequenceGuardsMatch(checkpointGuards, checkpointAfter),
+          );
+          if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
+            // The exact envelope can suppress a later matching frame only after
+            // either this response advanced the checkpoint or it was already
+            // covered by a completed pull.
+            acknowledgeEntitySequences(
+              entities.map((document) => document.seq),
+              targetWorkspaceId,
+            );
+            checkpointAcknowledged = true;
+          }
+        }
+      } catch (error) {
+        await refreshProjection().catch(() => {});
+        throw error;
+      }
+      const probe = (
+        window as Window & {
+          __studioSyncEntityPersisterProbe?: (value: {
+            sequences: number[];
+            checkpoint: number;
+            advanced: boolean;
+            acknowledged: boolean;
+            checkpointBefore: number;
+            guards: Array<{
+              captured: number;
+              current: number;
+              resetVersion: number;
+              currentResetVersion: number;
+            }>;
+            guardsMatched: boolean;
+            syncEntitiesAfter: number | null | undefined;
+            at: number;
+          }) => void;
+        }
+      ).__studioSyncEntityPersisterProbe;
+      if (probe !== undefined)
+        probe({
+          sequences: entities.map((document) => document.seq),
+          checkpoint: checkpointAfter,
+          advanced: checkpointAdvanced,
+          acknowledged: checkpointAcknowledged,
+          checkpointBefore,
+          guards: checkpointGuards.map((guard) => ({
+            captured: guard.sequence,
+            current: guard.checkpoint.value,
+            resetVersion: guard.resetVersion,
+            currentResetVersion: guard.checkpoint.resetVersion,
+          })),
+          guardsMatched: checkpointGuardsMatched,
+          syncEntitiesAfter,
+          at: performance.timeOrigin + performance.now(),
+        });
+    },
+  );
 
 async function pull(
   scope: string,
@@ -619,8 +736,14 @@ async function acquireProjection(
     let requiredEntitySequence: number | undefined;
     // Sequence zero is a valid initial baseline. Keep a sentinel until the
     // first pull establishes that the local projection already has that row.
-    const latestEntitySequence = new EntitySequenceCheckpoint();
-    if (remoteScope === "state:entities:v1") {
+    const latestEntitySequence = getEntitySequenceCheckpoint(
+      workspaceId,
+      remoteScope,
+    );
+    if (
+      remoteScope === "state:entities:v1" &&
+      !latestEntitySequence.initialized
+    ) {
       const [checkpoint] =
         await db.projections.storageInstance.findDocumentsById(
           ["state:entities:checkpoint"],
@@ -681,6 +804,19 @@ async function acquireProjection(
 
     const checkpointId =
       remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
+    const settleCoveredEntityInvalidation = () => {
+      if (
+        !entitySequenceInvalidationCovered(
+          latestEntitySequence.value,
+          requiredEntitySequence,
+          unversionedInvalidation,
+        )
+      )
+        return false;
+      invalidated = false;
+      requiredEntitySequence = undefined;
+      return true;
+    };
     const refresh = (signal?: AbortSignal): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
@@ -758,26 +894,66 @@ async function acquireProjection(
               signal && scopes.get(scope)?.foreground === 0
                 ? signal
                 : undefined;
+            if (
+              remoteScope === "state:entities:v1" &&
+              requiredEntitySequence !== undefined &&
+              !unversionedInvalidation &&
+              latestEntitySequence.canUseDurableCheckpoint &&
+              !latestEntitySequence.covers(requiredEntitySequence)
+            ) {
+              // Another tab has its own in-memory registry but can advance
+              // this shared IndexedDB checkpoint after persisting the rows.
+              const [persistedCheckpoint] =
+                await db.projections.storageInstance.findDocumentsById(
+                  [checkpointId],
+                  true,
+                );
+              if (
+                persistedCheckpoint &&
+                persistedCheckpoint.seq >= requiredEntitySequence
+              ) {
+                latestEntitySequence.assignWithinEpoch(persistedCheckpoint.seq);
+                latestEntitySequence.markDurableCheckpointValid();
+              }
+            }
             const pullResetVersion = latestEntitySequence.resetVersion;
-            const result = await retryRead(
-              () =>
-                pull(
-                  remoteScope,
-                  after,
-                  remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
-                  workspaceId,
-                  verifyWorkspace,
-                  initialHigh,
-                  remoteScope === "state:entities:v1" &&
-                    after === 0 &&
-                    initialHigh !== undefined &&
-                    window.matchMedia("(max-width: 760px)").matches
-                    ? saved<string | null>("codex-mobile-opened", null)
-                    : null,
-                  requestSignal,
-                ),
-              requestSignal,
-            );
+            // A queued versioned invalidation may be covered before dispatch.
+            const pullOutcome =
+              await pullUnlessEntitySequenceInvalidationCovered(
+                latestEntitySequence.value,
+                remoteScope === "state:entities:v1"
+                  ? requiredEntitySequence
+                  : undefined,
+                unversionedInvalidation,
+                () =>
+                  retryRead(
+                    () =>
+                      pull(
+                        remoteScope,
+                        after,
+                        remoteScope === "state:entities:v1"
+                          ? ENTITY_BATCH_SIZE
+                          : 100,
+                        workspaceId,
+                        verifyWorkspace,
+                        initialHigh,
+                        remoteScope === "state:entities:v1" &&
+                          after === 0 &&
+                          initialHigh !== undefined &&
+                          window.matchMedia("(max-width: 760px)").matches
+                          ? saved<string | null>("codex-mobile-opened", null)
+                          : null,
+                        requestSignal,
+                      ),
+                    requestSignal,
+                  ),
+              );
+            if (pullOutcome.skipped) {
+              settleCoveredEntityInvalidation();
+              more = false;
+              break;
+            }
+            const result = pullOutcome.value;
             if (stopped) return;
             // An epoch/reset during this request invalidates the old server
             // checkpoint. Same-epoch responses remain usable and cannot move
@@ -902,6 +1078,7 @@ async function acquireProjection(
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),
                 seq: latestEntitySequence.value,
               });
+              latestEntitySequence.markDurableCheckpointValid();
               if (!readyPublished) {
                 await persistProjection(db.projections, {
                   id: "state:entities:ready",
@@ -922,15 +1099,7 @@ async function acquireProjection(
               more = false;
             }
           }
-          if (
-            invalidated &&
-            !unversionedInvalidation &&
-            requiredEntitySequence !== undefined &&
-            latestEntitySequence.covers(requiredEntitySequence)
-          ) {
-            invalidated = false;
-            requiredEntitySequence = undefined;
-          }
+          settleCoveredEntityInvalidation();
           report(null);
         } while (invalidated && !stopped);
         if (!stopped && remoteScope === "state:entities:v1") {
@@ -970,7 +1139,10 @@ async function acquireProjection(
       if (invalidationBlocked) return;
       if (remoteScope === "state:entities:v1" && version) {
         latestEntitySequence.observeEpoch(version.epoch);
-        if (version.entitySequenceReset) latestEntitySequence.reset();
+        if (version.entitySequenceReset) {
+          latestEntitySequence.reset();
+          requiredEntitySequence = undefined;
+        }
       }
       if (
         remoteScope === "state:entities:v1" &&

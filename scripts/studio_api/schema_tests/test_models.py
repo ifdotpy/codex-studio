@@ -102,6 +102,18 @@ class ModelContractTests(unittest.TestCase):
             },
         )
 
+    def test_sync_envelope_accepts_optional_before_checkpoint(self) -> None:
+        response = ResponseModel.model_validate(
+            {
+                "_syncEntities": [],
+                "_syncEntitiesAfter": 8,
+            }
+        )
+        self.assertEqual(
+            response.wire_dump(),
+            {"_syncEntities": [], "_syncEntitiesAfter": 8},
+        )
+
     def test_error_response_keeps_documented_metadata(self) -> None:
         error = ErrorResponse.model_validate(
             {

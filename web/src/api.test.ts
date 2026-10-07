@@ -242,6 +242,35 @@ describe("OpenAPI transport facade", () => {
     }
   });
 
+  it("passes an unknown watermark through without inventing one", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 5,
+        payload: "{}",
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ _syncEntities: documents })),
+    );
+    const persist = vi.fn(async () => {});
+    const unregister = registerSyncEntityPersister(persist);
+    try {
+      await post("/api/sync/drafts", { rows: [] });
+      expect(persist).toHaveBeenCalledWith(
+        "workspace-a",
+        documents,
+        undefined,
+        expect.any(Function),
+      );
+    } finally {
+      unregister();
+    }
+  });
+
   it("keeps a committed mutation result and reports persistence failures", async () => {
     vi.stubGlobal("window", new EventTarget());
     const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
@@ -302,10 +331,18 @@ describe("OpenAPI transport facade", () => {
     const started = new Promise<void>((resolve) => {
       markStarted = resolve;
     });
-    const unregister = registerSyncEntityPersister(async () => {
-      markStarted();
-      await new Promise<void>(() => {});
+    let releasePersistence = () => {};
+    let persistenceGuard: (() => boolean) | undefined;
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
     });
+    const unregister = registerSyncEntityPersister(
+      async (_workspaceId, _rows, _after, isCurrent) => {
+        markStarted();
+        persistenceGuard = isCurrent;
+        await persistence;
+      },
+    );
     try {
       let settled = false;
       const request = post("/api/sync/drafts", { rows: [] }).then((result) => {
@@ -322,6 +359,8 @@ describe("OpenAPI transport facade", () => {
         "Mutation entity persistence failed",
         expect.objectContaining({ error: "IndexedDB persistence timed out" }),
       );
+      expect(persistenceGuard?.()).toBe(false);
+      releasePersistence();
     } finally {
       unregister();
     }

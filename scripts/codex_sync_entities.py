@@ -4,6 +4,8 @@ import json
 import logging
 import math
 import sqlite3
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
 from pydantic import AfterValidator, TypeAdapter
@@ -38,6 +40,68 @@ ENTITY_TOMBSTONE_LIMIT = 10_000
 ENTITY_TOMBSTONE_PRUNE_BATCH = 500
 ENTITY_TOMBSTONE_COUNT_KEY = "entity_tombstone_count"
 ENTITY_TOMBSTONE_FLOOR_KEY = "entity_tombstone_floor"
+MAX_MUTATION_SYNC_ENTITIES = 500
+
+
+@dataclass
+class SyncRequestEntityCapture:
+    """Request-local proof that its first entity write follows the sampled high."""
+
+    sampled_high: int
+    checkpoint: int | None = None
+    attempted: bool = False
+
+
+_sync_request_capture: ContextVar[SyncRequestEntityCapture | None] = ContextVar(
+    "studio_sync_request_entity_capture", default=None
+)
+
+
+def begin_sync_request_capture(sampled_high: int) -> Token[SyncRequestEntityCapture | None]:
+    """Start tracking an HTTP request's first durable entity write."""
+    return _sync_request_capture.set(SyncRequestEntityCapture(sampled_high))
+
+
+def end_sync_request_capture(token: object) -> None:
+    """Stop tracking an HTTP request after its response has been assembled."""
+    _sync_request_capture.reset(cast(Token[SyncRequestEntityCapture | None], token))
+
+
+def sync_request_checkpoint() -> int | None:
+    capture = _sync_request_capture.get()
+    return capture.checkpoint if capture is not None else None
+
+
+def _capture_request_entity_write(db: sqlite3.Connection) -> None:
+    capture = _sync_request_capture.get()
+    if capture is None or capture.attempted:
+        return
+    capture.attempted = True
+    # The request's handler must already hold its write transaction. A read
+    # outside that transaction cannot prove that a second connection did not
+    # commit between the sample and this write.
+    if not db.in_transaction:
+        return
+    try:
+        # Upgrade a deferred read transaction to a reserved writer before
+        # checking the high-water mark. A stale WAL snapshot fails closed here.
+        db.execute(
+            "UPDATE sync_entity_meta SET value=value WHERE key=?",
+            (ENTITY_TOMBSTONE_COUNT_KEY,),
+        )
+    except sqlite3.OperationalError:
+        return
+    row = db.execute(
+        "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
+        "WHERE collection NOT LIKE 'transcript:%'"
+    ).fetchone()
+    high = int(row[0]) if row is not None else 0
+    floor = db.execute(
+        "SELECT value FROM sync_entity_meta WHERE key=?", (ENTITY_TOMBSTONE_FLOOR_KEY,)
+    ).fetchone()
+    high = max(high, int(floor[0]) if floor else 0)
+    if high == capture.sampled_high:
+        capture.checkpoint = high
 
 
 _DTO_MODELS = {
@@ -365,6 +429,8 @@ def put(db: sqlite3.Connection, collection: str, key: str, record: Any, deleted:
                      (collection, key)).fetchone()
     if old and old[0] == digest and bool(old[1]) == deleted:
         return False
+    if not collection.startswith("transcript:"):
+        _capture_request_entity_write(db)
     seq = next_sequence(db)
     db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
                   VALUES (?,?,?,?,?,?) ON CONFLICT(collection,id) DO UPDATE SET

@@ -104,6 +104,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const OriginalEventSource = window.EventSource;
         window.__entityFrames = [];
         window.__entityStreamUrls = [];
+        window.__entityPersisterCompletions = [];
+        window.__studioSyncEntityPersisterProbe = (value) =>
+          window.__entityPersisterCompletions.push(value);
         window.EventSource = class extends OriginalEventSource {
           constructor(...args) {
             super(...args);
@@ -241,6 +244,38 @@ test("committed entities propagate between renderer tabs @sync", async ({
         const createdBody = await created.json();
         assert.equal(created.status(), 200);
         assert.ok(createdBody._syncEntities?.length);
+        const deliveredSequences = createdBody._syncEntities.map(
+          (doc) => doc.seq,
+        );
+        await pages[0].waitForFunction(
+          (sequences) =>
+            window.__entityPersisterCompletions.some((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            ),
+          deliveredSequences,
+          { timeout: 8000 },
+        );
+        const persisterDoneAt = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityPersisterCompletions.find((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            )?.at,
+          deliveredSequences,
+        );
+        assert.equal(typeof persisterDoneAt, "number");
+        const persisterCompletion = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityPersisterCompletions.find((completion) =>
+              sequences.every((sequence) =>
+                completion.sequences.includes(sequence),
+              ),
+            ),
+          deliveredSequences,
+        );
         await pages[0]
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
@@ -249,8 +284,11 @@ test("committed entities propagate between renderer tabs @sync", async ({
           ok: true,
           entityId: createdBody.id,
           seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
-          deliveredSequences: createdBody._syncEntities.map((doc) => doc.seq),
+          deliveredSequences,
           responseReceivedAt,
+          persisterDoneAt,
+          persisterAdvanced: persisterCompletion.advanced,
+          persisterCompletion,
           collection: "agent",
           deleted: false,
         };
@@ -361,6 +399,9 @@ test("committed entities propagate between renderer tabs @sync", async ({
         console.log(
           `ENTITY_MUTATION_ORDER ${JSON.stringify({
             responseReceivedAt: reply.responseReceivedAt,
+            persisterDoneAt: reply.persisterDoneAt,
+            persisterAdvanced: reply.persisterAdvanced,
+            persisterCompletion: reply.persisterCompletion,
             frameArrivals: actorFramesAfterMutation,
             actorPulls: actorPullTimings,
           })}`,
@@ -370,6 +411,12 @@ test("committed entities propagate between renderer tabs @sync", async ({
           .filter((pull) =>
             pull.documents.some((row) => responseSequences.has(row.seq)),
           );
+        const actorPrePersisterPulls = actorDuplicatePulls.filter(
+          (pull) => pull.startedAt <= reply.persisterDoneAt,
+        );
+        const actorPostPersisterPulls = actorDuplicatePulls.filter(
+          (pull) => pull.startedAt > reply.persisterDoneAt,
+        );
         const duplicateCauses = actorDuplicatePulls.map((pull) => {
           const precedingStateFrame = actorFramesAfterMutation
             .filter(
@@ -399,28 +446,21 @@ test("committed entities propagate between renderer tabs @sync", async ({
                   entitySequences: stateVersion?.entitySequences,
                 }
               : null,
-            permitted:
-              precedingStateFrame !== undefined &&
-              ["initial", "reconnect", "overflow", "workspace"].includes(
-                precedingStateFrame.reason,
-              ) &&
-              !stateVersion?.entitySequences?.length,
           };
         });
         console.log(
           `ENTITY_ACTOR_DUPLICATE_PULLS ${JSON.stringify({
             count: actorDuplicatePulls.length,
+            beforePersisterDone: actorPrePersisterPulls.length,
+            afterPersisterDone: actorPostPersisterPulls.length,
             causes: duplicateCauses,
             responseSequences: [...responseSequences],
           })}`,
         );
-        assert.ok(
-          actorDuplicatePulls.length <= 1,
-          `one create mutation must cause at most one redundant actor pull: ${JSON.stringify(duplicateCauses)}`,
-        );
-        assert.ok(
-          duplicateCauses.every((cause) => cause.permitted),
-          `a redundant actor pull is permitted only after a baseline without entity ids: ${JSON.stringify(duplicateCauses)}`,
+        assert.equal(
+          actorPostPersisterPulls.length,
+          0,
+          `create-chat actor pulls starting after the persister completed must not return rows already delivered in the mutation response: ${JSON.stringify(duplicateCauses)}`,
         );
       }
       if (params.operation === "rename") {

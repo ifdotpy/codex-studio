@@ -2107,6 +2107,8 @@ export interface components {
     AccountCostResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** At */
@@ -2135,6 +2137,8 @@ export interface components {
     AccountLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Error */
@@ -2198,6 +2202,8 @@ export interface components {
     AccountsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accounts */
       accounts: components["schemas"]["Account"][];
       /** Archivedaccounts */
@@ -2635,6 +2641,8 @@ export interface components {
     AgentRequest: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Answeredat */
@@ -2688,6 +2696,8 @@ export interface components {
     AgentResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       accountTransfer?:
@@ -3500,6 +3510,8 @@ export interface components {
     AnalyticsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       /** Accountlabel */
@@ -3857,6 +3869,8 @@ export interface components {
     AnnotationReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -3924,6 +3938,8 @@ export interface components {
     AnswerResult: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Replayed */
       replayed?: boolean | null;
       /**
@@ -3973,6 +3989,8 @@ export interface components {
     AssetRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -4056,6 +4074,8 @@ export interface components {
     BranchResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       accountTransfer?:
@@ -4258,6 +4278,8 @@ export interface components {
     CapabilitiesResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** At */
@@ -4359,6 +4381,8 @@ export interface components {
     ChangesResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Diff */
       diff?: string | null;
       /** Error */
@@ -4393,6 +4417,8 @@ export interface components {
     ChatCreated: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
     };
@@ -4438,6 +4464,8 @@ export interface components {
     ChatRead: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Messages */
       messages: components["schemas"]["ChatMessage"][];
       /** Nextafter */
@@ -4450,6 +4478,8 @@ export interface components {
     ChatReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Connected */
       connected: boolean;
       /** Id */
@@ -4472,6 +4502,8 @@ export interface components {
     CheckpointCaptureResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: string | null;
       /** Commit */
@@ -4510,6 +4542,8 @@ export interface components {
     CheckpointPreviewResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Canrestore */
       canRestore: boolean;
       checkpoint: components["schemas"]["CheckpointSummary"];
@@ -4537,6 +4571,8 @@ export interface components {
     CheckpointRestoreResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Checkpoint */
       checkpoint: string;
       /**
@@ -4549,6 +4585,8 @@ export interface components {
     CheckpointsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Checkpoints */
       checkpoints: components["schemas"]["CheckpointSummary"][];
     };
@@ -4643,6 +4681,8 @@ export interface components {
     ClaudeDeliveryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error?: string | null;
       /** Id */
@@ -4666,6 +4706,8 @@ export interface components {
     ClaudeLoginResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Chatsrefreshed */
@@ -4709,6 +4751,8 @@ export interface components {
     ClaudeRollbackResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Nativeid */
       nativeId: string;
       /** Removedturns */
@@ -4790,6 +4834,8 @@ export interface components {
     ClaudeSessionStateResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Contextwindow */
       contextWindow?: number | null;
       controlOperation?: components["schemas"]["ClaudeControlOperation"] | null;
@@ -4832,6 +4878,8 @@ export interface components {
     ClaudeSettingsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       settings: components["schemas"]["ClaudeSessionSettings"];
     };
     /** ClaudeStartRequest */
@@ -4845,6 +4893,8 @@ export interface components {
     ClaudeStopTaskResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
     };
     /** ClaudeTurn */
     ClaudeTurn: {
@@ -4916,6 +4966,8 @@ export interface components {
     ComplaintDetailResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Author */
       author?: string | null;
       /** Authorname */
@@ -5018,6 +5070,8 @@ export interface components {
     ConfigureResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       agentMode: components["schemas"]["AgentMode"];
       /** Agentmoderevision */
       agentModeRevision: number;
@@ -5067,6 +5121,8 @@ export interface components {
     ContextRepairResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       repair?: components["schemas"]["JsonValue"] | null;
@@ -5199,6 +5255,8 @@ export interface components {
     CreateInviteResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Expires */
       expires: number;
       invitation: components["schemas"]["FederationInvitation"];
@@ -5257,6 +5315,8 @@ export interface components {
     DeletedResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Deleted */
       deleted: string[];
     };
@@ -5272,6 +5332,8 @@ export interface components {
     DesktopResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Application */
       application: string;
       /** Backendbuild */
@@ -5314,6 +5376,8 @@ export interface components {
     DiagnosticsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       analyticsCapture: components["schemas"]["AnalyticsCaptureStatus"];
       analyticsFileMigration: components["schemas"]["AnalyticsFileMigration"];
       /** At */
@@ -5351,6 +5415,8 @@ export interface components {
     DirectoriesResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Directories */
       directories: components["schemas"]["DirectoryEntry"][];
       /** Parent */
@@ -5434,6 +5500,11 @@ export interface components {
        * @default null
        */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /**
+       * Syncentitiesafter
+       * @default null
+       */
+      _syncEntitiesAfter?: number | null;
       /**
        * Catalogpending
        * @default null
@@ -5868,6 +5939,8 @@ export interface components {
     FederationSnapshot: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Enabled */
       enabled: boolean;
       identity: components["schemas"]["FederationIdentity"] | null;
@@ -5886,6 +5959,8 @@ export interface components {
     FileContent: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Base64 */
       base64: string;
       /** Mime */
@@ -5897,6 +5972,8 @@ export interface components {
     FileInfo: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Mime */
       mime: string;
       /** Name */
@@ -5924,6 +6001,8 @@ export interface components {
     ImportListResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Data */
       data?: components["schemas"]["JsonValue"][];
       /** Nextcursor */
@@ -5958,6 +6037,8 @@ export interface components {
     LimitResetResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Account Id */
       account_id: string;
       /** Account Key */
@@ -6084,6 +6165,8 @@ export interface components {
     MessageReceipts: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Items */
@@ -6135,6 +6218,8 @@ export interface components {
     ModelCatalogResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       /** Catalogpending */
@@ -6160,6 +6245,8 @@ export interface components {
     MonitorActionResult: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Cancelrequested */
       cancelRequested?: boolean | null;
       /** Error */
@@ -6262,6 +6349,8 @@ export interface components {
     MutationReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       capabilities?: components["schemas"]["QueueCapabilities"] | null;
       /** Deferred */
       deferred?: boolean | null;
@@ -6302,6 +6391,8 @@ export interface components {
     NativeActionOutcome: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error?: string | null;
       status: components["schemas"]["NativeActionOutcomeStatus"];
@@ -6319,6 +6410,8 @@ export interface components {
     NativeActionReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Acceptedat */
       acceptedAt: number;
       /** Accountkey */
@@ -6357,6 +6450,8 @@ export interface components {
     NativeActionResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Acceptedturnid */
       acceptedTurnId?: string | null;
       /** Accountkey */
@@ -6500,6 +6595,8 @@ export interface components {
     NativeCommandResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error?: string | null;
       /** Id */
@@ -6822,6 +6919,8 @@ export interface components {
     PanelLayoutResult: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Reports */
@@ -6890,6 +6989,8 @@ export interface components {
     PeerConversionResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Movedagents */
@@ -6908,6 +7009,8 @@ export interface components {
     PeerProjectResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       /** Accountkeys */
@@ -6962,6 +7065,8 @@ export interface components {
     PeerRadioResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       room: components["schemas"]["PeerRoomResponse"];
     };
     /** PeerRoomRadio */
@@ -7257,6 +7362,8 @@ export interface components {
     PlanView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       native?: components["schemas"]["NativePlanPayload"] | null;
@@ -7356,6 +7463,8 @@ export interface components {
     ProfileList: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Profiles */
       profiles: components["schemas"]["ProfileRecord"][];
     };
@@ -7363,6 +7472,8 @@ export interface components {
     ProfileMutation: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Deleted */
       deleted?: string | null;
       /** Effort */
@@ -7400,6 +7511,8 @@ export interface components {
     ProgressPanel: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Error */
@@ -7500,6 +7613,8 @@ export interface components {
     ProjectMutationRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey?: string | null;
       /** Accountkeys */
@@ -7542,6 +7657,8 @@ export interface components {
     ProjectReadResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["Project"][];
     };
@@ -7549,6 +7666,8 @@ export interface components {
     ProjectRemovalResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Removed */
@@ -7708,6 +7827,8 @@ export interface components {
     QuestionHistory: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["AgentRequest"][];
     };
@@ -7856,6 +7977,8 @@ export interface components {
     QueueView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       capabilities: components["schemas"]["QueueCapabilities"];
       /** Items */
       items: components["schemas"]["QueueItem"][];
@@ -8012,6 +8135,8 @@ export interface components {
     RecoveryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Attemptid */
       attemptId?: string | null;
       /** Checked */
@@ -8078,6 +8203,8 @@ export interface components {
     RenameResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error?: string | null;
       /** Id */
@@ -8433,6 +8560,8 @@ export interface components {
     RetryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Acceptedturnid */
       acceptedTurnId?: string | null;
       /** Accountkey */
@@ -8815,6 +8944,8 @@ export interface components {
     RuleList: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Rules */
       rules: components["schemas"]["RuleRecord"][];
     };
@@ -8822,6 +8953,8 @@ export interface components {
     RuleMutation: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: string | null;
       /** Command */
@@ -9013,6 +9146,8 @@ export interface components {
     SearchItemResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Assets */
@@ -9184,6 +9319,8 @@ export interface components {
     SearchResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Limit */
       limit: number;
       /** Query */
@@ -9235,6 +9372,8 @@ export interface components {
     SessionCostResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       breakdown: components["schemas"]["CostBreakdown"];
       /** Cacheageseconds */
       cacheAgeSeconds: number;
@@ -9266,6 +9405,8 @@ export interface components {
     SessionResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Token */
       token: string;
     };
@@ -9301,6 +9442,8 @@ export interface components {
     SidebarOrderResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Groups */
       groups: {
         [key: string]: string[];
@@ -9355,6 +9498,8 @@ export interface components {
     SignedMessageResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["studio_api__federation__models__MessageReceipt"];
@@ -9369,6 +9514,8 @@ export interface components {
     SignedPairResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["SignedPairResult"];
@@ -9401,6 +9548,8 @@ export interface components {
     SignedPullResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["PullResult"];
@@ -9415,6 +9564,8 @@ export interface components {
     SignedStatusResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Nonce */
       nonce: string;
       result: components["schemas"]["SignedStatusResult"];
@@ -9441,6 +9592,8 @@ export interface components {
     SkillResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Description */
       description: string;
       /** Name */
@@ -9452,6 +9605,8 @@ export interface components {
     SkillsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Errors */
       errors: string[];
       /** Skills */
@@ -9674,6 +9829,8 @@ export interface components {
     StopResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Stopped */
       stopped: string[];
     };
@@ -9719,6 +9876,8 @@ export interface components {
     studio_api__work__models__MessageReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: string | null;
       /** At */
@@ -9931,6 +10090,8 @@ export interface components {
     SyncIdentityResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /**
        * Syncprotocol
        * @constant
@@ -9976,6 +10137,8 @@ export interface components {
     SyncProtocolResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Capabilities */
       capabilities: string[];
       /** Maxentitypage */
@@ -10010,6 +10173,8 @@ export interface components {
     SyncPullResetResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Floor */
       floor: number;
       /** Generation */
@@ -10028,6 +10193,8 @@ export interface components {
     SyncPullResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       checkpoint: components["schemas"]["SyncCheckpoint"];
       /** Documents */
       documents: components["schemas"]["SyncDocument"][];
@@ -10126,6 +10293,8 @@ export interface components {
     TaskDetailResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Arguments */
@@ -10322,6 +10491,8 @@ export interface components {
     TerminalInputResult: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       delivery: components["schemas"]["TerminalInputDelivery"];
       /** Error */
       error?: string | null;
@@ -10332,6 +10503,8 @@ export interface components {
     TerminalList: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["TerminalRecord"][];
     };
@@ -10339,6 +10512,8 @@ export interface components {
     TerminalOutput: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Availableoffset */
       availableOffset?: number | null;
       /** Error */
@@ -10361,6 +10536,8 @@ export interface components {
     TerminalRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -10482,6 +10659,8 @@ export interface components {
     ToolRequestList: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Requests */
       requests: components["schemas"]["VersionedRuntimeRecord"][];
     };
@@ -10587,6 +10766,8 @@ export interface components {
     TranscriptItemResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: string | null;
       /** Assets */
@@ -10754,6 +10935,8 @@ export interface components {
     TranscriptPageResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       agent?: components["schemas"]["TranscriptAgent"] | null;
       /** Historyversion */
       historyVersion?: string | null;
@@ -10784,6 +10967,8 @@ export interface components {
     TranscriptSearchResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Results */
       results: components["schemas"]["TranscriptSearchResult"][];
       /** Truncated */
@@ -10844,6 +11029,8 @@ export interface components {
     TransferMemberNotice: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       /** Name */
@@ -10875,6 +11062,8 @@ export interface components {
     TransferMemberResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Continueaftertransfer */
       continueAfterTransfer?: boolean | null;
       /** Error */
@@ -10906,6 +11095,8 @@ export interface components {
     TransferRequestReceipt: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Leadid */
       leadId: string;
       scope?: components["schemas"]["TransferScope"] | null;
@@ -10916,6 +11107,8 @@ export interface components {
     TransferResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Blocked */
       blocked?: components["schemas"]["TransferMemberNotice"][] | null;
       /** Canfinishhistory */
@@ -11024,6 +11217,8 @@ export interface components {
     UsageLimitsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** At */
@@ -11057,6 +11252,8 @@ export interface components {
     UsageResumeResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
       /** Authattempt */
@@ -11108,6 +11305,8 @@ export interface components {
     VersionedRuntimeRecord: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent?: string | null;
       /** Created */
@@ -11129,6 +11328,8 @@ export interface components {
     VoiceApprovalResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Replayed */
       replayed?: boolean | null;
       /**
@@ -11153,6 +11354,8 @@ export interface components {
     VoiceApprovalsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Requests */
       requests: components["schemas"]["JsonValue"][];
     };
@@ -11189,6 +11392,8 @@ export interface components {
     VoiceDeliveryResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error?: string | null;
       /** Id */
@@ -11267,6 +11472,8 @@ export interface components {
     VoiceRecordResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Agent */
       agent: string;
       /** Created */
@@ -11301,6 +11508,8 @@ export interface components {
     VoiceRecordsResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Cursor */
       cursor: number;
       /** Delivered */
@@ -11323,6 +11532,8 @@ export interface components {
     VoiceSessionResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Ended */
       ended: number | null;
       /** Error */
@@ -11349,6 +11560,8 @@ export interface components {
     VoiceSpeechQueuedResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Id */
       id: string;
       playback: components["schemas"]["VoicePlaybackConfirmation"];
@@ -11358,6 +11571,8 @@ export interface components {
     VoiceSpeechReceiptResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Error */
       error: string | null;
       /** Id */
@@ -11400,6 +11615,8 @@ export interface components {
     VoiceStatusResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       auth: components["schemas"]["VoiceAuth"];
       /** Configured */
       configured: boolean;
@@ -11545,6 +11762,8 @@ export interface components {
     WorkItem: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       archive?: components["schemas"]["JsonValue"] | null;
       archiveIntent?: components["schemas"]["JsonValue"] | null;
       /** Archivepending */
@@ -11598,6 +11817,8 @@ export interface components {
     WorkList: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Items */
       items: components["schemas"]["WorkItem"][];
       /** Tasks */
@@ -11661,6 +11882,8 @@ export interface components {
     WorkspaceTaskFeed: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       cursor?: components["schemas"]["TaskCursor"] | null;
       /** Hasmore */
       hasMore: boolean;
@@ -11733,6 +11956,8 @@ export interface components {
     WorkspaceView: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Annotations */
       annotations?: components["schemas"]["AnnotationRecord"][] | null;
       /** Checkpoints */
@@ -11766,6 +11991,8 @@ export interface components {
     WorktreeDiskResponse: {
       /** Syncentities */
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
       /** Basebytes */
       baseBytes: number;
       /** Bases */

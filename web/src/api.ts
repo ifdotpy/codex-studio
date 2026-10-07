@@ -349,12 +349,15 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
 
 type SyncEnvelope = {
   _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+  _syncEntitiesAfter?: number | null;
 };
 
 type SyncEntityDocument = components["schemas"]["SyncEntity"];
 type SyncEntityPersister = (
   workspaceId: string,
   documents: SyncEntityDocument[],
+  syncEntitiesAfter: number | null | undefined,
+  isPersistenceCurrent: () => boolean,
 ) => Promise<void>;
 let syncEntityPersister: SyncEntityPersister | undefined;
 const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
@@ -376,17 +379,24 @@ async function syncDocuments(
   const targetWorkspaceId = workspaceId ?? workspace;
   if (syncEntityPersister) {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    let persistenceCurrent = true;
     try {
       await Promise.race([
-        syncEntityPersister(targetWorkspaceId, value._syncEntities),
+        syncEntityPersister(
+          targetWorkspaceId,
+          value._syncEntities,
+          value._syncEntitiesAfter,
+          () => persistenceCurrent,
+        ),
         new Promise<never>((_, reject) => {
-          timer = setTimeout(
-            () => reject(new Error("IndexedDB persistence timed out")),
-            SYNC_ENTITY_PERSIST_TIMEOUT_MS,
-          );
+          timer = setTimeout(() => {
+            persistenceCurrent = false;
+            reject(new Error("IndexedDB persistence timed out"));
+          }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
         }),
       ]);
     } catch (error) {
+      persistenceCurrent = false;
       console.error("Mutation entity persistence failed", {
         workspaceId: targetWorkspaceId,
         error: error instanceof Error ? error.message : String(error),
