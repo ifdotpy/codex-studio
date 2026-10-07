@@ -56,7 +56,7 @@ class SessionNames:
     def submit(self, key, wanted):
         rt = self.runtime
         try:
-            server = rt.connect(wanted["accountKey"])
+            server = rt.connect_agent(rt.agent(key))
             with rt.lock:
                 if rt.closed or identity(rt.agent(key)) != wanted:
                     self.pending.pop(key, None)

@@ -839,6 +839,19 @@ class DirectoryEntry(ContractModel):
     path: str
 
 
+class LinuxVMSettings(ContractModel):
+    cpus: int = Field(ge=1, strict=True)
+    memoryBytes: int = Field(ge=1024 ** 3, le=64 * 1024 ** 3, strict=True)
+    systemDiskBytes: int = Field(ge=8 * 1024 ** 3, le=128 * 1024 ** 3, strict=True)
+    dataDiskBytes: int = Field(ge=8 * 1024 ** 3, le=1024 * 1024 ** 3, strict=True)
+
+
+class LinuxVMSettingsResponse(ResponseModel):
+    settings: LinuxVMSettings
+    state: str
+    allocatedDiskBytes: int | None = None
+
+
 class DirectoriesResponse(ResponseModel):
     path: str
     parent: str | None

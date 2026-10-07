@@ -25,8 +25,8 @@ def eligible(agent):
                         for tool in agent.get('activeTools', [])))
 
 
-def response_operation_id(runtime, account, rpc_id):
-    identity = supervisor_identity(runtime.servers.get(account))
+def response_operation_id(runtime, account, rpc_id, connection=None):
+    identity = supervisor_identity(runtime.server_for(account, connection))
     if identity is None:
         return None
     body = json.dumps([identity, rpc_id], sort_keys=True, separators=(',', ':'))
@@ -45,6 +45,16 @@ def _rpc_id(value):
 def _native_proof(runtime, server, record):
     """An absent acceptance receipt permits a response, never operation replay."""
     identity = supervisor_identity(server)
+    if identity is not None and identity['handle'].startswith('linux-worker:'):
+        if record.get('supervisor') != identity or identity['handle'] != 'linux-worker:' + record.get('agent', ''):
+            return None
+        proxy = server.proc
+        status = proxy.call('info')
+        if status.get('generation') != identity['generation'] or status.get('state') != 'running':
+            return None
+        proof = proxy.call('responseStatus', nativeId=record['rpcId'], generation=identity['generation'])
+        return identity if (proof.get('accepted') is False and proof.get('state') == 'running'
+                            and proof.get('generation') == identity['generation']) else None
     if (identity is None or identity['stateDir'] != str(runtime.root.resolve())
             or identity['handle'] != 'account:' + record.get('accountKey', 'default')):
         return None
@@ -86,8 +96,8 @@ def recover(runtime, key):
             return {'status': 'superseded'}
         expected = {field: agent.get(field) for field in FIELDS}
         account = agent.get('accountKey', 'default')
-        server = runtime.servers.get(account)
-        connection = runtime.connection_ids.get(account)
+        connection = runtime.agent_connection(agent)
+        server = runtime.server_for(account, connection)
         if (server is None or not runtime.connection_current(account, connection)
                 or supervisor_identity(server) is None):
             return {'status': 'superseded'}
@@ -132,11 +142,11 @@ def recover(runtime, key):
                         receipt = db.execute('SELECT record FROM runtime_tool_requests WHERE id=?',
                                              (record['id'],)).fetchone()
                     if (runtime.closed or any(current.get(field) != expected[field] for field in FIELDS)
-                            or runtime.servers.get(account) is not server
+                            or runtime.server_for(account, connection) is not server
                             or not runtime.connection_current(account, connection)
                             or supervisor_identity(server) != proof or not receipt or receipt[0] != raw):
                         continue
-                    operation_id = response_operation_id(runtime, account, record['rpcId'])
+                    operation_id = response_operation_id(runtime, account, record['rpcId'], connection)
                 # Do not retain Runtime.lock across a pipe or supervisor socket wait.
                 written = runtime.reply({'id': record['rpcId'], 'result': result}, account, connection,
                                         operation_id=operation_id)

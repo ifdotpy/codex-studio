@@ -386,10 +386,10 @@ class WorkMixin:
             prefix = []
             if owner.get('imageWorkspaceReady'):
                 from codex_workspace_images import exec_prefix
-                prefix = exec_prefix()
+                prefix = self.workspace_exec_prefix(owner)
             cwd = Path(owner['cwd']).resolve()
             repo_path = cwd
-            if not cwd.exists():
+            if owner.get('environment') != 'linux' and not cwd.exists():
                 worktree_root = _worker_worktree_root(owner_id, cwd)
                 if worktree_root is None:
                     raise ValueError('The saved worker path is outside its Studio worktree')

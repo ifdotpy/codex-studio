@@ -277,3 +277,22 @@ assignments, or unarchived children. `list_archived` supports `limit` and `curso
 Do not treat silence as proof of failure. Do not archive a worker to hide an error.
 
 Add `reason` for `archive`. Never replace the worker ID with a thread ID.
+
+## Linux VM workers
+
+The lead can select `environment: "linux"` for an implementer in
+`orchestration_spawn`. An omitted environment uses the project default.
+An explicit `host` choice overrides it. Leads and reviewers stay on the host.
+Linux workers wait for their source base before the first provider turn.
+The guest copy contains Git metadata and uncommitted changes.
+
+Commit a Linux result on a named branch. The worker result contains the guest
+path and a host fetch command. Fetch writes `FETCH_HEAD`. Review the commit
+before merging. A shell `cd` does not change the stored guest path.
+The guest receives access tokens only. The host owns OAuth refresh.
+If an access token expires before sync, check the host sign-in.
+Resume the worker after a successful token sync. Preserve uncertain input receipts.
+
+Archive retains the guest snapshot. Restore returns the worker paused.
+A VM disconnect does not prove that a native operation failed.
+Preserve its request ID and inspect the result before another operation.

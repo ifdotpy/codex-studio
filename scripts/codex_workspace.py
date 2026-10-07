@@ -337,6 +337,9 @@ class WorkspaceMixin:
         if action == "set_accounts":
             from codex_project_accounts import set_project_accounts
             return set_project_accounts(self, data)
+        if action == "set_worker_environment":
+            from codex_worker_environment import set_project_default
+            return set_project_default(self, data)
         if action not in ("register", "remove", "set_account", "set_worker_base"):
             raise ValueError("Unknown project action")
         path = self.project_directory(data.get("path"), require_existing=action == "register")
@@ -514,7 +517,7 @@ class WorkspaceMixin:
             mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         a = self.agent(agent_id) if agent_id and not asset_id else None
         if a and a.get("imageWorkspaceReady"):
-            size = self._image_file_size(file)
+            size = self._image_file_size(file, a)
         else:
             if not file.is_file():
                 raise ValueError("This file does not exist")
@@ -534,7 +537,7 @@ class WorkspaceMixin:
             mime = mimetypes.guess_type(file.name)[0] or "application/octet-stream"
         a = self.agent(agent_id) if agent_id and not asset_id else None
         if a and a.get("imageWorkspaceReady"):
-            content = self._read_image_file(file, limit)
+            content = self._read_image_file(file, limit, a)
         else:
             if not file.is_file():
                 raise ValueError("This file does not exist")
@@ -543,23 +546,21 @@ class WorkspaceMixin:
             content = file.read_bytes()
         return content, mime, file.name
 
-    @staticmethod
-    def _image_file_size(file):
+    def _image_file_size(self, file, agent=None):
         from codex_workspace_images import exec_prefix
         script = "import os,sys; p=sys.argv[1]; assert os.path.isfile(p); print(os.stat(p).st_size)"
-        result = subprocess.run([*exec_prefix(), sys.executable, "-c", script, str(file)],
+        result = subprocess.run([*(self.workspace_exec_prefix(agent) if agent else exec_prefix()), "python3", "-c", script, str(file)],
                                 capture_output=True, text=True, timeout=10)
         if result.returncode:
             raise ValueError("This file does not exist")
         return int(result.stdout.strip())
 
-    @staticmethod
-    def _read_image_file(file, limit):
+    def _read_image_file(self, file, limit, agent=None):
         from codex_workspace_images import exec_prefix
         script = ("import os,sys; p=sys.argv[1]; assert os.path.isfile(p); n=os.stat(p).st_size; "
                   "n > int(sys.argv[2]) and sys.exit(23); "
                   "sys.stdout.buffer.write(open(p,'rb').read(int(sys.argv[2])+1))")
-        result = subprocess.run([*exec_prefix(), sys.executable, "-c", script, str(file), str(limit)],
+        result = subprocess.run([*(self.workspace_exec_prefix(agent) if agent else exec_prefix()), "python3", "-c", script, str(file), str(limit)],
                                 capture_output=True, timeout=30)
         if result.returncode == 23:
             raise ValueError("This file exceeds the 20 MiB preview limit")
@@ -1177,7 +1178,7 @@ class WorkspaceMixin:
             else:
                 try:
                     if checkpoint.get("turnId"):
-                        response = self.connect(a.get("accountKey", "default")).call(
+                        response = self.connect_agent(a).call(
                             "thread/fork",
                             {
                                 "threadId": checkpoint["threadId"],
@@ -1189,7 +1190,7 @@ class WorkspaceMixin:
                             },
                         )
                     else:
-                        response = self.connect(a.get("accountKey", "default")).call(
+                        response = self.connect_agent(a).call(
                             "thread/start", self.new_thread_params(a)
                         )
                 except Exception as error:
@@ -1461,7 +1462,7 @@ class WorkspaceMixin:
                         "model": a["model"] if a.get("isLead") else "gpt-5.6-sol", "needsTitle": False})
                     fork_turn = turn_id
                     if data.get("before"):
-                        native = self.connect(a.get("accountKey", "default")).call(
+                        native = self.connect_agent(a).call(
                             "thread/read", {"threadId": a["threadId"], "includeTurns": True})
                         turns = native.get("thread", {}).get("turns", [])
                         index = next((i for i, turn in enumerate(turns) if turn.get("id") == turn_id), None)
@@ -1471,10 +1472,10 @@ class WorkspaceMixin:
                     self._update_workspace_operation(operation_id, forkTurnId=fork_turn)
                     provider_dispatched = True
                     if fork_turn is None:
-                        response = self.connect(a.get("accountKey", "default")).call(
+                        response = self.connect_agent(a).call(
                             "thread/start", branch_params)
                     else:
-                        response = self.connect(a.get("accountKey", "default")).call(
+                        response = self.connect_agent(a).call(
                             "thread/fork",
                             {
                                 "threadId": a["threadId"],
@@ -1676,7 +1677,7 @@ class WorkspaceMixin:
         a = self.checked_actor_in_own_db(key)
         result = {"skills": [], "errors": []}
         try:
-            response = self.connect(a.get("accountKey", "default")).call(
+            response = self.connect_agent(a).call(
                 "skills/list", {"cwds": [a["cwd"]], "forceReload": False},
                 timeout=SKILL_CATALOG_TIMEOUT_SECONDS,
             )
@@ -1751,7 +1752,7 @@ class WorkspaceMixin:
             ("servers", "mcpServerStatus/list", {"threadId": a.get("threadId"), "limit": 100}),
         ]
         def discover(method, params):
-            return self.connect(a.get("accountKey", "default")).call(method, params, timeout=5)
+            return self.connect_agent(a).call(method, params, timeout=5)
         # Independent provider reads share a five-second wait instead of two
         # sequential waits that can exceed the client's request deadline.
         with ThreadPoolExecutor(max_workers=2) as executor:
@@ -1983,7 +1984,7 @@ class WorkspaceMixin:
             raise ValueError("Choose input or cancel")
         a = self.agent(task["agent"])
         if data["action"] == "cancel":
-            server = self.connect(a.get("accountKey", "default"))
+            server = self.connect_agent(a)
             params = {"threadId": a.get("threadId"), "limit": 100}
             # A process number alone can belong to another thread after recovery.
             while True:

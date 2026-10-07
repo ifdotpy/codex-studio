@@ -592,6 +592,7 @@ class AgentEntityDto(ContractModel):
     cwd: str | None = None
     worktree: bool | str | None = None
     worktreePreparation: Literal["waiting", "preparing"] | None = None
+    environment: Literal["host", "linux"] | None = None
     imageWorkspace: bool | None = None
     imageWorkspaceReady: bool | None = None
     imageWorkspacePhase: str | None = None
@@ -1166,6 +1167,8 @@ class ProjectEntityDto(ContractModel):
     accountKey: str | None = None
     accountRevision: int | None = None
     accountKeys: list[str] | None = None
+    workerEnvironment: Literal["host", "linux"] | None = None
+    workerEnvironmentRevision: int | None = None
     organizationRevision: int | None = None
     peerTeamsRevision: int | None = None
     folders: list[ProjectFolder] | None = None

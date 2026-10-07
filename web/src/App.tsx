@@ -141,6 +141,7 @@ import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
 import { AccountTiles } from "./components/AccountTiles";
 import { FederationSettings } from "./components/FederationSettings";
+import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
 import SupervisorRecoveryNotice from "./components/SupervisorRecoveryNotice";
 import Accounts, { useAccounts } from "./components/Accounts";
@@ -2345,6 +2346,7 @@ export default function App() {
               <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
               <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
               <Tabs.Tab value="federation">Federation</Tabs.Tab>
+              <Tabs.Tab value="linux-vm">Linux VM</Tabs.Tab>
               <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
             </Tabs.List>
             <Tabs.Panel value="accounts" pt="md">
@@ -2580,6 +2582,9 @@ export default function App() {
                   notify={notify}
                 />
               )}
+            </Tabs.Panel>
+            <Tabs.Panel value="linux-vm" pt="md">
+              <LinuxVMSettings active={studioSettingsOpen} />
             </Tabs.Panel>
             <Tabs.Panel value="hotkeys" pt="md">
               <section className="settings-group" aria-label="Sidebar shortcut">

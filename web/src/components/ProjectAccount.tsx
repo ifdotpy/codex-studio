@@ -1,4 +1,4 @@
-import { Button, TextInput } from "@mantine/core";
+import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { AccountTiles } from "./AccountTiles";
 import { useRef, useState } from "react";
 import { useProjectSave } from "./useProjectSave";
@@ -27,6 +27,9 @@ export default function ProjectAccount({
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
   const [workerBase, setWorkerBase] = useState(project?.workerBaseRef || "");
+  const [environment, setEnvironment] = useState(
+    project?.workerEnvironment || "host",
+  );
   const selectableKeys = keys.filter((accountKey) => {
     const account = accounts.accounts.find((item) => item.id === accountKey);
     return account?.status === "ready" && !account.disconnected;
@@ -34,6 +37,7 @@ export default function ProjectAccount({
   const displayedKey = selectableKeys.includes(key) ? key : "";
   const save = useProjectSave("/api/projects", saved);
   const saveWorkerBase = useProjectSave("/api/projects", saved);
+  const saveEnvironment = useProjectSave("/api/projects", saved);
   const activeAccounts = accounts.accounts;
   const archivedMemberships = (accounts.archivedAccounts || []).filter(
     (account) => keys.includes(account.id),
@@ -42,6 +46,7 @@ export default function ProjectAccount({
   const ready = selected?.status === "ready" && !selected.disconnected;
   const revision = useRef(project?.accountRevision || 0);
   const workerBaseRevision = useRef(project?.workerBaseRevision || 0);
+  const environmentRevision = useRef(project?.workerEnvironmentRevision || 0);
   return (
     <form
       onSubmit={(event) => {
@@ -143,6 +148,37 @@ export default function ProjectAccount({
         }
       >
         {saveWorkerBase.retryLabel || "Save worker base"}
+      </Button>
+      <NativeSelect
+        mt="lg"
+        label="Default worker environment"
+        description="New workers use this environment. Leads and reviewers use the host."
+        value={environment}
+        disabled={saveEnvironment.pending || saveEnvironment.frozen}
+        onChange={(event) =>
+          setEnvironment(event.currentTarget.value as "host" | "linux")
+        }
+        data={[
+          { value: "host", label: "Host" },
+          { value: "linux", label: "Linux VM" },
+        ]}
+      />
+      {saveEnvironment.error && <p role="alert">{saveEnvironment.error}</p>}
+      <Button
+        mt="md"
+        type="button"
+        loading={saveEnvironment.pending}
+        disabled={saveEnvironment.frozen}
+        onClick={() =>
+          void saveEnvironment.submit({
+            action: "set_worker_environment",
+            path,
+            environment,
+            expected_revision: environmentRevision.current,
+          })
+        }
+      >
+        {saveEnvironment.retryLabel || "Save worker environment"}
       </Button>
     </form>
   );
