@@ -50,6 +50,43 @@ def run_turn(runtime, agent, prompt):
         runtime.notification, runtime.start_error = notification, start_error
 
 
+def large_native_event(remote, worker, root):
+    """Exercise the production AppServer and guest adapter without a model call."""
+    from codex_runtime import AppServer
+    from codex_linux_vm_provider import GuestProcessProxy
+    handle = 'linux-large-event:' + str(uuid.uuid4())
+    native = r"""import json,sys
+for line in sys.stdin:
+    message=json.loads(line)
+    if 'id' not in message: continue
+    result={'userAgent':'large-fixture/1'} if message.get('method')=='initialize' else {'text':'é'*1100000}
+    print(json.dumps({'id':message['id'],'result':result},ensure_ascii=False),flush=True)
+"""
+    params = {'transport':'native','handle':handle,'argv':['python3','-u','-c',native],
+              'cwd':worker['cwd'],'agentId':worker['id'],'env':{}}
+    request_id = str(uuid.uuid4())
+    proofs = []
+    class ObservedProxy(GuestProcessProxy):
+        def hydrate(self, event):
+            if 'payloadBytes' in event:
+                proofs.append(event['payloadBytes'])
+            return super().hydrate(event)
+    def process(stderr):
+        opened = remote.request('provider.start',params,request_id=request_id)
+        return ObservedProxy(remote,handle,opened,root=root,stderr_sink=stderr)
+    root.mkdir(mode=0o700)
+    server = AppServer(root,lambda message:None,lambda message:None,lambda error:None,
+                       process_factory=process,supervisor_handle=handle)
+    try:
+        result = server.call('fixture/large',{},timeout=60)
+        assert result['text'] == 'é'*1100000
+        assert proofs and max(proofs) > 2*1024*1024
+        return max(proofs)
+    finally:
+        server.close()
+        remote.request('provider.stop',{'handle':handle})
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state-dir', required=True)
@@ -144,6 +181,8 @@ def main():
             assert command(worker, 'cat', 'tracked') == 'dirty'
             metrics['sourceDeltaAndSnapshotIsolation'] = True
             progress('source delta and snapshot isolation')
+            metrics['largeNativeEventBytes'] = large_native_event(remote,later,root/'large-event')
+            progress('large native event through AppServer hydration')
             server = runtime.connect_agent(worker)
             from codex_linux_vm_credentials import profile_path
             guest_auth = '/home/studio/' + profile_path('default','codex') + '/auth.json'
