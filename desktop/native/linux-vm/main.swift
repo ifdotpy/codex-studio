@@ -55,6 +55,8 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         guard lease >= 0, flock(lease, LOCK_EX | LOCK_NB) == 0 else {
             try fail("Another VM helper owns this state directory.")
         }
+        // A new boot must not inherit a provision error from the previous boot.
+        try Data().write(to: directory.appendingPathComponent("console.log"), options: .atomic)
         config = try JSONSerialization.jsonObject(with: Data(contentsOf: directory.appendingPathComponent("config.json"))) as? [String: Any] ?? [:]
         guard let cpus = config["cpus"] as? Int, let memory = config["memoryBytes"] as? UInt64,
               cpus >= VZVirtualMachineConfiguration.minimumAllowedCPUCount,
@@ -99,7 +101,9 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         try listen(guest: true)
         vm!.start { [self] result in
             switch result {
-            case .success: phase = "running"
+            case .success:
+                if phase == "starting" { phase = "running" }
+                else { vm?.stop(completionHandler: { _ in }) }
             case .failure(let error): phase = "failed"; failure = error.localizedDescription
             }
         }
@@ -147,21 +151,27 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         }
     }
     func handle(_ fd: Int32) {
-        defer { channels.signal() }
         var line = Data(), byte: UInt8 = 0
-        let deadline = Date().addingTimeInterval(30)
-        while line.count < 65536 && Date() < deadline {
+        let deadline = DispatchTime.now().uptimeNanoseconds + 30_000_000_000
+        var terminated = false
+        while line.count < 65536 && DispatchTime.now().uptimeNanoseconds < deadline {
+            var pending = pollfd(fd: fd, events: Int16(POLLIN), revents: 0)
+            let remaining = deadline - min(deadline, DispatchTime.now().uptimeNanoseconds)
+            let ready = poll(&pending, 1, Int32(min(30_000, remaining / 1_000_000)))
+            if ready < 0 && errno == EINTR { continue }
+            if ready <= 0 { break }
             let count = read(fd, &byte, 1)
-            if count != 1 { close(fd); return }
-            if byte == 10 { break }
+            if count != 1 { close(fd); channels.signal(); return }
+            if byte == 10 { terminated = true; break }
             line.append(byte)
         }
-        guard line.count < 65536,
+        guard terminated, line.count < 65536,
               let request = try? JSONSerialization.jsonObject(with: line) as? [String: Any],
               let id = request["id"], let method = request["method"] as? String else {
-            reply(fd, ["error": ["message": "Invalid VM control request."]]); close(fd); return
+            reply(fd, ["error": ["message": "Invalid VM control request."]]); close(fd); channels.signal(); return
         }
         DispatchQueue.main.async { [self] in
+            defer { channels.signal() }
             switch method {
             case "host.status":
                 let result: [String: Any] = ["state": phase, "pid": getpid(), "error": failure ?? NSNull(), "settings": config]

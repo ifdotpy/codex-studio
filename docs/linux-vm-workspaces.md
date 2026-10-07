@@ -85,6 +85,8 @@ and initrd. It expands the kernel's gzip Image payload before boot.
 The kernel command line uses `root=/dev/vda rw console=hvc0`.
 Kernel updates use the pinned Studio image release. Apt does not select the boot kernel.
 The first boot uses cloud-init to install tools, pinned host CLI versions, and the guest service.
+Each npm download has bounded fetch retries. Each command timeout also forces termination.
+A systemd unit retries an incomplete provision on the next VM boot. It skips a complete provision.
 The guest component supplies `vm/guest/install.sh`. The host copies that component into
 `/opt/codex-studio/vm/guest` in the cloud-init seed. No credentials enter the seed.
 
@@ -113,3 +115,4 @@ python3 -B desktop/native/linux-vm/test.py
 The proof creates isolated temporary disks. It checks boot, CLI versions, a btrfs
 workspace, a guest commit, host fetch, provider reconnect, and native Codex initialization.
 It removes the VM after the check. It uses no account credentials or model requests.
+Use `--provision-restart-check` to inject one provision failure and check recovery after a VM reboot.
