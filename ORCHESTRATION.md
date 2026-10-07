@@ -514,16 +514,25 @@ Git root that contains `cwd`, or of `cwd` when it is outside Git. The copy inclu
 uncommitted changes. Multi agent mode starts the image base build. Before sealing the base,
 Studio applies one change-detection pass and refreshes each copied Git index. Git workspaces
 use HEAD differences, current status paths, and paths that were dirty when the base was made.
-Studio mirrors each Git directory with `rsync -a --delete`, excluding `index`, then applies
-changed staged entries. Plain folders use `rsync -a --delete`. Git-ignored files changed after
+Studio reads source status once per known repository and reuses that snapshot. It finds new
+nested repositories from dirty directory paths. It reads only candidate staged paths when an
+index changes. It skips index parsing when the index fingerprint matches.
+It mirrors Git directories with `rsync -a --delete`, excluding `index`, only when refs or Git
+metadata change. It copies newly staged objects by object ID. Plain folders use
+`rsync -a --delete`. Git-ignored files changed after
 base creation stay at the base version. These Git operations do not change the user's Git
 metadata. Studio does not stage, commit, replay, or collect agent changes. Agent Git settings
 stay at their defaults. Until the base is ready, the worker has read-only access, whatever the
 YOLO setting. Studio then switches the worker
 to the copy path and sends a notice with the path and copy time. Unsupported platforms use a
 Git worktree when the folder is in Git, or the original folder otherwise.
-On a real Mac, default-config first `git status` took 1.924 s at 50,000 files and 4.156 s at
-200,000 files with no staged source change. After source `git add`, it took 0.436 s and 1.676 s.
+On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
+200,000 files with no staged source change. After source `git add`, it took 3.757 s and
+10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
+and 4.013 s after `git add`. At 200,000 files, staged start used 5.365 s for source Git status,
+0.618 s for path copy, 0.610 s for index entry reads, and 1.857 s for index changes. It did not
+mirror Git metadata or restat paths. The base build took 361.245 s, including 87.022 s for file
+copy and 223.949 s for index handling. These step times overlap.
 The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
 earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
 An agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and

@@ -63,10 +63,15 @@ def _identity(agent):
 
 def _current(rt, db, op):
     a = rt.agent(op['agent'], db)
+    attempt, snapshot = a.get('startAttempt'), op.get('startAttemptSnapshot')
+    # A pending preparation adds display text without changing the input identity.
+    if (isinstance(attempt, dict) and isinstance(snapshot, dict)
+            and 'prepareError' not in snapshot and type(attempt.get('prepareError')) is str):
+        attempt = {key: value for key, value in attempt.items() if key != 'prepareError'}
     if (rt.closed or a.get('deletedAt') or _identity(a) != op['source']
             or (a.get('contextRepair') or {}).get('id') != op['id']
             or rt.preparation_settings(a) != op['settings']
-            or ('startAttemptSnapshot' in op and a.get('startAttempt') != op['startAttemptSnapshot'])
+            or ('startAttemptSnapshot' in op and attempt != snapshot)
             or ('nativeIdentity' in op
                 and _source_native_identity(rt.servers.get(a.get('accountKey', 'default'))) != op['nativeIdentity'])
             or ('connectionId' in op and not rt.connection_current(a.get('accountKey', 'default'), op['connectionId']))):
@@ -501,7 +506,8 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     browser_request = browser.get('nativeRequest') or {}
     restart = a.get('restartRecovery') or {}
     restart_same = all(restart.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId'))
-    if (safety_active(a) or (browser_same and (browser.get('stage') in {'pending', 'reconnecting'}
+    if (safety_active(a) or (browser_same and (browser.get('stage') == 'reconnecting'
+            or (browser.get('stage') == 'pending' and browser_request)
             or (browser_request.get('submittedAt') and browser_request.get('outcome') != 'received')))):
         raise _waiting('Context repair waits for the existing native recovery receipt')
     if restart_same and restart.get('stage') in {'pending', 'held'}:

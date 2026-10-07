@@ -157,6 +157,47 @@ class ImageIndexContract(unittest.TestCase):
         self.assertEqual(git(target, 'status', '--porcelain=v2'),
                          git(self.folder, 'status', '--porcelain=v2'))
 
+    def test_stash_and_git_config_changes_trigger_git_metadata_sync(self):
+        self.build_base()
+        (self.folder / 'tracked.txt').write_text('stashed after base\n')
+        git(self.folder, 'stash', 'push', '-m', 'image delta stash')
+        git(self.folder, 'config', 'image.delta-test', 'present')
+        workspace = images.create_workspace(self.folder, self.agent_id)
+        target = Path(workspace['path'])
+        self.assertEqual(git(target, 'stash', 'list'), git(self.folder, 'stash', 'list'))
+        self.assertEqual(git(target, 'config', 'image.delta-test'), b'present\n')
+        self.assertEqual(git(target, 'status', '--porcelain=v2'),
+                         git(self.folder, 'status', '--porcelain=v2'))
+
+    def test_clean_create_reuses_snapshot_and_skips_index_parse_and_gitdir_mirror(self):
+        self.build_base()
+        with (mock.patch.object(images, '_repo_snapshots', wraps=images._repo_snapshots) as snapshots,
+              mock.patch.object(images, '_git_repositories', wraps=images._git_repositories) as discovery,
+              mock.patch.object(images, '_index_entries', wraps=images._index_entries) as entries,
+              mock.patch.object(images, '_sync_git_directories',
+                                wraps=images._sync_git_directories) as git_sync):
+            images.create_workspace(self.folder, self.agent_id)
+        self.assertEqual(snapshots.call_count, 1)
+        self.assertEqual(discovery.call_count, 0)
+        self.assertEqual(entries.call_count, 0)
+        self.assertEqual(git_sync.call_count, 0)
+
+    def test_changed_index_reads_only_candidate_paths(self):
+        self.build_base()
+        (self.folder / 'tracked.txt').write_text('staged after base\n')
+        git(self.folder, 'add', 'tracked.txt')
+        with (mock.patch.object(images, '_index_entries', wraps=images._index_entries) as entries,
+              mock.patch.object(images, '_sync_git_directories',
+                                wraps=images._sync_git_directories) as git_sync):
+            workspace = images.create_workspace(self.folder, self.agent_id)
+        self.assertGreater(entries.call_count, 0)
+        self.assertEqual(git_sync.call_count, 0)
+        self.assertTrue(all(call.kwargs['paths'] == {b'tracked.txt'}
+                            for call in entries.call_args_list))
+        target = Path(workspace['path'])
+        self.assertEqual(git(target, 'status', '--porcelain=v2'),
+                         git(self.folder, 'status', '--porcelain=v2'))
+
     def test_repo_scan_skips_excluded_worktrees(self):
         excluded = self.folder / '.worktrees' / 'ignored-repo'
         init_repo(excluded, 'ignored')

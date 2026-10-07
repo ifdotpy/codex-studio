@@ -30,7 +30,8 @@ def observe(runtime, db, actor, item, turn_id, connection_id):
     if previous and not same_identity(runtime, actor, previous):
         previous = {}
     if item.get("status") == "completed":
-        if (previous.get("stage") == "verify" and any(
+        if ((previous.get("stage") == "verify"
+                or (previous.get("stage") == "pending" and not previous.get("nativeRequest"))) and any(
                 t.startswith("# Selected Browser\n- Name: Chrome\n- Type: extension\n") for t in texts)):
             previous.update(stage="verified", verifiedAt=time.time(), verificationItem=item["id"])
             actor["browserRecovery"] = previous
@@ -91,8 +92,15 @@ def tick(runtime, db, actors):
             if recovery["id"] not in jobs:
                 fail(runtime, db, actor, "Browser reconnection outcome is unknown after restart")
             continue
+        if recovery.get("nativeRequest"):
+            fail(runtime, db, actor, "Pending browser recovery has a submitted native request. Review its receipt before continuing")
+            continue
         if (not actor.get("autoWake") or actor.get("nativeFailureHold") or actor.get("deletedAt")
                 or busy(runtime, db, actor)):
+            continue
+        # Deliver current input and command results before optional browser repair.
+        if db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND epoch=? "
+                      "AND status='pending' LIMIT 1", (actor["id"], actor["epoch"])).fetchone():
             continue
         jobs = runtime.__dict__.setdefault("_browser_recovery_jobs", set())
         if len(jobs) >= 2:
@@ -166,7 +174,14 @@ def reconnect(runtime, agent_id, operation):
             from codex_browser import browser_status
             config, reason = browser_status(runtime.accounts.home(operation["accountKey"]), runtime.accounts.base_home)
             if not config:
-                raise RuntimeError("Native browser integration is unavailable: " + reason)
+                with runtime.lock, runtime.db() as db:
+                    current = runtime.agent(agent_id, db)
+                    if recovery_current(runtime, current, operation):
+                        current["browserRecovery"].update(
+                            stage="failed", error="Native browser integration is unavailable: " + reason,
+                            failedAt=time.time())
+                        runtime.put(db, "agents", current)
+                return
             server = runtime.connect(operation["accountKey"])
             params = runtime.new_thread_params(actor)
             params.pop("dynamicTools", None)

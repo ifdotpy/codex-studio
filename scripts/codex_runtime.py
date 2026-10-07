@@ -5418,7 +5418,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and not safety_retry_active(a)
                     and (not a.get("inFlight") or
                          (a.get("startAttempt") or {}).get("action") not in {"review", "compact"})
-                    and a.get("browserRecovery", {}).get("stage") not in {"pending", "reconnecting"}
+                    # A pending browser repair waits for background commands.
+                    # Keep ordinary input moving until native reconnection starts.
+                    and not (a.get("browserRecovery", {}).get("stage") == "reconnecting"
+                             or (a.get("browserRecovery", {}).get("stage") == "pending"
+                                 and a.get("browserRecovery", {}).get("nativeRequest")))
                     and (not a.get("accountTransferId") or bool(a.get("lazyAccountTransfer")))
                     and not (a.get("nativeRelease") or {}).get("resetPending")
                     and not native_thread_block(a)

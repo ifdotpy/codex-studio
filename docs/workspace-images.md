@@ -22,16 +22,22 @@ The base builder copies the folder, then runs one change-detection pass before i
 base. Git repositories use `git diff --name-only -z <base HEAD> <current HEAD>` and
 `git status --porcelain=v1 -z --untracked-files=all`. The engine also keeps paths that were
 dirty when the base copy began. It stores each repository path, HEAD, dirty paths, and index
-fingerprint in base metadata. Source Git reads set `GIT_OPTIONAL_LOCKS=0`.
+fingerprint in base metadata. It also fingerprints Git metadata outside object storage and
+indexes. The index fingerprint uses its device, inode, size, modification time, and change time.
+Git replaces its index atomically, so this check does not read the index file. Source Git reads
+set `GIT_OPTIONAL_LOCKS=0`.
 
-Each agent starts from the base and uses the same detector. Git deltas copy or delete only
-detected worktree paths. The engine also mirrors each repository's Git directory with
-`rsync -a --delete`, excluding its `index`. This copies new objects, packs, refs, and `HEAD`.
-If the source index fingerprint changed, it reads staged entries from the source and agent copies with
-`git ls-files --stage -z`. It applies only changed entries with `git update-index --index-info`,
-then copies their worktree paths and refreshes touched tracked paths. It does not run `git add`,
-create commits, replay commits, or collect changes. These operations do not change the user's
-Git metadata. Agent Git settings stay at their defaults.
+Each agent starts from the base and uses one source repository snapshot for status, index, and
+Git metadata checks. It finds new nested repositories from dirty directory paths. Git deltas
+copy or delete only detected worktree paths. The engine skips
+index entry reads when the index fingerprint matches. When it changes, the engine reads only
+candidate paths from the source and agent indexes, then applies changed entries with
+`git update-index --index-info`. It copies missing staged objects by object ID. It mirrors each
+Git directory with `rsync -a --delete`, excluding `index`, only when Git metadata changes. It
+then refreshes touched tracked paths whose index entries did not change. Git refreshes copied
+staged paths during the first status. It does not run `git add`, create commits, replay commits,
+or collect changes. These operations do not change the user's Git metadata. Agent Git settings
+stay at their defaults.
 
 Files ignored by Git stay at the base version when they change after base creation. Folders
 without a root Git repository use `rsync -a --delete`, with the workspace store and root
@@ -112,27 +118,24 @@ macOS runs on 2026-10-06, default Git settings:
 
 | Tracked files | Case                      | Agent start | First `git status` |
 | ------------: | ------------------------- | ----------: | -----------------: |
-|        50,000 | No staged source change   |     7.256 s |            1.924 s |
-|        50,000 | Source edit and `git add` |    11.884 s |            0.436 s |
-|       200,000 | No staged source change   |    20.105 s |            4.156 s |
-|       200,000 | Source edit and `git add` |    30.764 s |            1.676 s |
+|        50,000 | No staged source change   |     2.610 s |            0.983 s |
+|        50,000 | Source edit and `git add` |     3.757 s |            0.844 s |
+|       200,000 | No staged source change   |    10.104 s |            4.661 s |
+|       200,000 | Source edit and `git add` |    10.212 s |            4.013 s |
 
-At 50,000 files, the base build took 70.961 s. Its parallel file copy took 14.953 s, and Git
-index refresh took 35.164 s. The staged agent start included 0.207 s to clone, 0.890 s to
-attach, 1.213 s
-for source Git status, 0.570 s to copy changed paths, 1.488 s to sync Git metadata, 3.753 s
-to apply and refresh index entries, and 1.947 s to restat touched paths. These timings overlap:
-the detector total includes repository snapshots and source Git status. The source HEAD did
-not change, so the HEAD diff command did not run. The 50,000-file fixture took 387.418 s to
-create on a loaded host.
+The scale test ran on a loaded Mac. At 50,000 files, the base build took 50.419 s. File copy
+took 17.730 s, and index handling took 12.352 s. Staged agent start took 3.757 s: attach
+1.005 s, source Git status 0.953 s, path copy 0.443 s, index entry reads 0.167 s, and index
+delta handling 1.080 s. The first status took 0.844 s. The clean start took 2.610 s, and its
+first status took 0.983 s. The fixture took 175.540 s.
 
-The 200,000-file base build took 597.191 s. Parallel file copy took 287.579 s, and Git index
-refresh took 233.682 s. The staged agent start included 0.017 s to clone, 4.403 s to attach,
-3.903 s for source Git status, 0.669 s to copy changed paths, 2.982 s to sync Git metadata,
-9.962 s to apply and refresh index entries, and 5.202 s to restat touched paths. The detector
-took 5.555 s and included the 4.797 s repository snapshot. The source HEAD did not change, so
-the HEAD diff command did not run. The 200,000-file fixture took 1,536.880 s to create on a
-loaded host.
+At 200,000 files, the base build took 361.245 s. File copy took 87.022 s, and index handling
+took 223.949 s. The remaining base steps included repository discovery 6.323 s and source Git
+status 11.080 s. These timings overlap. Staged agent start took 10.212 s: attach 2.203 s,
+source Git status 5.365 s, path copy 0.618 s, index entry reads 0.610 s, and index delta
+handling 1.857 s. The first status took 4.013 s. The clean start took 10.104 s, and its first
+status took 4.661 s. The fixture took 823.811 s. Neither staged start mirrored the Git
+directory or restatted paths. The HEAD did not change, so no HEAD diff ran.
 
 Linux measurement, OrbStack Ubuntu 24.04, Git 2.43, btrfs, one run:
 
