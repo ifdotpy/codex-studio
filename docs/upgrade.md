@@ -233,16 +233,20 @@ continues to launch the old backend.
 
 ## Rollback and recovery
 
-- **Round 3 sync-entity rollback:** This rollback path was verified by two
-  reviews using a copy of a real database; a full start of the old server on
-  real data was not performed. For the pull request that completed the move to
-  sync entities (round 3), `#TBD-ROUND3`, first stop the server. On the database
-  copy, delete only the `seeded` and `agent_organization_fields` rows from
-  `sync_entity_meta`, then start the old build. It reseeds old-shaped entities;
-  the `agent_organization_fields` marker is then at version 3. Without deleting
-  those markers, the old build also starts, but its strict pull validator
-  rejects entity rows that carry the promoted fields. Preserve the original
-  database and verify the copied rollback path before considering any live use.
+- **Round 3 sync-entity rollback:** The pull request that completed the move to
+  sync entities (round 3), `#TBD-ROUND3`, raises the
+  `agent_organization_fields` marker in `sync_entity_meta` to version 3 and
+  adds fields to stored entity rows. To go back to a build from before that
+  pull request: stop the server; delete only the rows `seeded` and
+  `agent_organization_fields` from `sync_entity_meta`; start the old build. It
+  reseeds entities in its own shape and writes its own marker. If the markers
+  are left in place the old build also starts, but its strict pull validator
+  rejects entity rows that carry the promoted fields. A later start of the new
+  build runs the upgrade to version 3 again. Room entities that the upgrade
+  retired stay retired under the old build; their messages are not touched.
+  This procedure was verified by two reviews on a copy of a real database; a
+  full start of the old server on real data was not performed, so keep a copy
+  of the database before rolling back.
 - **Before source update:** no changes were made; stop safely.
 - **After source update, before migration:** at an idle boundary, restore the
   prior reviewed source revision using the installation's normal source
