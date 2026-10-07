@@ -889,6 +889,7 @@ class WorkEntityDto(ContractModel):
     agent: str | None = None
     status: Literal["ready", "running", "blocked", "review", "accepted", "cancelled"] | None = None
     title: str | None = None
+    archive: JsonValue | None = None
 
 
 class WorkResultDto(ContractModel):

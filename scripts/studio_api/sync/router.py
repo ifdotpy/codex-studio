@@ -218,10 +218,9 @@ def create_router(context: ApiContext) -> APIRouter:
                 payload = document.get("payload")
                 if not isinstance(payload, str):
                     return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
-                try:
-                    document["payload"], document["_deleted"] = response_entity_payload(payload)
-                except ValidationError:
-                    return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
+                # SyncStore already skipped and reported malformed persisted rows;
+                # this projection only retires a validated historical chat alias.
+                document["payload"], document["_deleted"] = response_entity_payload(payload)
         return context.send(request, {**projection, "generation": store.generation()})
 
     pull_route = router.routes[-1]

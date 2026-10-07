@@ -91,13 +91,71 @@ class TransferRuntimeFixture:
 
 
 class SyncEntityContractTests(unittest.TestCase):
+    def test_main_snapshot_only_agent_fields_stay_off_entity_dto(self) -> None:
+        agent = project("agent", {
+            "id": "worker-a", "kind": "agent", "workerBaseBehindMain": 182,
+            "nativeNameSynced": {
+                "accountKey": "default", "threadId": "thread-a", "name": "Worker",
+                "privateMarker": "omit",
+            },
+            "accountHistory": [{"threadId": "old-thread"}],
+            "deliveredMode": {"epoch": ["thread-a", 136]},
+            "nativeRelease": {"phase": "released", "targetEpoch": 0, "targetRootId": "lead-a"},
+            "startAttempt": {"id": "attempt-a", "claudeInputRequest": {"input": "private"}},
+        })
+        self.assertNotIn("workerBaseBehindMain", agent)
+        self.assertNotIn("nativeNameSynced", agent)
+        self.assertEqual(agent["nativeRelease"], {"phase": "released"})
+        self.assertEqual(agent["startAttempt"], {})
+        for private in ("accountHistory", "deliveredMode"):
+            self.assertNotIn(private, agent)
+
+        rule = project("rule", {
+            "id": "rule-a", "agent": "worker-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+            "kind": "interval", "intervalSeconds": 30, "nextAt": 100.0,
+            "at": 90.0, "path": "/repo", "event": "file-change",
+            "command": "check", "stallTimeoutSeconds": 1800,
+            "livenessCommand": "alive", "text": "Rule summary",
+            "status": "completed", "checks": 4, "wakes": 2,
+            "minimumWorkers": 3, "durationMinutes": 5,
+            "error": "last check warning", "lastExitCode": 0,
+            "lastOutput": "public rule output",
+            "restartHoldNotified": {"epoch": 1, "reason": "restart"},
+            "lastFinished": 2.0,
+            "activeWorkers": 1, "lastStallExitCode": 0, "stallProbe": False,
+            "eventText": "private event",
+        })
+        self.assertEqual(rule, {
+            "id": "rule-a", "agent": "worker-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+        })
+
+        work = project("work", {"id": "work-a", "archive": {"status": "kept"},
+                                 "archiveIntent": {"status": "pending"},
+                                 "releases": [{"agent": "worker-a"}]})
+        self.assertEqual(work["archive"], {"status": "kept"})
+        self.assertNotIn("archiveIntent", work)
+        self.assertNotIn("releases", work)
+
     def test_workspace_entity_carries_rate_limits_and_native_notices(self) -> None:
         source = {
             "connected": True,
             "rateLimits": {
                 "accountKey": "default",
                 "at": 1.0,
+                "processedAt": 2.0,
+                "checkedAt": 3.0,
                 "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+            },
+            "rateLimitsByAccount": {
+                "default": {
+                    "accountKey": "default",
+                    "at": 1.0,
+                    "processedAt": 2.0,
+                    "checkedAt": 3.0,
+                    "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+                }
             },
             "nativeNotices": [
                 {
@@ -117,6 +175,9 @@ class SyncEntityContractTests(unittest.TestCase):
         validated = WorkspaceEntityDto.model_validate(workspace)
         self.assertEqual(validated.nativeNotices[0].id, "notice")
         self.assertEqual(validated.rateLimits.data.rateLimits.primary.usedPercent, 42)
+        self.assertEqual(validated.rateLimits.processedAt, 2.0)
+        self.assertEqual(validated.rateLimits.checkedAt, 3.0)
+        self.assertEqual(validated.rateLimitsByAccount["default"].checkedAt, 3.0)
 
     def test_monitor_entity_keeps_nullable_identity_and_open_task_status(self) -> None:
         record: dict[str, JsonValue] = {
@@ -198,12 +259,12 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_image_workspace_metadata_rejects_wrong_types_and_unknown_fields(self) -> None:
         for model in (AgentEntityDto,):
-            for field in ("imageWorkspaceRelative", "imageWorkspaceStartCommit"):
+            for field in ("imageWorkspaceSubpath", "imageWorkspaceBaseRef"):
                 for value in (42, False, {}, []):
                     with self.subTest(model=model.__name__, field=field, value=value):
                         with self.assertRaises(ValidationError) as rejected:
                             model.model_validate({"id": "image-worker", "kind": "agent", field: value})
-                        self.assertEqual(rejected.exception.errors()[0]["type"], "float_type")
+                        self.assertEqual(rejected.exception.errors()[0]["type"], "string_type")
             with self.assertRaises(ValidationError) as rejected:
                 model.model_validate({"id": "image-worker", "kind": "agent", "imageWorkspaceUnknown": "."})
             self.assertEqual(rejected.exception.errors()[0]["type"], "extra_forbidden")
@@ -566,6 +627,19 @@ class SyncEntityContractTests(unittest.TestCase):
         invalid = json.dumps({"collection": "agent", "id": "a", "value": {"id": "a", "internal": True}})
         with self.assertRaises(ValidationError):
             validate_entity_payload(invalid)
+
+    def test_stored_legacy_chat_agent_alias_is_validated_for_response_retirement(self) -> None:
+        from codex_sync_entities import validate_stored_entity_payload
+
+        payload = json.dumps({
+            "collection": "agent", "id": "chat-a",
+            "value": {"id": "chat-a", "kind": "chat", "name": "Historical chat", "tail": "reply"},
+        })
+        validate_stored_entity_payload(payload, "agent", "chat-a", False)
+        with self.assertRaises(ValueError):
+            validate_stored_entity_payload(payload, "agent", "different-id", False)
+        with self.assertRaises(ValidationError):
+            validate_entity_payload(payload)
 
     def test_entity_payload_accepts_every_collection_and_rejects_invalid_values(self) -> None:
         collections = (

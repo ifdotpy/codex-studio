@@ -6,13 +6,15 @@ import subprocess
 import time
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
+
+from codex_records import ImageWorkspaceCleanupResultRecord
 
 if TYPE_CHECKING:
     import sqlite3
     from collections.abc import Callable, Mapping
     from typing import Any
-    from codex_records import AgentRecord, AccountHistoryRecord, ImageWorkspaceCleanupResultRecord, WorktreeCleanupRecord, WorktreeCleanupErrorRecord
+    from codex_records import AgentRecord, AccountHistoryRecord, WorktreeCleanupRecord, WorktreeCleanupErrorRecord
     from codex_runtime import Runtime
 
 
@@ -76,7 +78,7 @@ def _team_agents(rt: "Runtime", db: "sqlite3.Connection", root_id: str, *, inclu
             and (include_deleted or not a.get('deletedAt'))]
 
 
-def _cleanup_image_workspace(rt, agent_id):
+def _cleanup_image_workspace(rt: "Runtime", agent_id: str) -> dict[str, "Any"]:
     from codex_workspace_images import archive_workspace, workspace_bytes
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
@@ -92,7 +94,7 @@ def _cleanup_image_workspace(rt, agent_id):
             with rt.lock, rt.db() as db:
                 current = rt.agent(agent_id, db)
                 current.update(imageWorkspacePhase='archiving',
-                               cleanedImageWorkspace=saved)
+                               cleanedImageWorkspace=saved)  # type: ignore[call-arg]  # typed-update
                 rt.put(db, 'agents', current)
         removed = archive_workspace(agent_id)
         saved = {**saved, 'phase': 'archived',
@@ -100,7 +102,7 @@ def _cleanup_image_workspace(rt, agent_id):
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
             current.update(imageWorkspaceReady=False,
-                           imageWorkspacePhase='archived', cleanedImageWorkspace=saved)
+                           imageWorkspacePhase='archived', cleanedImageWorkspace=saved)  # type: ignore[call-arg]  # typed-update
             current['imageWorkspace'] = True
             rt.put(db, 'agents', current)
         return {'state': 'archived', 'bytes': saved['bytes'],
@@ -1180,7 +1182,9 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
         with rt.lock, rt.db() as db:
             current = rt.agent(target['id'], db)
             if current.get('imageWorkspace'):
-                current['imageWorkspaceCleanupResult'] = cleanup
+                current['imageWorkspaceCleanupResult'] = cast(
+                    ImageWorkspaceCleanupResultRecord, cleanup
+                )
             cleanup_failed = current.get('imageWorkspace') and cleanup.get('state') == 'kept'
             if (current.get('agentArchive') and current['agentArchive'].get('cleanupPending')
                     and not current.get('worktreeCleanup') and not cleanup_failed):
@@ -1197,8 +1201,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 workspace = ensure_mounted(target['id'])
             except Exception as error:
                 return {'status': 'blocked', 'reason': 'Image workspace restore failed: ' + str(error)[:500]}
-            cwd = (Path(workspace.get('path') or workspace.get('repoPath'))
-                   / target.get('imageWorkspaceSubpath', '.'))
+            cwd = (Path(cast(str, workspace.get('path') or workspace.get('repoPath')))
+                   / cast(str, target.get('imageWorkspaceSubpath', '.')))
             path_check = subprocess.run([*exec_prefix(), 'test', '-d', str(cwd)],
                                         capture_output=True, timeout=30)
             if path_check.returncode:
@@ -1211,7 +1215,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 target.update(cwd=str(cwd), imageWorkspace=True, imageWorkspaceReady=True,
                               imageWorkspacePhase='ready', imageWorkspaceMount=workspace['mount'],
                               branch=None, status='paused', autoWake=False,
-                              epoch=target['epoch'] + 1)
+                              epoch=target['epoch'] + 1)  # type: ignore[call-arg]  # typed-update
                 target.pop('deletedAt', None)
                 target.pop('agentArchive', None)
                 target.pop('cleanedImageWorkspace', None)

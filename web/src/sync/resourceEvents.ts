@@ -1197,8 +1197,10 @@ export function watchResourceChanges(
       baselineReconciliations.delete(key);
     }
     announceSubscriptions();
-    if (!subscribers.size && !tokenRateListeners.size)
+    if (!subscribers.size && !tokenRateListeners.size) {
+      cancelIdentityProbe();
       scheduleCoordinatorIdleStop();
+    }
   };
 }
 

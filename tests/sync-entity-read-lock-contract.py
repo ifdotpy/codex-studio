@@ -14,7 +14,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from codex_sync import SyncStore
-from codex_sync_entities import install_bypass_triggers, put, register_functions
+from codex_sync_entities import encoded, install_bypass_triggers, max_seq, put, register_functions
 
 
 class EntityReadLockContract(unittest.TestCase):
@@ -176,6 +176,23 @@ class EntityReadLockContract(unittest.TestCase):
             unchanged = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
         self.assertEqual(self.writes(), [])
         self.assertEqual(unchanged['documents'], [])
+
+    def test_legacy_chat_agent_alias_is_read_without_writer_lock(self):
+        payload, digest, _ = encoded('agent', 'historical-chat', {
+            'id': 'historical-chat', 'kind': 'chat', 'name': 'Old chat', 'tail': 'reply',
+        })
+        with self.connect() as db:
+            seq = max_seq(db) + 1
+            db.execute('''INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                          VALUES ('agent','historical-chat',?,?,?,0)''', (seq, digest, payload))
+        self.statements.clear()
+        with self.writer():
+            response = self.store.pull('state:entities:v1', self.initial['checkpoint']['seq'])
+        rows = {row['id']: row for row in response['documents']}
+        self.assertEqual(rows['entity:agent:historical-chat']['seq'], seq)
+        self.assertFalse(rows['entity:agent:historical-chat']['_deleted'])
+        self.assertEqual(rows['entity:agent:historical-chat']['payload'], payload)
+        self.assertEqual(self.writes(), [])
 
     def test_concurrent_commit_cannot_move_a_read_cursor_past_unseen_changes(self):
         original = self.store.entity_maintenance_needed

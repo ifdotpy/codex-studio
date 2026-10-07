@@ -37,6 +37,7 @@ class _WorkHost(RecordStore, Protocol):
     changed: threading.Event
     search_migration_thread: threading.Thread | None
     search_migration_error: str | None
+    _accepted_archive_index_ready: bool
 
     def db(self: "_WorkHost", *, busy_timeout: int | None = None) -> "ContextManager[sqlite3.Connection]": ...
     def read_db(self: "_WorkHost") -> "ContextManager[sqlite3.Connection]": ...

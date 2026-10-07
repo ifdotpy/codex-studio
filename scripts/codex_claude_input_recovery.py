@@ -2,7 +2,7 @@
 import copy
 import hashlib
 import json
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from codex_native_errors import NativeRpcError, native_thread_block
 
@@ -81,7 +81,7 @@ def capture_input(
             'textHash': hashlib.sha256(text.encode()).hexdigest()}
 
 
-def _later_user_input(db, agent, attempt):
+def _later_user_input(db: "sqlite3.Connection", agent: "AgentRecord", attempt: Any) -> bool:
     """A newer pending user instruction can resume a proven rejected input."""
     created = attempt.get('created')
     if type(created) not in (int, float):
@@ -95,7 +95,8 @@ def _later_user_input(db, agent, attempt):
         (agent['id'], agent['epoch'], created, created)).fetchone())
 
 
-def _saved_retry(runtime, db, agent, *, allow_held=False):
+def _saved_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",
+                 *, allow_held: bool = False) -> Any:
     marker = agent.get('claudePreInputRetry')
     if (not isinstance(marker, dict) or not agent.get('autoWake') or agent.get('status') == 'paused'
             or runtime.closed or agent.get('provider') != 'claude' or agent.get('deletedAt')
@@ -131,13 +132,13 @@ def _saved_retry(runtime, db, agent, *, allow_held=False):
                 or {k: v for k, v in captured.items() if k != 'compactions'}
                     != {k: v for k, v in source.items() if k != 'compactions'}):
             return None
-    same_transport = (runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))
+    same_transport = (runtime.connection_current(cast(str, marker.get('accountKey')), marker.get('connectionId'))
                       and _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
                                               marker.get('supervisorIdentity')))
     return saved if same_transport or later_user else None
 
 
-def _retry_rows(db, agent, saved):
+def _retry_rows(db: "sqlite3.Connection", agent: "AgentRecord", saved: Any) -> list[Any] | None:
     rows = [db.execute('SELECT * FROM runtime_events WHERE id=? AND agent=? AND epoch=?',
                        (key, agent['id'], agent['epoch'])).fetchone() for key in saved['events']]
     if (any(row is None or row['status'] != 'pending' or row['turn_id'] for row in rows)
@@ -146,7 +147,7 @@ def _retry_rows(db, agent, saved):
     return [dict(row) for row in rows]
 
 
-def _input_text(db, agent, request):
+def _input_text(db: "sqlite3.Connection", agent: "AgentRecord", request: Any) -> str | None:
     item = db.execute('SELECT record FROM runtime_items WHERE id=? AND agent=?',
                       (request['transcriptItemId'], agent['id'])).fetchone()
     fulltext = db.execute('SELECT body FROM runtime_item_fulltext WHERE id=?',
@@ -159,7 +160,7 @@ def _input_text(db, agent, request):
     return text
 
 
-def _resume_held_retry(runtime, db, agent):
+def _resume_held_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> None:
     if (not agent.get('nativeFailureHold') or agent.get('inFlight')
             or agent.get('turnId') or agent.get('startAttempt')):
         return
@@ -169,11 +170,11 @@ def _resume_held_retry(runtime, db, agent):
             or _input_text(db, agent, saved['claudeInputRequest']) is None):
         return
     agent.pop('nativeFailureHold', None)
-    agent.update(status='queued', error=None)
+    agent.update(status='queued', error=None)  # type: ignore[call-arg]  # typed-update
     runtime.put(db, 'agents', agent)
 
 
-def retire_stopped_retry(runtime, db, agent):
+def retire_stopped_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> bool:
     """Resume a proven held retry or retire its exact stopped reservation."""
     _resume_held_retry(runtime, db, agent)
     marker = agent.get('claudePreInputRetry') or {}
@@ -376,7 +377,10 @@ def recover_rejected_start(
     if (request.get('source') != _source(agent) or request.get('clientUserMessageId') != events[0]
             or [_event_snapshot(db, row) for row in rows] != request.get('events')):
         return None
-    rejection_data = turn['error']['data'] if turn is not None else error.data
+    rejection_data: dict[str, Any] = (
+        cast(dict[str, Any], turn['error']['data']) if turn is not None
+        else cast(dict[str, Any], cast(NativeRpcError, error).data)
+    )
     account_rejected = rejection_data.get('claudePreparationFailure') == 'account_validation'
     retry = not account_rejected and not any(meta.get('claudePreInputRetryUsed') for meta in metadata)
     receipt = {key: attempt[key] for key in ('id', 'epoch', 'accountKey', 'threadId',

@@ -3,8 +3,10 @@ import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
+  API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
   protocol3SseEvent,
+  readApiSchemaHash,
   syncProtocolFixture,
   test,
 } from "../playwright.mjs";
@@ -50,7 +52,10 @@ async function createFixture(page, options = {}) {
         if (!available || identityFailures > 0) {
           if (identityFailures > 0) identityFailures--;
           json(res, 503, { error: "Fixture sync unavailable" });
-        } else json(res, 200, { workspaceId });
+        } else {
+          res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          json(res, 200, { workspaceId });
+        }
       } else if (url.pathname === "/api/sync/stream") {
         counts.stream++;
         if (!available) {

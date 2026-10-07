@@ -1033,18 +1033,25 @@ class BudgetStateRecord(TypedDict):
 
 
 class CleanedImageWorkspaceRecord(TypedDict):
+    source: NotRequired[str | None]
+    path: NotRequired[str | None]
+    mount: NotRequired[str | None]
+    createdAt: NotRequired[float | None]
     repo: NotRequired[str]
     relative: NotRequired[str]
     branch: NotRequired[str]
     head: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
     bytes: NotRequired[int]
+    phase: NotRequired[str]
+    freedBytes: NotRequired[int]
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]
 
 
 class ImageWorkspaceCleanupResultRecord(TypedDict):
     state: NotRequired[str]
     bytes: NotRequired[int]
+    freedBytes: NotRequired[int]
     reason: NotRequired[str]
     restoreHeads: NotRequired[dict[str, str]]
     collect: NotRequired["ImageWorkspaceCollectResultRecord"]
@@ -1236,11 +1243,13 @@ class AgentRecord(TypedDict):
     imageWorkspace: NotRequired[bool]
     imageWorkspaceReady: NotRequired[bool]
     imageWorkspacePhase: NotRequired[ImageWorkspacePhase | None]
+    imageWorkspaceCreatedAt: NotRequired[float | None]
     imageWorkspaceError: NotRequired[str | None]
     imageWorkspaceRepo: NotRequired[str | None]
     imageWorkspaceBaseRepo: NotRequired[str | None]
-    imageWorkspaceRelative: NotRequired[str | None]
-    imageWorkspaceStartCommit: NotRequired[str | None]
+    imageWorkspaceSubpath: NotRequired[str | None]
+    imageWorkspaceBaseRef: NotRequired[str | None]
+    imageWorkspaceHasGit: NotRequired[bool]
     imageWorkspaceSnapshotCommit: NotRequired[str | None]
     imageWorkspaceMount: NotRequired[str | None]
     imageWorkspaceNoticeSent: NotRequired[str | None]

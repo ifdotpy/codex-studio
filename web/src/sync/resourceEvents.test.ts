@@ -726,6 +726,64 @@ describe("shared resource event transport", () => {
     },
   );
 
+  it("restarts the identity probe when a listener returns during idle grace", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const fetch = vi.fn(
+      (request: Request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const stopFirst = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    Source.instances[0]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const firstSignal = fetch.mock.calls[0]![0].signal;
+
+    stopFirst();
+    expect(firstSignal.aborted).toBe(true);
+    Source.skipNextAutoHandshake = true;
+    const stopSecond = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const secondSignal = fetch.mock.calls[1]![0].signal;
+    expect(secondSignal.aborted).toBe(false);
+
+    stopSecond();
+    expect(secondSignal.aborted).toBe(true);
+  });
+
   it("retries pre-handshake failures three times and ignores a late handshake", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.5);

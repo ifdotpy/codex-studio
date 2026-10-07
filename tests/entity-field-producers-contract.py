@@ -74,6 +74,27 @@ class EntityFieldProducers(unittest.TestCase):
     def test_agent_epoch(self):
         self.write_agent_field("epoch", 17)
 
+    def test_image_workspace_created_at_is_projected_from_runtime_record(self):
+        self.write_agent_field("imageWorkspaceCreatedAt", 3.0)
+
+    def test_workspace_rate_limit_checked_at_is_projected(self):
+        from codex_sync_entities import project
+        from studio_api.sync.models import WorkspaceEntityDto
+
+        limits = {
+            "accountKey": "default", "at": 1.0, "checkedAt": 3.0,
+            "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+        }
+        self.runtime.rate_limits = limits
+        self.runtime.rate_limits_by_account = {"default": limits}
+        with self.runtime.lock, self.runtime.db() as db:
+            view = self.runtime.workspace_entity_view(db)
+            entity = project("workspace", view)
+        self.assertIsInstance(entity, dict)
+        validated = WorkspaceEntityDto.model_validate(entity)
+        self.assertEqual(validated.rateLimits.checkedAt, 3.0)
+        self.assertEqual(validated.rateLimitsByAccount["default"].checkedAt, 3.0)
+
     def test_agent_epoch_tracks_real_stop_transition(self):
         self.runtime.stop(self.lead["id"], descendants=False)
         self.assertEqual(self.entity("agent", self.lead["id"])["epoch"],

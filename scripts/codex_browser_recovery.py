@@ -202,7 +202,7 @@ def reconnect(runtime: "Runtime", agent_id: str, operation: "BrowserRecoveryReco
                     if recovery_current(runtime, current, operation):
                         current["browserRecovery"].update(
                             stage="failed", error="Native browser integration is unavailable: " + reason,
-                            failedAt=time.time())
+                            failedAt=time.time())  # type: ignore[call-arg]  # typed-update
                         runtime.put(db, "agents", current)
                 return
             server = runtime.connect(operation["accountKey"])

@@ -12,7 +12,7 @@ from codex_native_errors import error_kind
 if TYPE_CHECKING:
     import sqlite3
     from threading import Event
-    from typing import ContextManager
+    from typing import Any, ContextManager
 
     from codex_records import (
         AccountDataRecord,
@@ -146,11 +146,12 @@ def _allowed(data: "RateLimitDataRecord", now: float) -> bool:
 class UsageAccounts(Protocol):
     lock: "ContextManager[object]"
 
-    def snapshot(self) -> "AccountSnapshotRecord": ...
+    def snapshot(self, *, refresh: bool = True) -> "AccountSnapshotRecord": ...
     def _row(self, key: object) -> "AccountDataRecord": ...
 
 
 class UsageResumeRuntime(RecordStore, Protocol):
+    def read_db(self) -> "ContextManager[sqlite3.Connection]": ...
     lock: "ContextManager[object]"
     changed: "Event"
     accounts: UsageAccounts
@@ -175,7 +176,7 @@ class UsageResumeRuntime(RecordStore, Protocol):
 
 
 class UsageResumeMixin:
-    def accounts_snapshot(self):
+    def accounts_snapshot(self: "UsageResumeRuntime") -> "AccountSnapshotRecord":
         snapshot = self.accounts.snapshot(refresh=False)
         now = time.time()
         with self.read_db() as db:

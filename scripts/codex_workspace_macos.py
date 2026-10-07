@@ -12,8 +12,15 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from subprocess import CompletedProcess
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from codex_records import ImageWorkspaceBaseState
+    from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
 
 ATTR_CMNEXT_PRIVATESIZE = 0x00000008
 FSOPT_NOFOLLOW = 0x00000001
@@ -63,12 +70,12 @@ def _device_for_mount(mount: str | Path) -> str | None:
     return None
 
 
-def _copy_tree_parallel(source, dest, excludes=()):
+def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path] = ()) -> None:
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
-    units = []
+    units: list[list[str]] = []
 
-    def partition(directory, depth=0):
+    def partition(directory: str | Path, depth: int = 0) -> None:
         relative = Path(directory)
         absolute = source / relative
         entries = sorted(absolute.iterdir(), key=lambda path: path.name)
@@ -78,7 +85,8 @@ def _copy_tree_parallel(source, dest, excludes=()):
         if depth >= 2:
             units.append([relative.as_posix()])
             return
-        files, directories = [], []
+        files: list[str] = []
+        directories: list[Path] = []
         for entry in entries:
             path = relative / entry.name
             path_value = path.as_posix()
@@ -97,7 +105,7 @@ def _copy_tree_parallel(source, dest, excludes=()):
     partition(Path('.'))
     if not units:
         return
-    shards = [[] for _ in range(min(16, len(units)))]
+    shards: list[list[str]] = [[] for _ in range(min(16, len(units)))]
     for index, unit in enumerate(units):
         shards[index % len(shards)].extend(unit)
 
@@ -112,6 +120,7 @@ def _copy_tree_parallel(source, dest, excludes=()):
                 command.extend(['--exclude', relative, '--exclude', relative + '/*'])
         command.extend(['--', *names])
         producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert producer.stdout is not None
         consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
                                   capture_output=True, timeout=1800)
         producer.stdout.close()
@@ -227,7 +236,8 @@ def current_event_id(_root: str | Path) -> int:
     return int(core.FSEventsGetCurrentEventId())
 
 
-def _rsync_folder(source, target, excludes=(), *, destination_root=None):
+def _rsync_folder(source: Path, target: Path, excludes: Iterable[str | Path] = (), *,
+                  destination_root: Path | None = None) -> None:
     source, target = Path(source), Path(target)
     destination_root = Path(destination_root) if destination_root is not None else target
     _prepare_delta_directory(target, destination_root)
@@ -238,7 +248,7 @@ def _rsync_folder(source, target, excludes=(), *, destination_root=None):
         raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
 
 
-def _prepare_delta_parent(target, destination_root):
+def _prepare_delta_parent(target: Path, destination_root: Path) -> None:
     target, destination_root = Path(target), Path(destination_root)
     parent = target.parent
     relative = parent.relative_to(destination_root)
@@ -258,7 +268,7 @@ def _prepare_delta_parent(target, destination_root):
             current.mkdir()
 
 
-def _prepare_delta_directory(target, destination_root):
+def _prepare_delta_directory(target: Path, destination_root: Path) -> None:
     target, destination_root = Path(target), Path(destination_root)
     if target != destination_root:
         _prepare_delta_parent(target, destination_root)
@@ -275,7 +285,7 @@ def _prepare_delta_directory(target, destination_root):
         target.mkdir()
 
 
-def _copy_delta_entry(source, target, destination_root=None):
+def _copy_delta_entry(source: Path, target: Path, destination_root: Path | None = None) -> None:
     if not source.exists() and not source.is_symlink():
         if destination_root is not None:
             _prepare_delta_parent(target, destination_root)

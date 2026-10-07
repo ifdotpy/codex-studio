@@ -94,12 +94,12 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         signature, previous = runtime.operation_receipt(db, request, body)
         if previous is not None:
             return mode_fields(agent)
-        current = concurrency(agent)
+        current_limit = concurrency(agent)
         if agent.get('agentModeRevision', 0) != revision:
             raise ValueError('Subagent concurrency changed. Read the current value before saving')
         prior_max_agents = agent.get('maxAgents')
-        changed = current != limit
-        if current != limit:
+        changed = current_limit != limit
+        if current_limit != limit:
             agent.update(concurrency=limit, agentModeRevision=revision + 1,  # type: ignore[call-arg]  # typed-update
                          agentModeChangedAt=time.time(), agentModeChangedBy='user')
         # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
@@ -122,11 +122,11 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
             supported, reason = runtime.image_workspace_support(repo)
             if supported:
                 with runtime.lock, runtime.db() as db:
-                    current = runtime.agent(key, db)
-                    if concurrency(current) > 0:
-                        current['imageWorkspaceBaseRepo'] = repo
-                        runtime.put(db, 'agents', current)
-                if concurrency(current) > 0:
+                    current_agent = runtime.agent(key, db)
+                    if concurrency(current_agent) > 0:
+                        current_agent['imageWorkspaceBaseRepo'] = repo
+                        runtime.put(db, 'agents', current_agent)
+                if concurrency(current_agent) > 0:
                     canonical['imageWorkspaceBaseRepo'] = repo
                     error_text = None
                     try:
