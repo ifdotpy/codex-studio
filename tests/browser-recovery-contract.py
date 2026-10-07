@@ -194,6 +194,62 @@ class BrowserRecovery(unittest.TestCase):
         a = self.event('# Selected Browser\n- Name: Chrome\n- Type: extension\n- ID: fixture', status='completed', item_id='probe-ok')
         self.assertEqual(a['browserRecovery']['stage'], 'verified')
 
+    def test_success_after_failed_probe_allows_a_new_failure_episode(self):
+        self.event();self.idle();self.tick();self.wait_stage('verify')
+        # The model receives the first diagnostic before it returns the probe.
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=? AND kind='browser_recovery'",
+                       (self.agent['id'],))
+        self.set_agent(turnId='turn-one', status='running', inFlight=True)
+        failed = self.event(item_id='probe-failed')['browserRecovery'].copy()
+        self.assertEqual(failed['stage'], 'failed')
+        a = self.event('# Selected Browser\n- Name: Chrome\n- Type: extension\n- ID: fixture',
+                       status='completed', item_id='manual-probe-ok')
+        self.assertEqual(a['browserRecovery']['stage'], 'verified')
+        self.assertEqual(a['browserRecovery']['nativeRequest'], failed['nativeRequest'])
+        a = self.event(item_id='later-discovery-failed')
+        self.assertEqual(a['browserRecovery']['stage'], 'pending')
+        self.assertNotEqual(a['browserRecovery']['id'], failed['id'])
+        self.assertNotIn('nativeRequest', a['browserRecovery'])
+        self.assertEqual(sum(m == 'thread/resume' for m, _ in self.server.calls), 1)
+        self.idle();self.tick();self.wait_stage('verify')
+        self.assertEqual(sum(m == 'thread/resume' for m, _ in self.server.calls), 2)
+
+    def test_success_cannot_clear_a_failed_recovery_with_an_unknown_receipt(self):
+        a = self.event()
+        previous = a['browserRecovery'].copy()
+        previous.update(stage='failed', nativeRequest={
+            'method': 'thread/resume', 'id': 913, 'submittedAt': 1.0,
+        })
+        self.set_agent(browserRecovery=previous)
+        a = self.event('# Selected Browser\n- Name: Chrome\n- Type: extension\n- ID: fixture',
+                       status='completed', item_id='unrelated-probe-ok')
+        self.assertEqual(a['browserRecovery'], previous)
+        self.idle();self.tick()
+        self.assertFalse(any(m == 'thread/resume' for m, _ in self.server.calls))
+
+    def test_success_cannot_clear_native_failure_hold(self):
+        a = self.event()
+        previous = a['browserRecovery'].copy()
+        previous.update(stage='failed', nativeRequest={
+            'method': 'thread/resume', 'id': 914, 'submittedAt': 1.0,
+            'receivedAt': 2.0, 'outcome': 'received',
+        })
+        self.set_agent(browserRecovery=previous, nativeFailureHold=True)
+        a = self.event('# Selected Browser\n- Name: Chrome\n- Type: extension\n- ID: fixture',
+                       status='completed', item_id='held-probe-ok')
+        self.assertEqual(a['browserRecovery'], previous)
+        self.assertTrue(a['nativeFailureHold'])
+
+    def test_success_cannot_verify_a_failed_recovery_from_another_connection(self):
+        a = self.event()
+        previous = a['browserRecovery'].copy()
+        previous.update(stage='failed', connectionId='earlier-connection')
+        self.set_agent(browserRecovery=previous)
+        a = self.event('# Selected Browser\n- Name: Chrome\n- Type: extension\n- ID: fixture',
+                       status='completed', item_id='new-connection-probe-ok')
+        self.assertEqual(a['browserRecovery'], previous)
+
     def test_persisted_incomplete_recovery_is_not_replayed(self):
         self.event();self.idle()
         a = self.runtime.agent(self.agent['id'])

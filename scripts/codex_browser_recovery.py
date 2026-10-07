@@ -30,8 +30,16 @@ def observe(runtime, db, actor, item, turn_id, connection_id):
     if previous and not same_identity(runtime, actor, previous):
         previous = {}
     if item.get("status") == "completed":
+        receipt = previous.get("nativeRequest")
+        # A later successful probe ends a failed discovery episode. An unknown
+        # native request or an explicit hold still needs its own receipt review.
+        recovered_probe = (previous.get("stage") == "failed"
+                           and not actor.get("nativeFailureHold")
+                           and (not receipt or (receipt.get("outcome") == "received"
+                                                and receipt.get("receivedAt"))))
         if ((previous.get("stage") == "verify"
-                or (previous.get("stage") == "pending" and not previous.get("nativeRequest"))) and any(
+                or (previous.get("stage") == "pending" and not receipt)
+                or recovered_probe) and any(
                 t.startswith("# Selected Browser\n- Name: Chrome\n- Type: extension\n") for t in texts)):
             previous.update(stage="verified", verifiedAt=time.time(), verificationItem=item["id"])
             actor["browserRecovery"] = previous
