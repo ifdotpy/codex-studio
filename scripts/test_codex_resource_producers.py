@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Domain producer publications reach registered resource subscribers."""
 import asyncio
-from contextlib import closing, contextmanager
+from contextlib import contextmanager
 import json
 from pathlib import Path
 import sqlite3
@@ -23,7 +23,6 @@ from codex_session_costs import SessionCostReader
 import codex_session_costs
 from codex_token_rate import TokenRates
 from codex_voice import VoiceStore
-from codex_worktree_disk import WorktreeDiskScanner, _publish_worktree_disk
 from studio_api.sync.resources.hub import (
     ResourceHub,
     register_resource_hub,
@@ -35,7 +34,6 @@ from studio_api.sync.resources.models import (
     ResourceRef,
     SessionCostResource,
     VoiceResource,
-    WorktreeDiskResource,
 )
 
 
@@ -105,25 +103,10 @@ def refresh_session_cost(root: Path) -> None:
         reader._background_refresh("agent-a", "agent-a")
 
 
-def publish_worktree_scan(root: Path) -> None:
-    worktree = root / "repo" / ".worktrees" / "codex-agents" / "agent-a"
-    worktree.mkdir(parents=True)
-    (worktree / "tracked.txt").write_text("measured")
-    with closing(sqlite3.connect(root / "canvas.sqlite3")) as db, db:
-        db.execute("CREATE TABLE runtime_agents (id TEXT PRIMARY KEY, record TEXT NOT NULL)")
-        db.execute("INSERT INTO runtime_agents VALUES (?, ?)", (
-            "agent-a",
-            json.dumps({"id": "agent-a", "isLead": False, "worktree": True,
-                        "cwd": str(worktree)}),
-        ))
-    WorktreeDiskScanner(root, pause=lambda _seconds: None).scan_once()
-
-
 def resource_refs() -> list[ResourceRef]:
     return [
         ResourceRef(CostsResource(kind="costs")),
         ResourceRef(SessionCostResource(kind="session-cost", agentId="agent-a")),
-        ResourceRef(WorktreeDiskResource(kind="worktree-disk", agentId="agent-a")),
         ResourceRef(VoiceResource(kind="voice", agentId="agent-a")),
         ResourceRef(PanelResource(kind="panel", agentId="agent-a")),
     ]
@@ -141,14 +124,13 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
                 refresh_costs(root)
                 refresh_session_cost(root)
                 publish_voice(root)
-                publish_worktree_scan(root)
 
                 event = await subscription.next_event(timeout=1)
                 self.assertIsNotNone(event)
                 assert event is not None
                 self.assertEqual(
                     {resource.root.kind for resource in event.resources},
-                    {"costs", "session-cost", "worktree-disk", "voice"},
+                    {"costs", "session-cost", "voice"},
                 )
             finally:
                 subscription.close()
@@ -159,9 +141,7 @@ class VolatileResourceProducerContracts(unittest.IsolatedAsyncioTestCase):
             root = Path(directory)
             _publish_costs(root)
             refresh_session_cost(root)
-            _publish_worktree_disk(root, ["agent-a"])
             publish_voice(root)
-            publish_worktree_scan(root)
             rates = TokenRates(clock=lambda: 100.0, state_dir=root)
             rates.observe(
                 {"id": "agent-a", "rootId": "agent-a", "threadId": "thread-a",

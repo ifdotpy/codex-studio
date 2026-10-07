@@ -13,7 +13,6 @@ const measured = new Set([
   "/api/accounts",
   "/api/desktop",
   "/api/costs",
-  "/api/worktree-disk",
 ]);
 
 test("repeated read counts across chat navigation @performance", async ({
@@ -349,9 +348,7 @@ test("repeated read counts across chat navigation @performance", async ({
               ? "desktop"
               : key.startsWith("/api/costs?")
                 ? "costs"
-                : key.startsWith("/api/worktree-disk")
-                  ? "worktree-disk"
-                  : undefined;
+                : undefined;
     const phaseBounds = {
       load: [loadStartedAt, loadSettledAt],
       toOther: [openOtherStartedAt, otherSettledAt],

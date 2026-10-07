@@ -37,9 +37,6 @@ test("Team panel ui", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const snapshot = await readTestState(origin);
-    const diskApi = await (await fetch(origin + "/api/worktree-disk")).json();
-    assert.equal(typeof diskApi.limitBytes, "number");
-    assert.equal(typeof diskApi.totalBytes, "number");
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
@@ -99,27 +96,8 @@ test("Team panel ui", async ({
     snapshot.threads = [lead, member, active, needsYou];
     snapshot.runtime.agents = [lead, member, active, needsYou];
     snapshot.runtime.requests = [
-      { id: "active-answer", agent: active.id, status: "pending" },
       { id: "answer", agent: needsYou.id, status: "pending" },
     ];
-    await page.route("**/api/worktree-disk**", (route) =>
-      route.fulfill({
-        json: {
-          workers: {
-            [member.id]: {
-              state: "ready",
-              bytes: 1024 ** 3,
-              measure: "private on APFS",
-            },
-          },
-          totalBytes: 1024 ** 3,
-          limitBytes: 1024 ** 3,
-          measure: "private on APFS",
-          warning: true,
-          scanning: false,
-        },
-      }),
-    );
     await stubEntityState(
       page,
       snapshot,
@@ -140,27 +118,12 @@ test("Team panel ui", async ({
             ?.getAttribute("aria-expanded") === "false",
         width,
       );
-      const priorityRequest =
-        width === 1440
-          ? page.waitForResponse((response) => {
-              const url = new URL(response.url());
-              const requested =
-                url.searchParams.get("workers")?.split(",") || [];
-              return (
-                url.pathname === "/api/worktree-disk" &&
-                [member.id, active.id, needsYou.id].every((id) =>
-                  requested.includes(id),
-                )
-              );
-            })
-          : undefined;
       if (width <= 760) {
         await page
           .getByRole("button", { name: "Chat actions", exact: true })
           .click();
         await page.getByRole("menuitem", { name: "Team", exact: true }).click();
       } else await page.locator("#team-toggle").click();
-      if (priorityRequest) await priorityRequest;
       await page.locator("#team").waitFor({ state: "visible" });
       const panel = page.locator("#team");
       await page.waitForFunction(() => {
@@ -194,11 +157,10 @@ test("Team panel ui", async ({
         );
       });
       assert.equal(
-        await panel
-          .locator(".team-overview, #worker-search, .team-filters")
-          .count(),
+        await panel.locator("#worker-search, .team-filters").count(),
         0,
       );
+      assert.equal(await panel.locator(".team-overview").count(), 1);
       try {
         await panel.locator(".team-heading").waitFor();
       } catch (error) {
@@ -226,7 +188,7 @@ test("Team panel ui", async ({
         "1",
       );
       assert.equal(
-        await panel.locator('[data-team-count="waiting"] dd').innerText(),
+        await panel.locator('[data-team-count="attention"] dd').innerText(),
         "1",
       );
       assert.deepEqual(
@@ -234,26 +196,9 @@ test("Team panel ui", async ({
         ["Active worker", "Needs you", "Подача уведомления"],
         "compact panel puts Working first and keeps Need you visible",
       );
-      assert.match(
-        await panel.locator(".worker-disk").innerText(),
-        /Disk: 1.0 GiB/,
-      );
-      assert.match(
-        await panel.locator(".worker-disk").getAttribute("title"),
-        /private on APFS/,
-      );
-      // The measure method stays in the tooltip, not in the visible label.
-      assert.doesNotMatch(
-        await panel.locator(".team-disk-total").innerText(),
-        /APFS|allocated blocks/,
-      );
-      assert.doesNotMatch(
-        await panel.locator(".worker-disk").innerText(),
-        /APFS/,
-      );
-      assert.match(
-        await panel.locator(".team-disk-total").innerText(),
-        /Disk limit reached/,
+      assert.equal(
+        await panel.locator(".worker-disk, .team-disk-total").count(),
+        0,
       );
       assert.equal(
         await panel.locator(".worker-error").innerText(),

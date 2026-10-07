@@ -25,6 +25,8 @@ class ResourceContractTests(unittest.TestCase):
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "unknown"})
         with self.assertRaises(ValidationError):
+            ResourceRef.model_validate({"kind": "worktree-disk", "agentId": "agent-a"})
+        with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a", "extra": True})
         with self.assertRaises(ValidationError):
             ResourceRef.model_validate({"kind": "panel", "agentId": ""})

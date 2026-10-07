@@ -98,7 +98,7 @@ class LazyTransferContract(unittest.TestCase):
         self.assertEqual(self.t.pending, [])
         self.assertEqual(self.t.native_calls, [])
         self.assertEqual(self.rt.agent(self.aid)['accountTransfer']['waiting'], 'Waiting for the current turn')
-        self.t.set_agent(self.aid, status='complete', inFlight=False, turnId=None)
+        self.t.set_agent(self.aid, status='completed', inFlight=False, turnId=None)
         self.t.tick()
         self.t.until(lambda: len(self.t.pending) == 1)
         self.t.complete_fork()
@@ -176,7 +176,7 @@ class LazyTransferContract(unittest.TestCase):
                 member = copy.deepcopy(lead)
                 member.update(id=str(uuid.uuid4()), name=f'Idle {index}', isLead=False,
                               parentId=self.aid, rootId=self.aid, threadId=None,
-                              accountKey='default', status='complete', inFlight=False,
+                              accountKey='default', status='completed', inFlight=False,
                               autoWake=False, created=lead['created'] - 1)
                 self.rt.put(db, 'agents', member)
         began = time.monotonic()
@@ -230,7 +230,7 @@ class LazyTransferContract(unittest.TestCase):
 
     def test_two_moved_members_waking_together_fork_once_each(self):
         child = self.rt.create({'name': 'Worker', 'prompt': 'Task'}, parent=self.aid, defer=True)
-        self.t.set_agent(child['id'], status='complete', threadId='worker-native', autoWake=False)
+        self.t.set_agent(child['id'], status='completed', threadId='worker-native', autoWake=False)
         op = self.t.start_transfer()
         members = [self.aid, child['id']]
         errors = []
@@ -300,7 +300,7 @@ class LazyTransferContract(unittest.TestCase):
         self.t.until(lambda: not self.store.running)
         self.assertNotIn('lazyAccountTransfer', self.rt.agent(self.aid))
         self.assertEqual(self.rt.agent(self.aid)['accountKey'], 'default')
-        self.t.set_agent(self.aid, status='complete', inFlight=False, turnId=None)
+        self.t.set_agent(self.aid, status='completed', inFlight=False, turnId=None)
         self.t.tick()
         self.t.tick()
         self.t.until(lambda: len(self.t.pending) == 1)

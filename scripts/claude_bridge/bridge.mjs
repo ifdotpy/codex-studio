@@ -31,6 +31,7 @@ import { createSessionStore } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
 import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
+import { createCatalogCache } from "./catalog-cache.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
@@ -83,7 +84,7 @@ const PREPARATION_TIMEOUT_MS = 20_000;
 // Retained query controls keep their shorter, shared deadline.
 const INITIALIZATION_TIMEOUT_MS = 60_000;
 
-async function boundedPreparation(read, deadline, onTimeout) {
+async function boundedPreparation(read, deadline, onTimeout, phase, startedAt) {
   let timer;
   try {
     return await Promise.race([
@@ -97,7 +98,14 @@ async function boundedPreparation(read, deadline, onTimeout) {
               ),
               {
                 preparationTimedOut: true,
-                data: { turnStartOutcome: "not_applied" },
+                data: {
+                  turnStartOutcome: "not_applied",
+                  claudePreparationPhase: phase,
+                  claudePreparationElapsedMs: Math.max(
+                    0,
+                    Date.now() - startedAt,
+                  ),
+                },
               },
             );
             reject(error);
@@ -138,6 +146,7 @@ const querySweep = setInterval(
       active.q?.close();
       if (queries.get(id) === active) {
         queries.delete(id);
+        catalogCache.activityChanged();
         void sessionStore.evict(id);
       }
     }
@@ -244,11 +253,19 @@ function checkAccount(account) {
       "Claude Code uses an API key instead of the configured subscription. Restore the original login.",
     );
 }
-async function verifiedAccount(q, deadline, onTimeout) {
+async function verifiedAccount(
+  q,
+  deadline,
+  onTimeout,
+  startedAt,
+  phase = "account",
+) {
   const account = await boundedPreparation(
     () => q.accountInfo(),
     deadline,
     onTimeout,
+    phase + "_initialize",
+    startedAt,
   );
   try {
     checkAccount(account);
@@ -274,6 +291,8 @@ async function verifiedAccount(q, deadline, onTimeout) {
         () => q.reinitialize(),
         deadline,
         onTimeout,
+        phase + "_reinitialize",
+        startedAt,
       );
     } catch (refreshError) {
       if (refreshError?.preparationTimedOut === true) throw refreshError;
@@ -304,8 +323,9 @@ async function verifiedAccount(q, deadline, onTimeout) {
     return fresh.account;
   }
 }
-async function probe(cwd, read) {
-  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
+async function probe(cwd, read, phase = "metadata") {
+  const startedAt = Date.now();
+  const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
   let release;
   const hold = new Promise((r) => (release = r));
   // Keep an idle async iterable open until the account probe completes.
@@ -333,15 +353,19 @@ async function probe(cwd, read) {
     },
   });
   try {
-    return await boundedPreparation(
-      async () => {
-        const account = await verifiedAccount(q, deadline, () =>
-          controller.abort(),
-        );
-        return read(q, account);
-      },
+    const account = await verifiedAccount(
+      q,
       deadline,
       () => controller.abort(),
+      startedAt,
+      phase + "_account",
+    );
+    return await boundedPreparation(
+      () => read(q, account),
+      deadline,
+      () => controller.abort(),
+      phase + "_read",
+      startedAt,
     );
   } finally {
     clearTimeout(timer);
@@ -349,22 +373,20 @@ async function probe(cwd, read) {
     q.close();
   }
 }
-let metadata,
-  metadataAt = 0;
-async function catalog() {
-  if (metadata && Date.now() - metadataAt < 300000) return metadata;
-  metadataAt = Date.now();
-  metadata = probe(null, async (q, account) => ({
-    models: await q.supportedModels(),
-    account,
-  }));
-  try {
-    return await metadata;
-  } catch (error) {
-    metadata = null;
-    throw error;
-  }
-}
+const catalogCache = createCatalogCache({
+  load: () =>
+    probe(
+      null,
+      async (q, account) => ({
+        models: await q.supportedModels(),
+        account,
+      }),
+      "catalog",
+    ),
+  isActive: () =>
+    [...queries.values()].some((active) => active.turn || active.tasks.size),
+});
+const catalog = () => catalogCache.read();
 function wireThread(s, metadata, includeTurns = true) {
   const id = s?.id || metadata.id;
   return {
@@ -622,6 +644,15 @@ async function finishTurn(s, active, result, error) {
                     claudeAccountFailure: error.data.claudeAccountFailure,
                   }
                 : {}),
+              ...(error?.preparationTimedOut === true &&
+              typeof error.data.claudePreparationPhase === "string" &&
+              Number.isFinite(error.data.claudePreparationElapsedMs)
+                ? {
+                    claudePreparationPhase: error.data.claudePreparationPhase,
+                    claudePreparationElapsedMs:
+                      error.data.claudePreparationElapsedMs,
+                  }
+                : {}),
             },
           }
         : {}),
@@ -710,6 +741,7 @@ async function finishTurn(s, active, result, error) {
   s.updatedAt = Math.floor(Date.now() / 1000);
   await persist(s);
   active.turn = null;
+  catalogCache.activityChanged();
   if (!active.tasks.size) active.idleSince = Date.now();
   active.pendingSteers.clear();
   active.assistantBlocks.clear();
@@ -731,7 +763,8 @@ async function finishTurn(s, active, result, error) {
 }
 async function startSession(s, active, p) {
   const initial = active.turn;
-  const deadline = Date.now() + INITIALIZATION_TIMEOUT_MS;
+  const startedAt = Date.now();
+  const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
   const source = () =>
     JSON.stringify([
       s.cwd,
@@ -779,6 +812,8 @@ async function startSession(s, active, p) {
           () => flags(s, p),
           deadline,
           () => {},
+          "catalog_flags",
+          startedAt,
         ),
         extraArgs: {
           ...providerOptions.extraArgs,
@@ -850,7 +885,7 @@ async function startSession(s, active, p) {
     });
     active.q = q;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
-    await verifiedAccount(q, deadline, () => q.close());
+    await verifiedAccount(q, deadline, () => q.close(), startedAt);
     if (
       initial?.interrupted ||
       active.input.closed ||
@@ -883,6 +918,7 @@ async function startSession(s, active, p) {
       }
       if (m.type === "system" && m.subtype === "background_tasks_changed") {
         active.tasks = new Map(m.tasks.map((t) => [t.task_id, t]));
+        catalogCache.activityChanged();
         if (!active.turn)
           active.idleSince = active.tasks.size ? null : Date.now();
         continue;
@@ -1280,6 +1316,7 @@ async function startSession(s, active, p) {
     active.q?.close();
     if (queries.get(s.id) === active) {
       queries.delete(s.id);
+      catalogCache.activityChanged();
       void sessionStore.evict(s.id);
     }
   }
@@ -1294,6 +1331,7 @@ function discardQuery(s, active) {
   active.input.close();
   active.q?.close();
   if (queries.get(s.id) === active) queries.delete(s.id);
+  catalogCache.activityChanged();
 }
 function newActive(turn) {
   const active = {
@@ -1356,7 +1394,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 20 },
+      capabilities: { claudeVersion: 21 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1465,6 +1503,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    catalogCache.activityChanged();
     s.claude = p.settings;
     await persist(s);
     return { settings: s.claude };
@@ -1477,6 +1516,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(s.id);
+    catalogCache.activityChanged();
     return rollbackSession(s, p, { persist, getSessionMessages, forkSession });
   }
   if (method === "thread/start") {
@@ -1580,6 +1620,7 @@ async function handle(method, p) {
         active?.input.close();
         active?.q?.close();
         queries.delete(s.id);
+        catalogCache.activityChanged();
         Object.assign(s, p);
         await persist(s);
       } else reattached = true;
@@ -1604,6 +1645,7 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.threadId);
+    catalogCache.activityChanged();
     await sessionStore.evict(p.threadId);
     return {};
   }
@@ -1698,17 +1740,24 @@ async function handle(method, p) {
       ],
     };
     let active = queries.get(s.id);
-    const deadline = Date.now() + PREPARATION_TIMEOUT_MS;
-    const control = (read) =>
-      boundedPreparation(read, deadline, () => {
-        if (
-          active &&
-          queries.get(s.id) === active &&
-          !active.turn &&
-          !active.tasks.size
-        )
-          discardQuery(s, active);
-      });
+    const startedAt = Date.now();
+    const deadline = startedAt + PREPARATION_TIMEOUT_MS;
+    const control = (read, phase) =>
+      boundedPreparation(
+        read,
+        deadline,
+        () => {
+          if (
+            active &&
+            queries.get(s.id) === active &&
+            !active.turn &&
+            !active.tasks.size
+          )
+            discardQuery(s, active);
+        },
+        phase,
+        startedAt,
+      );
     const requestedTools = p.dynamicTools || s.dynamicTools || [];
     const toolsIdentity = JSON.stringify(requestedTools);
     const toolsChanged = active && active.toolsIdentity !== toolsIdentity;
@@ -1717,7 +1766,7 @@ async function handle(method, p) {
       // A persistent query can die between turns (its Claude process ends).
       // Nothing is running in it, so start this turn in a fresh query.
       try {
-        await control(() => active.ready);
+        await control(() => active.ready, "active_ready");
       } catch (error) {
         if (!deadQuery(error)) throw error;
         discardQuery(s, active);
@@ -1725,24 +1774,35 @@ async function handle(method, p) {
       }
     }
     if (active) {
-      await control(() => active.ready);
+      await control(() => active.ready, "active_ready");
       if (toolsChanged) {
         // Replace only the Studio MCP server; background tasks keep running.
         // The SDK keeps an already registered in-process server even when its
         // tools change. Remove it first so the new schema replaces it.
-        await control(() => active.q.setMcpServers({}));
-        await control(() =>
-          active.q.setMcpServers({
-            studio: studioTools(s, () => active.turn),
-          }),
+        await control(() => active.q.setMcpServers({}), "mcp_remove");
+        await control(
+          () =>
+            active.q.setMcpServers({
+              studio: studioTools(s, () => active.turn),
+            }),
+          "mcp_install",
         );
         active.toolsIdentity = toolsIdentity;
       }
       try {
-        await control(() => active.q.setModel(p.model || s.model));
-        await control(() => active.q.setPermissionMode(permissionMode(s, p)));
-        const flagSettings = await control(() => flags(s, p, true));
-        await control(() => active.q.applyFlagSettings(flagSettings));
+        await control(() => active.q.setModel(p.model || s.model), "model_set");
+        await control(
+          () => active.q.setPermissionMode(permissionMode(s, p)),
+          "permissions_set",
+        );
+        const flagSettings = await control(
+          () => flags(s, p, true),
+          "catalog_flags",
+        );
+        await control(
+          () => active.q.applyFlagSettings(flagSettings),
+          "flag_settings",
+        );
       } catch (error) {
         if (!deadQuery(error) || active.turn || active.tasks.size) throw error;
         discardQuery(s, active);
@@ -1796,6 +1856,7 @@ async function handle(method, p) {
       queries.set(s.id, active);
       setImmediate(() => void startSession(s, active, p));
     }
+    catalogCache.activityChanged();
     emit("turn/started", {
       threadId: s.id,
       turn: { id: turn.id, status: "inProgress" },

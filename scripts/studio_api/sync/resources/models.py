@@ -86,11 +86,6 @@ class DesktopResource(ContractModel):
     kind: Literal["desktop"]
 
 
-class WorktreeDiskResource(ContractModel):
-    kind: Literal["worktree-disk"]
-    agentId: NonEmptyIdentifier
-
-
 class RoomResource(ContractModel):
     kind: Literal["room"]
     roomId: NonEmptyIdentifier
@@ -131,7 +126,6 @@ ResourceRefValue = Annotated[
     | SessionCostResource
     | CostsResource
     | DesktopResource
-    | WorktreeDiskResource
     | RoomResource
     | StateResource
     | DraftsResource

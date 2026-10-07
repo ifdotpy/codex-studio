@@ -95,6 +95,24 @@ class PricingCatalog:
                 threading.Thread(target=self._refresh, name="pricing-catalog", daemon=True).start()
             return artifact["catalog"] if artifact else None
 
+    def snapshot_with_signature(self, *, ttl=None):
+        """Pair the read-only catalog with its exact canonical content hash."""
+        import hashlib
+        with self.lock:
+            catalog = self.snapshot(ttl=ttl)
+            cached = self.__dict__.get("_signature_snapshot")
+            if cached is not None and cached[0] is catalog:
+                return cached
+            signature = None
+            if catalog is not None:
+                encoded = json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+                signature = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+            # Retain the object itself so a replaced catalog cannot reuse its id.
+            # Lazy state also supports native-preserved pre-update instances.
+            cached = (catalog, signature)
+            self._signature_snapshot = cached
+            return cached
+
     def refresh_missing(self):
         """Start an early refresh after a priced provider reports an unknown model."""
         self.snapshot(ttl=MISSING_TTL)
@@ -232,6 +250,11 @@ def lookup(catalog, provider, model):
 
 def price_usage(catalog, provider, model, usage, *, context_tokens=None, input_tokens_are_uncached=False):
     rates = lookup(catalog, provider, model)
+    return _price_usage_from_rates(rates, usage, context_tokens=context_tokens,
+                                   input_tokens_are_uncached=input_tokens_are_uncached)
+
+
+def _price_usage_from_rates(rates, usage, *, context_tokens=None, input_tokens_are_uncached=False):
     if not rates:
         return None, "unpriced", False
     usage = usage if isinstance(usage, dict) else {}
@@ -275,3 +298,22 @@ def price_usage(catalog, provider, model, usage, *, context_tokens=None, input_t
         return None, "incomplete", use_tier
     total = (base * base_rate + output * out_rate + cached * (read_rate or 0) + cache_write * (write_rate or 0)) / 1_000_000
     return total, "priced", use_tier
+
+
+def _scoped_pricer(catalog, *, price=None):
+    """Reuse model rates within one calculation over one catalog snapshot."""
+    if price is not None and price is not price_usage:
+        return lambda provider, model, usage, **options: price(catalog, provider, model, usage, **options)
+    rates_by_model = {}
+
+    def scoped(provider, model, usage, *, context_tokens=None, input_tokens_are_uncached=False):
+        if not isinstance(provider, str) or not isinstance(model, str):
+            return price_usage(catalog, provider, model, usage, context_tokens=context_tokens,
+                               input_tokens_are_uncached=input_tokens_are_uncached)
+        key = (provider, model)
+        if key not in rates_by_model:
+            rates_by_model[key] = lookup(catalog, provider, model)
+        return _price_usage_from_rates(rates_by_model[key], usage, context_tokens=context_tokens,
+                                       input_tokens_are_uncached=input_tokens_are_uncached)
+
+    return scoped

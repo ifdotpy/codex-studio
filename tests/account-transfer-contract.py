@@ -652,7 +652,8 @@ class TransferContract(f.AccountContracts):
                 'id': 'claude-fixture', 'provider': 'claude', 'home': str(self.root / 'claude-home'),
                 'label': 'Claude fixture', 'status': 'ready'}
         self.set_agent(self.lead_agent['id'], provider='claude', accountKey='claude-fixture',
-                       workerDefaults={'model': None, 'effort': None, 'fastMode': False, 'accountKey': 'default'})
+                        workerDefaults={**self.runtime.agent(self.lead_agent['id'])['workerDefaults'],
+                                        'accountKey': 'default'})
         codex = self.runtime.create({'name': 'Codex worker', 'prompt': 'Task'},
                                     parent=self.lead_agent['id'], defer=True)
         self.set_agent(codex['id'], status='completed', inFlight=False, threadId='native-codex', turnId=None)

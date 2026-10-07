@@ -87,6 +87,15 @@ class SessionCostReader:
         encoded = json.dumps(catalog, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
+    def _pricing_snapshot(self):
+        from codex_pricing import PricingCatalog
+        if type(self.pricing) is PricingCatalog:
+            return self.pricing.snapshot_with_signature()
+        # Test and custom providers can edit a snapshot in place. Their content
+        # must still be hashed on every read, without an identity cache.
+        catalog = self.pricing.snapshot()
+        return catalog, self._catalog_signature(catalog)
+
     @staticmethod
     def _usage_state(db, root):
         try:
@@ -374,7 +383,7 @@ class SessionCostReader:
         finally:
             db.rollback()  # End the explicit read snapshot before instrumented close.
             db.close()
-        pricing_signature = self._catalog_signature(self.pricing.snapshot())
+        _, pricing_signature = self._pricing_snapshot()
         agent_signature = self._agent_signature(agents)
         if not wait:
             return self._display_snapshot(agent_id, root, usage_state, pricing_signature,
@@ -650,13 +659,12 @@ class SessionCostReader:
     def _compute(self, agent_id, root):
         db = self._connect()
         try:
-            catalog = self.pricing.snapshot()
+            catalog, catalog_signature = self._pricing_snapshot()
             if catalog is None:
                 return {"rootId": root, "totalUSD": None, "pricedSamples": 0,
                         "breakdown": {"providers": {}, "models": {}}, "unknownModels": [],
                         "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
                         "method": "Loading public API prices."}
-            catalog_signature = self._catalog_signature(catalog)
             # Account and filesystem preparation can wait for unrelated work.
             # Keep those waits outside the history snapshot, then check its
             # exact usage and agent identities before materializing price rows.
@@ -728,6 +736,8 @@ class SessionCostReader:
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
+            from codex_pricing import _scoped_pricer
+            price = _scoped_pricer(catalog, price=price_usage)
             db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
             db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
                            claude_messages.keys())
@@ -751,7 +761,7 @@ class SessionCostReader:
                 context_tokens = usage.get("inputTokens")
                 if input_uncached and context_tokens is not None:
                     context_tokens += (usage.get("cachedInputTokens") or 0) + (usage.get("cacheWriteInputTokens") or 0)
-                cost, status, tier = price_usage(catalog, provider, model, usage,
+                cost, status, tier = price(provider, model, usage,
                                                  context_tokens=context_tokens,
                                                  input_tokens_are_uncached=bool(input_uncached))
                 if cost is None:
@@ -771,7 +781,7 @@ class SessionCostReader:
                 context_tokens = record["usage"].get("inputTokens", 0)
                 if record.get("inputTokensAreUncached"):
                     context_tokens += record["usage"].get("cachedInputTokens", 0) + record["usage"].get("cacheWriteInputTokens", 0)
-                cost, _, tier = price_usage(catalog, "anthropic", model, record["usage"],
+                cost, _, tier = price("anthropic", model, record["usage"],
                                             context_tokens=context_tokens,
                                             input_tokens_are_uncached=record.get("inputTokensAreUncached", False))
                 if cost is None:

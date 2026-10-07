@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 import threading
 import time
 import uuid
@@ -133,7 +134,7 @@ def prepare_budget_migration(runtime):
 
 
 def migrate_budget_usage(db, agent, limit=64, budget_db=None):
-    """Import one idempotent page of stored usage into the durable budget ledger."""
+    """Import one idempotent page; open a supplied budget context only for rows."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
         return False
     key = "budgetUsageMigrationV1:" + agent["id"]
@@ -146,15 +147,21 @@ def migrate_budget_usage(db, agent, limit=64, budget_db=None):
         return False
     rows = db.execute("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
                       (agent["id"], state["cursor"], state["end"], limit)).fetchall()
-    for seq, raw in rows:
-        record = json.loads(raw)
-        payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
-                   "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
-                   "requestUsage": record.get("requestUsage"),
-                   "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
-                   "_analyticsTimestampSource": record.get("timestampSource")}
-        budget_capture(budget_db or db, agent, payload, at=record.get("at", 0), source="rollout")
-        state["cursor"] = seq
+    if rows:
+        from contextlib import AbstractContextManager
+        # An entered SQL connection retains the original caller-owned scope.
+        budget_scope = (budget_db if isinstance(budget_db, AbstractContextManager) and not hasattr(budget_db, "execute")
+                        else nullcontext(budget_db or db))
+        with budget_scope as writer:
+            for seq, raw in rows:
+                record = json.loads(raw)
+                payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
+                           "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
+                           "requestUsage": record.get("requestUsage"),
+                           "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
+                           "_analyticsTimestampSource": record.get("timestampSource")}
+                budget_capture(writer, agent, payload, at=record.get("at", 0), source="rollout")
+                state["cursor"] = seq
     if len(rows) < limit:
         state["cursor"] = state["end"]
     db.execute("INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -175,6 +182,73 @@ def _history_worker_state(runtime):
         runtime._analytics_history_cursor = 0
     if not hasattr(runtime, '_analytics_history_paths'):
         runtime._analytics_history_paths = {}
+
+
+def _history_directory_signature(directory, *, follow_symlinks=False):
+    try:
+        info = directory.stat(follow_symlinks=follow_symlinks)
+        if stat.S_ISDIR(info.st_mode):
+            return (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns)
+    except OSError:
+        pass
+    return None
+
+
+def _history_rollout_index(home, cache):
+    """Check directories each discovery round; enumerate only changed entries."""
+    directories = dict(cache[2]) if cache is not None and len(cache) > 2 else {}
+    paths = dict(cache[1]) if directories else {}
+    visited = set()
+    pending = [(home / folder, True) for folder in ("sessions", "archived_sessions")]
+
+    def replace_paths(previous, current):
+        for suffix, path in previous:
+            matches = [value for value in paths.get(suffix, ()) if value != path]
+            if matches:
+                paths[suffix] = matches
+            else:
+                paths.pop(suffix, None)
+        for suffix, path in current:
+            paths[suffix] = [*paths.get(suffix, ()), path]
+
+    while pending:
+        directory, root = pending.pop()
+        key = str(directory)
+        visited.add(key)
+        signature = _history_directory_signature(directory, follow_symlinks=root)
+        previous = directories.get(key)
+        if signature is None:
+            if previous is not None:
+                replace_paths(previous[1], ())
+                directories.pop(key)
+            continue
+        if previous is not None and previous[0] == signature:
+            pending.extend((path, False) for path in previous[2])
+            continue
+        files, children = [], []
+        try:
+            with os.scandir(directory) as scanner:
+                for entry in scanner:
+                    path = None
+                    if entry.name.endswith(".jsonl"):
+                        path = Path(entry.path)
+                        files.append((path.stem[-36:], path))
+                    try:
+                        if entry.is_dir(follow_symlinks=False):
+                            children.append(path if path is not None else Path(entry.path))
+                    except OSError:
+                        continue
+        except OSError:
+            # Do not retain a partial scan or suppress its next discovery check.
+            files, children, signature = [], [], None
+        if signature != _history_directory_signature(directory, follow_symlinks=root):
+            signature = None
+        replace_paths(previous[1] if previous is not None else (), files)
+        directories[key] = (signature, tuple(files), tuple(children))
+        pending.extend((path, False) for path in children)
+    for key in directories.keys() - visited:
+        replace_paths(directories.pop(key)[1], ())
+    return paths, directories
 
 
 def _history_step_connections(runtime):
@@ -325,15 +399,8 @@ class AnalyticsHistoryMixin:
         now = time.monotonic()
         cache = self._analytics_history_paths.get(str(home))
         if cache is None or now - cache[0] > 30:
-            paths = {}
-            for folder in ("sessions", "archived_sessions"):
-                root = home / folder
-                if root.is_dir():
-                    for path in root.rglob("*.jsonl"):
-                        # Native UUID suffix. Do not infer another account home.
-                        suffix = path.stem[-36:]
-                        paths.setdefault(suffix, []).append(path)
-            cache = (now, paths)
+            paths, directories = _history_rollout_index(home, cache)
+            cache = (time.monotonic(), paths, directories)
             self._analytics_history_paths[str(home)] = cache
         matches = cache[1].get(thread_id, [])
         if len(matches) != 1:
@@ -348,187 +415,229 @@ class AnalyticsHistoryMixin:
 
     def analytics_history_step(self, max_bytes=1048576, max_records=128):
         """Import one fair batch. Return whether complete lines advanced."""
-        if not self._analytics_history_guard.acquire(blocking=False):
-            return False
+        background = getattr(self, 'analytics_history_thread', None) is threading.current_thread()
+        started = (time.monotonic(), time.thread_time()) if background else None
+        acquired = self._analytics_history_guard.acquire(blocking=False)
         try:
+            if not acquired:
+                return False
             with _history_step_connections(self):
-                if not getattr(self, "_analytics_history_schema_ready", False):
-                    with self.analytics_history_db() as db:
-                        self.analytics_history_init(db)
-                prepare_budget_migration(self)
-                with self.analytics_history_db() as db:
-                    repair_terminal_errors(db)
-                    # Decode all agents once per round, not once per step. Each
-                    # step reads only its own agent under the shared lock.
-                    ids = getattr(self, "_analytics_history_ids", None)
-                    if not ids or self._analytics_history_cursor % len(ids) == 0:
-                        ids = self._analytics_history_ids = [
-                            a["id"] for a in self.records(db, "agents") if a.get("threadId")]
-                    if not ids:
+                # Idle actors share setup, but every actor retains fresh reads.
+                # Progress and round boundaries preserve the worker's idle delay.
+                for _ in range(32 if background else 1):
+                    if background and self.closed:
                         return False
-                    self._analytics_history_cursor %= len(ids)
-                    agent_id = ids[self._analytics_history_cursor]
-                    self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(ids)
-                    try:
-                        a = self.agent(agent_id, db)
-                    except ValueError:
-                        a = None
-                if a is None or not a.get("threadId"):
-                    return False
-                key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
-                with self.analytics_history_db() as db:
-                    if hasattr(self, "analytics_db"):
-                        with self.db() as budget_db:
-                            budget_advanced = migrate_budget_usage(db, a, budget_db=budget_db)
-                    else:
-                        budget_advanced = migrate_budget_usage(db, a)
-                    row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
-                state = json.loads(row[0]) if row else {
-                    "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),
-                    "threadId": a["threadId"], "deletedAt": a.get("deletedAt"), "offset": 0, "importedRecords": 0, "malformedLines": 0,
-                    "context": {"threadId": a["threadId"]},
-                }
-                state["deletedAt"] = a.get("deletedAt")
-                try:
-                    try:
-                        home = Path(self.accounts.home(a.get("accountKey", "default")))
-                    except ValueError:
-                        state.update(status="profileUnavailable", error="The managed account profile is unavailable")
-                        return self._analytics_history_save(key, a, state)
-                    path, problem = self._analytics_rollout_path(home, a["threadId"])
-                    if problem:
-                        state.update(status=problem, error="Native rollout " + problem)
-                        return self._analytics_history_save(key, a, state)
-                    info = path.stat()
-                    identity = [info.st_dev, info.st_ino]
-                    previous_identity = state.get("filesystemIdentity", state.get("identity"))
-                    # Device numbers can change after remount. Preserve the original
-                    # analytics identity; continuity still requires the same inode,
-                    # recorded path, thread header and checkpoint bytes.
-                    remapped_device = bool(previous_identity and previous_identity != identity
-                        and previous_identity[1] == identity[1] and state.get("path") == str(path)
-                        and state.get("anchor") and state.get("offset", 0) > 0
-                        and info.st_size >= state["offset"])
-                    if previous_identity and (previous_identity != identity and not remapped_device
-                                              or info.st_size < state["offset"]):
-                        state.update(status="identityChanged", error="Native rollout was replaced or truncated; previous checkpoint retained")
-                        return self._analytics_history_save(key, a, state)
-                    state.update(path=str(path), fileBytes=info.st_size)
-                    state.setdefault("identity", identity)
-                    records, consumed, partial, oversized = [], 0, False, False
-                    with path.open("rb") as handle:
-                        opened = os.fstat(handle.fileno())
-                        if [opened.st_dev, opened.st_ino] != identity:
-                            state.update(status="identityChanged", error="Native rollout changed during open")
-                            return self._analytics_history_save(key, a, state)
-                        if remapped_device or not state.get("validated"):
-                            first = handle.readline(MAX_LINE_BYTES + 1)
-                            try:
-                                header = json.loads(first)
-                                payload = header.get("payload", {})
-                                valid = header.get("type") == "session_meta" and (payload.get("id") or payload.get("session_id")) == a["threadId"]
-                            except (ValueError, AttributeError):
-                                valid = False
-                            if not valid:
-                                state.update(status="identityChanged" if remapped_device else "wrongThread",
-                                             error="Native rollout header does not match the managed thread")
-                                return self._analytics_history_save(key, a, state)
-                            state["validated"] = True
-                        if state.get("anchor"):
-                            handle.seek(max(0, state["offset"] - 256))
-                            anchor = hashlib.sha256(handle.read(min(state["offset"], 256))).hexdigest()
-                            if anchor != state["anchor"]:
-                                state.update(status="identityChanged", error="Native rollout checkpoint bytes changed")
-                                return self._analytics_history_save(key, a, state)
-                        if remapped_device:
-                            state["filesystemRemap"] = {"previous": previous_identity, "current": identity,
-                                "offset": state["offset"], "at": time.time(), "proof": "samePathInodeHeaderAnchor"}
-                            state["filesystemRemapCount"] = state.get("filesystemRemapCount", 0) + 1
-                        state["filesystemIdentity"] = identity
-                        handle.seek(state["offset"])
-                        while len(records) < max_records and consumed < max_bytes:
-                            offset = handle.tell()
-                            line = handle.readline(MAX_LINE_BYTES + 1)
-                            if not line:
-                                break
-                            if len(line) > MAX_LINE_BYTES:
-                                oversized = True
-                                break
-                            if not line.endswith(b"\n"):
-                                partial = True
-                                break
-                            consumed += len(line)
-                            try:
-                                record = json.loads(line)
-                                if not isinstance(record, dict):
-                                    raise ValueError()
-                            except (ValueError, UnicodeDecodeError):
-                                state["malformedLines"] += 1
-                                record = None
-                            records.append((offset, record))
-                        next_offset = state["offset"] + consumed
-                        handle.seek(max(0, next_offset - 256))
-                        state["anchor"] = hashlib.sha256(handle.read(min(next_offset, 256))).hexdigest()
-                    # Parsing and metrics computation can include large results; the
-                    # collector runs in bounded record groups to release the writer.
-                    context = state["context"]
-                    context["allowedSourceThreadIds"] = inherited_usage_threads(a)
-                    collected = []
-                    for offset, record in records:
-                        if record is not None:
-                            identity_key = hashlib.sha256((key + ":" + str(state["identity"]) + ":" + str(offset)).encode()).hexdigest()
-                            for action in rollout_actions(record, context, identity_key, info.st_mtime):
-                                kind, method, p, at = action
-                                measurements = (event_payload_measurements(method, p) if kind == 'event'
-                                                else model_payload_measurements(p) if kind == 'payload' else None)
-                                collected.append((action, dict(context), measurements))
-                    budget_values = {}
-                    if hasattr(self, 'analytics_db'):
-                        # Native callbacks take the runtime writer before analytics.
-                        # Save exact budget receipts in that order before analytics SQL.
-                        for index, ((action, method, p, at), event_context, _) in enumerate(collected):
-                            if action != 'event' or method != 'thread/tokenUsage/updated':
-                                continue
-                            event_agent = {**a, 'turnId': event_context.get('turnId'),
-                                           'model': event_context.get('model'), 'effort': event_context.get('effort')}
-                            with self.lock, self.db() as budget_db:
-                                current = self.agent(a['id'], budget_db)
-                                if (current.get('threadId') != a['threadId']
-                                        or current.get('accountKey', 'default') != a.get('accountKey', 'default')):
-                                    return False
-                                budget_values[index] = budget_capture(budget_db, event_agent, p, at=at, source='rollout')
-                    with self.analytics_history_db() as db:
-                        current = self.agent(a["id"], db)
-                        if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
-                            return False
-                        for index, ((action, method, p, at), event_context, measurements) in enumerate(collected):
-                            event_agent = {**a, "turnId": event_context.get("turnId"),
-                                           "model": event_context.get("model"), "effort": event_context.get("effort")}
-                            if action == "event":
-                                budget_args = ({'budget_capture_value': budget_values[index]}
-                                               if index in budget_values else {})
-                                self.analytics_event(db, event_agent, method, p, at=at, source="rollout",
-                                                     measurements=measurements, **budget_args)
-                            elif action == "payload":
-                                self.analytics_model_payload(db, event_agent, p, at=at,
-                                    turn_id=p.get("_analyticsTurnId"), source="rollout",
-                                    measurements=measurements)
-                            elif action == "coverage":
-                                state[method] = state.get(method, 0) + 1
-                        state.update(offset=next_offset, importedRecords=state["importedRecords"] + len(records),
-                                     status="oversizedLine" if oversized else "partialLine" if partial else "catchingUp" if next_offset < info.st_size else "current")
-                        state["error"] = "Native rollout line exceeds 64 MiB; checkpoint retained" if oversized else None
-                        if state["malformedLines"] or state.get("wrongThreadRecord"):
-                            state["coverage"] = "partial"
-                        else:
-                            state["coverage"] = "availableRecords"
-                        self._analytics_history_record(db, key, a["id"], state)
-                    return bool(consumed) or budget_advanced
-                except OSError:
-                    state.update(status="unreadable", error="Cannot read the managed account's native rollout")
-                    return self._analytics_history_save(key, a, state)
+                    advanced = self._analytics_history_one(max_bytes, max_records)
+                    if advanced:
+                        return True
+                    if self._analytics_history_cursor == 0 or not self._analytics_history_ids:
+                        break
+                return False
         finally:
-            self._analytics_history_guard.release()
+            if acquired:
+                self._analytics_history_guard.release()
+            if started is not None:
+                # Each batch repays its CPU time after every import scope closes.
+                deadline = started[0] + max(0, time.thread_time() - started[1]) / .15
+                while not self.closed:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        break
+                    time.sleep(min(.1, remaining))
+
+    def _analytics_history_one(self, max_bytes, max_records):
+        """Import one actor through the batch owner's separate SQL scopes."""
+        if not getattr(self, "_analytics_history_schema_ready", False):
+            with self.analytics_history_db() as db:
+                self.analytics_history_init(db)
+        prepare_budget_migration(self)
+        with self.analytics_history_db() as db:
+            repair_terminal_errors(db)
+            # Runtime.put stores object records with unique JSON keys.
+            # Project roster fields once per round; read each actor fresh.
+            ids = getattr(self, "_analytics_history_ids", None)
+            if not ids or self._analytics_history_cursor % len(ids) == 0:
+                from sqlite3 import sqlite_version_info
+                if sqlite_version_info < (3, 38, 0):
+                    ids = [a["id"] for a in self.records(db, "agents") if a.get("threadId")]
+                else:
+                    ids = []
+                    for raw_id, raw_thread in db.execute(
+                            "SELECT record -> '$.id',record -> '$.threadId' "
+                            "FROM runtime_agents ORDER BY rowid"):
+                        if raw_thread is not None and json.loads(raw_thread):
+                            if raw_id is None:
+                                raise KeyError("id")
+                            ids.append(json.loads(raw_id))
+                self._analytics_history_ids = ids
+            if not ids:
+                return False
+            self._analytics_history_cursor %= len(ids)
+            agent_id = ids[self._analytics_history_cursor]
+            self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(ids)
+            try:
+                a = self.agent(agent_id, db)
+            except ValueError:
+                a = None
+        if a is None or not a.get("threadId"):
+            return False
+        key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
+        with self.analytics_history_db() as db:
+            if hasattr(self, "analytics_db"):
+                budget_advanced = migrate_budget_usage(db, a, budget_db=self.db())
+            else:
+                budget_advanced = migrate_budget_usage(db, a)
+            row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()
+        state = json.loads(row[0]) if row else {
+            "id": key, "agent": a["id"], "accountKey": a.get("accountKey", "default"),
+            "threadId": a["threadId"], "deletedAt": a.get("deletedAt"), "offset": 0, "importedRecords": 0, "malformedLines": 0,
+            "context": {"threadId": a["threadId"]},
+        }
+        state["deletedAt"] = a.get("deletedAt")
+        if a.get("provider") == "claude":
+            # Claude sends live analytics and has no Codex rollout format.
+            # Its saved usage still passes through the same budget migration.
+            state.update(status="liveOnly", error=None)
+            self._analytics_history_save(key, a, state)
+            return budget_advanced
+        try:
+            try:
+                home = Path(self.accounts.home(a.get("accountKey", "default")))
+            except ValueError:
+                state.update(status="profileUnavailable", error="The managed account profile is unavailable")
+                return self._analytics_history_save(key, a, state)
+            path, problem = self._analytics_rollout_path(home, a["threadId"])
+            if problem:
+                state.update(status=problem, error="Native rollout " + problem)
+                return self._analytics_history_save(key, a, state)
+            info = path.stat()
+            identity = [info.st_dev, info.st_ino]
+            previous_identity = state.get("filesystemIdentity", state.get("identity"))
+            # Device numbers can change after remount. Preserve the original
+            # analytics identity; continuity still requires the same inode,
+            # recorded path, thread header and checkpoint bytes.
+            remapped_device = bool(previous_identity and previous_identity != identity
+                and previous_identity[1] == identity[1] and state.get("path") == str(path)
+                and state.get("anchor") and state.get("offset", 0) > 0
+                and info.st_size >= state["offset"])
+            if previous_identity and (previous_identity != identity and not remapped_device
+                                      or info.st_size < state["offset"]):
+                state.update(status="identityChanged", error="Native rollout was replaced or truncated; previous checkpoint retained")
+                return self._analytics_history_save(key, a, state)
+            state.update(path=str(path), fileBytes=info.st_size)
+            state.setdefault("identity", identity)
+            records, consumed, partial, oversized = [], 0, False, False
+            with path.open("rb") as handle:
+                opened = os.fstat(handle.fileno())
+                if [opened.st_dev, opened.st_ino] != identity:
+                    state.update(status="identityChanged", error="Native rollout changed during open")
+                    return self._analytics_history_save(key, a, state)
+                if remapped_device or not state.get("validated"):
+                    first = handle.readline(MAX_LINE_BYTES + 1)
+                    try:
+                        header = json.loads(first)
+                        payload = header.get("payload", {})
+                        valid = header.get("type") == "session_meta" and (payload.get("id") or payload.get("session_id")) == a["threadId"]
+                    except (ValueError, AttributeError):
+                        valid = False
+                    if not valid:
+                        state.update(status="identityChanged" if remapped_device else "wrongThread",
+                                     error="Native rollout header does not match the managed thread")
+                        return self._analytics_history_save(key, a, state)
+                    state["validated"] = True
+                if state.get("anchor"):
+                    handle.seek(max(0, state["offset"] - 256))
+                    anchor = hashlib.sha256(handle.read(min(state["offset"], 256))).hexdigest()
+                    if anchor != state["anchor"]:
+                        state.update(status="identityChanged", error="Native rollout checkpoint bytes changed")
+                        return self._analytics_history_save(key, a, state)
+                if remapped_device:
+                    state["filesystemRemap"] = {"previous": previous_identity, "current": identity,
+                        "offset": state["offset"], "at": time.time(), "proof": "samePathInodeHeaderAnchor"}
+                    state["filesystemRemapCount"] = state.get("filesystemRemapCount", 0) + 1
+                state["filesystemIdentity"] = identity
+                handle.seek(state["offset"])
+                while len(records) < max_records and consumed < max_bytes:
+                    offset = handle.tell()
+                    line = handle.readline(MAX_LINE_BYTES + 1)
+                    if not line:
+                        break
+                    if len(line) > MAX_LINE_BYTES:
+                        oversized = True
+                        break
+                    if not line.endswith(b"\n"):
+                        partial = True
+                        break
+                    consumed += len(line)
+                    try:
+                        record = json.loads(line)
+                        if not isinstance(record, dict):
+                            raise ValueError()
+                    except (ValueError, UnicodeDecodeError):
+                        state["malformedLines"] += 1
+                        record = None
+                    records.append((offset, record))
+                next_offset = state["offset"] + consumed
+                handle.seek(max(0, next_offset - 256))
+                state["anchor"] = hashlib.sha256(handle.read(min(next_offset, 256))).hexdigest()
+            # Parsing and metrics computation can include large results; the
+            # collector runs in bounded record groups to release the writer.
+            context = state["context"]
+            context["allowedSourceThreadIds"] = inherited_usage_threads(a)
+            collected = []
+            for offset, record in records:
+                if record is not None:
+                    identity_key = hashlib.sha256((key + ":" + str(state["identity"]) + ":" + str(offset)).encode()).hexdigest()
+                    for action in rollout_actions(record, context, identity_key, info.st_mtime):
+                        kind, method, p, at = action
+                        measurements = (event_payload_measurements(method, p) if kind == 'event'
+                                        else model_payload_measurements(p) if kind == 'payload' else None)
+                        collected.append((action, dict(context), measurements))
+            budget_values = {}
+            if hasattr(self, 'analytics_db'):
+                # Native callbacks take the runtime writer before analytics.
+                # Save exact budget receipts in that order before analytics SQL.
+                for index, ((action, method, p, at), event_context, _) in enumerate(collected):
+                    if action != 'event' or method != 'thread/tokenUsage/updated':
+                        continue
+                    event_agent = {**a, 'turnId': event_context.get('turnId'),
+                                   'model': event_context.get('model'), 'effort': event_context.get('effort')}
+                    with self.lock, self.db() as budget_db:
+                        current = self.agent(a['id'], budget_db)
+                        if (current.get('threadId') != a['threadId']
+                                or current.get('accountKey', 'default') != a.get('accountKey', 'default')):
+                            return False
+                        budget_values[index] = budget_capture(budget_db, event_agent, p, at=at, source='rollout')
+            with self.analytics_history_db() as db:
+                current = self.agent(a["id"], db)
+                if current.get("threadId") != a["threadId"] or current.get("accountKey", "default") != a.get("accountKey", "default"):
+                    return False
+                for index, ((action, method, p, at), event_context, measurements) in enumerate(collected):
+                    event_agent = {**a, "turnId": event_context.get("turnId"),
+                                   "model": event_context.get("model"), "effort": event_context.get("effort")}
+                    if action == "event":
+                        budget_args = ({'budget_capture_value': budget_values[index]}
+                                       if index in budget_values else {})
+                        self.analytics_event(db, event_agent, method, p, at=at, source="rollout",
+                                             measurements=measurements, **budget_args)
+                    elif action == "payload":
+                        self.analytics_model_payload(db, event_agent, p, at=at,
+                            turn_id=p.get("_analyticsTurnId"), source="rollout",
+                            measurements=measurements)
+                    elif action == "coverage":
+                        state[method] = state.get(method, 0) + 1
+                state.update(offset=next_offset, importedRecords=state["importedRecords"] + len(records),
+                             status="oversizedLine" if oversized else "partialLine" if partial else "catchingUp" if next_offset < info.st_size else "current")
+                state["error"] = "Native rollout line exceeds 64 MiB; checkpoint retained" if oversized else None
+                if state["malformedLines"] or state.get("wrongThreadRecord"):
+                    state["coverage"] = "partial"
+                else:
+                    state["coverage"] = "availableRecords"
+                self._analytics_history_record(db, key, a["id"], state)
+            return bool(consumed) or budget_advanced
+        except OSError:
+            state.update(status="unreadable", error="Cannot read the managed account's native rollout")
+            return self._analytics_history_save(key, a, state)
 
     def _analytics_history_save(self, key, a, state):
         with self.analytics_history_db() as db:
