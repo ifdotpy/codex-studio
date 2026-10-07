@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 
 from common import GuestError, require
-from upload import MAX_TREE, tree_space
+from upload import MAX_TREE, real_directory, tree_space, validate_destination
 
 
 def apply_tree(staging, root, expanded, mode):
@@ -17,6 +19,7 @@ def apply_tree(staging, root, expanded, mode):
     temporary = staging.parent / "rsync-temp"
     process = None
     try:
+        links = validate_destination(staging, root)
         tree_space(root, expanded)
         temporary.mkdir(mode=0o700)
         options = ["--delete"] if mode == "full" else []
@@ -24,7 +27,9 @@ def apply_tree(staging, root, expanded, mode):
             # Make btrfs account dirty file extents before the final floor check.
             options.append("--fsync")
         # Share the deadline worker's process group so its SIGKILL covers rsync.
-        process = subprocess.Popen(["rsync", "-a", "--checksum", "--safe-links",
+        # Rsync replaces destination directory links by default. Never enable
+        # --keep-dirlinks or --inplace. Link objects are created separately, last.
+        process = subprocess.Popen(["rsync", "-a", "--checksum", "--no-links",
             "--temp-dir=" + str(temporary), *options, "--", str(staging) + "/", str(root) + "/"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         while True:
@@ -37,6 +42,20 @@ def apply_tree(staging, root, expanded, mode):
         tree_space(root)
         if code:
             raise GuestError("outcome_unknown", "The project sync failed after application started")
+        for relative, target in links:
+            tree_space(root)
+            with real_directory(root, relative.parts[:-1]) as parent:
+                try:
+                    existing = os.stat(relative.name, dir_fd=parent, follow_symlinks=False)
+                except FileNotFoundError:
+                    existing = None
+                if existing is not None:
+                    if stat.S_ISDIR(existing.st_mode):
+                        shutil.rmtree(relative.name, dir_fd=parent)
+                    else:
+                        os.unlink(relative.name, dir_fd=parent)
+                os.symlink(target, relative.name, dir_fd=parent)
+        tree_space(root)
     except GuestError as exc:
         if exc.code == "busy":
             raise GuestError("outcome_unknown", "The data disk crossed its free-space floor during project sync; inspect the project root") from exc

@@ -423,11 +423,96 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         await self.upload("full", archive({"c": b"new"}))
         self.assertEqual(sorted(path.name for path in root.iterdir()), ["c"])
 
-    async def test_archive_traversal_and_links_rejected(self):
-        for index, entries in enumerate(({"../escape": b"no"}, {"link": ("../../escape",)}, {"/escape": b"no"})):
+    async def test_archive_traversal_rejected(self):
+        for index, entries in enumerate(({"../escape": b"no"}, {"/escape": b"no"})):
             with self.assertRaises(GuestError):
                 await self.upload("bad" + str(index), archive(entries))
         self.assertFalse((self.root / "escape").exists())
+
+    @unittest.skipUnless(__import__("shutil").which("rsync"), "rsync is required")
+    async def test_upload_preserves_absolute_and_outside_relative_link_objects(self):
+        outside = self.home / "outside"
+        outside.mkdir()
+        (outside / "sentinel").write_bytes(b"keep")
+        targets = {"absolute": str(outside), "relative": "../../home/outside", "cycle": "cycle"}
+        await self.upload("links", archive({"ordinary": b"safe", "directory/file": b"old", "directory/untracked": b"old",
+            **{name: (target,) for name, target in targets.items()}}))
+        root = self.service.projects / "repo"
+        for name, target in targets.items():
+            self.assertTrue((root / name).is_symlink())
+            self.assertEqual(os.readlink(root / name), target)
+        self.assertEqual((root / "ordinary").read_bytes(), b"safe")
+        self.assertEqual((outside / "sentinel").read_bytes(), b"keep")
+        await self.upload("link-change", archive({"absolute": ("/not-present",)}), mode="delta")
+        self.assertEqual(os.readlink(root / "absolute"), "/not-present")
+        await self.upload("directory-link", archive({"directory": (str(outside),)}), mode="delta", deletes=["directory/file"])
+        self.assertEqual(os.readlink(root / "directory"), str(outside))
+        self.assertEqual((outside / "sentinel").read_bytes(), b"keep")
+
+    async def test_archive_rejects_a_file_below_a_link_in_either_order(self):
+        for index, entries in enumerate((
+                {"link": (str(self.home),), "link/escape": b"no"},
+                {"link/escape": b"no", "link": (str(self.home),)},
+                {"link": ("directory",), "link/nested": ("/tmp",)})):
+            with self.assertRaises(GuestError):
+                await self.upload("link-parent" + str(index), archive(entries))
+        self.assertFalse((self.home / "escape").exists())
+
+    async def test_extraction_rejects_a_link_parent_already_in_the_destination(self):
+        from upload import extract_tree
+        destination = self.root / "expanded"
+        destination.mkdir()
+        (destination / "link").symlink_to(self.home)
+        source = self.root / "archive.tar"
+        source.write_bytes(archive({"link/escape": b"no"}))
+        with self.assertRaises(GuestError) as error:
+            extract_tree(source, destination)
+        self.assertEqual(error.exception.code, "invalid_params")
+        self.assertFalse((self.home / "escape").exists())
+
+    @unittest.skipUnless(__import__("shutil").which("rsync"), "rsync is required")
+    async def test_later_upload_rejects_any_existing_symlink_parent(self):
+        outside = self.home / "outside"
+        outside.mkdir()
+        root = self.service.projects / "repo"
+        targets = {"absolute": str(outside), "relative": "../../home/outside", "internal": "real"}
+        await self.upload("parents", archive({"real/sentinel": b"keep", **{name: (target,) for name, target in targets.items()}}))
+        for index, name in enumerate(targets):
+            identity = "under-link" + str(index)
+            with self.assertRaises(GuestError) as error:
+                await self.upload(identity, archive({name + "/escape": b"no"}), mode="delta")
+            self.assertEqual(error.exception.code, "invalid_params")
+            self.assertEqual(self.service.uploads.row(identity)[5], "receiving")
+            self.assertEqual(os.readlink(root / name), targets[name])
+        self.assertFalse((outside / "escape").exists())
+        self.assertFalse((root / "real" / "escape").exists())
+        self.assertEqual((root / "real" / "sentinel").read_bytes(), b"keep")
+
+    async def test_link_parent_replaced_after_validation_is_still_rejected(self):
+        from upload_apply import apply_tree
+        staging = self.root / "expanded"
+        staging.mkdir()
+        (staging / "directory").mkdir()
+        (staging / "directory" / "link").symlink_to("/tmp")
+        root = self.root / "destination"
+        root.mkdir()
+        (root / "directory").mkdir()
+        outside = self.home / "outside"
+        outside.mkdir()
+
+        class Rsync:
+            def wait(self, timeout):
+                (root / "directory").rmdir()
+                (root / "directory").symlink_to(outside)
+                return 0
+
+            def poll(self):
+                return 0
+
+        with patch("upload_apply.subprocess.Popen", return_value=Rsync()):
+            with self.assertRaises(GuestError):
+                apply_tree(staging, root, 0, "delta")
+        self.assertEqual(list(outside.iterdir()), [])
 
     async def test_chunk_conflict_and_resume(self):
         data = archive({"a": b"ok"})

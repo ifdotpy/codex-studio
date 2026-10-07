@@ -324,7 +324,7 @@ class Service:
     async def apply_upload(self, identity, root, archive, expected):
         async with bounded_lock(self.root_locks, str(root)):
             staging = archive.parent / "expanded"
-            code, output = await self.worker("upload.py", {}, 1800, arguments=(str(archive), str(staging), expected))
+            code, output = await self.worker("upload.py", {}, 1800, arguments=(str(archive), str(staging), expected, str(root)))
             result = json.loads(output)
             if code or "error" in result:
                 if "error" in result:
