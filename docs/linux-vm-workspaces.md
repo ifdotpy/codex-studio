@@ -124,3 +124,66 @@ checks require the host helper and guest service from their component branches.
 checks the Studio caller, source deltas, native process reuse after a Runtime
 restart, result fetch, archive, restore, removal, and resource reports.
 Use `--claude` to check the native Claude bridge with the signed-in host profile.
+
+## Host interface
+
+The guest listens on vsock port 4050. The helper relays each guest connection through
+`~/.local/state/codex-agents/linux-vm/guest.sock`. The socket has mode `0600`.
+The helper accepts connections from the same macOS user only.
+
+`scripts/codex_linux_vm.py` provides these functions:
+
+- `ensure_running(settings=None, timeout=1500)` creates the VM when needed and waits for guest health.
+- `status()` returns the VM state, process ID, resource settings, allocated disk bytes, and free host bytes.
+- `get_settings()` returns the resource limits. `set_settings(values)` saves limits when the VM is stopped.
+- `stop(timeout=40)` requests guest shutdown. The helper forces VM shutdown after 20 seconds.
+- `connect()` returns a guest client. `request(method, params, request_id=None, timeout=60)` returns a result.
+- `stream(method, params, request_id=None, timeout=60)` yields guest event and result frames.
+
+Each guest request uses one connection. A subsequent request reconnects automatically.
+The client does not retry a mutation after a lost response. `LinuxVMError.uncertain`
+identifies failures where the guest can have applied the request.
+
+Resource settings use `cpus`, `memoryBytes`, `systemDiskBytes`, and `dataDiskBytes`.
+Defaults: 4 CPUs, 4 GiB RAM, 16 GiB system disk, 128 GiB data disk.
+The CPU default decreases when the host has fewer CPUs. Disk files are sparse.
+Resource changes require a stopped VM. Existing disk limits cannot decrease.
+The host uses the same 20 GiB creation floor and 5 GiB start floor as image workspaces.
+The existing `CODEX_WORKSPACE_MIN_FREE_BYTES` and `CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES`
+variables control those floors.
+
+The host downloads the Ubuntu 24.04 arm64 raw disk archive from release `20260926`.
+It checks the pinned SHA-256 checksum before extraction. It does not require QEMU.
+The helper uses `VZLinuxBootLoader` with the matching checksum-verified Ubuntu kernel
+and initrd. It expands the kernel's gzip Image payload before boot.
+The kernel command line uses `root=/dev/vda rw console=hvc0`.
+Kernel updates use the pinned Studio image release. Apt does not select the boot kernel.
+The first boot uses cloud-init to install tools, pinned host CLI versions, and the guest service.
+The guest component supplies `vm/guest/install.sh`. The host copies that component into
+`/opt/codex-studio/vm/guest` in the cloud-init seed. No credentials enter the seed.
+
+To build and sign the helper from a checkout:
+
+```sh
+node desktop/native/linux-vm/build.mjs /tmp/studio-linux-vm
+CODEX_LINUX_VM_HELPER=/tmp/studio-linux-vm python3 scripts/codex_linux_vm.py start
+```
+
+`desktop/package.mjs` includes the helper and guest payload. The helper has the
+`com.apple.security.virtualization` entitlement. A backend exit does not stop it.
+A separate helper lease prevents two VMs from opening the same disks.
+The helper keeps the latest 1 MiB of guest console output for boot diagnostics.
+
+The Claude bridge uses `/opt/codex-studio/claude_bridge/bridge.mjs`.
+Provisioning installs its production dependencies from the maintained package lock.
+The guest install script resizes the btrfs data filesystem on each boot.
+
+Run the native host proof from the checkout:
+
+```sh
+python3 -B desktop/native/linux-vm/test.py
+```
+
+The proof creates isolated temporary disks. It checks boot, CLI versions, a btrfs
+workspace, a guest commit, host fetch, provider reconnect, and native Codex initialization.
+It removes the VM after the check. It uses no account credentials or model requests.

@@ -3,7 +3,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { readFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
+import { pathToFileURL, fileURLToPath } from "node:url";
 
 function configuration(env = process.env) {
   if (env.CODEX_STUDIO_SIGNING_IDENTITY)
@@ -82,6 +82,20 @@ export function signCode(target, identity = signingIdentity(), extra = []) {
     ],
     { stdio: "inherit" },
   );
+}
+export function signLinuxVM(target, identity = signingIdentity()) {
+  signCode(target, identity, [
+    "--identifier",
+    "local.codex.agents.linux-vm",
+    "--entitlements",
+    fileURLToPath(
+      new URL("./native/linux-vm/entitlements.plist", import.meta.url),
+    ),
+  ]);
+  execFileSync("codesign", ["--verify", "--strict", target], {
+    stdio: "inherit",
+    timeout: 10_000,
+  });
 }
 export function signApplication(application, identity = signingIdentity()) {
   // External Python callers can import these modules without -B. Cache writes

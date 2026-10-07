@@ -1,3 +1,4 @@
+import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
@@ -30,6 +31,7 @@ try {
     path.join(root, "native/speech-info.plist"),
   ]);
   signCode(speech, identity);
+  const linuxVM = buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
   await cp(
@@ -60,6 +62,11 @@ try {
       stdio: "inherit",
     },
   );
+  await cp(path.join(root, "../vm/guest"), path.join(resources, "vm/guest"), {
+    recursive: true,
+    filter: (source) =>
+      !source.includes("__pycache__") && !source.endsWith(".pyc"),
+  });
   await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
     recursive: true,
   });
@@ -85,7 +92,12 @@ try {
     overwrite: true,
     asar: true,
     prune: true,
-    extraResource: [resources, speech, path.join(root, "recover_backend.py")],
+    extraResource: [
+      resources,
+      speech,
+      linuxVM,
+      path.join(root, "recover_backend.py"),
+    ],
     extendInfo: {
       NSMicrophoneUsageDescription:
         "Record dictation that you can review and convert to text.",
