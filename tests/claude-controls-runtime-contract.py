@@ -377,11 +377,38 @@ class Controls(unittest.TestCase):
         self.assertNotIn('default', self.rt.servers)
 
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
-        self.server.initialize_result = {'capabilities': {'claudeVersion': 18}}
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 19}}
         self.server.provider_options = {}
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.server.state['tasks'] = [{'task_id': 'background'}]
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
+
+    def test_version_18_same_options_retires_only_after_idle_is_proven(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 18}}
+        self.server.provider_options = {}
+        account = {'claudeOptions': {}}
+        previous = self.rt.connection_ids['default']
+        self.server.state['tasks'] = [{'task_id': 'background'}]
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', account, self.server))
+        self.server.state['tasks'] = []
+        self.server.queue = [{'id': 'native-steer'}]
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', account, self.server))
+        self.server.queue = []
+        self.server.pending = {'native-request': object()}
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', account, self.server))
+        self.server.pending = {}
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'monitors', {'id': 'version-monitor', 'agent': self.key, 'status': 'running'})
+        self.assertFalse(retire_idle_bridge(self.rt, 'default', account, self.server))
+        self.assertEqual(self.rt.connection_ids['default'], previous)
+        self.assertIs(self.rt.servers['default'], self.server)
+        self.assertFalse(self.server.closed)
+        with self.rt.db() as db:
+            db.execute("DELETE FROM runtime_monitors WHERE id='version-monitor'")
+        self.assertTrue(retire_idle_bridge(self.rt, 'default', account, self.server))
+        self.assertNotEqual(self.rt.connection_ids['default'], previous)
+        self.assertNotIn('default', self.rt.servers)
+        self.assertTrue(self.server.closed)
 
     def test_bridge_upgrade_waits_for_studio_monitors(self):
         self.server.initialize_result = {'capabilities': {'claudeVersion': 2}}
