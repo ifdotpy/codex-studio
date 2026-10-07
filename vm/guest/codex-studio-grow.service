@@ -1,0 +1,15 @@
+[Unit]
+Description=Expand the Codex Studio btrfs data filesystem
+After=local-fs.target
+Before=codex-studio-guest.service
+RequiresMountsFor=/var/lib/codex-studio
+ConditionPathIsMountPoint=/var/lib/codex-studio
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/btrfs filesystem resize max /var/lib/codex-studio
+TimeoutStartSec=30
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
