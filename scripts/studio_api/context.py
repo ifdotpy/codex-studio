@@ -478,17 +478,21 @@ class ApiContext:
                        WHERE seq>? AND collection NOT LIKE 'transcript:%' ORDER BY seq""",
                     (sync_after,),
                 ).fetchall()
+                floor_row = db.execute(
+                    "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'",
+                    (),
+                ).fetchone()
+                tombstone_floor = int(floor_row[0]) if floor_row else 0
             if rows:
                 body_value = dict(body_value)
                 body_value["_syncEntities"] = [
                     {"id": f"entity:{row[0]}:{row[1]}", "seq": row[2], "payload": row[3], "_deleted": bool(row[4])}
                     for row in rows
                 ]
-                from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES, sync_request_checkpoint
+                from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES
 
-                checkpoint = sync_request_checkpoint()
-                if checkpoint is not None and len(rows) <= MAX_MUTATION_SYNC_ENTITIES:
-                    body_value["_syncEntitiesAfter"] = checkpoint
+                if len(rows) <= MAX_MUTATION_SYNC_ENTITIES and tombstone_floor <= sync_after:
+                    body_value["_syncEntitiesAfter"] = sync_after
         if content_type.startswith(JSON_CONTENT_TYPE):
             try:
                 route = request.scope.get("route")

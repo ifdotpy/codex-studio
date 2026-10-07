@@ -91,6 +91,7 @@ export function getEntitySequenceCheckpoint(
   workspaceId: string,
   scope: string,
 ): EntitySequenceCheckpoint {
+  if (scope !== "state:entities:v1") return new EntitySequenceCheckpoint();
   let checkpoint = entitySequenceCheckpoints.get(scope);
   if (!checkpoint) {
     checkpoint = new EntitySequenceCheckpoint();

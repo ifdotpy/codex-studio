@@ -33,6 +33,19 @@ describe("entity sequence checkpoint", () => {
     expect(mutationCheckpoint).toBe(pullCheckpoint);
   });
 
+  it("does not retain checkpoints for non-entity projection scopes", () => {
+    const first = getEntitySequenceCheckpoint(
+      "transcript-registry-test",
+      "transcript:one",
+    );
+    const second = getEntitySequenceCheckpoint(
+      "transcript-registry-test",
+      "transcript:one",
+    );
+
+    expect(second).not.toBe(first);
+  });
+
   it("keeps the registry object through re-acquisition while a persister waits", async () => {
     const pullCheckpoint = getEntitySequenceCheckpoint(
       "reacquire-while-persisting-test",

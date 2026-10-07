@@ -166,6 +166,9 @@ class _SyncCursorFixture:
     def fetchall(self) -> list[tuple[str, str, int, str, int]]:
         return [("agent", "agent-created", 42, '{"id":"agent-created"}', 0)]
 
+    def fetchone(self) -> None:
+        return None
+
 
 class _SyncFixture:
     @contextmanager

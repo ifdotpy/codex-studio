@@ -27,6 +27,7 @@ import {
   entitySequenceInvalidationCovered,
   entitySequenceGuardsCanAdvance,
   entitySequenceGuardsMatch,
+  EntitySequenceCheckpoint,
   getEntitySequenceCheckpoint,
   mutationEntityCheckpointAdvance,
   pullUnlessEntitySequenceInvalidationCovered,
@@ -66,6 +67,22 @@ export type SyncDocument = {
   payload: string;
   seq: number;
   _deleted?: boolean;
+};
+export type SyncEntityPersisterProbe = {
+  sequences: number[];
+  checkpoint: number;
+  advanced: boolean;
+  acknowledged: boolean;
+  checkpointBefore: number;
+  guards: Array<{
+    captured: number;
+    current: number;
+    resetVersion: number;
+    currentResetVersion: number;
+  }>;
+  guardsMatched: boolean;
+  syncEntitiesAfter: number | null | undefined;
+  at: number;
 };
 class WorkspaceMismatchError extends Error {
   constructor() {
@@ -218,9 +235,9 @@ if (typeof window !== "undefined")
         for (const document of entities)
           await persistProjection(db.projections, document);
         if (isPersistenceCurrent() && entities.length > 0) {
-          const [persistedCheckpoint] =
+          const [persistedCheckpoint, readyMarker] =
             await db.projections.storageInstance.findDocumentsById(
-              ["state:entities:checkpoint"],
+              ["state:entities:checkpoint", "state:entities:ready"],
               true,
             );
           checkpointBefore = persistedCheckpoint?.seq ?? 0;
@@ -239,7 +256,13 @@ if (typeof window !== "undefined")
                 syncEntitiesAfter,
               )),
           );
-          if (advanceTo !== undefined) {
+          if (
+            advanceTo !== undefined &&
+            readyMarker?.payload !== "resetting" &&
+            checkpoint.isSameResetVersion(
+              checkpointGuards[0]?.resetVersion ?? -1,
+            )
+          ) {
             await persistProjection(db.projections, {
               id: "state:entities:checkpoint",
               payload: persistedCheckpoint?.payload ?? "{}",
@@ -247,6 +270,10 @@ if (typeof window !== "undefined")
             });
             if (
               isPersistenceCurrent() &&
+              readyMarker?.payload !== "resetting" &&
+              checkpoint.isSameResetVersion(
+                checkpointGuards[0]?.resetVersion ?? -1,
+              ) &&
               advanceEntitySequenceGuards(
                 checkpointGuards,
                 checkpointBefore,
@@ -282,22 +309,9 @@ if (typeof window !== "undefined")
       }
       const probe = (
         window as Window & {
-          __studioSyncEntityPersisterProbe?: (value: {
-            sequences: number[];
-            checkpoint: number;
-            advanced: boolean;
-            acknowledged: boolean;
-            checkpointBefore: number;
-            guards: Array<{
-              captured: number;
-              current: number;
-              resetVersion: number;
-              currentResetVersion: number;
-            }>;
-            guardsMatched: boolean;
-            syncEntitiesAfter: number | null | undefined;
-            at: number;
-          }) => void;
+          __studioSyncEntityPersisterProbe?: (
+            value: SyncEntityPersisterProbe,
+          ) => void;
         }
       ).__studioSyncEntityPersisterProbe;
       if (probe !== undefined)
@@ -736,10 +750,10 @@ async function acquireProjection(
     let requiredEntitySequence: number | undefined;
     // Sequence zero is a valid initial baseline. Keep a sentinel until the
     // first pull establishes that the local projection already has that row.
-    const latestEntitySequence = getEntitySequenceCheckpoint(
-      workspaceId,
-      remoteScope,
-    );
+    const isEntityScope = remoteScope === "state:entities:v1";
+    const latestEntitySequence = isEntityScope
+      ? getEntitySequenceCheckpoint(workspaceId, remoteScope)
+      : new EntitySequenceCheckpoint();
     if (
       remoteScope === "state:entities:v1" &&
       !latestEntitySequence.initialized
@@ -822,6 +836,11 @@ async function acquireProjection(
       if (pending) return pending;
       pending = (async () => {
         do {
+          const iterationUnversioned = unversionedInvalidation;
+          const iterationCanSkipVersioned =
+            invalidated &&
+            requiredEntitySequence !== undefined &&
+            !iterationUnversioned;
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
           invalidated = false;
@@ -832,6 +851,7 @@ async function acquireProjection(
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
+          let firstRequest = true;
           const markers =
             remoteScope === "state:entities:v1"
               ? await db.projections.storageInstance.findDocumentsById(
@@ -895,24 +915,19 @@ async function acquireProjection(
                 ? signal
                 : undefined;
             if (
+              firstRequest &&
+              iterationCanSkipVersioned &&
               remoteScope === "state:entities:v1" &&
               requiredEntitySequence !== undefined &&
+              !iterationUnversioned &&
               !unversionedInvalidation &&
               latestEntitySequence.canUseDurableCheckpoint &&
               !latestEntitySequence.covers(requiredEntitySequence)
             ) {
               // Another tab has its own in-memory registry but can advance
               // this shared IndexedDB checkpoint after persisting the rows.
-              const [persistedCheckpoint] =
-                await db.projections.storageInstance.findDocumentsById(
-                  [checkpointId],
-                  true,
-                );
-              if (
-                persistedCheckpoint &&
-                persistedCheckpoint.seq >= requiredEntitySequence
-              ) {
-                latestEntitySequence.assignWithinEpoch(persistedCheckpoint.seq);
+              if (previous && previous.seq >= requiredEntitySequence) {
+                latestEntitySequence.assignWithinEpoch(previous.seq);
                 latestEntitySequence.markDurableCheckpointValid();
               }
             }
@@ -924,7 +939,10 @@ async function acquireProjection(
                 remoteScope === "state:entities:v1"
                   ? requiredEntitySequence
                   : undefined,
-                unversionedInvalidation,
+                iterationUnversioned ||
+                  unversionedInvalidation ||
+                  !iterationCanSkipVersioned ||
+                  !firstRequest,
                 () =>
                   retryRead(
                     () =>
@@ -953,6 +971,7 @@ async function acquireProjection(
               more = false;
               break;
             }
+            firstRequest = false;
             const result = pullOutcome.value;
             if (stopped) return;
             // An epoch/reset during this request invalidates the old server

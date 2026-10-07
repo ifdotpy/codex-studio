@@ -276,7 +276,6 @@ class RequestBoundary:
         if not body:
             await _reject(send, 413, "Invalid request size")
             return
-        sync_capture_token: object | None = None
         if len(body) != declared:
             await _reject(send, 400, "Incomplete request")
             return
@@ -304,12 +303,6 @@ class RequestBoundary:
             if not self.context.schema_only:
                 try:
                     scope["studio_sync_entities_after"] = await asyncio.to_thread(self.context.entity_sequence)
-                    if scope["studio_sync_entities_after"] is not None:
-                        from codex_sync_entities import begin_sync_request_capture
-
-                        sync_capture_token = begin_sync_request_capture(
-                            int(scope["studio_sync_entities_after"])
-                        )
                 except (OSError, sqlite3.Error):
                     await _reject(send, 400, "The server sync state is unavailable")
                     return
@@ -322,13 +315,7 @@ class RequestBoundary:
             delivered = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
-        try:
-            await self.app(scope, replay_receive, send)
-        finally:
-            if sync_capture_token is not None:
-                from codex_sync_entities import end_sync_request_capture
-
-                end_sync_request_capture(sync_capture_token)
+        await self.app(scope, replay_receive, send)
 
     def _trusted(self, scope: Scope, headers: HeaderView, *, write: bool, federation: bool) -> bool:
         extensions = scope.get("extensions", {})
