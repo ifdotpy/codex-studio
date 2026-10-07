@@ -255,7 +255,9 @@ class EfficiencyMixin:
                     reasons.append('safety_retry')
                 if native_thread_block(a):
                     reasons.append('native_thread_blocked')
-                if a.get('browserRecovery', {}).get('stage') in {'pending', 'reconnecting'}:
+                browser = a.get('browserRecovery') or {}
+                if (browser.get('stage') == 'reconnecting'
+                        or (browser.get('stage') == 'pending' and browser.get('nativeRequest'))):
                     reasons.append('browser_recovery')
                 blocker = reservations.get(str(Path(a['cwd']).resolve()))
                 if blocker:

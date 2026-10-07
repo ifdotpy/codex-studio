@@ -501,7 +501,8 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     browser_request = browser.get('nativeRequest') or {}
     restart = a.get('restartRecovery') or {}
     restart_same = all(restart.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId'))
-    if (safety_active(a) or (browser_same and (browser.get('stage') in {'pending', 'reconnecting'}
+    if (safety_active(a) or (browser_same and (browser.get('stage') == 'reconnecting'
+            or (browser.get('stage') == 'pending' and browser_request)
             or (browser_request.get('submittedAt') and browser_request.get('outcome') != 'received')))):
         raise _waiting('Context repair waits for the existing native recovery receipt')
     if restart_same and restart.get('stage') in {'pending', 'held'}:
