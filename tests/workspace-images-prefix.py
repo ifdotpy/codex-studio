@@ -110,6 +110,7 @@ class FakeBackend:
 
     def unmount_workspace(self, mount, *, force=False):
         self.mounted.discard(pathlib.Path(mount))
+        return {'method': 'test-unmount', 'terminatedPids': 0}
 
     def remove_layer(self, agent_dir):
         shutil.rmtree(agent_dir, ignore_errors=True)
@@ -194,6 +195,7 @@ class WorkspaceCopyTests(unittest.TestCase):
         image = pathlib.Path(state['image'])
         archived = images.archive_workspace('archive-test')
         self.assertEqual(archived['state'], 'archived')
+        self.assertEqual(archived['unmount']['method'], 'test-unmount')
         self.assertTrue(image.exists())
         self.assertEqual(images._read_json(state_path, {})['state'], 'archived')
         restored = images.create_workspace(self.folder, 'archive-test')
@@ -207,6 +209,7 @@ class WorkspaceCopyTests(unittest.TestCase):
         self.assertEqual(images._read_json(state_path, {})['state'], 'creating')
         removed = images.remove_workspace('archive-test')
         self.assertEqual(removed['state'], 'removed')
+        self.assertEqual(removed['unmount']['method'], 'test-unmount')
         self.assertIsNone(removed['freedBytes'])
         self.assertFalse(image.exists())
 
