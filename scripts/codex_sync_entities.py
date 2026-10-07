@@ -469,10 +469,22 @@ def install_bypass_triggers(db: sqlite3.Connection) -> None:
         END""")
 
 
+def _ensure_sequence_transaction(db: sqlite3.Connection) -> None:
+    """Start the managed write transaction before any sequence read or row read."""
+    if db.in_transaction:
+        return
+    if db.isolation_level is None:
+        raise RuntimeError("Entity sequence allocation requires a write transaction")
+    # Match sqlite3's implicit transaction semantics, but acquire the writer
+    # lock before a read can establish a stale snapshot.
+    db.execute("BEGIN IMMEDIATE")
+
+
 def put(db: sqlite3.Connection, collection: str, key: str, record: Any, deleted: bool = False) -> bool:
     dto = project(collection, record) if not deleted else {}
     if dto is None:
         return False
+    _ensure_sequence_transaction(db)
     payload, digest, deleted = encoded(collection, key, dto, deleted)
     old = db.execute("SELECT hash,deleted FROM sync_entities WHERE collection=? AND id=?",
                      (collection, key)).fetchone()
@@ -488,6 +500,7 @@ def put(db: sqlite3.Connection, collection: str, key: str, record: Any, deleted:
 
 def patch(db: sqlite3.Connection, collection: str, key: str, changes: Any) -> bool:
     """Change fields of the stored renderer view; a raw record must not replace it."""
+    _ensure_sequence_transaction(db)
     try:
         row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection=? AND id=?",
                          (collection, key)).fetchone()
@@ -960,8 +973,7 @@ def sync_task_agent_change(db: sqlite3.Connection, agent_id: str, deleted: bool)
 
 
 def next_sequence(db: sqlite3.Connection) -> int:
-    if not db.in_transaction:
-        raise RuntimeError("Entity sequence allocation requires a write transaction")
+    _ensure_sequence_transaction(db)
     row = db.execute("""SELECT max(seq)+1 FROM (
         SELECT COALESCE(MAX(seq),0) seq FROM sync_entities UNION ALL
         SELECT COALESCE(MAX(seq),0) FROM sync_documents UNION ALL

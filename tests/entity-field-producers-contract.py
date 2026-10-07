@@ -782,13 +782,53 @@ class EntityFieldProducers(unittest.TestCase):
             "volatile refresh must hold BEGIN IMMEDIATE from sequence sampling through insert",
         )
 
-    def test_entity_sequence_allocation_requires_an_open_transaction(self):
+    def test_managed_connection_starts_sequence_transaction_and_context_commits(self):
         import codex_sync_entities
 
         with sqlite3.connect(self.runtime.db_path) as db:
             self.assertFalse(db.in_transaction)
+            self.assertTrue(codex_sync_entities.put(
+                db, "agent", "managed-sequence-probe", {}, deleted=True
+            ))
+            self.assertTrue(db.in_transaction)
+        with sqlite3.connect(self.runtime.db_path) as observer:
+            rows = observer.execute(
+                "SELECT seq FROM sync_entities WHERE collection='agent' AND id=?",
+                ("managed-sequence-probe",),
+            ).fetchall()
+        self.assertEqual(len(rows), 1)
+
+    def test_autocommit_connection_still_requires_explicit_write_transaction(self):
+        import codex_sync_entities
+
+        db = sqlite3.connect(self.runtime.db_path, isolation_level=None)
+        try:
+            self.assertFalse(db.in_transaction)
             with self.assertRaisesRegex(RuntimeError, "write transaction"):
                 codex_sync_entities.next_sequence(db)
+        finally:
+            db.close()
+
+    def test_rate_limit_patch_uses_managed_transaction_and_commits_once(self):
+        with sqlite3.connect(self.runtime.db_path) as observer:
+            before = observer.execute(
+                "SELECT seq FROM sync_entities WHERE collection='workspace' AND id='current'"
+            ).fetchone()[0]
+
+        limits = {
+            "accountKey": "default", "at": 10.0, "checkedAt": 11.0,
+            "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+        }
+        self.runtime.store_rate_limits("default", limits)
+
+        with sqlite3.connect(self.runtime.db_path) as observer:
+            row = observer.execute(
+                "SELECT seq,payload FROM sync_entities WHERE collection='workspace' AND id='current'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertGreater(row[0], before)
+            value = json.loads(row[1])["value"]
+            self.assertEqual(value["rateLimits"]["checkedAt"], 11.0)
 
     def test_workspace_refresh_does_not_break_primary_write_on_source_error(self):
         from unittest.mock import patch

@@ -388,13 +388,16 @@ class SyncStore:
              deleted: bool = False) -> None:
         self._ensure_versions()
         encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        # Start the write transaction before inspecting the previous row so
+        # the comparison and sequence allocation share one snapshot.
+        from codex_sync_entities import next_sequence
+        sequence = next_sequence(db)
         old = db.execute('SELECT payload, deleted FROM sync_documents WHERE scope=? AND id=?', (scope, key)).fetchone()
         if old and old[0] == encoded and bool(old[1]) == deleted:
             return
         # All persisted sync collections share one sequence space.
-        from codex_sync_entities import next_sequence
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
-                   (next_sequence(db), scope, key, encoded, int(deleted)))
+                   (sequence, scope, key, encoded, int(deleted)))
 
     def entity_maintenance_needed(self, db: sqlite3.Connection) -> bool:
         """Check the existing window rules within the pull's read snapshot."""

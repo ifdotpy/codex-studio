@@ -281,7 +281,13 @@ test("cold three silent stream handshakes escalate to the mismatch gate", async 
         body: "",
       });
     }
-    return route.continue();
+    // Keep identity validation healthy, but ensure no ordinary HTTP response
+    // resets the stream-only silent-handshake escalation under test.
+    if (url.pathname === "/api/sync/identity") return route.continue();
+    const response = await route.fetch();
+    const headers = { ...response.headers() };
+    delete headers[API_SCHEMA_HASH_HEADER.toLowerCase()];
+    return route.fulfill({ response, headers });
   });
   await page.goto(url);
   await expect(
