@@ -1,7 +1,7 @@
 # Incremental sync live patch inventory
 
 The compatibility window is closed: the pull request that completed the move to
-sync entities (round 3), `#TBD-ROUND3`, removed `/api/state` and the legacy
+sync entities (round 3), `#11`, removed `/api/state` and the legacy
 `state` / `state:chat` pull scopes. The install sequence and dry-run notes below
 record the earlier rollout plan; they are not current deployment instructions.
 

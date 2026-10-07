@@ -2,7 +2,7 @@
 
 This historical audit records `/api/state` and `scope=state` measurements;
 those endpoint and pull scopes were removed in the pull request that completed
-the move to sync entities (round 3), `#TBD-ROUND3`.
+the move to sync entities (round 3), `#11`.
 
 Read-only audit of the live Studio at `127.0.0.1:4620`, on 2026-09-28. HTTP requests made by this audit were GETs only. SQLite was opened with `mode=ro`; no backend was started. Measurements are a point-in-time sample under active workload, not a controlled benchmark. HTTP sizes below distinguish decoded JSON from gzip wire bytes. Rates marked “derived” combine a measured response with the current UI timer; actual views and event frequency vary.
 

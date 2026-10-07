@@ -5,7 +5,7 @@
 
 **Current sync contract:** `/api/state` and the `state` / `state:chat` pull scopes
 were removed in the pull request that completed the move to sync entities
-(round 3), `#TBD-ROUND3`. Route measurements and rollout evidence below retain
+(round 3), `#11`. Route measurements and rollout evidence below retain
 the older names as historical records.
 
 This page records the compatibility contract and evidence for replacing the

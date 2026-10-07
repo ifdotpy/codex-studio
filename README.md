@@ -298,7 +298,7 @@ The chat entity projection excludes work result histories. The work view loads
 those histories through its existing API. Renderer state uses sync entities;
 the old `/api/state` endpoint and `state` / `state:chat` pull scopes were removed
 in the pull request that completed the move to sync entities (round 3),
-`#TBD-ROUND3`. One shared protocol-3 event stream tells
+`#11`. One shared protocol-3 event stream tells
 visible windows when entity state, drafts, or open transcripts need an update.
 The renderer sends its generated API schema hash with API requests and
 protocol-3 stream connections. API responses carry the server hash. A
