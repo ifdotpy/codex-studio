@@ -188,7 +188,12 @@ const settings = (s) => ({
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
   settingSources: ["user", "project", "local"],
   includePartialMessages: true,
-  env: { ...process.env },
+  env: {
+    ...process.env,
+    ...(typeof s.studioImageWorkspaceTempDir === "string"
+      ? { TMPDIR: s.studioImageWorkspaceTempDir }
+      : {}),
+  },
   stderr: (line) => process.stderr.write(line),
 });
 function checkAccount(account) {
