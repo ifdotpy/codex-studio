@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
-import { getEntitySequenceCheckpoint } from "./entitySequence";
+import { setEntitySequenceProjection } from "./entitySequence";
 
 const mocks = vi.hoisted(() => ({
   createRxDatabase: vi.fn(),
@@ -121,11 +121,7 @@ describe("registered mutation entity persister", () => {
 
     await import("./client");
     expect(mocks.persist).toBeTypeOf("function");
-    getEntitySequenceCheckpoint(
-      workspaceId,
-      "state:entities:v1",
-      API_SCHEMA_HASH,
-    ).assign(9);
+    setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH).assign(9);
     await mocks.persist?.(
       workspaceId,
       [{ id: "entity:agent:chat", payload: "{}", seq: 12 }],

@@ -23,16 +23,11 @@ import {
 } from "../api";
 import type { Snapshot } from "../types";
 import {
-  advanceEntitySequenceGuards,
   canAcknowledgeEntitySequenceBatch,
-  captureEntitySequenceGuards,
   entitySequenceInvalidationCovered,
-  entitySequenceGuardsCanAdvance,
-  entitySequenceGuardsMatch,
   EntitySequenceCheckpoint,
   getEntitySequenceCheckpoint,
-  mutationEntityCheckpointAdvance,
-  pullUnlessEntitySequenceInvalidationCovered,
+  setEntitySequenceProjection,
 } from "./entitySequence";
 import {
   acknowledgeEntitySequences,
@@ -81,13 +76,6 @@ export type SyncEntityPersisterProbe = {
   advanced: boolean;
   acknowledged: boolean;
   checkpointBefore: number;
-  guards: Array<{
-    captured: number;
-    current: number;
-    resetVersion: number;
-    currentResetVersion: number;
-  }>;
-  guardsMatched: boolean;
   syncEntitiesAfter: number | null | undefined;
   at: number;
 };
@@ -149,6 +137,7 @@ async function open() {
     clearTimeout(grace);
   }
   const workspaceId = identity?.workspaceId || cached;
+  setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH);
   if (identity) save("codex-sync-workspace", workspaceId);
   const cleanupOtherSchemaCaches = () => {
     if (cleanupScheduled || isApiSchemaMismatch()) return;
@@ -254,12 +243,10 @@ if (typeof window !== "undefined")
       const { db, workspaceId } = await syncDatabase();
       if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
       const checkpoint = getEntitySequenceCheckpoint(
-        workspaceId,
         "state:entities:v1",
         API_SCHEMA_HASH,
       );
-      const checkpointGuards = captureEntitySequenceGuards(checkpoint);
-      let advancementGuards = checkpointGuards;
+      const resetVersion = checkpoint.resetVersion;
       const entities = documents.filter((document) =>
         document.id.startsWith("entity:"),
       );
@@ -267,7 +254,6 @@ if (typeof window !== "undefined")
       let checkpointBefore = 0;
       let checkpointAfter = 0;
       let checkpointAcknowledged = false;
-      let checkpointGuardsMatched = false;
       try {
         for (const document of entities)
           await persistProjection(db.projections, document);
@@ -279,70 +265,51 @@ if (typeof window !== "undefined")
             );
           checkpointBefore = persistedCheckpoint?.seq ?? 0;
           checkpointAfter = checkpointBefore;
-          const capturedResetVersion = checkpointGuards[0]?.resetVersion;
           if (
             readyMarker?.payload !== "resetting" &&
             checkpoint.canUseDurableCheckpoint &&
-            checkpoint.isSameResetVersion(capturedResetVersion ?? -1) &&
+            checkpoint.resetVersion === resetVersion &&
             checkpointBefore > checkpoint.value
           ) {
             // Another tab can durably advance the shared projection row while
             // this tab's in-memory checkpoint remains behind. Reconcile that
             // durable shadow before evaluating this response's contiguous
-            // checkpoint, while retaining the reset-version fence captured at
-            // persister entry.
+            // checkpoint, while retaining the projection reset fence.
             checkpoint.assignWithinEpoch(checkpointBefore);
-            advancementGuards = captureEntitySequenceGuards(checkpoint);
           }
           const highestSequence = Math.max(
             ...entities.map((document) => document.seq),
           );
-          const advanceTo = mutationEntityCheckpointAdvance(
-            checkpointBefore,
-            syncEntitiesAfter,
-            highestSequence,
-            isPersistenceCurrent(),
-            typeof syncEntitiesAfter === "number" &&
-              (checkpointGuardsMatched = entitySequenceGuardsCanAdvance(
-                advancementGuards,
-                syncEntitiesAfter,
-              )),
-          );
           if (
-            advanceTo !== undefined &&
-            readyMarker?.payload !== "resetting" &&
-            checkpoint.isSameResetVersion(
-              checkpointGuards[0]?.resetVersion ?? -1,
-            )
+            typeof syncEntitiesAfter === "number" &&
+            isPersistenceCurrent() &&
+            readyMarker?.payload !== "resetting"
           ) {
-            await persistProjection(db.projections, {
-              id: "state:entities:checkpoint",
-              payload: persistedCheckpoint?.payload ?? "{}",
-              seq: advanceTo,
-            });
-            if (
-              isPersistenceCurrent() &&
-              readyMarker?.payload !== "resetting" &&
-              checkpoint.isSameResetVersion(
-                checkpointGuards[0]?.resetVersion ?? -1,
-              ) &&
-              advanceEntitySequenceGuards(
-                advancementGuards,
-                checkpointBefore,
-                advanceTo,
-              )
-            ) {
+            checkpointAdvanced = await checkpoint.advanceIfContiguous(
+              syncEntitiesAfter,
+              highestSequence,
+              resetVersion,
+              checkpointBefore,
+              async () => {
+                if (!isPersistenceCurrent())
+                  throw new Error("Mutation persistence is no longer current");
+                await persistProjection(db.projections, {
+                  id: "state:entities:checkpoint",
+                  payload: persistedCheckpoint?.payload ?? "{}",
+                  seq: highestSequence,
+                });
+              },
+            );
+            if (checkpointAdvanced) {
               checkpoint.markDurableCheckpointValid();
-              checkpointAdvanced = true;
-              checkpointAfter = advanceTo;
+              checkpointAfter = highestSequence;
             }
           }
           const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
             checkpointAfter,
             highestSequence,
             isPersistenceCurrent(),
-            checkpointAdvanced ||
-              entitySequenceGuardsMatch(advancementGuards, checkpointAfter),
+            checkpointAdvanced || checkpointBefore >= highestSequence,
           );
           if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
             // The exact envelope can suppress a later matching frame only after
@@ -373,13 +340,6 @@ if (typeof window !== "undefined")
           advanced: checkpointAdvanced,
           acknowledged: checkpointAcknowledged,
           checkpointBefore,
-          guards: advancementGuards.map((guard) => ({
-            captured: guard.sequence,
-            current: guard.checkpoint.value,
-            resetVersion: guard.resetVersion,
-            currentResetVersion: guard.checkpoint.resetVersion,
-          })),
-          guardsMatched: checkpointGuardsMatched,
           syncEntitiesAfter,
           at: performance.timeOrigin + performance.now(),
         });
@@ -804,7 +764,7 @@ async function acquireProjection(
     // first pull establishes that the local projection already has that row.
     const isEntityScope = remoteScope === "state:entities:v1";
     const latestEntitySequence = isEntityScope
-      ? getEntitySequenceCheckpoint(workspaceId, remoteScope, API_SCHEMA_HASH)
+      ? getEntitySequenceCheckpoint(remoteScope, API_SCHEMA_HASH)
       : new EntitySequenceCheckpoint();
     if (
       remoteScope === "state:entities:v1" &&
@@ -988,41 +948,16 @@ async function acquireProjection(
               }
             }
             const pullResetVersion = latestEntitySequence.resetVersion;
-            // A versioned invalidation may be covered before dispatch.
-            const pullOutcome =
-              await pullUnlessEntitySequenceInvalidationCovered(
-                latestEntitySequence.effectiveCoverage(),
-                remoteScope === "state:entities:v1"
-                  ? requiredEntitySequence
-                  : undefined,
-                iterationUnversioned ||
-                  unversionedInvalidation ||
-                  !iterationCanSkipVersioned ||
-                  !firstRequest,
-                () =>
-                  retryRead(
-                    () =>
-                      pull(
-                        remoteScope,
-                        after,
-                        remoteScope === "state:entities:v1"
-                          ? ENTITY_BATCH_SIZE
-                          : 100,
-                        workspaceId,
-                        verifyWorkspace,
-                        initialHigh,
-                        remoteScope === "state:entities:v1" &&
-                          after === 0 &&
-                          initialHigh !== undefined &&
-                          window.matchMedia("(max-width: 760px)").matches
-                          ? saved<string | null>("codex-mobile-opened", null)
-                          : null,
-                        requestSignal,
-                      ),
-                    requestSignal,
-                  ),
-              );
-            if (pullOutcome.skipped) {
+            const coveredBeforeDispatch =
+              firstRequest &&
+              iterationCanSkipVersioned &&
+              remoteScope === "state:entities:v1" &&
+              !iterationUnversioned &&
+              !unversionedInvalidation &&
+              latestEntitySequence.canUseDurableCheckpoint &&
+              requiredEntitySequence !== undefined &&
+              latestEntitySequence.coversWithInFlight(requiredEntitySequence);
+            if (coveredBeforeDispatch) {
               if (
                 remoteScope === "state:entities:v1" &&
                 requiredEntitySequence !== undefined
@@ -1035,7 +970,25 @@ async function acquireProjection(
               break;
             }
             firstRequest = false;
-            const result = pullOutcome.value;
+            const result = await retryRead(
+              () =>
+                pull(
+                  remoteScope,
+                  after,
+                  remoteScope === "state:entities:v1" ? ENTITY_BATCH_SIZE : 100,
+                  workspaceId,
+                  verifyWorkspace,
+                  initialHigh,
+                  remoteScope === "state:entities:v1" &&
+                    after === 0 &&
+                    initialHigh !== undefined &&
+                    window.matchMedia("(max-width: 760px)").matches
+                    ? saved<string | null>("codex-mobile-opened", null)
+                    : null,
+                  requestSignal,
+                ),
+              requestSignal,
+            );
             if (stopped) return;
             // An epoch/reset during this request invalidates the old server
             // checkpoint. Same-epoch responses remain usable and cannot move
@@ -1239,7 +1192,11 @@ async function acquireProjection(
         remoteScope === "state:entities:v1" &&
         version?.entitySequence !== undefined
       ) {
-        if (latestEntitySequence.covers(version.entitySequence)) return;
+        if (
+          latestEntitySequence.canUseDurableCheckpoint &&
+          latestEntitySequence.covers(version.entitySequence)
+        )
+          return;
         requiredEntitySequence = Math.max(
           requiredEntitySequence ?? 0,
           version.entitySequence,

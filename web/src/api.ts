@@ -16,7 +16,7 @@ import type {
 } from "./apiContracts";
 import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
-import { getEntitySequenceCheckpoint } from "./sync/entitySequence";
+import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
 
 type Method = "get" | "post";
 type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
@@ -395,9 +395,8 @@ export function registerSyncEntityPersister(
 async function syncDocuments(
   value: SyncEnvelope | null | undefined,
   workspaceId: string | undefined,
-): Promise<boolean> {
-  if (!value?._syncEntities?.length || typeof window === "undefined")
-    return false;
+): Promise<void> {
+  if (!value?._syncEntities?.length || typeof window === "undefined") return;
   const targetWorkspaceId = workspaceId ?? workspace;
   if (syncEntityPersister) {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -417,7 +416,6 @@ async function syncDocuments(
           }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
         }),
       ]);
-      return true;
     } catch (error) {
       persistenceCurrent = false;
       console.error("Mutation entity persistence failed", {
@@ -428,7 +426,6 @@ async function syncDocuments(
       clearTimeout(timer);
     }
   }
-  return false;
 }
 
 function beginMutationEntityCoverage(
@@ -436,7 +433,9 @@ function beginMutationEntityCoverage(
   targetWorkspaceId: string,
 ):
   | {
-      checkpoint: ReturnType<typeof getEntitySequenceCheckpoint>;
+      checkpoint: NonNullable<
+        ReturnType<typeof getEntitySequenceCheckpointForWorkspace>
+      >;
       token: number;
     }
   | undefined {
@@ -453,11 +452,12 @@ function beginMutationEntityCoverage(
   const entities = rows.filter((document) => document.id.startsWith("entity:"));
   if (entities.length === 0) return undefined;
   const through = Math.max(...entities.map((document) => document.seq));
-  const checkpoint = getEntitySequenceCheckpoint(
+  const checkpoint = getEntitySequenceCheckpointForWorkspace(
     targetWorkspaceId,
     "state:entities:v1",
     API_SCHEMA_HASH,
   );
+  if (!checkpoint) return undefined;
   const token = checkpoint.beginInFlightCoverage(after, through);
   return token === undefined ? undefined : { checkpoint, token };
 }
@@ -567,15 +567,10 @@ export async function post<Path extends PathsFor<"post">>(
       data as SyncEnvelope,
       targetWorkspaceId,
     );
-    let persisted = false;
     try {
-      persisted = await syncDocuments(
-        data as SyncEnvelope,
-        options.workspaceId,
-      );
+      await syncDocuments(data as SyncEnvelope, options.workspaceId);
     } finally {
-      if (coverage)
-        coverage.checkpoint.settleInFlightCoverage(coverage.token, persisted);
+      if (coverage) coverage.checkpoint.settleInFlightCoverage(coverage.token);
     }
     return data;
   } catch (error) {

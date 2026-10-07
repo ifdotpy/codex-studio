@@ -12,8 +12,8 @@ import {
   syncGet,
 } from "./api";
 import {
-  getEntitySequenceCheckpoint,
-  pullUnlessEntitySequenceInvalidationCovered,
+  entitySequenceInvalidationCovered,
+  setEntitySequenceProjection,
 } from "./sync/entitySequence";
 import { API_SCHEMA_HASH } from "./generated/apiSchema";
 
@@ -21,6 +21,7 @@ describe("OpenAPI transport facade", () => {
   beforeEach(() => {
     setToken("test-token");
     setWorkspace("workspace-a");
+    setEntitySequenceProjection("workspace-a", API_SCHEMA_HASH);
   });
 
   afterEach(() => {
@@ -169,6 +170,45 @@ describe("OpenAPI transport facade", () => {
     expect(request.signal.aborted).toBe(false);
   });
 
+  it("does not let a mutation for another workspace reset or cover this projection", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const checkpoint = setEntitySequenceProjection(
+      "workspace-a",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.assign(10);
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 12,
+        payload: "{}",
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ _syncEntities: documents, _syncEntitiesAfter: 10 }),
+      ),
+    );
+    const persister = vi.fn(async () => {});
+    const unregister = registerSyncEntityPersister(persister);
+    try {
+      await post(
+        "/api/sync/drafts",
+        { rows: [] },
+        {
+          workspaceId: "workspace-b",
+        },
+      );
+      expect(persister).toHaveBeenCalledOnce();
+      expect(checkpoint.value).toBe(10);
+      expect(checkpoint.effectiveCoverage()).toBe(10);
+    } finally {
+      unregister();
+    }
+  });
+
   it.each([
     ["204", () => new Response(null, { status: 204 })],
     [
@@ -251,9 +291,8 @@ describe("OpenAPI transport facade", () => {
     vi.stubGlobal("window", new EventTarget());
     const workspaceId = "coverage-held-workspace";
     setWorkspace(workspaceId);
-    const checkpoint = getEntitySequenceCheckpoint(
+    const checkpoint = setEntitySequenceProjection(
       workspaceId,
-      "state:entities:v1",
       API_SCHEMA_HASH,
     );
     checkpoint.reset();
@@ -285,37 +324,35 @@ describe("OpenAPI transport facade", () => {
       await started;
       expect(checkpoint.effectiveCoverage()).toBe(12);
       const pull = vi.fn(async () => "unexpected pull");
-      const result = await pullUnlessEntitySequenceInvalidationCovered(
+      const covered = entitySequenceInvalidationCovered(
         checkpoint.effectiveCoverage(),
         12,
         false,
-        pull,
       );
-      expect(result).toEqual({ skipped: true });
+      expect(covered).toBe(true);
       checkpoint.markInFlightCoverageUsed(12);
       expect(pull).not.toHaveBeenCalled();
       releasePersistence();
       await request;
       expect(checkpoint.value).toBe(12);
       expect(checkpoint.effectiveCoverage()).toBe(12);
-      await expect(
-        pullUnlessEntitySequenceInvalidationCovered(
+      expect(
+        entitySequenceInvalidationCovered(
           checkpoint.effectiveCoverage(),
           12,
           false,
-          pull,
         ),
-      ).resolves.toEqual({ skipped: true });
+      ).toBe(true);
       expect(pull).not.toHaveBeenCalled();
       const foreignPull = vi.fn(async () => "foreign change pulled");
-      await expect(
-        pullUnlessEntitySequenceInvalidationCovered(
+      expect(
+        entitySequenceInvalidationCovered(
           checkpoint.effectiveCoverage(),
           13,
           false,
-          foreignPull,
         ),
-      ).resolves.toEqual({ skipped: false, value: "foreign change pulled" });
+      ).toBe(false);
+      await foreignPull();
       expect(foreignPull).toHaveBeenCalledOnce();
     } finally {
       unregister();
@@ -356,9 +393,8 @@ describe("OpenAPI transport facade", () => {
     const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
     const workspaceId = "coverage-reject-workspace";
     setWorkspace(workspaceId);
-    const checkpoint = getEntitySequenceCheckpoint(
+    const checkpoint = setEntitySequenceProjection(
       workspaceId,
-      "state:entities:v1",
       API_SCHEMA_HASH,
     );
     checkpoint.reset();
@@ -385,12 +421,8 @@ describe("OpenAPI transport facade", () => {
     const fallbackPull = vi.fn(async () => undefined);
     checkpoint.onInFlightCoverageInvalidated(() => {
       fallback();
-      void pullUnlessEntitySequenceInvalidationCovered(
-        checkpoint.value,
-        22,
-        false,
-        fallbackPull,
-      );
+      if (!entitySequenceInvalidationCovered(checkpoint.value, 22, false))
+        void fallbackPull();
     });
     const unregister = registerSyncEntityPersister(async () => {
       checkpoint.markInFlightCoverageUsed(22);
@@ -419,9 +451,8 @@ describe("OpenAPI transport facade", () => {
     vi.stubGlobal("window", new EventTarget());
     const workspaceId = "coverage-timeout-workspace";
     setWorkspace(workspaceId);
-    const checkpoint = getEntitySequenceCheckpoint(
+    const checkpoint = setEntitySequenceProjection(
       workspaceId,
-      "state:entities:v1",
       API_SCHEMA_HASH,
     );
     checkpoint.reset();
@@ -447,12 +478,8 @@ describe("OpenAPI transport facade", () => {
     const fallbackPull = vi.fn(async () => undefined);
     checkpoint.onInFlightCoverageInvalidated(() => {
       fallback();
-      void pullUnlessEntitySequenceInvalidationCovered(
-        checkpoint.value,
-        35,
-        false,
-        fallbackPull,
-      );
+      if (!entitySequenceInvalidationCovered(checkpoint.value, 35, false))
+        void fallbackPull();
     });
     let markStarted = () => {};
     const started = new Promise<void>((resolve) => {

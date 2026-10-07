@@ -1,6 +1,16 @@
-/** One object per schema hash and entity scope for this renderer tab. */
-const entitySequenceCheckpoints = new Map<string, EntitySequenceCheckpoint>();
+const ENTITY_SCOPE = "state:entities:v1";
 
+function isContiguous(after: number, checkpoint: number, through: number) {
+  return (
+    Number.isSafeInteger(after) &&
+    Number.isSafeInteger(checkpoint) &&
+    Number.isSafeInteger(through) &&
+    after <= checkpoint &&
+    checkpoint < through
+  );
+}
+
+/** The in-memory checkpoint shared by this tab's mutation and pull paths. */
 export class EntitySequenceCheckpoint {
   private sequence = -1;
   private epoch: string | undefined;
@@ -11,7 +21,7 @@ export class EntitySequenceCheckpoint {
   private nextCoverageToken = 0;
   private readonly inFlightCoverage = new Map<
     number,
-    { after: number; through: number; resetVersion: number }
+    { after: number; through: number }
   >();
   private suppressedRequirement: number | undefined;
   private readonly coverageInvalidationListeners = new Set<() => void>();
@@ -92,22 +102,17 @@ export class EntitySequenceCheckpoint {
   }
 
   covers(sequence: number): boolean {
-    return sequence <= this.sequence;
+    return Number.isSafeInteger(sequence) && sequence <= this.sequence;
   }
 
   beginInFlightCoverage(after: number, through: number): number | undefined {
     if (
-      !Number.isSafeInteger(after) ||
-      !Number.isSafeInteger(through) ||
-      through <= after
+      !this.durableCheckpointValid ||
+      !isContiguous(after, this.effectiveCoverage(), through)
     )
       return undefined;
     const token = ++this.nextCoverageToken;
-    this.inFlightCoverage.set(token, {
-      after,
-      through,
-      resetVersion: this.resetGeneration,
-    });
+    this.inFlightCoverage.set(token, { after, through });
     return token;
   }
 
@@ -117,13 +122,9 @@ export class EntitySequenceCheckpoint {
     let advanced = true;
     while (advanced) {
       advanced = false;
-      for (const coverage of this.inFlightCoverage.values()) {
-        if (
-          coverage.resetVersion === this.resetGeneration &&
-          coverage.after <= effective &&
-          coverage.through > effective
-        ) {
-          effective = coverage.through;
+      for (const { after, through } of this.inFlightCoverage.values()) {
+        if (isContiguous(after, effective, through)) {
+          effective = through;
           advanced = true;
         }
       }
@@ -133,7 +134,7 @@ export class EntitySequenceCheckpoint {
 
   coversWithInFlight(sequence: number): boolean {
     return (
-      Number.isSafeInteger(sequence) && this.effectiveCoverage() >= sequence
+      Number.isSafeInteger(sequence) && sequence <= this.effectiveCoverage()
     );
   }
 
@@ -145,18 +146,32 @@ export class EntitySequenceCheckpoint {
       );
   }
 
-  settleInFlightCoverage(token: number, persisted: boolean): void {
-    const coverage = this.inFlightCoverage.get(token);
-    if (!coverage) return;
-    this.inFlightCoverage.delete(token);
-    // A successful persister may have advanced the durable checkpoint. A
-    // reset or out-of-order response can still make dependent coverage invalid.
+  settleInFlightCoverage(token: number): void {
+    if (!this.inFlightCoverage.delete(token)) return;
+    this.notifyUncoveredSuppression();
+  }
+
+  async advanceIfContiguous(
+    after: number,
+    through: number,
+    expectedResetVersion: number,
+    durableCheckpoint: number,
+    persist: () => Promise<void>,
+  ): Promise<boolean> {
     if (
-      !persisted ||
-      coverage.resetVersion !== this.resetGeneration ||
-      this.suppressedRequirement !== undefined
+      expectedResetVersion !== this.resetGeneration ||
+      !isContiguous(after, this.sequence, through) ||
+      !isContiguous(after, durableCheckpoint, through)
     )
-      this.notifyUncoveredSuppression();
+      return false;
+    await persist();
+    if (
+      expectedResetVersion !== this.resetGeneration ||
+      !isContiguous(after, this.sequence, through)
+    )
+      return false;
+    this.assignWithinEpoch(through);
+    return true;
   }
 
   onInFlightCoverageInvalidated(listener: () => void): () => void {
@@ -182,73 +197,51 @@ export class EntitySequenceCheckpoint {
   }
 }
 
-/** Return the one entity checkpoint shared by this tab's pull and mutation paths. */
-export function getEntitySequenceCheckpoint(
+const entitySequenceCheckpoint = new EntitySequenceCheckpoint();
+let openWorkspaceId: string | undefined;
+let openSchemaHash: string | undefined;
+
+/** Reset the shared object when the open projection database changes identity. */
+export function setEntitySequenceProjection(
   workspaceId: string,
+  schemaHash: string,
+): EntitySequenceCheckpoint {
+  if (openSchemaHash !== undefined && openSchemaHash !== schemaHash) {
+    openWorkspaceId = undefined;
+    entitySequenceCheckpoint.reset();
+  }
+  openSchemaHash = schemaHash;
+  openWorkspaceId = workspaceId;
+  entitySequenceCheckpoint.observeWorkspace(workspaceId);
+  return entitySequenceCheckpoint;
+}
+
+/** Look up the active projection without letting a mutation change its identity. */
+export function getEntitySequenceCheckpoint(
   scope: string,
   schemaHash: string,
 ): EntitySequenceCheckpoint {
-  if (scope !== "state:entities:v1") return new EntitySequenceCheckpoint();
-  // Projection databases include the schema hash in their identity, so an
-  // in-memory checkpoint from a different generated API schema is not valid.
-  // Workspace changes keep this object and reset it through observeWorkspace.
-  const key = `${schemaHash}:${scope}`;
-  let checkpoint = entitySequenceCheckpoints.get(key);
-  if (!checkpoint) {
-    checkpoint = new EntitySequenceCheckpoint();
-    entitySequenceCheckpoints.set(key, checkpoint);
-  }
-  checkpoint.observeWorkspace(workspaceId);
-  return checkpoint;
+  if (
+    scope !== ENTITY_SCOPE ||
+    openWorkspaceId === undefined ||
+    schemaHash !== openSchemaHash
+  )
+    throw new Error("Entity projection checkpoint is not open");
+  return entitySequenceCheckpoint;
 }
 
-export type EntitySequenceGuard = {
-  checkpoint: EntitySequenceCheckpoint;
-  sequence: number;
-  initialized: boolean;
-  resetVersion: number;
-};
-
-export function captureEntitySequenceGuards(
-  checkpoint: EntitySequenceCheckpoint,
-): EntitySequenceGuard[] {
-  return [
-    {
-      checkpoint,
-      sequence: checkpoint.value,
-      initialized: checkpoint.initialized,
-      resetVersion: checkpoint.resetVersion,
-    },
-  ];
-}
-
-export function entitySequenceGuardsMatch(
-  guards: EntitySequenceGuard[],
-  expected: number,
-): boolean {
-  return guards.some(
-    (guard) =>
-      guard.sequence === expected &&
-      guard.checkpoint.value === expected &&
-      guard.checkpoint.isSameResetVersion(guard.resetVersion),
-  );
-}
-
-export function entitySequenceGuardsCanAdvance(
-  guards: EntitySequenceGuard[],
-  expected: number,
-): boolean {
-  return guards.some(
-    (guard) =>
-      // The persisted checkpoint equality is authoritative when this guard is
-      // still at its never-initialized sentinel; resets change resetVersion.
-      ((guard.sequence === expected && guard.checkpoint.value === expected) ||
-        (guard.sequence === -1 &&
-          !guard.initialized &&
-          guard.checkpoint.value === -1 &&
-          !guard.checkpoint.initialized)) &&
-      guard.checkpoint.isSameResetVersion(guard.resetVersion),
-  );
+export function getEntitySequenceCheckpointForWorkspace(
+  workspaceId: string,
+  scope: string,
+  schemaHash: string,
+): EntitySequenceCheckpoint | undefined {
+  if (
+    scope !== ENTITY_SCOPE ||
+    workspaceId !== openWorkspaceId ||
+    schemaHash !== openSchemaHash
+  )
+    return undefined;
+  return getEntitySequenceCheckpoint(scope, schemaHash);
 }
 
 export function canAcknowledgeEntitySequenceBatch(
@@ -278,65 +271,4 @@ export function entitySequenceInvalidationCovered(
     Number.isSafeInteger(requiredSequence) &&
     checkpoint >= requiredSequence
   );
-}
-
-export async function pullUnlessEntitySequenceInvalidationCovered<T>(
-  checkpoint: number,
-  requiredSequence: number | undefined,
-  unversionedInvalidation: boolean,
-  request: () => Promise<T>,
-): Promise<{ skipped: true } | { skipped: false; value: T }> {
-  if (
-    entitySequenceInvalidationCovered(
-      checkpoint,
-      requiredSequence,
-      unversionedInvalidation,
-    )
-  )
-    return { skipped: true };
-  return { skipped: false, value: await request() };
-}
-
-export function mutationEntityCheckpointAdvance(
-  checkpoint: number,
-  syncEntitiesAfter: number | null | undefined,
-  highestSequence: number,
-  persistenceCurrent: boolean,
-  guardsMatch: boolean,
-): number | undefined {
-  if (
-    typeof syncEntitiesAfter !== "number" ||
-    !Number.isSafeInteger(syncEntitiesAfter) ||
-    !Number.isSafeInteger(checkpoint) ||
-    !Number.isSafeInteger(highestSequence) ||
-    !persistenceCurrent ||
-    !guardsMatch ||
-    checkpoint !== syncEntitiesAfter ||
-    highestSequence <= syncEntitiesAfter
-  )
-    return undefined;
-  return highestSequence;
-}
-
-export function advanceEntitySequenceGuards(
-  guards: EntitySequenceGuard[],
-  expected: number,
-  sequence: number,
-): boolean {
-  if (!entitySequenceGuardsCanAdvance(guards, expected)) return false;
-  let advanced = false;
-  for (const guard of guards) {
-    if (
-      ((guard.sequence === expected && guard.checkpoint.value === expected) ||
-        (guard.sequence === -1 &&
-          !guard.initialized &&
-          guard.checkpoint.value === -1 &&
-          !guard.checkpoint.initialized)) &&
-      guard.checkpoint.isSameResetVersion(guard.resetVersion)
-    ) {
-      guard.checkpoint.assignWithinEpoch(sequence);
-      advanced = true;
-    }
-  }
-  return advanced;
 }
