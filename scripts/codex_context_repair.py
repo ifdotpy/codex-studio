@@ -73,7 +73,7 @@ def _current(rt, db, op):
             or rt.preparation_settings(a) != op['settings']
             or ('startAttemptSnapshot' in op and attempt != snapshot)
             or ('nativeIdentity' in op
-                and _source_native_identity(rt.servers.get(a.get('accountKey', 'default'))) != op['nativeIdentity'])
+                and _source_native_identity(rt.server_for(a.get('accountKey', 'default'), rt.agent_connection(a))) != op['nativeIdentity'])
             or ('connectionId' in op and not rt.connection_current(a.get('accountKey', 'default'), op['connectionId']))):
         raise ValueError('The agent changed during context repair. The original session is preserved.')
     if ('historicalInputs' in op
@@ -228,8 +228,8 @@ def recover_unconfirmed_inputs(rt, agent_id):
                 return {'status': 'resolved', 'reason': None, 'inputs': []}
             return {'status': 'not_needed', 'inputs': []}
         identity = (a['epoch'], a.get('threadId'), a.get('accountKey', 'default'))
-        server = rt.servers.get(identity[2])
-        connection_id = rt.connection_ids.get(identity[2])
+        server = rt.server_for(identity[2], rt.agent_connection(a))
+        connection_id = rt.agent_connection(a)
         batches, native_supervisor = [], None
         if historical_wait:
             from codex_historical_input_receipts import capture_batches
@@ -352,8 +352,8 @@ def recover_unconfirmed_inputs(rt, agent_id):
         if (rt.closed or current.get('deletedAt') or current.get('status') == 'paused'
                 or (not restart_wait and current.get('nativeFailureHold'))
                 or (current['epoch'], current.get('threadId'), current.get('accountKey', 'default')) != identity
-                or rt.connection_ids.get(identity[2]) != connection_id
-                or rt.servers.get(identity[2]) is not server
+                or rt.agent_connection(a) != connection_id
+                or rt.server_for(identity[2], rt.agent_connection(a)) is not server
                 or current_wait.get('error') != error
                 or current_wait.get('source') != wait_source
                 or current_wait.get('events') != wait_events
@@ -1100,7 +1100,7 @@ def source_terminal_callback(rt, db, params, account, connection):
     receipt = json.loads(row[0])
     source, proof, actor = (receipt.get(key) or {} for key in ('source', 'proof', 'sourceActor'))
     if (receipt.get('phase') != 'completed' or rt.closed or not isinstance(connection, str)
-            or connection != rt.connection_ids.get(account) or not rt.connection_current(account, connection)
+            or not rt.connection_current(account, connection)
             or source.get('accountKey') != account or source.get('threadId') != thread
             or proof.get('source') != source or proof.get('threadId') != thread
             or proof.get('turnId') != turn['id'] or proof.get('status') != turn['status']
@@ -1109,7 +1109,7 @@ def source_terminal_callback(rt, db, params, account, connection):
             or actor.get('turnId') != turn['id']):
         return False
     if (receipt.get('nativeIdentity')
-            and _source_native_identity(rt.servers.get(account)) != receipt['nativeIdentity']):
+            and _source_native_identity(rt.server_for(account, connection)) != receipt['nativeIdentity']):
         return False
     if connection != receipt.get('connectionId') and not receipt.get('nativeIdentity'):
         return False
@@ -1676,7 +1676,8 @@ def _run_task_wait_check(rt, job):
                 return
             receipt = _completed_task_receipt(db, agent, job['task'])
             account = agent.get('accountKey', 'default')
-            server, connection_id = rt.servers.get(account), rt.connection_ids.get(account)
+            connection_id = rt.agent_connection(agent)
+            server = rt.server_for(account, connection_id)
         task = job['task']
         if receipt:
             from codex_payloads import resolve_record, state_root
@@ -1719,8 +1720,8 @@ def _run_task_wait_check(rt, job):
             _release_task_check(rt, db, job)
             return
         account = agent.get('accountKey', 'default')
-        if (server is not None and (rt.servers.get(account) is not server
-                or rt.connection_ids.get(account) != connection_id
+        if (server is not None and (rt.server_for(account, connection_id) is not server
+                or rt.agent_connection(agent) != connection_id
                 or not rt.connection_current(account, connection_id))):
             proof, terminal_tools, error = None, [], 'The native connection changed during the task check'
         if proof and receipt:
@@ -1940,13 +1941,13 @@ def _repair(rt, key, attempt_id):
         _save(rt, db, a, op)
     submitted, report = False, None
     try:
-        server = rt.connect(a.get('accountKey', 'default'))
+        server = rt.connect_agent(a)
         with rt.lock, rt.db() as db:
             current = _current(rt, db, op)
             account = current.get('accountKey', 'default')
-            if rt.servers.get(account) is not server:
+            if rt.server_for(account, rt.agent_connection(current)) is not server:
                 raise _waiting('Context repair waits for its original native connection', 'native')
-            op['connectionId'] = rt.connection_ids.get(account)
+            op['connectionId'] = rt.agent_connection(current)
             op['startAttemptSnapshot'] = copy.deepcopy(current.get('startAttempt'))
             op['nativeIdentity'] = _source_native_identity(server)
             _save(rt, db, current, op)
@@ -2010,7 +2011,7 @@ def _repair(rt, key, attempt_id):
             params = rt.new_thread_params(current)
             params.pop('dynamicTools', None)
             params.update(threadId=report['importThreadId'], path=report['copyPath'], excludeTurns=True, deferGoalContinuation=True)
-            op.update(phase='submitted', connectionId=rt.connection_ids.get(a.get('accountKey', 'default')),
+            op.update(phase='submitted', connectionId=rt.agent_connection(a),
                       rpcMethod='thread/fork')
             _register_source_terminal(rt, db, current, op, server)
             _save(rt, db, current, op)

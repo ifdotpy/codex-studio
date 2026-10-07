@@ -231,6 +231,9 @@ class AccountTransfers:
             if target_account.get("disconnected"):
                 raise ValueError("Reconnect this account before transferring a team to it")
             members = rt.team_agents(db, key, include_id=key)
+            if any(agent.get('environment') == 'linux' and not agent.get('deletedAt')
+                   and agent.get('accountKey', 'default') != target for agent in members):
+                raise ValueError('Archive the Linux VM workers before changing the team account. Their native account identity stays fixed.')
             target_provider = rt.accounts.get(target).get('provider', 'codex')
             op = {'id': request_id, 'leadId': key, 'targetAccountKey': target,
                   'status': 'pending', 'scope': scope, 'created': time.time(), 'members': {},

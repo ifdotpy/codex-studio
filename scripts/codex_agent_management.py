@@ -22,6 +22,7 @@ def management_tools(tool, text):
         'restore reattaches an archived image or recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its image. '
         'list and list_archived are paged. '
         'maintenance_report lists old archived or deleted workspaces, bases, and Git worktrees; it does not remove them. '
+        'For Linux VM workers, it includes VM disk allocation, disk free space, and RAM. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
         'emit_event wakes every worker waiting for that event once; supply a stable request_id. '
         'Only the lead may archive, restore, recover, reset tools, or emit an event.',
@@ -85,7 +86,11 @@ def _cleanup_image_workspace(rt, agent_id):
                 current.update(imageWorkspacePhase='archiving',
                                cleanedImageWorkspace=saved)
                 rt.put(db, 'agents', current)
-        removed = archive_workspace(agent_id)
+        if agent.get('environment') == 'linux':
+            from codex_linux_workspaces import dispose
+            removed = dispose(rt, agent_id)
+        else:
+            removed = archive_workspace(agent_id)
         saved = {**saved, 'phase': 'archived',
                  'freedBytes': removed.get('freedBytes', 0)}
         with rt.lock, rt.db() as db:
@@ -198,6 +203,8 @@ def _blockers(rt, db, a, *, unassign_work=False):
                 or not str(task.get('processId', '')).isdigit() or not task.get('turnId')
                 or not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
                                   (key + ':' + task['turnId'],)).fetchone()):
+            continue
+        if a.get('environment') == 'linux':
             continue
         try:
             os.kill(int(task['processId']), 0)
@@ -889,14 +896,21 @@ def worktree_maintenance_report(rt, actor_id, epoch=None):
             if agent.get('deletedAt') or not agent.get('imageWorkspaceReady'):
                 workspace_rows.append({'id': agent_id, 'state': workspace.get('state'),
                                        'path': workspace.get('mount'), 'reason': 'archived or stale'})
-    repos = {a.get('imageWorkspaceRepo') for a in team if a.get('imageWorkspaceRepo')}
+    repos = {a.get('imageWorkspaceRepo') for a in team if a.get('imageWorkspaceRepo') and a.get('environment') != 'linux'}
     if actor.get('imageWorkspaceBaseRepo'):
         repos.add(actor['imageWorkspaceBaseRepo'])
     bases = []
     for repo in sorted(repos):
         status = base_status(repo)
         bases.append({'repo': repo, **status})
-    return {'worktrees': report, 'workspaces': workspace_rows, 'bases': bases}
+    result = {'worktrees': report, 'workspaces': workspace_rows, 'bases': bases}
+    if any(agent.get('environment') == 'linux' for agent in team):
+        try:
+            from codex_linux_workspaces import resources
+            result['linuxVM'] = resources(rt)
+        except Exception as error:
+            result['linuxVM'] = {'state': 'unavailable', 'errorType': type(error).__name__}
+    return result
 
 
 def _restore_worktree(info):
@@ -1010,6 +1024,7 @@ def manage_agent(rt, actor_id, args, epoch=None):
                 blockers = _blockers(rt, db, target, unassign_work=unassign_work)
                 if blockers: return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
                 if (not target.get('agentArchive') and not target.get('threadId')
+                        and not target.get('imageWorkspaceReady')
                         and not target.get('worktreeReady') and not target.get('worktreeCleanup')
                         and not target.get('cleanedWorktree')):
                     archived_agent = _archive_record(rt, db, target, actor_id, args.get('reason', ''),
@@ -1018,8 +1033,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                             'worktree': {'state': 'none', 'bytes': 0},
                             'unassignedWork': archived_agent['agentArchive']['unassignedWork']}
                 observed = (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
-                connection = rt.connection_ids.get(observed[2])
-                server = rt.servers.get(observed[2])
+                connection = rt.agent_connection(target)
+                server = rt.server_for(observed[2], connection)
         if observed and observed[1]:
             try:
                 if server is None: raise ValueError('Owning account is offline')
@@ -1115,8 +1130,8 @@ def manage_agent(rt, actor_id, args, epoch=None):
                             if action == 'recover' else None)
         if action == 'archive' and not archived:
             if (observed != (target['epoch'], target.get('threadId'), target.get('accountKey', 'default'))
-                    or connection != rt.connection_ids.get(observed[2])
-                    or server is not rt.servers.get(observed[2]) or rt.closed):
+                    or connection != rt.agent_connection(target)
+                    or server is not rt.server_for(observed[2], connection) or rt.closed):
                 raise ValueError('Worker changed during native inspection; inspect it again')
             reason = args.get('reason', '')
             if not isinstance(reason, str) or not 1 <= len(reason.strip()) <= 1000:
@@ -1154,12 +1169,12 @@ def manage_agent(rt, actor_id, args, epoch=None):
         if restore_image:
             from codex_workspace_images import ensure_mounted, exec_prefix
             try:
-                workspace = ensure_mounted(target['id'])
+                workspace = rt.ensure_image_workspace(target)
             except Exception as error:
                 return {'status': 'blocked', 'reason': 'Image workspace restore failed: ' + str(error)[:500]}
             cwd = (Path(workspace.get('path') or workspace.get('repoPath'))
                    / target.get('imageWorkspaceSubpath', '.'))
-            path_check = subprocess.run([*exec_prefix(), 'test', '-d', str(cwd)],
+            path_check = subprocess.run([*rt.workspace_exec_prefix({**target, 'cwd': str(cwd)}), 'test', '-d', str(cwd)],
                                         capture_output=True, timeout=30)
             if path_check.returncode:
                 return {'status': 'blocked', 'reason': 'The restored image workspace folder is missing'}

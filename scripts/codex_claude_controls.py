@@ -60,7 +60,7 @@ def action(rt, body):
             state['controlOperation'] = {field: op.get(field) for field in ('requestId', 'turnId', 'phase', 'error')}
         return state
     if kind == 'commands':
-        return rt.connect(agent.get('accountKey', 'default')).call('claude/commands', {'cwd': agent['cwd']}, timeout=25)
+        return rt.connect_agent(agent).call('claude/commands', {'cwd': agent['cwd']}, timeout=25)
     if kind == 'command':
         command = body.get('command')
         if not isinstance(command, str) or not re.fullmatch(r'[/$][\w:.-]+(?:[ \t]+[^\r\n\x00]*)?', command.strip()):
@@ -74,13 +74,13 @@ def action(rt, body):
     if kind == 'stop_task':
         if not agent.get('threadId') or not isinstance(body.get('task_id'), str) or not body['task_id']:
             raise ValueError('Select an active Claude task')
-        return rt.connect(agent.get('accountKey', 'default')).call('claude/stopTask', {'threadId': agent['threadId'], 'taskId': body['task_id']}, timeout=20)
+        return rt.connect_agent(agent).call('claude/stopTask', {'threadId': agent['threadId'], 'taskId': body['task_id']}, timeout=20)
     settings = _settings(body.get('settings')) if kind == 'settings' else None
     request = body.get('request_id')
     if kind == 'rollback' and (not isinstance(request, str) or not request or not isinstance(body.get('turn_id'), str) or not body['turn_id']):
         raise ValueError('Supply a rollback request identity and turn identity')
     control_source = rt._workspace_source(agent)
-    control_server = rt.connect(agent.get('accountKey', 'default')) if agent.get('threadId') else None
+    control_server = rt.connect_agent(agent) if agent.get('threadId') else None
     signature = rt._workspace_operation_signature({'agent': key, 'action': kind, 'settings': settings, 'turn': body.get('turn_id')})
     idle_snapshot = None
     with rt.lock, rt.db() as db:

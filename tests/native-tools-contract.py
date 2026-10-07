@@ -98,6 +98,9 @@ class Native:
 
 
 class Runtime:
+    from codex_runtime import Runtime as StudioRuntime
+    agent_connection = StudioRuntime.agent_connection
+
     def __init__(self, root):
         self.root = root
         self.home = root / "home"

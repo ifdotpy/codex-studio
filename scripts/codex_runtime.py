@@ -70,7 +70,7 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "nativeThreadBlock", "nativeSafetyBuffering", "nativeSafetyRetry", "nativeTurnError",
     "readState", "nativeLimitErrorAt", "startAttempt", "unreadCount", "lastReadAt",
     "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
-    "imageWorkspaceRepo", "imageWorkspaceBaseRepo", "imageWorkspaceCreatedAt",
+    "imageWorkspaceRepo", "imageWorkspaceBaseRepo", "imageWorkspaceCreatedAt", "environment",
 )
 
 @dataclass(frozen=True)
@@ -187,6 +187,8 @@ TOOLS = [
          "instead of native subagents. Implementers receive an image workspace when supported and a Git worktree otherwise. "
          "reviewers share your directory read-only. Never poll for their completion. "
          "Default: gpt-6-luna with high reasoning, unless the user sets team defaults. "
+         "environment=linux runs an implementer in the shared Linux VM. The project default applies when omitted. "
+         "Linux tasks wait for their base before the first provider turn. Reviewers stay on the host. "
          "Choose model and effort for each task. Codex and Claude can delegate to each other. "
          "Studio selects a connected account that offers the model; optional account_key selects it explicitly. "
          "effort=null uses that model's native default.",
@@ -194,6 +196,7 @@ TOOLS = [
              "type": "object", "properties": {"name": TEXT, "prompt": TEXT,
                  "role": {"type": "string", "enum": ["implementer", "reviewer"]},
                  "model": TEXT, "account_key": TEXT, "effort": {"type": ["string", "null"]},
+                 "environment": {"type": "string", "enum": ["host", "linux"]},
                  "fast_mode": {"type": "boolean"}, "base_ref": {"type": "string", "maxLength": 1024}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
@@ -405,9 +408,9 @@ class AppServer:
     CLOCK_QUEUE_LIMIT = 128
     TOOL_REQUEST_QUEUE_LIMIT = 1024
 
-    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None):
+    def __init__(self, root, notification, request, died, *, home=None, isolated=False, provider="codex", provider_options=None, executable=None, supervisor_handle=None, supervisor_root=None, supervisor_expected=None, supervisor_commit=None, supervisor_event_applied=None, supervisor_reattached=None, supervisor_monitor_bindings=None, supervisor_monitor_result=None, process_factory=None):
         import queue
-        self.supervisor_mode = os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
+        self.supervisor_mode = process_factory is not None or os.environ.get("CODEX_AGENTS_SUPERVISOR_MODE") == "1"
         recovery_config = next(
             (parent / "background-recovery.json" for parent in (root, *root.parents)
              if (parent / "background-recovery.json").is_file()),
@@ -456,7 +459,7 @@ class AppServer:
             env.pop("CODEX_API_KEY", None)
             command.extend(["-c", 'cli_auth_credentials_store="file"'])
         self.provider_options = (provider_options or {}).get("claudeOptions", {})
-        if provider == "claude":
+        if provider == "claude" and process_factory is None:
             from codex_claude import transport
             command, env = transport(root, provider_options) if provider_options else transport(root)
         command = provider_process_command(command)
@@ -465,8 +468,11 @@ class AppServer:
                 raise RuntimeError("Supervisor mode requires a stable native-process handle")
             from codex_process_supervisor import attach
             try:
-                self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
-                                   stderr_sink=self.log.write, expected=supervisor_expected)
+                if process_factory is not None:
+                    self.proc = process_factory(self.log.write)
+                else:
+                    self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
+                                       stderr_sink=self.log.write, expected=supervisor_expected)
             except Exception:
                 self.log.close()
                 raise
@@ -1338,6 +1344,9 @@ class AppServer:
                     self.protocol_error(error)
                     if self.transport_error:
                         break
+        except Exception as error:
+            self.transport_error = "Native provider transport failed; outcome unknown: " + str(error)[:800]
+            self.protocol_error(self.transport_error)
         finally:
             with self.lock:
                 pending = list(self.pending.values())
@@ -3189,6 +3198,36 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         raise ValueError(f"{label} agent ID {supplied!r}. Use at least 8 characters. Candidate full IDs: "
                          + (', '.join(candidates) if candidates else 'none'))
 
+    def connect_agent(self, agent):
+        if agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"):
+            from codex_linux_workspaces import connect_agent
+            return connect_agent(self, agent)
+        return self.connect(agent.get("accountKey", "default"))
+
+    def agent_connection(self, agent):
+        if agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"):
+            return self.__dict__.get("linux_connection_ids", {}).get(agent["id"])
+        return self.connection_ids.get(agent.get("accountKey", "default"))
+
+    def server_for(self, account_key, connection_id=None):
+        if connection_id is not None:
+            for agent_id, current in self.__dict__.get("linux_connection_ids", {}).items():
+                if current == connection_id:
+                    agent = self.agent(agent_id)
+                    if agent.get("accountKey", "default") != account_key:
+                        return None
+                    return self.__dict__.get("linux_servers", {}).get(agent_id)
+        return self.servers.get(account_key)
+
+    def transport_agents(self, db, account_key, connection_id):
+        linux_id = next((key for key, value in self.__dict__.get("linux_connection_ids", {}).items()
+                         if value == connection_id), None)
+        agents = self.account_agents(db, account_key)
+        if linux_id is not None:
+            return [agent for agent in agents if agent["id"] == linux_id]
+        return [agent for agent in agents if not (
+            agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"))]
+
     def connect(self, account_key="default", *, for_login=False):
         if self.closed:
             raise RuntimeError("Runtime is stopped")
@@ -3309,11 +3348,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             rows = db.execute("SELECT record FROM runtime_monitors WHERE "
                 "json_extract(record,'$.status')='lost' AND "
                 "json_extract(record,'$.reattachRecovery.status')='running'").fetchall()
+        with self.read_db() as db:
+            owners = {agent["id"] for agent in self.transport_agents(db, account_key, connection_id)}
         bindings = []
         for row in rows:
             monitor = json.loads(row[0])
             operation = monitor.get("operation") or {}
             if (not isinstance(operation, dict) or operation.get("accountKey") != account_key
+                    or operation.get("agent") not in owners
                     or operation.get("agent") != monitor.get("agent")
                     or operation.get("epoch") != monitor.get("epoch")
                     or not operation.get("connectionId")
@@ -3388,14 +3430,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             code, error = None, str(cause)
         self.finish_monitor(binding["key"], code, error, operation=binding["operation"])
 
-    def supervisor_reattached(self, account_key, connection_id, resumed):
+    def supervisor_reattached(self, account_key, connection_id, resumed, *, agent_id=None):
         """Restore only work whose native child was proven to survive this restart."""
         current = self.connection_current(account_key, connection_id)
         if not current:
-            self._record_supervisor_restore(account_key, "not_restored", "account_connection_replaced")
+            self._record_supervisor_restore(account_key, "not_restored", "account_connection_replaced", agent_id=agent_id)
             return
         if not resumed:
-            self._record_supervisor_restore(account_key, "not_restored", "native_handle_not_resumed")
+            self._record_supervisor_restore(account_key, "not_restored", "native_handle_not_resumed", agent_id=agent_id)
             return
         from codex_agent_modes import mode_fields
         now = time.time()
@@ -3409,6 +3451,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "OR json_type(record,'$.disconnectRecovery.autoWake') IS NOT NULL)", (account_key,))
             for row in agents.fetchall():
                 agent = mode_fields(json.loads(row[0]))
+                if ((agent_id is not None and agent["id"] != agent_id)
+                        or (agent_id is None and agent.get("environment") == "linux"
+                            and agent.get("imageWorkspaceReady"))):
+                    continue
                 if agent.get("deletedAt"):
                     continue
                 marker = agent.get("restartRecovery") or {}
@@ -3457,6 +3503,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         or receipt.get("status") not in {"running", "starting", "approval"}):
                     continue
                 owner = self.agent(record.get("agent"), db) if record.get("agent") else None
+                if owner and ((agent_id is not None and owner["id"] != agent_id)
+                        or (agent_id is None and owner.get("environment") == "linux"
+                            and owner.get("imageWorkspaceReady"))):
+                    continue
                 if (not owner or owner.get("accountKey", "default") != account_key
                         or owner.get("epoch") != receipt.get("epoch")
                         or owner.get("deletedAt")):
@@ -3471,7 +3521,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.changed.set()
         self._publish_desktop_resource()
 
-    def _record_supervisor_restore(self, account_key, status, reason, detail=None):
+    def _record_supervisor_restore(self, account_key, status, reason, detail=None, *, agent_id=None):
         from codex_agent_modes import mode_fields
         now = time.time()
         with self.notification_db() as db:
@@ -3483,6 +3533,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "AND json_extract(record,'$.restartRecovery.stage')='pending'", (account_key,))
             for row in agents.fetchall():
                 agent = mode_fields(json.loads(row[0]))
+                if ((agent_id is not None and agent["id"] != agent_id)
+                        or (agent_id is None and agent.get("environment") == "linux"
+                            and agent.get("imageWorkspaceReady"))):
+                    continue
                 marker = agent.get("restartRecovery") or {}
                 if (agent.get("accountKey", "default") != account_key or agent.get("deletedAt")
                         or marker.get("stage") != "pending"):
@@ -3497,11 +3551,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Resolve restart receipts before the canvas API can expose interrupted state."""
         with self.db() as db:
             pending = [a for a in self.pending_restart_agents(db) if not a.get("deletedAt")]
+            linux = [a for a in pending if a.get("environment") == "linux" and a.get("imageWorkspaceReady")]
             monitors = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' "
                 "AND json_extract(record,'$.reattachRecovery.status')='running' "
                 "AND json_type(record,'$.operation')='object'")]
-        accounts = sorted(({a.get("accountKey", "default") for a in pending}
+        for monitor in monitors:
+            owner = self.agent(monitor.get("agent"))
+            if (owner.get("environment") == "linux" and owner.get("imageWorkspaceReady")
+                    and not owner.get("deletedAt") and owner not in linux):
+                linux.append(owner)
+        for agent in linux:
+            try:
+                server = self.connect_agent(agent)
+                barrier = getattr(server, "supervisor_reattach_future", None)
+                if barrier is not None:
+                    barrier.result(timeout=65)
+            except Exception as error:
+                self._record_supervisor_restore(agent.get("accountKey", "default"), "not_restored",
+                    "linux_vm_unavailable", type(error).__name__, agent_id=agent["id"])
+        accounts = sorted(({a.get("accountKey", "default") for a in pending if a not in linux}
                            | {(m.get("operation") or {}).get("accountKey") for m in monitors}) - {None})
         if not self.supervisor_mode:
             for account in accounts:
@@ -3530,6 +3599,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                                 type(error).__name__)
 
     def connection_current(self, account_key, connection_id):
+        if connection_id is not None:
+            for agent_id, current in self.__dict__.get("linux_connection_ids", {}).items():
+                if current == connection_id:
+                    return (agent_id not in self.__dict__.get("offline_linux_agents", set())
+                            and self.agent(agent_id).get("accountKey", "default") == account_key)
         return connection_id is None or (
             self.connection_ids.get(account_key) == connection_id
             and account_key not in self.offline_accounts
@@ -3586,7 +3660,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def reply(self, message, account_key="default", connection_id=None, *, operation_id=None):
         # Never deliver an old approval or tool result to a replacement process.
-        server = self.servers.get(account_key)
+        server = self.server_for(account_key, connection_id)
         if not self.connection_current(account_key, connection_id):
             raise RuntimeError("The original account connection is no longer active")
         if server is None:
@@ -3602,7 +3676,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 canonical = False
             if canonical:
                 from codex_tool_response_recovery import response_operation_id
-                operation_id = response_operation_id(self, account_key, rpc_id)
+                operation_id = response_operation_id(self, account_key, rpc_id, connection_id)
         if operation_id is None:
             written = server.write(message)
         else:
@@ -3615,19 +3689,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_connection_recovery import supervisor_identity
         desktop_changed = False
         with self.lock, self.db() as db:
-            if connection_id is not None and self.connection_ids.get(account_key) != connection_id:
+            linux_id = next((key for key, value in self.__dict__.get("linux_connection_ids", {}).items()
+                             if value == connection_id), None)
+            if (linux_id is None and connection_id is not None
+                    and self.connection_ids.get(account_key) != connection_id):
                 return
-            desktop_changed = account_key not in self.offline_accounts
-            self.offline_accounts.add(account_key)
-            if account_key == "default":
-                self.offline = True
-            agents = self.account_agents(db, account_key)
+            if linux_id is not None:
+                self.__dict__.setdefault("offline_linux_agents", set()).add(linux_id)
+            else:
+                desktop_changed = account_key not in self.offline_accounts
+                self.offline_accounts.add(account_key)
+                if account_key == "default":
+                    self.offline = True
+            agents = self.transport_agents(db, account_key, connection_id)
             stream = getattr(self, '_stream_buffer', None)
             if stream:
                 for thread_id in {a.get('threadId') for a in agents if a.get('threadId')}:
                     stream.flush_locked(db, account=account_key, thread_id=thread_id,
                                         force=True, close=True)
-                agents = self.account_agents(db, account_key)
+                agents = self.transport_agents(db, account_key, connection_id)
             ids = {a["id"] for a in agents}
             self.loaded.difference_update(ids)
             from codex_connection_recovery import preparation_eligible
@@ -3644,10 +3724,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             "threadId": a.get("threadId"), "turnId": a.get("turnId"),
                             "startAttempt": start_attempt,
                             "connectionId": connection_id, "autoWake": bool(a.get("autoWake")),
-                            "supervisor": supervisor_identity(self.servers.get(account_key)),
+                            "supervisor": supervisor_identity(self.server_for(account_key, connection_id)),
                             "at": time.time(),
                         }
-                        a.update(status="interrupted", autoWake=False, error="Codex disconnected. Review the transcript before resuming.")
+                        a.update(status="interrupted", autoWake=False, error=("Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming."
+                                 if linux_id is not None else "Codex disconnected. Review the transcript before resuming."))
                     a["inFlight"] = False
                 self.put(db, "agents", a)
                 uncertain = db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
@@ -3671,7 +3752,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.put(db, "monitors", monitor)
                     self._monitor_exit_event(db, self.agent(monitor["agent"], db), monitor)
             for r in self.records(db, "requests"):
-                if (r.get("agent") in ids or r.get("accountKey", "default") == account_key) and r["status"] == "pending":
+                if (r.get("agent") in ids or (not r.get("agent") and r.get("accountKey", "default") == account_key
+                        and (r.get("connectionId") == connection_id or linux_id is None and not r.get("connectionId")))) and r["status"] == "pending":
                     # Local requests without account metadata are owned by their agent.
                     if r.get("agent") and r["agent"] not in ids:
                         continue
@@ -4114,6 +4196,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "tail": "",
                 "worktree": bool(p and role == "implementer") and data.get("_worktree", True),
                 "worktreeReady": False,
+                "environment": data.get("environment", "host"),
                 "imageWorkspace": bool(p and role == "implementer") and data.get("_imageWorkspace", False),
                 "imageWorkspaceReady": False,
                 "imageWorkspacePhase": "read_only" if data.get("_imageWorkspace") else None,
@@ -4380,7 +4463,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 for agent_id in image_ids:
                     try:
-                        remove_workspace(agent_id)
+                        self.remove_image_workspace(agent_id)
                     except Exception as error:
                         cleanup_failures[agent_id] = error
             for agent_id, error in cleanup_failures.items():
@@ -4770,6 +4853,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return False, str(error)
 
     def start_image_base(self, repo_root, agent_id=None, *, retry_failed=False):
+        if agent_id and self.agent(agent_id).get("environment") == "linux":
+            from codex_linux_workspaces import build_base
+            with self.lock:
+                if agent_id in self._image_base_callback_agents:
+                    return None
+                self._image_base_callback_agents.add(agent_id)
+            future = self.pool.submit(build_base, self, repo_root)
+            def complete(done):
+                try:
+                    status = done.result()
+                except Exception as error:
+                    status = {"state": "failed", "error": str(error)}
+                self.pool.submit(self.image_base_completed, agent_id, status)
+            self.__dict__.setdefault("linux_base_futures", {})[agent_id] = future
+            future.add_done_callback(complete)
+            return future
         from codex_workspace_images import start_base_build
         callback = None
         if agent_id:
@@ -4808,8 +4907,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         prefix = ()
         if actor.get("imageWorkspaceReady"):
             from codex_workspace_images import ensure_mounted, exec_prefix
-            ensure_mounted(actor["id"])
-            prefix = exec_prefix()
+            self.ensure_image_workspace(actor)
+            prefix = self.workspace_exec_prefix(actor)
         root = git_toplevel(directory, prefix=prefix) or directory
         return root, directory, prefix
 
@@ -4828,7 +4927,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Image workspace repository is missing")
                 if status.get("state") != "ready":
                     message = status.get("error") or "Image workspace base build failed"
-                    agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                    agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(message)[:1200],
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
@@ -4847,9 +4946,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
             from codex_workspace_images import create_workspace, exec_prefix
             workspace_attempted = True
-            workspace = create_workspace(repo, agent_id)
+            if agent.get("environment") == "linux":
+                from codex_linux_workspaces import create
+                workspace = create(self, repo, agent_id)
+            else:
+                workspace = create_workspace(repo, agent_id)
             cwd = Path(workspace["path"]) / agent.get("imageWorkspaceSubpath", ".")
-            exists = subprocess.run([*exec_prefix(), "test", "-d", str(cwd)],
+            check_prefix = self.workspace_exec_prefix({**agent, "cwd": str(cwd)})
+            exists = subprocess.run([*check_prefix, "test", "-d", str(cwd)],
                                     capture_output=True, timeout=10)
             if exists.returncode:
                 raise ValueError("Image workspace folder is missing")
@@ -4873,7 +4977,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self.changed.set()
             if remove_created_workspace:
                 from codex_workspace_images import remove_workspace
-                remove_workspace(agent_id)
+                self.remove_image_workspace(agent_id)
                 return
             taken_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(copied_at))
             notice_text = ("[Studio image workspace ready] Path: " + str(cwd)
@@ -4885,13 +4989,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if workspace_attempted:
                 try:
                     from codex_workspace_images import remove_workspace
-                    remove_workspace(agent_id)
+                    self.remove_image_workspace(agent_id)
                 except Exception as cleanup_error:
                     error = RuntimeError(f"{error}; image workspace cleanup failed: {cleanup_error}")
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
-                    agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                    agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(error)[:1200],
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
@@ -4933,6 +5037,27 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = self.agent(agent_id, db)
                 agent["imageWorkspaceNoticeError"] = str(error)[:500]
                 self.put(db, "agents", agent)
+
+    def workspace_exec_prefix(self, agent):
+        if agent.get("environment") == "linux":
+            from codex_linux_workspaces import prefix
+            return prefix(agent)
+        from codex_workspace_images import exec_prefix
+        return exec_prefix()
+
+    def ensure_image_workspace(self, agent):
+        if agent.get("environment") == "linux":
+            from codex_linux_workspaces import ensure
+            return ensure(self, agent)
+        from codex_workspace_images import ensure_mounted
+        return ensure_mounted(agent["id"])
+
+    def remove_image_workspace(self, agent_id):
+        if self.agent(agent_id).get("environment") == "linux":
+            from codex_linux_workspaces import dispose
+            return dispose(self, agent_id, remove=True)
+        from codex_workspace_images import remove_workspace
+        return remove_workspace(agent_id)
 
     @staticmethod
     def monitor_auto_approved(a):
@@ -5168,14 +5293,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             timing["prepareChecksDoneAt"] = time.monotonic_ns()
         if a.get("accountTransferId") and not a.get("inFlight") and not a.get("lazyAccountTransfer"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
-        server = self.connect(a.get("accountKey", "default"))
+        if a.get("environment") == "linux" and a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
+            future = self.start_image_base(a["imageWorkspaceRepo"], a["id"])
+            if future is None:
+                future = self.__dict__.get("linux_base_futures", {}).get(a["id"])
+            if future is not None:
+                raise PreparationPending(future, "The Linux VM workspace base is pending; no provider input was sent")
+            raise ValueError("The Linux VM workspace base is pending")
+        server = self.connect_agent(a)
         startup_memory_mark("prepare-connected")
         from codex_native_release import reconcile_unknown
         reconcile_unknown(self, a)
         if timing is not None:
             timing["prepareConnectedAt"] = time.monotonic_ns()
         previous = self.preparations.get(a["id"])
-        if previous and previous.get("connectionId") != self.connection_ids.get(a.get("accountKey", "default")):
+        if previous and previous.get("connectionId") != self.agent_connection(a):
             # Disconnect persistence can fail when storage is unavailable. An old
             # process's loaded cache and preparation future cannot survive replacement.
             self.loaded.discard(a["id"])
@@ -5184,7 +5316,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return previous["future"]
         if a.get("imageWorkspaceReady"):
             from codex_workspace_images import ensure_mounted
-            mounted = ensure_mounted(a["id"])
+            mounted = self.ensure_image_workspace(a)
             project = (Path(mounted.get("path") or mounted.get("repoPath"))
                        / a.get("imageWorkspaceSubpath", "."))
             with self.lock, self.db() as db:
@@ -5216,7 +5348,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             prefix = ()
             if a.get("imageWorkspaceReady"):
                 from codex_workspace_images import exec_prefix
-                prefix = exec_prefix()
+                prefix = self.workspace_exec_prefix(a)
             repo = git_toplevel(a["cwd"], prefix=prefix)
             if repo is None:
                 # The folder left git after spawn. Work in place and say so; do not fail the agent.
@@ -5279,7 +5411,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Agent changed before thread preparation")
                 operation = {"id": uid(), "agent": a["id"], "epoch": a["epoch"],
                              "accountKey": a.get("accountKey", "default"),
-                             "connectionId": self.connection_ids[a.get("accountKey", "default")],
+                             "connectionId": self.agent_connection(a),
                              "threadId": a["threadId"], "cwd": a["cwd"], "method": method,
                              "settings": self.preparation_settings(a),
                              "contextVersions": context_versions,
@@ -5347,7 +5479,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             or a.get("prepareAttempt") != operation["id"]
                             or a["threadId"] != operation["threadId"]):
                         raise
-                    server = self.servers[operation["accountKey"]]
+                    server = self.server_for(operation["accountKey"], operation.get("connectionId"))
                 operation["claudeReadSubmitted"] = True
                 submitted = self.submit_reserved(server, "thread/read",
                     {"threadId": operation["threadId"], "includeTurns": False},
@@ -5442,6 +5574,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def dispatch_all(self):
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
+        from codex_linux_vm_credentials import tick as linux_credentials_tick
+        linux_credentials_tick(self)
         from codex_native_runtime import tick as native_runtime_tick
         native_runtime_tick(self)
         from codex_provider_versions import tick as provider_version_tick
@@ -5969,7 +6103,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 timing["preparedAt"] = time.monotonic_ns()
             try:
-                server = self.connect(a.get("accountKey", "default"))
+                server = self.connect_agent(a)
             except Exception as error:
                 error.studioPreparation = True
                 raise
@@ -6097,7 +6231,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 native_operation_id = "turn:" + a["id"] + ":" + str(params.get("clientUserMessageId") or attempt_id) + ":attempt:" + attempt_id
                 current["startAttempt"]["submitted"] = True
                 current["startAttempt"].update(nativeOperationId=native_operation_id, accountKey=a.get("accountKey", "default"),
-                    connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
+                    connectionId=self.agent_connection(a), threadId=a["threadId"])
                 from codex_connection_recovery import supervisor_identity
                 current["startAttempt"]["supervisorIdentity"] = supervisor_identity(server)
                 self.put(db, "agents", current)
@@ -6413,6 +6547,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             or ("ready" if agent.get("imageWorkspaceReady")
                                 else "building" if phase == "read_only" else phase)),
                   "takenAt": taken_at, "includesUncommittedChanges": True}
+        if agent.get("environment") == "linux":
+            import shlex
+            result["environment"] = "linux"
+            result["fetchCommand"] = "python3 scripts/codex_linux_vm_fetch.py " + " ".join(
+                shlex.quote(str(value)) for value in (agent["id"], agent.get("cwd", ""), "BRANCH", "--cwd", agent.get("imageWorkspaceRepo", "")))
         if agent.get("imageWorkspaceError"):
             result["error"] = agent["imageWorkspaceError"]
         return result
@@ -7288,7 +7427,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "recovery": "Read orchestration_request with this requestId. Do not repeat the mutation with a new id."})}]}
             from codex_connection_recovery import supervisor_identity
             from codex_tool_response_recovery import response_operation_id
-            identity = supervisor_identity(self.servers.get(account_key))
+            identity = supervisor_identity(self.server_for(account_key, connection_id))
             if identity is not None:
                 # An accepted write may have reached the native child. Never
                 # replace its response with a different failure payload.
@@ -7308,7 +7447,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         return
                 finally:
                     db.close()
-            operation_id = response_operation_id(self, account_key, message["id"])
+            operation_id = response_operation_id(self, account_key, message["id"], connection_id)
             response = {"id": message["id"], "result": result}
             if operation_id is None:
                 self.reply(response, account_key, connection_id)
@@ -7352,6 +7491,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         base_cache = {}
         for spec in specs:
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
+            from codex_worker_environment import select as select_environment
+            environment = select_environment(self, spec, directory)
             if spec.get("role", "implementer") == "implementer":
                 workspace_root, directory, prefix = self.worker_spawn_repository(actor, directory)
                 git_repo = git_toplevel(directory, prefix=prefix)
@@ -7365,10 +7506,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if "base_ref" in spec and git_repo is None:
                 raise ValueError("base_ref requires an implementer in a Git repository")
             if workspace_root is not None:
-                use_image, support_reason = self.image_workspace_support(workspace_root)
+                use_image, support_reason = ((True, None) if environment == "linux"
+                                             else self.image_workspace_support(workspace_root))
                 if use_image:
                     try:
-                        self.start_image_base(workspace_root)
+                        if environment != "linux":
+                            self.start_image_base(workspace_root)
                     except Exception as error:
                         use_image = False
                         image_error = "Image workspace base build failed: " + str(error)[:700]
@@ -7384,7 +7527,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         from codex_worker_base import resolve_worker_base
                         base_cache[cache_key] = resolve_worker_base(git_repo, selected_base_ref)
                     base = base_cache[cache_key]
-            resolved.append({**spec, "cwd": directory,
+            resolved.append({**spec, "cwd": directory, "environment": environment,
                              "_worktree": bool(git_repo and not use_image),
                              "_imageWorkspace": use_image,
                              "_imageWorkspaceRepo": workspace_root if use_image else None,
@@ -7454,7 +7597,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     safe_record(db, record_spawn, db, current, child, key)
                     text = child["prompt"]
                     if child.get("imageWorkspace"):
-                        text += ("\n\n[Studio image workspace] Studio is building the base. "
+                        text += ("\n\n[Studio Linux VM workspace] Studio starts this task after the Linux base is ready."
+                                 if child.get("environment") == "linux" else
+                                 "\n\n[Studio image workspace] Studio is building the base. "
                                  "This turn is read-only until Studio sends a workspace-ready notice.")
                         image_base_jobs.append((child["imageWorkspaceRepo"], child["id"]))
                     elif child.get("imageWorkspaceError"):
@@ -7488,7 +7633,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
             value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider", "cwd", "worktree")},
-                                                  "workspace": ("image" if c.get("imageWorkspace") else "worktree" if c.get("worktree") else "shared"),
+                                                  "environment": c.get("environment", "host"),
+                                                  "workspace": ("linux" if c.get("imageWorkspace") and c.get("environment") == "linux" else "image" if c.get("imageWorkspace") else "worktree" if c.get("worktree") else "shared"),
                                                   **({"workspaceState": ("building" if not c.get("imageWorkspaceReady")
                                                                           else "ready")}
                                                      if c.get("imageWorkspace") else {}),
@@ -7808,7 +7954,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             response_error("tool_response_preparation_failed", error, response_phase)
         try:
             from codex_tool_response_recovery import response_operation_id
-            operation_id = response_operation_id(self, account_key, message["id"])
+            operation_id = response_operation_id(self, account_key, message["id"], connection_id)
             response = {"id": message["id"], "result": result}
             if operation_id is None:
                 self.reply(response, account_key, connection_id)
@@ -7963,7 +8109,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         with self.lock:
                             if self.closed or not self.connection_current(account_key, connection_id):
                                 return self.rate_limits_for(account_key)
-                            server = self.servers.get(account_key)
+                            server = self.server_for(account_key, connection_id)
                         if server is None:
                             return self.rate_limits_for(account_key)
                     data = server.call("account/rateLimits/read", {}, timeout=10)
@@ -8621,10 +8767,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if preflight and not self.operation_current(a, preflight):
                     return
             a = self.prepare(a)
-            server = self.connect(a.get("accountKey", "default"))
+            server = self.connect_agent(a)
             if shell_config is None:
                 preflight = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
-                             "connectionId": self.connection_ids[a.get("accountKey", "default")]}
+                             "connectionId": self.agent_connection(a)}
                 submitted_config = self.submit_reserved(server, "config/read", {"cwd": a["cwd"], "includeLayers": False})
                 try:
                     configuration = server.wait(submitted_config)
@@ -8669,7 +8815,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         raise ValueError("This rule was paused or deleted")
                 # Stop cannot overtake command submission on the same connection.
                 operation = {"agent": a["id"], "epoch": m["epoch"], "accountKey": a.get("accountKey", "default"),
-                             "connectionId": self.connection_ids[a.get("accountKey", "default")]}
+                             "connectionId": self.agent_connection(a)}
                 current_monitor.update(status="running", cwd=a["cwd"], error=None, operation=operation,
                     configurationPending=False, activityAt=time.time(), activityGeneration=0,
                     stallWakeGeneration=-1)
@@ -8812,7 +8958,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             a = self.prepare(a)
             if not self.monitor_auto_approved(a):
                 raise PermissionError("Liveness command not run because monitor approval is required.")
-            server = self.connect(a.get("accountKey", "default"))
+            server = self.connect_agent(a)
             config = server.wait(self.submit_reserved(server, "config/read",
                 {"cwd": a["cwd"], "includeLayers": False}))
             native_command = monitor_command(server, command, a["cwd"], config=config["config"])
@@ -8890,7 +9036,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
                 monitor = json.loads(row[0]) if row else {}
                 account = operation["accountKey"]
-                connection = self.connection_ids.get(account)
+                connection = self.agent_connection(self.agent(operation["agent"]))
                 if (monitor.get("status") != "running" or monitor.get("operation") != operation
                         or monitor.get("reattachedConnectionId") != connection
                         or not connection or not self.connection_current(account, connection)):
@@ -8985,6 +9131,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return []
             connections = [(account, connection) for account, connection in self.connection_ids.items()
                            if connection and account not in self.offline_accounts]
+            connections += [(self.agent(agent_id).get("accountKey", "default"), connection)
+                            for agent_id, connection in self.__dict__.get("linux_connection_ids", {}).items()
+                            if connection and agent_id not in self.__dict__.get("offline_linux_agents", set())]
         if not connections:
             return []
         # Select current and restored rows through the existing status index.
@@ -9074,8 +9223,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     continue
                 if (m.get("status") not in {"running", "lost"} or m.get("ruleId")
                         or m.get("exitCode") is not None
-                        or m.get("reattachedConnectionId") == self.connection_ids.get(
-                            operation.get("accountKey"))
+                        or m.get("reattachedConnectionId") == self.agent_connection(self.agent(m["agent"], db))
                         or (m.get("status") == "running" and m.get("finished") is not None)
                         or event["kind"] != "monitor_exit" or event["status"] != "cancelled"):
                     continue
@@ -9087,7 +9235,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not self._monitor_reattach_notice(a, m, event, previous):
                     continue
                 account = a.get("accountKey", "default")
-                connection = self.connection_ids.get(account)
+                connection = self.agent_connection(a)
                 if (not connection or not self.connection_current(account, connection)
                         or a.get("deletedAt") or not a.get("autoWake") or a.get("status") == "paused"
                         or event["agent"] != a["id"] or event["epoch"] != a.get("epoch")
@@ -9327,7 +9475,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if request["status"] == "pending" and request["method"] == "monitor/approve" and request.get("params", {}).get("monitorId") == key:
                     request["status"] = "expired"
                     self.put(db, "requests", request)
-        server = self.servers.get(self.agent(m["agent"]).get("accountKey", "default"))
+        owner = self.agent(m["agent"])
+        server = self.server_for(owner.get("accountKey", "default"), self.agent_connection(owner))
         if running and server:
             try:
                 server.call("command/exec/terminate", {"processId": key})
@@ -9348,7 +9497,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with self.lock, self.db() as db:
                 stream.flush_locked(db, account=a.get('accountKey', 'default'),
                                     thread_id=a['threadId'], force=True)
-        server = self.servers.get(a.get("accountKey", "default"))
+        server = self.server_for(a.get("accountKey", "default"), self.agent_connection(a))
         if server and a.get("nativeReview") and not a.get("turnId"):
             attempt = None
             try:
@@ -10072,7 +10221,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 attempt = {**attempt, "threadId": current_attempt["threadId"]}
             a = self.prepare(a)
             assert_identity(a, attempt)
-            server = self.connect(a.get("accountKey", "default"))
+            server = self.connect_agent(a)
             if attempt["action"] in {"compact", "review"} and a.get("provider", "codex") == "codex":
                 # Claude applies model and permissions with each turn; compaction
                 # is a turn there. Its bridge has no thread settings update.
@@ -10096,7 +10245,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 budget_admission(self, db, a)
                 attempt = {**a["startAttempt"], **attempt}
                 attempt.update(submitted=True, accountKey=a.get("accountKey", "default"),
-                               connectionId=self.connection_ids[a.get("accountKey", "default")], threadId=a["threadId"])
+                               connectionId=self.agent_connection(a), threadId=a["threadId"])
                 a["startAttempt"] = dict(attempt)
                 self.put(db, "agents", a)
                 method = "thread/compact/start" if attempt["action"] == "compact" else "review/start"
@@ -10241,6 +10390,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             servers = list({id(server): server for server in [
                 *self.servers.values(),
+                *self.__dict__.get("linux_servers", {}).values(),
                 *getattr(self, "_late_servers", []),
                 *(entry["server"] for entry in getattr(self, "_native_tools_retiring", {}).values()),
             ]}.values())

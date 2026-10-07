@@ -119,6 +119,7 @@ export default function WorkerCard({
           />
           <span className="worker-text">
             <strong>{agent.name}</strong>
+            {agent.environment === "linux" && <small>Linux VM</small>}
             <span className="worker-meta">
               <small>
                 {indicator?.kind === "answer" ||

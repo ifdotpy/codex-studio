@@ -355,7 +355,7 @@ def _growth_target(rt, server, agent):
             ticket = {"id": str(uuid.uuid4()), "kind": "tool_catalog_fork", "agent": current["id"],
                       "accountKey": current.get("accountKey", "default"), "source": _same_source(current),
                       "status": "submitted", "params": params, "created": time.time(),
-                      "connectionId": rt.connection_ids[current.get("accountKey", "default")]}
+                      "connectionId": rt.agent_connection(current)}
             _schema(db)
             rt.put(db, TABLE, ticket)
             current["nativeToolRefreshId"] = ticket["id"]

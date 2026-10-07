@@ -39,7 +39,8 @@ def transport_turn_eligible(agent):
     attempt = agent.get('startAttempt')
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
             and not agent.get('autoWake') and agent.get('threadId') and agent.get('turnId')
-            and agent.get('error') == 'Codex disconnected. Review the transcript before resuming.'
+            and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
+                                 'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
             and not agent.get('deletedAt') and not agent.get('nativeFailureHold')
             and not agent.get('accountTransferId') and not agent.get('workspaceOperation')
             and not native_thread_block(agent)
@@ -103,7 +104,8 @@ def disconnected_preparation_eligible(agent):
     events = attempt.get('events')
     return bool(agent.get('status') == 'interrupted' and not agent.get('inFlight')
         and not agent.get('autoWake') and not agent.get('startAttempt') and not agent.get('turnId')
-        and agent.get('error') == 'Codex disconnected. Review the transcript before resuming.'
+        and agent.get('error') in {'Codex disconnected. Review the transcript before resuming.',
+                                 'Linux VM provider disconnected. The turn outcome is unknown. Review the transcript before resuming.'}
         and previous.get('autoWake') and not previous.get('turnId')
         and all(previous.get(field) == agent.get(field) for field in ('epoch', 'accountKey', 'threadId'))
         and attempt.get('id') and attempt.get('submitted') is False
@@ -235,15 +237,15 @@ def recover(runtime, key, *, automatic=False):
             return {'status': 'superseded'}
         queued_active_wait = queued_active_wait_eligible(agent)
         if queued_active_wait:
-            server = runtime.servers.get(account)
-            connection = runtime.connection_ids.get(account)
+            server = runtime.server_for(account, runtime.agent_connection(agent))
+            connection = runtime.agent_connection(agent)
             return_args = (runtime, expected, connection, server)
         previous = agent.get('disconnectRecovery') or {}
         prior_supervisor = previous.get('supervisor')
         if (not prior_supervisor and previous.get('connectionId')
-                and runtime.connection_ids.get(account) == previous['connectionId']):
+                and runtime.agent_connection(agent) == previous['connectionId']):
             # Older receipts can still identify their retained account transport.
-            prior_supervisor = supervisor_identity(runtime.servers.get(account))
+            prior_supervisor = supervisor_identity(runtime.server_for(account, runtime.agent_connection(agent)))
     if queued_active_wait:
         return recover_queued_active_wait(*return_args)
     server = None
@@ -251,8 +253,8 @@ def recover(runtime, key, *, automatic=False):
     pending_restart = restart_turn_pending(agent)
     try:
         # This can start the account transport. It never loads or resumes a thread.
-        server = runtime.connect(account)
-        connection = runtime.connection_ids.get(account)
+        server = runtime.connect_agent(agent)
+        connection = runtime.agent_connection(agent)
         with runtime.lock, runtime.db() as db:
             if not current(runtime, db, expected, connection, server):
                 return {'status': 'superseded'}
@@ -700,7 +702,7 @@ def restore_preparation(runtime, expected, connection, server):
 def current(runtime, db, expected, connection, server):
     agent = runtime.agent(expected['id'], db)
     account = expected.get('accountKey') or 'default'
-    return (not runtime.closed and runtime.servers.get(account) is server
+    return (not runtime.closed and runtime.server_for(account, runtime.agent_connection(agent)) is server
             and runtime.connection_current(account, connection)
             and eligible(agent) and all(agent.get(k) == v for k, v in expected.items()))
 

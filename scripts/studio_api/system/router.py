@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable, cast
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
 from studio_api.models import ErrorResponse, JsonValue
@@ -16,6 +16,8 @@ from .models import (
     DiagnosticsResponse,
     DirectoriesQuery,
     DirectoriesResponse,
+    LinuxVMSettings,
+    LinuxVMSettingsResponse,
 )
 
 if TYPE_CHECKING:
@@ -31,6 +33,31 @@ DiagnosticsSnapshot = Callable[[object], dict[str, JsonValue]]
 
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
+
+    def linux_vm_configuration(values: LinuxVMSettings | None = None) -> dict[str, JsonValue]:
+        try:
+            from codex_linux_vm import connect
+        except ImportError as error:
+            raise HTTPException(status_code=503, detail="Linux VM support is unavailable") from error
+        try:
+            client = connect()
+            if values is not None:
+                client.set_settings(values.model_dump())
+            vm_status = client.status()
+            return {"settings": client.get_settings(), "state": vm_status["state"],
+                    "allocatedDiskBytes": vm_status.get("allocatedDiskBytes")}
+        except (RuntimeError, OSError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @router.get("/api/linux-vm/settings", response_model=LinuxVMSettingsResponse,
+                responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def linux_vm_settings(request: Request) -> Response:
+        return context.send(request, linux_vm_configuration())
+
+    @router.post("/api/linux-vm/settings", response_model=LinuxVMSettingsResponse,
+                 responses={400: {"model": ErrorResponse}, 503: {"model": ErrorResponse}})
+    def linux_vm_settings_write(request: Request, body: LinuxVMSettings = Body()) -> Response:
+        return context.send(request, linux_vm_configuration(body))
 
     @router.get(
         "/api/desktop",

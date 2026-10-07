@@ -141,6 +141,8 @@ class Project(ContractModel):
     accountRevision: int | None = None
     workerBaseRef: str | None = None
     workerBaseRevision: int | None = None
+    workerEnvironment: Literal["host", "linux"] | None = None
+    workerEnvironmentRevision: int | None = None
     organizationRevision: int | None = None
     peerTeamsRevision: int | None = None
     folders: list[ProjectFolder] | None = None
@@ -616,7 +618,7 @@ class SidebarReorderRequest(ContractModel):
 
 
 class ProjectWriteRequest(ContractModel):
-    action: Literal["register", "remove", "set_account", "set_worker_base", "set_accounts",
+    action: Literal["register", "remove", "set_account", "set_worker_base", "set_worker_environment", "set_accounts",
                     "rename", "add_folder", "rename_folder", "remove_folder"] | None = None
     path: str = Field(min_length=1)
     name: str | None = None
@@ -624,6 +626,7 @@ class ProjectWriteRequest(ContractModel):
     account_keys: list[str] | None = None
     expected_revision: int | None = None
     base_ref: str | None = None
+    environment: Literal["host", "linux"] | None = None
     folder_id: str | None = None
     parent_id: str | None = None
 
@@ -656,4 +659,10 @@ class ProjectAccountSetRequest(ProjectWriteRequest):
 
 class ProjectWorkerBaseRequest(ProjectWriteRequest):
     action: Literal["set_worker_base"]
+    expected_revision: int
+
+
+class ProjectWorkerEnvironmentRequest(ProjectWriteRequest):
+    action: Literal["set_worker_environment"]
+    environment: Literal["host", "linux"]
     expected_revision: int

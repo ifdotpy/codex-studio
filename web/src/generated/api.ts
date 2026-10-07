@@ -941,6 +941,24 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/linux-vm/settings": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Linux Vm Settings */
+    get: operations["linux_vm_settings_api_linux_vm_settings_get"];
+    put?: never;
+    /** Linux Vm Settings Write */
+    post: operations["linux_vm_settings_write_api_linux_vm_settings_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/messages": {
     parameters: {
       query?: never;
@@ -2478,6 +2496,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
+      /** Environment */
+      environment?: ("host" | "linux") | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
@@ -3814,6 +3834,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
+      /** Environment */
+      environment?: ("host" | "linux") | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
       /** Fastmode */
@@ -5692,6 +5714,27 @@ export interface components {
        */
       kind: "limits";
     };
+    /** LinuxVMSettings */
+    LinuxVMSettings: {
+      /** Cpus */
+      cpus: number;
+      /** Datadiskbytes */
+      dataDiskBytes: number;
+      /** Memorybytes */
+      memoryBytes: number;
+      /** Systemdiskbytes */
+      systemDiskBytes: number;
+    };
+    /** LinuxVMSettingsResponse */
+    LinuxVMSettingsResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Allocateddiskbytes */
+      allocatedDiskBytes?: number | null;
+      settings: components["schemas"]["LinuxVMSettings"];
+      /** State */
+      state: string;
+    };
     /**
      * LiveUpdateState
      * @enum {string}
@@ -6647,6 +6690,10 @@ export interface components {
       workerBaseRef?: string | null;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
+      /** Workerenvironment */
+      workerEnvironment?: ("host" | "linux") | null;
+      /** Workerenvironmentrevision */
+      workerEnvironmentRevision?: number | null;
     };
     /** PeerRadioActive */
     PeerRadioActive: {
@@ -7159,6 +7206,10 @@ export interface components {
       workerBaseRef?: string | null;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
+      /** Workerenvironment */
+      workerEnvironment?: ("host" | "linux") | null;
+      /** Workerenvironmentrevision */
+      workerEnvironmentRevision?: number | null;
     };
     /** ProjectFolder */
     ProjectFolder: {
@@ -7204,6 +7255,10 @@ export interface components {
       workerBaseRef?: string | null;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
+      /** Workerenvironment */
+      workerEnvironment?: ("host" | "linux") | null;
+      /** Workerenvironmentrevision */
+      workerEnvironmentRevision?: number | null;
     };
     /** ProjectPeerTeamDto */
     ProjectPeerTeamDto: {
@@ -7243,6 +7298,7 @@ export interface components {
             | "remove"
             | "set_account"
             | "set_worker_base"
+            | "set_worker_environment"
             | "set_accounts"
             | "rename"
             | "add_folder"
@@ -7252,6 +7308,8 @@ export interface components {
         | null;
       /** Base Ref */
       base_ref?: string | null;
+      /** Environment */
+      environment?: ("host" | "linux") | null;
       /** Expected Revision */
       expected_revision?: number | null;
       /** Folder Id */
@@ -9311,6 +9369,8 @@ export interface components {
       effort?: string | null;
       /** Empty */
       empty?: boolean | null;
+      /** Environment */
+      environment?: ("host" | "linux") | null;
       /** Epoch */
       epoch?: number | null;
       /** Error */
@@ -9781,6 +9841,10 @@ export interface components {
       workerBaseRef?: string | null;
       /** Workerbaserevision */
       workerBaseRevision?: number | null;
+      /** Workerenvironment */
+      workerEnvironment?: ("host" | "linux") | null;
+      /** Workerenvironmentrevision */
+      workerEnvironmentRevision?: number | null;
     };
     /** SnapshotRoomDto */
     SnapshotRoomDto: {
@@ -16223,6 +16287,140 @@ export interface operations {
           [name: string]: unknown;
         };
         content?: never;
+      };
+    };
+  };
+  linux_vm_settings_api_linux_vm_settings_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LinuxVMSettingsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  linux_vm_settings_write_api_linux_vm_settings_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["LinuxVMSettings"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["LinuxVMSettingsResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description The server workspace changed. Reload before sending. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
       };
     };
   };

@@ -937,3 +937,19 @@ visible to the caller. Ambiguous and unknown IDs return candidate full IDs.
 
 The shared Studio skill documents the workspace bridge for existing native threads.
 Tests: `tests/agent-management-contract.py`.
+
+### Linux VM workers
+
+Use `environment: "linux"` for an implementer in `orchestration_spawn`.
+The project settings provide a default. The lead and reviewers stay on the host.
+Linux workers wait for their base before the first provider turn. Their copy
+includes the source Git state and uncommitted files. Commit results on a named
+branch. The worker result contains its guest path and a host fetch command.
+Fetch places the result in `FETCH_HEAD`; review it before merging.
+
+Archive closes an idle guest provider and retains its snapshot. Restore returns
+the worker paused. Studio shutdown keeps native guest processes alive.
+A VM disconnect leaves native outcomes unknown. Do not repeat an uncertain
+operation with a new request ID. `maintenance_report` includes VM disk and
+memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
+See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
