@@ -41,6 +41,11 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import {
+  deleteOtherEntityProjectionDatabases,
+  entityProjectionDatabaseName,
+} from "./entityCacheStorage";
 
 export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
@@ -142,6 +147,19 @@ async function open() {
     multiInstance: true,
   });
   await db.addCollections({
+    drafts: { schema, conflictHandler: draftConflictHandler },
+    outbox: { schema },
+  });
+  const currentProjectionDatabase = entityProjectionDatabaseName(
+    workspaceId,
+    API_SCHEMA_HASH,
+  );
+  const projectionDb = await createRxDatabase({
+    name: currentProjectionDatabase,
+    storage: getRxStorageDexie(),
+    multiInstance: true,
+  });
+  const { projections } = await projectionDb.addCollections({
     projections: {
       schema,
       conflictHandler: {
@@ -164,9 +182,9 @@ async function open() {
             : realMasterState,
       },
     },
-    drafts: { schema, conflictHandler: draftConflictHandler },
-    outbox: { schema },
   });
+  Object.defineProperty(db, "projections", { value: projections });
+  deleteOtherEntityProjectionDatabases(workspaceId, currentProjectionDatabase);
   db.projections.$.subscribe((event) => {
     const doc = event.documentData;
     if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)

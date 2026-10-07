@@ -126,10 +126,15 @@ describe("entity pull reset wiring", () => {
         $: { subscribe: vi.fn(() => subscription) },
       })),
     };
-    mocks.createRxDatabase.mockResolvedValue({
-      addCollections: vi.fn(async () => {}),
-      projections,
-    });
+    const stableDatabase = {
+      addCollections: vi.fn(async () => ({})),
+    };
+    const projectionDatabase = {
+      addCollections: vi.fn(async () => ({ projections })),
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce(stableDatabase)
+      .mockResolvedValueOnce(projectionDatabase);
     const pulls: number[] = [];
     mocks.syncGet.mockImplementation(
       async (path: string, options?: { query?: { after?: number } }) => {

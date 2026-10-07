@@ -63,48 +63,12 @@ function emptyEntityValues(): EntityValues {
   };
 }
 
-type ParsedEntityPayload =
-  | { payload: SyncEntityPayload }
-  | { invalidCollection: string };
-
 /**
- * The server validates canonical payloads, and normal requests are schema
- * gated. Cached rows can outlive a schema change, so tolerate malformed JSON
- * and unknown collection names while retaining typed handling for known rows.
+ * The schema-versioned cache contains payloads from this renderer contract.
+ * JSON parsing remains guarded because storage corruption can still damage a row.
  */
-function parseEntityPayload(payload: string): ParsedEntityPayload {
-  let parsed: SyncEntityPayload;
-  try {
-    parsed = JSON.parse(payload) as SyncEntityPayload;
-  } catch {
-    return { invalidCollection: "unparseable" };
-  }
-  if (parsed === null || typeof parsed !== "object")
-    return { invalidCollection: "missing" };
-  const collection = parsed.collection;
-  if (typeof collection !== "string")
-    return { invalidCollection: "non-string" };
-  if (typeof parsed.id !== "string" || parsed.value === null)
-    return { invalidCollection: collection };
-  switch (collection) {
-    case "agent":
-    case "room":
-    case "task":
-    case "monitor":
-    case "complaint":
-    case "request":
-    case "rule":
-    case "project":
-    case "peerTeam":
-    case "chat":
-    case "edge":
-    case "event":
-    case "work":
-    case "workspace":
-      return { payload: parsed };
-    default:
-      return { invalidCollection: collection };
-  }
+function parseEntityPayload(payload: string): SyncEntityPayload {
+  return JSON.parse(payload) as SyncEntityPayload;
 }
 
 function entityValues<C extends EntityCollection>(
@@ -238,19 +202,20 @@ export function applyEntityRows(
       addedTombstone = true;
       continue;
     }
-    const parsed = parseEntityPayload(row.payload);
-    if ("invalidCollection" in parsed) {
+    let payload: SyncEntityPayload;
+    try {
+      payload = parseEntityPayload(row.payload);
+    } catch {
       if (state.invalidReportedSeq.get(row.id) !== row.seq) {
         state.invalidReportedSeq.set(row.id, row.seq);
         console.error(
-          `Skipping sync entity row for collection "${parsed.invalidCollection}" and document "${row.id}"`,
-          { collection: parsed.invalidCollection, id: row.id },
+          `Skipping sync entity row with invalid JSON for document "${row.id}"`,
+          { id: row.id, seq: row.seq },
         );
       }
       continue;
     }
     state.invalidReportedSeq.delete(row.id);
-    const payload = parsed.payload;
     if (
       oldCollection &&
       oldEntityId !== undefined &&

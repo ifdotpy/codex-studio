@@ -508,7 +508,7 @@ it("keeps chats after an unrelated entity update", () => {
   assert.deepEqual(updated.chats, [{ id: "c", title: "Shared chat" }]);
 });
 
-it("skips invalid entity rows once and still applies the rest of the batch", () => {
+it("skips corrupt JSON rows once and still applies the rest of the batch", () => {
   const state = emptyEntityProjection();
   const initial = applyEntityRows(
     state,
@@ -532,42 +532,18 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
           payload: "",
           seq: 5,
         },
-        {
-          id: "entity:broken:collection",
-          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
-          seq: 6,
-        },
-        {
-          id: "entity:broken:type",
-          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
-          seq: 7,
-        },
-        {
-          id: "entity:agent:missing-id",
-          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
-          seq: 8,
-        },
-        {
-          id: "entity:agent:null-value",
-          payload: JSON.stringify({
-            collection: "agent",
-            id: "x",
-            value: null,
-          }),
-          seq: 9,
-        },
-        entityRow("project", "p", { id: "p", name: "P2" }, 10),
+        entityRow("project", "p", { id: "p", name: "P2" }, 6),
       ],
       true,
     );
     assert.equal(changed.threads[0].name, "A2");
     assert.equal(changed.runtime.projects[0].name, "P2");
     assert.equal(changed.chats, initial.chats);
-    assert.equal(reports.length, 6);
+    assert.equal(reports.length, 2);
     assert.ok(
       reports.every(
         ([message, fields]) =>
-          message.includes(fields.collection) && message.includes(fields.id),
+          message.includes("invalid JSON") && message.includes(fields.id),
       ),
     );
     assert.ok(reports.every(([, fields]) => !Object.hasOwn(fields, "payload")));
@@ -582,38 +558,14 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
           payload: "",
           seq: 5,
         },
-        {
-          id: "entity:broken:collection",
-          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
-          seq: 6,
-        },
-        {
-          id: "entity:broken:type",
-          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
-          seq: 7,
-        },
-        {
-          id: "entity:agent:missing-id",
-          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
-          seq: 8,
-        },
-        {
-          id: "entity:agent:null-value",
-          payload: JSON.stringify({
-            collection: "agent",
-            id: "x",
-            value: null,
-          }),
-          seq: 9,
-        },
-        entityRow("project", "p", { id: "p", name: "P2" }, 10),
+        entityRow("project", "p", { id: "p", name: "P2" }, 6),
       ],
       true,
     );
     assert.equal(repeated, changed);
     assert.equal(
       reports.length,
-      6,
+      2,
       "the same invalid row versions report once",
     );
   } finally {
