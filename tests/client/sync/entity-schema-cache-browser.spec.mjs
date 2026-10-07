@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
+import { mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -22,22 +24,33 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   const oldHash = readApiSchemaHash();
   const nextHash = "f".repeat(64);
   assert.notEqual(nextHash, oldHash);
-  const assetDirectory = join(root, "web/dist/assets");
+  const distDirectory = process.env.P6_DIST_DIR || join(root, "web/dist");
+  const assetDirectory = join(distDirectory, "assets");
   const assetNames = await readdir(assetDirectory);
-  const changedAssets = [];
-  for (const name of assetNames.filter((entry) => entry.endsWith(".js"))) {
-    const path = join(assetDirectory, name);
-    const original = await readFile(path, "utf8");
-    if (!original.includes(oldHash)) continue;
-    changedAssets.push({ path, original });
-  }
+  const hashAssets = async () =>
+    Object.fromEntries(
+      await Promise.all(
+        (await readdir(assetDirectory)).sort().map(async (name) => [
+          name,
+          createHash("sha256")
+            .update(await readFile(join(assetDirectory, name)))
+            .digest("hex"),
+        ]),
+      ),
+    );
+  const distAssetsBefore = await hashAssets();
+  const distAssetsDigest = () =>
+    createHash("sha256").update(JSON.stringify(distAssetsBefore)).digest("hex");
   assert.ok(
-    changedAssets.length > 0,
-    "built app embeds the generated schema hash",
+    assetNames.some((name) => name.endsWith(".js")),
+    "built app assets are present",
   );
   const state = await mkdtemp(join(tmpdir(), "studio-real-schema-cache-"));
   const context = await browser.newContext({ serviceWorkers: "block" });
   const page = await context.newPage();
+  const variantPages = new WeakSet();
+  const oldBuildPages = new WeakSet([page]);
+  let appOrigin = "";
   const pageSession = await context.newCDPSession(page);
   await pageSession.send("Network.enable");
   await pageSession.send("Network.setCacheDisabled", { cacheDisabled: true });
@@ -55,6 +68,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   let pullFailureCount = 0;
   const rendererHashes = [];
   const apiRequests = [];
+  const statePulls = [];
   const confirmedResources = new Set();
   const transcriptRows = [];
   const errors = [];
@@ -67,6 +81,25 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       API_SCHEMA_HASH_HEADER.toLowerCase()
     ];
     if (rendererHash) rendererHashes.push(rendererHash);
+    if (
+      oldBuildPages.has(route.request().frame().page()) &&
+      rendererHash === oldHash &&
+      activeHash !== oldHash
+    )
+      return route.fulfill({
+        status: 426,
+        headers: { [API_SCHEMA_HASH_HEADER]: activeHash },
+        json: { error: "Renderer schema mismatch" },
+      });
+    if (
+      requestUrl.pathname === "/api/sync/pull" &&
+      requestUrl.searchParams.get("scope") === "state:entities:v1"
+    ) {
+      statePulls.push({
+        page: route.request().frame().page(),
+        after: requestUrl.searchParams.get("after"),
+      });
+    }
     if (requestUrl.pathname === "/api/sync/stream") {
       const streamHash =
         rendererHash || requestUrl.searchParams.get("apiSchema") || "";
@@ -135,6 +168,45 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       });
     }
   });
+  await context.route(
+    (url) =>
+      !!appOrigin &&
+      url.origin === appOrigin &&
+      !url.pathname.startsWith("/api/"),
+    async (route) => {
+      const url = new URL(route.request().url());
+      const requestedPath =
+        url.pathname === "/"
+          ? join(distDirectory, "index.html")
+          : join(distDirectory, decodeURIComponent(url.pathname.slice(1)));
+      const filePath = existsSync(requestedPath)
+        ? requestedPath
+        : join(distDirectory, "index.html");
+      const extension = extname(filePath);
+      const contentType =
+        extension === ".js"
+          ? "text/javascript"
+          : extension === ".css"
+            ? "text/css"
+            : extension === ".html"
+              ? "text/html"
+              : extension === ".svg"
+                ? "image/svg+xml"
+                : "application/octet-stream";
+      let body = await readFile(filePath);
+      if (
+        extension === ".js" &&
+        variantPages.has(route.request().frame().page())
+      )
+        body = Buffer.from(body.toString("utf8").replaceAll(oldHash, nextHash));
+      return route.fulfill({
+        status: 200,
+        contentType,
+        headers: { "cache-control": "no-store" },
+        body,
+      });
+    },
+  );
   let port;
   try {
     port = await new Promise((resolve, reject) => {
@@ -144,6 +216,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
     const origin = `http://127.0.0.1:${port}`;
+    appOrigin = origin;
     await page.goto(origin);
     await expect(page.locator(".startup")).toBeVisible({ timeout: 10_000 });
     await expect(
@@ -194,12 +267,6 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       statePullCount(),
       initialStatePullCount,
       "same-hash reload keeps the checkpoint and does not pull entities",
-    );
-
-    await Promise.all(
-      changedAssets.map(({ path, original }) =>
-        writeFile(path, original.replaceAll(oldHash, nextHash)),
-      ),
     );
 
     const { workspaceId } = await fetch(`${origin}/api/sync/identity`).then(
@@ -263,6 +330,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
     ).toBeVisible({ timeout: 20_000 });
     const oldPage = page;
     const newPage = await context.newPage();
+    variantPages.add(newPage);
     newPage.on("pageerror", (error) => errors.push(error.message));
     newPage.on("console", (message) => {
       if (
@@ -290,6 +358,27 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
     await expect(newPage.locator("#message")).toHaveValue(
       "Draft kept across the schema update",
     );
+    const validProjectionDatabaseNames = await newPage.evaluate(
+      async ({ workspaceId, schemaHash }) =>
+        (await indexedDB.databases())
+          .map(({ name }) => name)
+          .filter(
+            (name) =>
+              name?.includes(
+                `entity-projection-${workspaceId}-${schemaHash}`,
+              ) && name.endsWith("--0--projections"),
+          ),
+      { workspaceId, schemaHash: nextHash },
+    );
+    assert.ok(
+      validProjectionDatabaseNames.length > 0,
+      "the valid new-build tab has a populated projection cache",
+    );
+    assert.deepEqual(
+      errors,
+      [],
+      "the first full pull renders without console errors",
+    );
     assert.equal(
       pullFailureCount,
       1,
@@ -315,6 +404,26 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       ),
       "the legacy stable projections collection is preserved",
     );
+
+    // Reopen the old build after the server hash changes. It is now rejected;
+    // its startup cleanup must not remove the live new-build cache.
+    await oldPage.reload();
+    await expect(
+      oldPage.locator('[data-modal-content="true"]').filter({
+        hasText: "Studio has been updated. Update this tab",
+      }),
+    ).toBeVisible({ timeout: 20_000 });
+    await expect
+      .poll(() =>
+        newPage.evaluate(async (expected) => {
+          const names = new Set(
+            (await indexedDB.databases()).map(({ name }) => name),
+          );
+          return expected.filter((name) => names.has(name));
+        }, validProjectionDatabaseNames),
+      )
+      .toEqual(validProjectionDatabaseNames);
+
     const pulls = await newPage.evaluate(() =>
       performance
         .getEntriesByType("resource")
@@ -327,21 +436,24 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       sameHashCachedReloadMs: Math.round(cachedReloadMs),
       rendererHashes: [...new Set(rendererHashes)],
       pulls,
+      distAssetsSha256: distAssetsDigest(),
     });
     assert.ok(pulls.length > 0);
-    assert.equal(pulls[0], "0", "the new schema cache starts its pull at zero");
-    await expect(
-      oldPage.locator('[data-modal-content="true"]').filter({
-        hasText: "Studio has been updated. Update this tab",
-      }),
-    ).toBeVisible();
-    assert.deepEqual(errors, []);
+    assert.equal(
+      statePulls.find((pull) => pull.page === newPage)?.after,
+      "0",
+      "the new schema cache's first pull starts at zero",
+    );
   } finally {
     fixture.kill();
     await context.close();
-    await Promise.all(
-      changedAssets.map(({ path, original }) => writeFile(path, original)),
+    const distAssetsAfter = await hashAssets();
+    assert.deepEqual(
+      distAssetsAfter,
+      distAssetsBefore,
+      "web/dist/assets remains byte-identical; the spec only serves rewritten response bodies",
     );
+    console.log("web/dist/assets unchanged sha256:", distAssetsDigest());
   }
 });
 
