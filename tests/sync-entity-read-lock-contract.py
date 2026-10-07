@@ -200,6 +200,7 @@ class EntityReadLockContract(unittest.TestCase):
             needed = original(db)
             self.assertFalse(needed)
             with self.connect() as writer:
+                writer.execute('BEGIN IMMEDIATE')
                 put(writer, 'agent', 'owner', {}, deleted=True)
             return needed
         with patch.object(self.store, 'entity_maintenance_needed', side_effect=check):

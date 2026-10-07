@@ -7,10 +7,12 @@ import importlib.util
 import json
 import logging
 from pathlib import Path
+import sqlite3
 import tempfile
+import threading
 import unittest
 import uuid
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 root = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("runtime_fixture", root / "tests/runtime-contract.py")
@@ -713,6 +715,80 @@ class EntityFieldProducers(unittest.TestCase):
         self.runtime._retry_dirty_workspace_refresh()
         self.assertFalse(self.runtime.__dict__.get("_workspace_entity_refresh_dirty"))
         self.assertTrue(self.entity("workspace", "current")["connected"])
+
+    def test_workspace_refresh_holds_write_lock_across_sequence_allocation(self):
+        import codex_sync_entities
+
+        with sqlite3.connect(self.runtime.db_path) as db:
+            self.assertEqual(db.execute("PRAGMA journal_mode").fetchone()[0], "wal")
+        limits = {
+            "accountKey": "default", "at": 1.0, "checkedAt": 3.0,
+            "data": {"rateLimits": {"primary": {"usedPercent": 42}}},
+        }
+        self.runtime.rate_limits = limits
+        self.runtime.rate_limits_by_account = {"default": limits}
+        sequence_read = threading.Event()
+        release_refresh = threading.Event()
+        allocated_in_transaction = []
+        writer_result = []
+        refresh_result = []
+        original_next_sequence = codex_sync_entities.next_sequence
+
+        def pause_after_sequence_read(db):
+            sequence = original_next_sequence(db)
+            if threading.current_thread().name == "workspace-sequence-refresh":
+                allocated_in_transaction.append(db.in_transaction)
+                sequence_read.set()
+                if not release_refresh.wait(2):
+                    raise TimeoutError("test did not release workspace refresh")
+            return sequence
+
+        def refresh():
+            refresh_result.append(self.runtime.refresh_workspace_volatile())
+
+        thread = threading.Thread(target=refresh, name="workspace-sequence-refresh")
+        with patch("codex_sync_entities.next_sequence", side_effect=pause_after_sequence_read):
+            thread.start()
+            try:
+                self.assertTrue(sequence_read.wait(2), "refresh did not reach next_sequence")
+                writer = sqlite3.connect(self.runtime.db_path, timeout=0, isolation_level=None)
+                try:
+                    writer.execute("PRAGMA busy_timeout=0")
+                    writer.execute("BEGIN IMMEDIATE")
+                    codex_sync_entities.put(
+                        writer, "agent", "workspace-sequence-race-probe", {}, deleted=True
+                    )
+                    writer.commit()
+                    writer_result.append("committed")
+                except sqlite3.OperationalError as error:
+                    if "busy" not in str(error).lower() and "locked" not in str(error).lower():
+                        raise
+                    writer_result.append("busy")
+                    writer.rollback()
+                finally:
+                    writer.close()
+            finally:
+                release_refresh.set()
+                thread.join(2)
+
+        self.assertFalse(thread.is_alive(), "workspace refresh did not complete")
+        with sqlite3.connect(self.runtime.db_path) as db:
+            duplicate = db.execute(
+                "SELECT seq FROM sync_entities GROUP BY seq HAVING COUNT(*)>1 LIMIT 1"
+            ).fetchone()
+        self.assertEqual(
+            (refresh_result, allocated_in_transaction, writer_result, duplicate),
+            ([True], [True], ["busy"], None),
+            "volatile refresh must hold BEGIN IMMEDIATE from sequence sampling through insert",
+        )
+
+    def test_entity_sequence_allocation_requires_an_open_transaction(self):
+        import codex_sync_entities
+
+        with sqlite3.connect(self.runtime.db_path) as db:
+            self.assertFalse(db.in_transaction)
+            with self.assertRaisesRegex(RuntimeError, "write transaction"):
+                codex_sync_entities.next_sequence(db)
 
     def test_workspace_refresh_does_not_break_primary_write_on_source_error(self):
         from unittest.mock import patch

@@ -107,6 +107,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_context_commit_savepoint_release_and_rollback(self) -> None:
         with self.database:
+            self.database.execute("BEGIN IMMEDIATE")
             put(self.database, "project", "project-a", {"id": "project-a", "name": "A"})
         await self.assert_entity_event([1])
 
@@ -117,11 +118,12 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
 
         with self.assertRaisesRegex(RuntimeError, "rollback fixture"):
             with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "project-c", {"id": "project-c", "name": "C"})
                 raise RuntimeError("rollback fixture")
         self.assertIsNone(await self.subscription.next_event(timeout=0.08))
 
-    async def test_transcript_rows_do_not_publish_state_and_autocommit_does(self) -> None:
+    async def test_transcript_rows_do_not_publish_state_and_entity_put_does(self) -> None:
         with self.database:
             self.database.execute(
                 "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
@@ -135,7 +137,9 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             isolation_level=None,
         )
         try:
+            autocommit.execute("BEGIN IMMEDIATE")
             put(autocommit, "project", "project-a", {"id": "project-a", "name": "A"})
+            autocommit.commit()
             await self.assert_entity_event([2])
         finally:
             autocommit.close()
@@ -173,6 +177,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
     async def test_restarted_hub_reuses_entity_sequence_in_a_new_epoch(self) -> None:
         state = ResourceRef(StateResource(kind="state"))
         with self.database:
+            self.database.execute("BEGIN IMMEDIATE")
             put(self.database, "project", "before-restart", {"id": "before-restart"})
         await self.assert_entity_event([1])
         previous_epoch = self.hub.epoch
@@ -185,6 +190,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotEqual(subscription.initial.epoch, previous_epoch)
             self.assertEqual(subscription.initial.resourceVersions[0].revision, 1)
             with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "after-restart", {"id": "after-restart"})
             event = await subscription.next_event(timeout=1)
             self.assertIsNotNone(event)
@@ -218,6 +224,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             side_effect=RuntimeError("scheduler unavailable"),
         ):
             with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "committed", {"id": "committed"})
 
         row = self.database.execute(
@@ -243,6 +250,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(scheduler, "_publish", side_effect=fail_once):
             with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
                 put(self.database, "project", "first", {"id": "first"})
             self.assertTrue(await asyncio.to_thread(failed.wait, 5))
             await self.assert_entity_event([1])
@@ -408,6 +416,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             next_commit_at = started_at + index * 0.05
             await asyncio.sleep(max(0, next_commit_at - time.monotonic()))
             with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
                 put(
                     self.database,
                     "agent",
@@ -482,6 +491,7 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.subscription.next_event(timeout=0.08))
 
         with self.database:
+            self.database.execute("BEGIN IMMEDIATE")
             put(self.database, "project", "local-project", {"id": "local-project", "name": "Local"})
         await self.assert_entity_event([1, 2])
 

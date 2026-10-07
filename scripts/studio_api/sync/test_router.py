@@ -370,6 +370,7 @@ class SyncRouterTests(unittest.TestCase):
             "releases": [{"agent": "agent-a", "token": "private-release"}],
         }
         with connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             put(db, "agent", agent["id"], agent)
             put(db, "rule", rule["id"], rule)
             put(db, "work", work["id"], work)
@@ -678,6 +679,7 @@ class SyncRouterTests(unittest.TestCase):
             transcript=context.runtime.transcript,
         )
         with connect() as db:
+            db.execute("BEGIN IMMEDIATE")
             put(db, "workspace", "current", {"id": "current"})
 
         response = store.pull(
