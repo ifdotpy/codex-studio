@@ -76,6 +76,18 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]
         configuration.memoryBalloonDevices = [VZVirtioTraditionalMemoryBalloonDeviceConfiguration()]
         let network = VZVirtioNetworkDeviceConfiguration()
+        // Cloud-init matches its network configuration to the first boot's MAC.
+        let macURL = directory.appendingPathComponent("network-mac")
+        if FileManager.default.fileExists(atPath: macURL.path) {
+            let saved = try String(contentsOf: macURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard let mac = VZMACAddress(string: saved), mac.isUnicastAddress, mac.isLocallyAdministeredAddress else {
+                try fail("The saved VM network MAC address is invalid.")
+            }
+            network.macAddress = mac
+        } else {
+            try network.macAddress.string.write(to: macURL, atomically: true, encoding: .utf8)
+            chmod(macURL.path, 0o600)
+        }
         network.attachment = VZNATNetworkDeviceAttachment()
         configuration.networkDevices = [network]
         configuration.socketDevices = [VZVirtioSocketDeviceConfiguration()]
