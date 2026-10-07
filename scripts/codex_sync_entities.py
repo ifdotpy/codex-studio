@@ -253,6 +253,20 @@ def validate_stored_entity_payload(payload: str, collection: str, key: str, dele
         raise ValueError("invalid entity tombstone")
 
 
+def response_entity_payload(payload: str) -> tuple[str, bool]:
+    """Retire historical chat aliases in the agent collection without a write."""
+    envelope = SyncEntityPayload.model_validate_json(payload)
+    if (envelope.collection.value == "agent" and isinstance(envelope.value, dict)
+            and envelope.value.get("kind") == "chat"):
+        # Canvas groups have their own chat entity. An old agent alias must not
+        # overwrite that entity or appear as an agent. Keep its ID and sequence
+        # and return a tombstone, leaving both stored rows untouched.
+        ChatEntityDto.model_validate(envelope.value)
+        return payload, True
+    validate_entity_payload(payload)
+    return payload, False
+
+
 def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:
     payload = json.dumps({"collection": collection, "id": key, "value": value},
                          sort_keys=True, separators=(",", ":"), ensure_ascii=False)

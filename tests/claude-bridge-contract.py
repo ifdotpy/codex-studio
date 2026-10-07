@@ -202,6 +202,9 @@ class Bridge(unittest.TestCase):
             source = helper.read_text().replace("@anthropic-ai/claude-agent-sdk", "./fake.mjs")
             source = source.replace('const PREPARATION_TIMEOUT_MS = 20_000;',
                                     'const PREPARATION_TIMEOUT_MS = ' + str(self.preparation_timeout_ms) + ';')
+            source = source.replace('const INITIALIZATION_TIMEOUT_MS = 60_000;',
+                                    'const INITIALIZATION_TIMEOUT_MS = ' +
+                                    str(getattr(self, 'initialization_timeout_ms', self.preparation_timeout_ms)) + ';')
             (root / helper.name).write_text(source)
         (root / 'fake.mjs').write_text(SDK)
         dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
@@ -702,7 +705,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 15)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 20)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'replacement'}]}

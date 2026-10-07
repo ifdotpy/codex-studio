@@ -2,7 +2,7 @@
 .message-date {
   display: block;
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--studio-text-meta);
   line-height: 1.5;
   font-variant-numeric: tabular-nums;
 }

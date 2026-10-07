@@ -170,8 +170,7 @@ class SyncEntityContractTests(unittest.TestCase):
             "imageWorkspaceError",
             "imageWorkspaceRepo",
             "imageWorkspaceBaseRepo",
-            "imageWorkspaceRelative",
-            "imageWorkspaceStartCommit",
+            "imageWorkspaceCreatedAt",
         ):
             self.assertIn(field, AgentEntityDto.model_fields)
         self.assertEqual(EntityCollection.PEER_TEAM.value, "peerTeam")
@@ -204,7 +203,7 @@ class SyncEntityContractTests(unittest.TestCase):
                     with self.subTest(model=model.__name__, field=field, value=value):
                         with self.assertRaises(ValidationError) as rejected:
                             model.model_validate({"id": "image-worker", "kind": "agent", field: value})
-                        self.assertEqual(rejected.exception.errors()[0]["type"], "string_type")
+                        self.assertEqual(rejected.exception.errors()[0]["type"], "float_type")
             with self.assertRaises(ValidationError) as rejected:
                 model.model_validate({"id": "image-worker", "kind": "agent", "imageWorkspaceUnknown": "."})
             self.assertEqual(rejected.exception.errors()[0]["type"], "extra_forbidden")

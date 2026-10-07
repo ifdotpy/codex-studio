@@ -239,7 +239,10 @@ export const client = createClient<paths, "application/json">({
     const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
     if (
       response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
-      (serverHash && serverHash !== API_SCHEMA_HASH)
+      (serverHash && serverHash !== API_SCHEMA_HASH) ||
+      (response.ok &&
+        new URL(request.url).pathname === "/api/sync/identity" &&
+        !serverHash)
     )
       markApiSchemaMismatch();
     else if (serverHash === API_SCHEMA_HASH) {

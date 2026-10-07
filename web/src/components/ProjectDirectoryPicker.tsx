@@ -78,7 +78,7 @@ export default function ProjectDirectoryPicker({
           disabled={saving}
         />
         <Button type="submit" disabled={saving || !typedPath.trim()}>
-          Go
+          Open path
         </Button>
       </form>
       {window.codexDesktop && (
@@ -154,7 +154,7 @@ export default function ProjectDirectoryPicker({
       )}
       <div className="directory-footer">
         {!loading && !error && pathChanged && (
-          <p role="status">Select Go to open the entered folder.</p>
+          <p role="status">Select Open path to open the entered folder.</p>
         )}
         <Button
           variant="filled"
@@ -173,7 +173,7 @@ export default function ProjectDirectoryPicker({
             }
           }}
         >
-          Use this folder
+          Add project
         </Button>
       </div>
     </div>

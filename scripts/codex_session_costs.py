@@ -657,59 +657,77 @@ class SessionCostReader:
                         "estimated": True, "pricingState": "loading", "cacheAgeSeconds": 0,
                         "method": "Loading public API prices."}
             catalog_signature = self._catalog_signature(catalog)
-            db.execute("BEGIN")
-            usage_state = self._usage_state(db, root)
-            generation = self._global_usage_generation(db)
-            agents = self._root_agents(db, agent_id, root)
-            claude_agents = self._claude_agents(agents)
-            provider_by_account = {}
-            for _, member in agents:
-                account_key = member.get("accountKey", "default")
-                provider = member.get("provider") or self._account(account_key).get("provider")
-                if provider:
-                    provider_by_account[account_key] = provider
-                for history in (member.get("accountHistory") or []):
-                    if isinstance(history, dict) and isinstance(history.get("accountKey"), str) and history.get("provider"):
-                        provider_by_account[history["accountKey"]] = history["provider"]
-            claude_history_present = any(
-                member.get("provider") == "claude" or any(
-                    isinstance(history, dict) and history.get("provider") == "claude"
-                    for history in (member.get("accountHistory") or []))
-                for _, member in agents)
-            cache_source = {"usage": usage_state, "pricingSignature": catalog_signature,
-                            "agentsSignature": self._agent_signature(agents),
-                            "claudeSignature": self._claude_signature(claude_agents)}
-            with self.lock:
-                cached = self.cache.get(root)
-            if not cached:
-                cached = self._load_persisted(root, usage_state, catalog_signature,
-                                              cache_source["agentsSignature"], cache_source["claudeSignature"])
-            if cached and "claudeUsageSignature" in cached[2]:
-                cache_source["claudeUsageSignature"] = cached[2]["claudeUsageSignature"]
-            if cached and cached[2] == cache_source:
-                return {**cached[1], "_cacheSource": cache_source}
+            # Account and filesystem preparation can wait for unrelated work.
+            # Keep those waits outside the history snapshot, then check its
+            # exact usage and agent identities before materializing price rows.
+            for preparation in range(2):
+                db.execute("BEGIN")
+                usage_state = self._usage_state(db, root)
+                agents = self._root_agents(db, agent_id, root)
+                agents_signature = self._agent_signature(agents)
+                db.commit()
+                if any(key == agent_id and (member.get("rootId") or key) != root
+                       for key, member in agents):
+                    raise RuntimeError("The chat team changed during cost preparation; retry later")
+                claude_agents = self._claude_agents(agents)
+                provider_by_account = {}
+                for _, member in agents:
+                    account_key = member.get("accountKey", "default")
+                    provider = member.get("provider") or self._account(account_key).get("provider")
+                    if provider:
+                        provider_by_account[account_key] = provider
+                    for history in (member.get("accountHistory") or []):
+                        if isinstance(history, dict) and isinstance(history.get("accountKey"), str) and history.get("provider"):
+                            provider_by_account[history["accountKey"]] = history["provider"]
+                claude_history_present = any(
+                    member.get("provider") == "claude" or any(
+                        isinstance(history, dict) and history.get("provider") == "claude"
+                        for history in (member.get("accountHistory") or []))
+                    for _, member in agents)
+                cache_source = {"usage": usage_state, "pricingSignature": catalog_signature,
+                                "agentsSignature": agents_signature,
+                                "claudeSignature": self._claude_signature(claude_agents)}
+                with self.lock:
+                    cached = self.cache.get(root)
+                if not cached:
+                    cached = self._load_persisted(root, usage_state, catalog_signature,
+                                                  agents_signature, cache_source["claudeSignature"])
+                if cached and "claudeUsageSignature" in cached[2]:
+                    cache_source["claudeUsageSignature"] = cached[2]["claudeUsageSignature"]
+                cached_matches = bool(cached and cached[2] == cache_source)
+                claude_messages = {}
+                if not cached_matches:
+                    claude_usage_digest = hashlib.sha256()
+                    for _, (current_key, current_profile, sessions) in claude_agents.items():
+                        for account_key, thread_id in sessions:
+                            config = self._claude_profile(account_key)
+                            if not config:
+                                continue
+                            for path in self._thread_ids(config, account_key, thread_id):
+                                for message in self._log_rows(path):
+                                    key = (account_key, thread_id, message["id"])
+                                    claude_messages.setdefault(key, message)
+                                    claude_usage_digest.update(json.dumps([key, message], sort_keys=True,
+                                        separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+                                    claude_usage_digest.update(b"\n")
+                    cache_source["claudeUsageSignature"] = claude_usage_digest.hexdigest()
+                    # Log metadata can change without changing billable usage.
+                    cached_matches = bool(cached and "claudeUsageSignature" in cached[2]
+                        and {**cached[2], "claudeSignature": cache_source["claudeSignature"]} == cache_source)
+                db.execute("BEGIN")
+                if (self._usage_state(db, root) != usage_state
+                        or self._agent_signature(self._root_agents(db, agent_id, root)) != agents_signature):
+                    db.rollback()
+                    continue
+                generation = self._global_usage_generation(db)
+                if cached_matches:
+                    return {**cached[1], "_cacheSource": cache_source}
+                break
+            else:
+                raise RuntimeError("The session source changed during cost preparation; retry later")
             cost_total, model_totals, unpriced, provider_totals = 0.0, {}, set(), {}
             priced_count = 0
             tier_used = False
-            claude_messages = {}
-            claude_usage_digest = hashlib.sha256()
-            for _, (current_key, current_profile, sessions) in claude_agents.items():
-                for account_key, thread_id in sessions:
-                    config = self._claude_profile(account_key)
-                    if not config:
-                        continue
-                    for path in self._thread_ids(config, account_key, thread_id):
-                        for message in self._log_rows(path):
-                            key = (account_key, thread_id, message["id"])
-                            claude_messages.setdefault(key, message)
-                            claude_usage_digest.update(json.dumps([key, message], sort_keys=True,
-                                separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
-                            claude_usage_digest.update(b"\n")
-            cache_source["claudeUsageSignature"] = claude_usage_digest.hexdigest()
-            # Log metadata can change without changing usage or receipt exclusions.
-            if (cached and "claudeUsageSignature" in cached[2]
-                    and {**cached[2], "claudeSignature": cache_source["claudeSignature"]} == cache_source):
-                return {**cached[1], "_cacheSource": cache_source}
             db.execute("CREATE TEMP TABLE session_cost_claude_messages (account_key TEXT, thread_id TEXT, response_id TEXT, PRIMARY KEY(account_key,thread_id,response_id))")
             db.executemany("INSERT OR IGNORE INTO session_cost_claude_messages VALUES (?,?,?)",
                            claude_messages.keys())

@@ -560,21 +560,65 @@ class CoreResponseTests(unittest.TestCase):
                     API_SCHEMA_HASH_HEADER: "renderer-schema",
                 }
                 with patch("studio_api.middleware.API_SCHEMA_HASH_WAIT_TIMEOUT_SECONDS", 0.02):
-                    post, stream = await asyncio.gather(
+                    post, stream, identity = await asyncio.gather(
                         client.post("/api/messages", headers=headers, json={}),
                         client.get(
                             f"/api/sync/stream?{API_SCHEMA_HASH_PARAM}=renderer-schema",
                             headers={"Origin": "http://test"},
                         ),
+                        client.get("/api/sync/identity", headers=headers),
                     )
                 self.assertEqual(post.status_code, 503)
                 self.assertEqual(stream.status_code, 503)
+                self.assertEqual(identity.status_code, 503)
 
         try:
             asyncio.run(exercise())
         finally:
             release.set()
         self.assertEqual(future.result(timeout=2), "server-schema")
+
+    def test_cold_renderer_identity_waits_for_its_schema_hash(self) -> None:
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://test")
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def required_hash() -> str:
+            entered.set()
+            await release.wait()
+            return "server-schema"
+
+        context.get_api_schema_hash = required_hash
+        context.peek_api_schema_hash = lambda: None
+
+        async def endpoint(_scope: object, _receive: object, send: object) -> None:
+            await send({"type": "http.response.start", "status": 200, "headers": []})  # type: ignore[operator]
+            await send({"type": "http.response.body", "body": b"ok"})  # type: ignore[operator]
+
+        boundary = RequestBoundary(endpoint, context)
+
+        async def exercise() -> None:
+            async with httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=boundary), base_url="http://test",
+            ) as client:
+                pending = asyncio.create_task(client.get(
+                    "/api/sync/identity",
+                    headers={"Origin": "http://test", API_SCHEMA_HASH_HEADER: "renderer-schema"},
+                ))
+                try:
+                    await asyncio.wait_for(entered.wait(), timeout=1)
+                    self.assertFalse(pending.done())
+                    unmarked = await client.get("/api/sync/identity", headers={"Origin": "http://test"})
+                    self.assertEqual(unmarked.status_code, 200)
+                    self.assertNotIn(API_SCHEMA_HASH_HEADER, unmarked.headers)
+                finally:
+                    release.set()
+                response = await pending
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.headers[API_SCHEMA_HASH_HEADER], "server-schema")
+
+        asyncio.run(exercise())
 
     def test_schema_cache_corruption_and_cache_path_failures_are_misses(self) -> None:
         expected = "a" * 64
@@ -631,10 +675,12 @@ class CoreResponseTests(unittest.TestCase):
                 {"HOME": str(Path(cache_home) / "fake-home")},
                 clear=True,
             ):
-                self.assertEqual(
-                    _api_schema_cache_path(),
-                    Path(cache_home) / "fake-home" / ".cache" / API_SCHEMA_CACHE_DIRECTORY / API_SCHEMA_CACHE_FILE,
-                )
+                for system, folder in (("Darwin", "Library/Caches"), ("Linux", ".cache")):
+                    with self.subTest(system=system), patch("codex_python.platform.system", return_value=system):
+                        self.assertEqual(
+                            _api_schema_cache_path(),
+                            Path(cache_home) / "fake-home" / folder / API_SCHEMA_CACHE_DIRECTORY / API_SCHEMA_CACHE_FILE,
+                        )
             blocking_file = Path(cache_home) / "not-a-directory"
             blocking_file.write_text("x", encoding="utf-8")
             with patch(

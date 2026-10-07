@@ -172,7 +172,9 @@ class RequestBoundary:
                 stream_hash = QueryParams(query).get(API_SCHEMA_HASH_PARAM)
                 if renderer_hash is not None:
                     stream_hash = renderer_hash
-            needs_hash = (write and renderer_hash is not None) or stream_hash is not None
+            needs_hash = (renderer_hash is not None and (
+                write or path == "/api/sync/identity"
+            )) or stream_hash is not None
             try:
                 if needs_hash:
                     schema_hash = await asyncio.wait_for(

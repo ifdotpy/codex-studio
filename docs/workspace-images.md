@@ -1,119 +1,150 @@
-# Workspace images: implementation contract
+# Image workspaces
 
-Status: in progress (2026-10-04). Design and measurements:
-[agent workspace isolation](research/2026-10-03-agent-workspace-isolation.md), section
-"Implementation spec". This file fixes the module boundaries and the shared interface.
+Status: implementation contract. The workspace engine gives each agent a private copy of a
+folder. Git supports base index refresh and staged-index deltas.
 
 ## Scope
 
-- Replace the git worktree of a new implementer with an image workspace.
-- macOS: APFS clone of an ASIF base image, attached read-write with `--nobrowse`.
-- Linux: overlayfs. The lower is a frozen base version (read-only btrfs snapshot, or a plain
-  copy on other file systems). The upper is one folder per agent.
-- Windows: not supported. Use the existing git worktree path there.
-- Out of scope now: process sandbox, Seatbelt, separate users, EndpointSecurity, VMs.
-  Agents keep today's permissions (`turn_permissions`).
-- Existing agents with a ready git worktree keep it. The worktree code stays as the fallback
-  when `supported()` is false.
+- macOS uses an APFS clone of a base image and attaches it read-write with `--nobrowse`.
+- Linux uses overlayfs. The lower layer is a frozen base version. The upper layer is private to
+  one agent.
+- Windows is not supported. Callers use the existing workspace fallback there.
+- The engine does not add a process sandbox or change agent permissions.
 
-## Modules and owners
+## Copy behavior
 
-| File                                  | Content                                                                                                    |
-| ------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
-| `scripts/codex_workspace_images.py`   | Public API, store, locks, git steps (base git setup, snapshot, collect, protection refs). Platform neutral |
-| `scripts/codex_workspace_macos.py`    | macOS backend: ASIF base, clone, attach, eject, FSEvents delta, private size                               |
-| `scripts/codex_workspace_linux.py`    | Linux backend: namespace holder, overlay mount, base versions, rsync delta, size                           |
-| `scripts/codex_runtime.py` and others | Caller integration: spawn, read-only phase, switch notice, collect, archive, disk                          |
+The caller gives the folder root. It can be a Git repository or any other folder. The engine
+copies the full folder contents, including `.git`, ignored files, object stores, and caches.
+The only excluded paths are the workspace store when it is inside the root, and the root's
+`.worktrees` directory. Git repositories are the root and nested folders with a `.git` entry.
 
-The common module selects the backend by `sys.platform`. Backends implement the interface in
-`codex_workspace_images.py` (the engine owner writes it first and shares it).
+The base builder copies the folder, then runs one change-detection pass before it seals the
+base. Git repositories use `git diff --name-only -z <base HEAD> <current HEAD>` and
+`git status --porcelain=v1 -z --untracked-files=all`. The engine also keeps paths that were
+dirty when the base copy began. It stores each repository path, HEAD, dirty paths, and index
+fingerprint in base metadata. It also fingerprints Git metadata outside object storage and
+indexes. The index fingerprint uses its device, inode, size, modification time, and change time.
+Git replaces its index atomically, so this check does not read the index file. Source Git reads
+set `GIT_OPTIONAL_LOCKS=0`.
 
-The common module owns Git setup, snapshots, protection refs, and collection. A backend implements
-`current_event_id(repo_root)`, `open_base_staging(repo_root, repo_key, version)`,
-`copy_base_tree(repo_root, destination, *, excludes)`, `seal_base(staging)`,
-`remove_base_version(handle)`,
-`clone_workspace(base_image, agent_dir)`,
-`mount_workspace(layer, mount, *, base_image=None)`,
-`sync_delta(repo_root, target_repo, token, *, excludes)`,
-`unmount_workspace(mount, *, force=False)`, `remove_layer(agent_dir)`, `private_bytes(path)`, and
-`exec_prefix()`. Base creation opens writable staging, copies the tree, then applies common Git setup
-before sealing. Staging has `root`, `versionPath`, and `token`. The sealed result has `image`,
-`versionPath`, and `token`. `excludes` contains paths relative to the repository root, including
-`.worktrees` and the workspace store when it is inside the repository. Backend copies skip Git object
-stores and base-copy `.git` metadata. Delta sync can copy updated Git config and index files. Common
-builds a private standalone `.git` directory for each repository.
-This also converts linked worktree and submodule `.git` files, so agent HEAD, index, and refs never
-point into the user's Git metadata. Common refreshes each private Git config and reapplies alternates,
-`core.checkStat=minimal`, and `core.trustctime=false` after each delta.
+Each agent starts from the base and uses one source repository snapshot for status, index, and
+Git metadata checks. It finds new nested repositories from dirty directory paths. Git deltas
+copy or delete only detected worktree paths. The engine skips
+index entry reads when the index fingerprint matches. When it changes, the engine reads only
+candidate paths from the source and agent indexes, then applies changed entries with
+`git update-index --index-info`. It copies missing staged objects by object ID. It mirrors each
+Git directory with `rsync -a --delete`, excluding `index`, only when Git metadata changes. It
+then refreshes touched tracked paths whose index entries did not change. Git refreshes copied
+staged paths during the first status. It does not run `git add`, create commits, replay commits,
+or collect changes. These operations do not change the user's Git metadata. Agent Git settings
+stay at their defaults.
 
-`sync_delta` returns `token`, repo-root-relative `changedPaths`, and `historyLost`. It may also
-return `scanPaths` for folders that need a rescan, and `refreshBase` when history loss or a root
-rescan requires a new base. The common module records nested repository paths and dirty paths during
-the base build. A workspace start copies each source index, then updates only changed paths. Delta
-sync includes Git metadata changes but excludes object stores. Collection uses the repository list
-in `agent.json`; it does not walk the tree.
+Files ignored by Git stay at the base version when they change after base creation. Folders
+without a root Git repository use `rsync -a --delete`, with the workspace store and root
+`.worktrees` excluded. Nested repositories still receive Git index handling.
+
+On macOS, the APFS clone keeps file inode and ctime data from the base volume. On Linux, the
+overlay may keep or remap lower-layer inode data depending on filesystem and `xino` behavior;
+measure this on the target filesystem before relying on first-status timing.
+
+## Modules
+
+| File                                   | Responsibility                                                        |
+| -------------------------------------- | --------------------------------------------------------------------- |
+| `scripts/codex_workspace_images.py`    | Public API, store, state, locks, base versions, and lifecycle.        |
+| `scripts/codex_workspace_macos.py`     | APFS images, copy and delta operations, attach, detach, and size.     |
+| `scripts/codex_workspace_linux.py`     | Base folders, `rsync` deltas, overlay mounts, detach, and size.       |
+| `scripts/codex_runtime.py` and callers | Workspace selection, agent paths, archive, restore, and disk reports. |
 
 ## Store
 
-Default `~/.local/state/codex-agents/workspaces`, override `CODEX_WORKSPACE_STORE`.
-macOS: `tmutil addexclusion` on the store.
+The default store is `~/.local/state/codex-agents/workspaces`. Set
+`CODEX_WORKSPACE_STORE` to use another location. macOS excludes the store from Time Machine.
 
-- `bases/<repo-key>/` : base versions and `base.json` (repo root, version, nested repositories,
-  dirty paths, object store exclusions, git HEAD per repo,
-  delta token: FSEvents event id on macOS).
-- `agents/<agent-id>/` : agent layer (`workspace.asif` on macOS, `u/` and `w/` on Linux) and
-  `agent.json` (repo root, base version, snapshot commit, start commit, state).
-- `mnt/<agent-id>/` : mount point. Volume layout: `repo/`, `home/`, `tmp/`.
+- `bases/<folder-key>/` stores base versions and `base.json`.
+- `agents/<agent-id>/` stores the agent layer and `agent.json`.
+- `mnt/<agent-id>/` is the attached or mounted image. The copied folder is at `repo/`.
+- Linux also stores namespace state in `linux-namespace.json`.
 
-`repo-key`: stable hash of the resolved repository root.
-All state files are plain JSON, written atomically. Every operation is idempotent by agent id
-or repo key, so a retry after a crash or a lost response adopts or completes the earlier work.
+State files are JSON and use atomic writes. A base build is limited to one per folder. A failed
+base can retry after five minutes. The caller can request an immediate retry with
+`retry_failed=True`.
 
-## Public API (codex_workspace_images.py)
+## Public API
 
-- `supported(repo_root) -> (bool, reason)`
-- `base_status(repo_root) -> {"state": "missing"|"building"|"ready"|"failed", "version", "error"}`
-- `start_base_build(repo_root, on_done=None) -> base_status` : starts a background build if no
-  current base exists. Safe to call many times. Also refreshes a stale base when the delta is
-  large. `on_done(base_status)` runs once from the build thread when the build ends (ready or
-  failed), or at once when the base is already ready or failed. No polling.
-- `create_workspace(repo_root, agent_id, *, start_commit=None, restore_heads=None) -> dict` with `mount`,
-  `repoPath` (`<mount>/repo`), `branch` (`codex-agent/<id>`), `startCommit`, `snapshotCommit`
-  (None when the user tree was clean). The default start commit is the user's current HEAD.
-  It syncs the user's current refs into private Git metadata, updates only paths committed since
-  the base in the private index, then applies fresh edits. It copies the user's index, updates the
-  agent branch ref and `HEAD`, then stages only changed paths before a snapshot commit.
-  With `start_commit` different from the user's HEAD, it updates only changed paths to that commit
-  (ignored build output stays).
-  `restore_heads` maps repository paths from `agent.json` (for example `.` or `packages/lib`)
-  to commits collected from those repositories. Restore checks out each commit without a snapshot.
-- `ensure_mounted(agent_id) -> dict` : mount again after a restart or reboot.
-- `collect(agent_id) -> dict` : fetch the agent branch into the user repository (nested
-  repositories first) as `refs/studio/agents/<id>/raw`, then replay the agent commits onto the
-  start commit (the snapshot's parent, or `startCommit` when there is no snapshot) with `git merge-tree` and `git commit-tree`. The result goes to
-  `refs/heads/codex-agent/<id>` in the user repository, so the lead merges the same branch name as
-  today. Each repository result includes its path, branch, and head. On a conflict the branch is
-  not moved, and the result reports the conflicting path, conflict, and raw ref.
-  The user's working tree and HEAD never change.
-- `remove_workspace(agent_id, *, force=False) -> {"freedBytes", "state"}` : eject or unmount,
-  stop processes that hold the mount (`lsof -t +f -- <mount>`, macOS) when `force`, delete the
-  layer, drop protection refs that nothing uses.
-- `workspace_bytes(agent_id)` and `base_bytes(repo_root)` : private bytes.
-- `list_workspaces()` : for maintenance and disk reports.
-- `exec_prefix()` : `[]` on macOS. On Linux the `nsenter` argv that joins the Studio namespace.
-  Every process that must see an agent mount (provider processes, Studio git calls on agent
-  paths) starts with this prefix.
+- `supported(root) -> (bool, reason)` reports platform support.
+- `base_status(root) -> {state, version, error}` reports the current base.
+- `start_base_build(root, on_done=None, *, retry_failed=False) -> base_status` starts a build
+  when needed. The callback receives the final base status. A ready base can refresh in the
+  background when its change history needs a full copy.
+- `create_workspace(root, agent_id) -> {mount, path}` creates and attaches a private copy. The
+  returned `path` is `<mount>/repo`.
+- `ensure_mounted(agent_id) -> {mount, path}` reattaches an archived workspace. It preserves
+  the `creating` state after an interrupted create.
+- `archive_workspace(agent_id) -> {freedBytes, state}` stops processes that hold the mount,
+  detaches it, and keeps the image. The returned state is `archived`.
+- `remove_workspace(agent_id, *, force=False) -> {freedBytes, state}` stops processes that hold
+  the mount, detaches it, and deletes the image and state.
+- `workspace_bytes(agent_id)` and `base_bytes(root)` report private bytes.
+- `list_workspaces()` includes archived workspaces.
+- `exec_prefix()` returns the command prefix needed to access a Linux mount. It is empty on
+  macOS.
+
+Archive is reversible: call `ensure_mounted` to attach the same copy again. Remove deletes it.
+The `force` argument to remove is retained for API compatibility. Removal always stops mount
+holders so it can safely delete the image.
 
 ## Runtime behavior
 
-1. Multi agent mode turns on: `start_base_build(lead repo)`. An implementer spawn also calls it.
-2. Implementer spawn when the base is not ready: the agent starts at once in the user folder with
-   `sandboxPolicy: {"type": "readOnly"}` (and the Claude equivalent), whatever the YOLO setting.
-3. Base ready: `create_workspace`, set the agent `cwd` to `repoPath/<relative project path>`,
-   restore normal permissions, and deliver one notice (native delivery): new path, write access,
-   snapshot commit. The new `cwd` applies from the next turn.
-4. After each implementer turn: the existing checkpoint, then `collect`. The lead merges
-   `codex-agent/<id>` as today.
-5. Archive: `collect`, then `remove_workspace`. Restore: `create_workspace` and check out the
-   saved branch.
-6. Disk report and maintenance include image workspaces and bases.
+1. Multi-agent mode starts a base build for the caller's folder.
+2. The agent gets a private workspace when a base is ready. Otherwise, the caller uses its
+   existing fallback behavior until the base is ready.
+3. The agent's working directory uses the returned `path` and the project's relative path.
+4. The runtime archives a workspace when it must free the mount but keep the agent's files.
+   Restore calls `ensure_mounted` and uses the same path.
+5. Removing an agent calls `remove_workspace`.
+6. Disk reports include base images and archived workspaces.
+
+## Measurements
+
+Use `tests/workspace-images-scale-macos.py` on a real Mac with 50,000 and 200,000 paths. Record
+agent-start time, which includes read-only Git status in the source, and the first default-config
+`git status` time with no staged source changes and after a source edit and `git add`. Run the
+immediate-write test for Git and plain folders. The change detector does not depend on FSEvents.
+For Linux, use a temporary OrbStack btrfs virtual machine and record inode/ctime behavior and
+the same first-status cases. Delete the virtual machine after the measurements.
+
+macOS runs on 2026-10-06, default Git settings:
+
+| Tracked files | Case                      | Agent start | First `git status` |
+| ------------: | ------------------------- | ----------: | -----------------: |
+|        50,000 | No staged source change   |     2.610 s |            0.983 s |
+|        50,000 | Source edit and `git add` |     3.757 s |            0.844 s |
+|       200,000 | No staged source change   |    10.104 s |            4.661 s |
+|       200,000 | Source edit and `git add` |    10.212 s |            4.013 s |
+
+The scale test ran on a loaded Mac. At 50,000 files, the base build took 50.419 s. File copy
+took 17.730 s, and index handling took 12.352 s. Staged agent start took 3.757 s: attach
+1.005 s, source Git status 0.953 s, path copy 0.443 s, index entry reads 0.167 s, and index
+delta handling 1.080 s. The first status took 0.844 s. The clean start took 2.610 s, and its
+first status took 0.983 s. The fixture took 175.540 s.
+
+At 200,000 files, the base build took 361.245 s. File copy took 87.022 s, and index handling
+took 223.949 s. The remaining base steps included repository discovery 6.323 s and source Git
+status 11.080 s. These timings overlap. Staged agent start took 10.212 s: attach 2.203 s,
+source Git status 5.365 s, path copy 0.618 s, index entry reads 0.610 s, and index delta
+handling 1.857 s. The first status took 4.013 s. The clean start took 10.104 s, and its first
+status took 4.661 s. The fixture took 823.811 s. Neither staged start mirrored the Git
+directory or restatted paths. The HEAD did not change, so no HEAD diff ran.
+
+Linux measurement, OrbStack Ubuntu 24.04, Git 2.43, btrfs, one run:
+
+| Tracked files | No staged change | After source `git add` |
+| ------------: | ---------------: | ---------------------: |
+|        50,000 |          0.359 s |                0.014 s |
+|       200,000 |          2.307 s |                0.122 s |
+
+The test copied files into a btrfs base, refreshed its index, snapshotted the base, then mounted
+an overlay workspace. The sampled file kept the same inode and ctime in the base, snapshot, and
+overlay. The device number changed at each layer. The source and workspace `git status
+--porcelain=v2` output matched in both staged cases.

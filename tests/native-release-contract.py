@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -991,6 +992,69 @@ class NativeReleaseContract(unittest.TestCase):
         self.assertNotIn("orphan", self.rt.server.loaded_threads)
         self.assertEqual([p["threadId"] for m, p in self.rt.server.calls if m == "thread/unsubscribe"],
                          ["orphan"])
+
+    def test_sweep_reads_provider_without_native_authentication(self):
+        self.rt.connect()
+        self.rt.server.loaded_threads.add("orphan")
+        with patch.object(self.rt.accounts, "get", side_effect=AssertionError("Do not probe native authentication")):
+            self.assertEqual(sweep(self.rt), 1)
+        self.assertNotIn("orphan", self.rt.server.loaded_threads)
+
+    def test_sweep_keeps_claude_connection_without_authentication(self):
+        self.rt.connect()
+        with self.rt.accounts.lock:
+            self.rt.accounts.data["accounts"]["default"]["provider"] = "claude"
+        before = list(self.rt.server.calls)
+        with patch.object(self.rt.accounts, "get", side_effect=AssertionError("Do not probe native authentication")):
+            self.assertEqual(sweep(self.rt), 0)
+        self.assertEqual(self.rt.server.calls, before)
+
+    def test_sweep_registry_wait_does_not_hold_the_runtime_lock(self):
+        self.rt.connect()
+        entered, release = threading.Event(), threading.Event()
+        original_lock = self.rt.accounts.lock
+        runtime_lock_available = []
+        errors = []
+        class RegistryGate:
+            def __enter__(self):
+                entered.set()
+                if not release.wait(3):
+                    raise TimeoutError("The registry gate did not release")
+                return original_lock.__enter__()
+            def __exit__(self, *args):
+                return original_lock.__exit__(*args)
+        def inspect():
+            try:
+                sweep(self.rt)
+            except BaseException as error:
+                errors.append(error)
+        with patch.object(self.rt.accounts, "lock", RegistryGate()):
+            worker = threading.Thread(target=inspect)
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                acquired = self.rt.lock.acquire(timeout=.5)
+                runtime_lock_available.append(acquired)
+                if acquired:
+                    self.rt.lock.release()
+            finally:
+                release.set()
+                worker.join(4)
+        self.assertEqual(runtime_lock_available, [True])
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+
+    def test_sweep_ignores_connection_without_a_registry_identity(self):
+        self.rt.connect()
+        with self.rt.accounts.lock:
+            row = self.rt.accounts.data["accounts"].pop("default")
+        try:
+            before = list(self.rt.server.calls)
+            self.assertEqual(sweep(self.rt), 0)
+            self.assertEqual(self.rt.server.calls, before)
+        finally:
+            with self.rt.accounts.lock:
+                self.rt.accounts.data["accounts"]["default"] = row
 
     def test_sweep_releases_old_archived_agent_left_in_loaded_cache(self):
         lead = self.lead()

@@ -688,29 +688,54 @@ export default function Accounts({
         closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
       >
         {adding ? (
-          <AccountSignIn state={state} />
+          <>
+            <div className="accounts-add-header">
+              <h3>Add account</h3>
+              <Button variant="subtle" onClick={() => setAdding(false)}>
+                Back to accounts
+              </Button>
+            </div>
+            <AccountSignIn state={state} />
+          </>
         ) : (
-          <Button
-            onClick={() => setAdding(true)}
-            leftSection={<Plus size={14} />}
-          >
-            Add account
-          </Button>
-        )}
-        {adding && (
-          <Button variant="subtle" onClick={() => setAdding(false)}>
-            Back to accounts
-          </Button>
+          <div className="accounts-setup">
+            {managerOnly && <h3>Accounts</h3>}
+            {!accounts.length && (
+              <p className="accounts-intro">
+                No accounts found. Sign in or find profiles on this computer.
+              </p>
+            )}
+            <div className="accounts-actions">
+              <Button
+                variant="filled"
+                color="indigo"
+                onClick={() => setAdding(true)}
+                leftSection={<Plus size={14} />}
+              >
+                Add account
+              </Button>
+              <Button
+                variant="default"
+                leftSection={<RefreshCw size={14} />}
+                loading={pending === "discover"}
+                disabled={!!pending}
+                onClick={() =>
+                  void action("discover", async () => {
+                    state.setData(await post("/api/accounts/discover", {}));
+                  })
+                }
+              >
+                Find existing accounts
+              </Button>
+            </div>
+          </div>
         )}
         {!adding && (
           <>
             <p className="accounts-intro">
-              Used when a project has no default.
+              New chats use the application default unless the project has its
+              own default. Existing chats keep their account.
             </p>
-            <NativeRuntimeStatus
-              opened={managerOnly || opened}
-              accounts={accounts}
-            />
             <div className="accounts-list" aria-label="Saved accounts">
               {accounts.map((account) => (
                 <section
@@ -729,11 +754,30 @@ export default function Accounts({
                         <small>{account.status}</small>
                       )}
                     </div>
-                    {account.id === state.data.defaultAccountKey ? (
+                    {account.id === state.data.defaultAccountKey && (
                       <span className="account-default">
                         <Check size={12} /> Application default
                       </span>
-                    ) : (
+                    )}
+                  </div>
+                  {Boolean(account.error) && (
+                    <ErrorDescription
+                      className="account-action-error"
+                      value={account.error}
+                    />
+                  )}
+                  {account.authenticationRecovery && (
+                    <p role="alert">{account.authenticationRecovery}</p>
+                  )}
+                  {account.disconnected && <p>Hidden from new chats.</p>}
+                  {!account.disconnected && (
+                    <AccountCapacity
+                      account={account}
+                      opened={managerOnly || opened}
+                    />
+                  )}
+                  <div className="account-row-actions">
+                    {account.id !== state.data.defaultAccountKey && (
                       <Button
                         size="compact-xs"
                         variant="subtle"
@@ -757,109 +801,84 @@ export default function Accounts({
                         Set application default
                       </Button>
                     )}
-                  </div>
-                  {Boolean(account.error) && (
-                    <ErrorDescription
-                      className="account-action-error"
-                      value={account.error}
-                    />
-                  )}
-                  {account.authenticationRecovery && (
-                    <p role="alert">{account.authenticationRecovery}</p>
-                  )}
-                  {account.disconnected && <p>Hidden from new chats.</p>}
-                  {!account.disconnected && (
-                    <AccountCapacity
-                      account={account}
-                      opened={managerOnly || opened}
-                    />
-                  )}
-                  {account.provider === "claude" && (
-                    <>
+                    {account.provider === "claude" && (
+                      <>
+                        <Button
+                          variant="subtle"
+                          size="compact-xs"
+                          onClick={() => setClaudeLogin(account)}
+                        >
+                          Sign in again
+                        </Button>
+                      </>
+                    )}
+                    {account.provider !== "claude" && account.accountId && (
                       <Button
                         variant="subtle"
                         size="compact-xs"
-                        onClick={() => setClaudeLogin(account)}
+                        onClick={() => setCodexLogin(account)}
                       >
                         Sign in again
                       </Button>
-                      <ClaudeProfile
-                        account={account}
-                        onSaved={state.setData}
-                      />
-                    </>
-                  )}
-                  {account.provider !== "claude" && account.accountId && (
-                    <Button
-                      variant="subtle"
-                      size="compact-xs"
-                      onClick={() => setCodexLogin(account)}
-                    >
-                      Sign in again
-                    </Button>
-                  )}
-                  {state.data.supportsDisconnect && (
-                    <Button
-                      variant="subtle"
-                      size="compact-xs"
-                      disabled={!!pending}
-                      onClick={() => {
-                        if (account.disconnected)
-                          void action(`reconnect:${account.id}`, async () => {
-                            state.setData(
-                              await post("/api/accounts/reconnect", {
-                                account_key: account.id,
-                              }),
-                            );
-                          });
-                        else setDisconnectChoice(account);
-                      }}
-                    >
-                      {account.disconnected
-                        ? "Reconnect account"
-                        : "Disconnect account"}
-                    </Button>
-                  )}
-                  {state.data.supportsDelete && (
-                    <Button
-                      variant="subtle"
-                      size="compact-xs"
-                      disabled={!!pending}
-                      onClick={() => {
-                        const requestId =
-                          storedDeleteRequest(state.scope, account.id) ||
-                          crypto.randomUUID();
-                        saveDeleteRequest(state.scope, account.id, requestId);
-                        setDeleteRequestId(requestId);
-                        setDeleteChoice(account);
-                      }}
-                    >
-                      Delete account
-                    </Button>
+                    )}
+                    {state.data.supportsDisconnect && (
+                      <Button
+                        variant="subtle"
+                        size="compact-xs"
+                        color={account.disconnected ? "gray" : "red"}
+                        className={
+                          account.disconnected
+                            ? undefined
+                            : "account-destructive-action"
+                        }
+                        disabled={!!pending}
+                        onClick={() => {
+                          if (account.disconnected)
+                            void action(`reconnect:${account.id}`, async () => {
+                              state.setData(
+                                await post("/api/accounts/reconnect", {
+                                  account_key: account.id,
+                                }),
+                              );
+                            });
+                          else setDisconnectChoice(account);
+                        }}
+                      >
+                        {account.disconnected
+                          ? "Reconnect account"
+                          : "Disconnect account"}
+                      </Button>
+                    )}
+                    {state.data.supportsDelete && (
+                      <Button
+                        variant="subtle"
+                        size="compact-xs"
+                        color="red"
+                        className="account-destructive-action"
+                        disabled={!!pending}
+                        onClick={() => {
+                          const requestId =
+                            storedDeleteRequest(state.scope, account.id) ||
+                            crypto.randomUUID();
+                          saveDeleteRequest(state.scope, account.id, requestId);
+                          setDeleteRequestId(requestId);
+                          setDeleteChoice(account);
+                        }}
+                      >
+                        Delete account
+                      </Button>
+                    )}
+                  </div>
+                  {account.provider === "claude" && (
+                    <ClaudeProfile account={account} onSaved={state.setData} />
                   )}
                 </section>
               ))}
             </div>
-            {!accounts.length && (
-              <p className="accounts-intro">
-                No accounts found. Sign in or find profiles on this computer.
-              </p>
-            )}
-            <div className="accounts-actions">
-              <Button
-                variant="subtle"
-                leftSection={<RefreshCw size={14} />}
-                loading={pending === "discover"}
-                disabled={!!pending}
-                onClick={() =>
-                  void action("discover", async () => {
-                    state.setData(await post("/api/accounts/discover", {}));
-                  })
-                }
-              >
-                Find existing accounts
-              </Button>
-            </div>
+            <NativeRuntimeStatus
+              opened={managerOnly || opened}
+              accounts={accounts}
+            />
           </>
         )}
         {adding && <ClaudeProfile onSaved={state.setData} />}
@@ -881,6 +900,7 @@ export default function Accounts({
             >
               <TextInput
                 label="Codex home"
+                description="Enter the path to the existing .codex directory for this account."
                 placeholder="/path/to/.codex"
                 value={home}
                 onChange={(e) => setHome(e.target.value)}
@@ -928,51 +948,53 @@ export default function Accounts({
         closeOnEscape={!pending}
         withCloseButton={!pending}
       >
-        <p>
-          Remove{" "}
-          <strong>{disconnectChoice?.email || disconnectChoice?.label}</strong>{" "}
-          from new chat choices?
-        </p>
-        <p>
-          New chats cannot use it. Existing chats keep it. You can reconnect it
-          later.
-        </p>
+        <h3 className="account-disconnect-identity">
+          {disconnectChoice?.email || disconnectChoice?.label}
+        </h3>
+        <ul className="account-disconnect-effects">
+          <li>New chats cannot use this account.</li>
+          <li>Existing chats keep it. You can reconnect it later.</li>
+          <li>
+            Projects with this default need another account before new chats can
+            start.
+          </li>
+        </ul>
         {disconnectsDefault && (
-          <p>
+          <p className="account-replacement">
             {replacement
               ? `The application default changes to ${replacement.email || replacement.label}.`
               : "Connect another account before disconnecting the application default."}
           </p>
         )}
-        <p>
-          Projects with this default need another account before new chats can
-          start.
-        </p>
-        <Button
-          variant="default"
-          disabled={!!pending}
-          onClick={() => setDisconnectChoice(null)}
-        >
-          Cancel
-        </Button>
-        <Button
-          loading={pending === "disconnect"}
-          disabled={!!pending || (disconnectsDefault && !replacement)}
-          onClick={() => {
-            const accountKey = disconnectChoice?.id;
-            if (!accountKey) return;
-            void action("disconnect", async () => {
-              state.setData(
-                await post("/api/accounts/disconnect", {
-                  account_key: accountKey,
-                }),
-              );
-              setDisconnectChoice(null);
-            });
-          }}
-        >
-          Disconnect account
-        </Button>
+        <div className="account-confirm-actions">
+          <Button
+            variant="default"
+            disabled={!!pending}
+            onClick={() => setDisconnectChoice(null)}
+          >
+            Cancel
+          </Button>
+          <Button
+            variant="filled"
+            color="red"
+            loading={pending === "disconnect"}
+            disabled={!!pending || (disconnectsDefault && !replacement)}
+            onClick={() => {
+              const accountKey = disconnectChoice?.id;
+              if (!accountKey) return;
+              void action("disconnect", async () => {
+                state.setData(
+                  await post("/api/accounts/disconnect", {
+                    account_key: accountKey,
+                  }),
+                );
+                setDisconnectChoice(null);
+              });
+            }}
+          >
+            Disconnect account
+          </Button>
+        </div>
         {error && <p role="alert">{error}</p>}
       </Modal>
       <Modal

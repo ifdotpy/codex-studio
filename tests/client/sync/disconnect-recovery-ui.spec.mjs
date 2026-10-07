@@ -163,7 +163,12 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     await button.click();
     await page
       .getByRole("status")
-      .filter({ hasText: "Recovery service unavailable" })
+      .filter({ hasText: "Could not finish the connection check." })
+      .waitFor();
+    await page.locator(".studio-recovery-banner summary").click();
+    await page
+      .locator(".studio-recovery-banner")
+      .getByText("Recovery service unavailable", { exact: false })
       .waitFor();
     fail = false;
     assert.match(

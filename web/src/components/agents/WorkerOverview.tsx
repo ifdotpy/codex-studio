@@ -65,20 +65,8 @@ export function TeamSummary({
   const count = (state: string) =>
     workers.filter((agent) => workerState(agent, answers, deferred) === state)
       .length;
-  const working = count("working");
-  const answer = count("answer");
-  // One sentence for the current activity; each state then appears once.
-  const headline = [
-    working
-      ? `${working} ${working === 1 ? "subagent is" : "subagents are"} working.`
-      : "No subagent is working.",
-    answer > 0 && `${answer} ${answer === 1 ? "needs" : "need"} your answer.`,
-  ]
-    .filter(Boolean)
-    .join(" ");
   return (
     <div className="team-overview" aria-label="Team status summary">
-      <p className="team-headline">{headline}</p>
       <dl>
         {TEAM_STATES.filter(([state]) => count(state) > 0).map(
           ([state, label]) => (

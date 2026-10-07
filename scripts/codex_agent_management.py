@@ -19,15 +19,15 @@ if TYPE_CHECKING:
 def management_tools(tool: "Callable[[str, str, dict[str, Any], list[str]], dict[str, Any]]", text: dict[str, "Any"]) -> list[dict[str, "Any"]]:
     return [tool('orchestration_agent_manage',
         'Manage your own descendant workers. inspect returns archive blockers. recover checks exact unconfirmed input IDs in native history, requeues only IDs absent from an idle thread, and reconciles an existing turn. For a transferred thread with no source rollout, recover reports the missing history and does not replay inputs. '
-        'archive hides an inactive worker, collects and removes its image workspace, or removes a safe Studio Git worktree; it reports conflicts and why a workspace stays. '
+        'archive hides an inactive worker, detaches and retains its image workspace, or removes a safe Studio Git worktree. It reports why a workspace stays. '
         'archive_finished archives finished descendants with safe workspaces and reports freed bytes and kept workers. '
         'For archive or archive_finished, unassign_work=true returns open assigned tasks to the unassigned ready backlog in the same transaction. '
         'Task results and decisions remain. The default keeps the assigned_work blocker. Other archive blockers remain. '
-        'Retry archive with a new tool call to finish partial Git removal. The exact original Git link and archive ref are required. '
+        'Retry archive with a new tool call after an image detach interruption or partial Git removal. The exact original Git link and archive ref are required. '
         'Changed or untracked files stay for inspection. A missing Git link leaves the folder for manual review. '
         'reset_tools releases an idle worker subscription after native command and receipt checks. Give a reason. '
         'Codex can end its idle session after its configured idle window (60 seconds by default); send new work after confirmed closure to start fresh tools. '
-        'restore recreates a removed image workspace or Git worktree and returns an archived worker paused; use orchestration_send to resume. '
+        'restore reattaches an archived image or recreates a removed Git worktree, then returns the worker paused; use orchestration_send to resume. Deleting a worker removes its image. '
         'list and list_archived are paged and include workspace disk use. inspect includes a worker size and team total. '
         'maintenance_report lists old archived or deleted workspaces, bases, and Git worktrees; it does not remove them. '
         'park waits for a named event after the current turn. list_parked shows event waits. cancel_park wakes a worker. '
@@ -63,7 +63,8 @@ def _brief(a: "AgentRecord") -> dict[str, "Any"]:
     return {k: a.get(k) for k in ('id', 'name', 'parentId', 'status', 'inFlight', 'threadId',
                                  'turnId', 'error', 'lastEvent', 'agentArchive', 'nativeRelease', 'parkedEvent',
                                  'imageWorkspace', 'imageWorkspaceReady', 'imageWorkspacePhase',
-                                 'imageWorkspaceError', 'imageWorkspaceCollect')}
+                                 'imageWorkspaceError', 'imageWorkspaceCreatedAt',
+                                 'cleanedImageWorkspace')}
 
 
 def _team_agents(rt: "Runtime", db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False) -> list["AgentRecord"]:
@@ -75,78 +76,41 @@ def _team_agents(rt: "Runtime", db: "sqlite3.Connection", root_id: str, *, inclu
             and (include_deleted or not a.get('deletedAt'))]
 
 
-def _cleanup_image_workspace(rt: "Runtime", agent_id: str) -> "ImageWorkspaceCleanupResultRecord":
-    from codex_workspace_images import (collect, ensure_mounted, exec_prefix,
-                                       remove_workspace, workspace_bytes)
+def _cleanup_image_workspace(rt, agent_id):
+    from codex_workspace_images import archive_workspace, workspace_bytes
     with rt.lock, rt.db() as db:
         agent = rt.agent(agent_id, db)
-    repo = agent.get('imageWorkspaceRepo')
-    relative = agent.get('imageWorkspaceRelative', '.')
-    collected = None
+    saved = agent.get('cleanedImageWorkspace') or {}
+    retry_archive = saved.get('phase') == 'archiving'
     try:
-        before = workspace_bytes(agent_id)
-        collected = collect(agent_id)
-        mounted = ensure_mounted(agent_id)
-        dirty = subprocess.run([*exec_prefix(), 'git', '-C', mounted['repoPath'],
-                                'status', '--porcelain', '--untracked-files=all'],
-                               capture_output=True, text=True, timeout=30)
-        if dirty.returncode:
-            raise RuntimeError('Could not check the image workspace Git state: '
-                               + dirty.stderr[:800])
-        if dirty.stdout.strip():
-            raise RuntimeError('Image workspace has uncommitted or untracked changes; '
-                               'commit them before archiving')
-        restore_heads = {}  # type: dict[str, str]
-        conflict_path = collected.get('path')
-        for row in collected.get('repositories', []):
-            repository_path = row.get('path', '.')
-            repository = Path(repo) / repository_path  # type: ignore[arg-type]  # typed-suspect: missing workspace repo may reach path join
-            raw_ref = row.get('rawRef')
-            if not raw_ref and (row.get('state') == 'conflict' or repository_path == conflict_path):
-                raw_ref = collected.get('rawRef') or ('refs/studio/agents/' + agent_id + '/raw')
-            head = row.get('head') or row.get('commit')
-            if not head:
-                ref = raw_ref or row.get('branch') or 'refs/heads/codex-agent/' + agent_id
-                result = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', ref],
-                                        capture_output=True, timeout=30)
-                if result.returncode:
-                    fallback_ref = ('refs/heads/codex-agent/' + agent_id if raw_ref
-                                    else 'refs/studio/agents/' + agent_id + '/raw')
-                    result = subprocess.run(['git', '-C', str(repository), 'rev-parse', '--verify', fallback_ref],
-                                            check=True, capture_output=True, timeout=30)
-                head = result.stdout.decode().strip()
-            restore_heads[repository_path] = head
-        if not restore_heads:
-            raise RuntimeError('Collect returned no repository heads to restore')
-        head = restore_heads.get('.', collected.get('commit'))
-        if not head:
-            raise RuntimeError('Collect returned no root repository head to restore')
-        removed = remove_workspace(agent_id)
+        if not retry_archive:
+            before = workspace_bytes(agent_id)
+            saved = {'source': agent.get('imageWorkspaceRepo'),
+                     'path': agent.get('cwd'), 'mount': agent.get('imageWorkspaceMount'),
+                     'createdAt': agent.get('imageWorkspaceCreatedAt'),
+                     'bytes': before, 'phase': 'archiving'}
+            with rt.lock, rt.db() as db:
+                current = rt.agent(agent_id, db)
+                current.update(imageWorkspacePhase='archiving',
+                               cleanedImageWorkspace=saved)
+                rt.put(db, 'agents', current)
+        removed = archive_workspace(agent_id)
+        saved = {**saved, 'phase': 'archived',
+                 'freedBytes': removed.get('freedBytes', 0)}
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
-            current.update(cwd=str(Path(repo) / relative), imageWorkspaceReady=False,  # type: ignore[operator, arg-type]  # typed-suspect: missing workspace repo may reach path join
-                           imageWorkspacePhase='archived', imageWorkspaceCollect=collected,
-                           cleanedImageWorkspace={'repo': repo, 'relative': relative,
-                                                  'branch': 'codex-agent/' + agent_id,
-                                                  'head': head, 'restoreHeads': restore_heads,
-                                                  'bytes': removed.get('freedBytes', before),
-                                                  'collect': collected})  # type: ignore[call-arg]  # typed-update
+            current.update(imageWorkspaceReady=False,
+                           imageWorkspacePhase='archived', cleanedImageWorkspace=saved)
             current['imageWorkspace'] = True
             rt.put(db, 'agents', current)
-        state = 'conflict' if collected.get('conflict') or collected.get('conflicts') else 'removed'
-        return {'state': state, 'bytes': removed.get('freedBytes', before),
-                'collect': collected,
-                **({'reason': str(collected.get('conflict') or collected.get('conflicts'))[:1200]}
-                   if state == 'conflict' else {})}
+        return {'state': 'archived', 'bytes': saved['bytes'],
+                'freedBytes': saved['freedBytes']}
     except Exception as error:
         with rt.lock, rt.db() as db:
             current = rt.agent(agent_id, db)
-            current['imageWorkspaceError'] = 'Archive collect or removal failed: ' + str(error)[:1200]
-            if collected is not None:
-                current['imageWorkspaceCollect'] = collected
+            current['imageWorkspaceError'] = 'Image workspace archive failed: ' + str(error)[:1200]
             rt.put(db, 'agents', current)
-        return {'state': 'kept', 'bytes': 0, 'reason': str(error)[:500],
-                **({'collect': collected} if collected is not None else {})}
+        return {'state': 'kept', 'bytes': 0, 'reason': str(error)[:500]}
 
 
 def _completed_native_turn(a: "AgentRecord") -> bool:
@@ -908,7 +872,7 @@ def _archive_finished(rt: "Runtime", actor_id: str, epoch: int | None, *, unassi
                     result.setdefault('notes', []).append({'id': a['id'], 'reason': cleanup['reason']})
             elif cleanup['state'] == 'missing':
                 result.setdefault('notes', []).append({'id': a['id'], 'reason': cleanup['reason']})
-            elif cleanup['state'] != 'none':
+            elif cleanup['state'] not in {'none', 'archived'}:
                 result['kept'].append({'id': a['id'], 'reason': cleanup['reason']})
         else:
             result['kept'].append({'id': a['id'], 'reason': ', '.join(b['kind'] for b in archived['blockers'])})
@@ -1141,7 +1105,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                             {'state': 'kept', 'reason': 'already archived', 'bytes': 0})
                 return {'status': 'archived', 'agent': _brief(target), 'replayed': True,
                         'workspace': (target.get('imageWorkspaceCleanupResult')
-                                      or ({'state': 'removed', 'bytes': cleaned_image.get('bytes', 0)}
+                                      or ({'state': 'archived', 'bytes': cleaned_image.get('bytes', 0)}
                                           if cleaned_image else None)), 'worktree': worktree,
                         'unassignedWork': archived.get('unassignedWork', [])}
         if action == 'restore':
@@ -1167,11 +1131,6 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                         or not Path(target.get('cwd', '')).is_dir()):
                     return {'status': 'blocked',
                             'reason': 'The recorded worktree folder is missing and has no verified restore ref'}
-            if target.get('imageWorkspaceReady'):
-                mount = target.get('imageWorkspaceMount')
-                if not mount or not Path(mount).is_dir():
-                    return {'status': 'blocked',
-                            'reason': 'The recorded image workspace is missing and has no saved restore branch'}
             if not restore_info and not restore_image:
                 target.pop('deletedAt', None)
                 target.pop('agentArchive', None)
@@ -1207,8 +1166,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 return {'status': 'blocked', 'agent': _brief(target), 'blockers': blockers}
             archived_agent = _archive_record(rt, db, target, actor_id, reason, cleanup_pending=True, unassign_work=unassign_work)
     if action == 'archive':
-        cleanup: dict[str, Any] | ImageWorkspaceCleanupResultRecord
-        if target.get('imageWorkspaceReady'):
+        image_archive = target.get('cleanedImageWorkspace') or {}
+        if target.get('imageWorkspaceReady') or image_archive.get('phase') == 'archiving':
             cleanup = _cleanup_image_workspace(rt, target['id'])
         elif target.get('imageWorkspace'):
             cleanup = {'state': 'none', 'bytes': 0}
@@ -1221,9 +1180,10 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
         with rt.lock, rt.db() as db:
             current = rt.agent(target['id'], db)
             if current.get('imageWorkspace'):
-                current['imageWorkspaceCleanupResult'] = cleanup  # type: ignore[typeddict-item]  # typed-narrowing: image workspace cleanup result shape
+                current['imageWorkspaceCleanupResult'] = cleanup
+            cleanup_failed = current.get('imageWorkspace') and cleanup.get('state') == 'kept'
             if (current.get('agentArchive') and current['agentArchive'].get('cleanupPending')
-                    and not current.get('worktreeCleanup')):
+                    and not current.get('worktreeCleanup') and not cleanup_failed):
                 current['agentArchive']['cleanupPending'] = False
                 rt.put(db, 'agents', current)
         return {'status': 'archived', 'agent': archived_agent,
@@ -1232,19 +1192,17 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                 'unassignedWork': archived_agent['agentArchive'].get('unassignedWork', [])}
     if action == 'restore':
         if restore_image:
-            from codex_workspace_images import create_workspace, exec_prefix
+            from codex_workspace_images import ensure_mounted, exec_prefix
             try:
-                workspace = create_workspace(restore_image['repo'], target['id'],
-                                             restore_heads=restore_image.get('restoreHeads') or
-                                             {'.': restore_image['head']})
+                workspace = ensure_mounted(target['id'])
             except Exception as error:
                 return {'status': 'blocked', 'reason': 'Image workspace restore failed: ' + str(error)[:500]}
-            relative = restore_image.get('relative', '.')
-            cwd = Path(workspace['repoPath']) / relative
+            cwd = (Path(workspace.get('path') or workspace.get('repoPath'))
+                   / target.get('imageWorkspaceSubpath', '.'))
             path_check = subprocess.run([*exec_prefix(), 'test', '-d', str(cwd)],
                                         capture_output=True, timeout=30)
             if path_check.returncode:
-                return {'status': 'blocked', 'reason': 'The restored image workspace lacks the saved project path'}
+                return {'status': 'blocked', 'reason': 'The restored image workspace folder is missing'}
             with rt.lock, rt.db() as db:
                 target = rt.agent(args.get('agent_id'), db)  # type: ignore[arg-type]  # typed-suspect: absent agent id might reach runtime lookup
                 _authorize(rt, db, actor_id, epoch, target)
@@ -1252,9 +1210,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                     return {'status': 'blocked', 'reason': 'Worker changed during image workspace restoration'}
                 target.update(cwd=str(cwd), imageWorkspace=True, imageWorkspaceReady=True,
                               imageWorkspacePhase='ready', imageWorkspaceMount=workspace['mount'],
-                              imageWorkspaceSnapshotCommit=workspace.get('snapshotCommit'),
-                              branch=workspace['branch'], status='paused', autoWake=False,
-                              epoch=target['epoch'] + 1)  # type: ignore[call-arg]  # typed-update
+                              branch=None, status='paused', autoWake=False,
+                              epoch=target['epoch'] + 1)
                 target.pop('deletedAt', None)
                 target.pop('agentArchive', None)
                 target.pop('cleanedImageWorkspace', None)

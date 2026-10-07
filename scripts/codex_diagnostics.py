@@ -176,14 +176,19 @@ def snapshot(runtime, root_pid=None, ps_output=None):
                             "residentBytes": round(values["rssMiB"] * 1024 * 1024)})
     with runtime.lock:
         servers = sorted(runtime.servers.items())
-        providers = {key: (runtime.accounts.get(key) or {}).get("provider", "codex")
-                     for key, _server in servers}
         studio_loaded = len(runtime.loaded)
         queues = {"recoveryPending": runtime.recovery_pool._work_queue.qsize()}
         for index, (_account, server) in enumerate(servers, 1):
             alias = "account" + str(index)
             for name in ("callbacks", "clock_replies", "tool_requests"):
                 queues[alias + "." + name] = _queue_size(getattr(server, name, None))
+    # Provider type is saved metadata. Diagnostics must not authenticate.
+    # Wait for the registry without holding Runtime.lock.
+    providers = {}
+    if servers:
+        with runtime.accounts.lock:
+            providers = {key: runtime.accounts.data["accounts"].get(key, {}).get("provider", "codex")
+                         for key, _server in servers}
     with runtime.db() as db:
         queues["durableInputPending"] = db.execute(
             "SELECT COUNT(*) FROM runtime_events WHERE status IN "

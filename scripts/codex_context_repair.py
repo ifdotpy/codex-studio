@@ -63,9 +63,17 @@ def _identity(agent):
 
 def _current(rt, db, op):
     a = rt.agent(op['agent'], db)
+    attempt, snapshot = a.get('startAttempt'), op.get('startAttemptSnapshot')
+    # A pending preparation adds display text without changing the input identity.
+    if (isinstance(attempt, dict) and isinstance(snapshot, dict)
+            and 'prepareError' not in snapshot and type(attempt.get('prepareError')) is str):
+        attempt = {key: value for key, value in attempt.items() if key != 'prepareError'}
     if (rt.closed or a.get('deletedAt') or _identity(a) != op['source']
             or (a.get('contextRepair') or {}).get('id') != op['id']
             or rt.preparation_settings(a) != op['settings']
+            or ('startAttemptSnapshot' in op and attempt != snapshot)
+            or ('nativeIdentity' in op
+                and _source_native_identity(rt.servers.get(a.get('accountKey', 'default'))) != op['nativeIdentity'])
             or ('connectionId' in op and not rt.connection_current(a.get('accountKey', 'default'), op['connectionId']))):
         raise ValueError('The agent changed during context repair. The original session is preserved.')
     if ('historicalInputs' in op
@@ -498,7 +506,8 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     browser_request = browser.get('nativeRequest') or {}
     restart = a.get('restartRecovery') or {}
     restart_same = all(restart.get(k) == a.get(k) for k in ('epoch', 'accountKey', 'threadId'))
-    if (safety_active(a) or (browser_same and (browser.get('stage') in {'pending', 'reconnecting'}
+    if (safety_active(a) or (browser_same and (browser.get('stage') == 'reconnecting'
+            or (browser.get('stage') == 'pending' and browser_request)
             or (browser_request.get('submittedAt') and browser_request.get('outcome') != 'received')))):
         raise _waiting('Context repair waits for the existing native recovery receipt')
     if restart_same and restart.get('stage') in {'pending', 'held'}:
@@ -962,8 +971,16 @@ def _terminal_native_item(item):
 
 
 def _reconcile_thread_receipts(rt, op, native, attempt_id):
-    """Use exact native state and this thread's durable terminal receipt."""
+    """Accept the exact callback or a fenced terminal history observation."""
     turn_id = native.get('repairTerminalTurnId')
+    proof = native.get('repairTerminalReceipt') or {}
+    observed = (proof.get('threadId') == op['source']['threadId']
+                and proof.get('turnId') == turn_id and bool(turn_id)
+                and bool(op.get('connectionId'))
+                and 'startAttemptSnapshot' in op
+                and proof.get('status') == native.get('repairTerminalStatus')
+                and proof.get('status') in {'completed', 'failed', 'interrupted'}
+                and proof.get('nativeState') in {'idle', 'notLoaded', 'systemError'})
     deadline = time.monotonic() + WAIT_SECONDS
     while True:
         with rt.lock, rt.db() as db:
@@ -974,13 +991,20 @@ def _reconcile_thread_receipts(rt, op, native, attempt_id):
                                        and not attempt.get('turnId'))
             if (current.get('inFlight') or current.get('turnId')) and not unsubmitted_attempt:
                 error = _waiting('Context repair waits for the current thread terminal receipt', 'native')
-            elif (turn_id and not db.execute(
+            elif (turn_id and not observed and not db.execute(
                     'SELECT 1 FROM runtime_completed_turns WHERE id=?',
                     (current['id'] + ':' + turn_id,)).fetchone()):
                 error = _waiting('Context repair waits for the exact terminal callback receipt', 'native')
             else:
                 try:
                     _local_idle(rt, db, current, attempt_id)
+                    if observed and not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                                   (current['id'] + ':' + turn_id,)).fetchone():
+                        # This proof belongs only to this repair. A completed-turn
+                        # row would suppress a late real callback and its effects.
+                        op['nativeTerminalReceipt'] = {**proof, 'source': copy.deepcopy(op['source']),
+                                                       'connectionId': op.get('connectionId')}
+                        _save(rt, db, current, op)
                     return
                 except ValueError as caught:
                     if not isinstance(getattr(caught, 'contextRepairWait', None), dict):
@@ -989,6 +1013,177 @@ def _reconcile_thread_receipts(rt, op, native, attempt_id):
         if time.monotonic() >= deadline:
             raise error
         rt.changed.wait(min(.1, max(0, deadline - time.monotonic())))
+
+
+def _source_terminal_key(account, thread, turn):
+    return json.dumps([account, thread, turn], separators=(',', ':'))
+
+
+def _source_native_identity(server):
+    if server is None or not getattr(server, 'supervisor_mode', False):
+        return None
+    process = getattr(server, 'proc', None)
+    root, handle, generation = (getattr(process, key, None) for key in ('root', 'handle', 'generation'))
+    if root is None or not isinstance(handle, str) or type(generation) is not int or generation < 1:
+        return None
+    # Compare the retained descriptor. Never resolve paths in a callback.
+    return {'stateDir': str(root), 'handle': handle, 'generation': generation}
+
+
+def _register_source_terminal(rt, db, a, op, server):
+    proof = op.get('nativeTerminalReceipt')
+    if not proof:
+        return
+    source_actor = {key: copy.deepcopy(a.get(key)) for key in
+                    ('id', 'name', 'parentId', 'rootId', 'accountKey', 'epoch', 'turnEpoch', 'autoWake',
+                     'cwd', 'branch', 'model', 'effort', 'fastMode', 'provider', 'isLead', 'created')}
+    source_actor.update(threadId=op['source']['threadId'], turnId=proof['turnId'],
+                        turnEpoch=a.get('turnEpoch', a['epoch']),
+                        lastAnswer=proof.get('lastAnswer', a.get('lastAnswer') or '')[-16000:])
+    work = []
+    rows = db.execute("SELECT id,json_extract(record,'$.status') AS status,"
+                      "json_extract(record,'$.results[#-1].id') AS result,"
+                      "json_extract(record,'$.results[#-1].agent') AS result_agent,"
+                      "json_extract(record,'$.decisions[#-1].decision') AS decision,"
+                      "json_extract(record,'$.decisions[#-1].resultId') AS decision_result "
+                      "FROM runtime_work WHERE json_extract(record,'$.owner')=? AND json_extract(record,'$.rootId')=? "
+                      "AND json_extract(record,'$.status') IN ('ready','running','blocked','review') "
+                      "ORDER BY json_extract(record,'$.updated') DESC LIMIT 17", (a['id'], a['rootId'])).fetchall()
+    for row in rows[:16]:
+        own_result = row['result_agent'] == a['id'] and bool(row['result'])
+        work.append({'task_id':row['id'], 'status':row['status'], 'current_result_id':row['result'],
+                     'latest_decision':row['decision'],
+                     'result_submitted':bool(own_result and row['status'] == 'review'
+                                             and row['decision_result'] != row['result']),
+                     'needs_resubmission':bool(own_result and row['decision'] == 'reject'
+                                               and row['decision_result'] == row['result'])})
+    children = db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.parentId')=? "
+                          "AND json_extract(record,'$.autoWake') "
+                          "AND json_extract(record,'$.status') IN ('queued','starting','running','waiting','approval') LIMIT 1",
+                          (a['id'],)).fetchone() is not None
+    receipt = {'operationId':op['id'], 'source':copy.deepcopy(op['source']),
+               'proof':copy.deepcopy(proof), 'sourceActor':source_actor, 'children':children,
+               'connectionId':op['connectionId'], 'nativeIdentity':op.get('nativeIdentity'),
+               'work':work, 'workTruncated':len(rows) > 16,
+               'phase':'submitted'}
+    db.execute('CREATE TABLE IF NOT EXISTS runtime_context_terminal_receipts '
+               '(id TEXT PRIMARY KEY, agent TEXT NOT NULL, operation TEXT NOT NULL, record TEXT NOT NULL)')
+    key = _source_terminal_key(a.get('accountKey', 'default'), op['source']['threadId'], proof['turnId'])
+    db.execute('INSERT INTO runtime_context_terminal_receipts VALUES (?,?,?,?) ON CONFLICT(id) DO UPDATE '
+               "SET agent=excluded.agent,operation=excluded.operation,record=excluded.record "
+               "WHERE json_extract(runtime_context_terminal_receipts.record,'$.phase')!='completed'",
+               (key, a['id'], op['id'], json.dumps(receipt)))
+
+
+def _complete_source_fork(db, op, thread):
+    proof = op.get('nativeTerminalReceipt')
+    if not proof or not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_context_terminal_receipts'").fetchone():
+        return
+    key = _source_terminal_key(op['source']['accountKey'], op['source']['threadId'], proof['turnId'])
+    db.execute("UPDATE runtime_context_terminal_receipts SET record=json_set(record,'$.phase','completed',"
+               "'$.newThreadId',?) WHERE id=? AND agent=? AND operation=?",
+               (thread, key, op['agent'], op['id']))
+
+
+def source_terminal_callback(rt, db, params, account, connection):
+    """Consume one real terminal callback for an exact committed repair source."""
+    turn = params.get('turn') or {}
+    thread = params.get('threadId')
+    if (not isinstance(thread, str) or not isinstance(turn.get('id'), str)
+            or turn.get('status') not in {'completed', 'failed', 'interrupted'}
+            or not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_context_terminal_receipts'").fetchone()):
+        return False
+    key = _source_terminal_key(account, thread, turn['id'])
+    row = db.execute('SELECT record FROM runtime_context_terminal_receipts WHERE id=?', (key,)).fetchone()
+    if row is None:
+        return False
+    receipt = json.loads(row[0])
+    source, proof, actor = (receipt.get(key) or {} for key in ('source', 'proof', 'sourceActor'))
+    if (receipt.get('phase') != 'completed' or rt.closed or not isinstance(connection, str)
+            or connection != rt.connection_ids.get(account) or not rt.connection_current(account, connection)
+            or source.get('accountKey') != account or source.get('threadId') != thread
+            or proof.get('source') != source or proof.get('threadId') != thread
+            or proof.get('turnId') != turn['id'] or proof.get('status') != turn['status']
+            or actor.get('id') != source.get('id') or actor.get('epoch') != source.get('epoch')
+            or actor.get('accountKey') != account or actor.get('threadId') != thread
+            or actor.get('turnId') != turn['id']):
+        return False
+    if (receipt.get('nativeIdentity')
+            and _source_native_identity(rt.servers.get(account)) != receipt['nativeIdentity']):
+        return False
+    if connection != receipt.get('connectionId') and not receipt.get('nativeIdentity'):
+        return False
+    row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (source['id'],)).fetchone()
+    if row is None:
+        return False
+    a = json.loads(row[0])
+    if (a.get('deletedAt') or a.get('epoch') != source['epoch'] or a.get('accountKey') != account
+            or any(a.get(key) != actor.get(key) for key in ('id', 'parentId', 'rootId'))):
+        return False
+    repairs = [a.get('contextRepair') or {}, *a.get('contextRepairHistory', [])]
+    eligible = [r for r in repairs if r.get('phase') == 'completed' and r.get('agent') == a['id']
+                and (r.get('source') or {}).get('id') == a['id']
+                and (r.get('source') or {}).get('epoch') == a['epoch']
+                and (r.get('source') or {}).get('accountKey') == account]
+    if not any(r.get('id') == receipt.get('operationId') and r.get('source') == source
+               and r.get('newThreadId') == receipt.get('newThreadId')
+               and r.get('nativeTerminalReceipt') == proof for r in eligible):
+        return False
+    destination = receipt.get('newThreadId')
+    seen = set()
+    while destination != a.get('threadId'):
+        if not destination or destination in seen:
+            return False
+        seen.add(destination)
+        next_threads = {r.get('newThreadId') for r in eligible
+                        if r['source'].get('threadId') == destination and r.get('newThreadId')}
+        if len(next_threads) != 1:
+            return False
+        destination = next_threads.pop()
+    completion = a['id'] + ':' + turn['id']
+    if db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?', (completion,)).fetchone():
+        return True
+    # This row records the real callback, never the preceding history read.
+    db.execute('INSERT INTO runtime_completed_turns VALUES (?)', (completion,))
+    from codex_native_errors import error_kind, error_message, notice
+    outcome = ('failed' if turn['status'] == 'interrupted' and error_kind(turn.get('error')) == 'tooManyDenials'
+               else turn['status'])
+    actor = copy.deepcopy(actor)
+    actor.update(status=outcome, error=turn.get('error'), autoWake=bool(actor.get('autoWake') and a.get('autoWake')))
+    db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
+               "WHERE agent=? AND json_extract(record,'$.turnId')=?", (outcome, a['id'], turn['id']))
+    for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
+                          "AND json_extract(record,'$.status')='running' AND json_extract(record,'$.turnId')=?",
+                          (a['id'], turn['id'])).fetchall():
+        task = json.loads(row[0])
+        if task.get('kind') != 'command' or not task.get('processId'):
+            task.update(status='interrupted', finished=time.time())
+            rt.put(db, 'tasks', task)
+    from codex_execution import observe_native, safe_record
+    safe_record(db, observe_native, db, actor, 'turn/completed', params)
+    if outcome == 'failed':
+        actor['error'] = actor.get('error') or {'message':'Codex ended this turn with an error.'}
+        notice(rt, db, actor, 'error:' + turn['id'], error_message(actor['error']), 'error',
+               turnId=turn['id'], threadId=thread, nativeError=actor['error'])
+    if not receipt.get('children') and actor.get('turnEpoch', actor['epoch']) == actor['epoch']:
+        if outcome == 'completed':
+            rt.parent_event(db, actor, turn['id'], actor.get('lastAnswer') or 'No final text returned')
+        elif actor.get('parentId') and actor.get('autoWake'):
+            parent = rt.agent(actor['parentId'], db)
+            payload = {'agent_id':actor['id'], 'name':actor.get('name'), 'status':outcome,
+                       'cwd':actor.get('cwd'), 'branch':actor.get('branch'), 'reason':actor.get('error'),
+                       'result':error_message(actor['error']) if actor.get('error') else 'The turn ended without a final result.',
+                       'tasks':receipt.get('work', []), 'tasks_truncated':receipt.get('workTruncated', False),
+                       'task_id':(receipt.get('work') or [{}])[0].get('task_id'),
+                       'result_submitted':any(w.get('result_submitted') for w in receipt.get('work', [])),
+                       'thread_id':thread, 'turn_id':turn['id'], 'context_repair_id':receipt['operationId'],
+                       'next_step':'recover'}
+            rt.enqueue_recovery_event(db, parent, 'child_result', json.dumps(payload),
+                                      'child-stop:' + actor['id'] + ':' + str(actor['epoch']) + ':turn:' + turn['id'])
+    receipt['callback'] = {'at':time.time(), 'status':outcome, 'connectionId':connection}
+    db.execute('UPDATE runtime_context_terminal_receipts SET record=? WHERE id=?', (json.dumps(receipt), key))
+    rt.changed.set()
+    return True
 
 
 def _native_items(server, tid, turn_id, deadline=None):
@@ -1091,6 +1286,27 @@ def _native_idle(server, tid, unresolved=(), *, inherited_empty=False):
             raise _waiting('Context repair waits for the exact tool receipt: ' + receipt['id'], 'native')
     if not native.get('path'):
         raise ValueError('The native context has no saved rollout path')
+    if native.get('repairTerminalTurnId'):
+        checked = _native_read(server, 'thread/read', {'threadId': tid, 'includeTurns': False}, timeout=10)['thread']
+        state = checked.get('status', {}).get('type')
+        if checked.get('id') != tid or checked.get('path') != native['path'] or state not in {'idle', 'notLoaded', 'systemError'}:
+            raise _waiting('Context repair waits for unchanged terminal native history', 'native')
+        for method in (('thread/queue/list',) if state == 'notLoaded' else
+                       ('thread/backgroundTerminals/list', 'thread/queue/list')):
+            result = _native_read(server, method, {'threadId': tid}, timeout=10)
+            if result.get('data') or result.get('nextCursor'):
+                raise _waiting('Context repair waits for native commands and queued input', 'native')
+        latest = _native_read(server, 'thread/turns/list', {'threadId': tid, 'limit': 1,
+                              'sortDirection': 'desc', 'itemsView': 'notLoaded'}, timeout=10).get('data') or []
+        if (not latest or any(latest[0].get(k) != turn.get(k)
+                              for k in ('id', 'status', 'startedAt', 'completedAt'))):
+            raise _waiting('Context repair waits for unchanged terminal native history', 'native')
+        native['repairTerminalReceipt'] = {'threadId': tid, 'turnId': turn['id'], 'status': turn['status'],
+                                         'nativeState': state, 'checkedAt': time.time()}
+        answers = [e['item'].get('text') for e in pages[turn['id']] if e['item'].get('type') == 'agentMessage'
+                   and isinstance(e['item'].get('text'), str) and e['item']['text']]
+        if answers:
+            native['repairTerminalReceipt']['lastAnswer'] = answers[-1][-16000:]
     return native
 
 
@@ -1151,6 +1367,7 @@ def _settle(rt, op, future, server=None):
             if a.get('nativeToolCatalog') == source_catalog:
                 a['nativeToolCatalog'] = {**source_catalog, 'threadId': tid}
             a.update(threadId=tid, turnId=None)
+            _complete_source_fork(db, stored, tid)
             if stored['source']['attemptId']:
                 a['startAttempt']['threadId'] = tid
             stored.update(phase='completed', newThreadId=tid, error=None,
@@ -1591,6 +1808,9 @@ def claim_context_wait(rt, db, agent):
             _local_idle(rt, db, agent, attempt['id'])
     except ValueError as error:
         wait.update(error=str(error), nextCheckAt=time.time() + 2)
+        detail = getattr(error, 'contextRepairWait', None)
+        if isinstance(detail, dict):
+            wait['scope'] = detail.get('scope', 'local')
         agent['error'] = str(error)
         rt.put(db, 'agents', agent)
         _schedule_task_wait_check(rt, db, agent, error)
@@ -1721,7 +1941,15 @@ def _repair(rt, key, attempt_id):
     submitted, report = False, None
     try:
         server = rt.connect(a.get('accountKey', 'default'))
-        op['connectionId'] = rt.connection_ids.get(a.get('accountKey', 'default'))
+        with rt.lock, rt.db() as db:
+            current = _current(rt, db, op)
+            account = current.get('accountKey', 'default')
+            if rt.servers.get(account) is not server:
+                raise _waiting('Context repair waits for its original native connection', 'native')
+            op['connectionId'] = rt.connection_ids.get(account)
+            op['startAttemptSnapshot'] = copy.deepcopy(current.get('startAttempt'))
+            op['nativeIdentity'] = _source_native_identity(server)
+            _save(rt, db, current, op)
         native = _native_idle(server, a['threadId'], _unresolved_tool_receipts(rt, a), inherited_empty=True)
         _reconcile_thread_receipts(rt, op, native, attempt_id)
         # Native regular items flush before the terminal marker. Require that
@@ -1766,8 +1994,9 @@ def _repair(rt, key, attempt_id):
                 if (report.get('terminalTurnId') != native.get('repairTerminalTurnId')
                         or not isinstance(completed, (int, float))
                         or completed <= max(r['created'] for r in historical)
-                        or not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
-                                          (key + ':' + report['terminalTurnId'],)).fetchone()):
+                        or (not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                                           (key + ':' + report['terminalTurnId'],)).fetchone()
+                            and (op.get('nativeTerminalReceipt') or {}).get('turnId') != report['terminalTurnId'])):
                     raise _waiting('Context repair waits for a later confirmed native terminal turn', 'native')
                 op['historicalInputProof'] = {'events':historical, 'terminalTurnId':report['terminalTurnId'],
                     'terminalCompletedAt':completed, 'source':copy.deepcopy(op['source']),
@@ -1783,6 +2012,7 @@ def _repair(rt, key, attempt_id):
             params.update(threadId=report['importThreadId'], path=report['copyPath'], excludeTurns=True, deferGoalContinuation=True)
             op.update(phase='submitted', connectionId=rt.connection_ids.get(a.get('accountKey', 'default')),
                       rpcMethod='thread/fork')
+            _register_source_terminal(rt, db, current, op, server)
             _save(rt, db, current, op)
             db.commit()
             submitted = True

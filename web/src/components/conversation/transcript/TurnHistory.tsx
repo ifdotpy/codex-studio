@@ -165,6 +165,7 @@ const WorkBlock = memo(function WorkBlock({
           update(!open);
         }}
       >
+        <ChevronRight size={14} className="turn-expand-icon" />
         {summary.running ? (
           <LoaderCircle size={14} className="spin" />
         ) : (
@@ -182,7 +183,6 @@ const WorkBlock = memo(function WorkBlock({
         {!!summary.failed && (
           <span className="activity-failed">{summary.failed} failed</span>
         )}
-        <ChevronRight size={14} className="turn-expand-icon" />
       </summary>
       <div className="turn-work-body">
         {items.map((item) => {

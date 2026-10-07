@@ -319,7 +319,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
     /\$12.50/,
   );
   assert.match(await details().innerText(), /\$1,234.56/);
-  assert.match(await details().innerText(), /API cost estimate/);
+  assert.match(await details().innerText(), /Estimated API cost/);
   assert.doesNotMatch(
     await details().innerText(),
     /All local chats|All accounts/,

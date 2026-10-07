@@ -135,65 +135,69 @@ class AccountStore:
             raise ValueError("Unknown Codex account")
         return self.data["accounts"][key]
 
-    def refresh(self, key: str) -> dict[str, object]:
-        claude_metadata = None
-        with self.lock:
-            row = self._row(key)
-            claude_options = row.get("claudeOptions") if row.get("provider") == "claude" and not row.get("duplicateOf") else None
-            is_claude = row.get("provider") == "claude" and not row.get("duplicateOf")
-        if is_claude:
-            # The Claude CLI can take seconds. Never hold the account lock while it runs.
-            from codex_claude import auth_metadata as claude_auth
-            claude_metadata = claude_auth(claude_options)
-        with self.lock:
-            row = self._row(key)
-            if row.get("duplicateOf"):
-                return {k: v for k, v in row.items() if not k.startswith("_")}
-            if row.get("provider") == "claude":
-                if claude_metadata is None or row.get("claudeOptions") != claude_options:
-                    from codex_claude import auth_metadata as claude_auth
-                    claude_metadata = claude_auth(row.get("claudeOptions"))
-                metadata = claude_metadata
+    def refresh(self, key):
+        import copy
+        for _ in range(2):
+            with self.lock:
+                row = self._row(key)
+                if row.get("duplicateOf"):
+                    return {k: v for k, v in row.items() if not k.startswith("_")}
+                provider, home = row.get("provider"), row.get("home")
+                claude_options = copy.deepcopy(row.get("claudeOptions"))
+            if provider == "claude":
+                from codex_claude import auth_metadata as claude_auth
+                metadata = claude_auth(claude_options)
             else:
-                metadata = auth_metadata(row["home"])
-            expected = row.get("accountId")
-            credential_identity = row.get("_credentialIdentity")
-            observed = metadata.get("accountId")
-            observed_credential = metadata.get("_credentialIdentity")
-            if (expected and observed and observed != expected) or (
-                credential_identity and observed_credential
-                and observed_credential != credential_identity
-            ):
-                row.update(
-                    status="changed",
-                    error="This profile's account changed. Restore its original login or add a separate profile.",
-                )
-            elif metadata["status"] == "ready" and (
-                (expected and not observed)
-                or (credential_identity and not observed_credential)
-                or (not observed and not observed_credential)
-            ):
-                row.update(
-                    status="error",
-                    error="Cannot verify this profile's account. Sign in to its original account again.",
-                )
-            elif (
-                row.get("source") == "Codex Agents"
-                and row.get("status") in {"pending", "error"}
-                and metadata["status"] == "signedOut"
-            ):
-                pass
-            else:
-                # Missing authentication does not prove an account change or erase its pin.
-                row.update({k: v for k, v in metadata.items()
-                            if v or k not in {"accountId", "_credentialIdentity", "email", "plan"}})
+                metadata = auth_metadata(home)
+            with self.lock:
+                row = self._row(key)
+                if row.get("duplicateOf"):
+                    return {k: v for k, v in row.items() if not k.startswith("_")}
+                if (row.get("provider"), row.get("home"), row.get("claudeOptions")) != (provider, home, claude_options):
+                    continue
+                expected = row.get("accountId")
+                credential_identity = row.get("_credentialIdentity")
+                observed = metadata.get("accountId")
+                observed_credential = metadata.get("_credentialIdentity")
                 if metadata["status"] != "error":
-                    row.pop("error", None)
+                    row.pop("_authErrorKind", None)
+                if (expected and observed and observed != expected) or (
+                    credential_identity and observed_credential
+                    and observed_credential != credential_identity
+                ):
+                    row.update(
+                        status="changed",
+                        error="This profile's account changed. Restore its original login or add a separate profile.",
+                    )
+                elif metadata["status"] == "ready" and (
+                    (expected and not observed)
+                    or (credential_identity and not observed_credential)
+                    or (not observed and not observed_credential)
+                ):
+                    row.update(
+                        status="error",
+                        error="Cannot verify this profile's account. Sign in to its original account again.",
+                    )
+                elif (
+                    row.get("source") == "Codex Agents"
+                    and row.get("status") in {"pending", "error"}
+                    and metadata["status"] == "signedOut"
+                ):
+                    pass
+                else:
+                    # Missing authentication does not erase the original identity.
+                    row.update({k: v for k, v in metadata.items()
+                                if v or k not in {"accountId", "_credentialIdentity", "email", "plan"}})
+                    if metadata["status"] != "error":
+                        row.pop("error", None)
+                return {k: v for k, v in row.items() if not k.startswith("_")}
+        with self.lock:
+            row = self._row(key)
+            row.update(status="error", error="This profile changed during authentication. Check its settings and try again.")
             return {k: v for k, v in row.items() if not k.startswith("_")}
 
-    def get(self, key: str) -> dict[str, object]:
-        with self.lock:
-            return self.refresh(key)
+    def get(self, key):
+        return self.refresh(key)
 
     def home(self, key, *, for_login=False):
         row = self.get(key)
@@ -208,29 +212,50 @@ class AccountStore:
 
     def list(self):
         with self.lock:
-            return [self.get(key) for key, row in self.data["accounts"].items()
-                    if (not key.startswith("login-") or row.get("status") == "ready")
-                    and not row.get("deleted")]
-
-    def snapshot(self) -> "AccountSnapshotRecord":
-        if not self.discovered:
-            return self.discover()
+            keys = [key for key, row in self.data["accounts"].items()
+                    if (not key.startswith("login-") or row.get("status") == "ready") and not row.get("deleted")]
+        for key in keys:
+            self.refresh(key)
         with self.lock:
+            return [{k: v for k, v in row.items() if not k.startswith("_")}
+                    for key in keys if not (row := self._row(key)).get("deleted")
+                    and (not key.startswith("login-") or row.get("status") == "ready")]
+
+    def snapshot(self, *, refresh=True):
+        if refresh:
+            if not self.discovered:
+                return self.discover()
             logins = self.login_receipts()
-            return {
-                "accounts": self.list(),
-                "archivedAccounts": [self.get(key) for key, row in self.data["accounts"].items()
-                                     if row.get("deleted")],
+            with self.lock:
+                keys = list(self.data["accounts"])
+            for key in keys:
+                self.refresh(key)
+        else:
+            import copy
+        with self.lock:
+            if not refresh:
+                keys = list(self.data["accounts"])
+                logins = [{"requestId": request, **receipt}
+                          for request, receipt in self.data.get("logins", {}).items()]
+            snapshot = {
+                "accounts": [{k: v for k, v in row.items() if not k.startswith("_")}
+                             for key in keys if not (row := self._row(key)).get("deleted")
+                             and (not key.startswith("login-") or row.get("status") == "ready")],
+                "archivedAccounts": [{k: v for k, v in row.items() if not k.startswith("_")}
+                                     for key in keys if (row := self._row(key)).get("deleted")],
                 "defaultAccountKey": self.data["defaultAccountKey"],
                 "logins": logins,
                 "supportsDisconnect": True,
                 "supportsDelete": True,
             }
+            return snapshot if refresh else copy.deepcopy(snapshot)
 
-    def default(self, key: str | None = None) -> str:
+    def default(self, key=None):
+        if key is not None:
+            self.get(key)
         with self.lock:
             if key is not None:
-                row = self.get(key)
+                row = self._row(key)
                 if row["status"] != "ready" or row.get("disconnected") or row.get("deleted"):
                     raise ValueError("Sign in to this account first")
                 self.data["defaultAccountKey"] = key
@@ -239,23 +264,23 @@ class AccountStore:
 
     def disconnect(self, key):
         """Remove a profile from new choices; existing native identities still work."""
+        candidates = {row["id"] for row in self.list() if row.get("status") == "ready"}
         with self.lock:
             row = self._row(key)
-            if row.get("disconnected"):
-                return self.snapshot()
-            if self.data["defaultAccountKey"] == key:
+            if not row.get("disconnected") and self.data["defaultAccountKey"] == key:
                 replacement = next((other for other in self.data["accounts"]
-                                    if other != key
+                                    if other != key and other in candidates
                                     and not self.data["accounts"][other].get("disconnected")
                                     and not self.data["accounts"][other].get("deleted")
                                     and not self.data["accounts"][other].get("duplicateOf")
-                                    and self.get(other).get("status") == "ready"), None)
+                                    and self.data["accounts"][other].get("status") == "ready"), None)
                 if replacement is None:
                     raise ValueError("Connect another account before disconnecting the application default.")
                 self.data["defaultAccountKey"] = replacement
-            row["disconnected"] = True
-            self._save()
-            return self.snapshot()
+            if not row.get("disconnected"):
+                row["disconnected"] = True
+                self._save()
+        return self.snapshot()
 
     def delete(self, key, request_id):
         """Hide an account from new choices while retaining its native identity for old chats."""
@@ -263,35 +288,37 @@ class AccountStore:
             request = str(uuid.UUID(request_id))
         except (ValueError, TypeError, AttributeError):
             raise ValueError("Supply a UUID request_id") from None
+        candidates = {row["id"] for row in self.list() if row.get("status") == "ready"}
         with self.lock:
             receipts = self.data.setdefault("deleteReceipts", {})
             previous = receipts.get(request)
             if previous:
                 if previous.get("accountKey") != key:
                     raise ValueError("This delete request id has different content")
-                return self.snapshot()
-            row = self._row(key)
-            if self.data["defaultAccountKey"] == key:
-                replacement = next((other for other, value in self.data["accounts"].items()
-                                    if other != key and not value.get("deleted")
-                                    and not value.get("disconnected") and not value.get("duplicateOf")
-                                    and self.get(other).get("status") == "ready"), None)
-                if replacement is None:
-                    raise ValueError("Add another connected account before deleting the application default.")
-                self.data["defaultAccountKey"] = replacement
-            row["deleted"] = True
-            receipts[request] = {"accountKey": key, "deletedAt": time.time()}
-            self._save()
-            return self.snapshot()
+            else:
+                row = self._row(key)
+                if self.data["defaultAccountKey"] == key:
+                    replacement = next((other for other, value in self.data["accounts"].items()
+                                        if other != key and other in candidates and not value.get("deleted")
+                                        and not value.get("disconnected") and not value.get("duplicateOf")
+                                        and value.get("status") == "ready"), None)
+                    if replacement is None:
+                        raise ValueError("Add another connected account before deleting the application default.")
+                    self.data["defaultAccountKey"] = replacement
+                row["deleted"] = True
+                receipts[request] = {"accountKey": key, "deletedAt": time.time()}
+                self._save()
+        return self.snapshot()
 
     def reconnect(self, key):
+        self.get(key)
         with self.lock:
-            row = self.get(key)
+            row = self._row(key)
             if row.get("status") != "ready":
                 raise ValueError("Restore this profile's original login before reconnecting it.")
             self._row(key).pop("disconnected", None)
             self._save()
-            return self.snapshot()
+        return self.snapshot()
 
     def register(self, home, *, restore_deleted=True):
         if not isinstance(home, str) or not home.strip():
@@ -343,9 +370,15 @@ class AccountStore:
         if label is not None and (not isinstance(label, str) or not label.strip() or len(label) > 200):
             raise ValueError("Invalid Claude profile label")
         with self.lock:
+            existing_key = key in self.data["accounts"]
+        if existing_key:
+            self.get(key)
+        with self.lock:
             if key in self.data["accounts"]:
-                existing = self.get(key)
-                if existing.get("status") != "ready":
+                existing = self._row(key)
+                if (existing.get("status") != "ready"
+                        or any(existing.get(field) and existing[field] != metadata.get(field)
+                               for field in ("accountId", "_credentialIdentity"))):
                     raise ValueError("Restore this profile's original Claude login")
                 if existing.get("claudeOptions") != options:
                     raise ValueError("This Claude configuration already exists. Update its settings")
@@ -408,7 +441,7 @@ class AccountStore:
             if label is not None:
                 row["label"] = label.strip()
             self._save()
-            return self.get(key)
+        return self.get(key)
 
     def discover(self):
         """Bounded known profile locations; no recursive credential search."""
@@ -479,15 +512,23 @@ class AccountStore:
     def login_receipts(self):
         """Reconcile saved sign-ins from their isolated homes after a lost reply."""
         with self.lock:
+            pending = {request: receipt["accountKey"]
+                       for request, receipt in self.data.setdefault("logins", {}).items()
+                       if receipt.get("status") not in {"ready", "duplicate", "cancelled"}}
+        for key in dict.fromkeys(pending.values()):
+            self.refresh(key)
+        with self.lock:
             before = json.dumps(self.data, sort_keys=True)
             for request, receipt in self.data.setdefault("logins", {}).items():
                 receipt.setdefault("requestId", request)
                 if receipt.get("status") in {"ready", "duplicate", "cancelled"}:
                     continue
+                if pending.get(request) != receipt["accountKey"]:
+                    continue
                 if receipt.get("status") == "starting" and time.time() - receipt.get("createdAt", 0) > 30:
                     receipt.update(status="uncertain", error="Sign-in response is unconfirmed. Check status or start a separate attempt.")
                 key = receipt["accountKey"]
-                row = self.refresh(key)
+                row = self._row(key)
                 if receipt.get("reauthAccountKey"):
                     # Cached credentials do not prove that this sign-in completed.
                     if not receipt.get("nativeCompleted"):
@@ -526,8 +567,8 @@ class AccountStore:
         except (ValueError, TypeError, AttributeError):
             raise ValueError("Supply a UUID request_id") from None
         # Reserve once, then release the registry lock before native I/O.
+        self.login_receipts()
         with self.lock:
-            self.login_receipts()
             previous = self.data["logins"].get(request)
             if previous:
                 if previous.get("reauthAccountKey") != account_key:
@@ -576,13 +617,13 @@ class AccountStore:
                     if not submitted and account_key is None:
                         self.data["accounts"][key].update(status="error", error=receipt["error"])
                     self._save()
+        self.login_receipts()
         with self.lock:
-            self.login_receipts()
             return dict(self.data["logins"][request])
 
     def cancel_login(self, runtime, request):
+        self.login_receipts()
         with self.lock:
-            self.login_receipts()
             receipt = self.data["logins"].get(request)
             if not receipt:
                 raise ValueError("Unknown sign-in request")
@@ -601,8 +642,8 @@ class AccountStore:
                 receipt["error"] = "Cancellation is unconfirmed. Check status or retry cancellation."
                 self._save()
                 return dict(receipt)
+        self.login_receipts()
         with self.lock:
-            self.login_receipts()
             if receipt["status"] not in {"ready", "duplicate"}:
                 receipt.update(status="cancelled")
                 receipt.pop("error", None)
@@ -633,9 +674,10 @@ class AccountStore:
                         row.update(status="error", error=receipt["error"])
                 elif receipt.get("reauthAccountKey"):
                     receipt["nativeCompleted"] = True
-            if params.get("success"):
-                self.refresh(key)
-                self.login_receipts()
+        if params.get("success"):
+            self.refresh(key)
+            self.login_receipts()
+        with self.lock:
             self._save()
             changed = json.dumps(self.data, sort_keys=True) != before
         if changed:

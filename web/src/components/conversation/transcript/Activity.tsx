@@ -274,6 +274,7 @@ export const ToolCard = memo(function ToolCard({
       }}
     >
       <summary>
+        <ChevronRight size={14} className="tool-chevron" />
         <span className="tool-icon">
           <Icon size={15} />
         </span>
@@ -313,7 +314,6 @@ export const ToolCard = memo(function ToolCard({
               <Check size={12} />
             ) : null}
           </span>
-          <ChevronRight size={13} className="tool-chevron" />
         </span>
       </summary>
       {open && (
@@ -503,6 +503,7 @@ export default memo(function Activity({
       }}
     >
       <summary>
+        <ChevronRight size={14} className="tool-chevron" />
         {running ? (
           <LoaderCircle size={13} className="spin" />
         ) : (

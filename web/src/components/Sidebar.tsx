@@ -14,10 +14,11 @@ import {
   Pin,
   PinOff,
   ArchiveRestore,
-  Check,
+  Users,
   FolderOpen,
   MoreHorizontal,
   Pencil,
+  SquarePen,
   Search,
   Folder,
   ChevronDown,
@@ -216,7 +217,7 @@ export default function Sidebar(p: Props) {
     setDialog({
       title:
         folder === "new"
-          ? "New folder"
+          ? "New chat folder"
           : folder
             ? "Rename folder"
             : "Rename project",
@@ -642,12 +643,13 @@ export default function Sidebar(p: Props) {
                 if (e.key === "Escape") setRenaming(null);
               }}
             />
-            <ActionIcon type="submit" aria-label="Save name">
-              <Check size={16} />
-            </ActionIcon>
+            <Button type="submit" aria-label="Save name">
+              Save
+            </Button>
+            <Button onClick={() => setRenaming(null)}>Cancel</Button>
           </form>
         ) : (
-          <Menu position="bottom-end" withinPortal shadow="lg" width={170}>
+          <Menu position="bottom-end" withinPortal shadow="lg" width={220}>
             <Menu.Target>
               <ActionIcon
                 className="row-actions"
@@ -658,7 +660,18 @@ export default function Sidebar(p: Props) {
             </Menu.Target>
             <Menu.Dropdown>
               <Menu.Item
+                leftSection={<Pencil size={14} />}
+                onClick={() => {
+                  setName(row.name ?? "");
+                  setRenaming(row.id);
+                }}
+              >
+                Rename
+              </Menu.Item>
+              <Menu.Divider />
+              <Menu.Item
                 leftSection={<Mail size={14} />}
+                aria-label="Mark unread"
                 disabled={
                   !a.readStateSupported ||
                   !hasCompletedResult(a) ||
@@ -667,23 +680,18 @@ export default function Sidebar(p: Props) {
                 onClick={() => p.markUnread(a)}
               >
                 Mark unread
+                {(!a.readStateSupported ||
+                  !hasCompletedResult(a) ||
+                  p.markingRead.has(a.id)) && (
+                  <small className="menu-action-help">
+                    {!a.readStateSupported
+                      ? "Read status is unavailable for this chat."
+                      : !hasCompletedResult(a)
+                        ? "Available after an answer."
+                        : "The read status is changing."}
+                  </small>
+                )}
               </Menu.Item>
-              {a.cwd && (
-                <Menu.Item
-                  leftSection={<Folder size={14} />}
-                  onClick={() => {
-                    if (!requireProjectSupport()) return;
-                    const project = groupMap.get(a.cwd || "")!;
-                    setDialog({
-                      title: "Move chat",
-                      path: project.path,
-                      agentId: a.id,
-                    });
-                  }}
-                >
-                  Move to folder
-                </Menu.Item>
-              )}
               {a && (
                 <>
                   <Menu.Item
@@ -694,15 +702,33 @@ export default function Sidebar(p: Props) {
                   >
                     {a.pinned ? "Unpin" : "Pin"}
                   </Menu.Item>
+                  <Menu.Divider />
+                  {a.cwd && (
+                    <Menu.Item
+                      leftSection={<Folder size={14} />}
+                      onClick={() => {
+                        if (!requireProjectSupport()) return;
+                        const project = groupMap.get(a.cwd || "")!;
+                        setDialog({
+                          title: "Move chat",
+                          path: project.path,
+                          agentId: a.id,
+                        });
+                      }}
+                    >
+                      Move to folder
+                    </Menu.Item>
+                  )}
                   {!compact && (
                     <Menu.Item
                       leftSection={<FolderOpen size={14} />}
                       disabled={!!a.threadId || !!a.inFlight}
                       onClick={() => p.changeProject(a)}
                     >
-                      Change project folder
+                      Change project directory
                     </Menu.Item>
                   )}
+                  <Menu.Divider />
                   <Menu.Item
                     leftSection={
                       a.archived ? (
@@ -721,15 +747,6 @@ export default function Sidebar(p: Props) {
                   <Menu.Divider />
                 </>
               )}
-              <Menu.Item
-                leftSection={<Pencil size={14} />}
-                onClick={() => {
-                  setName(row.name ?? "");
-                  setRenaming(row.id);
-                }}
-              >
-                Rename
-              </Menu.Item>
               <Menu.Item
                 color="red"
                 leftSection={<Trash2 size={14} />}
@@ -1038,35 +1055,45 @@ export default function Sidebar(p: Props) {
         }
       </div>
       <div className="sidebar-nav">
-        <Button
-          className="sidebar-nav-button"
-          leftSection={<Plus size={15} />}
-          disabled={p.creating}
-          onClick={() => p.newChat()}
-        >
-          New chat
-        </Button>
+        <div className="sidebar-primary-actions">
+          <Button
+            className="sidebar-nav-button sidebar-search"
+            aria-label="Search chats"
+            leftSection={<Search size={15} />}
+            onClick={p.onSearch}
+          >
+            Search{" "}
+            <kbd>
+              {navigator.platform.toLowerCase().includes("mac")
+                ? "⌘K"
+                : "Ctrl+K"}
+            </kbd>
+          </Button>
+          <ActionIcon
+            className="sidebar-new-chat"
+            aria-label="New chat"
+            title="New chat"
+            disabled={p.creating}
+            onClick={() => p.newChat()}
+          >
+            <SquarePen size={16} />
+          </ActionIcon>
+        </div>
         {p.newSharedChat && (
           <Button
-            className="sidebar-nav-button"
-            variant="subtle"
+            className="sidebar-nav-button sidebar-shared-chat"
+            title="New shared chat"
+            leftSection={<Users size={15} />}
             onClick={() => p.newSharedChat?.()}
           >
             New shared chat
           </Button>
         )}
-        <Button
-          className="sidebar-search sidebar-nav-button"
-          leftSection={<Search size={15} />}
-          onClick={p.onSearch}
-        >
-          Search chats
-        </Button>
       </div>
       <TextInput
         id="chat-search"
         type="search"
-        placeholder="Filter projects and chats"
+        placeholder="Filter sidebar"
         aria-label="Filter projects and chats"
         leftSection={<Search size={15} />}
         value={query}
@@ -1139,7 +1166,7 @@ export default function Sidebar(p: Props) {
                     ) : (
                       <FolderOpen size={18} />
                     )}
-                    <span>{group.name}</span>
+                    <span title={group.name}>{group.name}</span>
                   </UnstyledButton>
                   {!archive && (!compact || !!group.path) && (
                     <ActionIcon
@@ -1162,6 +1189,10 @@ export default function Sidebar(p: Props) {
                         </ActionIcon>
                       </Menu.Target>
                       <Menu.Dropdown>
+                        <Menu.Label>Create</Menu.Label>
+                        <Menu.Item onClick={() => editProject(group, "new")}>
+                          New chat folder
+                        </Menu.Item>
                         {p.newSharedChat && (
                           <Menu.Item
                             onClick={() => p.newSharedChat?.(group.path)}
@@ -1181,8 +1212,15 @@ export default function Sidebar(p: Props) {
                             New team
                           </Menu.Item>
                         )}
+                        <Menu.Divider />
+                        <Menu.Label>View</Menu.Label>
                         <Menu.Item
                           title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
+                          aria-label={
+                            compactProjects[group.path]
+                              ? "Show all chats"
+                              : "Compact project"
+                          }
                           onClick={() =>
                             setCompactProject(
                               group.path,
@@ -1193,12 +1231,15 @@ export default function Sidebar(p: Props) {
                           {compactProjects[group.path]
                             ? "Show all chats"
                             : "Compact project"}
+                          <small className="menu-action-help">
+                            Show recent and active chats. Keep pinned, unread,
+                            and team chats.
+                          </small>
                         </Menu.Item>
+                        <Menu.Divider />
+                        <Menu.Label>Project settings</Menu.Label>
                         <Menu.Item onClick={() => editProject(group)}>
                           Rename project
-                        </Menu.Item>
-                        <Menu.Item onClick={() => editProject(group, "new")}>
-                          New folder
                         </Menu.Item>
                         <Menu.Item onClick={() => p.projectAccount(group.path)}>
                           Project account

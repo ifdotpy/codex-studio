@@ -216,9 +216,18 @@ test("Team panel ui", async ({
           `Team heading missing at ${width}px: ${JSON.stringify(state)}. ${error}`,
         );
       }
-      assert.match(
-        await panel.locator(".team-heading").innerText(),
-        /3 subagents\b/,
+      assert.equal(await panel.locator(".team-heading h2").innerText(), "Team");
+      assert.equal(
+        await panel.locator('[data-team-count="working"] dd').innerText(),
+        "1",
+      );
+      assert.equal(
+        await panel.locator('[data-team-count="answer"] dd').innerText(),
+        "1",
+      );
+      assert.equal(
+        await panel.locator('[data-team-count="waiting"] dd').innerText(),
+        "1",
       );
       assert.deepEqual(
         await panel.locator(".worker-entry strong").allInnerTexts(),

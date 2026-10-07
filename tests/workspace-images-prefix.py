@@ -1,13 +1,13 @@
-"""Exercise agent-view commands through a recording exec_prefix wrapper."""
+"""Portable contract checks for generic image workspace copies."""
 
-import json
 import os
 import pathlib
 import shutil
-import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
 
@@ -15,143 +15,294 @@ import codex_workspace_images as images
 
 
 class FakeBackend:
-    def __init__(self, wrapper):
-        self.wrapper = wrapper
-        self.changed_paths = []
+    def __init__(self):
+        self.mounted = set()
+        self.mutate_after_copy = None
+        self.fail_copy_once = False
+        self.fail_mount_once = False
+        self.delta_tokens = []
 
-    def exec_prefix(self):
-        return [str(self.wrapper)]
+    def supported(self, root):
+        return root.is_dir(), ''
 
-    def clone_workspace(self, base_image, agent_dir):
-        layer = agent_dir / 'layer'
-        shutil.copytree(base_image, layer, dirs_exist_ok=True)
+    def current_event_id(self, root):
+        return 0
+
+    def open_base_staging(self, root, key, version):
+        version_path = pathlib.Path(os.environ['CODEX_WORKSPACE_STORE']) / 'bases' / key / 'versions' / version
+        (version_path / 'repo').mkdir(parents=True)
+        for name in ('home', 'tmp'):
+            (version_path / name).mkdir()
+        return {'root': version_path / 'repo', 'versionPath': version_path, 'token': 0}
+
+    def _copy(self, source, destination, excludes, base=None, destination_base=None):
+        source = pathlib.Path(source)
+        destination = pathlib.Path(destination)
+        base = source if base is None else pathlib.Path(base)
+        destination_base = destination if destination_base is None else pathlib.Path(destination_base)
+        excluded = {pathlib.Path(value) for value in excludes}
+        destination.mkdir(parents=True, exist_ok=True)
+        items = list(source.iterdir())
+        present = {item.name for item in items}
+        for old in destination.iterdir():
+            relative = old.relative_to(destination_base)
+            if old.parent == destination and pathlib.Path(old.name) in excluded:
+                continue
+            if old.name in present or relative in excluded or any(
+                    parent in excluded for parent in relative.parents):
+                continue
+            if any(value.parts[:len(relative.parts)] == relative.parts for value in excluded):
+                continue
+            if old.is_dir() and not old.is_symlink():
+                shutil.rmtree(old)
+            else:
+                old.unlink()
+        for item in items:
+            relative = item.relative_to(base)
+            if relative in excluded or any(parent in excluded for parent in relative.parents):
+                continue
+            target = destination / item.name
+            if item.is_dir() and not item.is_symlink():
+                self._copy(item, target, excludes, base, destination_base)
+            elif item.is_symlink():
+                target.unlink(missing_ok=True)
+                target.symlink_to(os.readlink(item), target_is_directory=item.is_dir())
+            else:
+                target.unlink(missing_ok=True)
+                shutil.copy2(item, target)
+
+    def copy_base_tree(self, root, destination, *, excludes):
+        if self.fail_copy_once:
+            self.fail_copy_once = False
+            raise RuntimeError('injected base copy failure')
+        self._copy(root, destination, excludes)
+        if self.mutate_after_copy:
+            self.mutate_after_copy()
+            self.mutate_after_copy = None
+
+    def seal_base(self, staging):
+        return {'image': staging['versionPath'], 'versionPath': staging['versionPath'], 'token': 0}
+
+    def clone_workspace(self, image, agent_dir):
+        layer = pathlib.Path(agent_dir) / 'layer'
+        shutil.copytree(image, layer, symlinks=True, dirs_exist_ok=True)
         return layer
 
     def mount_workspace(self, layer, mount, *, base_image=None):
-        repo = mount / 'repo'
-        if not repo.exists():
-            repo.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copytree(layer, repo)
+        if self.fail_mount_once:
+            self.fail_mount_once = False
+            raise RuntimeError('injected mount failure')
+        mount = pathlib.Path(mount)
+        if mount not in self.mounted:
+            shutil.copytree(layer, mount, symlinks=True, dirs_exist_ok=True)
+            self.mounted.add(mount)
         return {'mount': str(mount)}
 
-    def sync_delta(self, repo_root, target_repo, token, *, excludes):
-        if isinstance(token, dict):
-            token = token.get('token')
-        for value in self.changed_paths:
-            parts = pathlib.Path(value).parts
-            if '.git' in parts:
-                rel = pathlib.Path(*parts[:parts.index('.git')])
-                source, target = pathlib.Path(repo_root) / rel, target_repo / rel
-                if source.is_dir():
-                    shutil.copytree(source, target, dirs_exist_ok=True)
-        return {'token': token, 'changedPaths': list(self.changed_paths), 'historyLost': False}
+    def sync_delta(self, root, target, token, *, excludes):
+        self.delta_tokens.append(token)
+        self._copy(root, pathlib.Path(target), excludes)
+        return {'token': 1, 'changedPaths': ['.'], 'scanPaths': ['.']}
 
     def unmount_workspace(self, mount, *, force=False):
-        return None
+        self.mounted.discard(pathlib.Path(mount))
 
     def remove_layer(self, agent_dir):
         shutil.rmtree(agent_dir, ignore_errors=True)
 
+    def remove_base_version(self, path):
+        shutil.rmtree(path, ignore_errors=True)
+
     def private_bytes(self, path):
-        return 0
+        return images._allocated_bytes(path)
+
+    def exec_prefix(self):
+        return []
 
 
-class PrefixTests(unittest.TestCase):
+class WorkspaceCopyTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix='workspace-prefix-')
+        self.temp = tempfile.TemporaryDirectory(prefix='workspace-copy-')
         self.root = pathlib.Path(self.temp.name)
-        self.repo = self.root / 'repo'
-        self.repo.mkdir()
-        self.store = self.root / 'store'
+        self.folder = self.root / 'folder'
+        self.folder.mkdir()
+        self.store = self.folder / 'studio-store'
+        self.old_store = os.environ.get('CODEX_WORKSPACE_STORE')
         os.environ['CODEX_WORKSPACE_STORE'] = str(self.store)
         self.old_backend = images._backend_instance
-        self.log = self.root / 'prefix.jsonl'
-        wrapper = self.root / 'exec-prefix'
-        wrapper.write_text(
-            '#!/usr/bin/env python3\n'
-            'import json,os,sys\n'
-            f'with open({str(self.log)!r}, "a") as stream: '
-            'stream.write(json.dumps(sys.argv[1:]) + "\\n")\n'
-            'os.execvp(sys.argv[1], sys.argv[1:])\n')
-        wrapper.chmod(0o755)
-        images._backend_instance = FakeBackend(wrapper)
-        self.backend = images._backend_instance
-        self.git('init')
-        self.git('config', 'user.name', 'Prefix Test')
-        self.git('config', 'user.email', 'prefix@example.invalid')
-        (self.repo / 'file.txt').write_text('base\n')
-        self.git('add', '-A')
-        self.git('commit', '-m', 'base')
-        key = images._repo_key(self.repo)
-        base_image = self.root / 'base-image'
-        shutil.copytree(self.repo, base_image)
-        base_dir = images._base_dir(key)
-        base_dir.mkdir(parents=True)
-        images._write_json(images._base_state_path(key), {
-            'state': 'ready', 'repoRoot': str(self.repo), 'repoKey': key,
-            'version': 'v-test', 'image': str(base_image), 'token': 0,
-            'repositories': ['.'], 'dirtyPaths': {'.': []},
-        })
-        self.agent_id = 'prefix-test'
+        self.backend = FakeBackend()
+        images._backend_instance = self.backend
+        (self.folder / '.git' / 'objects' / 'aa').mkdir(parents=True)
+        (self.folder / '.git' / 'config').write_bytes(b'config bytes\x00\xff')
+        (self.folder / '.git' / 'index').write_bytes(b'index bytes')
+        (self.folder / '.git' / 'objects' / 'aa' / 'object').write_bytes(b'object bytes')
+        (self.folder / 'node_modules' / '.cache').mkdir(parents=True)
+        (self.folder / 'node_modules' / '.cache' / 'cache.bin').write_bytes(b'cache')
+        (self.folder / '.worktrees' / 'legacy').mkdir(parents=True)
+        (self.folder / '.worktrees' / 'legacy' / 'ignored').write_bytes(b'excluded')
+        (self.folder / 'tracked.txt').write_bytes(b'initial')
 
     def tearDown(self):
-        try:
-            images.remove_workspace(self.agent_id, force=True)
-        except (OSError, RuntimeError, ValueError):
-            pass
         images._backend_instance = self.old_backend
-        os.environ.pop('CODEX_WORKSPACE_STORE', None)
+        if self.old_store is None:
+            os.environ.pop('CODEX_WORKSPACE_STORE', None)
+        else:
+            os.environ['CODEX_WORKSPACE_STORE'] = self.old_store
         self.temp.cleanup()
 
-    def git(self, *args, cwd=None):
-        return subprocess.run(['git', '-C', str(cwd or self.repo), *args], check=True,
-                              capture_output=True, text=True, timeout=30)
+    def build_base(self):
+        done = threading.Event()
+        result = []
+        images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
+        self.assertTrue(done.wait(30), 'base build did not finish')
+        self.assertEqual(result[-1]['state'], 'ready', result[-1])
 
-    def test_agent_git_and_file_commands_use_prefix(self):
-        from unittest import mock
-        with mock.patch.object(images, '_git_repositories',
-                               side_effect=AssertionError('create enumerated the tree')):
-            workspace = images.create_workspace(self.repo, self.agent_id)
-        agent_repo = pathlib.Path(workspace['repoPath'])
-        (agent_repo / 'file.txt').write_text('agent change\n')
-        self.git('add', '-A', cwd=agent_repo)
-        self.git('commit', '-m', 'agent change', cwd=agent_repo)
-        with mock.patch.object(images, '_git_repositories',
-                               side_effect=AssertionError('collect enumerated the tree')):
-            result = images.collect(self.agent_id)
-        self.assertEqual(result['state'], 'collected', result)
-        self.assertEqual(len(result['repositories']), 1, result)
+    def test_copy_includes_metadata_cache_and_excludes_only_studio_folders(self):
+        self.backend.mutate_after_copy = lambda: (self.folder / 'tracked.txt').write_bytes(b'changed during copy')
+        self.build_base()
+        workspace = images.create_workspace(self.folder, 'copy-test')
+        target = pathlib.Path(workspace['path'])
+        for relative in ('.git/config', '.git/index', '.git/objects/aa/object',
+                         'node_modules/.cache/cache.bin'):
+            self.assertEqual((target / relative).read_bytes(), (self.folder / relative).read_bytes())
+        self.assertEqual((target / 'tracked.txt').read_bytes(), b'changed during copy')
+        self.assertFalse((target / '.worktrees').exists())
+        self.assertFalse((target / 'studio-store').exists())
+        self.assertEqual(set(workspace), {'mount', 'path'})
 
-        calls = [json.loads(line) for line in self.log.read_text().splitlines()]
-        agent_git_calls = [call for call in calls if call[0] == 'git' and str(agent_repo) in call]
-        self.assertTrue(agent_git_calls, 'no agent Git calls reached exec_prefix')
-        self.assertTrue(any('fetch' in call and str(agent_repo) in call for call in calls),
-                        'collect fetch did not use exec_prefix')
-        self.assertTrue(any(any('alternates' in arg for arg in call) for call in calls),
-                        'agent alternates file write did not use exec_prefix')
-        self.assertTrue(all(call[0] == 'git' or call[0] == sys.executable for call in calls), calls)
+    def test_archive_restore_and_remove_keep_the_image(self):
+        self.build_base()
+        workspace = images.create_workspace(self.folder, 'archive-test')
+        (pathlib.Path(workspace['path']) / 'agent-only.txt').write_text('keep this file')
+        state_path = images._agent_state_path('archive-test')
+        state = images._read_json(state_path, {})
+        image = pathlib.Path(state['image'])
+        archived = images.archive_workspace('archive-test')
+        self.assertEqual(archived['state'], 'archived')
+        self.assertTrue(image.exists())
+        self.assertEqual(images._read_json(state_path, {})['state'], 'archived')
+        restored = images.create_workspace(self.folder, 'archive-test')
+        self.assertEqual(restored['path'], workspace['path'])
+        self.assertEqual((pathlib.Path(restored['path']) / 'agent-only.txt').read_text(),
+                         'keep this file')
+        self.assertEqual(images._read_json(state_path, {})['state'], 'ready')
+        state['state'] = 'creating'
+        images._write_json(state_path, state)
+        images.ensure_mounted('archive-test')
+        self.assertEqual(images._read_json(state_path, {})['state'], 'creating')
+        self.assertEqual(images.remove_workspace('archive-test')['state'], 'removed')
+        self.assertFalse(image.exists())
 
-    def test_delta_discovers_a_new_nested_repository_without_tree_walk(self):
-        nested = self.repo / 'nested'
-        nested.mkdir()
-        subprocess.run(['git', '-C', str(nested), 'init'], check=True,
-                       capture_output=True, text=True)
-        subprocess.run(['git', '-C', str(nested), 'config', 'user.name', 'Nested'], check=True)
-        subprocess.run(['git', '-C', str(nested), 'config', 'user.email', 'nested@example.invalid'],
-                       check=True)
-        (nested / 'nested.txt').write_text('nested repo\n')
-        subprocess.run(['git', '-C', str(nested), 'add', '-A'], check=True)
-        subprocess.run(['git', '-C', str(nested), 'commit', '-m', 'nested base'], check=True,
-                       capture_output=True, text=True)
-        self.backend.changed_paths = ['nested/.git/config']
-        self.agent_id = 'prefix-nested'
-        from unittest import mock
-        with mock.patch.object(images, '_git_repositories',
-                               side_effect=AssertionError('create enumerated the tree')):
-            workspace = images.create_workspace(self.repo, self.agent_id)
-        state = images._read_json(images._agent_state_path(self.agent_id), {})
-        self.assertIn('nested', [item['path'] for item in state['repositories']])
-        self.assertTrue(pathlib.Path(workspace['repoPath'], 'nested', 'nested.txt').exists())
+    def test_copy_delta_helper_replaces_a_destination_symlink(self):
+        import codex_workspace_macos as macos
+
+        source = self.root / 'source-file'
+        target = self.root / 'target-file'
+        victim = self.root / 'user-file'
+        source.write_bytes(b'new copy')
+        victim.write_bytes(b'keep')
+        target.symlink_to(victim)
+        macos._copy_delta_entry(source, target)
+        self.assertFalse(target.is_symlink())
+        self.assertEqual(target.read_bytes(), b'new copy')
+        self.assertEqual(victim.read_bytes(), b'keep')
+
+        root = self.root / 'target-root'
+        root.mkdir()
+        parent_victim = self.root / 'user-folder'
+        parent_victim.mkdir()
+        (parent_victim / 'nested').write_bytes(b'keep nested')
+        (root / 'parent').symlink_to(parent_victim, target_is_directory=True)
+        nested_source = self.root / 'nested-source'
+        nested_source.write_bytes(b'new nested')
+        macos._copy_delta_entry(nested_source, root / 'parent' / 'nested', root)
+        self.assertFalse((root / 'parent').is_symlink())
+        self.assertEqual((root / 'parent' / 'nested').read_bytes(), b'new nested')
+        self.assertEqual((parent_victim / 'nested').read_bytes(), b'keep nested')
+        scan_victim = self.root / 'scan-victim'
+        scan_victim.mkdir()
+        (root / 'scanned').symlink_to(scan_victim, target_is_directory=True)
+        macos._prepare_delta_directory(root / 'scanned', root)
+        self.assertFalse((root / 'scanned').is_symlink())
+        self.assertEqual(list(scan_victim.iterdir()), [])
+
+    def test_linux_folder_copy_keeps_destination_symlinks_private(self):
+        if shutil.which('rsync') is None:
+            self.skipTest('requires rsync')
+        import codex_workspace_linux as linux
+
+        source = self.root / 'linux-source'
+        target = self.root / 'linux-target'
+        source.mkdir()
+        target.mkdir()
+        victim = self.root / 'linux-victim'
+        victim.write_bytes(b'keep')
+        (source / 'file').write_bytes(b'new copy')
+        (target / 'file').symlink_to(victim)
+        linux._copy_folder(source, target)
+        self.assertFalse((target / 'file').is_symlink())
+        self.assertEqual((target / 'file').read_bytes(), b'new copy')
+        self.assertEqual(victim.read_bytes(), b'keep')
+
+    def test_macos_root_event_does_not_rescan_without_must_scan_flag(self):
+        import codex_workspace_macos as macos
+
+        target = self.root / 'root-event-target'
+        target.mkdir()
+        events = [(str(self.folder), 0, 1)]
+        with mock.patch.object(macos, '_read_events', return_value=(events, 1)), \
+                mock.patch.object(macos, '_rsync_folder') as rsync:
+            macos.Backend().sync_delta(self.folder, target, 0, excludes=())
+        rsync.assert_not_called()
+
+    def test_macos_root_must_scan_event_rescans_folder(self):
+        import codex_workspace_macos as macos
+
+        target = self.root / 'root-scan-target'
+        target.mkdir()
+        events = [(str(self.folder), 0x1, 1)]
+        with mock.patch.object(macos, '_read_events', return_value=(events, 1)), \
+                mock.patch.object(macos, '_rsync_folder') as rsync:
+            macos.Backend().sync_delta(self.folder, target, 0, excludes=())
+        rsync.assert_called_once()
+
+    def test_failed_base_retries_when_requested(self):
+        self.backend.fail_copy_once = True
+        done = threading.Event()
+        result = []
+        images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
+        self.assertTrue(done.wait(30), 'failed base build did not finish')
+        self.assertEqual(result[-1]['state'], 'failed', result[-1])
+
+        retried = threading.Event()
+        retry_result = []
+        images.start_base_build(self.folder, lambda value: (retry_result.append(value), retried.set()),
+                                retry_failed=True)
+        self.assertTrue(retried.wait(30), 'requested base retry did not finish')
+        self.assertEqual(retry_result[-1]['state'], 'ready', retry_result[-1])
+
+    def test_interrupted_create_uses_reserved_base_after_refresh(self):
+        self.build_base()
+        self.backend.fail_mount_once = True
+        with self.assertRaisesRegex(RuntimeError, 'injected mount failure'):
+            images.create_workspace(self.folder, 'reserved-base-test')
+        reserved = images._read_json(images._agent_state_path('reserved-base-test'), {})
+        self.assertEqual(reserved['state'], 'creating')
+        reserved_base = images._read_json(images._base_dir(reserved['repoKey']) / 'versions' /
+                                          reserved['baseVersion'] / 'version.json', {})
+        self.assertTrue(reserved_base)
+
+        current_path = images._base_state_path(reserved['repoKey'])
+        current = images._read_json(current_path, {})
+        newer_version = 'v-newer'
+        newer_image = images._base_dir(reserved['repoKey']) / 'versions' / newer_version
+        (newer_image / 'repo').mkdir(parents=True)
+        newer = {**current, 'version': newer_version, 'image': str(newer_image), 'token': 'new-token'}
+        images._write_json(newer_image / 'version.json', newer)
+        images._write_json(current_path, newer)
+
+        images.create_workspace(self.folder, 'reserved-base-test')
+        self.assertEqual(reserved_base['repositories'], current['repositories'])
+        images.remove_workspace('reserved-base-test')
 
 
 if __name__ == '__main__':
