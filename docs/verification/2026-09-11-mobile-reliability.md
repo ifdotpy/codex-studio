@@ -2,7 +2,7 @@
 
 This historical verification records the old `state:chat` fixture; the
 `/api/state` endpoint and legacy pull scopes were removed in the pull request
-that completed the move to sync entities (round 3), `#TBD-ROUND3`.
+that completed the move to sync entities (round 3), `#11`.
 
 ## Scope
 

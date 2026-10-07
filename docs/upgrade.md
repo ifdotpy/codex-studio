@@ -234,7 +234,7 @@ continues to launch the old backend.
 ## Rollback and recovery
 
 - **Round 3 sync-entity rollback:** The pull request that completed the move to
-  sync entities (round 3), `#TBD-ROUND3`, raises the
+  sync entities (round 3), `#11`, raises the
   `agent_organization_fields` marker in `sync_entity_meta` to version 3 and
   adds fields to stored entity rows. To go back to a build from before that
   pull request: stop the server; delete only the rows `seeded` and

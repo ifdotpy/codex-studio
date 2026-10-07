@@ -72,7 +72,7 @@ from the isolated Storybook stories.
 
 The renderer's state projection uses the sync-entity pull. `/api/state` and the
 legacy `state` / `state:chat` pull scopes were removed in the pull request that
-completed the move to sync entities (round 3), `#TBD-ROUND3`.
+completed the move to sync entities (round 3), `#11`.
 
 Shared UI views live beside their callers in the feature folders above. Typed presentational components
 have colocated `*.stories.tsx` files; the application imports those same
