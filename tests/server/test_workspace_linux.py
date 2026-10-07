@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 import shutil
@@ -60,6 +61,40 @@ class LinuxBackendUnitTests(unittest.TestCase):
         args = run.call_args.args[0]
         self.assertIn("--exclude=/.worktrees/***", args)
         self.assertFalse(any(".git/objects" in value for value in args if value.startswith("--exclude")))
+
+    def test_unmount_tries_normal_unmount_before_scanning_holders(self):
+        backend = linux.Backend()
+        mount = Path("/workspace/mount")
+        record = {"pid": 123, "startTime": "1"}
+        completed = subprocess.CompletedProcess([], 0, "", "")
+        with patch.object(linux, "_namespace_state_path") as state_path, \
+                patch.object(linux, "_namespace_alive", return_value=True), \
+                patch.object(linux, "_mount_exists", side_effect=[True, False]), \
+                patch.object(linux, "_run", return_value=completed) as run:
+            state_path.return_value.read_text.return_value = json.dumps(record)
+            result = backend.unmount_workspace(mount, force=True)
+        self.assertEqual(result["method"], "unmount")
+        self.assertEqual(run.call_args.kwargs["timeout"], 4)
+        self.assertNotIn("lsof", run.call_args.args[0])
+
+    def test_unmount_bounds_lsof_and_uses_force_as_last_step(self):
+        backend = linux.Backend()
+        mount = Path("/workspace/mount")
+        record = {"pid": 123, "startTime": "1"}
+        failed = subprocess.CompletedProcess([], 1, "", "busy")
+        found = subprocess.CompletedProcess([], 0, "", "")
+        outputs = [failed, found, failed, found]
+        with patch.object(linux, "_namespace_state_path") as state_path, \
+                patch.object(linux, "_namespace_alive", return_value=True), \
+                patch.object(linux, "_mount_exists", side_effect=[True, True, True, False]), \
+                patch.object(linux, "_proc_start_time", return_value=None), \
+                patch.object(linux, "_run", side_effect=outputs) as run:
+            state_path.return_value.read_text.return_value = json.dumps(record)
+            result = backend.unmount_workspace(mount, force=True)
+        self.assertEqual(result["method"], "force-unmount-after-terminating-holders")
+        self.assertEqual(run.call_args_list[1].kwargs["timeout"], 2)
+        self.assertEqual(run.call_args_list[-1].kwargs["timeout"], 4)
+        self.assertIn("unmount-force", run.call_args_list[-1].args[0])
 
 
 @unittest.skipUnless(sys.platform.startswith("linux")
