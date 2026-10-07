@@ -279,11 +279,29 @@ class RulesMixin:
         owner_fields = ("epoch", "accountKey", "threadId", "autoWake", "deletedAt",
                         "restartRecovery", "disconnectRecovery", "nativeFailureHold", "approvalPolicy",
                         "sandbox", "profile", "role")
+
+        def owner_reader(db):
+            owners = {}
+            generation = None
+
+            def read(key):
+                nonlocal generation
+                current = (db.total_changes, self.__dict__.get("_agent_record_revision", 0))
+                if current != generation:
+                    owners.clear()
+                    generation = current
+                if key not in owners:
+                    owners[key] = self.agent(key, db)
+                return owners[key]
+
+            return read
+
         snapshots = []
         with self.read_db() as db:
+            read_owner = owner_reader(db)
             for r in self.records(db, "rules"):
                 if r["status"] == "active" and not r.get("inFlight"):
-                    a = self.agent(r["agent"], db)
+                    a = read_owner(r["agent"])
                     snapshots.append((r, {field: a.get(field) for field in owner_fields}))
         # A slow filesystem must not hold the runtime lock or a SQLite writer.
         fingerprints = {}
@@ -296,13 +314,14 @@ class RulesMixin:
         with self.lock, self.db() as db:
             if self.closed:
                 return
+            read_owner = owner_reader(db)
             current_rules = {r["id"]: r for r in self.records(db, "rules")}
             for snapshot, owner in snapshots:
                 r = current_rules.get(snapshot["id"])
                 # Another tick, edit, or stop invalidates the sampled configuration.
                 if r != snapshot:
                     continue
-                a = self.agent(r["agent"], db)
+                a = read_owner(r["agent"])
                 if any(a.get(field) != owner[field] for field in owner_fields):
                     continue
                 if (not a.get("deletedAt") and a.get("epoch") == r["epoch"]

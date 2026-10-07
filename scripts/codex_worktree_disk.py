@@ -85,6 +85,128 @@ def _getattrlist_api():
         return _apfs_api
 
 
+def _getattrlistbulk_api():
+    global _apfs_bulk_api
+    if globals().get('_apfs_bulk_api') is not None:
+        return _apfs_bulk_api
+    with _apfs_api_lock:
+        if globals().get('_apfs_bulk_api') is None:
+            libc = ctypes.CDLL(None, use_errno=True)
+            function = libc.getattrlistbulk
+            function.argtypes = [ctypes.c_int, ctypes.POINTER(_AttrList),
+                                 ctypes.c_void_p, ctypes.c_size_t, ctypes.c_uint64]
+            function.restype = ctypes.c_int
+            _apfs_bulk_api = function
+        return _apfs_bulk_api
+
+
+def _parse_bulk_entries(raw, count):
+    """Read only complete PRIVATE records from the requested Darwin ABI."""
+    import struct
+
+    common = 0xa204000b  # RETURNED_ATTRS, ERROR, NAME, DEVID, OBJTYPE, FLAGS, FILEID.
+    if type(count) is not int or count <= 0 or count > len(raw) // 72:
+        raise ValueError('Invalid bulk entry count')
+    offset = 0
+    for _ in range(count):
+        if offset + 68 > len(raw):
+            raise ValueError('Truncated bulk entry')
+        length, = struct.unpack_from('=I', raw, offset)
+        if length < 72 or length % 8 or length > len(raw) - offset:
+            raise ValueError('Invalid bulk entry length')
+        returned = struct.unpack_from('=5I', raw, offset + 4)
+        if returned[0] != common or returned[1] or returned[4] != 8:
+            # In particular, an omitted PRIVATE attribute is not zero bytes.
+            raise ValueError('Unsupported bulk attributes')
+        error, name_offset, name_length, device, kind, flags, inode = (
+            struct.unpack_from('=IiIIIIQ', raw, offset + 24))
+        if error or kind not in range(1, 9):
+            raise ValueError('Invalid bulk object')
+        expected = (4, 0) if kind == 2 else (0, 1)
+        if returned[2:4] != expected:
+            raise ValueError('Unsupported bulk object attributes')
+        links_or_mount, private = struct.unpack_from('=Iq', raw, offset + 56)
+        if private < 0 or (kind != 2 and links_or_mount < 1):
+            raise ValueError('Invalid bulk size or link count')
+        start = offset + 28 + name_offset
+        if name_length < 2 or start < offset + 68 or start + name_length > offset + length:
+            raise ValueError('Invalid bulk name range')
+        name = raw[start:start + name_length]
+        if name[-1:] != b'\0' or b'\0' in name[:-1] or b'/' in name or name[:-1] in (b'.', b'..'):
+            raise ValueError('Invalid bulk name')
+        yield (os.fsdecode(name[:-1]), device, inode, kind,
+               links_or_mount, private, flags)
+        offset += length
+
+
+def _apfs_bulk_entries(directory, identity, *, pause=time.sleep):
+    """Use a separate directory descriptor and close it on every exit."""
+    api = _getattrlistbulk_api()
+    fd = os.open(directory, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) != identity:
+            raise ValueError('Directory identity changed before bulk read')
+        attrs = _AttrList(5, 0, 0xa204000b, 0, 4, 1, ATTR_CMNEXT_PRIVATESIZE)
+        output = ctypes.create_string_buffer(65536)
+        while True:
+            _scan_pause(pause, force=True)
+            count = api(fd, ctypes.byref(attrs), output, ctypes.sizeof(output),
+                        FSOPT_ATTR_CMN_EXTENDED | 8)  # FSOPT_PACK_INVAL_ATTRS.
+            _scan_pause(pause, force=True)
+            if count < 0:
+                raise OSError(ctypes.get_errno(), 'Bulk attributes are unavailable')
+            if count == 0:
+                return
+            yield from _parse_bulk_entries(output.raw, count)
+    finally:
+        os.close(fd)
+
+
+def _apfs_bulk_bytes(root, private, *, excluded=(), pause=time.sleep):
+    """Count APFS bytes in batches; use the path walker for ambiguous metadata."""
+    import stat
+
+    try:
+        info = root.lstat()
+        if not stat.S_ISDIR(info.st_mode):
+            return None
+        pending = [(root, (info.st_dev, info.st_ino))]
+        total, count = private, 0
+        hardlinks = set()
+        while pending:
+            directory, identity = pending.pop()
+            entries = _apfs_bulk_entries(directory, identity, pause=pause)
+            try:
+                for name, device, inode, kind, links_or_mount, value, flags in entries:
+                    path = directory / name
+                    if path in excluded:
+                        continue
+                    entry_identity = (device, inode)
+                    if flags & 0x00800000 or (kind == 2 and links_or_mount):
+                        # Bulk reports the underlying mount/firmlink, not its target.
+                        return None
+                    if kind == 2:
+                        child = path.lstat()
+                        if not stat.S_ISDIR(child.st_mode) or (child.st_dev, child.st_ino) != entry_identity:
+                            return None
+                        pending.append((path, entry_identity))
+                    if kind == 2 or links_or_mount <= 1 or entry_identity not in hardlinks:
+                        total += value
+                    if kind != 2 and links_or_mount > 1:
+                        hardlinks.add(entry_identity)
+                    count += 1
+                    if count % 64 == 0:
+                        _scan_pause(pause, force=True)
+                    if count % 500 == 0 and not _scan_pause(pause, force=True):
+                        pause(.01)
+            finally:
+                entries.close()
+        return total
+    except (AttributeError, ctypes.ArgumentError, OSError, TypeError, ValueError):
+        return None
+
+
 def disk_limit_bytes():
     value = os.environ.get('CODEX_WORKTREE_DISK_LIMIT_BYTES')
     if value is None:
@@ -180,8 +302,10 @@ def _allocated_bytes(root, *, excluded=(), pause=time.sleep):
 def _measure_worktree(root, *, excluded=(), pause=time.sleep):
     private = _apfs_private_bytes(root)
     if private is not None:
-        result = _tree_bytes(root, lambda path, _info: _apfs_private_bytes(path),
-                             excluded=excluded, pause=pause)
+        result = _apfs_bulk_bytes(root, private, excluded=excluded, pause=pause)
+        if result is None:
+            result = _tree_bytes(root, lambda path, _info: _apfs_private_bytes(path),
+                                 excluded=excluded, pause=pause)
         if result is not None:
             return result, 'private on APFS'
     return _allocated_bytes(root, excluded=excluded, pause=pause), 'allocated blocks'

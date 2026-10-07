@@ -2581,19 +2581,34 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return {record["id"]: record for record in
                 (mode_fields(json.loads(row[0])) for row in rows)}
 
+    def scheduler_roster_key(self, db):
+        """Read the roster dependencies in one SQLite snapshot."""
+        transfers = db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                               "AND name='runtime_account_transfers'").fetchone()
+        sql = ("SELECT 'agents',value FROM runtime_agent_record_generation WHERE id=1 "
+               "UNION ALL SELECT DISTINCT 'work',json_extract(record,'$.owner') FROM runtime_work "
+               "WHERE json_extract(record,'$.status') IN ('ready','running','blocked')")
+        if transfers:
+            sql += (" UNION ALL SELECT DISTINCT 'transfers',json_extract(record,'$.leadId') "
+                    "FROM runtime_account_transfers WHERE json_extract(record,'$.status')='pending'")
+        try:
+            dependencies = db.execute(sql).fetchall()
+        except sqlite3.OperationalError:
+            return None
+        generation = next((value for kind, value in dependencies if kind == 'agents'), None)
+        if type(generation) is not int or generation < 0:
+            return None
+        return self.__dict__.get("_agent_record_revision", 0), frozenset(tuple(row) for row in dependencies)
+
     def scheduler_agents(self, db):
         """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
         guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
-        write_mark = write_generation(db)
-        revision = self.__dict__.get("_agent_record_revision", 0)
+        key = self.scheduler_roster_key(db)
         with guard:
             roster_cache = self.__dict__.get("_scheduler_agent_roster")
-            if roster_cache:
-                cached_db, cached_revision, cached_write_mark, cached_changes, cached_rows = roster_cache
-                if (cached_revision == revision and cached_write_mark == write_mark
-                        and (cached_db is not db or cached_changes == db.total_changes)):
-                    return copy.deepcopy(cached_rows)
+            if key is not None and isinstance(roster_cache, dict) and roster_cache.get("key") == key:
+                return copy.deepcopy(roster_cache["rows"])
         transfer_roots = ""
         if db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                       "AND name='runtime_account_transfers'").fetchone():
@@ -2682,6 +2697,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         rows = db.execute("SELECT id,record FROM runtime_agents WHERE (" + filters + ") AND (" +
                           LIVE_AGENT_SQL + " OR (json_extract(record,'$.deletedAt') IS NOT NULL AND (" +
                           deleted_cleanup + ")))" ).fetchall()
+        final_key = self.scheduler_roster_key(db)
         cache = self.__dict__.setdefault("_scheduler_agent_cache", {})
         agents = []
         with guard:
@@ -2697,9 +2713,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agents.append(copy.deepcopy(cached[1]))
             while len(cache) > 4096:
                 cache.pop(next(iter(cache)))
-            self._scheduler_agent_roster = (
-                db, self.__dict__.get("_agent_record_revision", 0), write_generation(db),
-                db.total_changes, tuple(cache[agent_id][1] for agent_id, _ in rows))
+            # A rollback can reuse the counter in a different transaction.
+            # Publish only committed rows, even on this same connection.
+            if key is not None and final_key == key and not db.in_transaction:
+                entry = {"key": key, "rows": tuple(cache[agent_id][1] for agent_id, _ in rows)}
+                self._scheduler_agent_roster = entry
         return agents
 
     def broadcast_room(self, db, room):
@@ -5237,18 +5255,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         restart_wait_agents = []
 
         def current_agents(db):
-            # Reuse the roster within this database session. The revision and
-            # connection write count catch put() and direct SQL updates. Across
-            # sessions, retain the same snapshot when the agent watch is unchanged.
-            generation = (self._agent_record_revision, db.total_changes,
-                          write_generation(db))
-            same_session = decoded and decoded[0] is db
-            unchanged = (decoded and decoded[1][0] == generation[0]
-                         and decoded[1][2] == generation[2]
-                         and (not same_session or decoded[1][1] == generation[1]))
-            if not unchanged:
-                decoded[:] = [db, generation, self.scheduler_agents(db)]
-            return decoded[2]
+            key = self.scheduler_roster_key(db)
+            unchanged = key is not None and decoded and decoded[0] == key
+            if unchanged:
+                return decoded[1]
+            agents = self.scheduler_agents(db)
+            if key is not None and not db.in_transaction and self.scheduler_roster_key(db) == key:
+                decoded[:] = [key, agents]
+            else:
+                decoded.clear()
+            return agents
 
         with self.lock, self.db() as db:
             from codex_radio import tick as radio_tick

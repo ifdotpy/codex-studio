@@ -133,7 +133,7 @@ def prepare_budget_migration(runtime):
 
 
 def migrate_budget_usage(db, agent, limit=64, budget_db=None):
-    """Import one idempotent page of stored usage into the durable budget ledger."""
+    """Import one idempotent page; open a supplied budget context only for rows."""
     if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='analytics_usage'").fetchone():
         return False
     key = "budgetUsageMigrationV1:" + agent["id"]
@@ -146,15 +146,21 @@ def migrate_budget_usage(db, agent, limit=64, budget_db=None):
         return False
     rows = db.execute("SELECT seq,record FROM analytics_usage WHERE agent=? AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
                       (agent["id"], state["cursor"], state["end"], limit)).fetchall()
-    for seq, raw in rows:
-        record = json.loads(raw)
-        payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
-                   "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
-                   "requestUsage": record.get("requestUsage"),
-                   "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
-                   "_analyticsTimestampSource": record.get("timestampSource")}
-        budget_capture(budget_db or db, agent, payload, at=record.get("at", 0), source="rollout")
-        state["cursor"] = seq
+    if rows:
+        from contextlib import AbstractContextManager
+        # An entered SQL connection retains the original caller-owned scope.
+        budget_scope = (budget_db if isinstance(budget_db, AbstractContextManager) and not hasattr(budget_db, "execute")
+                        else nullcontext(budget_db or db))
+        with budget_scope as writer:
+            for seq, raw in rows:
+                record = json.loads(raw)
+                payload = {"threadId": record.get("threadId"), "turnId": record.get("turnId"),
+                           "responseId": record.get("responseId"), "rawTokenUsageRecord": record.get("rawTokenUsageRecord"),
+                           "requestUsage": record.get("requestUsage"),
+                           "tokenUsage": {"total": record.get("total"), "last": record.get("last")},
+                           "_analyticsTimestampSource": record.get("timestampSource")}
+                budget_capture(writer, agent, payload, at=record.get("at", 0), source="rollout")
+                state["cursor"] = seq
     if len(rows) < limit:
         state["cursor"] = state["end"]
     db.execute("INSERT INTO analytics_meta VALUES (?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -396,8 +402,7 @@ class AnalyticsHistoryMixin:
                 key = a["id"] + ":" + a.get("accountKey", "default") + ":" + a["threadId"]
                 with self.analytics_history_db() as db:
                     if hasattr(self, "analytics_db"):
-                        with self.db() as budget_db:
-                            budget_advanced = migrate_budget_usage(db, a, budget_db=budget_db)
+                        budget_advanced = migrate_budget_usage(db, a, budget_db=self.db())
                     else:
                         budget_advanced = migrate_budget_usage(db, a)
                     row = db.execute("SELECT record FROM analytics_history WHERE id=?", (key,)).fetchone()

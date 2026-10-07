@@ -62,7 +62,7 @@ class HistoryConnectionReuse(unittest.TestCase):
                              [False, False, False])
         self.assertEqual(counts['Runtime.analytics'], 3)
         self.assertEqual(attachments['Runtime.analytics'], 3)
-        self.assertEqual(counts['Runtime.db'], 3)
+        self.assertEqual(counts['Runtime.db'], 0)
 
     def test_each_phase_commits_and_failed_phase_rolls_back(self):
         with history._history_step_connections(self.runtime):
