@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   advanceEntitySequenceGuards,
   canAcknowledgeEntitySequenceBatch,
@@ -33,6 +33,88 @@ describe("entity sequence checkpoint", () => {
     );
 
     expect(mutationCheckpoint).toBe(pullCheckpoint);
+  });
+
+  it("only exposes contiguous in-flight mutation coverage to pull dispatch", async () => {
+    const checkpoint = new EntitySequenceCheckpoint();
+    checkpoint.assign(100);
+    const gap = checkpoint.beginInFlightCoverage(105, 110)!;
+    expect(checkpoint.effectiveCoverage()).toBe(100);
+    const gapPull = vi.fn(async () => "pulled");
+    await expect(
+      pullUnlessEntitySequenceInvalidationCovered(
+        checkpoint.effectiveCoverage(),
+        110,
+        false,
+        gapPull,
+      ),
+    ).resolves.toEqual({ skipped: false, value: "pulled" });
+    expect(gapPull).toHaveBeenCalledOnce();
+    checkpoint.settleInFlightCoverage(gap, false);
+  });
+
+  it("chains overlapping in-flight responses and handles out-of-order settlement", () => {
+    const checkpoint = new EntitySequenceCheckpoint();
+    checkpoint.assign(100);
+    const earlier = checkpoint.beginInFlightCoverage(100, 110)!;
+    const later = checkpoint.beginInFlightCoverage(110, 120)!;
+    expect(checkpoint.effectiveCoverage()).toBe(120);
+    checkpoint.settleInFlightCoverage(later, true);
+    expect(checkpoint.effectiveCoverage()).toBe(110);
+    checkpoint.assign(110);
+    checkpoint.settleInFlightCoverage(earlier, true);
+    expect(checkpoint.effectiveCoverage()).toBe(110);
+  });
+
+  it("falls back once when an earlier response fails under dependent coverage", () => {
+    const checkpoint = new EntitySequenceCheckpoint();
+    checkpoint.assign(100);
+    const earlier = checkpoint.beginInFlightCoverage(100, 110)!;
+    const later = checkpoint.beginInFlightCoverage(110, 120)!;
+    const fallback = vi.fn();
+    checkpoint.onInFlightCoverageInvalidated(fallback);
+    checkpoint.markInFlightCoverageUsed(120);
+
+    checkpoint.settleInFlightCoverage(earlier, false);
+    expect(checkpoint.effectiveCoverage()).toBe(100);
+    expect(fallback).toHaveBeenCalledOnce();
+    checkpoint.settleInFlightCoverage(later, true);
+    expect(fallback).toHaveBeenCalledOnce();
+  });
+
+  it("clears in-flight coverage on reset and ignores its later completion", () => {
+    const checkpoint = new EntitySequenceCheckpoint();
+    checkpoint.assign(100);
+    const token = checkpoint.beginInFlightCoverage(100, 120)!;
+    checkpoint.markInFlightCoverageUsed(120);
+
+    checkpoint.reset();
+    expect(checkpoint.effectiveCoverage()).toBe(-1);
+    expect(checkpoint.coversWithInFlight(120)).toBe(false);
+    checkpoint.settleInFlightCoverage(token, true);
+    expect(checkpoint.value).toBe(-1);
+  });
+
+  it("keeps in-flight coverage isolated by schema hash and entity scope", () => {
+    const checkpoint = getEntitySequenceCheckpoint(
+      "coverage-scope-test",
+      "state:entities:v1",
+      "coverage-schema-one",
+    );
+    checkpoint.assign(20);
+    checkpoint.beginInFlightCoverage(20, 25);
+    const otherSchema = getEntitySequenceCheckpoint(
+      "coverage-scope-test",
+      "state:entities:v1",
+      "coverage-schema-two",
+    );
+    expect(otherSchema.coversWithInFlight(25)).toBe(false);
+    const otherScope = getEntitySequenceCheckpoint(
+      "coverage-scope-test",
+      "transcript:scope-test",
+      "coverage-schema-one",
+    );
+    expect(otherScope.coversWithInFlight(25)).toBe(false);
   });
 
   it("keys entity checkpoints by API schema hash and scope", () => {

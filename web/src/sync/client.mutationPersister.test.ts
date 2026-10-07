@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import { getEntitySequenceCheckpoint } from "./entitySequence";
 
 const mocks = vi.hoisted(() => ({
   createRxDatabase: vi.fn(),
@@ -66,7 +68,7 @@ describe("registered mutation entity persister", () => {
     mocks.persist = undefined;
   });
 
-  it("persists rows before advancing the checkpoint and acknowledges the exact batch", async () => {
+  it("reconciles another tab's durable checkpoint before advancing this response", async () => {
     const workspaceId = "f".repeat(32);
     const rows = new Map<string, Record<string, unknown>>([
       [
@@ -119,6 +121,11 @@ describe("registered mutation entity persister", () => {
 
     await import("./client");
     expect(mocks.persist).toBeTypeOf("function");
+    getEntitySequenceCheckpoint(
+      workspaceId,
+      "state:entities:v1",
+      API_SCHEMA_HASH,
+    ).assign(9);
     await mocks.persist?.(
       workspaceId,
       [{ id: "entity:agent:chat", payload: "{}", seq: 12 }],

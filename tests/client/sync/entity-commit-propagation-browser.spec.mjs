@@ -105,6 +105,21 @@ test("committed entities propagate between renderer tabs @sync", async ({
         window.__entityFrames = [];
         window.__entityStreamUrls = [];
         window.__entityPersisterCompletions = [];
+        window.__entityMutationDecodes = [];
+        const responseJson = Response.prototype.json;
+        Response.prototype.json = async function (...args) {
+          const value = await responseJson.apply(this, args);
+          if (
+            this.url &&
+            new URL(this.url).pathname === "/api/leads" &&
+            value?._syncEntities?.length
+          )
+            window.__entityMutationDecodes.push({
+              at: performance.timeOrigin + performance.now(),
+              sequences: value._syncEntities.map((row) => row.seq),
+            });
+          return value;
+        };
         window.__studioSyncEntityPersisterProbe = (value) =>
           window.__entityPersisterCompletions.push(value);
         window.EventSource = class extends OriginalEventSource {
@@ -276,6 +291,16 @@ test("committed entities propagate between renderer tabs @sync", async ({
             ),
           deliveredSequences,
         );
+        const responseDecodedAt = await pages[0].evaluate(
+          (sequences) =>
+            window.__entityMutationDecodes.find((decode) =>
+              sequences.every((sequence) =>
+                decode.sequences.includes(sequence),
+              ),
+            )?.at,
+          deliveredSequences,
+        );
+        assert.equal(typeof responseDecodedAt, "number");
         await pages[0]
           .locator("#conversation-title")
           .getByText("New chat", { exact: true })
@@ -286,6 +311,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
           seq: Math.max(...createdBody._syncEntities.map((doc) => doc.seq)),
           deliveredSequences,
           responseReceivedAt,
+          responseDecodedAt,
           persisterDoneAt,
           persisterAdvanced: persisterCompletion.advanced,
           persisterCompletion,
@@ -399,6 +425,7 @@ test("committed entities propagate between renderer tabs @sync", async ({
         console.log(
           `ENTITY_MUTATION_ORDER ${JSON.stringify({
             responseReceivedAt: reply.responseReceivedAt,
+            responseDecodedAt: reply.responseDecodedAt,
             persisterDoneAt: reply.persisterDoneAt,
             persisterAdvanced: reply.persisterAdvanced,
             persisterCompletion: reply.persisterCompletion,
@@ -453,7 +480,14 @@ test("committed entities propagate between renderer tabs @sync", async ({
             count: actorDuplicatePulls.length,
             beforePersisterDone: actorPrePersisterPulls.length,
             afterPersisterDone: actorPostPersisterPulls.length,
+            beforeResponseDecode: actorDuplicatePulls.filter(
+              (pull) => pull.startedAt <= reply.responseDecodedAt,
+            ).length,
+            afterResponseDecode: actorDuplicatePulls.filter(
+              (pull) => pull.startedAt > reply.responseDecodedAt,
+            ).length,
             causes: duplicateCauses,
+            responseDecodedAt: reply.responseDecodedAt,
             responseSequences: [...responseSequences],
           })}`,
         );
@@ -461,6 +495,21 @@ test("committed entities propagate between renderer tabs @sync", async ({
           actorPostPersisterPulls.length,
           0,
           `create-chat actor pulls starting after the persister completed must not return rows already delivered in the mutation response: ${JSON.stringify(duplicateCauses)}`,
+        );
+        assert.ok(
+          actorDuplicatePulls.every((pull) => {
+            const precedingFrame = actorFramesAfterMutation
+              .filter(
+                (frame) =>
+                  frame.at <= pull.startedAt &&
+                  frame.resources.some((resource) => resource.kind === "state"),
+              )
+              .at(-1);
+            return (
+              !!precedingFrame && precedingFrame.at < reply.responseDecodedAt
+            );
+          }),
+          `every remaining duplicate must be triggered by a frame handled before response decoding: ${JSON.stringify(duplicateCauses)}`,
         );
       }
       if (params.operation === "rename") {

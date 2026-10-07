@@ -16,6 +16,7 @@ import type {
 } from "./apiContracts";
 import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
+import { getEntitySequenceCheckpoint } from "./sync/entitySequence";
 
 type Method = "get" | "post";
 type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
@@ -394,8 +395,9 @@ export function registerSyncEntityPersister(
 async function syncDocuments(
   value: SyncEnvelope | null | undefined,
   workspaceId: string | undefined,
-): Promise<void> {
-  if (!value?._syncEntities?.length || typeof window === "undefined") return;
+): Promise<boolean> {
+  if (!value?._syncEntities?.length || typeof window === "undefined")
+    return false;
   const targetWorkspaceId = workspaceId ?? workspace;
   if (syncEntityPersister) {
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -415,6 +417,7 @@ async function syncDocuments(
           }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
         }),
       ]);
+      return true;
     } catch (error) {
       persistenceCurrent = false;
       console.error("Mutation entity persistence failed", {
@@ -425,6 +428,38 @@ async function syncDocuments(
       clearTimeout(timer);
     }
   }
+  return false;
+}
+
+function beginMutationEntityCoverage(
+  value: SyncEnvelope | null | undefined,
+  targetWorkspaceId: string,
+):
+  | {
+      checkpoint: ReturnType<typeof getEntitySequenceCheckpoint>;
+      token: number;
+    }
+  | undefined {
+  const rows = value?._syncEntities;
+  const after = value?._syncEntitiesAfter;
+  if (
+    !rows?.length ||
+    !syncEntityPersister ||
+    typeof after !== "number" ||
+    !Number.isSafeInteger(after) ||
+    typeof window === "undefined"
+  )
+    return undefined;
+  const entities = rows.filter((document) => document.id.startsWith("entity:"));
+  if (entities.length === 0) return undefined;
+  const through = Math.max(...entities.map((document) => document.seq));
+  const checkpoint = getEntitySequenceCheckpoint(
+    targetWorkspaceId,
+    "state:entities:v1",
+    API_SCHEMA_HASH,
+  );
+  const token = checkpoint.beginInFlightCoverage(after, through);
+  return token === undefined ? undefined : { checkpoint, token };
 }
 
 async function performGet<Path extends PathsFor<"get">>(
@@ -526,8 +561,23 @@ export async function post<Path extends PathsFor<"post">>(
     if (!("data" in result)) return undefined as PostResult<Path>;
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
-    await syncDocuments(result.data as PostResult<Path>, options.workspaceId);
-    return result.data as PostResult<Path>;
+    const data = result.data as PostResult<Path>;
+    const targetWorkspaceId = options.workspaceId ?? workspace;
+    const coverage = beginMutationEntityCoverage(
+      data as SyncEnvelope,
+      targetWorkspaceId,
+    );
+    let persisted = false;
+    try {
+      persisted = await syncDocuments(
+        data as SyncEnvelope,
+        options.workspaceId,
+      );
+    } finally {
+      if (coverage)
+        coverage.checkpoint.settleInFlightCoverage(coverage.token, persisted);
+    }
+    return data;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;

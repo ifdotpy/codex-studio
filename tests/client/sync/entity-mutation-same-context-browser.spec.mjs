@@ -219,7 +219,7 @@ test("mutation projections propagate between pages sharing one browser context @
       assert.equal(
         completion.advanced,
         true,
-        "persister advanced the shared checkpoint",
+        `persister advanced the shared checkpoint: ${JSON.stringify(completion)}`,
       );
       await page
         .locator("#conversation-title")

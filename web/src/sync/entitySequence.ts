@@ -8,6 +8,13 @@ export class EntitySequenceCheckpoint {
   private hasAssignment = false;
   private durableCheckpointValid = true;
   private workspaceId: string | undefined;
+  private nextCoverageToken = 0;
+  private readonly inFlightCoverage = new Map<
+    number,
+    { after: number; through: number; resetVersion: number }
+  >();
+  private suppressedRequirement: number | undefined;
+  private readonly coverageInvalidationListeners = new Set<() => void>();
 
   get value() {
     return this.sequence;
@@ -41,6 +48,7 @@ export class EntitySequenceCheckpoint {
     this.hasAssignment = true;
     this.durableCheckpointValid = false;
     this.resetGeneration++;
+    this.clearInFlightCoverage(false);
     return true;
   }
 
@@ -55,6 +63,7 @@ export class EntitySequenceCheckpoint {
     this.hasAssignment = true;
     this.durableCheckpointValid = false;
     this.resetGeneration++;
+    this.clearInFlightCoverage(false);
     return true;
   }
 
@@ -79,10 +88,97 @@ export class EntitySequenceCheckpoint {
     this.resetGeneration++;
     this.hasAssignment = true;
     this.durableCheckpointValid = false;
+    this.clearInFlightCoverage(false);
   }
 
   covers(sequence: number): boolean {
     return sequence <= this.sequence;
+  }
+
+  beginInFlightCoverage(after: number, through: number): number | undefined {
+    if (
+      !Number.isSafeInteger(after) ||
+      !Number.isSafeInteger(through) ||
+      through <= after
+    )
+      return undefined;
+    const token = ++this.nextCoverageToken;
+    this.inFlightCoverage.set(token, {
+      after,
+      through,
+      resetVersion: this.resetGeneration,
+    });
+    return token;
+  }
+
+  effectiveCoverage(): number {
+    let effective = this.sequence;
+    if (!Number.isSafeInteger(effective)) return -1;
+    let advanced = true;
+    while (advanced) {
+      advanced = false;
+      for (const coverage of this.inFlightCoverage.values()) {
+        if (
+          coverage.resetVersion === this.resetGeneration &&
+          coverage.after <= effective &&
+          coverage.through > effective
+        ) {
+          effective = coverage.through;
+          advanced = true;
+        }
+      }
+    }
+    return effective;
+  }
+
+  coversWithInFlight(sequence: number): boolean {
+    return (
+      Number.isSafeInteger(sequence) && this.effectiveCoverage() >= sequence
+    );
+  }
+
+  markInFlightCoverageUsed(sequence: number): void {
+    if (!this.covers(sequence) && this.coversWithInFlight(sequence))
+      this.suppressedRequirement = Math.max(
+        this.suppressedRequirement ?? sequence,
+        sequence,
+      );
+  }
+
+  settleInFlightCoverage(token: number, persisted: boolean): void {
+    const coverage = this.inFlightCoverage.get(token);
+    if (!coverage) return;
+    this.inFlightCoverage.delete(token);
+    // A successful persister may have advanced the durable checkpoint. A
+    // reset or out-of-order response can still make dependent coverage invalid.
+    if (
+      !persisted ||
+      coverage.resetVersion !== this.resetGeneration ||
+      this.suppressedRequirement !== undefined
+    )
+      this.notifyUncoveredSuppression();
+  }
+
+  onInFlightCoverageInvalidated(listener: () => void): () => void {
+    this.coverageInvalidationListeners.add(listener);
+    return () => this.coverageInvalidationListeners.delete(listener);
+  }
+
+  private clearInFlightCoverage(notify = true): void {
+    this.inFlightCoverage.clear();
+    if (notify) this.notifyUncoveredSuppression();
+    else this.suppressedRequirement = undefined;
+  }
+
+  private notifyUncoveredSuppression(): void {
+    const required = this.suppressedRequirement;
+    if (required === undefined || this.sequence >= required) {
+      this.suppressedRequirement = undefined;
+      return;
+    }
+    if (this.coversWithInFlight(required)) return;
+    this.suppressedRequirement = undefined;
+    for (const listener of this.coverageInvalidationListeners) listener();
   }
 }
 
