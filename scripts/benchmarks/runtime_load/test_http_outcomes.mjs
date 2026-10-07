@@ -59,7 +59,7 @@ test("a different tab, scope, cursor, or route cannot recover a 503", () => {
     { tab: 2, url: pull("team", 7) },
     { tab: 1, url: pull("state", 7) },
     { tab: 1, url: pull("team", 8) },
-    { tab: 1, url: "http://127.0.0.1/api/state" },
+    { tab: 1, url: "http://127.0.0.1/api/session" },
   ])
     outcomes.record({ ...sample, status: 200, method: "GET", atEpochMs: 200 });
   assert.equal(outcomes.unrecoveredSnapshotReads().length, 1);
@@ -245,7 +245,7 @@ test("read retry identity includes tab and complete read cursor", () => {
     readRetryKey(1, pull("team", 1)),
     readRetryKey(1, pull("team", 2)),
   );
-  assert.equal(readRetryKey(1, "http://127.0.0.1/api/state"), null);
+  assert.equal(readRetryKey(1, "http://127.0.0.1/api/session"), null);
 });
 
 test("only the known SnapshotDeferred error qualifies for retry accounting", () => {
@@ -256,7 +256,7 @@ test("only the known SnapshotDeferred error qualifies for retry accounting", () 
   );
   for (const sample of [
     [503, "GET", url, { error: "another 503" }],
-    [503, "GET", "http://127.0.0.1/api/state", deferredSnapshot],
+    [503, "GET", "http://127.0.0.1/api/session", deferredSnapshot],
     [503, "POST", url, deferredSnapshot],
     [500, "GET", url, deferredSnapshot],
   ])

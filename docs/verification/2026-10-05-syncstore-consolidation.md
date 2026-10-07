@@ -1,5 +1,9 @@
 # SyncStore consolidation audit
 
+This historical comparison includes the old `state:chat` contract; the
+`/api/state` endpoint and legacy pull scopes were removed in the pull request
+that completed the move to sync entities (round 3), `#TBD-ROUND3`.
+
 The production implementation is [`scripts/codex_sync.py`](../../scripts/codex_sync.py),
 loaded by [`scripts/studio_api/context.py`](../../scripts/studio_api/context.py).
 The duplicate `scripts/sync/sync_store.py` was removed (304 lines). Its former

@@ -294,8 +294,11 @@ New chats, new file uploads, and voice require the Mac connection.
 Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
-The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. One shared protocol-3 event stream tells
+The chat entity projection excludes work result histories. The work view loads
+those histories through its existing API. Renderer state uses sync entities;
+the old `/api/state` endpoint and `state` / `state:chat` pull scopes were removed
+in the pull request that completed the move to sync entities (round 3),
+`#TBD-ROUND3`. One shared protocol-3 event stream tells
 visible windows when entity state, drafts, or open transcripts need an update.
 The renderer sends its generated API schema hash with API requests and
 protocol-3 stream connections. API responses carry the server hash. A

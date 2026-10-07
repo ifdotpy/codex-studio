@@ -68,7 +68,11 @@ from the isolated Storybook stories.
 - `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
 - `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.
-- `src/hooks.ts`: server snapshots and transcript updates.
+- `src/hooks.ts`: entity projections and transcript updates.
+
+The renderer's state projection uses the sync-entity pull. `/api/state` and the
+legacy `state` / `state:chat` pull scopes were removed in the pull request that
+completed the move to sync entities (round 3), `#TBD-ROUND3`.
 
 Shared UI views live beside their callers in the feature folders above. Typed presentational components
 have colocated `*.stories.tsx` files; the application imports those same

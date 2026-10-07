@@ -1,5 +1,9 @@
 # Incremental sync measurements
 
+These measurements preserve the historical `/api/state` baseline; the endpoint
+was removed in the pull request that completed the move to sync entities (round
+3), `#TBD-ROUND3`.
+
 Measured 2026-09-28 in isolated fixtures. No live database or backend was queried. The reproducible synthetic run is `python3 -B tests/sync-entity-measure.py`.
 
 | Measure                                                                      |                                   Before |                            After |
