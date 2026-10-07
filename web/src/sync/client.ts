@@ -834,12 +834,16 @@ async function acquireProjection(
       request: () => Promise<T>,
       signal?: AbortSignal,
     ): Promise<T> => {
+      // A request sent before the stream reaches live gets one attempt. If it
+      // fails, the stream baseline will schedule the retry with its sequence.
+      const retryStartedLive = connectionStatus === "live";
       for (let attempt = 0; ; attempt++) {
         try {
           return await request();
         } catch (error) {
           const canRetry =
             attempt < 2 &&
+            retryStartedLive &&
             isTransientSyncReadFailure(error) &&
             connectionStatus === "live" &&
             !document.hidden &&
@@ -1348,6 +1352,14 @@ async function watchStateProjection(
       ready = row?.payload === "ready" && !row?._deleted;
       publishCurrent();
     });
+  // Start the first incomplete projection pull as soon as the stream has been
+  // subscribed, without waiting for its baseline frame. A completed local
+  // cache already supplies content and needs no speculative pull.
+  const [complete] = await db.projections.storageInstance.findDocumentsById(
+    ["state:entities:complete"],
+    true,
+  );
+  if (!complete || complete._deleted) void state.refresh().catch(() => {});
   return () => {
     entities.unsubscribe();
     marker.unsubscribe();

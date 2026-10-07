@@ -28,10 +28,27 @@ async function createFixture(page, options = {}) {
   let identityFailures = options.identityFailures ?? 0;
   let pullFailures = options.pullFailures ?? 0;
   let pullStatus = options.pullStatus;
+  let streamFailures = options.streamFailures ?? 0;
+  const streamHeadersDelayMs = options.streamHeadersDelayMs ?? 0;
   const streams = new Set();
   let revision = 1;
   const requests = [];
   const counts = { identity: 0, stream: 0, pull: 0 };
+  const pullDocumentCounts = [];
+  let resolveFirstConnectedStream;
+  const firstConnectedStream = new Promise((resolve) => {
+    resolveFirstConnectedStream = resolve;
+  });
+  const entityDocument = () => ({
+    id: "entity:agent:lead",
+    payload: JSON.stringify({
+      collection: "agent",
+      id: "lead",
+      value: { id: "lead", name: `Fixture ${revision}` },
+    }),
+    seq: revision,
+    _deleted: false,
+  });
   const json = (res, status, value) => {
     res.writeHead(status, { "Content-Type": "application/json" });
     res.end(JSON.stringify(value));
@@ -58,32 +75,46 @@ async function createFixture(page, options = {}) {
         }
       } else if (url.pathname === "/api/sync/stream") {
         counts.stream++;
-        if (!available) {
+        if (!available || streamFailures > 0) {
+          if (streamFailures > 0) streamFailures--;
           res.writeHead(503, { "Content-Type": "text/plain" });
           res.end("Fixture stream unavailable");
         } else {
           const resources = JSON.parse(
             url.searchParams.get("resources") || "[]",
           );
-          res.writeHead(200, {
-            "Cache-Control": "no-cache",
-            "Content-Type": "text/event-stream",
-          });
-          res.write(
-            apiSchemaHandshakeSse(
-              protocol3SseEvent("resources", {
-                protocol: 3,
-                workspaceId,
-                epoch: "fixture-epoch",
-                revision,
-                reason: "initial",
-                resources,
-              }),
-            ),
-          );
-          const stream = { res, resources };
-          streams.add(stream);
-          res.on("close", () => streams.delete(stream));
+          const connect = () => {
+            if (res.destroyed) return;
+            res.writeHead(200, {
+              "Cache-Control": "no-cache",
+              "Content-Type": "text/event-stream",
+            });
+            res.write(
+              apiSchemaHandshakeSse(
+                protocol3SseEvent("resources", {
+                  protocol: 3,
+                  workspaceId,
+                  epoch: "fixture-epoch",
+                  revision,
+                  reason: "initial",
+                  resources,
+                  resourceVersions: resources.map((resource) => ({
+                    resource,
+                    revision,
+                    entitySequences: [revision],
+                    entitySequenceReset: false,
+                  })),
+                }),
+              ),
+            );
+            const stream = { res, resources };
+            streams.add(stream);
+            resolveFirstConnectedStream();
+            res.on("close", () => streams.delete(stream));
+          };
+          if (streamHeadersDelayMs > 0)
+            setTimeout(connect, streamHeadersDelayMs);
+          else connect();
         }
       } else if (url.pathname === "/api/sync/pull") {
         counts.pull++;
@@ -95,12 +126,17 @@ async function createFixture(page, options = {}) {
         } else if (pullStatus !== undefined) {
           json(res, pullStatus, { error: "Configured pull failure" });
         } else {
+          const documents =
+            Number(url.searchParams.get("after") || 0) < revision
+              ? [entityDocument()]
+              : [];
+          pullDocumentCounts.push(documents.length);
           json(res, 200, {
             workspaceId,
-            documents: [],
-            checkpoint: { seq: 0 },
-            initialHigh: 0,
-            maxSeq: 0,
+            documents,
+            checkpoint: { seq: revision },
+            initialHigh: revision,
+            maxSeq: revision,
           });
         }
       } else next();
@@ -112,6 +148,7 @@ async function createFixture(page, options = {}) {
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
     await page.evaluate(async () => {
+      window.snapshotMountedAt = performance.now();
       const { useSnapshot } = await import("/src/hooks.ts");
       const ReactModule = await import("/node_modules/.vite/deps/react.js");
       const DomModule =
@@ -137,7 +174,12 @@ async function createFixture(page, options = {}) {
   }
   return {
     counts,
+    pullDocumentCounts,
     requests,
+    firstConnectedStream,
+    get streamsConnected() {
+      return streams.size;
+    },
     async close() {
       await page.evaluate(() => window.unmountSnapshot?.());
       await server.close();
@@ -158,6 +200,14 @@ async function createFixture(page, options = {}) {
         revision,
         reason: "change",
         resources: [{ kind: "state" }],
+        resourceVersions: [
+          {
+            resource: { kind: "state" },
+            revision,
+            entitySequences: [revision],
+            entitySequenceReset: false,
+          },
+        ],
       });
       for (const stream of streams) {
         if (stream.resources.some((resource) => resource.kind === "state"))
@@ -218,6 +268,108 @@ test("retries a first identity failure and then loads the entity projection", as
   try {
     await waitForData(page);
     assert.ok(fixture.counts.identity >= 2);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("records first content time while stream headers are held", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const fixture = await mount(page, { streamHeadersDelayMs: 2_000 });
+  try {
+    await waitForData(page);
+    const firstContentMs = await page.evaluate(
+      () => performance.now() - window.snapshotMountedAt,
+    );
+    console.log(`FIRST_CONTENT_WITH_HELD_STREAM ${firstContentMs}`);
+    assert.ok(firstContentMs < 5_000, `first content ${firstContentMs}ms`);
+    assert.equal(fixture.streamsConnected, 0, "stream headers are still held");
+    assert.equal(fixture.counts.pull, 1);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+    await fixture.firstConnectedStream;
+    await page.waitForTimeout(100);
+    assert.equal(fixture.counts.pull, 1, "stream baseline reuses the pull");
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("normal load uses one nonempty entity pull", async ({ page }) => {
+  test.setTimeout(20_000);
+  const fixture = await mount(page);
+  try {
+    await waitForData(page);
+    await fixture.firstConnectedStream;
+    await page.waitForTimeout(100);
+    console.log(`NORMAL_LOAD_PULL_COUNT ${fixture.counts.pull}`);
+    assert.equal(fixture.counts.pull, 1);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("delivers one state change committed before the delayed stream attaches", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const fixture = await mount(page, { streamHeadersDelayMs: 2_000 });
+  try {
+    await waitForData(page);
+    assert.equal(fixture.counts.pull, 1);
+    assert.equal(fixture.streamsConnected, 0);
+    fixture.publish();
+    await fixture.firstConnectedStream;
+    await page.waitForFunction(() =>
+      window.snapshot?.data?.runtime?.agents?.some(
+        (agent) => agent.id === "lead" && agent.name === "Fixture 2",
+      ),
+    );
+    assert.equal(fixture.counts.pull, 2);
+    assert.deepEqual(fixture.pullDocumentCounts, [1, 1]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("loads entity content and reconnects after the first stream request fails", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const fixture = await mount(page, { streamFailures: 1 });
+  try {
+    await waitForData(page);
+    assert.equal(fixture.counts.pull, 1);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+    await fixture.firstConnectedStream;
+    assert.ok(fixture.counts.stream >= 2);
+    await page.waitForTimeout(100);
+    assert.equal(fixture.counts.pull, 1);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+  } finally {
+    await fixture.close();
+  }
+});
+
+test("the stream baseline retries an early failed entity pull", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  const fixture = await mount(page, {
+    pullFailures: 1,
+    streamHeadersDelayMs: 1_000,
+  });
+  try {
+    await waitForData(page);
+    assert.equal(fixture.counts.pull, 2);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
+    await fixture.firstConnectedStream;
+    await page.waitForTimeout(100);
+    assert.equal(fixture.counts.pull, 2);
+    assert.deepEqual(fixture.pullDocumentCounts, [1]);
   } finally {
     await fixture.close();
   }
