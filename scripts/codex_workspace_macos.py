@@ -56,11 +56,14 @@ def _device_for_mount(mount):
         matching = next((entry for entry in entities
                          if entry.get('mount-point') and Path(entry['mount-point']).resolve() == mount), None)
         if matching:
+            device = matching.get('dev-entry', '')
+            match = re.fullmatch(r'(/dev/disk\d+)(?:s\d+)?', device)
+            if match:
+                return match.group(1)
             entry = next((item for item in entities
                           if re.fullmatch(r'/dev/disk\d+', item.get('dev-entry', ''))), None)
             if entry:
                 return entry['dev-entry']
-            return re.sub(r's\d+$', '', matching.get('dev-entry', ''))
     return None
 
 
@@ -583,16 +586,18 @@ class Backend:
 
         lsof_timed_out = False
         try:
-            result = _run(['lsof', '-t', '--', str(mount)], timeout=2, check=False)
+            result = _run(['lsof', '-t', '+f', '--', str(mount)], timeout=2, check=False)
             pids = {int(value) for value in result.stdout.decode().split() if value.isdigit()}
         except subprocess.TimeoutExpired:
             pids = set()
             lsof_timed_out = True
         holders = {pid for pid in pids if _pid_exists(pid)}
+        signaled_pids = 0
         for pid in holders:
             try:
                 if _pid_exists(pid):
                     os.kill(pid, signal.SIGTERM)
+                    signaled_pids += 1
             except ProcessLookupError:
                 pass
         deadline = time.monotonic() + 1
@@ -612,7 +617,7 @@ class Backend:
             eject_timed_out = True
         if result is not None and result.returncode == 0 and not _mounted(mount):
             return {'method': 'eject-after-terminating-holders', 'holdersFound': len(holders),
-                    'terminatedPids': sum(not _pid_exists(pid) for pid in holders),
+                    'signaledPids': signaled_pids,
                     'lsofTimedOut': lsof_timed_out, 'ejectTimedOut': eject_timed_out}
 
         result = _run(['diskutil', 'unmount', 'force', str(mount)], timeout=4, check=False)
@@ -627,7 +632,7 @@ class Backend:
             error = result.stderr.decode(errors='replace')[-3000:]
             raise RuntimeError(error or f'Could not eject force-unmounted workspace: {mount}')
         return {'method': 'force-unmount-after-terminating-holders', 'holdersFound': len(holders),
-                'terminatedPids': sum(not _pid_exists(pid) for pid in holders),
+                'signaledPids': signaled_pids,
                 'lsofTimedOut': lsof_timed_out, 'ejectTimedOut': eject_timed_out}
 
 
