@@ -30,6 +30,7 @@ import { thinkingFlag } from "./thinking.mjs";
 import { createSessionStore } from "./session-store.mjs";
 import { claudeImage } from "./images.mjs";
 import { listSkills } from "./skills.mjs";
+import { reconcileHistoricalBash } from "./historical-bash-receipts.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
@@ -528,20 +529,21 @@ async function content(input) {
   }
   return result;
 }
-function turnEvent(s, turn, method, item, tokenRateUsage) {
+function turnEvent(s, turn, method, item, tokenRateUsage, receiptTimes) {
   emit(method, {
     threadId: s.id,
     turnId: turn?.id,
     item,
     ...(tokenRateUsage ? { tokenRateUsage } : {}),
+    ...receiptTimes,
   });
 }
-function finishItem(s, turn, item, tokenRateUsage) {
+function finishItem(s, turn, item, tokenRateUsage, receiptTimes) {
   if (!turn) return;
   const i = turn.items.findIndex((old) => old.id === item.id);
   if (i < 0) turn.items.push(item);
   else turn.items[i] = item;
-  turnEvent(s, turn, "item/completed", item, tokenRateUsage);
+  turnEvent(s, turn, "item/completed", item, tokenRateUsage, receiptTimes);
 }
 function notice(s, turn, text, id = randomUUID()) {
   finishItem(s, turn, { id, type: "agentMessage", phase: "commentary", text });
@@ -1354,7 +1356,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 19 },
+      capabilities: { claudeVersion: 20 },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1554,6 +1556,24 @@ async function handle(method, p) {
     let reattached = false;
     if (method === "thread/resume") {
       const active = queries.get(s.id);
+      const idle = () => {
+        const query = queries.get(s.id);
+        return (
+          !query ||
+          (!query.turn &&
+            !query.tasks.size &&
+            !query.pendingSteers.size &&
+            !query.reservingInput &&
+            !query.input.values.length)
+        );
+      };
+      if (idle())
+        await reconcileHistoricalBash(s, {
+          isIdle: idle,
+          complete: (turn, item, times) =>
+            finishItem(s, turn, item, undefined, times),
+          persist,
+        });
       // Reattach to a live query without changing its settings or background work.
       // turn/start already steers its current turn or queues the next input.
       if (!active?.turn && !active?.tasks.size) {

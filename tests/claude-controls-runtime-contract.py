@@ -377,14 +377,14 @@ class Controls(unittest.TestCase):
         self.assertNotIn('default', self.rt.servers)
 
     def test_current_bridge_version_stays_and_checks_native_tasks(self):
-        self.server.initialize_result = {'capabilities': {'claudeVersion': 19}}
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 20}}
         self.server.provider_options = {}
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {}}, self.server))
         self.server.state['tasks'] = [{'task_id': 'background'}]
         self.assertFalse(retire_idle_bridge(self.rt, 'default', {'claudeOptions': {'customModels': []}}, self.server))
 
-    def test_version_18_same_options_retires_only_after_idle_is_proven(self):
-        self.server.initialize_result = {'capabilities': {'claudeVersion': 18}}
+    def test_version_19_same_options_retires_only_after_idle_is_proven(self):
+        self.server.initialize_result = {'capabilities': {'claudeVersion': 19}}
         self.server.provider_options = {}
         account = {'claudeOptions': {}}
         previous = self.rt.connection_ids['default']
