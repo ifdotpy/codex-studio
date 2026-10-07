@@ -134,6 +134,21 @@ class ImageIndexContract(unittest.TestCase):
         self.assertEqual({row['path'] for row in images._read_json(
             images._agent_state_path(self.agent_id), {})['repositories']}, {'.', 'nested'})
 
+    def test_unstaged_worktree_edits_remain_unstaged_after_base_and_delta(self):
+        (self.folder / 'tracked.txt').write_text('user unstaged edit\n')
+        (self.folder / 'untracked.txt').write_text('user untracked file\n')
+        expected = git(self.folder, 'status', '--porcelain=v2')
+
+        base = self.build_base()
+        base_repo = Path(base['image']) / 'repo'
+        self.assertEqual(git(self.folder, 'status', '--porcelain=v2'), expected)
+        self.assertEqual(git(base_repo, 'status', '--porcelain=v2'), expected)
+
+        workspace = images.create_workspace(self.folder, self.agent_id)
+        agent_root = Path(workspace['path'])
+        self.assertEqual(git(self.folder, 'status', '--porcelain=v2'), expected)
+        self.assertEqual(git(agent_root, 'status', '--porcelain=v2'), expected)
+
     def test_git_directory_delta_copies_commits_fetch_refs_and_gc(self):
         base = self.build_base()
         remote = self.root / 'remote'
