@@ -624,21 +624,6 @@ def make_server(canvas, port=0, public_origin=None, unix_socket=False):
 
     return create_server(canvas, port, public_origin, unix_socket)
 
-
-def _close_shutdown_resources(updates, server, runtime, completed):
-    """Close each backend resource once so cleanup can resume after interruption."""
-    if updates is not None and not completed["updates"]:
-        updates.close()
-        completed["updates"] = True
-    if server is not None and not completed["server"]:
-        server.shutdown()
-        server.server_close()
-        completed["server"] = True
-    if runtime is not None and not completed["runtime"]:
-        runtime.close()
-        completed["runtime"] = True
-
-
 def record_shutdown_threads():
     """Keep code locations for threads that can prevent process exit."""
     try:
@@ -670,6 +655,7 @@ def record_shutdown_threads():
                           "threadsTruncated": len(threads) > SHUTDOWN_THREAD_LIMIT}),
               file=sys.stderr, flush=True)
     except Exception:
+        # Evidence must not change the existing shutdown result or lease rules.
         try:
             print(json.dumps({"event": "backend_shutdown_thread_diagnostic_failed",
                               "pid": os.getpid()}), file=sys.stderr, flush=True)
@@ -679,6 +665,7 @@ def record_shutdown_threads():
 
 class BackendShutdown:
     """Defer signal work and bound the entire process shutdown."""
+
     def __init__(self):
         self.request = None
         self.logged = False
@@ -686,6 +673,8 @@ class BackendShutdown:
         self.timeout_seconds = SHUTDOWN_TIMEOUT_SECONDS
 
     def terminate(self, number, _frame):
+        # A signal can interrupt a response, a lock, or stderr itself.
+        # Do not raise, log, or acquire a lock in this handler.
         if self.request is None:
             self.request = (number, time.monotonic())
 
@@ -706,6 +695,8 @@ class BackendShutdown:
             request = self.request
             if request is not None:
                 if time.monotonic() - request[1] >= self.timeout_seconds:
+                    # Cleanup, the event loop, or interpreter thread joins can
+                    # stall. Keep this path independent of their locks and logs.
                     os._exit(1)
             elif self.finished:
                 return
@@ -718,6 +709,8 @@ def main():
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
     shutdown = BackendShutdown()
+    # Prepare the watchdog before signals can request shutdown. A daemon still
+    # runs while Python waits for non-daemon threads after main returns.
     threading.Thread(target=shutdown.watch, name="backend-shutdown", daemon=True).start()
     previous_handlers = {number: signal.getsignal(number)
                          for number in (signal.SIGTERM, signal.SIGINT)}
@@ -727,8 +720,6 @@ def main():
     server = None
     updates = None
     unix_thread = None
-    cleanup_completed = False
-    cleanup_steps = {"updates": False, "server": False, "runtime": False}
     try:
         from codex_runtime import Runtime
         if shutdown.requested():
@@ -745,13 +736,12 @@ def main():
             unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
-        if not shutdown.requested():
-            from codex_live_updates import start as start_updates
-            updates = start_updates(runtime)
-        if not shutdown.requested():
-            print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
-        if not shutdown.requested():
-            server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
+        if shutdown.requested():
+            return
+        from codex_live_updates import start as start_updates
+        updates = start_updates(runtime)
+        print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
+        server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
@@ -759,14 +749,16 @@ def main():
     finally:
         try:
             shutdown.requested()
-            while not cleanup_completed:
-                try:
-                    _close_shutdown_resources(updates, server, runtime, cleanup_steps)
-                    cleanup_completed = True
-                except KeyboardInterrupt:
-                    continue
+            if server:
+                server.shutdown()
             if unix_thread:
                 unix_thread.join(timeout=15)
+            if updates:
+                updates.close()
+            if server:
+                server.server_close()
+            if runtime:
+                runtime.close()
             record_shutdown_threads()
         finally:
             shutdown.finished = True

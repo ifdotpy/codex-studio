@@ -32,15 +32,12 @@ UNIX_SOCKET_MODE = 0o600
 UVICORN_LOG_CONFIG = None
 API_SCHEMA_HASH_START_DELAY_SECONDS = 0.25
 GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 10
-SERVER_THREAD_JOIN_TIMEOUT_SECONDS = GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS + 1
 
 
 class ShutdownEvent:
-    """A shutdown flag that can wake stream generators on each server loop."""
+    """Notify event-stream generators when the server starts shutting down."""
 
     def __init__(self) -> None:
-        # Signal handlers only write _requested directly; they never take this
-        # lock. Other callers synchronize registration with listener delivery.
         self._requested = False
         self._notified = False
         self._async_events: tuple[
@@ -83,13 +80,16 @@ class ShutdownEvent:
 
 
 class ShutdownAwareApp:
-    """End event streams cleanly and abort other responses on forced drain."""
+    """End event streams cleanly when Uvicorn cancels them during shutdown."""
 
     def __init__(self, app: ASGIApp, shutdown_requested: ShutdownEvent) -> None:
         self.app = app
         self.shutdown_requested = shutdown_requested
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope.get("type") != "http" or scope.get("path") != "/api/sync/stream":
+            await self.app(scope, receive, send)
+            return
         response_started = False
         response_complete = False
         event_stream = False
@@ -111,23 +111,21 @@ class ShutdownAwareApp:
                 response_complete = True
             await send(message)
 
+        marked = dict(scope)
+        state = dict(scope.get("state", {}))
+        state["studio_shutdown_event"] = self.shutdown_requested
+        marked["state"] = state
         try:
-            marked = dict(scope)
-            state = dict(scope.get("state", {}))
-            state["studio_shutdown_event"] = self.shutdown_requested
-            marked["state"] = state
             await self.app(marked, receive, tracked_send)
         except asyncio.CancelledError:
             if not self.shutdown_requested.is_set():
                 raise
-            if event_stream and response_started and not response_complete:
-                try:
-                    await send({"type": "http.response.body", "body": b"", "more_body": False})
-                except (OSError, RuntimeError):
-                    pass
-            # For all other responses, returning without the final body makes
-            # Uvicorn close the transport. This preserves an observable client
-            # error for truncated downloads without a protocol traceback.
+            if not event_stream or not response_started or response_complete:
+                raise
+            try:
+                await send({"type": "http.response.body", "body": b"", "more_body": False})
+            except (OSError, RuntimeError):
+                pass
 
 
 class _StudioUvicornServer(uvicorn.Server):
@@ -242,9 +240,7 @@ class BoundServer:
         self.address_family = sock.family
         self.owned_socket_identity = owned_unix
         self._closed = False
-        self._socket_path_unlinked = False
         self._lock = threading.Lock()
-        self._serve_thread: threading.Thread | None = None
 
     @property
     def address(self) -> object:
@@ -254,50 +250,28 @@ class BoundServer:
         self, poll_interval: float = 0.5, *, shutdown_requested: Callable[[], bool] | None = None,
     ) -> None:
         del poll_interval  # Uvicorn runs the event loop and polling itself.
-        self._serve_thread = threading.current_thread()
         self.server.shutdown_requested = shutdown_requested
-        async def serve() -> None:
-            await self.server.serve(sockets=[self.socket])
-        asyncio.run(serve())
+        asyncio.run(self.server.serve(sockets=[self.socket]))
 
     def shutdown(self) -> None:
         self.server.should_exit = True
 
-    def request_shutdown_from_signal(self) -> None:
-        if self.server.shutdown_event is not None:
-            self.server.shutdown_event._requested = True
-
-    def _join_serve_thread(self) -> bool:
-        serving_thread = self._serve_thread
-        if serving_thread is None or serving_thread is threading.current_thread():
-            return True
-        serving_thread.join(timeout=SERVER_THREAD_JOIN_TIMEOUT_SECONDS)
-        return not serving_thread.is_alive()
-
-    def _close_bound_resources(self, *, close_socket: bool = True) -> bool:
+    def server_close(self) -> None:
         with self._lock:
             if self._closed:
-                return True
-            if close_socket:
-                self._closed = True
+                return
+            self._closed = True
+            try:
                 self.socket.close()
-            if not self._socket_path_unlinked and self.owned_socket_identity is not None:
-                self._socket_path_unlinked = True
-                socket_path = Path(str(self.server_address))
-                try:
-                    stat = socket_path.stat()
-                    if (stat.st_dev, stat.st_ino) == self.owned_socket_identity:
-                        socket_path.unlink()
-                except FileNotFoundError:
-                    pass
-        return True
-
-    def server_close(self) -> bool:
-        joined = self._join_serve_thread()
-        # Uvicorn owns the live descriptor while its selector is running. Its
-        # shutdown closes that descriptor when a bounded join expires.
-        self._close_bound_resources(close_socket=joined)
-        return joined
+            finally:
+                if self.owned_socket_identity is not None:
+                    socket_path = Path(str(self.server_address))
+                    try:
+                        stat = socket_path.stat()
+                        if (stat.st_dev, stat.st_ino) == self.owned_socket_identity:
+                            socket_path.unlink()
+                    except FileNotFoundError:
+                        pass
 
 
 class CanvasServer(BoundServer):
@@ -306,16 +280,16 @@ class CanvasServer(BoundServer):
         tcp: BoundServer,
         unix: BoundServer | None,
         context: ApiContext,
-        shutdown_requested: ShutdownEvent,
+        shutdown_requested: ShutdownEvent | None = None,
     ) -> None:
         self.__dict__.update(tcp.__dict__)
         self.unix_server = unix
         self._tcp = tcp
         self._context = context
-        self._shutdown_requested = shutdown_requested
-        self._tcp.server.shutdown_event = shutdown_requested
+        self._shutdown_requested = shutdown_requested or ShutdownEvent()
+        self._tcp.server.shutdown_event = self._shutdown_requested
         if unix is not None:
-            unix.server.shutdown_event = shutdown_requested
+            unix.server.shutdown_event = self._shutdown_requested
 
     @property
     def shutdown_requested(self) -> ShutdownEvent:
@@ -323,27 +297,15 @@ class CanvasServer(BoundServer):
 
     def shutdown(self) -> None:
         self._shutdown_requested.set()
-        self._tcp.shutdown()
+        super().shutdown()
         if self.unix_server is not None:
             self.unix_server.shutdown()
 
-    def serve_forever(
-        self, poll_interval: float = 0.5, *, shutdown_requested: Callable[[], bool] | None = None,
-    ) -> None:
-        self._tcp._serve_thread = threading.current_thread()
-        super().serve_forever(poll_interval=poll_interval, shutdown_requested=shutdown_requested)
-
-    def server_close(self) -> bool:
-        # The TCP serve thread is this caller when codex-canvas runs Uvicorn in
-        # the main thread; the Unix listener has its own serving thread.
-        tcp_joined = self._tcp._join_serve_thread()
-        unix_joined = True
+    def server_close(self) -> None:
         if self.unix_server is not None:
-            unix_joined = self.unix_server._join_serve_thread()
-            self.unix_server._close_bound_resources(close_socket=unix_joined)
-        self._tcp._close_bound_resources(close_socket=tcp_joined)
+            self.unix_server.server_close()
+        self._tcp.server_close()
         self._context.close()
-        return tcp_joined and unix_joined
 
 
 def _bind_tcp(port: int) -> socket.socket:
@@ -413,9 +375,7 @@ def make_server(canvas: Canvas, port: int = 0, public_origin: str | None = None,
                 unix_socket_fd, UnixScopeApp(app), context, owned_unix=identity,
                 shutdown_requested=shutdown_requested,
             )
-        tcp = BoundServer(
-            tcp_socket, app, context, shutdown_requested=shutdown_requested,
-        )
+        tcp = BoundServer(tcp_socket, app, context, shutdown_requested=shutdown_requested)
         tcp.unix_server = unix_handle
         context.initialize()
         # Hash generation starts in serve_forever after the bound sockets are ready.
