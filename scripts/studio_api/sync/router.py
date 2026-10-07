@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.sse import format_sse_event
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
 from studio_api.models import ErrorResponse
@@ -138,12 +139,24 @@ def _schema_event(payload: dict[str, object]) -> bytes:
     )
 
 
+class ClosingEventStreamResponse(StreamingResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()
+
+
 def _stream_response(content: AsyncIterator[bytes]) -> StreamingResponse:
     headers = {
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(content, media_type="text/event-stream; charset=utf-8", headers=headers)
+    return ClosingEventStreamResponse(
+        content, media_type="text/event-stream; charset=utf-8", headers=headers
+    )
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -361,10 +374,10 @@ def create_router(context: ApiContext) -> APIRouter:
                         elif event is None:
                             yield _resource_event("heartbeat", subscription.heartbeat())
                 finally:
+                    subscription.close()
                     if shutdown_wait is not None:
                         shutdown_wait.cancel()
                         await asyncio.gather(shutdown_wait, return_exceptions=True)
-                    subscription.close()
 
             return _stream_response(resource_events())
 

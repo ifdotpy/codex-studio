@@ -142,7 +142,11 @@ class ProgressWatchdogStub:
 
     def subscribe(self, agent_id: str, _on_change: object):
         self.agents.append(agent_id)
-        return lambda: None
+
+        def detach() -> None:
+            self.agents.remove(agent_id)
+
+        return detach
 
 
 class ConnectedRequest(Request):
@@ -217,6 +221,74 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
 
 
 class SyncRouterTests(unittest.TestCase):
+    def test_cancelled_event_stream_send_closes_progress_subscription(self) -> None:
+        context = ContextStub()
+
+        class ShutdownEventStub:
+            def __init__(self) -> None:
+                self.event = asyncio.Event()
+
+            def async_event(self) -> asyncio.Event:
+                return self.event
+
+        async def verify() -> None:
+            event = ShutdownEventStub()
+            path = "/api/sync/stream?protocol=3&resources=" + json.dumps(
+                [{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":")
+            )
+            scope: dict[str, object] = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/sync/stream",
+                "raw_path": b"/api/sync/stream",
+                "query_string": path.split("?", 1)[1].encode(),
+                "headers": [],
+                "client": ("test", 1000),
+                "server": ("test", 80),
+                "state": {"studio_shutdown_event": event},
+            }
+            request = ConnectedRequest(scope)
+            router = create_router(cast(ApiContext, context))
+            route = cast(
+                APIRoute,
+                next(
+                    route
+                    for route in router.routes
+                    if getattr(route, "path", None) == "/api/sync/stream"
+                ),
+            )
+            response = await route.endpoint(
+                request,
+                SyncStreamQuery(
+                    protocol="3",
+                    resources=request.query_params.get("resources"),
+                ),
+            )
+            receive_started = False
+            sent_types: list[str] = []
+
+            async def receive() -> dict[str, object]:
+                nonlocal receive_started
+                if not receive_started:
+                    receive_started = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                await asyncio.Future()
+
+            async def send(message: dict[str, object]) -> None:
+                sent_types.append(str(message["type"]))
+                if message["type"] == "http.response.body":
+                    raise asyncio.CancelledError
+
+            await response(scope, receive, send)
+            self.assertIn("http.response.body", sent_types)
+            self.assertEqual(context.watchdog.agents, [])
+            self.assertEqual(context.hub._subscriptions, set())
+
+        asyncio.run(verify())
+
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()
         app.include_router(create_router(cast(ApiContext, ContextStub())))
