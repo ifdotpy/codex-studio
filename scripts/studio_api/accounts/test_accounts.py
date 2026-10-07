@@ -463,6 +463,46 @@ class AccountsRouterTests(unittest.TestCase):
             "tokens": {"account_id": account_id, "id_token": "x." + payload + ".sig", "access_token": "fixture-secret"}
         }))
 
+    def test_account_name_set_clear_validation_and_exact_replay(self) -> None:
+        from codex_accounts import AccountStore
+
+        store = cast(AccountStore, self.store)
+        store.data["accounts"]["claude"] = {
+            "id": "claude", "home": str(self.profile), "provider": "claude",
+            "label": "Claude Code", "source": "Claude Code", "status": "ready",
+        }
+        store._save()
+        with patch("codex_claude.auth_metadata", return_value={
+            "status": "ready", "email": "claude@example.invalid", "accountId": "claude-fixture",
+        }):
+            for key in ("default", "claude"):
+                with self.subTest(provider=key):
+                    body = {"account_key": key, "label": "  Work 1  ", "request_id": str(uuid4())}
+                    first = self.client.post("/api/accounts/name", json=body)
+                    self.assertEqual(first.status_code, 200, first.text)
+                    self.assertEqual(next(row for row in first.json()["accounts"] if row["id"] == key)["label"], "Work 1")
+                    clear = {**body, "label": "   ", "request_id": str(uuid4())}
+                    cleared = self.client.post("/api/accounts/name", json=clear)
+                    self.assertEqual(cleared.status_code, 200, cleared.text)
+                    self.assertEqual(next(row for row in cleared.json()["accounts"] if row["id"] == key)["label"], "")
+                    # An old receipt must not restore the old label after a later edit.
+                    retry = self.client.post("/api/accounts/name", json=body)
+                    self.assertEqual(retry.status_code, 200)
+                    self.assertEqual(next(row for row in retry.json()["accounts"] if row["id"] == key)["label"], "")
+                    with self.assertRaisesRegex(ValueError, "different content"):
+                        self.client.post("/api/accounts/name", json={**body, "label": "Work 2"})
+                    for invalid in ("x" * 33, None, 123):
+                        response = self.client.post("/api/accounts/name", json={**body, "label": invalid, "request_id": str(uuid4())})
+                        self.assertEqual(response.status_code, 400)
+                    boundary = self.client.post("/api/accounts/name", json={**body, "label": " " + "😀" * 32 + " ", "request_id": str(uuid4())})
+                    self.assertEqual(boundary.status_code, 200)
+                    invalid_id = self.client.post("/api/accounts/name", json={**body, "request_id": "invalid"})
+                    self.assertEqual(invalid_id.status_code, 400)
+                    self.assertEqual(store.data["accounts"][key]["label"], "😀" * 32)
+            reloaded = AccountStore(self.root / "state")
+            self.assertEqual(reloaded.data["accounts"]["default"]["label"], "😀" * 32)
+            self.assertEqual(reloaded.data["accounts"]["claude"]["label"], "😀" * 32)
+
     def test_accounts_response_comes_from_account_store_and_hides_credentials(self) -> None:
         response = self.client.get("/api/accounts")
         self.assertEqual(response.status_code, 200)

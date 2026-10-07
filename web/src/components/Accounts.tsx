@@ -1,3 +1,5 @@
+import { accountDisplayName } from "../accountName";
+import { ActionButton } from "./ui/primitives";
 import { localDateTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import ClaudeProfile from "./ClaudeProfile";
@@ -14,6 +16,7 @@ import {
   Plus,
   RefreshCw,
   UserRound,
+  Pencil,
 } from "lucide-react";
 import {
   useCallback,
@@ -21,6 +24,7 @@ import {
   useRef,
   useState,
   type SetStateAction,
+  type ReactNode,
 } from "react";
 import { errorText, get, post, type GetResult } from "../api";
 import type { Agent } from "../types";
@@ -120,6 +124,116 @@ export function useAccounts(stateDir?: string) {
     };
   }, [stateDir, refresh]);
   return { data, setData, error, refresh, scope: stateDir };
+}
+
+function AccountNameEditor({
+  account,
+  onSaved,
+  disabled,
+}: {
+  account: Account;
+  onSaved: (data: AccountsState) => void;
+  disabled: boolean;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [name, setName] = useState(account.label);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const request = useRef<{ label: string; request_id: string } | null>(null);
+  const lock = useRef(false);
+  const fallback = account.email?.split("@")[0] || "Account";
+  const save = async () => {
+    if (lock.current || disabled) return;
+    if ([...name.trim()].length > 32) {
+      setError("Use at most 32 characters.");
+      return;
+    }
+    if (request.current?.label !== name)
+      request.current = { label: name, request_id: crypto.randomUUID() };
+    lock.current = true;
+    setBusy(true);
+    setError("");
+    try {
+      const result = await post("/api/accounts/name", {
+        account_key: account.id,
+        ...request.current,
+      });
+      onSaved(result);
+      request.current = null;
+      setEditing(false);
+    } catch (failure) {
+      setError(errorText(failure));
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
+  };
+  const cancel = () => {
+    if (lock.current) return;
+    setEditing(false);
+    setError("");
+  };
+  return (
+    <div className="account-name">
+      {editing ? (
+        <form
+          className="account-name-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void save();
+          }}
+        >
+          <TextInput
+            label="Name"
+            aria-label={`Name for ${account.email || account.id}`}
+            placeholder={fallback}
+            value={name}
+            onChange={(event) => setName(event.currentTarget.value)}
+            onKeyDown={(event) => {
+              if (event.key === "Escape") {
+                event.preventDefault();
+                event.stopPropagation();
+                cancel();
+              }
+            }}
+            disabled={busy || disabled}
+            autoFocus
+            error={error || undefined}
+          />
+          <div className="account-name-actions">
+            <ActionButton
+              type="submit"
+              actionRole="primary"
+              loading={busy}
+              disabled={disabled}
+            >
+              Save
+            </ActionButton>
+            <ActionButton actionRole="quiet" onClick={cancel} disabled={busy}>
+              Cancel
+            </ActionButton>
+          </div>
+        </form>
+      ) : (
+        <>
+          <span className="account-name-label">Name</span>
+          <ActionButton
+            actionRole="quiet"
+            leftSection={<Pencil size={14} />}
+            aria-label={`Edit name for ${account.email || account.id}`}
+            disabled={disabled}
+            onClick={() => {
+              setName(account.label);
+              setError("");
+              setEditing(true);
+            }}
+          >
+            {accountDisplayName(account)}
+          </ActionButton>
+        </>
+      )}
+    </div>
+  );
 }
 
 function AccountCapacity({
@@ -412,6 +526,7 @@ export default function Accounts({
   projectAccountKeys,
   onModalOpenChange,
   managerOnly = false,
+  renderPicker,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
@@ -419,6 +534,10 @@ export default function Accounts({
   projectAccountKeys?: string[];
   onModalOpenChange?: (opened: boolean) => void;
   managerOnly?: boolean;
+  renderPicker?: (
+    selectAccount: (key: string) => void,
+    disabled: boolean,
+  ) => ReactNode;
   changeAccount?: (key: string) => Promise<void>;
   onError: (message: string) => void;
 }) {
@@ -511,6 +630,34 @@ export default function Accounts({
       setPending("");
     }
   };
+  const selectAccount = (key: string) => {
+    const account = accounts.find((candidate) => candidate.id === key);
+    if (
+      !account ||
+      actionLock.current ||
+      pending ||
+      account.status !== "ready" ||
+      account.disconnected ||
+      (pinned && !owner) ||
+      (transferring && account.id !== teamTransfer?.targetAccountKey)
+    )
+      return;
+    const extendTransfer =
+      transferring && account.id === teamTransfer?.targetAccountKey;
+    if (account.id === accountKey && !extendTransfer) return;
+    if (pinned && owner)
+      setTransferChoice({
+        target: account,
+        sourceProvider: selected?.provider || owner.provider || "codex",
+        agentId: owner.id,
+        requestId: crypto.randomUUID(),
+        extend: !!extendTransfer,
+      });
+    else if (!pinned)
+      void action(account.id, async () => {
+        await changeAccount?.(account.id);
+      });
+  };
   useEffect(() => {
     if (!opened && !managerOnly) return;
     void state.refresh();
@@ -533,7 +680,10 @@ export default function Accounts({
           onReady={state.refresh}
         />
       )}
-      {!managerOnly && (
+      {!managerOnly &&
+        renderPicker &&
+        renderPicker(selectAccount, !!pending || (pinned && !owner))}
+      {!managerOnly && !renderPicker && (
         <Menu
           position="bottom-end"
           width={300}
@@ -592,25 +742,7 @@ export default function Accounts({
                       <span style={{ width: 14 }} />
                     )
                   }
-                  onClick={() => {
-                    const extendTransfer =
-                      transferring &&
-                      account.id === teamTransfer?.targetAccountKey;
-                    if (account.id === accountKey && !extendTransfer) return;
-                    if (pinned && owner)
-                      setTransferChoice({
-                        target: account,
-                        sourceProvider:
-                          selected?.provider || owner.provider || "codex",
-                        agentId: owner.id,
-                        requestId: crypto.randomUUID(),
-                        extend: !!extendTransfer,
-                      });
-                    else if (!pinned)
-                      void action(account.id, async () => {
-                        await changeAccount?.(account.id);
-                      });
-                  }}
+                  onClick={() => selectAccount(account.id)}
                 >
                   <span className="account-menu-identity">
                     {account.email || account.label}
@@ -760,6 +892,11 @@ export default function Accounts({
                       </span>
                     )}
                   </div>
+                  <AccountNameEditor
+                    account={account}
+                    onSaved={state.setData}
+                    disabled={!!pending}
+                  />
                   {Boolean(account.error) && (
                     <ErrorDescription
                       className="account-action-error"

@@ -57,8 +57,7 @@ export default function ClaudeProfile({
       else options.autoCompactWindow = Number(window);
       const result = await post("/api/claude/profiles", {
         options,
-        label: label.trim(),
-        ...(account ? { account_key: account.id } : {}),
+        ...(account ? { account_key: account.id } : { label: label.trim() }),
       });
       onSaved(result);
       setSaved(true);
@@ -86,14 +85,16 @@ export default function ClaudeProfile({
               : "Sign in to this Claude Code configuration with your subscription before you add it."}
           </small>
           {account && <strong>{account.email || account.label}</strong>}
-          <TextInput
-            label="Profile name"
-            value={label}
-            maxLength={200}
-            required
-            onChange={(event) => setLabel(event.currentTarget.value)}
-            disabled={busy}
-          />
+          {!account && (
+            <TextInput
+              label="Profile name"
+              value={label}
+              maxLength={200}
+              required
+              onChange={(event) => setLabel(event.currentTarget.value)}
+              disabled={busy}
+            />
+          )}
           <TextInput
             label="Claude executable"
             placeholder="Installed Claude Code"

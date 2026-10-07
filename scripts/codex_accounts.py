@@ -306,6 +306,30 @@ class AccountStore:
                 self._save()
         return self.snapshot()
 
+    def set_name(self, key, label, request_id):
+        """Save a short account label once for an exact request."""
+        if not isinstance(label, str) or len(label.strip()) > 32:
+            raise ValueError("The account name must contain at most 32 characters")
+        try:
+            request = str(uuid.UUID(request_id))
+        except (ValueError, TypeError, AttributeError):
+            raise ValueError("Supply a UUID request_id") from None
+        with self.lock:
+            receipts = self.data.setdefault("nameReceipts", {})
+            previous = receipts.get(request)
+            content = {"accountKey": key, "label": label}
+            if previous is not None:
+                if previous != content:
+                    raise ValueError("This name request id has different content")
+            else:
+                row = self._row(key)
+                if row.get("deleted"):
+                    raise ValueError("This account was deleted")
+                row["label"] = label.strip()
+                receipts[request] = content
+                self._save()
+        return self.snapshot()
+
     def reconnect(self, key):
         self.get(key)
         with self.lock:
