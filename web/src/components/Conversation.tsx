@@ -98,7 +98,8 @@ import SelectionQuote, {
 import MessageActions from "./conversation/transcript/MessageActions";
 import AgentPhase from "./agents/AgentPhase";
 import AgentPanel from "./agents/AgentPanel";
-import { ExecutionSettings } from "./agents/ExecutionSettings";
+import { UnifiedAgentSettings } from "./agents/UnifiedAgentSettings";
+import type { useAccounts } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import ComposerAttachments, {
   MessageAttachments,
@@ -229,6 +230,7 @@ export default function Conversation(p: {
   sending: boolean;
   schemaMismatch?: boolean;
   refresh: () => Promise<void>;
+  accountsState: ReturnType<typeof useAccounts>;
   notify: (s: string) => void;
   limits: Json | null;
   limitsAccounts?: UsageAccount[];
@@ -1923,7 +1925,10 @@ export default function Conversation(p: {
                         )}
                       {p.agent?.source === "managed" && (
                         <div className="composer-context-row">
-                          <ExecutionSettings
+                          <UnifiedAgentSettings
+                            state={p.accountsState}
+                            notify={p.notify}
+                            team={p.data.runtime?.agents || []}
                             // Transcript metadata can predate a settings change.
                             agent={p.agent}
                             catalog={modelCatalog}

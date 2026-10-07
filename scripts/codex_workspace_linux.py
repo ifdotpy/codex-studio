@@ -13,6 +13,7 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterable
+from typing import Any
 
 from codex_records import JsonObject
 from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
@@ -34,15 +35,17 @@ if operation == "mount":
     result = libc.mount(source, target, b"overlay", 0, options)
 else:
     target, = (os.fsencode(item) for item in args)
-    result = libc.umount2(target, 0)
+    flags = 1 if operation == "unmount-force" else 0
+    result = libc.umount2(target, flags)
 if result != 0:
     error = ctypes.get_errno()
     raise OSError(error, os.strerror(error), os.fsdecode(target))
 '''
 
 
-def _run(argv: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(argv, check=False, text=True, capture_output=True)
+def _run(argv: list[str], *, check: bool = True,
+         timeout: float | None = None) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(argv, check=False, text=True, capture_output=True, timeout=timeout)
     if check and result.returncode:
         raise RuntimeError(f"Command failed ({result.returncode}): {argv!r}: {result.stderr.strip()}")
     return result
@@ -271,40 +274,70 @@ class Backend:
                 changed_paths.add(path)
         return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}  # type: ignore[typeddict-item]  # typed-narrowing: backend tokens are JSON scalar values from the persisted state
 
-    def unmount_workspace(self, mount: Path, *, force: bool = False) -> None:
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, Any]:
         mount = Path(mount).resolve()
         state_path = _namespace_state_path()
         try:
             record = json.loads(state_path.read_text(encoding="utf-8"))
         except (FileNotFoundError, json.JSONDecodeError):
-            return
+            return {"method": "namespace-not-running", "terminatedPids": 0}
         if not _namespace_alive(record):
-            return
+            return {"method": "namespace-not-running", "terminatedPids": 0}
         pid = int(record["pid"])
-        if force:
-            result = _run(self._nsenter(pid) + ["lsof", "-t", "+f", "--", str(mount)], check=False)
+        if not _mount_exists(pid, mount):
+            return {"method": "already-unmounted", "terminatedPids": 0}
+
+        unmount = [sys.executable, "-c", _OVERLAY_SETNS, str(pid), "unmount", str(mount)]
+        try:
+            _run(unmount, check=False, timeout=4)
+        except subprocess.TimeoutExpired:
+            pass
+        if not _mount_exists(pid, mount):
+            return {"method": "unmount", "terminatedPids": 0}
+        if not force:
+            raise RuntimeError(f"Could not unmount workspace: {mount}")
+
+        lsof_timed_out = False
+        try:
+            result = _run(self._nsenter(pid) + ["lsof", "-t", "--", str(mount)],
+                          check=False, timeout=2)
             pids = {int(value) for value in result.stdout.split() if value.isdigit()}
-            holders = {process_id: _proc_start_time(process_id) for process_id in pids}
-            holders = {process_id: start for process_id, start in holders.items()
-                       if start is not None}
-            for process_id, start in holders.items():
+        except subprocess.TimeoutExpired:
+            pids = set()
+            lsof_timed_out = True
+        holders = {process_id: _proc_start_time(process_id) for process_id in pids}
+        holders = {process_id: start for process_id, start in holders.items() if start is not None}
+        for process_id, start in holders.items():
+            try:
+                if _proc_start_time(process_id) == start:
+                    os.kill(process_id, 15)
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and any(_proc_start_time(process_id) == start
+                                                  for process_id, start in holders.items()):
+            time.sleep(0.1)
+        for process_id, start in holders.items():
+            if _proc_start_time(process_id) == start:
                 try:
-                    if _proc_start_time(process_id) == start:
-                        os.kill(process_id, 15)
+                    os.kill(process_id, 9)
                 except ProcessLookupError:
                     pass
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and any(_proc_start_time(process_id) == start
-                                                      for process_id, start in holders.items()):
-                time.sleep(0.1)
-            for process_id, start in holders.items():
-                if _proc_start_time(process_id) == start:
-                    try:
-                        os.kill(process_id, 9)
-                    except ProcessLookupError:
-                        pass
+
+        try:
+            _run(unmount, check=False, timeout=4)
+        except subprocess.TimeoutExpired:
+            pass
         if _mount_exists(pid, mount):
-            _run([sys.executable, "-c", _OVERLAY_SETNS, str(pid), "unmount", str(mount)])
+            forced = [sys.executable, "-c", _OVERLAY_SETNS, str(pid), "unmount-force", str(mount)]
+            _run(forced, check=False, timeout=4)
+        if _mount_exists(pid, mount):
+            raise RuntimeError(f"Could not force-unmount workspace: {mount}")
+        return {"method": "force-unmount-after-terminating-holders",
+                "holdersFound": len(holders),
+                "terminatedPids": sum(_proc_start_time(process_id) != start
+                                       for process_id, start in holders.items()),
+                "lsofTimedOut": lsof_timed_out}
 
     def remove_layer(self, agent_dir: Path) -> None:
         agent_dir = Path(agent_dir)

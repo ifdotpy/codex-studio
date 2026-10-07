@@ -11,6 +11,7 @@ from studio_api.models import (
     JsonValue,
     ResponseModel,
     SyncEntity as SyncEntity,
+    SupervisorIdentity,
 )
 
 
@@ -462,6 +463,45 @@ class CapacityRetrySettingsDto(ExecutionSettingsDto):
     yoloMode: bool | None = None
     profileInstructions: str | None = None
     role: AgentRole | None = None
+
+
+class SnapshotModelSettingsDto(ContractModel):
+    id: str
+    epoch: int
+    accountKey: str
+    threadId: str
+    connectionId: str
+    settings: CapacityRetrySettingsDto
+    status: Literal["submitted", "acknowledged"]
+
+
+class ReviewUncommittedTargetDto(ContractModel):
+    type: Literal["uncommittedChanges"]
+
+
+class ReviewBaseBranchTargetDto(ContractModel):
+    type: Literal["baseBranch"]
+    branch: str
+
+
+class ReviewCommitTargetDto(ContractModel):
+    type: Literal["commit"]
+    sha: str
+    title: str | None = None
+
+
+class ReviewCustomTargetDto(ContractModel):
+    type: Literal["custom"]
+    instructions: str
+
+
+ReviewTargetDto = Annotated[
+    ReviewUncommittedTargetDto
+    | ReviewBaseBranchTargetDto
+    | ReviewCommitTargetDto
+    | ReviewCustomTargetDto,
+    Field(discriminator="type"),
+]
 
 
 class AgentOverview(ContractModel):

@@ -1289,14 +1289,28 @@ async function watchStateProjection(
   let ready = false;
   let entitiesLoaded = false;
   let latestRows: EntityRow[] = [];
+  // RxDB caches immutable document versions. Keep one JSON view per version
+  // without retaining removed documents in a strong cache.
+  const documentRows = new WeakMap<object, SyncDocument>();
+  let published: ReturnType<typeof applyEntityRows>;
   const publishCurrent = () => {
     if (!ready || !entitiesLoaded) return;
     const next = applyEntityRows(projection, latestRows, true);
-    if (next) accept(next);
+    if (next && next !== published) {
+      published = next;
+      accept(next);
+    }
   };
   const publish = (documents: RxDocument<SyncDocument>[]) => {
     entitiesLoaded = true;
-    latestRows = documents.map((document) => document.toJSON());
+    latestRows = documents.map((document) => {
+      let row = documentRows.get(document);
+      if (!row) {
+        row = document.toJSON();
+        documentRows.set(document, row);
+      }
+      return row;
+    });
     publishCurrent();
   };
   const entities = db.projections

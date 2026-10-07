@@ -69,6 +69,12 @@ class ContractModel(BaseModel):
     )
 
 
+class SupervisorIdentity(ContractModel):
+    stateDir: str
+    handle: str
+    generation: int
+
+
 class SyncEntity(ContractModel):
     """One durable sync entity change attached to a successful response."""
 

@@ -17,6 +17,7 @@ from .models import (
     AccountDiscoverRequest,
     AccountLoginResponse,
     AccountKeyRequest,
+    AccountNameRequest,
     RequiredAccountKeyRequest,
     ClaudeCancelRequest,
     ClaudeCodeRequest,
@@ -66,6 +67,8 @@ class AccountService(Protocol):
     def cancel_login(self, runtime: RuntimePort, request_id: str) -> JsonValue: ...
 
     def delete(self, key: str, request_id: str) -> JsonValue: ...
+
+    def set_name(self, key: str, label: str, request_id: str) -> JsonValue: ...
 
     def disconnect(self, key: str) -> JsonValue: ...
 
@@ -284,6 +287,14 @@ def create_router(context: ApiContext) -> APIRouter:
         before = _accounts_before(runtime)
         runtime.accounts.delete(body.account_key, body.request_id)
         result = runtime.accounts.snapshot()
+        _publish_accounts_if_changed(runtime, before)
+        return context.send(request, result)
+
+    @router.post("/api/accounts/name", response_model=AccountsResponse, responses=_ERROR_RESPONSES)
+    def account_name(request: Request, body: Annotated[AccountNameRequest, Body()]) -> Response:
+        runtime = _runtime(context)
+        before = _accounts_before(runtime)
+        result = runtime.accounts.set_name(body.account_key, body.label, body.request_id)
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 

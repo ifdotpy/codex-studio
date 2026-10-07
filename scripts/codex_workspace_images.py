@@ -56,7 +56,7 @@ class WorkspaceBackend(Protocol):
     def clone_workspace(self, image: Path, agent_dir: Path) -> Path: ...
     def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> dict[str, Any]: ...
     def sync_delta(self, root: Path, target: Path, token: Any, *, excludes: tuple[str, ...]) -> Any: ...
-    def unmount_workspace(self, mount: Path, *, force: bool = False) -> None: ...
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, Any]: ...
     def remove_layer(self, agent_dir: Path) -> None: ...
     def remove_base_version(self, path: Path) -> None: ...
     def private_bytes(self, path: Path) -> int: ...
@@ -1147,11 +1147,11 @@ def archive_workspace(agent_id) -> dict[str, Any]:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(_agent_dir(agent_id) / '.workspace.lock'):
         mount = Path(state.get('mount') or _mount_path(agent_id))
-        _get_backend().unmount_workspace(mount, force=True)
+        unmount = _get_backend().unmount_workspace(mount, force=True)
         state['state'] = 'archived'
         state['mounted'] = False
         _write_json(_agent_state_path(agent_id), state)
-    return {'freedBytes': 0, 'state': 'archived'}
+    return {'freedBytes': 0, 'state': 'archived', 'unmount': unmount}
 
 
 def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
@@ -1163,12 +1163,12 @@ def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
         return {'freedBytes': 0, 'state': 'removed'}
     with _file_lock(agent_dir / '.workspace.lock'):
         mount = Path(state.get('mount') or _mount_path(agent_id))
-        _get_backend().unmount_workspace(mount, force=True)
+        unmount = _get_backend().unmount_workspace(mount, force=True)
         _get_backend().remove_layer(agent_dir)
         shutil.rmtree(mount, ignore_errors=True)
         if state.get('repoKey'):
             _prune_base_versions(state['repoKey'])
-    return {'freedBytes': None, 'state': 'removed'}
+    return {'freedBytes': None, 'state': 'removed', 'unmount': unmount}
 
 
 def list_workspaces() -> list[JsonObject]:

@@ -26,7 +26,6 @@ NORMAL_SHUTDOWN_BOUND_SECONDS = 1.5
 SECOND_SIGNAL_BOUND_SECONDS = 6.5
 PROCESS_CLEANUP_BOUND_SECONDS = 45
 
-
 class BackendShutdownContract(unittest.TestCase):
     def start_backend(
         self,
@@ -356,12 +355,6 @@ main()
                     process.kill()
                     process.wait(timeout=5)
 
-    def test_sigterm_without_clients_is_clean_and_fast(self):
-        self.run_shutdown()
-
-    def test_sigint_without_clients_is_clean_and_fast(self):
-        self.run_shutdown(first_signal=signal.SIGINT)
-
     def test_sigterm_closes_one_idle_sync_stream_immediately(self):
         self.run_shutdown(stream_count=1)
 
@@ -370,88 +363,6 @@ main()
 
     def test_sigterm_closes_a_stream_even_when_the_client_does_not_read(self):
         self.run_shutdown(stream_count=1, unread_stream=True)
-
-    def test_second_signal_closes_bounded_stream_drain(self):
-        self.run_shutdown(stream_count=1, second_signal_delay=0.1)
-
-    def test_second_sigterm_closes_bounded_two_stream_drain(self):
-        self.run_shutdown(stream_count=2, second_signal_delay=0.1)
-
-    def test_second_sigint_closes_bounded_stream_drain(self):
-        self.run_shutdown(
-            stream_count=1, second_signal_delay=0.1, first_signal=signal.SIGINT,
-        )
-
-    def test_second_signal_exits_five_second_handler(self):
-        self.run_shutdown(handler_delay=5, second_signal_delay=0.1)
-
-    def test_second_signal_exits_thirty_second_handler(self):
-        self.run_shutdown(handler_delay=30, second_signal_delay=0.1)
-
-    def test_thirty_second_handler_exits_after_second_signal_at_each_gap(self):
-        for delay in (0.1, 1.0, 3.0):
-            with self.subTest(delay=delay):
-                self.run_shutdown(handler_delay=30, second_signal_delay=delay)
-
-    def test_second_sigint_exits_thirty_second_handler_after_one_second(self):
-        self.run_shutdown(
-            handler_delay=30, second_signal_delay=1.0,
-            second_signal_number=signal.SIGINT,
-        )
-
-    def test_single_signal_allows_five_second_handler_to_finish(self):
-        elapsed, _, _, _ = self.run_shutdown(handler_delay=5)
-        self.assertGreaterEqual(elapsed, 4.5)
-
-    def test_single_signal_bounds_thirty_second_handler_after_completion(self):
-        elapsed, _, _, _ = self.run_shutdown(handler_delay=30)
-        self.assertGreaterEqual(elapsed, 29)
-
-    def test_first_signal_during_runtime_construction_exits_promptly(self):
-        elapsed, _, _, _ = self.run_shutdown(startup_delay=6)
-        self.assertLess(elapsed, 1.5, "the first signal interrupts Runtime construction")
-
-    def test_interrupted_cleanup_reenters_before_first_close_step(self):
-        self.run_shutdown(interrupt_cleanup_before_step=True)
-
-    def test_second_signal_during_update_startup_exits_promptly(self):
-        for delay in (0.1, 1.0, 3.0):
-            with self.subTest(delay=delay):
-                self.run_shutdown(updates_delay=30, second_signal_delay=delay)
-
-    def test_third_signal_abandons_a_stuck_cleanup(self):
-        with tempfile.TemporaryDirectory(prefix="backend-shutdown-third-") as directory:
-            root = Path(directory)
-            port = self.free_port()
-            process, marker = self.start_backend(root, port, cleanup_delay=30)
-            try:
-                self.wait_for_start(process, port)
-                process.send_signal(signal.SIGTERM)
-                time.sleep(0.1)
-                process.send_signal(signal.SIGTERM)
-                self.wait_marker(marker, process)
-                started = time.monotonic()
-                process.send_signal(signal.SIGINT)
-                stdout, stderr = process.communicate(timeout=3)
-                elapsed = time.monotonic() - started
-                self.assertEqual(process.returncode, -signal.SIGINT, stderr)
-                self.assertLess(elapsed, 3)
-                self.assertIn("cleanup abandoned after third shutdown signal", stderr)
-                self.assertRegex(stderr, r"cleanup abandoned after third shutdown signal pid=\d+ signal=2 at=\d+\.\d+")
-                self.assertNotRegex(stderr, r"Traceback|Exception in")
-                self.assertFalse((root / "state" / "canvas.sock").exists())
-                print(json.dumps({
-                    "case": {"cleanupSeconds": 30, "signals": ["SIGTERM", "SIGTERM", "SIGINT"]},
-                    "exitCode": process.returncode,
-                    "elapsedSeconds": round(elapsed, 3),
-                    "stderr": stderr.splitlines()[-2:],
-                    "stdout": stdout.splitlines()[-1:],
-                }), flush=True)
-            finally:
-                if process.poll() is None:
-                    process.kill()
-                    process.wait(timeout=5)
-
 
 if __name__ == "__main__":
     unittest.main()

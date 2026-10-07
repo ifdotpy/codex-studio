@@ -206,14 +206,17 @@ class SessionCostInvalidationContract(unittest.TestCase):
     def test_claude_root_move_invalidates_both_roots_once(self):
         notice = self.claude_notice()
         self.event(notice)
-        self.estimate()
+        initial = self.estimate()
         self.agent['rootId'] = 'other-root'
         self.event(notice, at=101)
         self.assertEqual(self.state(), {'maxSeq': 0, 'generation': 2})
         self.assertEqual(self.reader._usage_state(self.db, 'other-root'), {'maxSeq': 1, 'generation': 1})
-        self.assertIsNone(self.estimate()['totalUSD'])
-        moved = self.reader._compute_shared('lead', 'other-root', refresh=True)
+        with self.assertRaisesRegex(RuntimeError, 'chat team changed'):
+            self.estimate()
+        moved = self.reader.snapshot('lead', wait=True)
+        self.assertEqual(moved['rootId'], 'other-root')
         self.assertEqual(moved['pricedSamples'], 1)
+        self.assertEqual(moved['totalUSD'], initial['totalUSD'])
         original = self.usage()
         self.event(notice, at=102)
         self.assertEqual(self.usage(), original)

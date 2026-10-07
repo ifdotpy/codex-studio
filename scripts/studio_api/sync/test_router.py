@@ -349,6 +349,14 @@ class SyncRouterTests(unittest.TestCase):
             "deliveredMode": {"secret": "delivery"}, "nativeRelease": {"phase": "released", "targetEpoch": 4,
                                                                               "targetRootId": "private-root"},
             "startAttempt": {"claudeInputRequest": {"text": "private-input"}},
+            "contextRepair": {"savedInput": "private-repair-input"},
+            "contextRepairHistory": [{"savedInput": "private-repair-history"}],
+            "lastContextRepairCheck": {"savedInput": "private-repair-check"},
+            "lastContextRepairWait": {"savedInput": "private-repair-wait"},
+            "contextRepairWait": {
+                "phase": "waiting", "reason": "private-reason", "scope": "native",
+                "error": "public-wait-error",
+            },
         }
         rule = {
             "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
@@ -391,6 +399,7 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(entities["entity:agent:agent-a"], {
             "id": "agent-a", "kind": "agent", "name": "Worker",
             "nativeRelease": {"phase": "released"}, "startAttempt": {},
+            "contextRepairWait": {"scope": "native", "error": "public-wait-error"},
         })
         self.assertEqual(entities["entity:rule:rule-a"], {
             "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
@@ -404,7 +413,9 @@ class SyncRouterTests(unittest.TestCase):
         wire = json.dumps(response.json())
         for private in ("history", "delivery", "targetEpoch", "private-root", "private-input",
                         "private/path", "private-command", "private-liveness", "private-text",
-                        "private-error", "private-output", "private-event"):
+                        "private-error", "private-output", "private-event", "private-repair-input",
+                        "private-repair-history", "private-repair-check", "private-repair-wait",
+                        "private-reason"):
             self.assertNotIn(private, wire)
         self.assertNotIn("private-archive", wire)
         self.assertNotIn("private-release", wire)

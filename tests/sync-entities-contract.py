@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory() as directory:
 
     @contextlib.contextmanager
     def connect():
-        db = sqlite3.connect(path, timeout=5, isolation_level=None)
+        db = sqlite3.connect(path, timeout=5)
         try:
             with db:
                 ensure_tables(db)

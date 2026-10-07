@@ -211,7 +211,7 @@ class Bridge(unittest.TestCase):
             (root / helper.name).write_text(source)
         (root / 'fake.mjs').write_text(SDK)
         dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
-        if dependency_modules.exists():
+        if (dependency_modules / 'zod').is_dir():
             (root / 'node_modules').symlink_to(dependency_modules, target_is_directory=True)
         else:
             zod = root / 'node_modules' / 'zod'

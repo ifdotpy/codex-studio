@@ -56,17 +56,20 @@ def _mounted(path: str | Path) -> bool:
 
 def _device_for_mount(mount: str | Path) -> str | None:
     mount = Path(mount).resolve()
-    info = plistlib.loads(_run(['hdiutil', 'info', '-plist'], timeout=30).stdout)
+    info = plistlib.loads(_run(['hdiutil', 'info', '-plist'], timeout=5).stdout)
     for image in info.get('images', []):
         entities = image.get('system-entities', [])
         matching = next((entry for entry in entities
                          if entry.get('mount-point') and Path(entry['mount-point']).resolve() == mount), None)
         if matching:
+            device = matching.get('dev-entry', '')
+            match = re.fullmatch(r'(/dev/disk\d+)(?:s\d+)?', device)
+            if match:
+                return match.group(1)
             entry = next((item for item in entities
                           if re.fullmatch(r'/dev/disk\d+', item.get('dev-entry', ''))), None)
             if entry:
                 return entry['dev-entry']  # type: ignore[no-any-return]  # typed-narrowing: diskutil returns a device path string
-            return re.sub(r's\d+$', '', matching.get('dev-entry', ''))
     return None
 
 
@@ -574,33 +577,79 @@ class Backend:
         return {'token': current, 'changedPaths': sorted(changed_paths),  # type: ignore[typeddict-item]  # typed-narrowing: event tokens originate in FSEvents as integers
                 'scanPaths': sorted(scan_paths), 'historyLost': False}
 
-    def unmount_workspace(self, mount: Path, *, force: bool = False) -> None:
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, object]:
         mount = Path(mount)
         if not _mounted(mount):
-            return
-        if force:
-            result = _run(['lsof', '-t', '+f', '--', str(mount)], check=False)
-            pids = {int(value) for value in result.stdout.decode().split() if value.isdigit()}
-            for pid in pids:
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-            deadline = time.monotonic() + 5
-            while time.monotonic() < deadline and any(_pid_exists(pid) for pid in pids):
-                time.sleep(.1)
-            for pid in pids:
-                if _pid_exists(pid):
-                    try:
-                        os.kill(pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+            return {'method': 'already-unmounted', 'terminatedPids': 0}
         device = _device_for_mount(mount)
         if not device:
             raise RuntimeError(f'Cannot find the disk image device for mounted workspace: {mount}')
-        result = _run(['diskutil', 'eject', device], timeout=120, check=False)
-        if result.returncode and _mounted(mount):
-            raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
+        eject_timed_out = False
+        try:
+            result = _run(['diskutil', 'eject', device], timeout=20, check=False)
+        except subprocess.TimeoutExpired:
+            result = None
+            eject_timed_out = True
+            error = 'Timed out while ejecting the workspace disk image'
+        else:
+            assert result is not None
+            error = result.stderr.decode(errors='replace')[-3000:]
+        if result is not None and result.returncode == 0 and not _mounted(mount):
+            return {'method': 'eject', 'terminatedPids': 0}
+        if not force:
+            raise RuntimeError(error or f'Could not eject mounted workspace: {mount}')
+
+        lsof_timed_out = False
+        try:
+            result = _run(['lsof', '-t', '+f', '--', str(mount)], timeout=2, check=False)
+            pids = {int(value) for value in result.stdout.decode().split() if value.isdigit()}
+        except subprocess.TimeoutExpired:
+            pids = set()
+            lsof_timed_out = True
+        holders = {pid for pid in pids if _pid_exists(pid)}
+        signaled_pids = 0
+        for pid in holders:
+            try:
+                if _pid_exists(pid):
+                    os.kill(pid, signal.SIGTERM)
+                    signaled_pids += 1
+            except ProcessLookupError:
+                pass
+        deadline = time.monotonic() + 1
+        while time.monotonic() < deadline and any(_pid_exists(pid) for pid in holders):
+            time.sleep(.1)
+        for pid in holders:
+            if _pid_exists(pid):
+                try:
+                    os.kill(pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+
+        try:
+            result = _run(['diskutil', 'eject', device], timeout=4, check=False)
+        except subprocess.TimeoutExpired:
+            result = None
+            eject_timed_out = True
+        if result is not None and result.returncode == 0 and not _mounted(mount):
+            return {'method': 'eject-after-terminating-holders', 'holdersFound': len(holders),
+                    'signaledPids': signaled_pids,
+                    'lsofTimedOut': lsof_timed_out, 'ejectTimedOut': eject_timed_out}
+
+        result = _run(['diskutil', 'unmount', 'force', str(mount)], timeout=4, check=False)
+        if result.returncode:
+            raise RuntimeError(result.stderr.decode(errors='replace')[-3000:] or
+                               f'Could not force-unmount workspace: {mount}')
+        try:
+            result = _run(['diskutil', 'eject', device], timeout=4, check=False)
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError(f'Timed out while ejecting force-unmounted workspace: {mount}') from exc
+        if result.returncode or _mounted(mount):
+            error = result.stderr.decode(errors='replace')[-3000:]
+            raise RuntimeError(error or f'Could not eject force-unmounted workspace: {mount}')
+        return {'method': 'force-unmount-after-terminating-holders', 'holdersFound': len(holders),
+                'signaledPids': signaled_pids,
+                'lsofTimedOut': lsof_timed_out, 'ejectTimedOut': eject_timed_out}
+
 
     def remove_layer(self, agent_dir: Path) -> None:
         shutil.rmtree(agent_dir, ignore_errors=False)

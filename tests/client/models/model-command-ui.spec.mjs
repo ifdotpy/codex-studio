@@ -4,6 +4,7 @@ import {
   expect,
   spawnFixture as spawn,
 } from "../playwright.mjs";
+import { chooseSetupValue } from "../../setup-controls.mjs";
 // Production renderer, isolated runtime, real settings and message endpoints.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
@@ -249,9 +250,10 @@ db.close()`;
       { model: "gpt-5.6-sol", effort: "medium" },
       "The main model is persisted in the isolated fixture",
     );
-    await dialog()
-      .getByLabel("Main agent reasoning", { exact: true })
-      .selectOption("high");
+    await chooseSetupValue(
+      dialog().getByLabel("Main agent reasoning", { exact: true }),
+      "high",
+    );
     await saved();
     const mainAfterReasoning = persistedAgent(main.id);
     assert.deepEqual(
@@ -318,7 +320,7 @@ db.close()`;
     assert.equal(
       await dialog()
         .getByLabel("Main agent reasoning", { exact: true })
-        .inputValue(),
+        .getAttribute("data-value"),
       "high",
       "The stale sync response does not replace saved reasoning",
     );
@@ -436,9 +438,10 @@ db.close()`;
       "gpt-5.6-sol",
       "Mobile picker retains the saved main model",
     );
-    await dialog()
-      .getByLabel("Main agent reasoning", { exact: true })
-      .selectOption("medium");
+    await chooseSetupValue(
+      dialog().getByLabel("Main agent reasoning", { exact: true }),
+      "medium",
+    );
     await saved();
     const mainAfterMobileReasoning = persistedAgent(main.id);
     assert.deepEqual(

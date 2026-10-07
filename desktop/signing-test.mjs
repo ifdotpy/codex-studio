@@ -8,16 +8,21 @@ import {
   chmodSync,
   writeFileSync,
   readdirSync,
+  readFileSync,
+  statSync,
   rmSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { signApplication, signingIdentity } from "./signing.mjs";
 
 const identity = signingIdentity();
 const root = mkdtempSync(path.join(tmpdir(), "studio-signature-"));
 const app = path.join(root, "Probe.app");
 const scripts = path.join(app, "Contents/Resources/workspace/scripts");
+const repositoryScripts = fileURLToPath(new URL("../scripts", import.meta.url));
+const lease = path.join(scripts, ".studio-update.lock");
 try {
   mkdirSync(path.join(app, "Contents/MacOS"), { recursive: true });
   mkdirSync(scripts, { recursive: true });
@@ -29,11 +34,17 @@ try {
   );
   const requirements = [];
   for (const version of [1, 2]) {
+    const expectedLease = version === 1 ? "" : "existing lease\n";
+    if (version === 2) writeFileSync(lease, expectedLease);
+    const priorLeaseInode = version === 2 ? statSync(lease).ino : null;
     writeFileSync(
       path.join(scripts, "studio_signature_probe.py"),
       `value = ${version}\n`,
     );
     signApplication(app, identity);
+    const leaseInode = statSync(lease).ino;
+    assert.equal(readFileSync(lease, "utf8"), expectedLease);
+    if (priorLeaseInode !== null) assert.equal(leaseInode, priorLeaseInode);
     const requirement = execFileSync("codesign", ["-d", "-r-", app], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
@@ -50,6 +61,16 @@ try {
       [],
       "imports cannot add unsigned cache files",
     );
+    execFileSync(process.env.CODEX_AGENTS_PYTHON || "python3", [
+      "-B",
+      "-c",
+      "import sys; from types import SimpleNamespace; sys.path.insert(0, sys.argv[1]); from codex_live_updates import LiveUpdates; manager = LiveUpdates(SimpleNamespace(root=sys.argv[3], closed=False), scripts=sys.argv[2]); manager.tick(); manager.tick(); assert manager.status()['status'] == 'idle', manager.status()",
+      repositoryScripts,
+      scripts,
+      root,
+    ]);
+    assert.equal(statSync(lease).ino, leaseInode);
+    assert.equal(readFileSync(lease, "utf8"), expectedLease);
     execFileSync("codesign", ["--verify", "--deep", "--strict", app]);
   }
   assert.match(requirements[0], /certificate leaf/);
@@ -59,7 +80,7 @@ try {
     "resource updates preserve the application identity",
   );
   console.log(
-    "PASS: stable certificate identity; Python imports preserve the resource seal",
+    "PASS: stable certificate identity; Python imports and updater ticks preserve the resource seal and lease",
   );
 } finally {
   rmSync(root, { recursive: true, force: true });

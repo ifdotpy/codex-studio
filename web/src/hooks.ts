@@ -93,7 +93,7 @@ export function useSnapshot() {
     }));
   }, []);
   useEffect(() => {
-    if (!data) return;
+    if (!data || !created.agents.length) return;
     setCreated((old) => {
       if (old.scope !== scope)
         return old.agents.length ? { scope, agents: [] } : old;

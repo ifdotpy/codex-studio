@@ -1,6 +1,13 @@
 // Keep one certificate identity across local application updates.
 import { execFileSync, spawnSync } from "node:child_process";
-import { readFileSync, mkdirSync, chmodSync, existsSync } from "node:fs";
+import {
+  readFileSync,
+  mkdirSync,
+  chmodSync,
+  existsSync,
+  openSync,
+  closeSync,
+} from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -94,6 +101,9 @@ export function signApplication(application, identity = signingIdentity()) {
     const cache = path.join(scripts, "__pycache__");
     mkdirSync(cache, { recursive: true });
     chmodSync(cache, 0o555);
+    // The updater opens this lease on its first tick. Create it before sealing
+    // resources, and preserve the inode and contents of an existing lease.
+    closeSync(openSync(path.join(scripts, ".studio-update.lock"), "a"));
   }
   signCode(application, identity, [
     "--deep",

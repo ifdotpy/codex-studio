@@ -237,7 +237,7 @@ from types import SimpleNamespace
 from studio_api.server import BoundServer, ShutdownEvent
 event = ShutdownEvent()
 bound = object.__new__(BoundServer)
-bound.server = SimpleNamespace(shutdown_requested=event)
+bound.server = SimpleNamespace(shutdown_event=event)
 event._lock.acquire()
 signal.signal(signal.SIGTERM, lambda _signum, _frame: bound.request_shutdown_from_signal())
 signal.raise_signal(signal.SIGTERM)

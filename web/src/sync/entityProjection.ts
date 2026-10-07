@@ -188,7 +188,10 @@ function projectSnapshotCollections(
     stateDir: workspace?.stateDir ?? prior?.stateDir ?? "",
     threads: agents,
     chats,
-    nodes: [...agents, ...chats],
+    nodes:
+      prior && !changed.has("agent") && !changed.has("chat")
+        ? prior.nodes
+        : [...agents, ...chats],
     edges,
     runtime,
   };

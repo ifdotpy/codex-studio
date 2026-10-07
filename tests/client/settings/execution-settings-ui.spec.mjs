@@ -1,4 +1,9 @@
 import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  setupControl,
+  setupToggle,
+  chooseSetupValue,
+} from "../../setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -154,7 +159,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await settings.getByRole("button", { name, exact: true }).click();
+      const trigger = settings.locator(".execution-menu");
+      if ((await trigger.getAttribute("aria-expanded")) !== "true")
+        await trigger.click();
+      const role = name === "Subagent defaults" ? "Worker" : "Orchestrator";
+      await page.getByRole("button", { name: role, exact: true }).click();
     };
     await page
       .locator("[data-chat]")
@@ -162,7 +171,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       .click();
     const lead = (await state()).find((a) => a.name === "Release lead");
     await openSettings("Main agent settings");
-    // The picker lists every model with its tags and catalog description.
+    // Model rows use short names, one recommendation tag, and a selected state.
     const leadModel = page.getByLabel("Main agent model", { exact: true });
     assert.equal(await modelValue(leadModel), lead.model);
     const rows = await openModelList(leadModel);
@@ -170,27 +179,23 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await rows.evaluateAll((nodes) =>
         nodes.map((node) => [
           node.getAttribute("data-value"),
-          node.querySelector(".model-picker-name").textContent,
-          node.querySelector(".model-picker-description")?.textContent || "",
+          node.querySelector(".setup-model-name").textContent,
+          !!node.querySelector("small"),
         ]),
       ),
       [
-        [
-          "gpt-6-astra",
-          "Astra",
-          "Frontier intelligence for the most demanding work.",
-        ],
-        [
-          "gpt-5.6-sol",
-          "Sol (default)",
-          "Latest workhorse model for coding and everyday work.",
-        ],
-        ["gpt-6-luna", "Luna", "Fast and affordable model for easier tasks."],
-        ["gpt-5.6-luna", "Luna 5.6", "Previous generation fast model."],
-        ["test-slow", "Standard only", ""],
-      ].map((row) =>
-        row[0] === lead.model ? [row[0], row[1] + " (current)", row[2]] : row,
-      ),
+        ["gpt-6-astra", "Astra", false],
+        ["gpt-5.6-sol", "Sol", true],
+        ["gpt-6-luna", "Luna", false],
+        ["gpt-5.6-luna", "Luna 5.6", false],
+        ["test-slow", "Standard only", false],
+      ],
+    );
+    assert.equal(
+      await page
+        .locator(`[role="option"][data-value="${lead.model}"]`)
+        .getAttribute("aria-selected"),
+      "true",
     );
     await page.screenshot({ path: join(root, "model-picker-open.png") });
     const listBox = page.locator('[role="listbox"]:visible');
@@ -198,42 +203,34 @@ test("execution settings ui", async ({ browser: _browser }) => {
       await listBox.evaluate(
         (node) => node.getBoundingClientRect().right <= innerWidth,
       ),
-      "the open list fits the window",
+      "the model rows fit the window",
     );
-    // Arrow keys move the highlight, Enter picks, Escape closes only the list.
     const alternateModelSaved = settingsResponse(
       lead.id,
       (body) => typeof body.model === "string" && body.model !== lead.model,
     );
+    await leadModel.focus();
     await leadModel.press("ArrowDown");
-    await leadModel.press("ArrowDown");
-    await leadModel.press("Enter");
-    await listBox.waitFor({ state: "hidden" });
+    await page.keyboard.press("ArrowDown");
+    await page.keyboard.press("Enter");
     assert.ok(
       (await alternateModelSaved).ok(),
-      "alternate model save is acknowledged",
+      "keyboard selection is acknowledged",
     );
     await waitFor(async () => {
       const row = (await state()).find((a) => a.id === lead.id);
       return (row.pendingSettings?.model || row.model) !== lead.model;
     });
-    // The fixture state commits before the settings response re-enables the picker.
-    await waitFor(() => leadModel.isEnabled());
-    await leadModel.press("ArrowDown");
-    await listBox.waitFor();
-    await leadModel.press("Escape");
+    await page.keyboard.press("Escape");
     await listBox.waitFor({ state: "hidden" });
-    assert.ok(
-      await page
-        .getByRole("region", { name: "Main agent settings", exact: true })
-        .isVisible(),
-      "Escape on the open list keeps the settings detail section",
-    );
     assert.equal(
-      await page.evaluate(() => document.activeElement?.id),
-      "model",
-      "focus stays on the picker",
+      await page.evaluate(() =>
+        document.activeElement?.classList.contains("execution-menu"),
+      ),
+      true,
+      "Escape returns focus to the picker trigger",
     );
+    await openSettings("Main agent settings");
     const originalModelSaved = settingsResponse(
       lead.id,
       (body) => body.model === lead.model,
@@ -248,9 +245,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
       return (row.pendingSettings?.model || row.model) === lead.model;
     });
     assert.equal(await modelValue(leadModel), lead.model);
-    const leadReasoning = page.getByLabel("Main agent reasoning", {
-      exact: true,
-    });
+    const leadReasoning = setupControl(
+      page.getByLabel("Main agent reasoning", { exact: true }),
+    );
     const leadReasoningSaved = settingsResponse(
       lead.id,
       (body) => body.effort === "high",
@@ -274,17 +271,17 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await yolo.click();
     await page
-      .getByRole("alert")
+      .locator("#chat-settings-permissions .execution-error[role=alert]")
       .filter({ hasText: "Wait for every team turn" })
       .waitFor();
     assert.equal((await yoloSaved).status(), 400);
     assert.equal((await state()).find((a) => a.id === lead.id).yoloMode, true);
     await waitFor(() => yolo.isChecked());
     await waitFor(() => yolo.isEnabled());
-    const leadFastMode = page.getByRole("switch", {
-      name: "Fast mode",
-      exact: true,
-    });
+    await openSettings("Main agent settings");
+    const leadFastMode = setupToggle(
+      page.getByRole("button", { name: "Fast mode", exact: true }),
+    );
     const leadFastModeSaved = settingsResponse(
       lead.id,
       (body) => body.fast_mode === true,
@@ -298,7 +295,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await waitFor(() => leadFastMode.isEnabled());
     await page.keyboard.press("Escape");
     await page
-      .getByRole("region", { name: "Main agent settings", exact: true })
+      .getByRole("dialog", { name: "Main agent settings", exact: true })
       .waitFor({ state: "hidden" });
     assert.ok(
       await page
@@ -307,7 +304,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       "Escape closes only the model detail section",
     );
     await openSettings("Subagent defaults");
-    const dialog = page.getByRole("region", {
+    const dialog = page.getByRole("dialog", {
       name: "Subagent defaults",
       exact: true,
     });
@@ -316,18 +313,27 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     assert.match(
       await (await openModelList(defaultModel)).first().innerText(),
-      /^Same as main agent \(/,
+      /^Same as main agent$/,
     );
     assert.equal(await modelValue(defaultModel), "gpt-6-luna");
     await waitFor(() => defaultModel.isEnabled());
     assert.equal(
       await dialog
         .getByLabel("Default subagent reasoning")
-        .locator('option[value="ultra"]')
+        .locator('input[value="ultra"]')
         .count(),
       0,
     );
-    const defaultReasoning = dialog.getByLabel("Default subagent reasoning");
+    const defaultReasoning = setupControl(
+      dialog.getByLabel("Default subagent reasoning"),
+    );
+    const lowerWorkerReasoningSaved = settingsResponse(
+      lead.id,
+      (body) => body.worker_defaults?.effort === "low",
+    );
+    await defaultReasoning.selectOption("low");
+    assert.ok((await lowerWorkerReasoningSaved).ok());
+    await waitFor(() => defaultReasoning.isEnabled());
     const inheritedReasoningSaved = settingsResponse(
       lead.id,
       (body) => body.worker_defaults?.effort === "high",
@@ -335,10 +341,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await defaultReasoning.selectOption("high");
     assert.ok((await inheritedReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
-    const defaultFastMode = dialog.getByRole("switch", {
-      name: "Fast mode",
-      exact: true,
-    });
+    const defaultFastMode = setupToggle(
+      dialog.getByRole("button", { name: "Fast mode", exact: true }),
+    );
     const inheritedFastModeSaved = settingsResponse(
       lead.id,
       (body) => body.worker_defaults?.fast_mode === true,
@@ -362,8 +367,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         `model list fits ${width}`,
       );
       await page.screenshot({ path: join(root, `model-picker-${width}.png`) });
-      await defaultModel.press("Escape");
-      await listBox.waitFor({ state: "hidden" });
     }
     await waitFor(
       async () =>
@@ -415,24 +418,22 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
-    assert.ok(
-      await dialog
-        .getByRole("switch", { name: "Fast mode", exact: true })
-        .isDisabled(),
-    );
     assert.equal(
       await dialog
-        .getByRole("switch", { name: "Fast mode", exact: true })
-        .isChecked(),
-      false,
+        .getByRole("button", { name: "Fast mode", exact: true })
+        .count(),
+      0,
+      "Unsupported modes stay hidden",
     );
     await dialog
       .getByRole("status")
       .filter({ hasText: "Fast mode is unavailable and was turned off" })
       .waitFor();
     assert.equal(
-      await dialog.getByLabel("Default subagent reasoning").inputValue(),
-      "__model_default__",
+      await dialog
+        .getByLabel("Default subagent reasoning")
+        .getAttribute("data-value"),
+      "low",
     );
     await waitFor(
       async () =>
@@ -452,6 +453,13 @@ test("execution settings ui", async ({ browser: _browser }) => {
         "gpt-5.6-sol",
     );
     await waitFor(() => defaultModel.isEnabled());
+    const higherWorkerReasoningSaved = settingsResponse(
+      lead.id,
+      (body) => body.worker_defaults?.effort === "high",
+    );
+    await defaultReasoning.selectOption("high");
+    assert.ok((await higherWorkerReasoningSaved).ok());
+    await waitFor(() => defaultReasoning.isEnabled());
     const lowReasoningSaved = settingsResponse(
       lead.id,
       (body) =>
@@ -468,9 +476,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     });
     await waitFor(() => defaultReasoning.isEnabled());
     assert.equal(
-      await dialog
-        .getByRole("switch", { name: "Fast mode", exact: true })
-        .isChecked(),
+      (await dialog
+        .getByRole("button", { name: "Fast mode", exact: true })
+        .getAttribute("aria-pressed")) === "true",
       false,
     );
     await waitFor(async () => {
@@ -559,8 +567,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       name: "Chat settings",
       exact: true,
     });
-    if (await chatSettings.isVisible())
-      await chatSettings.locator(".mantine-Modal-close").click();
+    await chatSettings.waitFor({ state: "hidden" });
     await page.locator(`[data-chat="${lead.id}"]`).click();
     const running = (await state()).find((agent) => agent.name === "Worker 00");
     const openWorker = async () => {
@@ -585,9 +592,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await route.abort("failed");
       } else await route.continue();
     });
-    await page
-      .getByLabel("Subagent reasoning", { exact: true })
-      .selectOption("medium");
+    await chooseSetupValue(
+      page.getByLabel("Subagent reasoning", { exact: true }),
+      "medium",
+    );
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
@@ -625,7 +633,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     assert.deepEqual(errors, []);
     console.log(
-      "PASS execution settings UI: model picker rows with tags and descriptions, keyboard list, main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
+      "PASS execution settings UI: short model rows and recommended tags, keyboard list, main agent reasoning/Fast, model choices, saved defaults, child inheritance and overrides, dependent reset notice, immediate save, permission guards, nested Escape, next-turn settings, lost-response replay across reload, active worker unchanged, responsive layout. Evidence " +
         root,
     );
   } finally {

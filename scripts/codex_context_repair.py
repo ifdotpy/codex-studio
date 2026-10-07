@@ -21,6 +21,7 @@ IDENTITY = ('id', 'accountKey', 'epoch', 'threadId')
 WAIT_SECONDS = 10
 TASK_CHECK_SECONDS = 20
 TASK_CHECK_RETRY_SECONDS = 15
+COMPACTION_SETTLE_LIMIT = 16
 TASK_CHECK_TYPES = {'commandExecution', 'fileChange', 'dynamicToolCall', 'mcpToolCall',
                     'computerToolCall', 'collabAgentToolCall'}
 
@@ -494,6 +495,43 @@ def _run_restart_input_check(rt, agent_id, check_id):
     rt.changed.set()
 
 
+def settle_completed_compaction_task(rt, db, agent, task):
+    """End only a compaction whose exact native turn already ended here."""
+    from codex_execution import TERMINAL, native_run
+
+    item, turn = task.get('itemId'), task.get('turnId')
+    scope = {key:agent.get(key, 'default') if key == 'accountKey' else agent.get(key)
+             for key in ('accountKey', 'threadId', 'epoch')}
+    if (agent.get('provider', 'codex') != 'codex' or agent.get('deletedAt')
+            or task.get('kind') != 'tool' or task.get('type') != 'contextCompaction'
+            or task.get('status') not in {'lost', 'running', 'starting', 'approval'}
+            or task.get('processId') or task.get('agent') != agent.get('id')
+            or not isinstance(item, str) or not item
+            or not isinstance(turn, str) or not turn
+            or task.get('id') != agent['id'] + ':' + item
+            or not agent.get('threadId')
+            or any(key in task and task[key] != scope[key] for key in scope)):
+        return False
+    if not db.execute('SELECT 1 FROM runtime_completed_turns WHERE id=?',
+                      (agent['id'] + ':' + turn,)).fetchone():
+        return False
+    # Older tasks omit their native scope. The execution record supplies it.
+    run = native_run(db, agent['id'], agent.get('accountKey', 'default'),
+                     agent['threadId'], turn)
+    if (not run or run.get('status') not in TERMINAL
+            or type(run.get('finished')) not in (int, float)
+            or any(run.get(key) != value for key, value in
+                   (('agent', agent['id']), ('accountKey', agent.get('accountKey', 'default')),
+                    ('threadId', agent['threadId']), ('epoch', agent.get('epoch')), ('turnId', turn)))):
+        return False
+    row = db.execute('SELECT record FROM runtime_tasks WHERE id=?', (task['id'],)).fetchone()
+    if not row or json.loads(row[0]) != task:
+        return False
+    ended = {**task, 'status':'interrupted', 'finished':run['finished']}
+    rt.put(db, 'tasks', ended)
+    return True
+
+
 def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     from codex_native_errors import assert_native_thread_open
     from codex_safety_buffering import active as safety_active
@@ -529,6 +567,7 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
     prep = rt.preparations.get(a['id'])
     if prep and not prep['future'].done():
         raise _waiting('Context repair waits for the native preparation receipt')
+    settled_compactions = 0
     for table, column, statuses in (
         ('tasks', 'status', ('starting', 'running', 'pending', 'unknown')),
         ('monitors', 'status', ('starting', 'running', 'pending', 'stopping')),
@@ -546,10 +585,17 @@ def _local_idle(rt, db, a, attempt_id, *, allow_background_work=False):
             nonblocking += (" AND NOT (coalesce(json_extract(record,'$.kind'),'')='command'"
                             " AND json_extract(record,'$.status')='running'"
                             " AND coalesce(cast(json_extract(record,'$.processId') AS TEXT),'')!='')")
-        row = db.execute(f"SELECT id FROM runtime_{table} WHERE json_extract(record,'$.agent')=? "
-                         f"AND json_extract(record,'$.{column}') IN ({','.join('?' for _ in statuses)}){nonblocking} LIMIT 1",
-                         (a['id'], *statuses)).fetchone()
-        if row:
+        while True:
+            row = db.execute(f"SELECT id FROM runtime_{table} WHERE json_extract(record,'$.agent')=? "
+                             f"AND json_extract(record,'$.{column}') IN ({','.join('?' for _ in statuses)}){nonblocking} LIMIT 1",
+                             (a['id'], *statuses)).fetchone()
+            if not row:
+                break
+            if table == 'tasks' and settled_compactions < COMPACTION_SETTLE_LIMIT:
+                saved = db.execute('SELECT record FROM runtime_tasks WHERE id=?', (row[0],)).fetchone()
+                if settle_completed_compaction_task(rt, db, a, json.loads(saved[0])):
+                    settled_compactions += 1
+                    continue
             raise _waiting('Context repair waits for ' + table + ': ' + row[0])
     historical = _unsettled_inputs(db, a, attempt_id)
     if db.execute("SELECT 1 FROM sqlite_master WHERE name='voice_sessions'").fetchone():

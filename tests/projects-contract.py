@@ -303,6 +303,8 @@ class ProjectContracts(unittest.TestCase):
             self.assertEqual(request("/api/projects"), {"items": []})
             project = request("/api/projects", {"path": str(self.second)})
             entities = project.pop("_syncEntities")
+            sync_after = project.pop("_syncEntitiesAfter")
+            self.assertIsInstance(sync_after, int)
             self.assertEqual(len(entities), 1)
             self.assertEqual(entities[0]["id"], "entity:project:" + project["path"])
             self.assertEqual(json.loads(entities[0]["payload"])["value"], project)

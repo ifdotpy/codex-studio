@@ -267,6 +267,7 @@ class UsageLimitsResponse(ResponseModel):
     error: str | None = None
     readAt: float | None = None
     checkedAt: float | None = None
+    processedAt: float | None = None
 
 
 class LimitResetResponse(ResponseModel):
@@ -318,6 +319,17 @@ class RegisterAccountRequest(ContractModel):
 
 
 class DeleteAccountRequest(RequiredAccountKeyRequest):
+    request_id: RequestUUID
+
+
+def _account_name(value: str) -> str:
+    if len(value.strip()) > 32:
+        raise ValueError("The account name must contain at most 32 characters")
+    return value
+
+
+class AccountNameRequest(RequiredAccountKeyRequest):
+    label: Annotated[str, AfterValidator(_account_name)]
     request_id: RequestUUID
 
 

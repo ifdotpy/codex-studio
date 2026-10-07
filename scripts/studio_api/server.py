@@ -9,7 +9,7 @@ from pathlib import Path
 import socket
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING, cast
 
 import uvicorn
@@ -31,7 +31,7 @@ UNIX_SOCKET_NAME = "canvas.sock"
 UNIX_SOCKET_MODE = 0o600
 UVICORN_LOG_CONFIG = None
 API_SCHEMA_HASH_START_DELAY_SECONDS = 0.25
-GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 2
+GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS = 10
 SERVER_THREAD_JOIN_TIMEOUT_SECONDS = GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS + 1
 
 
@@ -135,18 +135,22 @@ class _StudioUvicornServer(uvicorn.Server):
         super().__init__(config)
         self.context = context
         self.schema_hash_start_scheduled = False
-        self.shutdown_requested: ShutdownEvent | None = None
+        self.shutdown_event: ShutdownEvent | None = None
+        self.shutdown_requested: Callable[[], bool] | None = None
 
     @contextmanager
     def capture_signals(self) -> Iterator[None]:
-        # codex_canvas owns the established SIGTERM-to-shutdown contract.
+        # codex_canvas owns SIGTERM and SIGINT for both listener loops.
         yield
 
     async def on_tick(self, counter: int) -> bool:
-        if self.shutdown_requested is not None and self.shutdown_requested.is_set():
-            self.shutdown_requested.notify_listeners()
+        if self.shutdown_requested is not None and self.shutdown_requested():
+            if self.shutdown_event is not None:
+                self.shutdown_event.set()
             self.should_exit = True
         should_exit = await super().on_tick(counter)
+        if should_exit:
+            return True
         # Let the first ordinary read finish before the CPU-heavy OpenAPI build
         # starts. Gated requests can still start and await the shared future.
         if not self.schema_hash_start_scheduled:
@@ -232,7 +236,7 @@ class BoundServer:
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_TIMEOUT_SECONDS,
             limit_max_requests=None,
         ), context)
-        self.server.shutdown_requested = shutdown_requested
+        self.server.shutdown_event = shutdown_requested
         self.server_address = sock.getsockname()
         self.server_port = int(sock.getsockname()[1]) if sock.family != socket.AF_UNIX else context.server_port
         self.address_family = sock.family
@@ -246,21 +250,22 @@ class BoundServer:
     def address(self) -> object:
         return self.server_address
 
-    def serve_forever(self, poll_interval: float = 0.5) -> None:
+    def serve_forever(
+        self, poll_interval: float = 0.5, *, shutdown_requested: Callable[[], bool] | None = None,
+    ) -> None:
         del poll_interval  # Uvicorn runs the event loop and polling itself.
         self._serve_thread = threading.current_thread()
-
+        self.server.shutdown_requested = shutdown_requested
         async def serve() -> None:
             await self.server.serve(sockets=[self.socket])
-
         asyncio.run(serve())
 
     def shutdown(self) -> None:
         self.server.should_exit = True
 
     def request_shutdown_from_signal(self) -> None:
-        if self.server.shutdown_requested is not None:
-            self.server.shutdown_requested._requested = True
+        if self.server.shutdown_event is not None:
+            self.server.shutdown_event._requested = True
 
     def _join_serve_thread(self) -> bool:
         serving_thread = self._serve_thread
@@ -308,6 +313,9 @@ class CanvasServer(BoundServer):
         self._tcp = tcp
         self._context = context
         self._shutdown_requested = shutdown_requested
+        self._tcp.server.shutdown_event = shutdown_requested
+        if unix is not None:
+            unix.server.shutdown_event = shutdown_requested
 
     @property
     def shutdown_requested(self) -> ShutdownEvent:
@@ -319,9 +327,11 @@ class CanvasServer(BoundServer):
         if self.unix_server is not None:
             self.unix_server.shutdown()
 
-    def serve_forever(self, poll_interval: float = 0.5) -> None:
+    def serve_forever(
+        self, poll_interval: float = 0.5, *, shutdown_requested: Callable[[], bool] | None = None,
+    ) -> None:
         self._tcp._serve_thread = threading.current_thread()
-        super().serve_forever(poll_interval=poll_interval)
+        super().serve_forever(poll_interval=poll_interval, shutdown_requested=shutdown_requested)
 
     def server_close(self) -> bool:
         # The TCP serve thread is this caller when codex-canvas runs Uvicorn in

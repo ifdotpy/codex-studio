@@ -27,6 +27,10 @@ WEB = SCRIPTS.parent / "web" / "dist"
 COMPONENT = re.compile(r"[A-Za-z0-9._-]+\Z")
 AGENT_ID = re.compile(r"[A-Za-z0-9._:/-]{1,200}\Z")
 READ_LIMIT = 2 * 1024 * 1024
+SHUTDOWN_THREAD_LIMIT = 16
+SHUTDOWN_STACK_LIMIT = 32
+SHUTDOWN_TIMEOUT_SECONDS = 60
+SHUTDOWN_POLL_SECONDS = 0.05
 
 
 HASHED_ASSET = re.compile(r"^assets/.+-[A-Za-z0-9_-]{8,}\.(?:js|css|png|svg|woff2?)$")
@@ -634,106 +638,137 @@ def _close_shutdown_resources(updates, server, runtime, completed):
         runtime.close()
         completed["runtime"] = True
 
+
+def record_shutdown_threads():
+    """Keep code locations for threads that can prevent process exit."""
+    try:
+        main_thread = threading.main_thread()
+        threads = [thread for thread in threading.enumerate()
+                   if thread is not main_thread and not thread.daemon
+                   and thread.ident is not None and thread.is_alive()]
+        if not threads:
+            return
+        frames = sys._current_frames()
+        records = []
+        try:
+            for thread in threads[:SHUTDOWN_THREAD_LIMIT]:
+                frame = frames.get(thread.ident)
+                stack = []
+                while frame is not None and len(stack) < SHUTDOWN_STACK_LIMIT:
+                    stack.append({"function": frame.f_code.co_name,
+                                  "file": frame.f_code.co_filename,
+                                  "line": frame.f_lineno})
+                    frame = frame.f_back
+                records.append({"threadId": thread.ident,
+                                "nativeThreadId": thread.native_id,
+                                "stack": stack, "stackTruncated": frame is not None})
+                frame = None
+        finally:
+            frames.clear()
+        print(json.dumps({"event": "backend_shutdown_threads", "pid": os.getpid(),
+                          "at": time.time(), "threads": records,
+                          "threadsTruncated": len(threads) > SHUTDOWN_THREAD_LIMIT}),
+              file=sys.stderr, flush=True)
+    except Exception:
+        try:
+            print(json.dumps({"event": "backend_shutdown_thread_diagnostic_failed",
+                              "pid": os.getpid()}), file=sys.stderr, flush=True)
+        except Exception:
+            pass
+
+
+class BackendShutdown:
+    """Defer signal work and bound the entire process shutdown."""
+    def __init__(self):
+        self.request = None
+        self.logged = False
+        self.finished = False
+        self.timeout_seconds = SHUTDOWN_TIMEOUT_SECONDS
+
+    def terminate(self, number, _frame):
+        if self.request is None:
+            self.request = (number, time.monotonic())
+
+    def requested(self):
+        request = self.request
+        if request is None:
+            return False
+        if not self.logged:
+            self.logged = True
+            print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
+                              "signal": request[0], "at": time.time(),
+                              "timeoutSeconds": self.timeout_seconds}),
+                  file=sys.stderr, flush=True)
+        return True
+
+    def watch(self):
+        while True:
+            request = self.request
+            if request is not None:
+                if time.monotonic() - request[1] >= self.timeout_seconds:
+                    os._exit(1)
+            elif self.finished:
+                return
+            time.sleep(SHUTDOWN_POLL_SECONDS)
+
+
 def main():
     raise_open_file_limit()
     parser = argparse.ArgumentParser(description="Local canvas for Codex app-server waves")
     parser.add_argument("--port", type=int, default=4620)
     args = parser.parse_args()
+    shutdown = BackendShutdown()
+    threading.Thread(target=shutdown.watch, name="backend-shutdown", daemon=True).start()
+    previous_handlers = {number: signal.getsignal(number)
+                         for number in (signal.SIGTERM, signal.SIGINT)}
+    for number in previous_handlers:
+        signal.signal(number, shutdown.terminate)
     runtime = None
     server = None
     updates = None
-    shutdown_requests = 0
-    shutdown_signal = None
-    cleanup_started = False
+    unix_thread = None
     cleanup_completed = False
-    shutdown_prepared = False
-    shutdown_cleanup_pending = False
-    serve_wait_finished = False
     cleanup_steps = {"updates": False, "server": False, "runtime": False}
-    def terminate(_signal, _frame):
-        nonlocal shutdown_requests, shutdown_signal, shutdown_cleanup_pending, serve_wait_finished
-        shutdown_requests += 1
-        shutdown_signal = _signal
-        if shutdown_requests >= 3 and (cleanup_started or shutdown_cleanup_pending) and not cleanup_completed:
-            message = (
-                "Codex Canvas: cleanup abandoned after third shutdown signal "
-                f"pid={os.getpid()} signal={_signal} at={time.time():.6f}\n"
-            ).encode("ascii")
-            os.write(2, message)
-            signal.signal(_signal, signal.SIG_DFL)
-            os.kill(os.getpid(), _signal)
-        if cleanup_started:
-            if cleanup_completed and shutdown_prepared and shutdown_requests > 1:
-                signal.signal(_signal, signal.SIG_DFL)
-                os.kill(os.getpid(), _signal)
-            return
-        # During Runtime construction there is no event loop to shut down. Let
-        # KeyboardInterrupt unwind construction and reach the normal cleanup.
-        if runtime is None:
-            shutdown_cleanup_pending = True
-            raise KeyboardInterrupt
-        if server is not None:
-            # The event loop observes this lock-free flag on its next Uvicorn
-            # tick, then wakes stream generators outside the signal handler.
-            server.request_shutdown_from_signal()
-        # Preserve the established second-signal behavior: interrupt the main
-        # wait so its finally block closes resources and Python exits normally.
-        if shutdown_requests > 1:
-            shutdown_cleanup_pending = True
-            if not serve_wait_finished:
-                # Set this before raising so a signal at the edge of the outer
-                # finally cannot raise a second KeyboardInterrupt through it.
-                serve_wait_finished = True
-                raise KeyboardInterrupt
-
-    signal.signal(signal.SIGTERM, terminate)
-    signal.signal(signal.SIGINT, terminate)
     try:
         from codex_runtime import Runtime
+        if shutdown.requested():
+            return
         canvas = Canvas()
         # Bind first so a port collision cannot disturb an existing runtime.
         server = make_server(canvas, args.port, unix_socket=True)
+        if shutdown.requested():
+            return
         if server.unix_server:
             unix_thread = threading.Thread(target=server.unix_server.serve_forever,
-                                           kwargs={"poll_interval": 0.5}, daemon=True)
+                                           kwargs={"poll_interval": 0.5,
+                                                   "shutdown_requested": shutdown.requested}, daemon=True)
             unix_thread.start()
         runtime = Runtime(canvas.root)
         canvas.runtime = runtime
-        if not server.shutdown_requested.is_set():
+        if not shutdown.requested():
             from codex_live_updates import start as start_updates
             updates = start_updates(runtime)
-        if not server.shutdown_requested.is_set():
+        if not shutdown.requested():
             print(f"Codex Canvas: http://127.0.0.1:{server.server_port}", flush=True)
-        if not server.shutdown_requested.is_set():
-            try:
-                server.serve_forever(poll_interval=0.5)
-            finally:
-                serve_wait_finished = True
+        if not shutdown.requested():
+            server.serve_forever(poll_interval=0.5, shutdown_requested=shutdown.requested)
     except KeyboardInterrupt:
         pass
     except (RuntimeError, OSError) as error:
         parser.exit(1, f"codex-canvas: {error}\n")
     finally:
-        # The retry loop is inside the finally so a KeyboardInterrupt injected
-        # before the first close step is caught and cleanup is entered again.
-        # Per-resource completion flags make completed steps idempotent.
-        while not cleanup_completed:
-            try:
-                cleanup_started = True
-                _close_shutdown_resources(updates, server, runtime, cleanup_steps)
-                cleanup_completed = True
-            except KeyboardInterrupt:
-                continue
-    if shutdown_requests:
-        print(json.dumps({"event": "backend_shutdown", "pid": os.getpid(),
-                          "signal": shutdown_signal, "at": time.time(),
-                          "requests": shutdown_requests}), file=sys.stderr, flush=True)
-        import logging
-
-        sys.stdout.flush()
-        sys.stderr.flush()
-        logging.shutdown()
-    shutdown_prepared = True
-    if shutdown_requests > 1:
-        signal.signal(shutdown_signal, signal.SIG_DFL)
-        os.kill(os.getpid(), shutdown_signal)
+        try:
+            shutdown.requested()
+            while not cleanup_completed:
+                try:
+                    _close_shutdown_resources(updates, server, runtime, cleanup_steps)
+                    cleanup_completed = True
+                except KeyboardInterrupt:
+                    continue
+            if unix_thread:
+                unix_thread.join(timeout=15)
+            record_shutdown_threads()
+        finally:
+            shutdown.finished = True
+            for number, handler in previous_handlers.items():
+                signal.signal(number, handler)
