@@ -5,6 +5,7 @@ import hashlib
 import fcntl
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 import shutil
 import tarfile
@@ -34,11 +35,66 @@ def tree_space(path, required=0):
         raise GuestError("busy", "The data disk has insufficient free space")
 
 
+@contextmanager
+def real_directory(root, parts=(), *, create=False, missing_ok=False):
+    """Open each parent without following a link, including links inside the root."""
+    descriptor = None
+    try:
+        descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        for part in parts:
+            require(part not in {"", ".", ".."} and "/" not in part, "The path component is invalid")
+            if create:
+                try:
+                    os.mkdir(part, mode=0o700, dir_fd=descriptor)
+                except FileExistsError:
+                    pass
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = child
+    except FileNotFoundError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        descriptor = None
+        if not missing_ok:
+            raise GuestError("invalid_params", "The path parent is not a real directory") from exc
+    except OSError as exc:
+        if descriptor is not None:
+            os.close(descriptor)
+        descriptor = None
+        raise GuestError("invalid_params", "The path parent is not a real directory") from exc
+    except GuestError:
+        if descriptor is not None:
+            os.close(descriptor)
+        raise
+    try:
+        yield descriptor
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+
+
+def validate_destination(staging, root):
+    """Reject writes below existing links before changing the project tree."""
+    links = []
+    for parent, directories, files in os.walk(staging, followlinks=False):
+        for name in directories + files:
+            path = Path(parent) / name
+            relative = path.relative_to(staging)
+            is_link = path.is_symlink()
+            parts = relative.parts if not is_link and path.is_dir() else relative.parts[:-1]
+            with real_directory(root, parts, missing_ok=True):
+                pass
+            if is_link:
+                links.append((relative, os.readlink(path)))
+    return links
+
+
 def extract_tree(archive: Path, destination: Path):
-    """Do not follow archive links. Create contained symlinks only after regular files."""
+    """Treat link targets as text. Create links after all files and directories."""
     expanded = 0
     members = 0
     links = []
+    link_paths = set()
     with tarfile.open(archive, "r|*") as source:
         for item in source:
             members += 1
@@ -51,40 +107,37 @@ def extract_tree(archive: Path, destination: Path):
             target = destination.joinpath(*name.parts)
             require(target.is_relative_to(destination), "The archive path is outside the tree")
             require(item.isfile() or item.isdir() or item.issym(), "The archive entry type is not supported")
+            require(not any(parent in link_paths for parent in name.parents), "The archive path has a symlink parent")
             if item.issym():
-                link = PurePosixPath(item.linkname)
-                require(not link.is_absolute(), "The symlink target must be relative")
-                resolved = Path(os.path.normpath(target.parent / item.linkname))
-                require(resolved.is_relative_to(destination), "The symlink target is outside the tree")
+                require(name not in link_paths and not target.exists(), "The archive path occurs more than once")
+                link_paths.add(name)
                 links.append((target, item.linkname))
                 continue
+            require(name not in link_paths, "The archive path occurs more than once")
             expanded += item.size
             require(expanded <= MAX_TREE, "The expanded tree exceeds the size limit")
             tree_space(destination, item.size)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if item.isdir():
-                target.mkdir(exist_ok=True)
-                os.chmod(target, 0o700 | (item.mode & 0o077))
-            else:
-                # Duplicate files and link/file collisions fail instead of replacing a path.
-                with target.open("xb") as output, source.extractfile(item) as input_file:
-                    while block := input_file.read(1024 * 1024):
-                        tree_space(destination, len(block))
-                        output.write(block)
-                    output.flush()
-                    os.fsync(output.fileno())
-                os.chmod(target, 0o600 | (item.mode & 0o177))
+            with real_directory(destination, name.parts[:-1], create=True) as parent:
+                if item.isdir():
+                    try:
+                        os.mkdir(name.name, mode=0o700, dir_fd=parent)
+                    except FileExistsError:
+                        pass
+                    with real_directory(destination, name.parts) as directory:
+                        os.fchmod(directory, 0o700 | (item.mode & 0o077))
+                else:
+                    descriptor = os.open(name.name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                         0o600, dir_fd=parent)
+                    with os.fdopen(descriptor, "wb") as output, source.extractfile(item) as input_file:
+                        while block := input_file.read(1024 * 1024):
+                            tree_space(destination, len(block))
+                            output.write(block)
+                        output.flush()
+                        os.fsync(output.fileno())
+                        os.fchmod(output.fileno(), 0o600 | (item.mode & 0o177))
     for target, link in links:
-        require(target.parent.resolve().is_relative_to(destination), "The symlink parent is outside the tree")
-        target.parent.mkdir(parents=True, exist_ok=True)
-        require((target.parent.resolve() / link).resolve().is_relative_to(destination), "The symlink target is outside the tree")
-        target.symlink_to(link)
-    # Check the whole chain after all links exist. Cycles are also rejected.
-    for target, _ in links:
-        try:
-            require(target.resolve().is_relative_to(destination), "The symlink chain is outside the tree")
-        except RuntimeError as exc:
-            raise GuestError("invalid_params", "The tree has a symlink cycle") from exc
+        with real_directory(destination, target.relative_to(destination).parts[:-1], create=True) as parent:
+            os.symlink(link, target.name, dir_fd=parent)
     return expanded
 
 
@@ -213,11 +266,13 @@ class Uploads:
 
 if __name__ == "__main__":
     import sys
-    archive, destination, expected = sys.argv[1:]
+    archive, destination, expected = sys.argv[1:4]
     try:
         archive = Path(archive)
         destination = Path(destination)
         expanded = prepare_tree(archive, destination, expected)
+        if len(sys.argv) == 5:
+            validate_destination(destination, Path(sys.argv[4]))
         print(json.dumps({"bytes": expanded}))
     except GuestError as exc:
         print(json.dumps({"error": exc.object()}))

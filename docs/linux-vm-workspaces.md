@@ -134,11 +134,18 @@ its saved offset and sequence. Chunk bytes become durable before the offset
 advances. `upload.commit` checks the checksum and tar paths before any source
 change. A full upload runs rsync with deletion. Rsync uses checksums to detect equal-size, equal-timestamp file changes. A delta upload removes only
 `deletePaths`, then runs rsync without deletion. Deletion paths are relative to
-the root, cannot contain `..`, and cannot traverse a symlink outside the root.
-Regular files, directories, and relative symlinks are supported. Every symlink
-chain must remain inside the tree. Devices, hard links, absolute paths, and
-traversal fail. Set-ID bits are removed. Uploads and workspace operations lock the
-same root. A repeated completed commit returns the saved receipt without
+the root, cannot contain `..`, and cannot traverse any symlink.
+Regular files, directories, and symlink objects are supported. A symlink target
+can be absolute or relative, including a target outside the project. The guest
+preserves the target text and does not follow it during extraction or application.
+Every parent of a written path must be a real directory inside the project root.
+The guest creates links after all regular files and directories. A later file
+or link below an existing link fails, including links that point inside the root.
+A delta can replace a directory with a link. The guest removes the directory
+through its verified parent before it creates that link. Devices, hard links,
+absolute archive paths, and path traversal fail. Set-ID bits are removed.
+Uploads and workspace operations lock the same root. A repeated completed commit
+returns the saved receipt without
 reapplying the tree. A retry removes a partial extraction under the upload's file
 lock, verifies the archive checksum, and extracts again. A surviving extraction
 worker retains that lock and prevents replacement until it exits.

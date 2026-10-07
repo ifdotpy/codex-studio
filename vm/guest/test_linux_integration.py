@@ -119,6 +119,8 @@ def main(path):
         subprocess.run(["git", "-C", str(source), "add", "hello"], check=True, timeout=10)
         subprocess.run(["git", "-C", str(source), "-c", "user.name=Contract", "-c", "user.email=contract@example.invalid",
                         "commit", "-qm", "Base"], check=True, timeout=10)
+        (source / "absolute-link").symlink_to("/tmp")
+        (source / "outside-link").symlink_to("../../guest")
         data = io.BytesIO()
         with tarfile.open(fileobj=data, mode="w") as archive:
             for item in source.iterdir():
@@ -130,6 +132,28 @@ def main(path):
         client.call("upload.chunk", {"uploadId": identity, "seq": sequence,
                                     "data": base64.b64encode(data[offset:offset + 1024**2]).decode()})
     client.call("upload.commit", {"uploadId": identity})
+    actual_links = json.loads(client.exec(["python3", "-c",
+        "import json,os; print(json.dumps([os.readlink('absolute-link'),os.readlink('outside-link')]))"], root))
+    assert actual_links == ["/tmp", "../../guest"], actual_links
+    escape = "link-escape-" + identity
+    for link in ("absolute-link", "outside-link"):
+        data = io.BytesIO()
+        with tarfile.open(fileobj=data, mode="w") as archive:
+            item = tarfile.TarInfo(link + "/" + escape)
+            item.size = 2
+            archive.addfile(item, io.BytesIO(b"no"))
+        data = data.getvalue()
+        upload_id = identity + "-" + link
+        client.call("upload.begin", {"uploadId": upload_id, "root": root, "totalBytes": len(data),
+            "sha256": hashlib.sha256(data).hexdigest(), "mode": "delta"})
+        client.call("upload.chunk", {"uploadId": upload_id, "seq": 0, "data": base64.b64encode(data).decode()})
+        try:
+            client.call("upload.commit", {"uploadId": upload_id})
+            raise AssertionError("The guest accepted a write below a link")
+        except RuntimeError as exc:
+            assert "invalid_params" in str(exc), exc
+    assert not Path("/tmp", escape).exists()
+    assert not Path(health["state"], escape).exists()
     marker = root + "/long-exec-proof"
     long_params = {"argv": ["python3", "-c", f"import time; time.sleep(65); open({marker!r},'a').write('once'); print('done')"],
                    "cwd": root, "timeoutSeconds": 90}
@@ -257,7 +281,8 @@ def main(path):
                       "fetchMatched": True, "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
                       "longExecSeconds": round(long_elapsed, 2), "longExecReconnectReplay": True,
                       "deadNativeSocketRecovered": True, "largeNativeEventBytes": len(payload),
-                      "largeNativeReattachAck": True, "compressedUploadFloor": floor_proved, "archiveRemoved": True}))
+                      "largeNativeReattachAck": True, "compressedUploadFloor": floor_proved,
+                      "uploadLinkObjects": True, "symlinkParentWritesRejected": True, "archiveRemoved": True}))
 
 
 if __name__ == "__main__":
