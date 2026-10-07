@@ -66,7 +66,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {theme} from '/src/theme.ts';import '/src/style.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {AccountTiles} from '/src/components/AccountTiles.tsx';import ProjectAccount from '/src/components/ProjectAccount.tsx';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';
       const accounts=Array.from({length:7},(_,i)=>({id:'account-'+i,home:'/fixture/'+i,label:i<3?'Work '+(i+1):'Personal '+(i-2),email:'fixture'+i+'@example.com',source:'fixture',provider:i<4?'codex':'claude',status:'ready'}));
       const codex=['gpt-6-astra','gpt-6-luna'].map((model,i)=>({model,displayName:i?'Luna':'Astra',isDefault:!i,provider:'codex',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:i?[]:[{id:'priority'}],availableAccessPrograms:{cyber:i?['standard']:['standard','daybreakBlue']}}));
-      const claude=[{model:'claude-sonnet-5-5',displayName:'Claude Sonnet 5.5',provider:'claude',isDefault:true,defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[]}];
+      const claudeRow=(model,displayName,extra)=>({model,displayName,provider:'claude',defaultReasoningEffort:'medium',supportedReasoningEfforts:['low','medium','high'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[],...extra});const claude=[claudeRow('default','Claude · Default (recommended)',{isDefault:true,resolvedModel:'claude-opus-5-5'}),claudeRow('opus','Claude · Opus 5.5',{resolvedModel:'claude-opus-5-5'}),claudeRow('claude-sonnet-5-5','Claude Sonnet 5.5',{})];
       const initial={id:'lead',accountKey:'account-0',provider:'codex',name:'Lead',source:'managed',model:'gpt-6-astra',effort:'medium',fastMode:false,daybreakEnabled:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true,workerDefaults:{model:'gpt-6-luna',effort:'high',fastMode:false},reviewDefaults:{model:null,effort:null}};
       window.calls=[];const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?input.url:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;const u=new URL(url,location.origin);let result;if(u.pathname==='/api/limits'){const key=u.searchParams.get('account_key'),i=Number(key?.split('-')[1]);result={accountKey:key,at:Date.now()/1000,data:{rateLimits:{limitId:i<4?'codex':'claude',primary:{usedPercent:[20,60,95,100,25,70,100][i],windowDurationMins:300,resetsAt:Date.now()/1000+3600}}}};}else if(u.pathname==='/api/models'){result={data:u.searchParams.get('workers')?'1'===u.searchParams.get('workers')?[...codex,...claude]:codex:Number(u.searchParams.get('account_key')?.split('-')[1])>=4?claude:codex};}else if(options?.method==='POST'){const body=JSON.parse(options.body);window.calls.push({endpoint:u.pathname,...body});if(u.pathname==='/api/conversation'){const next={...window.agent};if(body.worker_defaults)next.workerDefaults={model:body.worker_defaults.model,effort:body.worker_defaults.effort,fastMode:body.worker_defaults.fast_mode,daybreakEnabled:body.worker_defaults.daybreak_enabled,accountKey:body.worker_defaults.account_key};else if(body.review_defaults)next.reviewDefaults=body.review_defaults;else Object.assign(next,{model:body.model,effort:body.effort,fastMode:body.fast_mode,daybreakEnabled:body.daybreak_enabled});window.updateAgent(next);result=next;}else if(u.pathname==='/api/agents/account-transfer'){result={id:body.request_id,status:'completed',targetAccountKey:body.account_key,total:0,moved:0,completed:0};window.updateAgent({...window.agent,workerDefaults:{accountKey:body.account_key,model:Number(body.account_key.split('-')[1])>=4?claude[0].model:codex[0].model,effort:'medium',fastMode:false}});}else if(u.pathname==='/api/projects')result={id:'project',path:'/fixture/project',name:'Project',created:1,accountKey:body.account_key,accountKeys:body.account_keys,accountRevision:1};else if(u.pathname==='/api/peer-teams')result={room:{id:'shared'}};}if(result===undefined)return nativeFetch(url,options);return new Response(JSON.stringify(result),{headers:{'Content-Type':'application/json'}});};
       function Fixture(){const[agent,setAgent]=useState(initial),[scene,setScene]=useState('picker'),[scheme,setScheme]=useState('dark'),[account,setAccount]=useState('account-0');window.agent=agent;window.updateAgent=value=>flushSync(()=>setAgent(value));window.scene=value=>flushSync(()=>setScene(value));window.scheme=value=>flushSync(()=>setScheme(value));window.reset=()=>flushSync(()=>{setAgent(initial);setScene('picker');window.calls=[]});const data={stateDir:'fixture',threads:[],runtime:{rooms:[],projects:[{id:'project',path:'/fixture/project',name:'Project',created:1}]}};return <MantineProvider theme={theme} forceColorScheme={scheme}><main style={{padding:20,maxWidth:720,margin:'0 auto'}}><h2>Agent setup</h2>{scene==='picker'?<ExecutionSettings agent={agent} accounts={accounts} catalog={{models:agent.provider==='claude'?claude:codex,loading:false,error:'',retry:()=>{}}} onAccountChange={key=>{window.calls.push({path:'account-selection',key});const provider=accounts.find(a=>a.id===key).provider;setAgent({...agent,accountKey:key,provider,model:provider==='claude'?claude[0].model:codex[0].model,effort:'medium'});}} refresh={async()=>{}}/>:scene==='chat-account'?<AccountTiles label="Account" accounts={accounts} value={account} onChange={setAccount}/>:scene==='project'?<ProjectAccount path="/fixture/project" project={{id:'project',path:'/fixture/project',name:'Project',created:1,accountKey:'account-0',accountKeys:accounts.map(a=>a.id)}} defaultAccountKey="account-0" accounts={{accounts,defaultAccountKey:'account-0'}} saved={async()=>{}}/>:<SharedChatCreate data={data} accounts={{accounts,defaultAccountKey:'account-0'}} initialPath="/fixture/project" refresh={async()=>{}} created={id=>{window.created=id}}/>}</main></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
@@ -196,7 +196,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       );
       await expect(
         page.getByRole("option", {
-          name: "Sonnet 5.5 recommended",
+          name: "Opus 5.5 recommended",
           exact: true,
         }),
       ).toBeVisible();
@@ -255,12 +255,22 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         page.getByLabel("Main agent account", { exact: true }),
         "account-5",
       );
+      // A default alias reads as the model it resolves to, listed once.
       await expect(
         page.getByRole("option", {
-          name: "Sonnet 5.5 recommended",
+          name: "Opus 5.5 recommended",
           exact: true,
         }),
       ).toBeVisible();
+      await expect(
+        page.getByRole("option", { name: /^Opus 5\.5/ }),
+      ).toHaveCount(1);
+      await expect(page.locator(".execution-menu").first()).toContainText(
+        "Opus 5.5",
+      );
+      await expect(page.locator(".execution-menu").first()).not.toContainText(
+        "default",
+      );
       await capture("orchestrator-claude");
       for (const scene of ["chat-account", "project", "shared"]) {
         await page.evaluate((scene) => window.scene(scene), scene);
@@ -292,7 +302,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           await group.locator('[data-account-key="account-5"]').click();
           await expect(
             page.getByLabel("Model for agent 1", { exact: true }),
-          ).toHaveAttribute("data-value", "claude-sonnet-5-5");
+          ).toHaveAttribute("data-value", "default");
           await page
             .getByLabel("Reasoning for agent 1", { exact: true })
             .selectOption("high");
@@ -313,7 +323,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
                 participant.effort,
               ];
             }),
-            ["account-5", "claude-sonnet-5-5", "high"],
+            ["account-5", "default", "high"],
           );
         }
       }

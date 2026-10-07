@@ -181,3 +181,14 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+/* Keep the model list short; scroll for older models. */
+.setup-models {
+  max-height: 236px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+/* No separators between unselected reasoning levels. */
+.setup-reasoning .mantine-SegmentedControl-control::before {
+  display: none;
+}

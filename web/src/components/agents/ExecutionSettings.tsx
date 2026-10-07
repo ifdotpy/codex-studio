@@ -58,6 +58,21 @@ const infoFor = (catalog: Catalog, model: string) =>
   catalog.models.find(
     (row) => row.model === model || row.resolvedModel === model,
   );
+/** Name a model row; a default alias shows the model it resolves to. */
+const displayModel = (catalog: Catalog, model: string) => {
+  const info = infoFor(catalog, model);
+  if (info?.isDefault && info.resolvedModel) {
+    const target = catalog.models.find(
+      (row) =>
+        row.model !== info.model &&
+        (row.model === info.resolvedModel ||
+          row.resolvedModel === info.resolvedModel),
+    );
+    if (target) return setupModelName(target, target.model);
+  }
+  if (!info && model === "default") return "Auto";
+  return setupModelName(info, model);
+};
 const fastTier = (info?: WorkerModelInfo) =>
   info?.serviceTiers?.find((tier) => tier.id === "priority");
 export function shortModel(model: string) {
@@ -850,6 +865,10 @@ function ScopedExecutionSettings({
     }
   };
   const mobile = useMediaQuery("(max-width: 760px)");
+  const pickerModel =
+    role === "review"
+      ? reviewCurrent.model || DEFAULT
+      : current.model || DEFAULT;
   const pickerModels = (role === "review" ? reviewOptions : modelOptions)
     .filter((row) => {
       if (row.value === DEFAULT) return role !== "orchestrator";
@@ -871,8 +890,19 @@ function ScopedExecutionSettings({
           ? role === "review"
             ? "Same as caller"
             : "Same as main agent"
-          : setupModelName(infoFor(catalog, row.value), row.value),
-    }));
+          : displayModel(catalog, row.value),
+    }))
+    // One row per model name: a default alias and the model it resolves to
+    // read the same. Keep the current choice, else the recommended alias.
+    .filter((row, index, rows) => {
+      const same = rows.filter((other) => other.label === row.label);
+      if (same.length < 2) return true;
+      const keep =
+        same.find((other) => other.value === pickerModel) ||
+        same.find((other) => other.isDefault) ||
+        same[0];
+      return keep === row;
+    });
   const pickerInfo = role === "review" ? reviewInfo : info;
   const pickerEfforts = (pickerInfo?.supportedReasoningEfforts || []).map(
     (row) => ({
@@ -904,11 +934,7 @@ function ScopedExecutionSettings({
           saving || accountDisabled || (!teamDefaults && !onAccountChange)
         }
         models={pickerModels}
-        model={
-          role === "review"
-            ? reviewCurrent.model || DEFAULT
-            : current.model || DEFAULT
-        }
+        model={pickerModel}
         modelLabel={
           role === "review" ? "Default review model" : prefix + " model"
         }
@@ -1081,7 +1107,7 @@ function ScopedExecutionSettings({
     >
       <ProviderMark provider={agent.provider || "codex"} />
       <span className="execution-selected">
-        {setupModelName(mainInfo, mainModel)} ·{" "}
+        {displayModel(parentCatalog, mainModel)} ·{" "}
         {title(
           mainSettings.effort || mainInfo?.defaultReasoningEffort || "Default",
         )}
