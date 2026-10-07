@@ -1,3 +1,4 @@
+import { SettingsSection } from "./ui/primitives";
 import { useEffect, useRef, useState } from "react";
 import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
 import { errorText, post, saved, type PostBody, type PostResult } from "../api";
@@ -101,6 +102,7 @@ export function ClaudeSettings({
   const [busyAction, setBusyAction] = useState(false);
   const [savingField, setSavingField] = useState("");
   const [savedLabel, setSavedLabel] = useState("");
+  const [savedField, setSavedField] = useState("");
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const windowSaveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const call = (body: ClaudeSessionRequest) =>
@@ -174,6 +176,7 @@ export function ClaudeSettings({
     try {
       await mutate({ id: agent.id, action: "settings", settings: next });
       savedRef.current = next;
+      setSavedField(field);
       setSavedLabel("Saved");
       if (timer.current) clearTimeout(timer.current);
       timer.current = setTimeout(() => setSavedLabel(""), 2200);
@@ -247,53 +250,64 @@ export function ClaudeSettings({
       ? agent.nativeStatus.error
       : undefined;
 
+  const fieldStatus = (field: string) => (
+    <div className="claude-save-status" aria-live="polite">
+      {savingField === field
+        ? "Saving…"
+        : savedField === field
+          ? savedLabel
+          : ""}
+    </div>
+  );
   return (
     <section
       className="settings-group claude-settings"
       aria-label="Claude settings"
       aria-busy={stateLoading}
     >
-      <h2>Permissions</h2>
-      {stateLoading && <p role="status">Loading Claude settings…</p>}
-      <NativeSelect
-        label="Permission mode"
-        value={values.permissionMode}
-        disabled={locked}
-        onChange={(event) => {
-          const selected = permissionMode(event.currentTarget.value);
-          if (selected)
-            void saveSetting("Permission mode", { permissionMode: selected });
-        }}
-        data={[
-          { value: "default", label: "Ask for permission" },
-          { value: "acceptEdits", label: "Allow file edits" },
-          { value: "auto", label: "Automatic" },
-          { value: "plan", label: "Plan only" },
-          { value: "bypassPermissions", label: "Full access" },
-        ]}
-      />
-      {thinkingRequired ? (
-        <p className="claude-setting-help">
-          Thinking is always on for this model.
-        </p>
-      ) : (
-        <Switch
-          label="Extended thinking"
-          description="Controls how much reasoning the model uses."
-          checked={values.thinking}
-          disabled={locked || catalog.loading || !!catalog.error}
-          onChange={(event) =>
-            void saveSetting("Extended thinking", {
-              thinking: event.currentTarget.checked,
-            })
-          }
+      <SettingsSection title="Permissions">
+        {stateLoading && <p role="status">Loading Claude settings…</p>}
+        <NativeSelect
+          label="Permission mode"
+          value={values.permissionMode}
+          disabled={locked}
+          onChange={(event) => {
+            const selected = permissionMode(event.currentTarget.value);
+            if (selected)
+              void saveSetting("Permission mode", { permissionMode: selected });
+          }}
+          data={[
+            { value: "default", label: "Ask for permission" },
+            { value: "acceptEdits", label: "Allow file edits" },
+            { value: "auto", label: "Automatic" },
+            { value: "plan", label: "Plan only" },
+            { value: "bypassPermissions", label: "Full access" },
+          ]}
         />
-      )}
-      <div className="claude-save-status" aria-live="polite">
-        {savingField ? `Saving ${savingField.toLowerCase()}…` : savedLabel}
-      </div>
+        {fieldStatus("Permission mode")}
+      </SettingsSection>
+      <SettingsSection title="Optional modes">
+        {thinkingRequired ? (
+          <p className="claude-setting-help">
+            Thinking is always on for this model.
+          </p>
+        ) : (
+          <Switch
+            label="Extended thinking"
+            description="Controls how much reasoning the model uses."
+            checked={values.thinking}
+            disabled={locked || catalog.loading || !!catalog.error}
+            onChange={(event) =>
+              void saveSetting("Extended thinking", {
+                thinking: event.currentTarget.checked,
+              })
+            }
+          />
+        )}
+        {fieldStatus("Extended thinking")}
+      </SettingsSection>
       <details className="claude-advanced">
-        <summary>Advanced</summary>
+        <summary>More settings and actions</summary>
         <div className="claude-advanced-content">
           <TextInput
             label="Auto-compact token limit"
@@ -314,6 +328,7 @@ export function ClaudeSettings({
             onBlur={() => saveWindow()}
             onKeyDown={(event) => event.key === "Enter" && saveWindow()}
           />
+          {fieldStatus("Auto-compact limit")}
           <details>
             <summary>Commands and skills</summary>
             <Button

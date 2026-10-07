@@ -51,6 +51,7 @@ export default function ConnectionRecovery({
 }) {
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState("");
+  const [details, setDetails] = useState("");
   const lock = useRef(false);
   const mounted = useRef(true);
   useEffect(() => {
@@ -64,6 +65,7 @@ export default function ConnectionRecovery({
     lock.current = true;
     setPending(true);
     setMessage("");
+    setDetails("");
     try {
       const result = await post(
         "/api/connection-recovery",
@@ -82,26 +84,27 @@ export default function ConnectionRecovery({
           "The conversation changed while the connection was checked. Review its current state.",
         );
       } else {
+        setDetails(result.error ? errorText(result.error) : "");
         setMessage(
           result.error
-            ? `Could not confirm the previous outcome. Review the history before continuing. ${result.error}`
+            ? "Could not confirm the previous outcome. Review the history before continuing."
             : "Connection checked. The previous outcome remains unconfirmed. Review the history before continuing.",
         );
         if (result.status === "unconfirmed" && result.checked === true)
           await refresh();
       }
     } catch (error) {
-      if (mounted.current)
-        setMessage(
-          `Could not finish the connection check. ${errorText(error)}`,
-        );
+      if (mounted.current) {
+        setMessage("Could not finish the connection check.");
+        setDetails(errorText(error));
+      }
     } finally {
       lock.current = false;
       if (mounted.current) setPending(false);
     }
   };
   return (
-    <div className="native-error-actions">
+    <div className="native-error-actions studio-recovery-banner">
       <Button
         size="compact-xs"
         variant="light"
@@ -112,6 +115,12 @@ export default function ConnectionRecovery({
         Check connection
       </Button>
       {message && <p role="status">{message}</p>}
+      {details && (
+        <details>
+          <summary>Details</summary>
+          <p>{details}</p>
+        </details>
+      )}
     </div>
   );
 }

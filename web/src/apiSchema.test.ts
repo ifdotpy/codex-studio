@@ -45,6 +45,23 @@ it("accepts a matching server schema hash without entering mismatch state", asyn
   expect(api.isApiSchemaMismatch()).toBe(false);
 });
 
+it("notifies cache cleanup only after a matching server schema response", async () => {
+  stubBrowser();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response("{}", {
+        headers: { [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH },
+      }),
+  );
+  const api = await import("./api");
+  await api.get("/api/session");
+  const confirmed = vi.fn();
+  const stop = api.onMatchingApiSchemaResponse(confirmed);
+  expect(confirmed).toHaveBeenCalledOnce();
+  stop();
+});
+
 it("sends the generated schema hash and raises mismatch state from an API response", async () => {
   const requests: Request[] = [];
   stubBrowser();
@@ -61,10 +78,12 @@ it("sends the generated schema hash and raises mismatch state from an API respon
 
   const api = await import("./api");
   const mismatch = vi.fn();
+  const matching = vi.fn();
   api.onApiSchemaMismatch(mismatch);
-  await expect(api.get("/api/session")).resolves.toEqual({
-    token: "session-token",
-  });
+  api.onMatchingApiSchemaResponse(matching);
+  await expect(api.get("/api/session")).rejects.toBeInstanceOf(
+    api.ApiSchemaMismatchError,
+  );
 
   expect(requests).toHaveLength(1);
   expect(requests[0]!.headers.get(API_SCHEMA_HASH_HEADER)).toBe(
@@ -72,6 +91,7 @@ it("sends the generated schema hash and raises mismatch state from an API respon
   );
   expect(api.isApiSchemaMismatch()).toBe(true);
   expect(mismatch).toHaveBeenCalledTimes(1);
+  expect(matching).not.toHaveBeenCalled();
   await expect(
     api.syncGet("/api/limits", { query: { account_key: "default" } }),
   ).rejects.toMatchObject({ status: 426 });
@@ -79,6 +99,128 @@ it("sends the generated schema hash and raises mismatch state from an API respon
     name: "ApiSchemaMismatchError",
   });
   expect(requests).toHaveLength(1);
+});
+
+it("blocks later writes when a rollback returns an identity without a schema hash", async () => {
+  stubBrowser();
+  const fetch = vi.fn(
+    async () =>
+      new Response(
+        JSON.stringify({
+          workspaceId: "workspace",
+          syncProtocol: 2,
+          chatState: true,
+        }),
+        { headers: { "Content-Type": "application/json" } },
+      ),
+  );
+  vi.stubGlobal("fetch", fetch);
+  const api = await import("./api");
+  const mismatch = vi.fn();
+  api.onApiSchemaMismatch(mismatch);
+
+  await expect(api.syncGet("/api/sync/identity")).rejects.toMatchObject({
+    name: "ApiSchemaMismatchError",
+  });
+
+  expect(api.isApiSchemaMismatch()).toBe(true);
+  expect(mismatch).toHaveBeenCalledTimes(1);
+  await expect(
+    api.post("/api/messages", {
+      id: "same-message",
+      room: "chat",
+      text: "hello",
+    }),
+  ).rejects.toMatchObject({ name: "ApiSchemaMismatchError" });
+  expect(fetch).toHaveBeenCalledTimes(1);
+});
+
+it("accepts the identity when its server schema hash matches", async () => {
+  stubBrowser();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({ workspaceId: "workspace", syncProtocol: 2 }),
+        {
+          headers: {
+            "Content-Type": "application/json",
+            [API_SCHEMA_HASH_HEADER]: API_SCHEMA_HASH,
+          },
+        },
+      ),
+  );
+  const api = await import("./api");
+
+  await api.syncGet("/api/sync/identity");
+
+  expect(api.isApiSchemaMismatch()).toBe(false);
+});
+
+it("does not return mismatched pull rows or persist mismatched mutation entities", async () => {
+  stubBrowser();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          workspaceId: "a".repeat(32),
+          documents: [
+            {
+              id: "entity:agent:a",
+              seq: 1,
+              payload: JSON.stringify({
+                collection: "agent",
+                id: "a",
+                value: null,
+              }),
+            },
+          ],
+          checkpoint: { seq: 1 },
+        }),
+        {
+          headers: { [API_SCHEMA_HASH_HEADER]: "foreign-schema" },
+        },
+      ),
+  );
+  let api = await import("./api");
+  await expect(
+    api.get("/api/sync/pull", {
+      query: { scope: "state:entities:v1", after: 0, limit: 500 },
+    }),
+  ).rejects.toBeInstanceOf(api.ApiSchemaMismatchError);
+
+  vi.resetModules();
+  const persist = vi.fn();
+  vi.stubGlobal(
+    "fetch",
+    async () =>
+      new Response(
+        JSON.stringify({
+          groups: { projects: [] },
+          revision: 1,
+          _syncEntities: [
+            {
+              id: "entity:workspace:current",
+              seq: 1,
+              payload: "{}",
+            },
+          ],
+        }),
+        { headers: { [API_SCHEMA_HASH_HEADER]: "foreign-schema" } },
+      ),
+  );
+  api = await import("./api");
+  api.registerSyncEntityPersister(persist);
+  await expect(
+    api.post("/api/projects", {
+      action: "reorder",
+      expected_revision: 0,
+      groups: { projects: [] },
+      request_id: "p6-mismatched-response",
+    }),
+  ).rejects.toBeInstanceOf(api.ApiSchemaMismatchError);
+  expect(persist).not.toHaveBeenCalled();
 });
 
 it("does not treat an unmarked HTTP 426 as an API schema mismatch", async () => {
@@ -154,7 +296,9 @@ it("clears the update attempt only after a matching response on the reloaded pag
       }),
   );
   const api = await import("./api");
-  await api.get("/api/session");
+  await expect(api.get("/api/session")).rejects.toBeInstanceOf(
+    api.ApiSchemaMismatchError,
+  );
   storage.set("studio-api-schema-update-attempted", "1");
   expect(api.schemaUpdateFailedAfterReload()).toBe(true);
   vi.resetModules();
@@ -189,7 +333,9 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
   );
 
   let api = await import("./api");
-  await api.get("/api/session");
+  await expect(api.get("/api/session")).rejects.toBeInstanceOf(
+    api.ApiSchemaMismatchError,
+  );
   expect(reload).not.toHaveBeenCalled();
   await api.updateRendererAndReload();
   expect(reload).toHaveBeenCalledTimes(1);
@@ -206,7 +352,9 @@ it("reloads only after Update and distinguishes a matching renderer from a persi
   vi.resetModules();
   responseHash = "foreign-schema";
   api = await import("./api");
-  await api.get("/api/session");
+  await expect(api.get("/api/session")).rejects.toBeInstanceOf(
+    api.ApiSchemaMismatchError,
+  );
   expect(api.isApiSchemaMismatch()).toBe(true);
   expect(api.schemaUpdateFailedAfterReload()).toBe(true);
   expect(reload).toHaveBeenCalledTimes(1);

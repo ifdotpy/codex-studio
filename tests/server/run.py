@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
+WORKSPACE_TEST_STORE = os.environ["CODEX_WORKSPACE_STORE"]
 
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests"
@@ -479,6 +480,9 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT, execute
         else:
             command = [sys.executable, "-B", str(root / relative)]
         environment = os.environ.copy()
+        # Set this at the process boundary so every suite and its children
+        # inherit the isolated image store, even if the caller has a store set.
+        environment["CODEX_WORKSPACE_STORE"] = WORKSPACE_TEST_STORE
         scripts_path = str(root / "scripts")
         environment["PYTHONPATH"] = os.pathsep.join(
             item for item in (scripts_path, environment.get("PYTHONPATH", "")) if item)

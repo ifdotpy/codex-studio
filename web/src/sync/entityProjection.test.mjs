@@ -508,7 +508,7 @@ it("keeps chats after an unrelated entity update", () => {
   assert.deepEqual(updated.chats, [{ id: "c", title: "Shared chat" }]);
 });
 
-it("skips invalid entity rows once and still applies the rest of the batch", () => {
+it("skips malformed entity rows once and still applies the rest of the batch", () => {
   const state = emptyEntityProjection();
   const initial = applyEntityRows(
     state,
@@ -518,6 +518,33 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
     ],
     true,
   );
+  const malformedRows = [
+    { id: "entity:broken:json", payload: "{", seq: 4 },
+    { id: "entity:broken:empty", payload: "", seq: 5 },
+    { id: "entity:broken:null", payload: "null", seq: 6 },
+    { id: "entity:broken:number", payload: "42", seq: 7 },
+    { id: "entity:broken:array", payload: "[]", seq: 8 },
+    {
+      id: "entity:agent:missing-id",
+      payload: JSON.stringify({ collection: "agent", value: { name: "A" } }),
+      seq: 9,
+    },
+    {
+      id: "entity:agent:null-value",
+      payload: JSON.stringify({ collection: "agent", id: "a", value: null }),
+      seq: 10,
+    },
+    {
+      id: "entity:agent:missing-value",
+      payload: JSON.stringify({ collection: "agent", id: "a" }),
+      seq: 11,
+    },
+    {
+      id: "entity:future:x",
+      payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
+      seq: 12,
+    },
+  ];
   const reports = [];
   const report = console.error;
   console.error = (...args) => reports.push(args);
@@ -526,48 +553,19 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
       state,
       [
         entityRow("agent", "a", { id: "a", name: "A2" }, 3),
-        { id: "entity:broken:json", payload: "{", seq: 4 },
-        {
-          id: "entity:broken:empty",
-          payload: "",
-          seq: 5,
-        },
-        {
-          id: "entity:broken:collection",
-          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
-          seq: 6,
-        },
-        {
-          id: "entity:broken:type",
-          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
-          seq: 7,
-        },
-        {
-          id: "entity:agent:missing-id",
-          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
-          seq: 8,
-        },
-        {
-          id: "entity:agent:null-value",
-          payload: JSON.stringify({
-            collection: "agent",
-            id: "x",
-            value: null,
-          }),
-          seq: 9,
-        },
-        entityRow("project", "p", { id: "p", name: "P2" }, 10),
+        ...malformedRows,
+        entityRow("project", "p", { id: "p", name: "P2" }, 6),
       ],
       true,
     );
     assert.equal(changed.threads[0].name, "A2");
     assert.equal(changed.runtime.projects[0].name, "P2");
     assert.equal(changed.chats, initial.chats);
-    assert.equal(reports.length, 6);
+    assert.equal(reports.length, malformedRows.length);
     assert.ok(
       reports.every(
         ([message, fields]) =>
-          message.includes(fields.collection) && message.includes(fields.id),
+          message.includes("invalid payload") && message.includes(fields.id),
       ),
     );
     assert.ok(reports.every(([, fields]) => !Object.hasOwn(fields, "payload")));
@@ -576,44 +574,15 @@ it("skips invalid entity rows once and still applies the rest of the batch", () 
       state,
       [
         entityRow("agent", "a", { id: "a", name: "A2" }, 3),
-        { id: "entity:broken:json", payload: "{", seq: 4 },
-        {
-          id: "entity:broken:empty",
-          payload: "",
-          seq: 5,
-        },
-        {
-          id: "entity:broken:collection",
-          payload: JSON.stringify({ collection: "future", id: "x", value: {} }),
-          seq: 6,
-        },
-        {
-          id: "entity:broken:type",
-          payload: JSON.stringify({ collection: 1, id: "x", value: {} }),
-          seq: 7,
-        },
-        {
-          id: "entity:agent:missing-id",
-          payload: JSON.stringify({ collection: "agent", value: { id: "x" } }),
-          seq: 8,
-        },
-        {
-          id: "entity:agent:null-value",
-          payload: JSON.stringify({
-            collection: "agent",
-            id: "x",
-            value: null,
-          }),
-          seq: 9,
-        },
-        entityRow("project", "p", { id: "p", name: "P2" }, 10),
+        ...malformedRows,
+        entityRow("project", "p", { id: "p", name: "P2" }, 6),
       ],
       true,
     );
     assert.equal(repeated, changed);
     assert.equal(
       reports.length,
-      6,
+      malformedRows.length,
       "the same invalid row versions report once",
     );
   } finally {

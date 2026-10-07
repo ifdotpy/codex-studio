@@ -270,9 +270,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   });
   await manager.waitFor();
   assert.equal(
-    await manager
-      .getByRole("button", { name: "Sign in to another account" })
-      .count(),
+    await manager.getByRole("button", { name: "Sign in" }).count(),
     0,
   );
   await manager
@@ -282,9 +280,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     name: "Add account",
     exact: true,
   });
-  await add
-    .getByRole("button", { name: "Sign in to another account" })
-    .waitFor();
+  await add.getByRole("button", { name: "Sign in" }).waitFor();
   assert.equal(await add.locator(".account-row").count(), 0);
   await add.getByRole("button", { name: "Back to accounts" }).click();
   const work = manager.locator('[data-account="work"]');

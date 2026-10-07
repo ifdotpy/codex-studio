@@ -1,6 +1,7 @@
 import { Button, Popover, NativeSelect, Switch } from "@mantine/core";
 import { ChevronDown } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   post,
   ApiError,
@@ -19,6 +20,7 @@ import {
 import { AccountTransferStatus, type Account } from "../Accounts";
 import { ModelPicker, type ModelOption } from "../ModelPicker";
 import "./execution-settings.css";
+import { SettingsSection } from "../ui/primitives";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -89,6 +91,9 @@ type SettingsProps = {
   nextTurnSupported?: boolean;
   onOpenChange?: (opened: boolean) => void;
   openRequest?: number;
+  inline?: boolean;
+  permissionsOnly?: boolean;
+  permissionsTargetId?: string;
 };
 const accountOf = (agent: Pick<Agent, "accountKey">) =>
   agent.accountKey || "default";
@@ -183,7 +188,17 @@ function ScopedExecutionSettings({
   nextTurnSupported,
   onOpenChange,
   openRequest = 0,
+  inline = false,
+  permissionsOnly = false,
+  permissionsTargetId,
 }: SettingsProps) {
+  const [permissionsTarget, setPermissionsTarget] =
+    useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    setPermissionsTarget(
+      permissionsTargetId ? document.getElementById(permissionsTargetId) : null,
+    );
+  }, [permissionsTargetId]);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -824,102 +839,122 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
   };
-  return (
-    <Popover
-      opened={opened}
-      onChange={setOpened}
-      position={
-        openRequest > 0 ? "top-start" : teamDefaults ? "top-end" : "bottom-end"
-      }
-      width={300}
-      shadow="md"
-      middlewares={{ flip: true, shift: true, size: true }}
-      closeOnEscape={false}
-      trapFocus
-      returnFocus
-    >
-      <Popover.Target>
-        <Button
-          className="execution-menu"
-          rightSection={<ChevronDown size={14} />}
-          aria-label={label}
-          aria-expanded={opened}
-          title={[
-            selectedModel,
-            current.effort || "Default reasoning",
-            current.fast_mode ? "Fast" : "Standard",
-            `${modeLabel}${modeQueued ? " (next turn)" : ""}`,
-          ].join(" · ")}
-          onClick={() => {
-            setError("");
-            setStatus(null);
-            setOpened(!opened);
-          }}
-        >
-          {teamDefaults
-            ? "Subagents"
-            : agent.isLead
-              ? "Main agent"
-              : "Subagent"}{" "}
-          ·{" "}
-          {selectedProvider === "claude"
-            ? info?.displayName || shortModel(selectedModel)
-            : shortModel(selectedModel)}
-          {(daybreakEnabled || modeQueued) &&
-            ` · ${modeLabel}${modeQueued ? " next turn" : ""}`}
-        </Button>
-      </Popover.Target>
-      <Popover.Dropdown
-        className="execution-dropdown"
-        role="dialog"
-        aria-label={label}
-      >
-        {teamDefaults && (
-          <NativeSelect
-            label="Subagent account"
-            data={[{ value: "", label: "Automatic" }, ...accountOptions]}
-            value={current.account_key || ""}
-            disabled={saving}
-            onChange={(event) =>
-              void changeAccount(event.currentTarget.value || null)
-            }
-          />
+  const controls = (
+    <>
+      <ModelPicker
+        id={teamDefaults ? undefined : "model"}
+        label={prefix + " model"}
+        visibleLabel={inline ? "Model" : undefined}
+        options={modelOptions}
+        value={current.model || DEFAULT}
+        currentValue={currentModel || ""}
+        disabled={disabled}
+        onChange={(value) =>
+          void change({ model: value === DEFAULT ? null : value })
+        }
+      />
+      {selectedProvider !== "claude" &&
+        !catalog.loading &&
+        !catalog.error &&
+        !canEnableDaybreak && (
+          <Button
+            className="model-refresh"
+            variant="subtle"
+            size="compact-xs"
+            onClick={catalog.retry}
+          >
+            Refresh model list
+          </Button>
         )}
-        {teamDefaults && accountPending && (
-          <p className="notice" role="status">
-            {preview.moving.length
-              ? `Moving ${plural(preview.moving.length, "subagent")} to ${accountLabel(accountPending.target)}.`
-              : "No subagents to move."}
-            {preview.staying.length > 0 &&
-              ` ${plural(preview.staying.length, "subagent")} ${preview.staying.length === 1 ? "stays" : "stay"} on ${preview.stayingProvider}: ${preview.staying
-                .map((member) => member.name)
-                .join(", ")}.`}
-          </p>
-        )}
-        {teamDefaults && !accountPending && shownTransfer && (
-          <AccountTransferStatus
-            transfer={shownTransfer}
-            showCompleted
-            targetLabel={accountLabel(
-              typeof shownTransfer.targetAccountKey === "string"
-                ? shownTransfer.targetAccountKey
-                : undefined,
-            )}
-            pending={saving}
-            onAction={(action) => void runTeamTransferAction(action)}
-          />
-        )}
-        <ModelPicker
-          id={teamDefaults ? undefined : "model"}
-          label={prefix + " model"}
-          options={modelOptions}
-          value={current.model || DEFAULT}
-          currentValue={currentModel || ""}
-          disabled={disabled}
-          onChange={(value) =>
-            void change({ model: value === DEFAULT ? null : value })
+      <NativeSelect
+        label={inline ? "Reasoning" : prefix + " reasoning"}
+        aria-label={prefix + " reasoning"}
+        data={options}
+        value={current.effort || DEFAULT}
+        disabled={disabled || !modeSupported}
+        description={
+          !modeSupported ? "Unavailable for this model and mode." : undefined
+        }
+        onChange={(event) =>
+          void change({
+            effort:
+              event.currentTarget.value === DEFAULT
+                ? null
+                : event.currentTarget.value,
+          })
+        }
+      />
+      {teamDefaults && (
+        <NativeSelect
+          label="Subagent account"
+          description="Automatic uses the main account when it supports the model, then the application default."
+          data={[{ value: "", label: "Automatic" }, ...accountOptions]}
+          value={current.account_key || ""}
+          disabled={saving}
+          onChange={(event) =>
+            void changeAccount(event.currentTarget.value || null)
           }
         />
+      )}
+      {teamDefaults && accountPending && (
+        <p className="notice" role="status">
+          {preview.moving.length
+            ? `Moving ${plural(preview.moving.length, "subagent")} to ${accountLabel(accountPending.target)}.`
+            : "No subagents to move."}
+          {preview.staying.length > 0 &&
+            ` ${plural(preview.staying.length, "subagent")} ${preview.staying.length === 1 ? "stays" : "stay"} on ${preview.stayingProvider}: ${preview.staying
+              .map((member) => member.name)
+              .join(", ")}.`}
+        </p>
+      )}
+      {teamDefaults && !accountPending && shownTransfer && (
+        <AccountTransferStatus
+          transfer={shownTransfer}
+          showCompleted
+          targetLabel={accountLabel(
+            typeof shownTransfer.targetAccountKey === "string"
+              ? shownTransfer.targetAccountKey
+              : undefined,
+          )}
+          pending={saving}
+          onAction={(action) => void runTeamTransferAction(action)}
+        />
+      )}
+      {teamDefaults && agent.provider !== "claude" && (
+        <>
+          <ModelPicker
+            id="review-model"
+            label="Default review model"
+            description="Same as caller uses the model of the agent that requests the review."
+            options={reviewOptions}
+            value={reviewCurrent.model || DEFAULT}
+            disabled={disabled}
+            onChange={(value) =>
+              void changeReview({ model: value === DEFAULT ? null : value })
+            }
+          />
+          <NativeSelect
+            label="Default review reasoning"
+            data={reviewEfforts}
+            value={reviewCurrent.effort || DEFAULT}
+            disabled={disabled || !reviewCurrent.model || !reviewInfo}
+            description={
+              !reviewCurrent.model
+                ? "Uses the caller’s reasoning when no review model is selected."
+                : undefined
+            }
+            onChange={(event) =>
+              void changeReview({
+                effort:
+                  event.currentTarget.value === DEFAULT
+                    ? null
+                    : event.currentTarget.value,
+              })
+            }
+          />
+        </>
+      )}
+      <SettingsSection title="Optional modes">
         {selectedProvider !== "claude" && (
           <Switch
             label="Daybreak"
@@ -946,56 +981,6 @@ function ScopedExecutionSettings({
               : "The selected model does not support this mode in the account model list. Select another model or change the mode."}
           </p>
         )}
-        {selectedProvider !== "claude" &&
-          !catalog.loading &&
-          !catalog.error &&
-          !canEnableDaybreak && (
-            <Button variant="subtle" size="compact-xs" onClick={catalog.retry}>
-              Refresh model list
-            </Button>
-          )}
-        <NativeSelect
-          label={prefix + " reasoning"}
-          data={options}
-          value={current.effort || DEFAULT}
-          disabled={disabled || !modeSupported}
-          onChange={(event) =>
-            void change({
-              effort:
-                event.currentTarget.value === DEFAULT
-                  ? null
-                  : event.currentTarget.value,
-            })
-          }
-        />
-        {teamDefaults && agent.provider !== "claude" && (
-          <>
-            <ModelPicker
-              id="review-model"
-              label="Default review model"
-              options={reviewOptions}
-              value={reviewCurrent.model || DEFAULT}
-              disabled={disabled}
-              onChange={(value) =>
-                void changeReview({ model: value === DEFAULT ? null : value })
-              }
-            />
-            <NativeSelect
-              label="Default review reasoning"
-              data={reviewEfforts}
-              value={reviewCurrent.effort || DEFAULT}
-              disabled={disabled || !reviewCurrent.model || !reviewInfo}
-              onChange={(event) =>
-                void changeReview({
-                  effort:
-                    event.currentTarget.value === DEFAULT
-                      ? null
-                      : event.currentTarget.value,
-                })
-              }
-            />
-          </>
-        )}
         <Switch
           label="Fast mode"
           aria-label="Fast mode"
@@ -1012,88 +997,172 @@ function ScopedExecutionSettings({
             void change({ fast_mode: event.currentTarget.checked })
           }
         />
-        {!teamDefaults && agent.isLead && agent.provider !== "claude" && (
-          <details className="execution-permissions">
-            <summary>Permissions</summary>
-            <p>Applies to the whole team.</p>
-            <Switch
-              label="Full access without approval"
-              aria-label="Full access without approval"
-              checked={pendingYolo?.value ?? agent.yoloMode === true}
-              disabled={saving || active}
-              description={
-                agent.yoloMode == null
-                  ? "The team uses normal Codex permissions."
-                  : "Tools run without permission prompts."
-              }
-              onChange={(event) => void changeYolo(event.currentTarget.checked)}
-            />
-          </details>
-        )}
-        {teamDefaults && (
-          <p className="notice">
-            For new subagents. An account change also moves existing ones.
+      </SettingsSection>
+      {teamDefaults && (
+        <p className="notice">
+          For new subagents. An account change also moves existing ones.
+        </p>
+      )}
+      {status && (
+        <p role="status" className="notice execution-status">
+          {status.kind === "saving"
+            ? "Saving…"
+            : `Saved${status.text ? ` · ${status.text}` : ""}`}
+        </p>
+      )}
+      {((!teamDefaults && queued) || (active && canQueueSettings)) && (
+        <p className="notice" role="status">
+          Model settings apply to the next turn. The current response keeps its
+          settings.
+          {modeQueued &&
+            ` Current mode: ${agent.daybreakEnabled ? "Daybreak" : "Standard"}. Next turn: ${modeLabel}.`}
+        </p>
+      )}
+      {active && !canQueueSettings && (
+        <p className="notice">
+          Available when this turn ends. Update the server to set options for
+          the next turn.
+        </p>
+      )}
+      {catalog.error && (
+        <div role="alert">
+          <p>{catalog.error}</p>
+          <Button onClick={catalog.retry}>Retry model list</Button>
+        </div>
+      )}
+      {unconfirmed && !saving && (
+        <div role="status">
+          <p>
+            The settings response is unconfirmed. Check the same save before
+            changing settings again.
           </p>
-        )}
-        {status && (
-          <p role="status" className="notice execution-status">
-            {status.kind === "saving"
-              ? "Saving…"
-              : `Saved${status.text ? ` · ${status.text}` : ""}`}
-          </p>
-        )}
-        {((!teamDefaults && queued) || (active && canQueueSettings)) && (
-          <p className="notice" role="status">
-            Model settings apply to the next turn. The current response keeps
-            its settings.
-            {modeQueued &&
-              ` Current mode: ${agent.daybreakEnabled ? "Daybreak" : "Standard"}. Next turn: ${modeLabel}.`}
-          </p>
-        )}
-        {active && !canQueueSettings && (
-          <p className="notice">
-            Available when this turn ends. Update the server to set options for
-            the next turn.
-          </p>
-        )}
-        {catalog.error && (
-          <div role="alert">
-            <p>{catalog.error}</p>
-            <Button onClick={catalog.retry}>Retry model list</Button>
-          </div>
-        )}
-        {unconfirmed && !saving && (
-          <div role="status">
-            <p>
-              The settings response is unconfirmed. Check the same save before
-              changing settings again.
-            </p>
+          <Button
+            disabled={saving}
+            loading={saving}
+            onClick={() =>
+              void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
+            }
+          >
+            Check settings save
+          </Button>
+        </div>
+      )}
+      {error && (
+        <p className="execution-error" role="alert">
+          {error}
+          {retryTarget && (
             <Button
+              variant="subtle"
+              size="compact-xs"
               disabled={saving}
-              loading={saving}
-              onClick={() =>
-                void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
-              }
+              onClick={() => void changeAccount(retryTarget)}
             >
-              Check settings save
+              Retry
             </Button>
+          )}
+        </p>
+      )}
+    </>
+  );
+  const permissions = (
+    <>
+      {!teamDefaults && agent.isLead && agent.provider !== "claude" && (
+        <SettingsSection title="Permissions">
+          <p>Applies to the whole team.</p>
+          <Switch
+            label="Full access without approval"
+            aria-label="Full access without approval"
+            checked={pendingYolo?.value ?? agent.yoloMode === true}
+            disabled={saving || active || !("yoloMode" in agent)}
+            description={
+              !("yoloMode" in agent)
+                ? "Available after the server update."
+                : active
+                  ? "Available when this turn ends."
+                  : agent.yoloMode == null
+                    ? "The team uses normal Codex permissions."
+                    : "Tools run without permission prompts."
+            }
+            onChange={(event) => void changeYolo(event.currentTarget.checked)}
+          />
+          {saving && <p role="status">Saving…</p>}
+          {error && (
+            <p className="execution-error" role="alert">
+              {error}
+            </p>
+          )}
+        </SettingsSection>
+      )}
+    </>
+  );
+  const trigger = (
+    <Button
+      className="execution-menu"
+      rightSection={<ChevronDown size={14} />}
+      aria-label={label}
+      aria-expanded={opened}
+      title={[
+        selectedModel,
+        current.effort || "Default reasoning",
+        current.fast_mode ? "Fast" : "Standard",
+        `${modeLabel}${modeQueued ? " (next turn)" : ""}`,
+      ].join(" · ")}
+      onClick={() => {
+        setError("");
+        setStatus(null);
+        setOpened(!opened);
+      }}
+    >
+      {inline && (
+        <span className="execution-role">
+          {teamDefaults ? "Subagents" : "Main agent"}
+        </span>
+      )}
+      <span className="execution-selected">
+        {selectedProvider === "claude"
+          ? info?.displayName || shortModel(selectedModel)
+          : shortModel(selectedModel)}
+        {(daybreakEnabled || modeQueued) &&
+          ` · ${modeLabel}${modeQueued ? " next turn" : ""}`}
+      </span>
+    </Button>
+  );
+  if (permissionsOnly) return permissions;
+  if (inline)
+    return (
+      <div className="execution-inline">
+        {trigger}
+        {permissionsTarget && createPortal(permissions, permissionsTarget)}
+        {opened && (
+          <div
+            className="execution-inline-body"
+            role="region"
+            aria-label={label}
+          >
+            {controls}
           </div>
         )}
-        {error && (
-          <p className="execution-error" role="alert">
-            {error}
-            {retryTarget && (
-              <Button
-                variant="subtle"
-                size="compact-xs"
-                disabled={saving}
-                onClick={() => void changeAccount(retryTarget)}
-              >
-                Retry
-              </Button>
-            )}
-          </p>
-        )}
+      </div>
+    );
+  return (
+    <Popover
+      opened={opened}
+      onChange={setOpened}
+      position="top-start"
+      width={340}
+      shadow="md"
+      middlewares={{ flip: true, shift: true, size: true }}
+      closeOnEscape={false}
+      trapFocus
+      returnFocus
+    >
+      <Popover.Target>{trigger}</Popover.Target>
+      <Popover.Dropdown
+        className="execution-dropdown"
+        role="dialog"
+        aria-label={label}
+      >
+        {controls}
       </Popover.Dropdown>
     </Popover>
   );

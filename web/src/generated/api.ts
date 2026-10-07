@@ -2175,9 +2175,13 @@ export interface components {
       accountKey: string;
       /** At */
       at: number | null;
+      /** Checkedat */
+      checkedAt?: number | null;
       data?: components["schemas"]["RateLimitsDataDto"] | null;
       /** Error */
       error?: string | null;
+      /** Processedat */
+      processedAt?: number | null;
       /** Readat */
       readAt?: number | null;
     };
@@ -2438,20 +2442,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -2758,20 +2766,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -4137,20 +4149,24 @@ export interface components {
       id: string;
       /** Imageworkspace */
       imageWorkspace?: boolean | null;
+      /** Imageworkspacebaseref */
+      imageWorkspaceBaseRef?: string | null;
       /** Imageworkspacebaserepo */
       imageWorkspaceBaseRepo?: string | null;
+      /** Imageworkspacecreatedat */
+      imageWorkspaceCreatedAt?: number | null;
       /** Imageworkspaceerror */
       imageWorkspaceError?: string | null;
+      /** Imageworkspacehasgit */
+      imageWorkspaceHasGit?: boolean | null;
       /** Imageworkspacephase */
       imageWorkspacePhase?: string | null;
       /** Imageworkspaceready */
       imageWorkspaceReady?: boolean | null;
-      /** Imageworkspacerelative */
-      imageWorkspaceRelative?: string | null;
       /** Imageworkspacerepo */
       imageWorkspaceRepo?: string | null;
-      /** Imageworkspacestartcommit */
-      imageWorkspaceStartCommit?: string | null;
+      /** Imageworkspacesubpath */
+      imageWorkspaceSubpath?: string | null;
       /** Inflight */
       inFlight?: boolean | null;
       /** Islead */
@@ -9087,7 +9103,7 @@ export interface components {
      * RuleStatus
      * @enum {string}
      */
-    RuleStatus: "active" | "paused";
+    RuleStatus: "active" | "paused" | "completed";
     /** RuntimeLockOperation */
     RuntimeLockOperation: {
       /** Callsite */
@@ -11709,6 +11725,7 @@ export interface components {
     WorkEntityDto: {
       /** Agent */
       agent?: string | null;
+      archive?: components["schemas"]["JsonValue"] | null;
       /** Id */
       id: string;
       /** Rootid */

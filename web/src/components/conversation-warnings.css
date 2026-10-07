@@ -1,9 +1,9 @@
 .conversation-warning-trigger {
-  color: var(--mantine-color-orange-4);
+  color: var(--studio-warning);
 }
 
 .conversation-warning-trigger:hover {
-  color: var(--mantine-color-orange-3);
+  color: var(--studio-warning-hover);
 }
 
 .conversation-warning-list {
@@ -23,7 +23,7 @@
 
 .conversation-warning-list h3 {
   margin: 0 0 5px;
-  color: var(--mantine-color-orange-4);
+  color: var(--studio-warning);
   font-size: var(--mantine-font-size-sm);
 }
 
@@ -44,4 +44,10 @@
 .conversation-warning-list a {
   display: inline-block;
   margin: 8px 12px 0 0;
+}
+
+.conversation-warning-list summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
 }

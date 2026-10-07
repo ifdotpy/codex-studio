@@ -39,13 +39,72 @@ test("Question history", async ({ context }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.goto(origin);
+    await page.locator("#message").waitFor({ timeout: 60000 });
     const selectLead = () =>
       page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
     await selectLead();
+    const assistant = page.locator(".message.assistant").first();
+    await assistant.waitFor();
+    const transcriptLayout = await assistant.evaluate((element) => {
+      const column = element
+        .closest(".message-content")
+        .getBoundingClientRect();
+      const answer = element.getBoundingClientRect();
+      return {
+        width: column.width,
+        answerWidth: answer.width,
+        left: answer.left - column.left,
+        border: getComputedStyle(element).borderTopWidth,
+      };
+    });
+    assert.ok(
+      transcriptLayout.width <= 760,
+      "the transcript uses a bounded text column",
+    );
+    assert.equal(transcriptLayout.answerWidth, transcriptLayout.width);
+    assert.equal(transcriptLayout.left, 0);
+    assert.equal(
+      transcriptLayout.border,
+      "0px",
+      "assistant answers have no card border",
+    );
+    const copy = assistant.getByRole("button", {
+      name: "Copy message",
+      exact: true,
+    });
+    await page.mouse.move(0, 0);
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message"),
+        ).opacity === "0",
+    );
+    await assistant.hover();
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message"),
+        ).opacity === "1",
+    );
+    await page.mouse.move(0, 0);
+    await copy.focus();
+    await page.waitForFunction(
+      () =>
+        getComputedStyle(
+          document.querySelector(".message.assistant .copy-message"),
+        ).opacity === "1",
+    );
     const card = page.locator('[data-request="async-question"]');
+    assert.equal(
+      await card
+        .getByRole("button", { name: "Defer", exact: true })
+        .innerText(),
+      "Answer later",
+    );
     await card.getByRole("button", { name: "Defer", exact: true }).click();
     const deferred = page.locator(".request-deferred");
     await deferred.locator("summary").waitFor();
+    assert.match(await deferred.locator("summary").innerText(), /Later\s+1/);
     assert.equal(
       await card.isVisible(),
       false,

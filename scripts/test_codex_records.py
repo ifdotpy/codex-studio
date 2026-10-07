@@ -31,8 +31,9 @@ AGENT_FIELD_GROUPS = {
         accountKey accountTransfer activity agentMode agentModeRevision agentModeSupported
         archived autoWake compactions concurrency connectionCheck contextUsage convertedFromLead
         created cwd daybreakEnabled deletedAt effort error fastMode id imageWorkspace
-        imageWorkspaceBaseRepo imageWorkspaceError imageWorkspacePhase imageWorkspaceReady
-        imageWorkspaceRelative imageWorkspaceRepo imageWorkspaceStartCommit inFlight isLead
+        imageWorkspaceBaseRef imageWorkspaceBaseRepo imageWorkspaceCreatedAt imageWorkspaceError
+        imageWorkspaceHasGit imageWorkspacePhase imageWorkspaceReady imageWorkspaceRepo
+        imageWorkspaceSubpath inFlight isLead
         lastAnswer lastCompletedTurn manualName model name nativeLimitErrorAt nativeRelease
         nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeThreadBlock nativeTurnError parentId parkedEvent
         pendingSettings pendingSettingsAccountKey pinned project projectFolder projectFolderRevision

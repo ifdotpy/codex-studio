@@ -93,10 +93,12 @@ Base reports of continued work on an active worker, command, or automatic contin
   not only into chat. A chat message can arrive late.
 - Give every shared branch and every shared file one owner. State who may merge
   into an integration branch.
-- Pass `cwd` with the repository folder when the project root is not a Git
-  repository. Supported platforms give implementers an image workspace. Other
-  platforms use a Git worktree. New implementers work read-only until the image
-  base is ready.
+- Give workers the folder that contains their task. Supported platforms copy
+  its Git root, or the folder itself outside Git, including uncommitted changes.
+  Other platforms use a Git worktree when possible, or the original folder.
+  New workers have read-only access until the image base is ready. Ask workers
+  to commit on a named branch. Integrate by reading the copy path or fetching
+  the branch, for example `git fetch <path> <branch>`.
 - Do not run two live verifications that change the same system state at the
   same time. Schedule them, or give them independent criteria.
 

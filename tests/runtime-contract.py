@@ -214,6 +214,37 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(imported, 1)
         self.assertEqual(charged, 1)
 
+    def test_scheduler_schema_is_ready_before_scheduler_starts(self):
+        started = threading.Event()
+        release = threading.Event()
+
+        def hold_scheduler(_runtime):
+            started.set()
+            release.wait(5)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(Runtime, 'schedule', hold_scheduler):
+            runtime = Runtime(Path(directory), FakeServer)
+            try:
+                self.assertTrue(started.wait(2))
+                with runtime.db() as db:
+                    indexes = {row[0] for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='index'"
+                    )}
+                    tables = {row[0] for row in db.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
+                    )}
+                self.assertTrue({
+                    'runtime_agent_dispatch_active',
+                    'runtime_agent_dispatch_busy_input',
+                    'runtime_agent_dispatch_workspace',
+                    'runtime_work_archive_due',
+                } <= indexes)
+                self.assertIn('runtime_account_transfers', tables)
+            finally:
+                release.set()
+                runtime.close()
+
     def tearDown(self):
         self.runtime.close()
         self.tmp.cleanup()

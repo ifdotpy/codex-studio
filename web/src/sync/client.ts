@@ -16,6 +16,8 @@ import {
   saved,
   save,
   setWorkspace,
+  isApiSchemaMismatch,
+  onMatchingApiSchemaResponse,
   registerSyncEntityPersister,
   type GetResult,
 } from "../api";
@@ -52,6 +54,11 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import {
+  deleteOtherEntityProjectionDatabases,
+  entityProjectionDatabaseName,
+} from "./entityCacheStorage";
 
 export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
@@ -120,6 +127,8 @@ async function open() {
   const initialIdentity = identify();
   let grace: ReturnType<typeof setTimeout> | undefined;
   let identity: Awaited<ReturnType<typeof identify>> | null = null;
+  let cleanupScheduled = false;
+  let stopSchemaMatchCleanup = () => {};
   try {
     identity = await (hasCache
       ? Promise.race([
@@ -131,6 +140,7 @@ async function open() {
       : initialIdentity);
   } catch (error) {
     const unavailable =
+      isApiSchemaMismatch() ||
       error instanceof TypeError ||
       (error instanceof ApiError &&
         (error.status >= 500 || [408, 429].includes(error.status)));
@@ -140,6 +150,12 @@ async function open() {
   }
   const workspaceId = identity?.workspaceId || cached;
   if (identity) save("codex-sync-workspace", workspaceId);
+  const cleanupOtherSchemaCaches = () => {
+    if (cleanupScheduled || isApiSchemaMismatch()) return;
+    cleanupScheduled = true;
+    stopSchemaMatchCleanup();
+    deleteOtherEntityProjectionDatabases(workspaceId, API_SCHEMA_HASH);
+  };
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
@@ -169,6 +185,19 @@ async function open() {
     multiInstance: true,
   });
   await db.addCollections({
+    drafts: { schema, conflictHandler: draftConflictHandler },
+    outbox: { schema },
+  });
+  const currentProjectionDatabase = entityProjectionDatabaseName(
+    workspaceId,
+    API_SCHEMA_HASH,
+  );
+  const projectionDb = await createRxDatabase({
+    name: currentProjectionDatabase,
+    storage: getRxStorageDexie(),
+    multiInstance: true,
+  });
+  const { projections } = await projectionDb.addCollections({
     projections: {
       schema,
       conflictHandler: {
@@ -191,9 +220,15 @@ async function open() {
             : realMasterState,
       },
     },
-    drafts: { schema, conflictHandler: draftConflictHandler },
-    outbox: { schema },
   });
+  Object.defineProperty(db, "projections", { value: projections });
+  if (isApiSchemaMismatch()) stopSchemaMatchCleanup();
+  else {
+    stopSchemaMatchCleanup = onMatchingApiSchemaResponse(
+      cleanupOtherSchemaCaches,
+    );
+    if (cleanupScheduled) stopSchemaMatchCleanup();
+  }
   db.projections.$.subscribe((event) => {
     const doc = event.documentData;
     if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)

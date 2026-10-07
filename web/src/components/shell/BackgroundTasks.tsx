@@ -292,6 +292,10 @@ export default function BackgroundTasks({
             size="xs"
           />
         </div>
+        <span className="tasks-filter-help">
+          Commands run in the chat. Monitors run in the background. Other tools
+          show tool results.
+        </span>
       </div>
       <div
         className={`tasks-content ${mobileDetail && (selectedTask || explicitId) ? "show-task-detail" : ""}`}
@@ -711,13 +715,6 @@ function TaskDetail({
             {task.cancelRequested ? "Stop requested" : "Cancel monitor"}
           </Button>
         )}
-        <Button
-          size="xs"
-          rightSection={<ArrowUpRight size={13} />}
-          onClick={openAgent}
-        >
-          Open agent
-        </Button>
       </div>
     </section>
   );

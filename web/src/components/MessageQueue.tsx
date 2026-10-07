@@ -161,7 +161,9 @@ function QueuePreview({
           onClick={toggle}
         >
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-          {expanded ? "Show less" : "Show more"}
+          <span className="sr-only">
+            {expanded ? "Show less" : "Show more"}
+          </span>
         </button>
       )}
     </>

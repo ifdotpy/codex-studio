@@ -458,9 +458,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
       exact: true,
     });
     await dialog.getByLabel("Folder path").fill(folders["Empty project"]);
-    await dialog.getByRole("button", { name: "Go", exact: true }).click();
     await dialog
-      .getByRole("button", { name: "Use this folder", exact: true })
+      .getByRole("button", { name: "Open path", exact: true })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     await dialog.waitFor({ state: "hidden" });
     await group("Empty project")
@@ -511,11 +513,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
       } else {
         await projectOptions("Client work");
         await page
-          .getByRole("menuitem", { name: "New folder", exact: true })
+          .getByRole("menuitem", { name: "New chat folder", exact: true })
           .click();
       }
       const form = page.getByRole("dialog", {
-        name: "New folder",
+        name: "New chat folder",
         exact: true,
       });
       await form.getByLabel("Folder name").fill(name);

@@ -58,6 +58,88 @@ class SyncStoreTests(unittest.TestCase):
             with self.subTest(scope=scope), self.assertRaisesRegex(ValueError, "Invalid sync scope"):
                 self.store.pull(scope)
 
+    def test_entity_pull_never_returns_snapshot_private_agent_or_rule_fields(self):
+        agent = {
+            "id": "worker-a", "kind": "agent", "workerBaseBehindMain": 182,
+            "nativeNameSynced": {"accountKey": "default", "threadId": "thread-a",
+                                 "name": "Worker", "privateMarker": "omit"},
+            "accountHistory": [{"threadId": "old-thread"}],
+            "deliveredMode": {"epoch": ["thread-a", 136]},
+            "nativeRelease": {"phase": "released", "targetEpoch": 0, "targetRootId": "lead-a"},
+            "startAttempt": {"id": "attempt-a", "claudeInputRequest": {"input": "private"}},
+        }
+        rule = {
+            "id": "rule-a", "agent": "worker-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+            "kind": "interval",
+            "intervalSeconds": 30, "nextAt": 100.0, "at": 90.0,
+            "path": "/repo", "event": "file-change", "command": "check",
+            "stallTimeoutSeconds": 1800, "livenessCommand": "alive",
+            "text": "Rule summary", "status": "completed", "checks": 4,
+            "wakes": 2, "minimumWorkers": 3, "durationMinutes": 5,
+            "error": "last check warning", "lastExitCode": 0,
+            "lastOutput": "public rule output",
+            "restartHoldNotified": {"epoch": 1, "reason": "restart"},
+            "lastFinished": 2.0,
+            "activeWorkers": 1, "lastStallExitCode": 0, "stallProbe": False,
+            "eventText": "private event",
+        }
+        work = {"id": "work-a", "archive": {"status": "kept"},
+                "archiveIntent": {"status": "pending"}, "releases": [{"agent": "worker-a"}]}
+        with self.connect() as db:
+            db.executescript("""
+                CREATE TABLE runtime_rules(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE TABLE runtime_work(id TEXT PRIMARY KEY, record TEXT NOT NULL);
+            """)
+            db.execute("INSERT INTO runtime_agents VALUES (?,?)", (agent["id"], json.dumps(agent)))
+            db.execute("INSERT INTO runtime_rules VALUES (?,?)", (rule["id"], json.dumps(rule)))
+            db.execute("INSERT INTO runtime_work VALUES (?,?)", (work["id"], json.dumps(work)))
+
+        pulled = self.store.pull("state:entities:v1", fresh=True, limit=500)
+        entities = {
+            document["id"]: json.loads(document["payload"])["value"]
+            for document in pulled["documents"]
+        }
+        self.assertEqual(entities["entity:rule:rule-a"], {
+            "id": "rule-a", "agent": "worker-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+        })
+        self.assertEqual(entities["entity:work:work-a"]["archive"], {"status": "kept"})
+
+        private_keys = {
+            "accountHistory", "deliveredMode", "targetEpoch", "targetRootId",
+            "claudeInputRequest", "privateMarker", "restartHoldNotified",
+            "nativeNameSynced", "workerBaseBehindMain",
+            "kind", "intervalSeconds", "nextAt", "at", "path", "event",
+            "command", "stallTimeoutSeconds", "livenessCommand", "text",
+            "status", "checks", "wakes", "minimumWorkers", "durationMinutes",
+            "error", "lastExitCode", "lastOutput",
+            "lastFinished", "activeWorkers", "lastStallExitCode",
+            "stallProbe", "eventText", "archiveIntent", "releases",
+        }
+        def keys(value):
+            if isinstance(value, dict):
+                yield from value.keys()
+                for nested in value.values():
+                    yield from keys(nested)
+            elif isinstance(value, list):
+                for nested in value:
+                    yield from keys(nested)
+
+        self.assertFalse(private_keys.intersection(keys(entities)) - {"kind", "status"})
+        for field in private_keys:
+            if field not in {"kind", "status"}:
+                self.assertNotIn(field, entities["entity:rule:rule-a"])
+        with self.connect() as db:
+            stored_agent = json.loads(db.execute(
+                "SELECT record FROM runtime_agents WHERE id='worker-a'"
+            ).fetchone()[0])
+            stored_rule = json.loads(db.execute(
+                "SELECT record FROM runtime_rules WHERE id='rule-a'"
+            ).fetchone()[0])
+        self.assertIn("accountHistory", stored_agent)
+        self.assertIn("restartHoldNotified", stored_rule)
+
     def test_lazy_version_schema_initialization_is_idempotent(self):
         self.store._ensure_versions()
         with self.connect() as db:

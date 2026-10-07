@@ -90,7 +90,7 @@ it("keeps a locally schema-blocked deliver queued with the same id, then sends o
   });
   expect(JSON.parse(record.payload)).toMatchObject({
     status: "queued",
-    attempted: true,
+    attempted: false,
     body: { id: "stable-id", text: "hello" },
   });
   expect(

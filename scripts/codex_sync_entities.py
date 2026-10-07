@@ -241,9 +241,33 @@ def validate_entity_payload(payload: str) -> SyncEntityPayload:
     return _SYNC_ENTITY_PAYLOAD_ADAPTER.validate_json(payload)
 
 
+def _legacy_chat_agent_alias(payload: str) -> dict[str, JsonValue] | None:
+    """Validate the historical chat-as-agent shape for response-only retirement."""
+    value = json.loads(payload)
+    if (not isinstance(value, dict) or value.get("collection") != "agent"
+            or not isinstance(value.get("value"), dict)
+            or value["value"].get("kind") != "chat"):
+        return None
+    entity_id = value.get("id")
+    chat = value["value"]
+    if not isinstance(entity_id, str) or chat.get("id") != entity_id:
+        raise ValueError("entity identity does not match its row")
+    _validate_finite_json(cast(JsonValue, value))
+    ChatEntityDto.model_validate(chat)
+    return cast(dict[str, JsonValue], value)
+
+
 def validate_stored_entity_payload(payload: str, collection: str, key: str, deleted: bool) -> None:
     """Validate persisted live DTOs and the deliberately empty tombstone envelope."""
     if not deleted:
+        # Old installations could persist a chat row under the agent collection.
+        # Admit only this validated legacy shape so the HTTP pull can return its
+        # response-only tombstone; new writes remain canonical and strict.
+        legacy_chat = _legacy_chat_agent_alias(payload)
+        if legacy_chat is not None:
+            if collection != "agent" or legacy_chat.get("id") != key:
+                raise ValueError("entity identity does not match its row")
+            return
         entity = validate_entity_payload(payload)
         if entity.collection != collection or entity.id != key:
             raise ValueError("entity identity does not match its row")
@@ -252,6 +276,16 @@ def validate_stored_entity_payload(payload: str, collection: str, key: str, dele
     if (not isinstance(value, dict) or value.get("collection") != collection
             or value.get("id") != key or not isinstance(value.get("value"), dict)):
         raise ValueError("invalid entity tombstone")
+
+
+def response_entity_payload(payload: str) -> tuple[str, bool]:
+    """Retire historical chat aliases in the agent collection without a write."""
+    if _legacy_chat_agent_alias(payload) is not None:
+        # Preserve payload and sequence; the router marks only the returned
+        # document deleted, leaving both persisted aliases untouched.
+        return payload, True
+    validate_entity_payload(payload)
+    return payload, False
 
 
 def encoded(collection: str, key: str, value: JsonValue, deleted: bool = False) -> tuple[str, str, bool]:

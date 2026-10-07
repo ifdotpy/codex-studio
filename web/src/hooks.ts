@@ -28,6 +28,10 @@ import {
   syncDatabase,
   watchResourceChanges,
 } from "./sync/client";
+import {
+  isProjectionDatabaseClosedError,
+  PROJECTION_DATABASE_RELOAD_MESSAGE,
+} from "./sync/entityCacheStorage";
 import { peekTranscript, subscribeTranscript } from "./sync/transcriptCache";
 import { onResume } from "./sync/resume";
 import { agentChatMessages } from "./hooks/agentChatMessages";
@@ -198,7 +202,9 @@ export function useSnapshot() {
         if (stopped) return;
         dispatchProjectionStatus({
           type: "startup-failed",
-          error: errorText(error),
+          error: isProjectionDatabaseClosedError(error)
+            ? PROJECTION_DATABASE_RELOAD_MESSAGE
+            : errorText(error),
         });
       }
     };
@@ -246,6 +252,14 @@ export function useSnapshot() {
           }
         },
         (error) => {
+          if (error !== null && isProjectionDatabaseClosedError(error)) {
+            setData(null);
+            dispatchProjectionStatus({
+              type: "startup-failed",
+              error: PROJECTION_DATABASE_RELOAD_MESSAGE,
+            });
+            return;
+          }
           dispatchProjectionStatus(
             error === null
               ? { type: "projection-recovered" }

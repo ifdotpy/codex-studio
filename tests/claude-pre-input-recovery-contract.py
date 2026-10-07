@@ -39,6 +39,15 @@ class ClaudePreInputRecovery(unittest.TestCase):
         f.WorkspaceContract.setUp(self)
         self.agent = self.agent_update(self.lead(), provider='claude')
         self.agent = self.runtime.prepare(self.agent)
+        identity = 'claude:input-fixture@example.test'
+        with self.runtime.accounts.lock:
+            self.runtime.accounts._row('default').update(provider='claude', accountId=identity,
+                _credentialIdentity=identity, claudeOptions=None)
+        authentication = patch('codex_claude.auth_metadata', return_value={
+            'status': 'ready', 'accountId': identity, '_credentialIdentity': identity,
+            'email': 'input-fixture@example.test', 'plan': 'fixture'})
+        authentication.start()
+        self.addCleanup(authentication.stop)
         self.server = self.runtime.server
         self.connection = self.runtime.connection_ids['default']
         self.ids = ['original-a', 'original-b']
@@ -97,6 +106,26 @@ class ClaudePreInputRecovery(unittest.TestCase):
         with self.runtime.db() as db:
             self.assertEqual(db.execute('SELECT COUNT(*) FROM runtime_events WHERE agent=? AND id IN (?,?)',
                                         (self.agent['id'], *self.ids)).fetchone()[0], 2)
+
+    def test_account_validation_rejection_keeps_exact_input_pending_without_auto_retry(self):
+        self.start()
+        terminal = self.terminal(error={'message': 'Claude sign-in cannot be verified', 'data': {
+            'turnStartOutcome': 'not_applied', 'claudePreparationFailure': 'account_validation'}})
+        self.complete(terminal)
+        self.assert_pending_batch()
+        current = self.runtime.agent(self.agent['id'])
+        self.assertTrue(current['nativeFailureHold'])
+        self.assertEqual(current['status'], 'failed')
+        self.assertFalse(self.receipt()['retry'])
+        self.runtime.dispatch()
+        self.assertEqual(self.server.calls, self.calls)
+        self.runtime.send(self.agent['id'], 'The user restores the same account', 'auth-continue', manual=True)
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(starts[0]['input'], starts[1]['input'])
+        self.assertEqual(starts[0]['clientUserMessageId'], starts[1]['clientUserMessageId'])
+        self.assertEqual(self.runtime.delivery_receipt('auth-continue')['status'], 'pending')
 
     def test_notification_after_rpc_acceptance_retries_same_ids_once(self):
         self.start()
@@ -452,6 +481,156 @@ class ClaudePreInputRecovery(unittest.TestCase):
                     self.runtime.dispatch()
                     self.assertTrue(self.runtime.agent(self.agent['id'])['nativeFailureHold'])
                 self.assertEqual(self.server.calls, self.calls)
+
+    def test_later_user_input_resumes_held_retry_after_transport_change(self):
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(root=self.state.resolve(), handle='fixture-native', generation=1)
+        self.start()
+        self.complete()
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        self.agent = self.runtime.agent(self.agent['id'])
+        self.attempt = copy.deepcopy(self.agent['startAttempt'])
+        self.turn_id = self.agent['turnId']
+        self.complete()
+        self.runtime.connection_ids['default'] = 'replacement-connection'
+        self.server.proc.generation = 2
+        self.runtime.send(self.agent['id'], 'Continue the saved work', 'manual-after-reconnect', manual=True)
+        # The old dispatcher already rejected this instruction after reconnect.
+        self.agent_update(self.agent, status='completed', inFlight=False, turnId=None,
+                          nativeFailureHold=True, error=None)
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 3)
+        self.assertEqual(starts[0]['input'], starts[2]['input'])
+        self.assertEqual(starts[0]['clientUserMessageId'], starts[2]['clientUserMessageId'])
+        self.assertEqual(self.runtime.delivery_receipt('manual-after-reconnect')['status'], 'pending')
+        self.runtime.dispatch()
+        f.eventually(lambda: self.runtime.delivery_receipt('manual-after-reconnect')['status'] == 'delivered')
+        self.assertFalse(self.runtime.agent(self.agent['id']).get('nativeFailureHold'))
+
+    def test_later_user_input_resumes_exact_input_after_background_compaction(self):
+        self.agent = self.agent_update(self.agent, compactions=9)
+        self.start()
+        self.complete()
+        self.runtime.send(self.agent['id'], 'Continue after the compaction', 'after-compaction', manual=True)
+        self.agent_update(self.agent, status='completed', inFlight=False, turnId=None,
+                          compactions=10, nativeFailureHold=True, error=None)
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0]['input'], starts[1]['input'])
+        self.assertEqual(starts[0]['clientUserMessageId'], starts[1]['clientUserMessageId'])
+        self.assertEqual(self.runtime.delivery_receipt('after-compaction')['status'], 'pending')
+
+    def test_compaction_change_without_new_instruction_stays_held(self):
+        self.agent = self.agent_update(self.agent, compactions=9)
+        self.start()
+        self.complete()
+        self.agent_update(self.agent, compactions=10)
+        self.runtime.dispatch()
+        self.assertTrue(self.runtime.agent(self.agent['id']).get('nativeFailureHold'))
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), 1)
+
+    def test_busy_background_retry_retires_marker_before_later_user_delivery(self):
+        self.agent = self.agent_update(self.agent, compactions=9)
+        self.start()
+        self.complete()
+        background = {'id': 'independent-background-turn', 'status': 'inProgress'}
+        self.server.active_turns[self.agent['threadId']] = background
+        self.runtime.notification({'method': 'turn/started', 'params': {
+            'threadId': self.agent['threadId'], 'turn': background}}, 'default', self.connection)
+        self.agent_update(self.agent, compactions=10)
+        self.runtime.send(self.agent['id'], 'Continue the saved work', 'background-continue', manual=True)
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 2)
+        self.assertEqual(starts[0]['input'], starts[1]['input'])
+        self.assertEqual(starts[0]['clientUserMessageId'], starts[1]['clientUserMessageId'])
+        current = self.runtime.agent(self.agent['id'])
+        self.assertTrue(current['startAttempt']['activeAtReservation'])
+        self.assertEqual(current['turnId'], background['id'])
+        self.assertEqual(self.runtime.delivery_receipt('background-continue')['status'], 'pending')
+        self.runtime.dispatch()
+        self.assertFalse(self.runtime.agent(self.agent['id']).get('nativeFailureHold'))
+        f.eventually(lambda: self.runtime.delivery_receipt('background-continue')['status'] == 'delivered')
+        current = self.runtime.agent(self.agent['id'])
+        self.assertIsNone(current.get('claudePreInputRetry'))
+        self.assertTrue(current['inFlight'])
+        self.assertEqual(current['turnId'], background['id'])
+        self.assertEqual(current['epoch'], self.agent['epoch'])
+        starts = [params for method, params in self.server.calls if method == 'turn/start']
+        self.assertEqual(len(starts), 3)
+        self.assertEqual(starts[2]['clientUserMessageId'], 'background-continue')
+        self.assertFalse(any(method == 'turn/interrupt' for method, _ in self.server.calls))
+        with self.runtime.db() as db:
+            self.assertEqual({row[0] for row in db.execute(
+                'SELECT turn_id FROM runtime_events WHERE id IN (?,?,?)',
+                (*self.ids, 'background-continue'))}, {background['id']})
+
+    def test_old_user_input_cannot_release_a_newer_rejection(self):
+        self.start()
+        self.complete()
+        self.runtime.dispatch()
+        f.eventually(lambda: all(self.runtime.delivery_receipt(key)['status'] == 'delivered' for key in self.ids))
+        self.runtime.send(self.agent['id'], 'Already queued instruction', 'before-rejection', manual=True)
+        self.agent = self.runtime.agent(self.agent['id'])
+        self.attempt = copy.deepcopy(self.agent['startAttempt'])
+        self.turn_id = self.agent['turnId']
+        self.complete()
+        with self.runtime.db() as db:
+            db.execute('UPDATE runtime_events SET created=? WHERE id=?',
+                       (self.attempt['created'] - 1, 'before-rejection'))
+        self.runtime.dispatch()
+        self.assertTrue(self.runtime.agent(self.agent['id']).get('nativeFailureHold'))
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), 2)
+
+    def test_later_user_input_cannot_release_changed_or_unknown_retry(self):
+        self.start()
+        self.complete()
+        self.runtime.send(self.agent['id'], 'Continue only safe input', 'manual-review', manual=True)
+        cases = ('source', 'compaction_decrease', 'compaction_type', 'event', 'unknown', 'receipt', 'transcript', 'stopped')
+        for change in cases:
+            with self.subTest(change=change), self.runtime.lock, self.runtime.db() as db:
+                db.execute('SAVEPOINT invalid_retry')
+                agent = self.runtime.agent(self.agent['id'], db)
+                agent.update(status='failed', nativeFailureHold=True)
+                if change == 'source':
+                    agent['yoloMode'] = not agent.get('yoloMode')
+                elif change == 'compaction_decrease':
+                    agent['compactions'] = -1
+                elif change == 'compaction_type':
+                    saved = json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',
+                        (self.attempt['id'],)).fetchone()[0])
+                    saved['claudeInputRequest']['source']['compactions'] = '0'
+                    db.execute('UPDATE runtime_execution_attempts SET record=? WHERE id=?',
+                               (json.dumps(saved), self.attempt['id']))
+                    agent['compactions'] = 1
+                elif change in ('event', 'unknown'):
+                    db.execute('UPDATE runtime_events SET ' +
+                               ('text=?' if change == 'event' else 'status=?') + ' WHERE id=?',
+                               ('Edited input' if change == 'event' else 'uncertain', self.ids[0]))
+                elif change == 'receipt':
+                    saved = json.loads(db.execute('SELECT record FROM runtime_execution_attempts WHERE id=?',
+                        (self.attempt['id'],)).fetchone()[0])
+                    saved['claudeInputRejection']['outcome'] = 'unknown'
+                    db.execute('UPDATE runtime_execution_attempts SET record=? WHERE id=?',
+                               (json.dumps(saved), self.attempt['id']))
+                elif change == 'transcript':
+                    item_id = self.attempt['claudeInputRequest']['transcriptItemId']
+                    db.execute('DELETE FROM runtime_items WHERE id=?', (item_id,))
+                else:
+                    agent.update(autoWake=False, status='paused')
+                self.runtime.put(db, 'agents', agent)
+                from codex_claude_input_recovery import retire_stopped_retry
+                self.assertFalse(retire_stopped_retry(self.runtime, db, agent))
+                self.assertTrue(agent['nativeFailureHold'])
+                db.execute('ROLLBACK TO invalid_retry')
+                db.execute('RELEASE invalid_retry')
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), 1)
 
     def test_late_scope_change_before_submit_holds_without_native_write(self):
         import threading

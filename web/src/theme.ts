@@ -6,7 +6,10 @@ import {
   NativeSelect,
   Modal,
   Tooltip,
+  Menu,
 } from "@mantine/core";
+
+export const modalSizes = { settings: 720 };
 
 export const theme = createTheme({
   primaryColor: "indigo",
@@ -15,9 +18,9 @@ export const theme = createTheme({
     'Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   fontFamilyMonospace: '"SFMono-Regular", Consolas, monospace',
   fontSizes: {
-    xs: "0.75rem",
-    sm: "0.8125rem",
-    md: "0.875rem",
+    xs: "var(--studio-text-meta)",
+    sm: "var(--studio-text-body)",
+    md: "var(--studio-text-body)",
     lg: "1rem",
     xl: "1.25rem",
   },
@@ -39,12 +42,17 @@ export const theme = createTheme({
   components: {
     Button: Button.extend({
       styles: {
+        label: { textBoxTrim: "none", height: "auto", lineHeight: 1.4 },
         inner: { transform: "none", transition: "opacity 100ms ease" },
       },
       defaultProps: { size: "sm", variant: "subtle", color: "gray", fw: 500 },
     }),
     ActionIcon: ActionIcon.extend({
-      defaultProps: { size: "lg", variant: "subtle", color: "gray" },
+      defaultProps: {
+        size: "var(--studio-action-size)",
+        variant: "subtle",
+        color: "gray",
+      },
     }),
     TextInput: TextInput.extend({ defaultProps: { size: "sm" } }),
     NativeSelect: NativeSelect.extend({ defaultProps: { size: "sm" } }),
@@ -53,9 +61,12 @@ export const theme = createTheme({
         centered: true,
         radius: "lg",
         padding: "lg",
-        overlayProps: { backgroundOpacity: 0.6, blur: 4 },
+        overlayProps: { backgroundOpacity: 0.6, blur: 1 },
         closeButtonProps: { "aria-label": "Close" },
       },
+    }),
+    Menu: Menu.extend({
+      styles: { dropdown: { minWidth: 220 } },
     }),
     Tooltip: Tooltip.extend({
       defaultProps: { openDelay: 500, withArrow: true },

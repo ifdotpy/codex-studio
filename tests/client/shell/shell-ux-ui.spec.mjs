@@ -74,10 +74,47 @@ test("Shell ux ui", async ({
     await page
       .getByRole("button", { name: "Search chats", exact: true })
       .click();
-    await page.getByRole("dialog").waitFor();
-    await page.keyboard.press("Escape");
+    const searchDialog = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
+    await searchDialog.waitFor();
+    assert.equal(await searchDialog.getByRole("navigation").count(), 0);
+    assert.equal(
+      await page
+        .getByLabel("Search all conversations")
+        .evaluate((input) => input === document.activeElement),
+      true,
+    );
+    await searchDialog
+      .getByLabel("Search all conversations")
+      .fill("Review the release");
+    await searchDialog
+      .getByRole("button", { name: "Search", exact: true })
+      .click();
+    await searchDialog
+      .getByRole("button", { name: /Review the release/ })
+      .first()
+      .click();
+    const searchSource = page.getByRole("dialog", {
+      name: "Search source",
+      exact: true,
+    });
+    await searchSource
+      .getByText("Review the release", { exact: false })
+      .waitFor();
+    await searchSource
+      .getByRole("button", { name: "Open chat", exact: true })
+      .click();
+    await searchDialog.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+k");
-    await page.getByRole("dialog").waitFor();
+    await searchDialog.waitFor();
+    assert.equal(
+      await page
+        .getByLabel("Search all conversations")
+        .evaluate((input) => input === document.activeElement),
+      true,
+    );
     await page.keyboard.press("Escape");
     const other = snapshot.threads.find(
       (item) => item.name === "Other project",
@@ -305,9 +342,15 @@ test("Shell ux ui", async ({
       name: "Warnings",
       exact: true,
     });
-    await warningsDialog.getByText("Account notice", { exact: true }).waitFor();
+    await warningsDialog
+      .getByRole("heading", {
+        name: "Account configuration needs review",
+        exact: true,
+      })
+      .waitFor();
     assert.equal(
       await warningsDialog
+        .locator("p")
         .getByText("Account configuration needs review", {
           exact: true,
         })
@@ -320,6 +363,14 @@ test("Shell ux ui", async ({
       0,
       "Notices for other accounts are excluded",
     );
+    const rawDetails = warningsDialog.locator("details");
+    assert.equal(
+      await rawDetails.getAttribute("open"),
+      null,
+      "Raw warning details start closed",
+    );
+    await rawDetails.getByText("Details", { exact: true }).click();
+    assert.equal(await rawDetails.locator("pre").isVisible(), true);
     assert.equal(
       await warningsDialog
         .getByText('"fixture_configuration"', {
@@ -548,7 +599,7 @@ test("Shell ux ui", async ({
       exact: true,
     });
     await folderDialog
-      .getByRole("button", { name: "Use this folder", exact: true })
+      .getByRole("button", { name: "Add project", exact: true })
       .click();
     await createdRequest;
     assert.equal(projects.length, 1);

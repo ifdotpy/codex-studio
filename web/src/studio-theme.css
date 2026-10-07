@@ -1,5 +1,11 @@
 :root {
   color-scheme: dark;
+  --studio-text-body: 14px;
+  --studio-text-meta: 12px;
+  --studio-text-code: 13px;
+  --studio-action-size: 32px;
+  --studio-warning: #ffc078;
+  --studio-warning-hover: #ffd8a8;
   --surface: #1b1b20;
   --sidebar: #141418;
   --line: #ffffff0d;

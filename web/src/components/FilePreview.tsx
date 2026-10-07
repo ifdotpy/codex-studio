@@ -160,19 +160,28 @@ export default function FilePreview({
       opened={!!target}
       onClose={onClose}
       title={file?.name || target?.path || "File preview"}
-      size="xl"
+      size={
+        file &&
+        file.text.length < 2000 &&
+        ["text", "json"].includes(file.format)
+          ? "min(720px, 100vw)"
+          : "min(900px, 100vw)"
+      }
+      overlayProps={{ blur: 0 }}
       className="workspace-file-modal"
     >
       <div className="file-preview-toolbar">
         {file && (
           <>
-            <span>
-              {file.mime}
+            <span title={file.mime}>
+              {["text", "markdown", "csv", "tsv", "json"].includes(file.format)
+                ? "Text file"
+                : file.mime}
               {target?.line ? ` · Line ${target.line}` : ""}
             </span>
             <Button
               size="xs"
-              variant="light"
+              variant="subtle"
               onClick={() =>
                 act(() =>
                   saveFile({
@@ -191,21 +200,21 @@ export default function FilePreview({
           <>
             <Button
               size="xs"
-              variant="light"
+              variant="subtle"
               onClick={() => act(() => openFile(target))}
             >
               Open
             </Button>
             <Button
               size="xs"
-              variant="light"
+              variant="subtle"
               onClick={() => act(() => revealFile(target))}
             >
               Show in folder
             </Button>
             <Button
               size="xs"
-              variant="light"
+              variant="subtle"
               onClick={() => act(() => previewFile(target))}
             >
               Quick Look

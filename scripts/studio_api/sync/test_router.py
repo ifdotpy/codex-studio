@@ -35,7 +35,7 @@ from studio_api.sync.resources.models import (
 )
 from codex_runtime import Runtime
 from codex_sync import SyncStore
-from codex_sync_entities import put
+from codex_sync_entities import encoded, max_seq, put
 
 
 class StoreStub:
@@ -288,6 +288,169 @@ class SyncRouterTests(unittest.TestCase):
             self.assertEqual(context.hub._subscriptions, set())
 
         asyncio.run(verify())
+
+    def test_entity_pull_retires_legacy_agent_alias_and_preserves_canonical_chat(self) -> None:
+        context = ContextStub()
+        legacy = json.dumps({
+            "collection": "agent", "id": "chat-a",
+            "value": {"id": "chat-a", "kind": "chat", "name": "Historical chat", "tail": "reply"},
+        })
+        limits = {"accountKey": "default", "at": 1.0, "processedAt": 2.0}
+        workspace = json.dumps({
+            "collection": "workspace", "id": "current",
+            "value": {"rateLimits": limits, "rateLimitsByAccount": {"default": limits}},
+        })
+        canonical = json.dumps({"collection": "chat", "id": "chat-a", "value": {
+            "id": "chat-a", "kind": "chat", "name": "Canonical chat", "members": ["lead-a"],
+        }})
+        documents = [
+            {"id": "entity:chat:chat-a", "payload": canonical, "seq": 6, "_deleted": False},
+            {"id": "entity:agent:chat-a", "payload": legacy, "seq": 7, "_deleted": False},
+            {"id": "entity:workspace:current", "payload": workspace, "seq": 8, "_deleted": False},
+        ]
+        projection = {"workspaceId": "workspace-a", "documents": documents,
+                      "checkpoint": {"seq": 8}, "maxSeq": 8, "initialHigh": 8}
+        with patch.object(context.store, "pull", return_value=projection):
+            response = make_client(context).get(
+                "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        self.assertEqual(body["checkpoint"], {"seq": 8})
+        self.assertEqual(body["documents"][0], documents[0])
+        self.assertEqual(body["documents"][0]["payload"], canonical)
+        row = body["documents"][1]
+        self.assertEqual(row["id"], "entity:agent:chat-a")
+        self.assertEqual(row["seq"], 7)
+        self.assertTrue(row["_deleted"])
+        self.assertEqual(row["payload"], legacy)
+        self.assertEqual(body["documents"][2]["payload"], workspace)
+
+    def test_entity_pull_exposes_only_entity_fields_for_agent_rule_and_workspace(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        store.pull("state:entities:v1", fresh=True)
+        limits = {"accountKey": "default", "at": 1.0, "processedAt": 2.0, "checkedAt": 3.0,
+                  "data": {"rateLimits": {"primary": {"usedPercent": 42}}}}
+        agent = {
+            "id": "agent-a", "kind": "agent", "name": "Worker", "accountHistory": [{"secret": "history"}],
+            "deliveredMode": {"secret": "delivery"}, "nativeRelease": {"phase": "released", "targetEpoch": 4,
+                                                                              "targetRootId": "private-root"},
+            "startAttempt": {"claudeInputRequest": {"text": "private-input"}},
+        }
+        rule = {
+            "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+            "kind": "interval", "intervalSeconds": 30, "nextAt": 100.0,
+            "at": 90.0, "path": "/private/path", "event": "file-change",
+            "command": "private-command", "stallTimeoutSeconds": 1800,
+            "livenessCommand": "private-liveness", "text": "private-text",
+            "status": "completed", "checks": 4, "wakes": 2,
+            "minimumWorkers": 3, "durationMinutes": 5,
+            "error": "private-error", "lastExitCode": 0,
+            "lastOutput": "private-output", "restartHoldNotified": {"epoch": 1},
+            "lastFinished": 2.0, "activeWorkers": 1, "lastStallExitCode": 0,
+            "stallProbe": False, "eventText": "private-event",
+        }
+        work = {
+            "id": "work-a", "archive": {"status": "kept"},
+            "archiveIntent": {"status": "pending", "token": "private-archive"},
+            "releases": [{"agent": "agent-a", "token": "private-release"}],
+        }
+        with connect() as db:
+            put(db, "agent", agent["id"], agent)
+            put(db, "rule", rule["id"], rule)
+            put(db, "work", work["id"], work)
+            put(db, "workspace", "current", {
+                "id": "current", "connected": True, "rateLimits": limits,
+                "rateLimitsByAccount": {"default": limits},
+            })
+            db.commit()
+        context.store = store
+        response = make_client(context).get(
+            "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1"
+        )
+        self.assertEqual(response.status_code, 200)
+        entities = {
+            row["id"]: json.loads(row["payload"])["value"]
+            for row in response.json()["documents"]
+        }
+        self.assertEqual(entities["entity:agent:agent-a"], {
+            "id": "agent-a", "kind": "agent", "name": "Worker",
+            "nativeRelease": {"phase": "released"}, "startAttempt": {},
+        })
+        self.assertEqual(entities["entity:rule:rule-a"], {
+            "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+        })
+        self.assertEqual(entities["entity:work:work-a"]["archive"], {"status": "kept"})
+        self.assertNotIn("archiveIntent", entities["entity:work:work-a"])
+        self.assertNotIn("releases", entities["entity:work:work-a"])
+        self.assertEqual(entities["entity:workspace:current"]["rateLimits"], limits)
+        self.assertEqual(entities["entity:workspace:current"]["rateLimitsByAccount"]["default"], limits)
+        wire = json.dumps(response.json())
+        for private in ("history", "delivery", "targetEpoch", "private-root", "private-input",
+                        "private/path", "private-command", "private-liveness", "private-text",
+                        "private-error", "private-output", "private-event"):
+            self.assertNotIn(private, wire)
+        self.assertNotIn("private-archive", wire)
+        self.assertNotIn("private-release", wire)
+
+    def test_entity_pull_skips_malformed_stored_rows_and_advances_checkpoint(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        payloads = (
+            ("agent", "before", {"id": "before", "kind": "agent", "name": "Before"}),
+            ("agent", "bad", {"id": "bad", "kind": "agent", "name": 42}),
+            ("agent", "after", {"id": "after", "kind": "agent", "name": "After"}),
+        )
+        with connect() as db:
+            seq = max_seq(db)
+            for collection, key, value in payloads:
+                payload, digest, _ = encoded(collection, key, value)
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,?,0)""",
+                           (collection, key, seq, digest, payload))
+            db.commit()
+        context.store = store
+        with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        ids = [document["id"] for document in body["documents"]]
+        self.assertIn("entity:agent:before", ids)
+        self.assertNotIn("entity:agent:bad", ids)
+        self.assertIn("entity:agent:after", ids)
+        self.assertEqual(body["checkpoint"]["seq"], seq)
+        self.assertEqual(len(captured.records), 1)
 
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()

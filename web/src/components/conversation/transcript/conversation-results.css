@@ -7,7 +7,7 @@
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  padding: 4px 0;
+  padding: 4px 8px;
   border: 0;
   background: none;
   color: var(--muted);
@@ -61,7 +61,7 @@
 }
 .conversation-result small {
   flex-shrink: 0;
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   color: var(--muted);
 }
 .conversation-result:hover {

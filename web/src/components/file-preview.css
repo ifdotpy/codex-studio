@@ -25,7 +25,7 @@
 .file-preview-source {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  font: 12px/1.8 var(--mono, monospace);
+  font: var(--studio-text-code)/1.65 var(--mono, monospace);
 }
 .file-preview-table {
   overflow: auto;
@@ -33,7 +33,7 @@
 }
 .file-preview-table table {
   border-collapse: collapse;
-  font: 12px/1.5 var(--mono, monospace);
+  font: var(--studio-text-code)/1.5 var(--mono, monospace);
 }
 .file-preview-table td,
 .file-preview-table th {
@@ -64,4 +64,19 @@
 .image-viewer output {
   min-width: 4ch;
   text-align: center;
+}
+
+.workspace-file-modal .mantine-Modal-header {
+  padding: 12px 18px;
+}
+.workspace-file-modal .mantine-Modal-body {
+  padding: 0 18px 18px;
+}
+.file-preview-toolbar {
+  gap: 6px;
+  font-size: var(--studio-text-meta);
+}
+.file-preview-toolbar .mantine-Button-root {
+  border: 0;
+  background: transparent;
 }

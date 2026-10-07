@@ -47,6 +47,7 @@ run(
     "--project=client",
     "--project=performance",
     ...testFiles,
+    ...process.argv.slice(2),
   ],
   web,
   { ...process.env, PLAYWRIGHT_INCLUDE_SPECIAL: "1" },

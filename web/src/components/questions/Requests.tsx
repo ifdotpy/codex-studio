@@ -17,7 +17,10 @@ import AnswerFields, {
 import { requestApprovalDetails, requestQuestions } from "./requestData";
 
 type Props = {
+  mainAgentId?: string;
   showDates?: boolean;
+  onAnswerOpen?: () => void;
+  onAnswerPosition?: (node: HTMLElement) => void;
   requests: components["schemas"]["RequestEntityDto"][];
   allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
@@ -63,6 +66,33 @@ function parseJson(text: string): JsonValue {
   const value: unknown = JSON.parse(text);
   if (!isJsonValue(value)) throw new Error("Enter a valid JSON value.");
   return value;
+}
+
+function permissionRows(
+  value: unknown,
+  name = "Permission",
+): [string, string][] {
+  if (isJsonObject(value)) {
+    return Object.entries(value).flatMap(([key, entry]) =>
+      permissionRows(entry, name === "Permission" ? key : `${name} / ${key}`),
+    );
+  }
+  if (Array.isArray(value))
+    return value.flatMap((entry, index) =>
+      permissionRows(entry, `${name} ${index + 1}`),
+    );
+  return [
+    [
+      name.replace(/([a-z])([A-Z])/g, "$1 $2").replaceAll("_", " "),
+      value === true
+        ? "Allowed"
+        : value === false
+          ? "Not allowed"
+          : value == null
+            ? "None"
+            : String(value),
+    ],
+  ];
 }
 
 // Secret answers remain in memory. Other answers survive a reload.
@@ -244,6 +274,8 @@ function AnswerForm({
 
 function RequestCard({
   request: r,
+  onAnswerOpen,
+  onAnswerPosition,
   showDates = true,
   agents,
   refresh,
@@ -258,8 +290,49 @@ function RequestCard({
   const requestThread = stringValue(params.threadId);
   const blocked =
     !!nativeThreadError(owner) && requestThread === owner?.threadId;
+  const [requestError, setRequestError] = useState("");
   const [open, setOpen] = useState(false),
     [sending, setSending] = useState(false);
+  const card = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open || !card.current) return;
+    const node = card.current;
+    const form = node.querySelector<HTMLElement>(".request-answer-form");
+    const transcript = node.closest("#messages");
+    if (!form || !transcript) return;
+    const position = () => {
+      if (onAnswerPosition) onAnswerPosition(node);
+      else
+        transcript.scrollTop +=
+          node.getBoundingClientRect().top -
+          transcript.getBoundingClientRect().top -
+          12;
+    };
+    const fit = () => {
+      const available =
+        transcript.clientHeight -
+        (form.getBoundingClientRect().top - node.getBoundingClientRect().top) -
+        24;
+      form.style.setProperty(
+        "--request-answer-height",
+        `${Math.max(120, available)}px`,
+      );
+    };
+    fit();
+    position();
+    const observer = new ResizeObserver(() => {
+      fit();
+      position();
+    });
+    observer.observe(transcript);
+    const frame = requestAnimationFrame(() => {
+      position();
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [open]);
   const pending = useRef(false),
     mounted = useRef(true),
     trigger = useRef<HTMLButtonElement>(null);
@@ -281,6 +354,7 @@ function RequestCard({
     if (pending.current) return;
     pending.current = true;
     setSending(true);
+    setRequestError("");
     try {
       await apiPost("/api/answer", { ...body, id: r.id });
       answerDrafts.delete(draftKey);
@@ -293,7 +367,10 @@ function RequestCard({
       setOpen(false);
       await refresh();
     } catch (e) {
-      if (mounted.current) notify(errorText(e));
+      if (mounted.current) {
+        setRequestError(errorText(e));
+        notify(errorText(e));
+      }
     } finally {
       pending.current = false;
       if (mounted.current) setSending(false);
@@ -303,6 +380,7 @@ function RequestCard({
     if (pending.current) return;
     pending.current = true;
     setSending(true);
+    setRequestError("");
     try {
       if (remove) await apiPost("/api/questions/delete", { id: r.id });
       else
@@ -313,7 +391,10 @@ function RequestCard({
       if (mounted.current) setOpen(false);
       await refresh();
     } catch (error) {
-      if (mounted.current) notify(errorText(error));
+      if (mounted.current) {
+        setRequestError(errorText(error));
+        notify(errorText(error));
+      }
     } finally {
       pending.current = false;
       if (mounted.current) setSending(false);
@@ -345,6 +426,7 @@ function RequestCard({
   return (
     <div
       className={`request request-card${asynchronous ? " request-async" : ""}`}
+      ref={card}
       data-request={r.id}
     >
       <div className="request-summary">
@@ -399,7 +481,20 @@ function RequestCard({
             </p>
           )}
           {permissions !== undefined && (
-            <pre>{JSON.stringify(permissions, null, 2)}</pre>
+            <div className="request-permissions">
+              <dl>
+                {permissionRows(permissions).map(([name, value]) => (
+                  <div key={name}>
+                    <dt>{name}</dt>
+                    <dd title={value}>{value}</dd>
+                  </div>
+                ))}
+              </dl>
+              <details>
+                <summary>Permission details</summary>
+                <pre>{JSON.stringify(permissions, null, 2)}</pre>
+              </details>
+            </div>
           )}
           {url && /^https?:\/\//.test(url) && (
             <a href={url} target="_blank" rel="noreferrer">
@@ -427,9 +522,10 @@ function RequestCard({
               <Button
                 variant="subtle"
                 disabled={sending}
+                aria-label={r.deferred ? "Restore" : "Defer"}
                 onClick={() => void defer()}
               >
-                {r.deferred ? "Restore" : "Defer"}
+                {r.deferred ? "Restore" : "Answer later"}
               </Button>
               <Button
                 ref={trigger}
@@ -439,7 +535,10 @@ function RequestCard({
                 disabled={sending}
                 aria-expanded={open}
                 aria-controls={`answer-${r.id}`}
-                onClick={() => setOpen(!open)}
+                onClick={() => {
+                  if (!open) onAnswerOpen?.();
+                  setOpen(!open);
+                }}
               >
                 {open ? "Hide" : "Answer"}
               </Button>
@@ -466,6 +565,15 @@ function RequestCard({
           )}
         </div>
       </div>
+      {requestError && (
+        <div className="studio-recovery-banner" role="alert">
+          <p>Could not update this request.</p>
+          <details>
+            <summary>Details</summary>
+            <ErrorDescription value={requestError} />
+          </details>
+        </div>
+      )}
       {!blocked && question && open && (
         <div id={`answer-${r.id}`} className="request-inline-answer">
           <AnswerForm
@@ -482,7 +590,12 @@ function RequestCard({
   );
 }
 
-export default function Requests({ requests, allRequests, ...props }: Props) {
+export default function Requests({
+  requests,
+  allRequests,
+  mainAgentId,
+  ...props
+}: Props) {
   useEffect(() => {
     const active = new Set(
       allRequests.map((request) => answerKey(props.scope, request)),
@@ -491,28 +604,54 @@ export default function Requests({ requests, allRequests, ...props }: Props) {
       if (JSON.parse(key)[0] === props.scope && !active.has(key))
         answerDrafts.delete(key);
   }, [allRequests, props.scope]);
-  const deferred = requests.filter((r) => r.deferred);
-  return (
-    <div id="requests">
-      {requests
-        .filter((r) => !r.deferred)
-        .map((r) => (
-          <RequestCard key={answerKey(props.scope, r)} request={r} {...props} />
-        ))}
-      {deferred.length > 0 && (
-        <details className="request-history request-deferred">
-          <summary>
-            Deferred questions <span>{deferred.length}</span>
-          </summary>
-          <p className="request-deferred-note">Deferred questions stay open.</p>
-          {deferred.map((r) => (
+  const group = (items: RequestDto[]) => {
+    const deferred = items.filter((r) => r.deferred);
+    return (
+      <>
+        {items
+          .filter((r) => !r.deferred)
+          .map((r) => (
             <RequestCard
               key={answerKey(props.scope, r)}
               request={r}
               {...props}
             />
           ))}
-        </details>
+        {deferred.length > 0 && (
+          <details className="request-history request-deferred">
+            <summary>
+              Later <span>{deferred.length}</span>
+            </summary>
+            <p className="request-deferred-note">
+              These questions remain open.
+            </p>
+            {deferred.map((r) => (
+              <RequestCard
+                key={answerKey(props.scope, r)}
+                request={r}
+                {...props}
+              />
+            ))}
+          </details>
+        )}
+      </>
+    );
+  };
+  const mainRequests = mainAgentId
+    ? requests.filter((r) => r.agent === mainAgentId)
+    : [];
+  return (
+    <div id="requests">
+      {mainRequests.length > 0 && (
+        <section aria-label="Main-agent requests">
+          <h3 className="main-agent-requests-heading">Main-agent requests</h3>
+          {group(mainRequests)}
+        </section>
+      )}
+      {group(
+        mainAgentId
+          ? requests.filter((r) => r.agent !== mainAgentId)
+          : requests,
       )}
     </div>
   );

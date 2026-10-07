@@ -94,10 +94,13 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     assert.deepEqual(await projects(), ["Project A", "Project B", "Project C"]);
     const reorderResponse = page.waitForResponse((response) => {
       const request = response.request();
+      const order = request.postDataJSON()?.groups?.projects;
       return (
         new URL(response.url()).pathname === "/api/projects" &&
         request.method() === "POST" &&
-        request.postDataJSON()?.action === "reorder"
+        request.postDataJSON()?.action === "reorder" &&
+        Array.isArray(order) &&
+        order[0] === resolve(stateDir, "Project C")
       );
     });
     await drag(
@@ -116,7 +119,65 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     );
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);
     console.log("Project pointer drag passed");
-    await reorderResponse;
+    const response = await reorderResponse;
+    const responseBody = await response.json();
+    const expectedOrder = [
+      resolve(stateDir, "Project C"),
+      resolve(stateDir, "Project A"),
+      resolve(stateDir, "Project B"),
+    ];
+    assert.ok(
+      responseBody._syncEntities?.some((entity) => {
+        if (entity.id !== "entity:workspace:current") return false;
+        const payload = JSON.parse(entity.payload);
+        return (
+          JSON.stringify(payload.value.sidebarOrder.groups.projects) ===
+          JSON.stringify(expectedOrder)
+        );
+      }),
+      "The reorder response carries the updated workspace entity",
+    );
+    const workspaceCache = () =>
+      page.evaluate(async () => {
+        const names = (await indexedDB.databases())
+          .map((database) => database.name)
+          .filter((name) => name?.startsWith("rxdb-dexie-studio"));
+        return Promise.all(
+          names.map(
+            (name) =>
+              new Promise((resolve) => {
+                const request = indexedDB.open(name);
+                request.onerror = () => resolve({ name, error: true });
+                request.onsuccess = () => {
+                  const db = request.result;
+                  const tx = db.transaction("docs", "readonly");
+                  const rows = tx.objectStore("docs").getAll();
+                  rows.onsuccess = () => {
+                    const workspace = rows.result.find(
+                      (row) => row.id === "entity:workspace:current",
+                    );
+                    resolve({
+                      name,
+                      workspace: workspace
+                        ? JSON.parse(workspace.payload).value.sidebarOrder
+                        : null,
+                    });
+                    db.close();
+                  };
+                };
+              }),
+          ),
+        );
+      });
+    await expect
+      .poll(async () =>
+        (await workspaceCache()).some(
+          (entry) =>
+            JSON.stringify(entry.workspace?.groups?.projects) ===
+            JSON.stringify(expectedOrder),
+        ),
+      )
+      .toBe(true);
     await page.reload();
     await row("Destination").waitFor();
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);

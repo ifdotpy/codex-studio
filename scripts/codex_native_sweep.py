@@ -207,10 +207,15 @@ def _settle_ticket(rt: "Runtime", db: "sqlite3.Connection", key: str, ticket: "A
 def sweep(rt: "Runtime", now: float | None = None) -> int:
     """Inspect existing account connections only; use at most two unsubscribes."""
     now = time.time() if now is None else now
+    # Provider type belongs to the registry. A sweep does not authenticate.
+    # Read it before the runtime lock so a profile probe cannot stop dispatch.
+    with rt.accounts.lock:
+        providers = {key: row.get("provider", "codex")
+                     for key, row in rt.accounts.data["accounts"].items()}
     with rt.lock:
         accounts = sorted((key, server, rt.connection_ids.get(key))
                           for key, server in rt.servers.items()
-                          if rt.accounts.get(key).get("provider", "codex") == "codex"
+                          if providers.get(key) == "codex"
                           and rt.connection_current(key, rt.connection_ids.get(key)))
         offset = getattr(rt, "_native_sweep_cursor", 0) % max(1, len(accounts))
         rt._native_sweep_cursor = offset + 1  # type: ignore[attr-defined]  # typed-narrowing: Module owns sweep cursor state

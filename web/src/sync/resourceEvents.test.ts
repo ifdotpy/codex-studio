@@ -596,6 +596,10 @@ describe("shared resource event transport", () => {
     vi.stubGlobal("location", { origin: "http://studio.test" });
     vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
     vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockRejectedValue(new TypeError("Failed to fetch")),
+    );
     Source.skipNextAutoHandshake = true;
     const transport = await import("./resourceEvents");
     const states: string[] = [];
@@ -613,6 +617,171 @@ describe("shared resource event transport", () => {
     expect(Source.instances.length).toBeGreaterThan(1);
     stop();
     stopStatus();
+  });
+
+  it.each(["rollback", "unavailable"])(
+    "checks the identity after a warm stream rejection (%s)",
+    async (mode) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      syncDatabase.mockResolvedValue({ workspaceId });
+      vi.stubGlobal("window", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      });
+      vi.stubGlobal("document", {
+        hidden: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
+      vi.stubGlobal("navigator", { onLine: true });
+      vi.stubGlobal("location", { origin: "http://studio.test" });
+      vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+      vi.stubGlobal("EventSource", Source);
+      const fetch = vi.fn(
+        async (_request: Request) =>
+          new Response(JSON.stringify({ workspaceId }), {
+            status: mode === "rollback" ? 200 : 503,
+            headers: { "Content-Type": "application/json" },
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      const api = await import("../api");
+      const transport = await import("./resourceEvents");
+      const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+      await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+      const live = Source.instances[0]!;
+      live.open();
+      live.onerror?.();
+      expect(fetch).not.toHaveBeenCalled();
+      Source.skipNextAutoHandshake = true;
+      await vi.advanceTimersByTimeAsync(500);
+      const rejected = Source.instances.at(-1)!;
+      rejected.onerror?.();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(new URL(fetch.mock.calls[0]![0].url).pathname).toBe(
+        "/api/sync/identity",
+      );
+      expect(api.isApiSchemaMismatch()).toBe(mode === "rollback");
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(Source.instances.length).toBe(mode === "rollback" ? 2 : 3);
+      stop();
+    },
+  );
+
+  it.each(["unsubscribe", "handshake"])(
+    "cancels a shared identity probe on %s",
+    async (reason) => {
+      vi.useFakeTimers();
+      vi.spyOn(Math, "random").mockReturnValue(0.5);
+      syncDatabase.mockResolvedValue({ workspaceId });
+      vi.stubGlobal("window", {
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+        dispatchEvent: vi.fn(),
+      });
+      vi.stubGlobal("document", {
+        hidden: false,
+        addEventListener: vi.fn(),
+        removeEventListener: vi.fn(),
+      });
+      vi.stubGlobal("navigator", { onLine: true });
+      vi.stubGlobal("location", { origin: "http://studio.test" });
+      vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+      vi.stubGlobal("EventSource", Source);
+      const fetch = vi.fn(
+        (request: Request) =>
+          new Promise<Response>((_resolve, reject) => {
+            request.signal.addEventListener(
+              "abort",
+              () => reject(new DOMException("Aborted", "AbortError")),
+              { once: true },
+            );
+          }),
+      );
+      vi.stubGlobal("fetch", fetch);
+      Source.skipNextAutoHandshake = true;
+      const api = await import("../api");
+      const transport = await import("./resourceEvents");
+      const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+      await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+      Source.instances[0]!.onerror?.();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      const signal = fetch.mock.calls[0]![0].signal;
+      Source.skipNextAutoHandshake = true;
+      await vi.advanceTimersByTimeAsync(500);
+      Source.instances.at(-1)!.onerror?.();
+      expect(fetch).toHaveBeenCalledTimes(1);
+      expect(signal.aborted).toBe(false);
+      if (reason === "unsubscribe") stop();
+      else await vi.advanceTimersByTimeAsync(1_000);
+      expect(signal.aborted).toBe(true);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(api.isApiSchemaMismatch()).toBe(false);
+      stop();
+      await vi.advanceTimersByTimeAsync(10_000);
+      expect(fetch).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("restarts the identity probe when a listener returns during idle grace", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const fetch = vi.fn(
+      (request: Request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const stopFirst = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    Source.instances[0]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const firstSignal = fetch.mock.calls[0]![0].signal;
+
+    stopFirst();
+    expect(firstSignal.aborted).toBe(true);
+    Source.skipNextAutoHandshake = true;
+    const stopSecond = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const secondSignal = fetch.mock.calls[1]![0].signal;
+    expect(secondSignal.aborted).toBe(false);
+
+    stopSecond();
+    expect(secondSignal.aborted).toBe(true);
   });
 
   it("retries pre-handshake failures three times and ignores a late handshake", async () => {

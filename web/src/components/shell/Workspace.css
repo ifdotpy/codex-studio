@@ -3,7 +3,7 @@
 }
 .workspace-drawer .mantine-Drawer-header {
   border-bottom: 1px solid var(--line, #292b32);
-  padding: 20px 24px;
+  padding: 12px 18px;
 }
 .workspace-drawer-title {
   display: flex;
@@ -13,11 +13,11 @@
 }
 .workspace-shell {
   display: grid;
-  grid-template-columns: 168px minmax(0, 1fr);
+  grid-template-columns: 140px minmax(0, 1fr);
   min-height: calc(100dvh - 78px);
 }
 .workspace-nav {
-  padding: 20px 12px;
+  padding: 12px 8px;
   border-right: 1px solid var(--line, #292b32);
   background: rgba(0, 0, 0, 0.06);
 }
@@ -44,7 +44,7 @@
 }
 .workspace-count {
   margin-left: auto;
-  font-size: 10px;
+  font-size: var(--studio-text-meta);
   background: var(--mantine-color-orange-light);
   color: var(--mantine-color-orange-light-color);
   border-radius: 4px;
@@ -52,14 +52,14 @@
 }
 .workspace-content {
   min-width: 0;
-  padding: 26px 30px 60px;
+  padding: 16px 20px 40px;
 }
 .workspace-heading {
   display: flex;
   align-items: flex-start;
   justify-content: space-between;
   gap: 16px;
-  margin-bottom: 22px;
+  margin-bottom: 12px;
 }
 .workspace-heading h2 {
   margin: 0 0 8px;
@@ -76,14 +76,12 @@
 }
 .workspace-scope {
   display: flex;
-  align-items: end;
-  gap: 12px;
-  padding-bottom: 20px;
-  margin-bottom: 22px;
-  border-bottom: 1px solid var(--line, #292b32);
+  align-items: center;
+  gap: 8px;
+  margin-top: 8px;
 }
 .workspace-scope .mantine-NativeSelect-root {
-  width: min(320px, 100%);
+  width: min(220px, 100%);
 }
 .workspace-toolbar {
   display: flex;
@@ -98,12 +96,12 @@
   min-width: 170px;
 }
 .workspace-empty {
-  padding: 42px 22px;
-  text-align: center;
+  padding: 12px 0;
+  text-align: left;
   color: var(--muted, #999ca7);
   font-size: 13px;
   line-height: 1.7;
-  border: 1px dashed var(--line, #292b32);
+  border: 0;
   border-radius: 10px;
   margin: 12px 0;
 }
@@ -141,9 +139,9 @@
   width: 100%;
   text-align: left;
   border: 1px solid var(--line, #292b32);
-  border-radius: 9px;
-  padding: 14px;
-  margin: 0 0 9px;
+  border-radius: 4px;
+  padding: 10px;
+  margin: 0 0 6px;
   min-width: 0;
   overflow-wrap: anywhere;
 }
@@ -177,8 +175,8 @@ button.workspace-row:hover {
 .workspace-detail {
   min-width: 0;
   border: 1px solid var(--line, #292b32);
-  padding: 20px;
-  border-radius: 10px;
+  padding: 14px;
+  border-radius: 6px;
 }
 .workspace-detail h3 {
   margin: 0 0 12px;
@@ -245,7 +243,7 @@ button.workspace-row:hover {
 }
 .workspace-code {
   font:
-    11px/1.75 ui-monospace,
+    var(--studio-text-code)/1.65 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -263,14 +261,14 @@ button.workspace-row:hover {
   border-radius: 8px;
   overflow: auto;
   max-height: 66dvh;
-  padding: 8px 0;
+  padding: 0;
 }
 .workspace-diff-line {
   display: flex;
   width: max-content;
   min-width: 100%;
   font:
-    11px/1.9 ui-monospace,
+    var(--studio-text-code)/1.65 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -344,10 +342,11 @@ button.workspace-row:hover {
   gap: 8px;
 }
 .workspace-tool {
-  border: 1px solid var(--line, #292b32);
-  border-radius: 8px;
-  margin: 8px 0;
-  padding: 12px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--line, #292b32);
+  border-radius: 0;
+  margin: 0;
+  padding: 10px 0;
   min-width: 0;
 }
 .workspace-tool summary {
@@ -408,7 +407,7 @@ button.workspace-row:hover {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   font:
-    12px/1.8 ui-monospace,
+    var(--studio-text-code)/1.65 ui-monospace,
     SFMono-Regular,
     Menlo,
     monospace;
@@ -448,8 +447,8 @@ button.workspace-row:hover {
     font-size: 21px;
   }
   .workspace-scope {
-    align-items: end;
-    flex-wrap: wrap;
+    align-items: center;
+    flex-wrap: nowrap;
   }
   .workspace-facts {
     grid-template-columns: minmax(0, 1fr);
@@ -549,4 +548,115 @@ button.workspace-row:hover {
   padding: 12px;
   color: var(--muted);
   font-size: 12px;
+}
+
+.workspace-heading .ui-panel-header {
+  margin: 0;
+}
+.workspace-heading .ui-panel-header h3 {
+  font-size: 18px;
+}
+.workspace-scope .mantine-InputWrapper-label {
+  font-size: var(--studio-text-meta);
+}
+.workspace-scope .mantine-NativeSelect-root {
+  width: min(220px, 100%);
+}
+.workspace-tool summary {
+  flex-wrap: wrap;
+}
+.workspace-tool-description {
+  flex-basis: 100%;
+  color: var(--muted);
+  margin-left: 24px;
+  line-height: 1.5;
+}
+.workspace-diff-line.file-header {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 2;
+  width: 100%;
+  background: var(--mantine-color-body);
+  color: var(--text);
+  font-weight: 600;
+  padding: 8px 12px;
+  gap: 12px;
+}
+.workspace-diff-status {
+  color: var(--muted);
+}
+.workspace-diff-line.patch-metadata {
+  color: var(--muted);
+}
+.workspace-messages .workspace-heading {
+  margin-bottom: 0;
+}
+@media (max-width: 760px) {
+  .workspace-content {
+    padding: 16px 12px 40px;
+  }
+}
+
+.workspace-heading {
+  align-items: center;
+  gap: 10px;
+}
+.workspace-heading > div:first-child {
+  flex: 1;
+  min-width: 0;
+}
+.workspace-heading > .mantine-TextInput-root {
+  flex: 0 1 230px;
+}
+@media (max-width: 760px) {
+  .workspace-heading {
+    flex-wrap: wrap;
+  }
+  .workspace-heading > .mantine-TextInput-root {
+    flex-basis: 100%;
+    order: 2;
+  }
+}
+
+.workspace-tool:not([open]) .workspace-tool-description {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.workspace-tool[open] .workspace-tool-description {
+  display: block;
+}
+
+.workspace-nav-item {
+  padding: 8px;
+  gap: 8px;
+}
+.workspace-nav-item > svg {
+  flex-shrink: 0;
+}
+details.workspace-error {
+  background: transparent;
+  color: var(--muted);
+  padding: 10px 0;
+}
+details.workspace-error > summary {
+  cursor: pointer;
+}
+
+.workspace-messages-refresh {
+  margin-left: auto;
+  margin-right: 8px;
+}
+
+@media (max-width: 760px) {
+  .workspace-scope .mantine-NativeSelect-root {
+    flex: 1;
+    width: auto;
+    min-width: 0;
+  }
+  .workspace-scope > .mantine-Button-root {
+    flex-shrink: 0;
+  }
 }

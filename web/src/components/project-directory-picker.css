@@ -12,7 +12,9 @@
   font-size: 12px;
 }
 .directory-location > span {
-  overflow-wrap: anywhere;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 .directory-location > button {
   flex-shrink: 0;
@@ -40,7 +42,7 @@
 }
 .directory-row:hover,
 .directory-row:focus-visible {
-  background: #ffffff08;
+  background: var(--hover);
 }
 .directory-row > span {
   flex: 1;

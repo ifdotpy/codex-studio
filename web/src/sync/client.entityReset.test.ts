@@ -5,6 +5,10 @@ const mocks = vi.hoisted(() => ({
   syncGet: vi.fn(),
   watchResourceChanges: vi.fn(),
   registerPersister: vi.fn(),
+  deleteOtherCaches: vi.fn(),
+  isApiSchemaMismatch: vi.fn(() => false),
+  cachedWorkspace: "",
+  matchingSchemaListener: undefined as (() => void) | undefined,
   invalidation: undefined as
     | ((version?: {
         epoch: string;
@@ -37,8 +41,19 @@ vi.mock("../api", () => ({
     }
   },
   registerSyncEntityPersister: mocks.registerPersister,
+  isApiSchemaMismatch: mocks.isApiSchemaMismatch,
+  onMatchingApiSchemaResponse: vi.fn((listener: () => void) => {
+    mocks.matchingSchemaListener = listener;
+    return () => {
+      if (mocks.matchingSchemaListener === listener)
+        mocks.matchingSchemaListener = undefined;
+    };
+  }),
   save: vi.fn(),
-  saved: (_key: string, fallback: unknown) => fallback,
+  saved: (key: string, fallback: unknown) =>
+    key === "codex-sync-workspace"
+      ? mocks.cachedWorkspace || fallback
+      : fallback,
   setWorkspace: vi.fn(),
   syncGet: mocks.syncGet,
   syncPost: vi.fn(),
@@ -49,6 +64,11 @@ vi.mock("./resourceEvents", () => ({
   watchResourceConnection: vi.fn(() => () => {}),
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
+vi.mock("./entityCacheStorage", () => ({
+  deleteOtherEntityProjectionDatabases: mocks.deleteOtherCaches,
+  entityProjectionDatabaseName: (workspace: string, hash: string) =>
+    `studio-entity-projection-${workspace}-${hash}`,
+}));
 
 describe("entity pull reset wiring", () => {
   afterEach(() => {
@@ -59,7 +79,63 @@ describe("entity pull reset wiring", () => {
     mocks.syncGet.mockReset();
     mocks.watchResourceChanges.mockReset();
     mocks.registerPersister.mockReset();
+    mocks.deleteOtherCaches.mockReset();
+    mocks.isApiSchemaMismatch.mockReset();
+    mocks.isApiSchemaMismatch.mockReturnValue(false);
+    mocks.cachedWorkspace = "";
+    mocks.matchingSchemaListener = undefined;
     mocks.invalidation = undefined;
+  });
+
+  it("starts stale-cache cleanup only after matching schema confirmation", async () => {
+    const workspaceId = "c".repeat(32);
+    mocks.syncGet.mockResolvedValue({ workspaceId });
+    const projections = {
+      storageInstance: {},
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", { onLine: true });
+
+    const client = await import("./client");
+    await client.syncDatabase();
+    expect(mocks.deleteOtherCaches).not.toHaveBeenCalled();
+    expect(mocks.matchingSchemaListener).toBeTypeOf("function");
+
+    mocks.matchingSchemaListener?.();
+    expect(mocks.deleteOtherCaches).toHaveBeenCalledOnce();
+    expect(mocks.deleteOtherCaches).toHaveBeenCalledWith(
+      workspaceId,
+      expect.stringMatching(/^[a-f0-9]{64}$/),
+    );
+  });
+
+  it("opens cached state but never schedules cleanup when schema-mismatched", async () => {
+    mocks.isApiSchemaMismatch.mockReturnValue(true);
+    const workspaceId = "d".repeat(32);
+    mocks.cachedWorkspace = workspaceId;
+    mocks.syncGet.mockRejectedValue(new Error("schema mismatch"));
+    const projections = {
+      storageInstance: {},
+      $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce({ addCollections: vi.fn(async () => ({})) })
+      .mockResolvedValueOnce({
+        addCollections: vi.fn(async () => ({ projections })),
+      });
+    vi.stubGlobal("window", { addEventListener: vi.fn() });
+    vi.stubGlobal("navigator", { onLine: true });
+    const client = await import("./client");
+
+    await expect(client.syncDatabase()).resolves.toMatchObject({ workspaceId });
+    expect(mocks.deleteOtherCaches).not.toHaveBeenCalled();
+    expect(mocks.createRxDatabase).toHaveBeenCalledTimes(2);
   });
 
   it("refreshes after an epoch change, handles reset and persists the lower cursor", async () => {
@@ -126,10 +202,15 @@ describe("entity pull reset wiring", () => {
         $: { subscribe: vi.fn(() => subscription) },
       })),
     };
-    mocks.createRxDatabase.mockResolvedValue({
-      addCollections: vi.fn(async () => {}),
-      projections,
-    });
+    const stableDatabase = {
+      addCollections: vi.fn(async () => ({})),
+    };
+    const projectionDatabase = {
+      addCollections: vi.fn(async () => ({ projections })),
+    };
+    mocks.createRxDatabase
+      .mockResolvedValueOnce(stableDatabase)
+      .mockResolvedValueOnce(projectionDatabase);
     const pulls: number[] = [];
     mocks.syncGet.mockImplementation(
       async (path: string, options?: { query?: { after?: number } }) => {

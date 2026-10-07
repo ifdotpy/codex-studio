@@ -76,10 +76,11 @@ export default function PromptInput(p: {
       emptyMessage="No matching skills"
       label={commandQuery !== null ? "Commands" : "Skills"}
       opened={
-        (commandQuery !== null &&
+        !p.modelCommand &&
+        ((commandQuery !== null &&
           commandQuery !== "rename" &&
           dismissedCommand !== `${p.session}:${p.value}`) ||
-        !!skills.range
+          !!skills.range)
       }
       resetKey={commandQuery ?? skills.range?.signature}
       options={

@@ -223,7 +223,7 @@ export const browserExecutablePath =
  *   "fastMode" | "concurrency" | "accountKey" | "cwd" | "worktree" |
  *   "worktreePreparation" | "imageWorkspace" | "imageWorkspaceReady" |
  *   "imageWorkspacePhase" | "imageWorkspaceError" | "imageWorkspaceRepo" |
- *   "imageWorkspaceBaseRepo" | "imageWorkspaceRelative" | "imageWorkspaceStartCommit" |
+ *   "imageWorkspaceBaseRepo" | "imageWorkspaceSubpath" | "imageWorkspaceBaseRef" |
  *   "created" | "updated" | "turnId" | "turnStatus" | "inFlight" | "compactions" |
  *   "tokensUsed" | "contextUsage" | "error" | "tail" | "canSend" | "launcherAlive" |
  *   "empty" | "yoloMode" | "agentMode" | "agentModeRevision" | "agentModeSupported" |
@@ -784,6 +784,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
     response.end(JSON.stringify(value));
   };
   if (url.pathname === "/api/sync/identity") {
+    response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     json(identity);
     return true;
   }
@@ -1120,7 +1121,10 @@ export async function stubEntityState(page, snapshot, contract) {
   const pullState = createMutableEntityPullState();
   reconcileMutableEntityPullState(pullState, currentSnapshot);
   await page.route("**/api/sync/identity", (route) =>
-    route.fulfill({ json: identityResponse }),
+    route.fulfill({
+      json: identityResponse,
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+    }),
   );
   await page.route("**/api/sync/protocol", (route) =>
     route.fulfill({ json: protocolResponse }),
