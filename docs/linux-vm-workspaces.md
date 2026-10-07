@@ -196,7 +196,10 @@ turn result. Studio does not replay that input or create a replacement VM.
 helper owns the VM and socket. Studio has no separate socket or VM process.
 Source archives use the existing Git HEAD and status detector. The first upload
 contains the source tree, Git metadata, the index, and uncommitted files. Later
-uploads contain changes and explicit deletions. Each source has a stable guest
+uploads contain changes and explicit deletions. Index changes include the index
+and a self-contained pack of newly needed Git objects. Objects reachable from
+the preceding upload are excluded. A regression transfers less than 64 KiB
+from a source with a 12 MiB existing object store. Each source has a stable guest
 root. Pending uploads keep their archive, checksum, chunk sequence, and request
 IDs outside the checkout. A retry uses the same content and identities.
 
@@ -206,17 +209,61 @@ The guest runs the maintained native supervisor. Studio uses
 the host client. The existing AppServer handles request ID remap, initialization,
 operation receipts, event ACK, and native thread state. Replay starts after the
 last acknowledged event. The guest returns at most 128 replay events per call.
+The adapter reads oversized event payloads through `eventRead` before it changes
+the cursor. It checks chunk offsets, length, sequence, generation, and JSON.
+The maintained event limit is 256 MiB. It sends no ACK for an incomplete payload.
 A new connection gets the current open receipt. A lost start response keeps its
 original request ID. The host account key stays unchanged. Each Linux worker has
 its own connection ID and native provider. Its disconnect affects that worker.
 
-Codex and Claude credentials use private guest profiles for the selected host
-account. Studio copies Codex `auth.json` and Claude `.credentials.json` (or the
-macOS Keychain credential). It verifies Claude account identity before
-and after the read. Token values stay out of launch arguments and receipts.
-Studio compares credential hashes and checks for host token changes every
-30 seconds while Linux providers exist. Account transfers require the Linux
-workers to be archived first.
+Codex and Claude use private guest profiles for the selected host account.
+The guest never receives an OAuth refresh token. The host owns token refresh.
+Studio checks the host store every 30 seconds while Linux providers exist.
+It requests a host refresh within five minutes of access token expiry.
+Account transfers require the Linux workers to be archived first.
+
+Codex uses the app-server `chatgptAuthTokens` login with an access token and
+account ID. Its guest `auth.json` is empty, which clears earlier copied tokens.
+Studio answers `account/chatgptAuthTokens/refresh` from the selected host account.
+It uses the host AppServer `account/read` refresh path and its native store locks.
+The callback has an eight-second host request limit. A failure returns a clear
+host sign-in error. The guest has no refresh token to rotate.
+An API key account sends only its API key through the login method.
+
+Claude receives a credential file with `accessToken`, `scopes`, and `expiresAt`.
+Optional subscription metadata can also be present. `refreshToken` is omitted.
+A file update lets the running guest CLI reload its access token.
+`CLAUDE_CODE_OAUTH_TOKEN` is not used because that environment value remains fixed
+for the process. An expired guest token gives an authentication error. Resume
+the worker after a successful host token sync. Studio does not replay a turn
+whose provider input outcome is unknown.
+
+When no host Claude process runs, Studio starts an unsubmitted host SDK query
+through `scripts/claude_bridge/refresh-auth.mjs`. The native host CLI performs
+its existing OAuth refresh under its own store locks. The query stays open
+until the refreshed token is saved. It verifies the account before completion.
+It sends no user prompt or model request. A token within 15 seconds of that
+refresh window waits for the held query. Short status probes run outside the
+refresh window. The host operation has a 90-second
+request limit and a bounded cleanup period. Tokens remain out of launch
+arguments, logs, and Studio receipts.
+
+This design assumes refresh token rotation for both providers. Codex
+[rust-v0.160.1 auth manager](https://github.com/openai/codex/blob/rust-v0.160.1/codex-rs/login/src/auth/manager.rs)
+refreshes within five minutes of JWT expiry, after eight days without usable
+expiry metadata, or after an unauthorized response. It saves returned refresh
+tokens and rejects `refresh_token_reused`. Its
+[external token protocol](https://learn.chatgpt.com/docs/app-server#3c-log-in-with-externally-managed-chatgpt-tokens-chatgptauthtokens)
+keeps the guest outside that refresh path.
+Claude Code 2.1.291 on this Mac checks its store file timestamp, refreshes within
+five minutes of expiry or after an unauthorized response, and saves returned
+refresh tokens. Its refresh function returns `no_refresh_token` before the
+network request when the store has no refresh token. These are observations
+of the installed CLI, not an Anthropic rotation guarantee. The
+[Claude environment reference](https://code.claude.com/docs/en/env-vars)
+documents the access-only environment option. Reported host refresh failures
+with a short status process also support keeping the host query open until
+its store write finishes ([Anthropic issue 95822](https://github.com/anthropics/claude-code/issues/95822)).
 
 Custom Claude Keychain profiles use `Claude Code-credentials-` plus the first
 eight SHA256 hex characters of the selected `CLAUDE_CONFIG_DIR` string, without
@@ -246,7 +293,9 @@ provider closes. Studio shutdown detaches providers and keeps their guest
 processes alive.
 
 Native tool catalog replacement stays deferred while the maintained supervisor
-owns the provider. Linux threads never enter host account rollout maintenance.
+owns the provider. Linux threads never enter host account rollout maintenance. Automatic context
+repair records a non-blocking note for Linux workers. Their rollout paths stay
+in the guest. The next turn proceeds without a host rollout read.
 
 `maintenance_report` includes Linux VM disk allocation, disk free space, and
 memory totals when the VM responds. Limits appear in Studio Settings, Linux VM.
@@ -262,7 +311,8 @@ checks require the host helper and guest service from their component branches.
 checks the Studio caller, source deltas, a native Codex model commit, native
 process reuse after a Runtime restart, result fetch, archive, restore, removal,
 and resource reports. Use `--claude` to check a native Claude model turn with
-the signed-in host profile. The test copies credentials and preserves host files.
+the signed-in host profile. The test uses the existing host credential store
+and its refresh locks. It checks that both guest profiles have no refresh token.
 
 Use the state directory and helper path of an already running test VM:
 
@@ -270,6 +320,12 @@ Use the state directory and helper path of an already running test VM:
 python3 scripts/codex_python.py --exec tests/linux-vm-studio-native.py \
   --state-dir /tmp/studio-vm-check --helper /tmp/studio-linux-vm --claude
 ```
+
+`tests/linux-vm-auth-native.py` uses fake tokens and a local HTTPS service.
+It checks an expired Linux Claude token, zero guest OAuth refresh requests,
+an idle host native refresh and store write, and a successful retry after sync.
+It uses no real account token or paid model request. Run it with the same
+`--state-dir` and `--helper` arguments as the Studio caller test.
 
 The test uses a private Studio account registry. It does not start an HTTP
 backend or stop the VM. It removes only the guest workers that it creates.

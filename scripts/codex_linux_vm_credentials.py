@@ -5,8 +5,6 @@ import base64
 import hashlib
 import json
 from pathlib import Path
-import subprocess
-import sys
 
 
 MAX_CREDENTIAL_BYTES = 1024 * 1024
@@ -35,56 +33,30 @@ def _read_file(path):
 
 
 def read_credentials(runtime, account_key):
-    account = runtime.accounts.get(account_key)
+    from codex_linux_vm_auth import account_snapshot, claude_access, codex_access
+    account = account_snapshot(runtime, account_key)
     provider = account.get('provider', 'codex')
     if provider == 'codex':
-        data = _read_file(Path(runtime.accounts.home(account_key)) / 'auth.json')
+        codex_access(runtime, account_key)
+        # Clear any legacy copied credential. External auth is installed through RPC.
+        value = {}
         destination = profile_path(account_key, provider) + '/auth.json'
-        try:
-            value = json.loads(data)
-            if not isinstance(value, dict):
-                raise ValueError()
-        except (ValueError, TypeError) as error:
-            raise ValueError('The Codex credential file is invalid') from error
     elif provider == 'claude':
-        from codex_claude import auth_metadata, subscription_env
-        before = auth_metadata(account, force=True)
-        if before.get('status') != 'ready' or before.get('accountId') != account.get('accountId'):
-            raise ValueError('The Claude account identity changed; refresh the host sign-in')
-        configured = subscription_env(account).get('CLAUDE_CONFIG_DIR')
-        home = Path(configured or Path.home() / '.claude')
-        path = home / '.credentials.json'
-        if path.is_file():
-            data = _read_file(path)
-        elif sys.platform == 'darwin':
-            # Read the selected profile Keychain service. Capture
-            # bytes only; never place the token in arguments, receipts or logs.
-            completed = subprocess.run(['security', 'find-generic-password', '-s',
-                                        claude_keychain_service(configured), '-w'],
-                                       capture_output=True, timeout=10)
-            if completed.returncode or len(completed.stdout) > MAX_CREDENTIAL_BYTES:
-                raise ValueError('The Claude Keychain credential cannot be read')
-            data = completed.stdout.strip()
-        else:
-            raise ValueError('The Claude profile needs a credential file for Linux VM use')
-        try:
-            value = json.loads(data)
-            if not isinstance(value.get('claudeAiOauth', {}).get('accessToken'), str):
-                raise ValueError()
-        except (ValueError, TypeError, AttributeError) as error:
-            raise ValueError('The Claude credential file is invalid') from error
-        after = auth_metadata(account, force=True)
-        if after.get('status') != 'ready' or after.get('accountId') != before.get('accountId'):
-            raise ValueError('The Claude account changed during credential copy')
+        value = {'claudeAiOauth': claude_access(runtime, account_key)}
         destination = profile_path(account_key, provider) + '/.credentials.json'
     else:
         raise ValueError('This provider does not support Linux VM credentials')
+    data = json.dumps(value, sort_keys=True).encode()
     return {'path': destination, 'data': base64.b64encode(data).decode('ascii')}
 
 
 def sync_credentials(runtime, client, account_key, *, previous_hash=None):
     file = read_credentials(runtime, account_key)
-    digest = hashlib.sha256(json.dumps(file, sort_keys=True).encode()).hexdigest()
+    from codex_linux_vm_auth import account_snapshot, codex_access
+    identity = file
+    if account_snapshot(runtime, account_key).get('provider', 'codex') == 'codex':
+        identity = [file, codex_access(runtime, account_key, proactive=False)]
+    digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
     if digest != previous_hash:
         identity = 'credentials:' + hashlib.sha256(account_key.encode()).hexdigest()[:24] + ':' + digest
         client.request('credentials.put', {'files': [file]}, request_id=identity, timeout=15)
@@ -114,6 +86,14 @@ def tick(runtime):
                 try:
                     digest = sync_credentials(runtime, client(runtime), account, previous_hash=hashes.get(account))
                     hashes[account] = digest
+                    from codex_linux_vm_auth import bootstrap_codex
+                    for agent_id, server in list(runtime.__dict__.get('linux_servers', {}).items()):
+                        agent = runtime.agent(agent_id)
+                        if (agent.get('accountKey', 'default') == account
+                                and agent.get('provider', 'codex') == 'codex'
+                                and runtime.__dict__.setdefault('linux_provider_credential_hashes', {}).get(agent_id) != digest):
+                            bootstrap_codex(runtime, server, account)
+                            runtime.linux_provider_credential_hashes[agent_id] = digest
                     runtime.__dict__.setdefault('linux_credential_errors', {}).pop(account, None)
                 except Exception as error:
                     # Keep tokens and file content out of diagnostics.

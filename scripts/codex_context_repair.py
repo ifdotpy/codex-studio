@@ -1885,6 +1885,9 @@ def repair_before_start(rt, agent):
     try:
         with rt.lock, rt.db() as db:
             current = rt.agent(agent['id'], db)
+            if (_identity(current) == _identity(agent)
+                    and _skip_linux_repair(rt, db, current)):
+                return current
             if _identity(current) == _identity(agent) and current.get('provider') == 'claude':
                 assert_context_available(current)
                 return current
@@ -1902,9 +1905,24 @@ def repair_idle(rt, key):
     return _repair(rt, key, None)
 
 
+def _skip_linux_repair(rt, db, agent):
+    if agent.get('environment') != 'linux' or not agent.get('imageWorkspaceReady'):
+        return False
+    # Keep existing uncertain operation holds. Never use a guest path as a host path.
+    assert_context_available(agent)
+    note = ('Automatic context repair is skipped for Linux workers. '
+            'The rollout stays in the guest. The next turn can proceed.')
+    if agent.get('contextRepairNote') != note:
+        agent['contextRepairNote'] = note
+        rt.put(db, 'agents', agent)
+    return True
+
+
 def _repair(rt, key, attempt_id):
     with rt.lock, rt.db() as db:
         a = rt.agent(key, db)
+        if _skip_linux_repair(rt, db, a):
+            return a
         old = a.get('contextRepair') or {}
         assert_context_available(a)
         # This operation rewrites Codex JSONL rollouts. Claude owns its history.

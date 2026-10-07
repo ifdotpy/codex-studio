@@ -121,6 +121,13 @@ def connect_agent(runtime, agent):
     from codex_linux_vm_provider import GuestProcessProxy
     agent_id = agent['id']
     account_key = agent.get('accountKey', 'default')
+    # Host refresh can call Runtime.connect, which also takes start_lock.
+    # Complete it before acquiring that lock for guest process creation.
+    digest = runtime.__dict__.get('linux_credential_hashes', {}).get(account_key)
+    cached = runtime.__dict__.get('linux_servers', {}).get(agent_id)
+    if (cached is None or cached.closed
+            or agent_id in runtime.__dict__.get('offline_linux_agents', set())):
+        digest = sync_credentials(runtime, client(runtime), account_key)
     with runtime.start_lock:
         if runtime.closed:
             raise RuntimeError('Runtime is stopped')
@@ -135,9 +142,9 @@ def connect_agent(runtime, agent):
         # Reconnect must not provision or replace a lost VM while a provider outcome is unknown.
         remote.request('health', timeout=15)
         ensure(runtime, agent)
-        account = runtime.accounts.get(account_key)
+        from codex_linux_vm_auth import account_snapshot
+        account = account_snapshot(runtime, account_key)
         provider = account.get('provider', 'codex')
-        digest = sync_credentials(runtime, remote, account_key)
         runtime.__dict__.setdefault('linux_credential_hashes', {})[account_key] = digest
         profile = '/home/studio/' + profile_path(account_key, provider)
         handle = 'linux-worker:' + agent_id
@@ -184,6 +191,15 @@ def connect_agent(runtime, agent):
             supervisor_monitor_bindings=lambda proxy: runtime.supervisor_monitor_bindings(account_key, connection, proxy),
             supervisor_monitor_result=lambda binding, future: runtime.supervisor_monitor_result(account_key, connection, binding, future))
         servers[agent_id] = server
+        try:
+            if provider == 'codex':
+                from codex_linux_vm_auth import bootstrap_codex
+                bootstrap_codex(runtime, server, account_key)
+            runtime.__dict__.setdefault('linux_provider_credential_hashes', {})[agent_id] = digest
+        except Exception:
+            server.close()
+            servers.pop(agent_id, None)
+            raise
         return server
 
 

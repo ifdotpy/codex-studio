@@ -289,6 +289,10 @@ The guest copy contains Git metadata and uncommitted changes.
 Commit a Linux result on a named branch. The worker result contains the guest
 path and a host fetch command. Fetch writes `FETCH_HEAD`. Review the commit
 before merging. A shell `cd` does not change the stored guest path.
+The guest receives access tokens only. The host owns OAuth refresh.
+If an access token expires before sync, check the host sign-in.
+Resume the worker after a successful token sync. Preserve uncertain input receipts.
+
 Archive retains the guest snapshot. Restore returns the worker paused.
 A VM disconnect does not prove that a native operation failed.
 Preserve its request ID and inspect the result before another operation.

@@ -1,4 +1,5 @@
 """Native guest adapter contracts use a fake guest and no model process."""
+import base64
 import json
 import unittest
 
@@ -42,6 +43,71 @@ class GuestNativeProxy(unittest.TestCase):
     def event(self, sequence, payload, kind='stdout', generation=2):
         return {'sequence': sequence, 'payload': json.dumps(payload),
                 'kind': kind, 'generation': generation}
+
+    def large_event(self, *, sequence=1):
+        payload = json.dumps({'method':'item/agentMessage/delta', 'params':{'delta':'é'*(1024*1024)}}).encode()
+        descriptor = {'sequence':sequence, 'generation':2, 'kind':'stdout',
+                      'payload':None, 'payloadBytes':len(payload)}
+        original = self.client.request
+        def request(method, params, **options):
+            if params['action'] != 'eventRead':
+                return original(method, params, **options)
+            self.client.requests.append((method, params, options))
+            offset = params['offset']
+            data = payload[offset:offset+params['maxBytes']]
+            return {'sequence':sequence, 'generation':2, 'offset':offset,
+                'nextOffset':offset+len(data), 'bytes':len(payload),
+                'data':base64.b64encode(data).decode(), 'eof':offset+len(data)==len(payload)}
+        self.client.request = request
+        return descriptor, payload
+
+    def test_large_next_event_is_complete_before_cursor_or_ack_changes(self):
+        descriptor, payload = self.large_event()
+        self.client.events = [descriptor]
+        sequence, line = self.proxy.next_event()
+        self.assertEqual(sequence,1)
+        self.assertEqual(json.loads(line),json.loads(payload))
+        self.assertEqual(self.proxy.cursor,0)
+        self.assertEqual(self.proxy.read_cursor,1)
+        self.assertEqual([r[1]['offset'] for r in self.client.requests if r[1]['action']=='eventRead'],
+                         list(range(0,len(payload),1024*1024)))
+        self.assertFalse(any(r[1]['action']=='ack' for r in self.client.requests))
+
+    def test_large_replay_keeps_the_whole_event_sequence(self):
+        descriptor, payload = self.large_event()
+        self.client.events = [descriptor]
+        result = self.proxy.call('replay',cursor=0,limit=128)
+        self.assertEqual(result['events'][0]['payload'],payload.decode())
+        self.assertEqual(self.proxy.cursor,0)
+
+    def test_large_replay_has_an_aggregate_allocation_limit(self):
+        self.client.events = [{'payload':None,'payloadBytes':200*1024*1024}]*2
+        with self.assertRaisesRegex(ValueError,'replay exceeds its size limit'):
+            self.proxy.call('replay',cursor=0,limit=128)
+        self.assertEqual([r[1]['action'] for r in self.client.requests],['replay'])
+
+    def test_bad_large_event_chunk_never_advances_or_acknowledges(self):
+        descriptor, _ = self.large_event()
+        original = self.client.request
+        for field, invalid in [('sequence',2),('generation',1),('offset',1),
+                               ('bytes',1),('nextOffset',0),('data','!'),('eof',True)]:
+            def request(method, params, **options):
+                result = original(method, params, **options)
+                if params['action']=='eventRead': result[field]=invalid
+                return result
+            self.client.request=request
+            self.client.events=[dict(descriptor)]
+            with self.subTest(field=field), self.assertRaisesRegex(ValueError,'chunk is invalid'):
+                self.proxy.next_event()
+            self.assertEqual(self.proxy.cursor,0)
+            self.assertEqual(self.proxy.read_cursor,0)
+        self.assertFalse(any(r[1]['action']=='ack' for r in self.client.requests))
+
+    def test_large_event_descriptor_bounds_are_checked_before_reads(self):
+        for size in [0,-1,True,256*1024*1024+1]:
+            with self.subTest(size=size), self.assertRaisesRegex(ValueError,'descriptor is invalid'):
+                self.proxy.hydrate({'payload':None,'payloadBytes':size,'sequence':1,'generation':2})
+        self.assertEqual(self.client.requests,[])
 
     def test_open_preserves_native_initialization_and_generation(self):
         self.assertTrue(self.proxy.resumed)

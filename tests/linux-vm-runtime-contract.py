@@ -97,6 +97,7 @@ class LinuxRuntime(unittest.TestCase):
         self.addCleanup(patch.stopall)
         patch('codex_linux_workspaces.ensure', return_value={'path':str(self.project),'mount':str(self.project)}).start()
         patch('codex_linux_vm_credentials.sync_credentials', return_value='fixture-hash').start()
+        patch('codex_linux_vm_auth.bootstrap_codex').start()
 
     def tearDown(self):
         self.runtime.close()
@@ -117,6 +118,24 @@ class LinuxRuntime(unittest.TestCase):
             worker.update(imageWorkspaceReady=True,imageWorkspacePhase='ready',cwd=str(self.project))
             self.runtime.put(db,'agents',worker)
         return self.runtime.agent(self.worker_id)
+
+    def test_linux_external_token_request_uses_the_host_refresh_path(self):
+        self.spawn()
+        worker = self.ready()
+        server = self.runtime.connect_agent(worker)
+        connection = self.runtime.agent_connection(worker)
+        self.runtime.reply = unittest.mock.Mock()
+        with patch('codex_linux_vm_auth.codex_access',return_value={
+                'type':'chatgptAuthTokens','accessToken':'host-fresh-access',
+                'chatgptAccountId':self.runtime.accounts.get('default')['accountId']}):
+            self.runtime.request({'id':99,'method':'account/chatgptAuthTokens/refresh',
+                'params':{'previousAccountId':self.runtime.accounts.get('default')['accountId']}},
+                'default',connection)
+        result, key, actual_connection = self.runtime.reply.call_args.args
+        self.assertEqual(key,'default')
+        self.assertEqual(actual_connection,connection)
+        self.assertEqual(result['result']['accessToken'],'host-fresh-access')
+        self.assertNotIn('refreshToken',json.dumps(result))
 
     def test_spawn_waits_for_base_without_host_input(self):
         result = self.spawn()

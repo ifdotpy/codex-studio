@@ -129,6 +129,24 @@ class ContextRepair(unittest.TestCase):
             p.stop()
         f.WorkspaceContract.tearDown(self)
 
+    def test_linux_role_manifest_event_does_not_read_guest_rollout_on_host(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.a['id'], db)
+            agent.update(environment='linux', imageWorkspaceReady=True)
+            self.runtime.put(db, 'agents', agent)
+            metadata = {'contextManifest': {'versions': {'roleSkill': 'fixture-role-v1'}}}
+            db.execute('INSERT OR REPLACE INTO runtime_event_meta VALUES (?,?)',
+                       (self.event['id'], json.dumps(metadata)))
+            self.assertTrue(any(event['kind'] == 'studio_role' for event in repair.verified_events(db, agent)))
+        self.server.path = Path('/home/studio/.codex/studio-accounts/fixture/sessions/rollout.jsonl')
+        with patch.object(self.runtime.accounts, 'home', side_effect=AssertionError('Guest path must not enter host filesystem')):
+            result = repair.repair_before_start(self.runtime, agent)
+        self.assertEqual(result['threadId'], agent['threadId'])
+        self.assertIn('rollout stays in the guest', result['contextRepairNote'])
+        self.assertNotIn('contextRepairWait', result)
+        self.assertEqual(self.server.calls, [])
+        self.assertFalse(repair.blocked(result))
+
     def write_records(self):
         self.path.write_text(''.join(json.dumps(r) + '\n' for r in self.records))
 

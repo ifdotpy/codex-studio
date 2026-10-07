@@ -7336,6 +7336,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             from codex_token_rate import token_rates, event_time as token_rate_event_time
             token_rates(self).request_started(account_key, connection_id, thread_id,
                                               message.get("id"), token_rate_event_time(message, message.get("method")) or token_rate_received_at)
+        if (message["method"] == "account/chatgptAuthTokens/refresh"
+                and connection_id in self.__dict__.get("linux_connection_ids", {}).values()):
+            from codex_linux_vm_auth import refresh_request
+            refresh_request(self, message, account_key, connection_id)
+            return
         if message["method"] == "currentTime/read":
             self.reply({"id": message["id"], "result": {"currentTimeAt": int(time.time())}}, account_key, connection_id)
             return

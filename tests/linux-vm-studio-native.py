@@ -57,7 +57,8 @@ def main():
     parser.add_argument('--codex-home', default=str(Path.home() / '.codex'))
     parser.add_argument('--claude', action='store_true')
     args = parser.parse_args()
-    auth = (Path(args.codex_home) / 'auth.json').read_bytes()
+    host_profile = Path(args.codex_home).expanduser().resolve()
+    assert (host_profile / 'auth.json').is_file(), 'The selected host profile is signed out'
     os.environ['CODEX_LINUX_VM_STATE_DIR'] = args.state_dir
     os.environ['CODEX_LINUX_VM_HELPER'] = args.helper
     spec = importlib.util.spec_from_file_location('studio_native_fixture', Path(__file__).with_name('worker-defaults-contract.py'))
@@ -73,11 +74,8 @@ def main():
     metrics = {'stateDir': args.state_dir}
     with tempfile.TemporaryDirectory(prefix='studio-linux-caller-') as name:
         root = Path(name)
-        profile = root / 'profile'
-        profile.mkdir(mode=0o700)
-        (profile / 'auth.json').write_bytes(auth)
-        (profile / 'auth.json').chmod(0o600)
-        os.environ['CODEX_HOME'] = str(profile)
+        # Use the existing host store and its native refresh locks. Never clone a refresh token.
+        os.environ['CODEX_HOME'] = str(host_profile)
         project = root / 'project'
         project.mkdir()
         git(project, 'init', '-b', 'main')
@@ -133,15 +131,24 @@ def main():
             metrics['sourceIndexAndDirtyFiles'] = True
             progress('source index and dirty files')
             (project / 'deleted').unlink()
+            (project / 'tracked').write_text('later-staged\n')
+            git(project, 'add', 'tracked')
             (project / 'tracked').write_text('later\n')
             build_base(runtime, project)
             later = spawn(lead)
             assert command(later, 'cat', 'tracked') == 'later'
+            assert command(later, 'git', 'status', '--porcelain=v2') == git(project, 'status', '--porcelain=v2')
+            assert command(later, 'git', 'diff', '--cached') == git(project, 'diff', '--cached')
+            metrics['deltaPreservesStagedIndex'] = True
             assert command(later, 'python3', '-c', 'from pathlib import Path;print(Path("deleted").exists())') == 'False'
             assert command(worker, 'cat', 'tracked') == 'dirty'
             metrics['sourceDeltaAndSnapshotIsolation'] = True
             progress('source delta and snapshot isolation')
             server = runtime.connect_agent(worker)
+            from codex_linux_vm_credentials import profile_path
+            guest_auth = '/home/studio/' + profile_path('default','codex') + '/auth.json'
+            assert command(worker,'python3','-c','import json,sys;print(json.load(open(sys.argv[1]))=={})',guest_auth) == 'True'
+            metrics['codexGuestHasNoRefreshToken'] = True
             catalog = server.call('model/list', {}, timeout=30)
             selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
             effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
@@ -224,6 +231,10 @@ def main():
                 run_turn(runtime, claude, 'Reply linux-claude-ok. Do not use tools.')
                 history = bridge.call('thread/read', {'threadId':claude['threadId'], 'includeTurns':True}, timeout=30)
                 assert 'linux-claude-ok' in json.dumps(history), 'The Claude reply is missing'
+                guest_auth = '/home/studio/' + profile_path(claude['accountKey'],'claude') + '/.credentials.json'
+                assert command(claude,'python3','-c',
+                    'import json,sys;print("refreshToken" not in json.load(open(sys.argv[1]))["claudeAiOauth"])',guest_auth) == 'True'
+                metrics['claudeGuestHasNoRefreshToken'] = True
                 metrics['claudeNativeModelTurn'] = True
                 progress('native Claude model turn')
         finally:

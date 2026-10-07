@@ -947,6 +947,10 @@ includes the source Git state and uncommitted files. Commit results on a named
 branch. The worker result contains its guest path and a host fetch command.
 Fetch places the result in `FETCH_HEAD`; review it before merging.
 
+The guest receives access tokens only. The host owns OAuth refresh.
+If an access token expires before sync, check the host sign-in.
+Resume the worker after a successful token sync. Preserve uncertain input receipts.
+
 Archive closes an idle guest provider and retains its snapshot. Restore returns
 the worker paused. Studio shutdown keeps native guest processes alive.
 A VM disconnect leaves native outcomes unknown. Do not repeat an uncertain
