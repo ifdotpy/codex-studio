@@ -202,6 +202,13 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(rejected.status_code, 500)
         self.assertEqual(json.loads(bytes(rejected.body)), {"error": "The server could not validate its response"})
 
+    def test_contract_mismatch_fails_open_with_strict_json_and_logs(self) -> None:
+        with self.assertLogs("studio_api.context", level="ERROR") as logs:
+            response = self.context.send(request_for(NumericResponse), {"value": "not-a-number"})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(json.loads(bytes(response.body)), {"value": "not-a-number"})
+        self.assertIn("Response contract mismatch", logs.output[0])
+
     def test_direct_json_encoding_accepts_integers_beyond_python_string_limit(self) -> None:
         value = 10 ** 4_300
         response = self.context.send(request_for(NumericResponse), {"value": 0.0, "integer": value})
@@ -980,8 +987,9 @@ class CoreResponseTests(unittest.TestCase):
             for value, status in (
                 ({"paired": True}, 200),
                 ({"invitation": "signed", "expires": 123, "warning": None}, 200),
-                ({"paired": "true"}, 500),
-                ({"paired": True, "unexpected": 1}, 500),
+                # Contract mismatches fail open with the strict JSON body.
+                ({"paired": "true"}, 200),
+                ({"paired": True, "unexpected": 1}, 200),
                 ({"paired": False}, 200),
             ):
                 response = self.context.send(request, value)
@@ -1027,10 +1035,11 @@ class CoreResponseTests(unittest.TestCase):
             self.assertEqual(bytes(response.body), expected)
 
     def test_output_contract_failure_does_not_claim_not_applied(self) -> None:
-        response = self.context.send(request_for(MessageHistory), [{"id": 1, "text": "hello"}])
+        with self.assertLogs("studio_api.context", level="ERROR"):
+            response = self.context.send(request_for(MessageHistory), [{"id": 1, "text": "hello"}])
         body = json.loads(bytes(response.body))
-        self.assertEqual(response.status_code, 500)
-        self.assertNotIn("outcome", body)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(body, [{"id": 1, "text": "hello"}])
         self.assert_security_headers(response)
 
     def assert_security_headers(self, response: Response) -> None:

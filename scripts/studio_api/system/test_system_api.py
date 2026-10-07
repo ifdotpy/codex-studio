@@ -209,10 +209,13 @@ class SystemApiTests(unittest.TestCase):
         }
         with patch("codex_native_runtime.status", return_value=invalid_native_status), \
                 patch("codex_browser.diagnostics", return_value=None):
-            rejected = client.get("/api/desktop")
+            with self.assertLogs("studio_api.context", level="ERROR"):
+                mismatched = client.get("/api/desktop")
 
-        self.assertEqual(rejected.status_code, 500)
-        self.assertEqual(rejected.json(), {"error": "The server could not validate its response"})
+        # A read with a contract mismatch fails open, so desktop attach and
+        # recovery keep working while the mismatch is logged.
+        self.assertEqual(mismatched.status_code, 200)
+        self.assertEqual(mismatched.json()["nativeRuntime"], invalid_native_status)
         provider_monitor = runtime.provider_version_monitor
         provider_monitor.worker.join(timeout=2)
         self.assertFalse(provider_monitor.worker.is_alive())

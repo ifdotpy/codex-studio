@@ -4,9 +4,10 @@ import json
 import logging
 import math
 import sqlite3
+from copy import deepcopy
 from typing import TYPE_CHECKING, Annotated, Any, cast
 
-from pydantic import AfterValidator, TypeAdapter
+from pydantic import AfterValidator, TypeAdapter, ValidationError
 
 from codex_entity_contracts import (TASK_ARCHIVE_WINDOW,
                                     event_records, monitor_records, task_records)
@@ -257,24 +258,101 @@ def _legacy_chat_agent_alias(payload: str) -> dict[str, JsonValue] | None:
 
 
 def validate_stored_entity_payload(payload: str, collection: str, key: str, deleted: bool) -> None:
-    """Validate persisted live DTOs and the deliberately empty tombstone envelope."""
-    if not deleted:
-        # Old installations could persist a chat row under the agent collection.
-        # Admit only this validated legacy shape so the HTTP pull can return its
-        # response-only tombstone; new writes remain canonical and strict.
-        legacy_chat = _legacy_chat_agent_alias(payload)
-        if legacy_chat is not None:
-            if collection != "agent" or legacy_chat.get("id") != key:
-                raise ValueError("entity identity does not match its row")
-            return
-        entity = validate_entity_payload(payload)
-        if entity.collection != collection or entity.id != key:
-            raise ValueError("entity identity does not match its row")
-        return
+    """Validate the readable envelope and row identity before returning stored data."""
     value = json.loads(payload)
     if (not isinstance(value, dict) or value.get("collection") != collection
-            or value.get("id") != key or not isinstance(value.get("value"), dict)):
-        raise ValueError("invalid entity tombstone")
+            or collection not in _DTO_MODELS or value.get("id") != key
+            or not isinstance(value.get("value"), dict)):
+        raise ValueError("invalid entity envelope")
+    _validate_finite_json(cast(JsonValue, value))
+
+
+def _drop_error_path(value: Any, path: tuple[object, ...]) -> None:
+    """Remove one Pydantic extra-field path from a mutable JSON copy."""
+    if not path:
+        return
+    head, *tail = path
+    if isinstance(value, dict) and isinstance(head, str) and head in value:
+        if tail:
+            _drop_error_path(value[head], tuple(tail))
+        else:
+            del value[head]
+    elif isinstance(value, list) and isinstance(head, int) and 0 <= head < len(value):
+        _drop_error_path(value[head], tuple(tail))
+
+
+def _contract_extra_paths(error: ValidationError) -> tuple[tuple[object, ...], ...]:
+    paths: set[tuple[object, ...]] = set()
+    for item in error.errors():
+        if item.get("type") != "extra_forbidden":
+            continue
+        location = tuple(item.get("loc", ()))
+        # Discriminated-union validation prepends the collection and DTO value.
+        if "value" in location:
+            location = location[location.index("value") + 1:]
+        if location:
+            paths.add(location)
+    return tuple(sorted(paths, key=lambda path: tuple(map(str, path))))
+
+
+def _legacy_chat_alias_envelope(value: Any) -> bool:
+    return (isinstance(value, dict) and value.get("collection") == "agent"
+            and isinstance(value.get("value"), dict)
+            and value["value"].get("kind") == "chat"
+            and isinstance(value.get("id"), str)
+            and value["value"].get("id") == value.get("id"))
+
+
+def response_entity_payload_fail_open(
+    payload: str,
+) -> tuple[str, bool, tuple[str, ...], str | None]:
+    """Drop DTO-forbidden fields, then deliver any remaining DTO mismatch safely."""
+    try:
+        response, deleted = response_entity_payload(payload)
+        return response, deleted, (), None
+    except ValidationError as original_error:
+        envelope = json.loads(payload)
+        if (not isinstance(envelope, dict) or envelope.get("collection") not in _DTO_MODELS
+                or not isinstance(envelope.get("id"), str)
+                or not isinstance(envelope.get("value"), dict)):
+            raise ValueError("invalid entity envelope") from original_error
+        _validate_finite_json(cast(JsonValue, envelope))
+        deleted = _legacy_chat_alias_envelope(envelope)
+        candidate = cast(dict[str, Any], deepcopy(envelope))
+        # Envelope fields are closed too. Strip any extra root keys before
+        # applying DTO-specific error paths, so no private data crosses the API.
+        envelope_extras = tuple(key for key in candidate if key not in {"collection", "id", "value"})
+        for key in envelope_extras:
+            del candidate[key]
+
+        paths = _contract_extra_paths(original_error)
+        if deleted:
+            # The union adapter reports a legacy alias through its branch DTO;
+            # remove forbidden fields from the value itself using that DTO.
+            try:
+                ChatEntityDto.model_validate(candidate["value"])
+            except ValidationError as alias_error:
+                paths = tuple(dict.fromkeys((*paths, *_contract_extra_paths(alias_error))))
+        for path in paths:
+            _drop_error_path(candidate["value"], path)
+        try:
+            if deleted:
+                ChatEntityDto.model_validate(candidate["value"])
+            else:
+                _SYNC_ENTITY_PAYLOAD_ADAPTER.validate_python(candidate)
+            remaining = None
+        except ValidationError as error:
+            remaining = "; ".join(
+                f"{'.'.join(str(part) for part in item.get('loc', ())) or '<entity>'} "
+                f"({item.get('type', 'validation_error')}): {item.get('msg', 'invalid value')}"
+                for item in error.errors(include_input=False, include_context=False, include_url=False)
+            )[:4000]
+        dropped_names = tuple(sorted({
+            ".".join(str(part) for part in path if isinstance(part, str))
+            for path in (*paths, *((key,) for key in envelope_extras))
+        }))
+        encoded = json.dumps(candidate, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+        return encoded, deleted, dropped_names, remaining
 
 
 def response_entity_payload(payload: str) -> tuple[str, bool]:

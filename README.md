@@ -288,6 +288,10 @@ is not guaranteed. Keep the page open for voice.
 
 The chat entity projection excludes work result histories. The work view loads
 those histories through its existing API. Renderer state uses sync entities;
+entity pulls skip and report unreadable stored envelopes, while DTO mismatches
+omit forbidden fields and return the remaining entity so one bad row cannot
+block later updates. Known fields with invalid values are reported and passed
+through for compatibility with the renderer's envelope-level row guard.
 the old `/api/state` endpoint and `state` / `state:chat` pull scopes were removed
 in the pull request that completed the move to sync entities (round 3),
 `#11`. One shared protocol-3 event stream tells

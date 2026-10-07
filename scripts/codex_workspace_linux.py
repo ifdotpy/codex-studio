@@ -12,7 +12,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Iterable
+from collections.abc import Callable, Iterable
 
 from codex_records import JsonObject
 from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
@@ -63,7 +63,8 @@ def _relative_excludes(root: Path, excludes: Iterable[str | Path]) -> set[Path]:
 
 
 def _copy_folder(source: Path, destination: Path,
-                 excludes: Iterable[str | Path] = ()) -> None:
+                 excludes: Iterable[str | Path] = (), *,
+                 check: Callable[[], None] | None = None) -> None:
     """Copy a folder tree with rsync and the requested folder exclusions."""
     source = source.resolve()
     if destination.exists():
@@ -77,7 +78,33 @@ def _copy_folder(source: Path, destination: Path,
     for path in sorted(excluded, key=lambda item: item.as_posix()):
         relative = "" if path == Path(".") else path.as_posix()
         args.append(f"--exclude=/{relative}/***")
-    _run([*args, str(source) + "/", str(destination) + "/"])
+    command = [*args, str(source) + "/", str(destination) + "/"]
+    if check:
+        check()
+    process = subprocess.Popen(command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+    try:
+        while process.poll() is None:
+            if check:
+                check()
+            try:
+                process.wait(timeout=0.25)
+            except subprocess.TimeoutExpired:
+                continue
+        if check:
+            check()
+        stderr = process.communicate(timeout=5)[1]
+    except BaseException:
+        if process.poll() is None:
+            process.terminate()
+        try:
+            process.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait()
+        raise
+    if process.returncode:
+        raise RuntimeError(f"Command failed ({process.returncode}): {command!r}: "
+                           f"{stderr.decode(errors='replace').strip()}")
 
 
 def _namespace_state_path() -> Path:
@@ -168,8 +195,9 @@ class Backend:
         return {"root": repo, "token": None, "versionPath": staging_path}
 
     def copy_base_tree(self, repo_root: Path, destination: Path, *,
-                       excludes: tuple[str, ...]) -> None:
-        _copy_folder(Path(repo_root), Path(destination), excludes)
+                       excludes: tuple[str, ...],
+                       check: Callable[[], None] | None = None) -> None:
+        _copy_folder(Path(repo_root), Path(destination), excludes, check=check)
 
     def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging:
         staging_path = Path(staging["versionPath"]).resolve()

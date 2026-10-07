@@ -26,6 +26,10 @@ if not is_isolated:
     os.environ[TEST_WORKSPACE_STORE_ENV] = TEST_WORKSPACE_STORE
     atexit.register(shutil.rmtree, TEST_WORKSPACE_STORE, ignore_errors=True)
 os.environ["CODEX_WORKSPACE_STORE"] = TEST_WORKSPACE_STORE
+# Test stores hold tiny images. The production free-space floors would make
+# every test fail on a nearly full disk, so tests opt in to them explicitly.
+os.environ.setdefault("CODEX_WORKSPACE_MIN_FREE_BYTES", "0")
+os.environ.setdefault("CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES", "0")
 
 
 def isolate_supervisor_environment():

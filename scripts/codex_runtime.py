@@ -1785,6 +1785,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if server_factory is AppServer:
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
+            self.resume_read_only_image_bases()
         except BaseException as error:
             self._cleanup_failed_initialization(error)
             raise
@@ -5101,6 +5102,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     self._image_base_callback_agents.discard(agent_id)
             raise
 
+    def resume_read_only_image_bases(self):
+        with self.lock, self.read_db() as db:
+            pending = [
+                (agent.get("imageWorkspaceRepo"), agent["id"])
+                for agent in self.records(db, "agents")
+                if (not agent.get("deletedAt") and agent.get("imageWorkspace")
+                    and not agent.get("imageWorkspaceReady")
+                    and agent.get("imageWorkspacePhase") == "read_only")
+            ]
+        for repo, agent_id in pending:
+            try:
+                self.start_image_base(repo, agent_id)
+            except Exception as error:
+                self.pool.submit(self.image_base_completed, agent_id,
+                                 {"state": "failed", "error": str(error)})
+
     def worker_spawn_repository(self, actor, directory):
         prefix = ()
         if actor.get("imageWorkspaceReady"):
@@ -5126,6 +5143,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if status.get("state") != "ready":
                     message = status.get("error") or "Image workspace base build failed"
                     agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                                 imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(message)[:1200],
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
                                  worktreeWarning=None, error=None)
@@ -5136,6 +5154,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     notice_text = ("[Studio workspace fallback] The image workspace could not start: "
                                    + str(message)[:800] + ". " + fallback + " "
                                    "This work remains read-only until the next turn starts.")
+                    self.parent_event(db, agent, "image-workspace-fallback", notice_text,
+                                      recovery=True)
                     self.pool.submit(self._send_image_workspace_notice, agent_id, notice_text,
                                      "image-workspace-fallback:" + agent_id)
                     return
@@ -5159,6 +5179,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 else:
                     current.update(cwd=str(cwd), branch=None,
                                    imageWorkspaceReady=True, imageWorkspacePhase="ready",
+                                   imageWorkspaceBaseState="ready",
                                    imageWorkspaceMount=workspace["mount"],
                                    imageWorkspaceCreatedAt=copied_at)
                     self.loaded.discard(agent_id)
@@ -5185,6 +5206,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = self.agent(agent_id, db)
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
                     agent.update(imageWorkspace=False, imageWorkspacePhase="fallback",
+                                 imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(error)[:1200],
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
                                  worktreeWarning=None, error=None)
@@ -5194,8 +5216,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             fallback = ("Studio will create a Git worktree." if agent.get("imageWorkspaceHasGit")
                         else "Studio will use the original folder.")
             self.pool.submit(self._send_image_workspace_notice, agent_id,
-                             "[Studio workspace fallback] Image workspace setup failed. " + fallback,
+                             "[Studio workspace fallback] Image workspace setup failed: "
+                             + str(error)[:800] + ". " + fallback,
                              "image-workspace-fallback:" + agent_id)
+            with self.lock, self.db() as db:
+                current = self.agent(agent_id, db)
+                self.parent_event(db, current, "image-workspace-fallback",
+                                  "[Studio workspace fallback] Image workspace setup failed: "
+                                  + str(error)[:800] + ". " + fallback,
+                                  recovery=True)
 
     def _send_image_workspace_notice(self, agent_id, text, message_id):
         try:
@@ -6717,13 +6746,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @staticmethod
     def image_workspace_summary(agent):
-        if not agent.get("imageWorkspace"):
+        phase = agent.get("imageWorkspacePhase")
+        if not agent.get("imageWorkspace") and phase != "fallback":
             return None
         created = agent.get("imageWorkspaceCreatedAt")
         taken_at = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created))
                     if created else None)
-        return {"path": agent.get("cwd"), "source": agent.get("imageWorkspaceRepo"),
-                "takenAt": taken_at, "includesUncommittedChanges": True}
+        result = {"path": agent.get("cwd"), "source": agent.get("imageWorkspaceRepo"),
+                  "state": (agent.get("imageWorkspaceBaseState")
+                            or ("ready" if agent.get("imageWorkspaceReady")
+                                else "building" if phase == "read_only" else phase)),
+                  "takenAt": taken_at, "includesUncommittedChanges": True}
+        if agent.get("imageWorkspaceError"):
+            result["error"] = agent["imageWorkspaceError"]
+        return result
 
     def child_stopped_event(self, db, a, status, reason, marker, *, requested_by_lead=False):
         """Save one parent event for a worker stop that will not continue by itself."""
@@ -7813,7 +7849,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  "call orchestration_task action=submit task_id=" + w["id"] + " with result, checks and revision.")
                     self.enqueue(db, child, "user", text, child["id"] + ":initial")
             value = {"requestId": key, "agents": [{**{k: c[k] for k in ("id", "name", "status", "model", "effort", "fastMode", "accountKey", "provider", "cwd", "worktree")},
-                                                  "workspace": ("image" if c.get("imageWorkspace") else "worktree" if c.get("worktree") else "shared"),  # type: ignore[call-arg]  # typed-update
+                                                  "workspace": ("image" if c.get("imageWorkspace") else "worktree" if c.get("worktree") else "shared"),
+                                                  **({"workspaceState": ("building" if not c.get("imageWorkspaceReady")
+                                                                          else "ready")}
+                                                     if c.get("imageWorkspace") else {}),
+                                                  **({"workspaceError": c["imageWorkspaceError"]}
+                                                     if c.get("imageWorkspaceError") else {}),
                                                   **({"baseRef": c["workerBaseRef"], "baseCommit": c["workerBaseCommit"]}
                                                      if c.get("workerBaseCommit") else {}),
                                                   **({"taskId": s["task_id"]} if "task_id" in s else {}),

@@ -12,7 +12,7 @@ import subprocess
 import sys
 import threading
 import time
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from subprocess import CompletedProcess
@@ -70,12 +70,15 @@ def _device_for_mount(mount: str | Path) -> str | None:
     return None
 
 
-def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path] = ()) -> None:
+def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path] = (), *,
+                        check: Callable[[], None] | None = None) -> None:
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
     units: list[list[str]] = []
 
     def partition(directory: str | Path, depth: int = 0) -> None:
+        if check:
+            check()
         relative = Path(directory)
         absolute = source / relative
         entries = sorted(absolute.iterdir(), key=lambda path: path.name)
@@ -112,6 +115,8 @@ def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path]
     def copy_shard(names):  # type: (list[str]) -> None
         if not names:
             return
+        if check:
+            check()
         # BSD tar accepts path operands and excludes relative to its cwd.
         command = ['tar', '-C', str(source), '-cf', '-', '--no-mac-metadata']
         for relative in exclusions:
@@ -120,13 +125,44 @@ def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path]
                 command.extend(['--exclude', relative, '--exclude', relative + '/*'])
         command.extend(['--', *names])
         producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        assert producer.stdout is not None
-        consumer = subprocess.run(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
-                                  capture_output=True, timeout=1800)
-        producer.stdout.close()
-        stderr = producer.communicate(timeout=1800)[1]
+        consumer: subprocess.Popen[bytes] | None = None
+        try:
+            assert producer.stdout is not None
+            consumer = subprocess.Popen(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
+                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            producer.stdout.close()
+            started = time.monotonic()
+            while producer.poll() is None or consumer.poll() is None:
+                if check:
+                    check()
+                if time.monotonic() - started > 1800:
+                    raise TimeoutError('Image base copy shard exceeded 30 minutes')
+                time.sleep(0.25)
+            if check:
+                check()
+            producer_stderr = producer.communicate(timeout=5)[1]
+            assert consumer is not None
+            consumer_stderr = consumer.communicate(timeout=5)[1]
+        except BaseException:
+            if producer.stdout:
+                producer.stdout.close()
+            for process in (producer, consumer):
+                if process is None:
+                    continue
+                if process.poll() is None:
+                    process.terminate()
+            for process in (producer, consumer):
+                if process is None:
+                    continue
+                try:
+                    process.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait()
+            raise
+        assert consumer is not None
         if producer.returncode or consumer.returncode:
-            raise RuntimeError((stderr + consumer.stderr).decode(errors='replace')[-3000:])
+            raise RuntimeError((producer_stderr + consumer_stderr).decode(errors='replace')[-3000:])
 
     with ThreadPoolExecutor(max_workers=len(shards), thread_name_prefix='studio-base-tar') as pool:
         futures = [pool.submit(copy_shard, names) for names in shards if names]
@@ -412,8 +448,9 @@ class Backend:
         return {'root': mount / 'repo', 'image': image, 'mount': mount,
                 'versionPath': version_path, 'token': token, 'version': version}
 
-    def copy_base_tree(self, repo_root: Path, destination: Path, *, excludes: tuple[str, ...] = ()) -> None:
-        _copy_tree_parallel(Path(repo_root).resolve(), Path(destination), excludes)
+    def copy_base_tree(self, repo_root: Path, destination: Path, *, excludes: tuple[str, ...] = (),
+                       check: Callable[[], None] | None = None) -> None:
+        _copy_tree_parallel(Path(repo_root).resolve(), Path(destination), excludes, check=check)
 
     def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging:
         mount = Path(staging['mount'])

@@ -1028,3 +1028,42 @@ it("bounds retained tombstones after deletes and missing rows", () => {
   assert.equal(omitted.rows.has("entity:agent:a0"), true);
   assert.equal(omitted.rows.has("entity:agent:a4096"), false);
 });
+
+it("keeps extra and wrong-typed known DTO fields after envelope validation", () => {
+  const state = emptyEntityProjection();
+  const snapshot = applyEntityRows(
+    state,
+    [
+      entityRow(
+        "agent",
+        "extra",
+        {
+          id: "extra",
+          kind: "agent",
+          name: "Worker",
+          unknownPrivateLookingField: "retained",
+        },
+        1,
+      ),
+      entityRow(
+        "agent",
+        "wrong-type",
+        {
+          id: "wrong-type",
+          kind: "agent",
+          name: 42,
+        },
+        2,
+      ),
+    ],
+    true,
+  );
+  assert.equal(snapshot.runtime.agents.length, 2);
+  assert.equal(
+    snapshot.runtime.agents[0].unknownPrivateLookingField,
+    "retained",
+  );
+  assert.equal(snapshot.runtime.agents[1].name, 42);
+  assert.equal(state.rows.get("entity:agent:extra").seq, 1);
+  assert.equal(state.rows.get("entity:agent:wrong-type").seq, 2);
+});

@@ -426,7 +426,6 @@ class SyncRouterTests(unittest.TestCase):
         initial = store.pull("state:entities:v1", fresh=True)
         payloads = (
             ("agent", "before", {"id": "before", "kind": "agent", "name": "Before"}),
-            ("agent", "bad", {"id": "bad", "kind": "agent", "name": 42}),
             ("agent", "after", {"id": "after", "kind": "agent", "name": "After"}),
         )
         with connect() as db:
@@ -437,6 +436,19 @@ class SyncRouterTests(unittest.TestCase):
                 db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
                               VALUES (?,?,?,?,?,0)""",
                            (collection, key, seq, digest, payload))
+            for key, raw in (("bad-json", "not-json"), ("wrong-root", '["agent"]'),
+                             ("missing-id", '{"collection":"agent","value":{}}')):
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES ('agent',?,?,?, ?,0)""",
+                           (key, seq, "malformed", raw))
+            after, digest, _ = encoded("agent", "after-malformed", {
+                "id": "after-malformed", "kind": "agent", "name": "After malformed",
+            })
+            seq += 1
+            db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                          VALUES ('agent','after-malformed',?,?,?,0)""",
+                       (seq, digest, after))
             db.commit()
         context.store = store
         with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
@@ -447,10 +459,101 @@ class SyncRouterTests(unittest.TestCase):
         body = response.json()
         ids = [document["id"] for document in body["documents"]]
         self.assertIn("entity:agent:before", ids)
-        self.assertNotIn("entity:agent:bad", ids)
-        self.assertIn("entity:agent:after", ids)
+        for malformed in ("bad-json", "wrong-root", "missing-id"):
+            self.assertNotIn(f"entity:agent:{malformed}", ids)
+        self.assertIn("entity:agent:after-malformed", ids)
         self.assertEqual(body["checkpoint"]["seq"], seq)
-        self.assertEqual(len(captured.records), 1)
+        self.assertEqual(len(captured.records), 3)
+
+    def test_entity_pull_strips_extras_but_delivers_bad_dto_and_private_fields(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        entries = [
+            ("agent", "extra", {"id": "extra", "kind": "agent", "name": "Worker",
+                                  "accountHistory": [{"secret": "agent-private"}]}, False),
+            ("agent", "wrong-type", {"id": "wrong-type", "kind": "agent", "name": 42,
+                                       "accountHistory": [{"secret": "wrong-private"}]}, False),
+            ("work", "work-extra", {"id": "work-extra", "archive": {"status": "kept"},
+                                     "archiveIntent": {"token": "work-private"}}, False),
+            ("agent", "tombstone-extra", {"id": "tombstone-extra", "kind": "agent",
+                                           "accountHistory": [{"secret": "tombstone-private"}]}, True),
+        ]
+        with connect() as db:
+            seq = max_seq(db)
+            for collection, key, value, deleted in entries:
+                payload, digest, _ = encoded(collection, key, value)
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,?,?)""",
+                           (collection, key, seq, digest, payload, int(deleted)))
+            db.commit()
+        context.store = store
+        with self.assertLogs("studio_api.sync.router", level="WARNING") as captured:
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        documents = {row["id"]: row for row in response.json()["documents"]}
+        self.assertEqual(set(documents), {f"entity:{collection}:{key}" for collection, key, _, _ in entries})
+        self.assertNotIn("accountHistory", json.loads(documents["entity:agent:extra"]["payload"])["value"])
+        wrong_type = json.loads(documents["entity:agent:wrong-type"]["payload"])["value"]
+        self.assertEqual(wrong_type["name"], 42)
+        self.assertNotIn("accountHistory", wrong_type)
+        work = json.loads(documents["entity:work:work-extra"]["payload"])["value"]
+        self.assertEqual(work["archive"], {"status": "kept"})
+        self.assertNotIn("archiveIntent", work)
+        tombstone = documents["entity:agent:tombstone-extra"]
+        self.assertTrue(tombstone["_deleted"])
+        self.assertNotIn("accountHistory", json.loads(tombstone["payload"])["value"])
+        self.assertEqual(response.json()["checkpoint"]["seq"], seq)
+        log_text = "\n".join(captured.output)
+        self.assertIn("accountHistory", log_text)
+        self.assertIn("archiveIntent", log_text)
+        for secret in ("agent-private", "wrong-private", "work-private", "tombstone-private"):
+            self.assertNotIn(secret, log_text)
+        self.assertNotIn("42", log_text)
+        self.assertNotIn("agent-private", response.text)
+        self.assertNotIn("wrong-private", response.text)
+        self.assertNotIn("work-private", response.text)
+        self.assertNotIn("tombstone-private", response.text)
+
+    def test_entity_pull_fails_open_and_logs_invalid_public_data(self) -> None:
+        context = ContextStub()
+        payload = json.dumps({"collection": "agent", "id": "a", "value": {
+            "id": "a", "kind": "agent", "name": "A", "unrecognized": "secret",
+        }})
+        later = json.dumps({"collection": "agent", "id": "b", "value": {
+            "id": "b", "kind": "agent", "name": "B",
+        }})
+        projection = {"workspaceId": "workspace-a", "documents": [
+            {"id": "entity:agent:a", "seq": 1, "_deleted": False, "payload": payload},
+            {"id": "entity:agent:b", "seq": 2, "_deleted": False, "payload": later},
+        ], "checkpoint": {"seq": 2}, "maxSeq": 2}
+        with patch.object(context.store, "pull", return_value=projection), \
+                self.assertLogs("studio_api.sync.router", level="WARNING") as logs:
+            response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
+        self.assertEqual(response.status_code, 200)
+        rows = response.json()["documents"]
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("unrecognized", json.loads(rows[0]["payload"])["value"])
+        self.assertEqual(rows[1]["payload"], later)
+        self.assertFalse(rows[0]["_deleted"])
+        self.assertIn("entity:agent:a", logs.output[0])
+        self.assertIn("unrecognized", logs.output[0])
+        self.assertNotIn("secret", logs.output[0])
 
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()

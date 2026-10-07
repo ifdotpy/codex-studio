@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
@@ -211,16 +212,45 @@ def create_router(context: ApiContext) -> APIRouter:
         priority_id = _first(request, "priorityId")
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
-        for document in projection.get("documents", []):
-            if scope == "state:entities:v1" and not document.get("_deleted"):
-                from codex_sync_entities import response_entity_payload
+        if scope == "state:entities:v1":
+            from codex_sync_entities import (
+                _report_bad_entity,
+                response_entity_payload_fail_open,
+            )
 
+            valid_documents: list[dict[str, object]] = []
+            for document in projection.get("documents", []):
                 payload = document.get("payload")
+                row_id = str(document.get("id", ""))
                 if not isinstance(payload, str):
-                    return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
-                # SyncStore already skipped and reported malformed persisted rows;
-                # this projection only retires a validated historical chat alias.
-                document["payload"], document["_deleted"] = response_entity_payload(payload)
+                    _report_bad_entity("response", row_id, TypeError("payload is not a string"))
+                    continue
+                was_deleted = bool(document.get("_deleted"))
+                try:
+                    # SyncStore rejects unreadable envelopes. For readable rows,
+                    # strip DTO extras but deliver other mismatches so one stale
+                    # row cannot block the checkpoint or later entity updates.
+                    (document["payload"], alias_deleted, dropped_paths,
+                     remaining_mismatch) = response_entity_payload_fail_open(payload)
+                except (ValueError, TypeError) as error:
+                    # SyncStore skips unreadable envelopes before they reach this
+                    # route; retain the guard for alternate stores and test doubles.
+                    _report_bad_entity("response", row_id, error)
+                    continue
+                document["_deleted"] = was_deleted or alias_deleted
+                if dropped_paths:
+                    logging.getLogger(__name__).warning(
+                        "Sync entity contract extras removed for %s: %s",
+                        row_id, ", ".join(dropped_paths),
+                    )
+                if remaining_mismatch:
+                    logging.getLogger(__name__).error(
+                        "Sync entity contract mismatch for %s: %s",
+                        row_id, remaining_mismatch,
+                    )
+                valid_documents.append(document)
+            if "documents" in projection:
+                projection["documents"] = valid_documents
         return context.send(request, {**projection, "generation": store.generation()})
 
     pull_route = router.routes[-1]
