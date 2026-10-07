@@ -466,6 +466,24 @@ class WorkspaceCopyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, '4 free, 5 required'):
             images.create_workspace(self.folder, 'low-space-agent')
         self.assertFalse(images._agent_state_path('low-space-agent').exists())
+    def test_stale_building_base_is_restarted(self):
+        key = images._repo_key(self.folder)
+        state_path = images._base_state_path(key)
+        state = {
+            'schema': 2, 'state': 'building', 'changeDetector': 'git-v1',
+            'repoRoot': str(self.folder), 'repoKey': key, 'version': 'v-stale',
+            'builderPid': os.getpid() + 1,
+        }
+        images._write_json(state_path, {**state, 'builderPid': os.getpid()})
+        self.assertEqual(images.base_status(self.folder)['state'], 'building')
+        images._write_json(state_path, state)
+        self.assertEqual(images.base_status(self.folder)['state'], 'missing')
+
+        done = threading.Event()
+        results = []
+        images.start_base_build(self.folder, lambda value: (results.append(value), done.set()))
+        self.assertTrue(done.wait(30), 'stale base build did not restart')
+        self.assertEqual(results[-1]['state'], 'ready', results[-1])
 
     def test_interrupted_create_uses_reserved_base_after_refresh(self):
         self.build_base()

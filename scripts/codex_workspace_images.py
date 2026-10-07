@@ -789,6 +789,8 @@ def base_status(root) -> dict[str, Any]:
     state = _read_json(_base_state_path(_repo_key(folder)), {})
     if not state or state.get('schema') != 2 or state.get('changeDetector') != 'git-v1':
         return {'state': 'missing', 'version': None, 'error': None}
+    if state.get('state') == 'building' and state.get('builderPid') != os.getpid():
+        return {'state': 'missing', 'version': None, 'error': None}
     return {key: state.get(key) for key in ('state', 'version', 'error')}
 
 
@@ -902,7 +904,9 @@ def _build_base(root: Path, key: str, refresh_from=None):
                 if refresh_from is None:
                     _write_json(_base_state_path(key), {
                         'schema': 2, 'state': 'building', 'repoRoot': str(root), 'repoKey': key,
-                        'version': version, 'error': None, 'startedAt': time.time(),
+                        'changeDetector': 'git-v1', 'version': version,
+                        'error': None, 'startedAt': time.time(),
+                        'builderPid': os.getpid(),
                     })
                 else:
                     prior['refreshingVersion'] = version
