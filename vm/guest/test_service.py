@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import fcntl
 import hashlib
 import io
 import json
@@ -18,7 +19,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import GuestError, process_identity
+from common import GuestError, MAX_LINE, process_identity
 from service import Service
 
 
@@ -265,7 +266,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(GuestError):
             await self.call("credentials.put", {"files": [{"path": "link/auth", "data": encoded(b"bad")}]})
 
-    async def upload(self, identity, data, *, mode="full", deletes=()):
+    async def stage_upload(self, identity, data, *, mode="full", deletes=()):
         root = self.service.projects / "repo"
         params = {"uploadId": identity, "root": str(root), "totalBytes": len(data),
                   "sha256": hashlib.sha256(data).hexdigest(), "mode": mode, "deletePaths": list(deletes)}
@@ -274,7 +275,137 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
             chunk = {"uploadId": identity, "seq": sequence, "data": encoded(data[offset:offset + 4096])}
             await self.call("upload.chunk", chunk)
             await self.call("upload.chunk", chunk)
+        return root
+
+    async def upload(self, identity, data, *, mode="full", deletes=()):
+        await self.stage_upload(identity, data, mode=mode, deletes=deletes)
         return await self.call("upload.commit", {"uploadId": identity})
+
+    async def test_upload_retry_after_extraction_is_killed_mid_file(self):
+        class Zeros:
+            def read(self, count):
+                return b"0" * count
+
+        data = io.BytesIO()
+        size = 256 * 1024 * 1024
+        with tarfile.open(fileobj=data, mode="w:gz") as output:
+            item = tarfile.TarInfo("large")
+            item.size = size
+            output.addfile(item, Zeros())
+        data = data.getvalue()
+        root = await self.stage_upload("interrupted", data)
+        directory = self.service.uploads.path / "interrupted"
+        staging = directory / "expanded"
+        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("upload.py")),
+            str(directory / "tree.tar"), str(staging), hashlib.sha256(data).hexdigest(),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL, env=self.service.environment)
+        try:
+            deadline = asyncio.get_running_loop().time() + 10
+            partial = staging / "large"
+            while not partial.exists() or not partial.stat().st_size:
+                self.assertIsNone(process.returncode)
+                self.assertLess(asyncio.get_running_loop().time(), deadline)
+                await asyncio.sleep(0.001)
+            process.kill()
+            await asyncio.wait_for(process.wait(), 5)
+            self.assertGreater(partial.stat().st_size, 0)
+            self.assertLess(partial.stat().st_size, size)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await asyncio.wait_for(process.wait(), 5)
+        self.assertEqual(self.service.uploads.row("interrupted")[5], "receiving")
+        result = await self.call("upload.commit", {"uploadId": "interrupted"})
+        self.assertEqual(result["state"], "applied")
+        self.assertEqual((root / "large").stat().st_size, size)
+        with (root / "large").open("rb") as source:
+            self.assertEqual(source.read(8), b"00000000")
+        modified = (root / "large").stat().st_mtime_ns
+        self.assertEqual(await self.call("upload.commit", {"uploadId": "interrupted"}), result)
+        self.assertEqual((root / "large").stat().st_mtime_ns, modified)
+
+    async def test_upload_retry_does_not_remove_a_live_extraction(self):
+        await self.stage_upload("locked", archive({"file": b"new"}))
+        directory = self.service.uploads.path / "locked"
+        staging = directory / "expanded"
+        staging.mkdir()
+        (staging / "partial").write_bytes(b"owned")
+        with (directory / "extract.lock").open("a+") as lease:
+            fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(GuestError) as error:
+                await self.call("upload.commit", {"uploadId": "locked"})
+            self.assertEqual(error.exception.code, "busy")
+            self.assertEqual((staging / "partial").read_bytes(), b"owned")
+        self.assertEqual((await self.call("upload.commit", {"uploadId": "locked"}))["state"], "applied")
+
+    async def test_compressed_upload_reserves_expanded_space_before_apply(self):
+        data = io.BytesIO()
+        size = 32 * 1024 * 1024
+        with tarfile.open(fileobj=data, mode="w:gz") as output:
+            item = tarfile.TarInfo("large")
+            item.size = size
+            output.addfile(item, io.BytesIO(b"0" * size))
+        data = data.getvalue()
+        root = await self.stage_upload("space", data)
+        self.assertLess(len(data), size // 100)
+        with patch("service.tree_space", side_effect=GuestError("busy", "The data disk has insufficient free space")) as floor:
+            with self.assertRaises(GuestError) as error:
+                await self.call("upload.commit", {"uploadId": "space"})
+            self.assertEqual(error.exception.code, "busy")
+            floor.assert_called_once_with(self.service.projects, size)
+        self.assertFalse(root.exists())
+        self.assertFalse((self.service.uploads.path / "space" / "expanded").exists())
+        self.assertEqual(self.service.uploads.row("space")[5], "receiving")
+        self.assertEqual((await self.call("upload.commit", {"uploadId": "space"}))["state"], "applied")
+
+    async def test_upload_apply_aborts_and_cleans_when_free_space_crosses_floor(self):
+        from upload_apply import apply_tree
+        staging = self.root / "expanded"
+        staging.mkdir()
+        (staging / "source").write_bytes(b"source")
+        root = self.root / "destination"
+        root.mkdir()
+        (root / "existing").write_bytes(b"keep")
+        executable = self.root / "bin"
+        executable.mkdir()
+        marker = self.home / "rsync-pid"
+        fixture = executable / "rsync"
+        fixture.write_text(f"#!{sys.executable}\nimport os,pathlib,sys,time\np=pathlib.Path(next(a.split('=',1)[1] for a in sys.argv if a.startswith('--temp-dir=')))\n(p/'partial').write_bytes(b'partial')\npathlib.Path({str(marker)!r}).write_text(str(os.getpid()))\ntime.sleep(60)\n")
+        fixture.chmod(0o700)
+
+        def floor(path, required=0):
+            if marker.exists():
+                raise GuestError("busy", "The data disk has insufficient free space")
+
+        with patch("upload_apply.tree_space", side_effect=floor), patch.dict(os.environ, {"PATH": str(executable)}):
+            with self.assertRaises(GuestError) as error:
+                await asyncio.to_thread(apply_tree, staging, root, 6, "full")
+        self.assertEqual(error.exception.code, "outcome_unknown")
+        self.assertIn("free-space floor", str(error.exception))
+        self.assertIsNone(process_identity(int(marker.read_text())))
+        self.assertFalse((self.root / "rsync-temp").exists())
+        self.assertFalse(staging.exists())
+        self.assertEqual((root / "existing").read_bytes(), b"keep")
+
+    async def test_upload_apply_without_a_response_is_unknown_and_not_repeated(self):
+        await self.stage_upload("lost-apply", archive({"source": b"new"}))
+        worker = self.service.worker
+
+        async def interrupted(script, *args, **kwargs):
+            if script == "upload_apply.py":
+                return 247, b""
+            return await worker(script, *args, **kwargs)
+
+        with patch.object(self.service, "worker", side_effect=interrupted):
+            with self.assertRaises(GuestError) as error:
+                await self.call("upload.commit", {"uploadId": "lost-apply"})
+        self.assertEqual(error.exception.code, "outcome_unknown")
+        self.assertEqual(self.service.uploads.row("lost-apply")[5], "applying")
+        with patch.object(self.service, "worker") as repeated:
+            with self.assertRaises(GuestError) as error:
+                await self.call("upload.commit", {"uploadId": "lost-apply"})
+            self.assertEqual(error.exception.code, "outcome_unknown")
+            repeated.assert_not_called()
 
     @unittest.skipUnless(__import__("shutil").which("rsync"), "rsync is required")
     async def test_full_delta_deletes_symlinks_and_commit_retry(self):
@@ -354,6 +485,80 @@ for line in sys.stdin:
         stopped = await self.call("provider.stop", {"handle": handle})
         self.assertEqual(stopped["state"], "exited")
 
+    async def test_large_native_event_chunks_survive_reattach_and_ack(self):
+        text = "é🙂" + "x" * 2_200_000
+        source = "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(60)"
+        params = {**self.command(source), "transport": "native", "handle": "linux-worker:large"}
+        opened = await self.call("provider.start", params)
+        handle = opened["handle"]
+        deadline = asyncio.get_running_loop().time() + 5
+        while self.service.native.info(handle)["sequence"] == 0:
+            self.assertLess(asyncio.get_running_loop().time(), deadline)
+            await asyncio.sleep(0.025)
+        socket_path = self.root / "guest.sock"
+
+        async def listen():
+            server = await asyncio.start_unix_server(self.service.client, path=str(socket_path), limit=MAX_LINE + 1)
+            self.servers.append(server)
+            return server
+
+        async def rpc(action, **values):
+            reader, writer = await asyncio.open_unix_connection(str(socket_path), limit=MAX_LINE + 1)
+            self.next_id += 1
+            writer.write(json.dumps({"id": str(self.next_id), "method": "provider.rpc",
+                "params": {"handle": handle, "action": action, **values}}).encode() + b"\n")
+            await writer.drain()
+            try:
+                line = await asyncio.wait_for(reader.readline(), 10)
+                self.assertTrue(line)
+                self.assertLessEqual(len(line), MAX_LINE)
+                response = json.loads(line)
+                self.assertNotIn("error", response)
+                return response["result"]
+            finally:
+                writer.close()
+                await writer.wait_closed()
+
+        server = await listen()
+        event = (await rpc("next", cursor=0))["event"]
+        self.assertIsNone(event["payload"])
+        self.assertGreater(event["payloadBytes"], MAX_LINE)
+        replay = await rpc("replay", cursor=0, limit=128)
+        self.assertEqual(replay["events"], [event])
+        self.assertFalse(replay["hasMore"])
+        server.close()
+        await server.wait_closed()
+        socket_path.unlink(missing_ok=True)
+        self.service.close()
+        self.service = Service(self.root / "state", self.root / "workspaces", self.root / "projects", self.home)
+        self.instances.append(self.service)
+        attached = await self.call("provider.start", params)
+        self.assertTrue(attached["resumed"])
+        self.assertEqual(attached["acknowledged"], 0)
+        await listen()
+        self.assertEqual((await rpc("next", cursor=0))["event"], event)
+        payload = bytearray()
+        while len(payload) < event["payloadBytes"]:
+            chunk = await rpc("eventRead", sequence=event["sequence"], offset=len(payload), maxBytes=1024 * 1024)
+            self.assertEqual(chunk["offset"], len(payload))
+            self.assertEqual((chunk["sequence"], chunk["generation"]), (event["sequence"], event["generation"]))
+            data = base64.b64decode(chunk["data"], validate=True)
+            self.assertLessEqual(len(data), 1024 * 1024)
+            payload.extend(data)
+            self.assertEqual(chunk["nextOffset"], len(payload))
+            self.assertEqual(chunk["eof"], len(payload) == chunk["bytes"])
+            self.assertEqual(self.service.native.info(handle)["acknowledged"], 0)
+        self.assertEqual(len(payload), event["payloadBytes"])
+        decoded = json.loads(payload)
+        self.assertIsInstance(decoded.pop("_studioSupervisorReceivedAt"), (int, float))
+        self.assertEqual(decoded, {"method": "fixture/large", "params": {"text": text}})
+        await rpc("ack", sequence=event["sequence"])
+        self.assertEqual(self.service.native.info(handle)["acknowledged"], event["sequence"])
+        self.assertIsNone((await rpc("next", cursor=event["sequence"]))["event"])
+        with self.assertRaises(GuestError) as error:
+            await self.call("provider.rpc", {"handle": handle, "action": "eventRead", "sequence": event["sequence"], "offset": 0})
+        self.assertEqual(error.exception.code, "not_found")
+
     async def test_output_limit_stops_the_process(self):
         params = {**self.command("import sys; sys.stdout.buffer.write(b'x' * (8 * 1024 * 1024)); sys.stdout.flush()"),
                   "outputLimitBytes": 1024 * 1024, "timeoutSeconds": 5}
@@ -404,6 +609,26 @@ for line in sys.stdin:
             stdout=asyncio.subprocess.PIPE)
         await asyncio.wait_for(process.communicate(b"{}"), 5)
         self.assertEqual(process.returncode, 124)
+
+    async def test_failed_helper_terminates_its_descendants(self):
+        marker = self.home / "helper-child"
+        source = f"import subprocess,sys,os,json; sys.path.insert(0,{str(Path(__file__).parent)!r}); from common import process_identity; p=subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL); open({str(marker)!r},'w').write(json.dumps({{'pid':p.pid,'start':process_identity(p.pid)}})); os._exit(3)"
+        process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
+            "2", sys.executable, "-c", source, stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE)
+        await asyncio.wait_for(process.communicate(b"{}"), 5)
+        self.assertEqual(process.returncode, 3)
+        child = json.loads(marker.read_text())
+        pid = child["pid"]
+        self.assertIsNotNone(child["start"])
+        try:
+            deadline = asyncio.get_running_loop().time() + 3
+            while process_identity(pid) is not None and asyncio.get_running_loop().time() < deadline:
+                await asyncio.sleep(0.025)
+            self.assertIsNone(process_identity(pid))
+        finally:
+            # Clean up the child even when this regression fails on the prior code.
+            if process_identity(pid) == child["start"]:
+                os.kill(pid, signal.SIGKILL)
 
     async def test_invalid_shapes(self):
         for request in ([], {}, {"id": True}, {"id": "a", "method": "health", "params": []}):

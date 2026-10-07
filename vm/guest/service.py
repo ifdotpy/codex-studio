@@ -331,6 +331,12 @@ class Service:
                     raise GuestError(result["error"]["code"], result["error"]["message"])
                 raise GuestError("invalid_params", "The upload extraction failed")
             require(root.parent.resolve() == self.projects and not root.is_symlink(), "The upload root is outside projects")
+            try:
+                # Rsync needs another complete copy after the archive has expanded.
+                tree_space(self.projects, result["bytes"])
+            except GuestError:
+                await self.remove_temporary(staging)
+                raise
             root.mkdir(mode=0o700, exist_ok=True)
             # This durable marker precedes the first change to the project tree.
             self.db.execute("UPDATE uploads SET state='applying' WHERE id=?", (identity,))
@@ -341,18 +347,17 @@ class Service:
                 code, _ = await self.worker("upload_delete.py", {"root": str(root), "deletePaths": deletes}, 120)
                 if code:
                     raise GuestError("outcome_unknown", "The delta deletion failed after application started")
-            options = ["--delete"] if mode == "full" else []
-            process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
-                "1800", "rsync", "-a", "--checksum", "--safe-links", *options, "--",
-                str(staging) + "/", str(root) + "/", stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL, stdin=asyncio.subprocess.DEVNULL, start_new_session=True)
             try:
-                code = await asyncio.wait_for(process.wait(), 1806)
-            except asyncio.TimeoutError as exc:
-                os.killpg(process.pid, signal.SIGKILL)
-                await asyncio.wait_for(process.wait(), 5)
-                raise GuestError("outcome_unknown", "The project sync exceeded its deadline") from exc
-            if code:
+                code, output = await self.worker("upload_apply.py", {"root": str(root), "staging": str(staging),
+                                                "bytes": result["bytes"], "mode": mode}, 1800)
+                applied = json.loads(output)
+                if not isinstance(applied, dict):
+                    raise ValueError("The worker response is not an object")
+            except (GuestError, ValueError, TypeError) as exc:
+                raise GuestError("outcome_unknown", "The project sync worker has no proven result; inspect the project root") from exc
+            if "error" in applied:
+                raise GuestError(applied["error"]["code"], applied["error"]["message"])
+            if code or applied.get("applied") is not True:
                 raise GuestError("outcome_unknown", "The project sync failed after application started")
             result = {"uploadId": identity, "root": str(root), "sha256": expected,
                       "bytes": result["bytes"], "state": "applied"}

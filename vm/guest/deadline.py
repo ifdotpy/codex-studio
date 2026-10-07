@@ -53,7 +53,7 @@ except subprocess.TimeoutExpired:
     code = 124
 finally:
     selector.close()
-    if process.poll() is None or code in {124, 125}:
+    if process.poll() is None or code != 0:
         try:
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:

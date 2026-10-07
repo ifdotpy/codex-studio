@@ -108,6 +108,15 @@ generation, as in the existing supervisor.
 - `replay`: `cursor`, optional `limit` (default and maximum 128). Returns
   `{events, sequence, acknowledged, backpressure, hasMore}`. Native events retain
   `{sequence, kind, payload, generation}`. The page also fits the line limit.
+- A native payload above 64 KiB returns `payload:null` and `payloadBytes` in
+  `next` and `replay`. It retains its whole-event sequence and generation.
+- `eventRead`: `sequence`, `offset` (UTF-8 byte offset), optional `maxBytes`
+  (default 256 KiB, maximum 1 MiB). Returns
+  `{sequence, generation, offset, nextOffset, bytes, data:base64, eof}`. `bytes`
+  is the total payload size. Join the chunks before parsing the saved JSON text.
+  Check each sequence, generation, offset and length. A missing or acknowledged
+  event fails with `not_found`. Native payloads are bounded by the 256 MiB journal
+  limit. A client acknowledges only after it consumes the complete event.
 - `status`, `detach`: no additional parameters, existing supervisor result.
 - `info`: current `{handle, pid, sequence, lastSeq, acknowledged, generation,
 initResult, state, reason}` without opening a new generation.
@@ -130,7 +139,18 @@ Regular files, directories, and relative symlinks are supported. Every symlink
 chain must remain inside the tree. Devices, hard links, absolute paths, and
 traversal fail. Set-ID bits are removed. Uploads and workspace operations lock the
 same root. A repeated completed commit returns the saved receipt without
-reapplying the tree. An interrupted apply returns `outcome_unknown`. Start a new
+reapplying the tree. A retry removes a partial extraction under the upload's file
+lock, verifies the archive checksum, and extracts again. A surviving extraction
+worker retains that lock and prevents replacement until it exits.
+Before application, the guest reserves free space for another full expanded
+copy. Extraction flushes each file to disk before that check. Rsync uses `--fsync`
+on Linux, so the final check includes its file writes. Insufficient space returns
+`busy`, clears the expanded tree, and leaves the
+upload ready for retry. During rsync, a worker checks the free-space floor every
+50 milliseconds and after rsync exits. If the floor is crossed, it stops rsync
+and clears its temporary files and the expanded tree. Source changes can be
+partial, so that error returns `outcome_unknown` and requires inspection.
+An interrupted apply also returns `outcome_unknown`. Start a new
 full upload only after inspecting that state. At most 32 uploads can be pending.
 
 For stdio transport, Each output event has

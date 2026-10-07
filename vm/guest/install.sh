@@ -9,6 +9,10 @@ set -eu
 for tool in python3 rsync btrfs git unshare nsenter lsof; do
     command -v "$tool" >/dev/null || { echo "Install the required tool: $tool" >&2; exit 1; }
 done
+rsync --fsync --version >/dev/null 2>&1 || {
+    echo 'Install rsync with --fsync support.' >&2
+    exit 1
+}
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
 for script in codex_workspace_images.py codex_workspace_linux.py codex_process_supervisor.py codex_open_file_limit.py; do

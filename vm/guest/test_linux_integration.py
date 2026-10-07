@@ -1,5 +1,6 @@
 """Opt-in Linux integration test against an installed, isolated guest service."""
 import argparse
+import asyncio
 import base64
 import hashlib
 import io
@@ -7,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import signal
+import shutil
 import socket
 import subprocess
 import sys
@@ -14,6 +16,63 @@ import tarfile
 import tempfile
 import time
 import uuid
+
+
+async def disk_floor_proof(state):
+    """Use a separate fixture state on the real btrfs disk, without a second server."""
+    sys.path.insert(0, str(Path(__file__).parent))
+    import service as guest
+    from upload import tree_space
+    old_floor = os.environ.get("CODEX_WORKSPACE_MIN_FREE_BYTES")
+    original_space = guest.tree_space
+    checks = []
+
+    def record_space(path, required=0):
+        checks.append(required)
+        return tree_space(path, required)
+
+    with tempfile.TemporaryDirectory(prefix="floor-proof-", dir=state) as temporary:
+        path = Path(temporary)
+        home = path / "home"
+        home.mkdir()
+        os.environ["CODEX_WORKSPACE_MIN_FREE_BYTES"] = str(shutil.disk_usage(path).free - 40 * 1024**2)
+        fixture = guest.Service(path / "state", path / "store", path / "projects", home)
+        guest.tree_space = record_space
+        try:
+            data = io.BytesIO()
+            size = 32 * 1024**2
+            with tarfile.open(fileobj=data, mode="w:gz") as archive:
+                item = tarfile.TarInfo("large")
+                item.size = size
+                archive.addfile(item, io.BytesIO(b"0" * size))
+            data = data.getvalue()
+            root = fixture.projects / "source"
+
+            async def emit(*unused):
+                pass
+
+            async def call(method, params):
+                return await fixture.request({"id": uuid.uuid4().hex, "method": method, "params": params}, emit)
+
+            begun = await call("upload.begin", {"uploadId": "floor", "root": str(root), "totalBytes": len(data),
+                                               "sha256": hashlib.sha256(data).hexdigest()})
+            assert "result" in begun, begun
+            chunk = await call("upload.chunk", {"uploadId": "floor", "seq": 0, "data": base64.b64encode(data).decode()})
+            assert "result" in chunk, chunk
+            result = await call("upload.commit", {"uploadId": "floor"})
+            assert result.get("error", {}).get("code") == "busy", result
+            assert checks == [size], checks
+            assert not root.exists()
+            assert not (fixture.uploads.path / "floor" / "expanded").exists()
+            assert fixture.uploads.row("floor")[5] == "receiving"
+        finally:
+            fixture.close()
+            guest.tree_space = original_space
+            if old_floor is None:
+                os.environ.pop("CODEX_WORKSPACE_MIN_FREE_BYTES", None)
+            else:
+                os.environ["CODEX_WORKSPACE_MIN_FREE_BYTES"] = old_floor
+    return True
 
 
 class Client:
@@ -159,12 +218,46 @@ def main(path):
     assert process_start_time(current_owner["pid"]) == current_owner["startTime"]
     assert recovered["state"] == "running" and recovered["generation"] > native["generation"]
     client.call("provider.stop", {"handle": recovered["handle"]})
+    large_params = {**native_params, "handle": "large:" + identity,
+                    "argv": ["python3", "-u", "-c", "import json,time; print(json.dumps({'method':'fixture/large','params':{'text':'é🙂'+'x'*2200000}},ensure_ascii=False),flush=True); time.sleep(90)"]}
+    large, _ = client.call("provider.start", large_params)
+    handle = large["handle"]
+    deadline = time.monotonic() + 10
+    while True:
+        replay, _ = client.call("provider.rpc", {"handle": handle, "action": "replay", "cursor": 0})
+        if replay["events"]:
+            break
+        assert time.monotonic() < deadline, replay
+        time.sleep(0.05)
+    descriptor = replay["events"][0]
+    assert descriptor["payload"] is None and descriptor["payloadBytes"] > 2 * 1024**2
+    next_event, _ = client.call("provider.rpc", {"handle": handle, "action": "next", "cursor": 0})
+    assert next_event["event"] == descriptor
+    subprocess.run(["sudo", "systemctl", "restart", "codex-studio-guest.service"], check=True, timeout=20)
+    attached, _ = client.call("provider.start", large_params)
+    assert attached["resumed"] and attached["acknowledged"] == 0 and attached["pid"] == large["pid"]
+    payload = bytearray()
+    while len(payload) < descriptor["payloadBytes"]:
+        chunk, _ = client.call("provider.rpc", {"handle": handle, "action": "eventRead", "sequence": descriptor["sequence"],
+                                                "offset": len(payload), "maxBytes": 1024**2})
+        assert (chunk["sequence"], chunk["generation"], chunk["offset"], chunk["bytes"]) == (
+            descriptor["sequence"], descriptor["generation"], len(payload), descriptor["payloadBytes"])
+        payload.extend(base64.b64decode(chunk["data"], validate=True))
+        assert chunk["nextOffset"] == len(payload)
+    decoded = json.loads(payload)
+    assert decoded["method"] == "fixture/large" and decoded["params"]["text"] == "é🙂" + "x" * 2_200_000
+    client.call("provider.rpc", {"handle": handle, "action": "ack", "sequence": descriptor["sequence"]})
+    next_event, _ = client.call("provider.rpc", {"handle": handle, "action": "next", "cursor": descriptor["sequence"]})
+    assert next_event["event"] is None
+    client.call("provider.stop", {"handle": handle})
     client.call("workspace.archive", {"agentId": agent})
     client.call("workspace.remove", {"agentId": agent})
+    floor_proved = asyncio.run(disk_floor_proof(health["state"]))
     print(json.dumps({"uid": health["uid"], "filesystem": health["filesystem"], "commit": commit,
                       "fetchMatched": True, "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
                       "longExecSeconds": round(long_elapsed, 2), "longExecReconnectReplay": True,
-                      "deadNativeSocketRecovered": True, "archiveRemoved": True}))
+                      "deadNativeSocketRecovered": True, "largeNativeEventBytes": len(payload),
+                      "largeNativeReattachAck": True, "compressedUploadFloor": floor_proved, "archiveRemoved": True}))
 
 
 if __name__ == "__main__":
