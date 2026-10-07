@@ -1,33 +1,38 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, within } from "storybook/test";
+import { expect, userEvent, within } from "storybook/test";
 import { LinuxVMSettings } from "./LinuxVMSettings";
 
 const GiB = 1024 ** 3;
+let savedSettings: unknown;
 const meta = {
   title: "Settings/Linux VM",
   component: LinuxVMSettings,
   args: { active: true },
-  beforeEach: () => {
+  beforeEach: ({ parameters }) => {
+    savedSettings = undefined;
     const original = window.fetch;
     window.fetch = async (input, init) => {
       const request = new Request(input, init);
-      if (new URL(request.url).pathname === "/api/linux-vm/settings")
+      if (new URL(request.url).pathname === "/api/linux-vm/settings") {
+        if (request.method === "POST")
+          savedSettings = JSON.parse(await request.text());
         return new Response(
           JSON.stringify({
             settings:
               request.method === "POST"
-                ? JSON.parse(await request.text())
+                ? savedSettings
                 : {
                     cpus: 4,
                     memoryBytes: 4 * GiB,
                     systemDiskBytes: 16 * GiB,
                     dataDiskBytes: 128 * GiB,
                   },
-            state: "running",
+            state: parameters.vmState ?? "running",
             allocatedDiskBytes: 1024,
           }),
           { headers: { "content-type": "application/json" } },
         );
+      }
       return original(input, init);
     };
     return () => {
@@ -50,5 +55,24 @@ export const ActiveWorkersKeepTheirLimits: Story = {
     await expect(
       canvas.getByRole("textbox", { name: "Processor cores" }),
     ).toBeDisabled();
+  },
+};
+
+export const SaveStoppedLimits: Story = {
+  parameters: { vmState: "stopped" },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cores = await canvas.findByRole("textbox", {
+      name: "Processor cores",
+    });
+    await userEvent.clear(cores);
+    await userEvent.type(cores, "6");
+    await userEvent.click(
+      canvas.getByRole("button", { name: "Save VM limits" }),
+    );
+    await expect(savedSettings).toMatchObject({
+      cpus: 6,
+      memoryBytes: 4 * GiB,
+    });
   },
 };

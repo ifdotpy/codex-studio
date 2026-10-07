@@ -82,6 +82,8 @@ def _local_idle(rt, db, key, server):
     # checks below, including malformed legacy values and deleted agents.
     account_scope = ("(json_extract(record,'$.accountKey')=? OR "
                      "(?='default' AND json_type(record,'$.accountKey') IS NULL))")
+    account_scope += (" AND NOT (COALESCE(json_extract(record,'$.environment'),'host')='linux' "
+                      "AND COALESCE(json_extract(record,'$.imageWorkspaceReady'),0)=1)")
     if db.execute("SELECT 1 FROM runtime_agents WHERE " + account_scope +
                   " AND (json_extract(record,'$.status') IN ('running','starting','approval') "
                   "OR json_extract(record,'$.inFlight')=1) LIMIT 1", (key, key)).fetchone():
@@ -564,6 +566,11 @@ def gate(rt, db, agent, tools):
     if account_reserved(rt, key):
         return False
     if not needs_refresh(agent, tools):
+        _wait_notice(rt, db, agent, tools, None, None)
+        return True
+    if agent.get('environment') == 'linux' and agent.get('imageWorkspaceReady'):
+        # Native supervisor mode defers catalog replacement. The guest owns
+        # this thread and its rollout; the host account cannot update it.
         _wait_notice(rt, db, agent, tools, None, None)
         return True
     prior_notice = agent.get("nativeToolUpdate") or {}

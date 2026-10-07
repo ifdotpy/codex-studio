@@ -12,6 +12,15 @@ import sys
 MAX_CREDENTIAL_BYTES = 1024 * 1024
 
 
+def claude_keychain_service(config_dir=None):
+    service = 'Claude Code-credentials'
+    if config_dir:
+        # Observed with the installed Claude CLI on this Mac. Keep the
+        # selected CLI directory string, without a trailing slash.
+        service += '-' + hashlib.sha256(str(config_dir).rstrip('/').encode()).hexdigest()[:8]
+    return service
+
+
 def profile_path(account_key, provider):
     key = hashlib.sha256(account_key.encode()).hexdigest()[:32]
     return ('.claude' if provider == 'claude' else '.codex') + '/studio-accounts/' + key
@@ -38,20 +47,20 @@ def read_credentials(runtime, account_key):
         except (ValueError, TypeError) as error:
             raise ValueError('The Codex credential file is invalid') from error
     elif provider == 'claude':
-        from codex_claude import auth_metadata, profile_options
+        from codex_claude import auth_metadata, subscription_env
         before = auth_metadata(account, force=True)
         if before.get('status') != 'ready' or before.get('accountId') != account.get('accountId'):
             raise ValueError('The Claude account identity changed; refresh the host sign-in')
-        options = profile_options(account)
-        home = Path(options.get('configDir') or Path.home() / '.claude')
+        configured = subscription_env(account).get('CLAUDE_CONFIG_DIR')
+        home = Path(configured or Path.home() / '.claude')
         path = home / '.credentials.json'
         if path.is_file():
             data = _read_file(path)
-        elif sys.platform == 'darwin' and home == Path.home() / '.claude':
-            # Read the native default profile Keychain service. Capture
+        elif sys.platform == 'darwin':
+            # Read the selected profile Keychain service. Capture
             # bytes only; never place the token in arguments, receipts or logs.
             completed = subprocess.run(['security', 'find-generic-password', '-s',
-                                        'Claude Code-credentials', '-w'],
+                                        claude_keychain_service(configured), '-w'],
                                        capture_output=True, timeout=10)
             if completed.returncode or len(completed.stdout) > MAX_CREDENTIAL_BYTES:
                 raise ValueError('The Claude Keychain credential cannot be read')

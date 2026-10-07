@@ -267,6 +267,21 @@ class Contract(unittest.TestCase):
         self.assertFalse(any(method == "thread/fork" for method, _ in self.native.calls))
         self.assertTrue(tools.needs_refresh(self.rt.agent("chat-1"), NEW))
 
+    def test_linux_catalog_change_never_reads_host_rollout(self):
+        self.change_agent(environment='linux', imageWorkspaceReady=True)
+        with self.rt.lock, self.rt.db() as db, patch.object(self.rt, 'connect', side_effect=AssertionError('Host provider dispatch')):
+            self.assertTrue(tools.gate(self.rt, db, self.rt.agent('chat-1', db), NEW))
+        self.assertEqual(self.native.calls, [])
+        self.assertTrue(tools.needs_refresh(self.rt.agent('chat-1'), NEW))
+
+    def test_host_catalog_scope_excludes_live_linux_provider(self):
+        with self.rt.db() as db:
+            self.rt.put(db, 'agents', {'id':'linux-chat', 'accountKey':'default', 'environment':'linux',
+                                      'imageWorkspaceReady':True, 'status':'running', 'inFlight':True})
+            agents, reason = tools._local_idle(self.rt, db, 'default', self.native)
+        self.assertIsNone(reason)
+        self.assertNotIn('linux-chat', [agent['id'] for agent in agents])
+
     def test_supervisor_header_growth_does_not_submit_a_fork(self):
         self.native.supervisor_mode = True
         result = tools.refresh_account(self.rt, tools_for_agent=lambda _: OLD * 20)

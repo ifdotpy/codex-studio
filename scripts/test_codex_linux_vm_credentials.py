@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock, patch
 
-from codex_linux_vm_credentials import profile_path, read_credentials, sync_credentials
+from codex_linux_vm_credentials import claude_keychain_service, profile_path, read_credentials, sync_credentials
 
 
 class Credentials(unittest.TestCase):
@@ -46,6 +46,24 @@ class Credentials(unittest.TestCase):
         with patch('codex_claude.auth_metadata', return_value=ready), patch('codex_claude.profile_options', return_value={'configDir': str(self.home)}):
             file = read_credentials(self.runtime, 'claude-profile')
         self.assertEqual(file['path'], profile_path('claude-profile', 'claude') + '/.credentials.json')
+
+    def test_custom_keychain_name_matches_observed_cli_profile(self):
+        directory = '/Users/igor/.local/state/codex-agents/accounts/claude-ifdotpy'
+        self.assertEqual(claude_keychain_service(directory), 'Claude Code-credentials-d5853ba6')
+        self.assertEqual(claude_keychain_service(directory + '/'), claude_keychain_service(directory))
+        self.assertEqual(claude_keychain_service(), 'Claude Code-credentials')
+
+    def test_custom_keychain_read_uses_selected_cli_directory(self):
+        self.account = {'provider':'claude', 'accountId':'claude:fixture@example.test'}
+        ready = {'status':'ready', 'accountId':self.account['accountId']}
+        credential = json.dumps({'claudeAiOauth':{'accessToken':'fixture'}}).encode()
+        with patch('codex_claude.auth_metadata', return_value=ready), \
+                patch('codex_claude.subscription_env', return_value={'CLAUDE_CONFIG_DIR':str(self.home)}), \
+                patch('codex_linux_vm_credentials.sys.platform', 'darwin'), \
+                patch('codex_linux_vm_credentials.subprocess.run', return_value=SimpleNamespace(returncode=0, stdout=credential)) as read:
+            file = read_credentials(self.runtime, 'claude-profile')
+        self.assertEqual(read.call_args.args[0], ['security', 'find-generic-password', '-s', claude_keychain_service(str(self.home)), '-w'])
+        self.assertEqual(json.loads(base64.b64decode(file['data']))['claudeAiOauth']['accessToken'], 'fixture')
 
     def test_claude_identity_change_is_rejected_before_guest_write(self):
         self.account = {'provider': 'claude', 'accountId': 'claude:fixture@example.test'}

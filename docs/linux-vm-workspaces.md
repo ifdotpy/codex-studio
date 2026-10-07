@@ -207,11 +207,18 @@ its own connection ID and native provider. Its disconnect affects that worker.
 
 Codex and Claude credentials use private guest profiles for the selected host
 account. Studio copies Codex `auth.json` and Claude `.credentials.json` (or the
-default macOS Keychain credential). It verifies Claude account identity before
+macOS Keychain credential). It verifies Claude account identity before
 and after the read. Token values stay out of launch arguments and receipts.
 Studio compares credential hashes and checks for host token changes every
 30 seconds while Linux providers exist. Account transfers require the Linux
 workers to be archived first.
+
+Custom Claude Keychain profiles use `Claude Code-credentials-` plus the first
+eight SHA256 hex characters of the selected `CLAUDE_CONFIG_DIR` string, without
+a trailing slash. The default profile uses `Claude Code-credentials`.
+This rule comes from the lead's measurement on this Mac with Claude Code
+2.1.291, not an Anthropic protocol guarantee. A missing service gives a clear
+credential read error. A unit test retains the measured service name.
 
 Worker results contain the guest path and a host fetch command. Commit the result
 on a named branch. Run the fetch command from the host checkout:
@@ -233,6 +240,9 @@ and returns the worker paused. Removal deletes the guest workspace after its
 provider closes. Studio shutdown detaches providers and keeps their guest
 processes alive.
 
+Native tool catalog replacement stays deferred while the maintained supervisor
+owns the provider. Linux threads never enter host account rollout maintenance.
+
 `maintenance_report` includes Linux VM disk allocation, disk free space, and
 memory totals when the VM responds. Limits appear in Studio Settings, Linux VM.
 The host helper validates processor, memory, and disk limits. The VM must be
@@ -244,9 +254,10 @@ Studio spawn, the base wait, native process reuse, host connection isolation,
 credential changes, upload response loss, and a real Git bundle fetch. Real VM
 checks require the host helper and guest service from their component branches.
 `tests/linux-vm-studio-native.py` uses an already provisioned, isolated VM. It
-checks the Studio caller, source deltas, native process reuse after a Runtime
-restart, result fetch, archive, restore, removal, and resource reports.
-Use `--claude` to check the native Claude bridge with the signed-in host profile.
+checks the Studio caller, source deltas, a native Codex model commit, native
+process reuse after a Runtime restart, result fetch, archive, restore, removal,
+and resource reports. Use `--claude` to check a native Claude model turn with
+the signed-in host profile. The test copies credentials and preserves host files.
 
 ## Host interface
 

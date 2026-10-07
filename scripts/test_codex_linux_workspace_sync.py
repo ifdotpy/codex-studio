@@ -5,6 +5,7 @@ import tarfile
 import tempfile
 import unittest
 import os
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from codex_linux_workspace_sync import archive_source
@@ -91,6 +92,22 @@ class SourceArchives(unittest.TestCase):
         result, names = self.archive('second.tar.gz', baseline)
         self.assertEqual(result['mode'], 'full')
         self.assertIn('keep', names)
+
+    def test_disk_floor_stops_archive_before_upload(self):
+        with patch('codex_linux_workspace_sync.shutil.disk_usage', return_value=SimpleNamespace(free=0)):
+            with self.assertRaisesRegex(RuntimeError, 'insufficient free disk space'):
+                self.archive('no-space.tar.gz')
+
+    def test_source_change_during_archive_is_rejected(self):
+        original = tarfile.TarFile.add
+        def change_after_read(archive, name, *args, **kwargs):
+            result = original(archive, name, *args, **kwargs)
+            if Path(name).resolve() == (self.repo / 'one').resolve():
+                (self.repo / 'one').write_text('changed after archive read')
+            return result
+        with patch.object(tarfile.TarFile, 'add', change_after_read):
+            with self.assertRaisesRegex(ValueError, 'source changed during the archive'):
+                self.archive('changed.tar.gz')
 
 
 if __name__ == '__main__':

@@ -112,6 +112,14 @@ def main():
             assert command(later, 'python3', '-c', 'from pathlib import Path;print(Path("deleted").exists())') == 'False'
             assert command(worker, 'cat', 'tracked') == 'dirty'
             metrics['sourceDeltaAndSnapshotIsolation'] = True
+            server = runtime.connect_agent(worker)
+            catalog = server.call('model/list', {}, timeout=30)
+            selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
+            effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
+            with runtime.lock, runtime.db() as db:
+                worker = runtime.agent(worker['id'], db)
+                worker.update(model=selected['model'], effort=effort, nativeEffort=native_effort, yoloMode=True)
+                runtime.put(db, 'agents', worker)
             prepared = runtime.prepare_locked(worker)
             if isinstance(prepared, concurrent.futures.Future):
                 prepared.result(timeout=120)
@@ -119,6 +127,25 @@ def main():
             assert worker['threadId']
             server = runtime.connect_agent(worker)
             server.call('thread/read', {'threadId':worker['threadId']}, timeout=30)
+            completed = threading.Event()
+            notification = runtime.notification
+            def observe(message, *identity):
+                notification(message, *identity)
+                if message.get('method') == 'turn/completed' and message.get('params', {}).get('threadId') == worker['threadId']:
+                    completed.set()
+            runtime.notification = observe
+            with runtime.lock, runtime.db() as db:
+                db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (worker['id'],))
+            runtime.send(worker['id'], 'Create branch result. Write native-result.txt with linux-native-ok. '
+                         'Commit all source changes on result. Use the native command tool. '
+                         'Do not spawn agents. Report the commit hash.', message_id=str(uuid.uuid4()), resume=True)
+            runtime.dispatch(worker['id'])
+            assert completed.wait(360), 'The native Codex turn did not complete'
+            assert command(worker, 'cat', 'native-result.txt') == 'linux-native-ok'
+            assert command(worker, 'git', 'branch', '--show-current') == 'result'
+            assert command(worker, 'git', 'status', '--porcelain') == ''
+            metrics['codexNativeModelCommit'] = True
+            runtime.notification = notification
             handle = 'linux-worker:' + worker['id']
             before = remote.request('provider.rpc', {'handle':handle, 'action':'info'})
             runtime.close()
@@ -131,9 +158,6 @@ def main():
             restored_server.call('thread/read', {'threadId':worker['threadId']}, timeout=30)
             metrics['studioRestartSameNativeProcess'] = True
             metrics['codexThreadId'] = worker['threadId']
-            command(worker, 'git', 'switch', '-c', 'result')
-            command(worker, 'git', 'add', 'tracked', 'untracked')
-            command(worker, 'git', 'commit', '-m', 'Commit Linux result')
             commit = command(worker, 'git', 'rev-parse', 'HEAD')
             fetch(remote, worker['id'], worker['cwd'], 'result', project)
             assert git(project, 'rev-parse', 'FETCH_HEAD') == commit
@@ -169,9 +193,32 @@ def main():
                         current.update(accountKey='native-claude', provider='claude')
                         runtime.put(db, 'agents', current)
                     bridge = runtime.connect_agent(runtime.agent(claude['id']))
-                    thread = bridge.call('thread/start', {'cwd':claude['cwd'], 'approvalPolicy':'never', 'sandbox':'workspace-write', 'dynamicTools':[]}, timeout=60)
-                    assert thread['thread']['id']
-                    metrics['claudeNativeBridgeThread'] = True
+                    catalog = bridge.call('model/list', {}, timeout=30)
+                    selected = next((item for item in catalog['data'] if item.get('isDefault')), catalog['data'][0])
+                    effort, native_effort = runtime.validate_execution(catalog, selected['model'], selected['defaultReasoningEffort'], False)
+                    with runtime.lock, runtime.db() as db:
+                        current = runtime.agent(claude['id'], db)
+                        current.update(model=selected['model'], effort=effort, nativeEffort=native_effort, yoloMode=True)
+                        runtime.put(db, 'agents', current)
+                    prepared = runtime.prepare_locked(current)
+                    if isinstance(prepared, concurrent.futures.Future):
+                        prepared.result(timeout=120)
+                    claude = runtime.agent(claude['id'])
+                    completed = threading.Event()
+                    notification = runtime.notification
+                    def observe_claude(message, *identity):
+                        notification(message, *identity)
+                        if message.get('method') == 'turn/completed' and message.get('params', {}).get('threadId') == claude['threadId']:
+                            completed.set()
+                    runtime.notification = observe_claude
+                    with runtime.lock, runtime.db() as db:
+                        db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (claude['id'],))
+                    runtime.send(claude['id'], 'Reply linux-claude-ok. Do not use tools.', message_id=str(uuid.uuid4()), resume=True)
+                    runtime.dispatch(claude['id'])
+                    assert completed.wait(360), 'The native Claude turn did not complete'
+                    assert not runtime.agent(claude['id']).get('nativeFailureHold'), 'The Claude turn failed'
+                    metrics['claudeNativeModelTurn'] = True
+                    runtime.notification = notification
         finally:
             for worker_id in workers:
                 dispose(runtime, worker_id, remove=True)
