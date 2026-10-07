@@ -21,7 +21,8 @@ class WorkspaceBackend(Protocol):
     def supported(self, root: Path) -> tuple[bool, str]: ...
     def current_event_id(self, root: Path) -> Any: ...
     def open_base_staging(self, root: Path, key: str, version: str) -> dict[str, Any]: ...
-    def copy_base_tree(self, root: Path, destination: Path, *, excludes: tuple[str, ...]) -> None: ...
+    def copy_base_tree(self, root: Path, destination: Path, *, excludes: tuple[str, ...],
+                       check=None) -> None: ...
     def seal_base(self, staging: dict[str, Any]) -> dict[str, Any]: ...
     def clone_workspace(self, image: Path, agent_dir: Path) -> Path: ...
     def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> dict[str, Any]: ...
@@ -35,6 +36,10 @@ class WorkspaceBackend(Protocol):
 
 _STORE_OVERRIDE = 'CODEX_WORKSPACE_STORE'
 _DEFAULT_STORE = Path.home() / '.local' / 'state' / 'codex-agents' / 'workspaces'
+_BASE_MIN_FREE_ENV = 'CODEX_WORKSPACE_MIN_FREE_BYTES'
+_AGENT_MIN_FREE_ENV = 'CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES'
+_DEFAULT_BASE_MIN_FREE_BYTES = 20 * 1024**3
+_DEFAULT_AGENT_MIN_FREE_BYTES = 5 * 1024**3
 _backend_instance = None
 _backend_lock = threading.Lock()
 _build_lock = threading.Lock()
@@ -63,6 +68,61 @@ def _get_backend():
 
 def _store() -> Path:
     return Path(os.environ.get(_STORE_OVERRIDE) or _DEFAULT_STORE).expanduser().resolve()
+
+
+def _free_bytes(path: Path) -> int:
+    path = Path(path).expanduser()
+    while not path.exists():
+        parent = path.parent
+        if parent == path:
+            raise OSError(f'Cannot find an existing path for disk-space check: {path}')
+        path = parent
+    return shutil.disk_usage(path).free
+
+
+def _minimum_free_bytes(variable: str, default: int) -> int:
+    value = os.environ.get(variable)
+    if value is None:
+        return default
+    try:
+        result = int(value)
+    except ValueError as exc:
+        raise ValueError(f'{variable} must be a non-negative integer') from exc
+    if result < 0:
+        raise ValueError(f'{variable} must be a non-negative integer')
+    return result
+
+
+def _free_space_error(free: int, floor: int, *, purpose='image base') -> str:
+    return (f'Not enough free disk space for the {purpose}: '
+            f'{free} free, {floor} required (bytes)')
+
+
+def _require_base_space(staging=None) -> None:
+    floor = _minimum_free_bytes(_BASE_MIN_FREE_ENV, _DEFAULT_BASE_MIN_FREE_BYTES)
+    free = _free_bytes(_store())
+    if free < floor:
+        raise RuntimeError(_free_space_error(free, floor))
+    if staging and staging.get('mount'):
+        mount = Path(staging['mount'])
+        try:
+            mount_device = mount.stat().st_dev
+            parent_device = mount.parent.stat().st_dev
+        except OSError as exc:
+            raise RuntimeError(f'Image base staging mount is unavailable: {mount}: {exc}') from exc
+        if mount_device == parent_device:
+            raise RuntimeError(f'Image base staging mount disappeared: {mount}')
+
+
+def _record_base_space_failure(root: Path, key: str, error: str) -> dict[str, Any]:
+    base_dir = _base_dir(key)
+    with _file_lock(base_dir / '.build.lock'):
+        current = _read_json(_base_state_path(key), {}) or {}
+        failed = {**current, 'schema': 2, 'changeDetector': 'git-v1',
+                  'state': 'failed', 'repoRoot': str(root), 'repoKey': key,
+                  'error': error, 'failedAt': time.time()}
+        _write_json(_base_state_path(key), failed)
+    return {key: failed.get(key) for key in ('state', 'version', 'error')}
 
 
 def _root_path(path) -> Path:
@@ -754,6 +814,21 @@ def start_base_build(root, on_done=None, *, retry_failed=False) -> dict[str, Any
                     _build_threads[key] = thread
                     thread.start()
         return status
+    space_failure = None
+    with _build_lock:
+        thread = _build_threads.get(key)
+        if thread is not None and thread.is_alive():
+            if on_done:
+                _build_callbacks.setdefault(key, []).append(on_done)
+            return {'state': 'building', 'version': status.get('version'), 'error': None}
+        try:
+            _require_base_space()
+        except (OSError, RuntimeError, ValueError) as exc:
+            space_failure = _record_base_space_failure(folder, key, str(exc))
+    if space_failure:
+        if on_done:
+            _call_callback(on_done, space_failure)
+        return space_failure
     if status['state'] == 'failed':
         failed_at = float((_read_json(_base_state_path(key), {}) or {}).get('failedAt') or 0)
         if not retry_failed and time.time() - failed_at < 300:
@@ -817,6 +892,7 @@ def _build_base(root: Path, key: str, refresh_from=None):
                 result = prior
             else:
                 version = f'v-{time.time_ns()}'
+                _require_base_space()
                 if refresh_from is None:
                     _write_json(_base_state_path(key), {
                         'schema': 2, 'state': 'building', 'repoRoot': str(root), 'repoKey': key,
@@ -827,12 +903,16 @@ def _build_base(root: Path, key: str, refresh_from=None):
                     _write_json(_base_state_path(key), prior)
                 backend = _get_backend()
                 staging = backend.open_base_staging(root, key, version)
+                _require_base_space(staging)
                 excludes = _workspace_excludes(root)
                 baseline = {'repositories': _repo_snapshots(root)}
                 delta_excludes = _delta_excludes(
                     root, excludes, _repositories_for_records(root, baseline['repositories']))
                 token = staging.get('token')
-                backend.copy_base_tree(root, Path(staging['root']), excludes=excludes)
+                check_space = lambda: _require_base_space(staging)
+                backend.copy_base_tree(root, Path(staging['root']), excludes=excludes,
+                                       check=check_space)
+                check_space()
                 delta = _sync_detected(root, Path(staging['root']), baseline,
                                        delta_excludes, backend, repair_pointers=True)
                 index_records, _index_changes = _repo_index_metadata(
@@ -938,6 +1018,15 @@ def create_workspace(root, agent_id) -> dict[str, str]:
             already_ready = True
         else:
             already_ready = False
+            try:
+                free = _free_bytes(_store())
+                floor = _minimum_free_bytes(_AGENT_MIN_FREE_ENV,
+                                            _DEFAULT_AGENT_MIN_FREE_BYTES)
+            except (OSError, ValueError) as exc:
+                raise RuntimeError(f'Cannot verify free disk space for the image workspace: {exc}') from exc
+            if free < floor:
+                raise RuntimeError(_free_space_error(
+                    free, floor, purpose='image workspace'))
             base = (_base_metadata(key, state.get('baseVersion'))
                     if state.get('baseVersion') else None)
             if base is None:

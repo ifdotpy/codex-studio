@@ -3,6 +3,7 @@
 import os
 import pathlib
 import shutil
+import subprocess
 import sys
 import tempfile
 import threading
@@ -71,11 +72,15 @@ class FakeBackend:
                 target.unlink(missing_ok=True)
                 shutil.copy2(item, target)
 
-    def copy_base_tree(self, root, destination, *, excludes):
+    def copy_base_tree(self, root, destination, *, excludes, check=None):
         if self.fail_copy_once:
             self.fail_copy_once = False
             raise RuntimeError('injected base copy failure')
+        if check:
+            check()
         self._copy(root, destination, excludes)
+        if check:
+            check()
         if self.mutate_after_copy:
             self.mutate_after_copy()
             self.mutate_after_copy = None
@@ -127,10 +132,14 @@ class WorkspaceCopyTests(unittest.TestCase):
         self.folder.mkdir()
         self.store = self.folder / 'studio-store'
         self.old_store = os.environ.get('CODEX_WORKSPACE_STORE')
+        self.old_base_floor = os.environ.get('CODEX_WORKSPACE_MIN_FREE_BYTES')
+        self.old_agent_floor = os.environ.get('CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES')
         os.environ['CODEX_WORKSPACE_STORE'] = str(self.store)
         self.old_backend = images._backend_instance
         self.backend = FakeBackend()
         images._backend_instance = self.backend
+        self.free_space = mock.patch.object(images, '_free_bytes', return_value=64 * 1024**3)
+        self.free_space.start()
         (self.folder / '.git' / 'objects' / 'aa').mkdir(parents=True)
         (self.folder / '.git' / 'config').write_bytes(b'config bytes\x00\xff')
         (self.folder / '.git' / 'index').write_bytes(b'index bytes')
@@ -142,11 +151,18 @@ class WorkspaceCopyTests(unittest.TestCase):
         (self.folder / 'tracked.txt').write_bytes(b'initial')
 
     def tearDown(self):
+        self.free_space.stop()
         images._backend_instance = self.old_backend
         if self.old_store is None:
             os.environ.pop('CODEX_WORKSPACE_STORE', None)
         else:
             os.environ['CODEX_WORKSPACE_STORE'] = self.old_store
+        for name, value in (('CODEX_WORKSPACE_MIN_FREE_BYTES', self.old_base_floor),
+                            ('CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES', self.old_agent_floor)):
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
         self.temp.cleanup()
 
     def build_base(self):
@@ -281,6 +297,175 @@ class WorkspaceCopyTests(unittest.TestCase):
                                 retry_failed=True)
         self.assertTrue(retried.wait(30), 'requested base retry did not finish')
         self.assertEqual(retry_result[-1]['state'], 'ready', retry_result[-1])
+
+    def test_base_build_is_refused_and_failed_state_is_saved_when_space_is_low(self):
+        os.environ['CODEX_WORKSPACE_MIN_FREE_BYTES'] = '20'
+        self.free_space.stop()
+        self.free_space = mock.patch.object(images, '_free_bytes', return_value=19)
+        self.free_space.start()
+
+        result = images.start_base_build(self.folder)
+
+        self.assertEqual(result['state'], 'failed')
+        self.assertIn('Not enough free disk space for the image base: 19 free, 20 required (bytes)',
+                      result['error'])
+        self.assertEqual(images.base_status(self.folder)['state'], 'failed')
+        self.assertFalse(list((self.store / 'bases').glob('*/versions/*')))
+
+    def test_low_space_retry_does_not_start_a_build(self):
+        os.environ['CODEX_WORKSPACE_MIN_FREE_BYTES'] = '20'
+        self.free_space.stop()
+        self.free_space = mock.patch.object(images, '_free_bytes', return_value=19)
+        self.free_space.start()
+        first = images.start_base_build(self.folder)
+        self.assertEqual(first['state'], 'failed')
+        state_path = images._base_state_path(images._repo_key(self.folder))
+        state = images._read_json(state_path, {})
+        state['failedAt'] = 0
+        images._write_json(state_path, state)
+
+        retried = images.start_base_build(self.folder, retry_failed=True)
+
+        self.assertEqual(retried['state'], 'failed')
+        self.assertIn('Not enough free disk space', retried['error'])
+        self.assertFalse(list((self.store / 'bases').glob('*/versions/*')))
+
+    def test_copy_abort_saves_failure_and_removes_staging_version(self):
+        os.environ['CODEX_WORKSPACE_MIN_FREE_BYTES'] = '20'
+        self.free_space.stop()
+        self.free_space = mock.patch.object(
+            images, '_free_bytes', side_effect=[100, 100, 100, 100, 19])
+        self.free_space.start()
+        done = threading.Event()
+        result = []
+
+        images.start_base_build(self.folder, lambda value: (result.append(value), done.set()))
+
+        self.assertTrue(done.wait(30), 'low-space base build did not finish')
+        self.assertEqual(result[-1]['state'], 'failed', result[-1])
+        self.assertIn('19 free, 20 required (bytes)', result[-1]['error'])
+        self.assertFalse(list((self.store / 'bases').glob('*/versions/*')))
+
+    def test_staging_mount_must_remain_on_a_separate_device(self):
+        mount = self.root / 'staging-mount'
+        mount.mkdir()
+
+        with self.assertRaisesRegex(RuntimeError, 'staging mount disappeared'):
+            images._require_base_space({'mount': mount})
+
+    def test_linux_copy_stops_its_process_when_the_check_fails(self):
+        import codex_workspace_linux as linux
+
+        class FakeProcess:
+            def __init__(self):
+                self.returncode = None
+                self.stopped = False
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                if not self.stopped:
+                    raise subprocess.TimeoutExpired('rsync', timeout)
+                self.returncode = -15
+                return self.returncode
+
+            def terminate(self):
+                self.stopped = True
+
+            def kill(self):
+                self.stopped = True
+
+        source = self.root / 'linux-abort-source'
+        target = self.root / 'linux-abort-target'
+        source.mkdir()
+        process = FakeProcess()
+        checks = 0
+
+        def check():
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                raise RuntimeError('disk floor reached')
+
+        with mock.patch.object(linux.subprocess, 'Popen', return_value=process):
+            with self.assertRaisesRegex(RuntimeError, 'disk floor reached'):
+                linux._copy_folder(source, target, check=check)
+        self.assertTrue(process.stopped)
+
+    def test_macos_copy_stops_both_processes_when_the_check_fails(self):
+        import codex_workspace_macos as macos
+
+        class FakePipe:
+            def close(self):
+                pass
+
+        class FakeProcess:
+            def __init__(self, *, producer=False):
+                self.returncode = None
+                self.stopped = False
+                if producer:
+                    self.stdout = FakePipe()
+
+            def poll(self):
+                return self.returncode
+
+            def wait(self, timeout=None):
+                if not self.stopped:
+                    raise subprocess.TimeoutExpired('tar', timeout)
+                self.returncode = -15
+                return self.returncode
+
+            def terminate(self):
+                self.stopped = True
+
+            def kill(self):
+                self.stopped = True
+
+        source = self.root / 'macos-abort-source'
+        target = self.root / 'macos-abort-target'
+        source.mkdir()
+        (source / 'small-file').write_text('small')
+        processes = [FakeProcess(producer=True), FakeProcess()]
+        checks = 0
+
+        def check():
+            nonlocal checks
+            checks += 1
+            if checks == 3:
+                raise RuntimeError('staging mount disappeared')
+
+        with mock.patch.object(macos.subprocess, 'Popen', side_effect=processes):
+            with self.assertRaisesRegex(RuntimeError, 'staging mount disappeared'):
+                macos._copy_tree_parallel(source, target, check=check)
+        self.assertTrue(all(process.stopped for process in processes))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'requires the macOS tar implementation')
+    def test_macos_parallel_copy_checks_and_copies_a_small_tree(self):
+        import codex_workspace_macos as macos
+
+        source = self.root / 'macos-copy-source'
+        target = self.root / 'macos-copy-target'
+        (source / 'nested').mkdir(parents=True)
+        target.mkdir()
+        (source / 'nested' / 'small-file').write_text('small')
+        checks = []
+
+        macos._copy_tree_parallel(source, target, check=lambda: checks.append(True))
+
+        self.assertEqual((target / 'nested' / 'small-file').read_text(), 'small')
+        self.assertTrue(checks)
+
+    def test_create_workspace_is_refused_below_agent_floor(self):
+        self.build_base()
+        os.environ['CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES'] = '5'
+        self.free_space.stop()
+        self.free_space = mock.patch.object(images, '_free_bytes', return_value=4)
+        self.free_space.start()
+
+        with self.assertRaisesRegex(RuntimeError, '4 free, 5 required'):
+            images.create_workspace(self.folder, 'low-space-agent')
+        self.assertFalse(images._agent_state_path('low-space-agent').exists())
 
     def test_interrupted_create_uses_reserved_base_after_refresh(self):
         self.build_base()
