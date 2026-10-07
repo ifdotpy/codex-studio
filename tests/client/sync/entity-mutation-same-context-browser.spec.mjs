@@ -55,7 +55,10 @@ test("mutation projections propagate between pages sharing one browser context @
           url.searchParams.get("scope") === "state:entities:v1"
         ) {
           countPulls[index]++;
-          pulls[index].push({ after: url.searchParams.get("after") });
+          pulls[index].push({
+            after: url.searchParams.get("after"),
+            startedAt: Date.now(),
+          });
         }
       });
       page.on("response", async (response) => {
@@ -180,7 +183,7 @@ test("mutation projections propagate between pages sharing one browser context @
     });
     await new Promise((resolve) => setTimeout(resolve, 350));
 
-    const createChat = async (page) => {
+    const createChat = async (page, pullCountsBeforeMutation) => {
       await page.locator(".project-tree-heading").first().hover();
       const responsePromise = page.waitForResponse(
         (response) =>
@@ -216,11 +219,92 @@ test("mutation projections propagate between pages sharing one browser context @
           ),
         body._syncEntities.map((row) => row.seq),
       );
-      assert.equal(
-        completion.advanced,
-        true,
-        `persister advanced the shared checkpoint: ${JSON.stringify(completion)}`,
-      );
+      if (completion.advanced) {
+        assert.equal(
+          completion.advanced,
+          true,
+          `mutation persister advanced the shared checkpoint: ${JSON.stringify(completion)}`,
+        );
+      } else {
+        assert.equal(
+          completion.acknowledged,
+          true,
+          `mutation persister neither advanced nor acknowledged already-covered rows: ${JSON.stringify(completion)}`,
+        );
+        const highestSequence = Math.max(
+          ...body._syncEntities.map((row) => row.seq),
+        );
+        assert.ok(
+          completion.checkpoint >= highestSequence,
+          `already-covered checkpoint ${completion.checkpoint} is below response sequence ${highestSequence}`,
+        );
+        const storedResponseRows = await page.evaluate(
+          async (entityIds) => {
+            const { db, workspaceId } = await (
+              await import("/src/sync/client.ts")
+            ).syncDatabase();
+            const { API_SCHEMA_HASH } =
+              await import("/src/generated/apiSchema.ts");
+            const { entityProjectionDatabaseName } =
+              await import("/src/sync/entityCacheStorage.ts");
+            const stored = await Promise.all(
+              entityIds.map(async (id) => {
+                const row = await db.projections.findOne(id).exec();
+                return row
+                  ? { id: row.id, seq: row.seq, payload: row.payload }
+                  : null;
+              }),
+            );
+            return {
+              databaseName: entityProjectionDatabaseName(
+                workspaceId,
+                API_SCHEMA_HASH,
+              ),
+              rows: stored,
+            };
+          },
+          body._syncEntities.map((row) => row.id),
+        );
+        assert.match(
+          storedResponseRows.databaseName,
+          /^studio-entity-projection-[a-f0-9]{32}-[a-f0-9]{64}$/,
+          "covered rows are read from this workspace's API-schema-keyed projection database",
+        );
+        assert.deepEqual(
+          storedResponseRows.rows,
+          body._syncEntities.map(({ id, seq, payload }) => ({
+            id,
+            seq,
+            payload,
+          })),
+          "already-covered checkpoint is backed by the mutation response rows in the per-hash projection database",
+        );
+        const coveringPull = pulls.flatMap((tabPulls, tab) =>
+          tabPulls.flatMap((pull, ordinal) =>
+            body._syncEntities.every((responseRow) =>
+              pull.documents?.some(
+                (row) =>
+                  row.seq === responseRow.seq &&
+                  row.payload === responseRow.payload,
+              ),
+            )
+              ? [{ tab, ordinal, after: pull.after }]
+              : [],
+          ),
+        )[0];
+        assert.ok(
+          coveringPull,
+          "an earlier entity pull must account for the already-covered response rows",
+        );
+        assert.ok(
+          coveringPull.ordinal < pullCountsBeforeMutation[coveringPull.tab],
+          `covering pull must predate this mutation: ${JSON.stringify(coveringPull)}`,
+        );
+        console.log(
+          "MUTATION_ROWS_ALREADY_COVERED",
+          JSON.stringify({ ...coveringPull, highestSequence }),
+        );
+      }
       await page
         .locator("#conversation-title")
         .getByText("New chat", { exact: true })
@@ -232,7 +316,7 @@ test("mutation projections propagate between pages sharing one browser context @
     // persister completion is timestamped in the renderer page; do not compare
     // those clocks. This test checks observed rows and pull counts directly.
     const pullsBeforeFirst = [...countPulls];
-    const firstId = await createChat(pages[0]);
+    const firstId = await createChat(pages[0], pullsBeforeFirst);
     await pages[1].locator(`[data-chat="${firstId}"]`).waitFor();
     await new Promise((resolve) => setTimeout(resolve, 2100));
     assert.ok(
@@ -248,7 +332,7 @@ test("mutation projections propagate between pages sharing one browser context @
     );
 
     const pullsBeforeReverse = [...countPulls];
-    const secondId = await createChat(pages[1]);
+    const secondId = await createChat(pages[1], pullsBeforeReverse);
     await pages[0].locator(`[data-chat="${secondId}"]`).waitFor();
     await new Promise((resolve) => setTimeout(resolve, 2100));
     assert.deepEqual(
