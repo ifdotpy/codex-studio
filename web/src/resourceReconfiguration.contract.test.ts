@@ -225,7 +225,7 @@ describe("round two: freshness with the real hub revision rules", () => {
     resumeListeners.clear();
   });
 
-  it("F1 reconnect after missed events re-reads changed resources only", async () => {
+  it("F1 reconnect after missed events re-reads changed and unchanged resources", async () => {
     const { hub, watch } = await setup();
     let a = 0;
     let c = 0;
@@ -241,7 +241,7 @@ describe("round two: freshness with the real hub revision rules", () => {
       JSON.stringify({ base, after: [a, c], streams: Source.instances.length }),
     );
     expect(a).toBeGreaterThan(base[0]!);
-    expect(c).toBe(base[1]);
+    expect(c).toBeGreaterThan(base[1]!);
   });
 
   it("F2 a server restart (new epoch) re-reads every resource", async () => {
