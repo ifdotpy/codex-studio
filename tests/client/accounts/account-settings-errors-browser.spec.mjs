@@ -9,6 +9,9 @@ import {
   test,
   browserExecutablePath,
   apiSchemaHandshakeSse,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  syncProtocolFixture,
 } from "../playwright.mjs";
 
 test("Account settings errors", async () => {
@@ -57,8 +60,13 @@ test("Account settings errors", async () => {
         name: "account-error-fixture",
         configureServer(server) {
           server.middlewares.use("/api/sync/identity", (_req, res) => {
+            res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
             res.setHeader("Content-Type", "application/json");
             res.end(JSON.stringify({ workspaceId }));
+          });
+          server.middlewares.use("/api/sync/protocol", (_req, res) => {
+            res.setHeader("Content-Type", "application/json");
+            res.end(JSON.stringify(syncProtocolFixture()));
           });
           server.middlewares.use("/api/sync/stream", (req, res) => {
             const stream = {
@@ -138,7 +146,11 @@ test("Account settings errors", async () => {
     };
     await page.route("**/api/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
-      if (pathname === "/api/sync/identity" || pathname === "/api/sync/stream")
+      if (
+        pathname === "/api/sync/identity" ||
+        pathname === "/api/sync/protocol" ||
+        pathname === "/api/sync/stream"
+      )
         return route.continue();
       if (pathname === "/api/limits") limitsReads++;
       if (route.request().method() !== "GET") mutations.push(pathname);
@@ -361,6 +373,12 @@ test("Account settings errors", async () => {
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
         await page.evaluate((value) => window.showSurface(value), section);
+        if (section === "tools")
+          await page
+            .getByText("Some tools could not load. View details.", {
+              exact: true,
+            })
+            .click();
         await page.getByText(failure.message, { exact: true }).waitFor();
         await details(failure);
       }

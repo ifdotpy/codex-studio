@@ -371,22 +371,19 @@ test("account project ui", async ({ browser: _browser }) => {
       if (legacySnapshotRoute.test(request.url()))
         stateRequests.push(request.url());
     });
-    page.on("response", (response) => {
-      if (new URL(response.url()).pathname !== "/api/sync/pull") return;
-      syncPullResponses.push(
-        response.json().then((payload) => {
-          const entity = payload.documents
-            ?.map((document) => JSON.parse(document.payload))
-            .find(
-              (entity) =>
-                entity.collection === "agent" && entity.id === "empty",
-            );
-          return {
-            after: new URL(response.url()).searchParams.get("after"),
-            accountKey: entity?.value?.accountKey,
-          };
-        }),
-      );
+    await page.route("**/api/sync/pull**", async (route) => {
+      const response = await route.fetch();
+      const payload = await response.json();
+      const entity = payload.documents
+        ?.map((document) => JSON.parse(document.payload))
+        .find(
+          (entity) => entity.collection === "agent" && entity.id === "empty",
+        );
+      syncPullResponses.push({
+        after: new URL(route.request().url()).searchParams.get("after"),
+        accountKey: entity?.value?.accountKey,
+      });
+      await route.fulfill({ response, body: JSON.stringify(payload) });
     });
     const errors = [];
     page.on("pageerror", (error) => {
