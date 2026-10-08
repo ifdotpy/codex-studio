@@ -39,7 +39,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       const scope = url.searchParams.get("scope");
       const after = Number(url.searchParams.get("after"));
       pulls.push({ scope, after });
-      if (scope === "drafts")
+      if (scope === "drafts" || scope === "state:entities:v1")
         return route.fulfill({
           json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
         });
