@@ -272,7 +272,9 @@ If Tailscale requests HTTPS setup, complete that setup and run the command again
 Existing unrelated Serve configurations require manual setup.
 The server accepts the exact origin in `remote-access.json` in its state directory.
 Set `enabled` to `false` there to revoke remote access without a restart.
-Tailscale access rules control who can open Studio. Studio adds no separate login.
+Tailscale access rules control who can open Studio. The phone uses the existing
+Serve session and token flow. Cross-server clients use signed device pairing.
+See the [multi-server access contract](docs/multi-server.md).
 
 RxDB replicates SQLite projections to IndexedDB. It keeps message identities across
 reloads and retries. Different browser drafts remain separate and can be combined.
