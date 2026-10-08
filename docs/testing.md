@@ -87,8 +87,10 @@ children to block and record access to the real user's `.codex`, `.claude`, and
 `.local/state/codex-agents` trees. For the default PTY suite only, it allows a
 read-only open and exec of the single canonical `codexExecutable` printed in the
 plan, and permits that exact resolved path as the `CODEX_BIN` and audit-policy
-environment values passed to the isolated supervisor. The audit also requires
-`HOME`, `CODEX_HOME`, and all `XDG_*` home paths in each launched Codex child to
+environment values passed to the isolated supervisor. Exec detection also
+recognizes the exact executable immediately after a namespace wrapper's `--`
+marker; the wrapper and all other command arguments remain audited. The audit
+also requires `HOME`, `CODEX_HOME`, and all `XDG_*` home paths in each launched Codex child to
 stay outside protected state; this redirected child environment is the
 isolation boundary for native executable state. The audit hooks observe Python-level
 `open`, list, create, remove, rename, SQLite connect, and `subprocess.Popen`

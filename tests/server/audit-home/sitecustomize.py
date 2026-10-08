@@ -56,13 +56,35 @@ if os.environ.get("CODEX_SERVER_TEST_AUDIT_HOME") == "1":
             executable = args[0] if args else None
             argv = args[1] if len(args) > 1 else None
             executable_path = os.path.normcase(os.path.realpath(os.fsdecode(executable))) if executable else ""
-            argv0 = argv[0] if isinstance(argv, (tuple, list)) and argv else None
-            argv0_path = os.path.normcase(os.path.realpath(os.fsdecode(argv0))) if argv0 else ""
-            if allowed_executable and allowed_executable in {executable_path, argv0_path}:
+            argv_items = list(argv) if isinstance(argv, (tuple, list)) else [argv]
+            argv_paths = [
+                os.path.normcase(os.path.realpath(os.fsdecode(value)))
+                if isinstance(value, (str, bytes, os.PathLike)) else ""
+                for value in argv_items
+            ]
+            allowed_argv_index = None
+            if allowed_executable and argv_paths and argv_paths[0] == allowed_executable:
+                allowed_argv_index = 0
+            elif allowed_executable and "--" in argv_items:
+                wrapper_end = argv_items.index("--")
+                if wrapper_end + 1 < len(argv_paths) and argv_paths[wrapper_end + 1] == allowed_executable:
+                    allowed_argv_index = wrapper_end + 1
+            allowed_direct_executable = bool(allowed_executable and executable_path == allowed_executable)
+            if allowed_direct_executable or allowed_argv_index is not None:
                 record = f"ALLOWED_EXEC\t{allowed_executable}\n".encode("utf-8", "backslashreplace")
                 os.write(audit_fd, record)
-                values = [value for value in strings(args[:3])
-                          if os.path.normcase(os.path.realpath(value)) != allowed_executable]
+                values = list(strings(args[:3]))
+                if allowed_direct_executable:
+                    allowed_token = executable_path
+                else:
+                    allowed_token = allowed_executable
+                allowed_occurrences = int(allowed_direct_executable) + int(
+                    allowed_argv_index is not None)
+                for _ in range(allowed_occurrences):
+                    for index, value in enumerate(values):
+                        if os.path.normcase(os.path.realpath(value)) == allowed_token:
+                            del values[index]
+                            break
                 environment = args[3] if len(args) > 3 else None
             else:
                 values = list(strings(args[:2]))

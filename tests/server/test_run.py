@@ -456,6 +456,12 @@ class ServerSuiteRunner(unittest.TestCase):
             audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"]).read_text()
             self.assertIn("ALLOWED_READ\t" + str(executable.resolve()), audit_log)
             self.assertIn("ALLOWED_EXEC\t" + str(executable.resolve()), audit_log)
+            wrapped = subprocess.run(
+                ["/usr/bin/env", "--", str(executable)], cwd=ROOT,
+                env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(wrapped.returncode, 0, wrapped.stderr)
+            self.assertEqual(wrapped.stdout.strip(), "codex-fixture")
             empty_allow = environment.copy()
             empty_allow["CODEX_SERVER_TEST_AUDIT_ALLOW_EXECUTABLE"] = ""
             blocked_empty = subprocess.run(
