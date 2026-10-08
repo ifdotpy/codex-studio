@@ -1,5 +1,10 @@
 import createClient from "openapi-fetch";
 import type { FetchResponse } from "openapi-fetch";
+import type {
+  FilterKeys,
+  OperationRequestBodyContent,
+  PathsWithMethod,
+} from "openapi-typescript-helpers";
 import type { components, paths } from "./generated/api";
 import {
   API_SCHEMA_HASH,
@@ -8,22 +13,20 @@ import {
 } from "./generated/apiSchema";
 import type {
   ApiGetOptions,
-  ApiPathsFor,
+  ApiSuccessBodyFor,
   ApiPathsWithRequiredQuery,
   ApiQueryFor,
-  ApiRequestBodyFor,
-  ApiSuccessBodyFor,
 } from "./apiContracts";
 import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
 import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
 
 type Method = "get" | "post";
-type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
-type Operation<
-  Path extends keyof paths,
-  M extends Method,
-> = Path extends keyof paths ? NonNullable<paths[Path][M]> : never;
+type PathsFor<M extends Method> = PathsWithMethod<paths, M> & keyof paths;
+type Operation<Path extends keyof paths, M extends Method> = FilterKeys<
+  paths[Path],
+  M
+>;
 type QueryOf<Op> = ApiQueryFor<Op>;
 type QueryOfPath<Path extends PathsFor<"get">> = Path extends keyof paths
   ? ApiQueryFor<NonNullable<paths[Path]["get"]>>
@@ -88,8 +91,8 @@ export type GetResult<Path extends PathsFor<"get">> = ApiSuccessBodyFor<
 export type PostResult<Path extends PathsFor<"post">> = ApiSuccessBodyFor<
   Operation<Path, "post">
 >;
-export type PostBody<Path extends PathsFor<"post">> = ApiRequestBodyFor<
-  NonNullable<paths[Path]["post"]>
+export type PostBody<Path extends PathsFor<"post">> = NonNullable<
+  OperationRequestBodyContent<Operation<Path, "post">>
 >;
 
 const deadlines = new Map<
