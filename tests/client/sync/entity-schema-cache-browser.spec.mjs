@@ -66,6 +66,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   let activeHash = oldHash;
   let pendingEntitySequence;
   let pendingChangeEventResolve;
+  let allowPendingChangeEvent = false;
   let newPageStateCheckpoint;
   let firstPullFails = false;
   let pullFailureCount = 0;
@@ -115,16 +116,11 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
         confirmedResources.add(key);
         return true;
       });
-      if (pendingEntitySequence !== undefined)
-        console.log("schema-cache pending stream event", {
-          streamHash,
-          initialResources,
-          pendingEntitySequence,
-        });
       let body = "";
+      let workspaceId;
       if (initialResources.length > 0) {
         const identity = await fetch(new URL("/api/sync/identity", requestUrl));
-        const { workspaceId } = await identity.json();
+        ({ workspaceId } = await identity.json());
         body = protocol3SseEvent("resources", {
           protocol: 3,
           workspaceId,
@@ -133,29 +129,36 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
           reason: "initial",
           resources: initialResources,
         });
-        if (streamHash === nextHash && pendingEntitySequence !== undefined) {
-          body += protocol3SseEvent("resources", {
-            protocol: 3,
-            workspaceId,
-            epoch: "schema-cache-test",
-            revision: 2,
-            reason: "change",
-            resources: [{ kind: "state" }],
-            resourceVersions: [
-              {
-                resource: { kind: "state" },
-                revision: 2,
-                entitySequences: [pendingEntitySequence],
-              },
-            ],
-          });
-          console.log("schema-cache injected change resource event", {
-            sequence: pendingEntitySequence,
-          });
-          pendingChangeEventResolve?.(pendingEntitySequence);
-          pendingChangeEventResolve = undefined;
-          pendingEntitySequence = undefined;
+      }
+      if (
+        streamHash === nextHash &&
+        pendingEntitySequence !== undefined &&
+        allowPendingChangeEvent
+      ) {
+        if (!workspaceId) {
+          const identity = await fetch(
+            new URL("/api/sync/identity", requestUrl),
+          );
+          ({ workspaceId } = await identity.json());
         }
+        body += protocol3SseEvent("resources", {
+          protocol: 3,
+          workspaceId,
+          epoch: "schema-cache-test",
+          revision: 2,
+          reason: "change",
+          resources: [{ kind: "state" }],
+          resourceVersions: [
+            {
+              resource: { kind: "state" },
+              revision: 2,
+              entitySequences: [pendingEntitySequence],
+            },
+          ],
+        });
+        pendingChangeEventResolve?.(pendingEntitySequence);
+        pendingChangeEventResolve = undefined;
+        pendingEntitySequence = undefined;
       }
       return route.fulfill({
         status: 200,
@@ -510,28 +513,34 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       mutationEntity.seq > newPageStateCheckpoint,
       `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint}`,
     );
-    console.log("schema-cache checkpoint/event sequence", {
-      checkpoint: newPageStateCheckpoint,
-      event: mutationEntity.seq,
-    });
     const pullsBeforeMutationEvent = statePulls.filter(
       (pull) => pull.page === newPage,
     ).length;
     pendingEntitySequence = mutationEntity.seq;
+    allowPendingChangeEvent = false;
     const changeEventInjected = new Promise((resolve) => {
       pendingChangeEventResolve = resolve;
     });
     confirmedResources.clear();
-    const retainedCheckpointPull = newPage.waitForRequest((request) => {
+    const firstReloadStatePull = newPage.waitForRequest((request) => {
       const url = new URL(request.url());
       return (
         url.pathname === "/api/sync/pull" &&
-        url.searchParams.get("scope") === "state:entities:v1" &&
-        Number(url.searchParams.get("after")) > 0
+        url.searchParams.get("scope") === "state:entities:v1"
       );
     });
+    await newPage.reload();
+    allowPendingChangeEvent = true;
     await changeEventInjected;
-    await retainedCheckpointPull;
+    const reloadPullRequest = await firstReloadStatePull;
+    const reloadPullAfter = new URL(reloadPullRequest.url()).searchParams.get(
+      "after",
+    );
+    assert.equal(
+      Number(reloadPullAfter),
+      newPageStateCheckpoint,
+      `the reloaded projection cache resumes at checkpoint ${newPageStateCheckpoint}; got after=${reloadPullAfter}`,
+    );
     await expect
       .poll(() => statePulls.filter((pull) => pull.page === newPage).length, {
         message: "the route records the retained-checkpoint pull",
@@ -547,9 +556,13 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       "the valid tab pulls the fixture change from its retained checkpoint",
     );
     assert.equal(
-      Number(checkpointPulls.find((pull) => Number(pull.after) > 0).after),
+      Number(
+        checkpointPulls
+          .slice(pullsBeforeMutationEvent)
+          .find((pull) => Number(pull.after) > 0)?.after,
+      ),
       newPageStateCheckpoint,
-      "the incremental pull starts at the successful reset checkpoint",
+      "the first post-reload incremental pull starts at the successful reset checkpoint",
     );
     await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
       timeout: 30_000,

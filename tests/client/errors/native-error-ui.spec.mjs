@@ -12,9 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("native error ui", async ({ page: runnerPage }) => {
-  // This one test covers many live-runtime scenarios. Solo repeats took 25.2–28.9s;
-  // the loaded checkpoint exceeded Playwright's 30s default at 31.6s.
-  test.setTimeout(60_000);
+  // After replacing the fixed dialog delay, repeats took 17.0–18.1s solo and
+  // 21.7–23.0s under the requested loaded run, leaving 7s below the default bound.
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
