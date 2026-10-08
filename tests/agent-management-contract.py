@@ -25,7 +25,6 @@ from codex_tool_requests import RequestMixin
 class Store(EfficiencyMixin, RequestMixin):
     from codex_runtime import Runtime
     agent_connection = Runtime.agent_connection
-    server_for = Runtime.server_for
     ensure_image_workspace = Runtime.ensure_image_workspace
     workspace_exec_prefix = Runtime.workspace_exec_prefix
 
@@ -63,6 +62,14 @@ class Store(EfficiencyMixin, RequestMixin):
         row=db.execute('SELECT record FROM runtime_agents WHERE id=?',(key,)).fetchone()
         if not row: raise ValueError('Unknown agent')
         return json.loads(row[0])
+    def server_for(self,account_key,connection_id=None):
+        if connection_id is not None:
+            for agent_id,current in self.__dict__.get('linux_connection_ids',{}).items():
+                if current == connection_id:
+                    with self.db() as db: agent=self.agent(agent_id,db)
+                    if agent.get('accountKey','default') != account_key: return None
+                    return self.__dict__.get('linux_servers',{}).get(agent_id)
+        return self.servers.get(account_key)
     def resource_action(self): return {'state':{'claims':self.claims}}
     def reconcile_turn(self,key): self.calls.append(('reconcile',key)); return {'status':'unconfirmed'}
 
@@ -258,8 +265,59 @@ class Contract(unittest.TestCase):
     def test_native_activity_blocks_archive_even_when_local_status_is_completed(self):
         self.rt.native_state='active'
         self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
+    def test_system_error_and_stale_release_receipt_allow_fresh_archive(self):
+        self.worker(status='failed', lastCompletedTurn='done', startAttempt={'turnId':'done'},
+                    turnId=None, nativeRelease={'id':'old', 'phase':'blocked',
+                                                'targetEpoch':0, 'threadId':'worker'})
+        self.rt.native_state='systemError'
+        self.assertEqual(self.call('archive')['status'],'archived')
+        self.assertEqual(self.rt.calls,[('thread/read','worker')])
+    def test_linux_worker_archive_reads_guest_thread_status(self):
+        self.worker(status='failed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None,
+                    nativeRelease={'id':'old', 'phase':'blocked', 'targetEpoch':0})
+        guest_calls=[]
+        class Guest:
+            def call(self, method, params, timeout):
+                guest_calls.append((method, params['threadId']))
+                return {'thread': {'id': params['threadId'], 'status': {'type': 'systemError'}}}
+        self.rt.__dict__['linux_connection_ids']={'worker':'guest-connection'}
+        self.rt.__dict__['linux_servers']={'worker':Guest()}
+        with patch('codex_linux_workspaces.dispose', return_value={'freedBytes': 0}):
+            self.assertEqual(self.call('archive')['status'],'archived')
+        self.assertEqual(guest_calls,[('thread/read','worker')])
+        self.assertEqual(self.rt.calls,[])
+    def test_finished_linux_worker_without_guest_connection_uses_durable_completion(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt=None, turnId=None, inFlight=False)
+        host_calls=[]
+        class Host:
+            def call(self, method, params, timeout):
+                host_calls.append((method, params['threadId']))
+                raise ValueError('Thread is not known to the host provider')
+        self.rt.servers['default']=Host()
+        with patch('codex_linux_workspaces.dispose', return_value={'freedBytes': 0}):
+            self.assertEqual(self.call('archive')['status'],'archived')
+        self.assertEqual(host_calls,[('thread/read','worker')])
+        self.assertNotIn('worker', self.rt.__dict__.get('linux_connection_ids', {}))
+        self.assertNotIn('worker', self.rt.__dict__.get('linux_servers', {}))
+    def test_active_linux_thread_still_blocks_archive(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt=None, turnId=None, inFlight=False)
+        self.rt.native_state='active'
+        self.rt.__dict__['linux_connection_ids']={'worker':'guest-connection'}
+        self.rt.__dict__['linux_servers']={'worker':self.rt.servers['default']}
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
+    def test_finished_linux_worker_without_terminal_turn_status_stays_blocked(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', startAttempt=None, turnId=None, inFlight=False)
+        self.rt.servers.clear()
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
     def test_completed_native_turn_allows_archive_when_account_is_offline(self):
-        self.worker(lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None)
+        self.worker(lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt={'turnId':'done'}, turnId=None)
         self.rt.servers.clear()
         self.assertEqual(self.call('archive')['status'],'archived')
     def test_bulk_archives_finished_worker_without_worktree(self):

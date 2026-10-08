@@ -41,7 +41,9 @@ class OpenFileLimit(unittest.TestCase):
         self.assertEqual((own, child), (1024, 1024))
 
     def test_higher_soft_limit_is_not_lowered(self):
-        own, _ = run_with(100000, resource.RLIM_INFINITY)
+        hard = resource.getrlimit(resource.RLIMIT_NOFILE)[1]
+        self.assertGreaterEqual(hard, 100000, 'The host hard limit must permit this contract')
+        own, _ = run_with(100000, hard)
         self.assertEqual(own, 100000)
 
 

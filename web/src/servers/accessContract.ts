@@ -1,4 +1,17 @@
 import type { PairInvitation } from "./pairing";
+export type ServerAccessPeer = {
+  id: string;
+  clientId: string;
+  serverId: string | null;
+  label: string;
+  origin: string | null;
+  publicKey: string;
+  tailscaleUser: string;
+  status: "discovered" | "paired" | "revoked" | "unreachable";
+  created: number;
+  lastSeen: number | null;
+  autoPair: boolean | null;
+};
 export type ServerAccessState = {
   protocol: 1;
   identity: {
@@ -15,12 +28,17 @@ export type ServerAccessState = {
     status: "paired" | "revoked";
     created?: number;
   }[];
-  servers: unknown[];
+  settings?: { autoPair: boolean };
+  servers: ServerAccessPeer[];
   invites: unknown[];
 };
 export type ServerAccessRequest =
   | { action: "create_invite"; requestId: string; label?: string }
-  | { action: "revoke"; clientId: string; requestId: string };
+  | { action: "revoke"; clientId: string; requestId: string }
+  | { action: "unrevoke"; clientId: string; requestId: string }
+  | { action: "discover"; requestId: string }
+  | { action: "ui_invite"; serverId: string; requestId: string }
+  | { action: "settings"; autoPair: boolean; requestId: string };
 export type ServerAccessResponse =
   | ServerAccessState
   | { invitation: PairInvitation; expires: number }

@@ -14,7 +14,8 @@ from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from codex_workspace import MONITOR_TERMINAL_STATUSES, WorkspaceMixin
+from codex_entity_contracts import MONITOR_TERMINAL_STATUSES
+from codex_workspace import WorkspaceMixin
 
 OLD = """SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN ('running','starting','approval') {scope}
   UNION ALL SELECT record FROM (SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') NOT IN ('running','starting','approval') {scope}
@@ -56,7 +57,9 @@ class RecentMonitors(unittest.TestCase):
         self.db.set_trace_callback(queries.append)
         mixin.recent_monitors(self.db)
         self.db.set_trace_callback(None)
-        plan = " ".join(row[3] for row in self.db.execute("EXPLAIN QUERY PLAN " + queries[-1]))
+        monitor_query = next(query for query in reversed(queries)
+                             if query.lstrip().startswith("SELECT record FROM runtime_monitors"))
+        plan = " ".join(row[3] for row in self.db.execute("EXPLAIN QUERY PLAN " + monitor_query))
         self.assertNotIn("SCAN runtime_monitors", plan)
         self.assertIn("USING INDEX runtime_monitor_status", plan)
 

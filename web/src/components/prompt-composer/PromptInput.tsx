@@ -9,6 +9,8 @@ import ComposerAutocomplete from "../ComposerAutocomplete";
 import { useSkillAutocomplete } from "../useSkillAutocomplete";
 import type { DraftReader, DraftWriter } from "./PromptComposer";
 
+const INPUT_ROWS = 2;
+
 export default function PromptInput(p: {
   value: string;
   session: string;
@@ -16,7 +18,6 @@ export default function PromptInput(p: {
   setDraft: DraftWriter;
   input: RefObject<HTMLTextAreaElement | null>;
   mobile: boolean;
-  shortViewport: boolean;
   managed: boolean;
   canSend: boolean;
   blocked: boolean;
@@ -135,9 +136,6 @@ export default function PromptInput(p: {
           }
         }}
         variant="unstyled"
-        autosize
-        minRows={1}
-        maxRows={p.shortViewport ? 3 : 8}
         id="message"
         ref={p.input}
         aria-label="Message"
@@ -160,7 +158,7 @@ export default function PromptInput(p: {
         onChange={(event) => p.onChange(event.currentTarget.value)}
         error={p.draftTooLong}
         aria-describedby={p.draftTooLong ? "draft-length-error" : undefined}
-        rows={1}
+        rows={INPUT_ROWS}
         onClick={skills.updateRange}
         onBlur={skills.blur}
         onKeyUp={skills.updateRange}

@@ -34,6 +34,10 @@ export async function fixture(label, signed = false) {
     { clientId: "old-ui", label: "Old UI", status: "paired" },
   ];
   const writes = [];
+  const accessRequests = [];
+  let discoveredPeers = [];
+  let autoPair = true;
+  let staleSettingsReceipts = false;
   const pairs = [];
   const streams = new Set();
   const nonces = new Set();
@@ -218,16 +222,58 @@ export async function fixture(label, signed = false) {
       return;
     }
     if (url.pathname === "/api/multi-server") {
+      if (request.method === "POST") accessRequests.push(body);
+      if (["ui_invite", "discover", "settings"].includes(body.action))
+        assert.equal(request.headers["x-canvas-token"], snapshot.token);
+      if (body.action === "ui_invite") {
+        const target = discoveredPeers.find(
+          (row) => row.serverId === body.serverId,
+        );
+        if (!target || target.status !== "paired") {
+          json({ error: "Server not paired" }, 403);
+          return;
+        }
+        json({
+          invitation: target.invitation,
+          expires: target.invitation.expires,
+        });
+        return;
+      }
+      if (body.action === "settings") autoPair = body.autoPair;
       if (body.action === "create_invite") {
         json({ invitation, expires: invitation.expires });
         return;
       }
-      if (body.action === "revoke") accessClients[0].status = "revoked";
+      if (body.action === "revoke") {
+        const peer = discoveredPeers.find(
+          (row) => row.clientId === body.clientId,
+        );
+        if (peer) peer.status = "revoked";
+        else accessClients[0].status = "revoked";
+      }
+      if (body.action === "unrevoke") {
+        const peer = discoveredPeers.find(
+          (row) => row.clientId === body.clientId,
+        );
+        if (peer) {
+          peer.status = "discovered";
+          peer.created += 1;
+        }
+      }
       json({
         protocol: 1,
         identity: invitation,
         clients: accessClients,
-        servers: [],
+        // An exact retry can return an earlier snapshot. GET stays current.
+        settings: {
+          autoPair:
+            staleSettingsReceipts && body.action === "settings"
+              ? !autoPair
+              : autoPair,
+        },
+        servers: discoveredPeers.map(
+          ({ invitation: _invitation, ...peer }) => peer,
+        ),
         invites: [],
       });
       return;
@@ -333,6 +379,31 @@ export async function fixture(label, signed = false) {
     invitation,
     writes,
     pairs,
+    accessRequests,
+    staleSettingsReceipts(value) {
+      staleSettingsReceipts = value;
+    },
+    discoverPeer(peer, status = "paired") {
+      const value = peer.invitation;
+      discoveredPeers = [
+        ...discoveredPeers.filter((row) => row.serverId !== value.serverId),
+        {
+          id: value.serverId,
+          clientId: value.serverId,
+          serverId: value.serverId,
+          kind: "server",
+          label: value.label,
+          origin: value.origin,
+          publicKey: value.publicKey,
+          tailscaleUser: value.tailscaleUser,
+          status,
+          created: 1,
+          lastSeen: Math.floor(Date.now() / 1000),
+          autoPair: true,
+          invitation: value,
+        },
+      ];
+    },
     complete(turnId = "turn-completed") {
       Object.assign(agent, {
         threadId: "thread-overlap",

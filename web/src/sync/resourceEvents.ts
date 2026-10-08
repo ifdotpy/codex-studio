@@ -17,7 +17,8 @@ import {
   markApiSchemaMismatch,
   onApiSchemaMismatch,
 } from "../api";
-import { syncDatabase } from "./client";
+import { persistResourceEntityChanges, syncDatabase } from "./client";
+import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { onResume } from "./resume";
 import { retryableReadError } from "./readRetry";
 import {
@@ -485,6 +486,15 @@ function scheduleFlush() {
   }, RESOURCE_FLUSH_MS);
 }
 
+const entityDelivery = new ResourceEntityDelivery(
+  (event, isCurrent) =>
+    persistResourceEntityChanges(
+      event,
+      () => isCurrent() && event.workspaceId === workspaceId,
+    ),
+  dispatchEvent,
+);
+
 function receiveResourceEvent(value: unknown, fromPeer = false) {
   if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
     throw new TypeError("Invalid resource frame");
@@ -495,8 +505,7 @@ function receiveResourceEvent(value: unknown, fromPeer = false) {
     if (!fromPeer) reconnectNow();
     return;
   }
-  dispatchEvent(event);
-  scheduleFlush();
+  entityDelivery.receive(event);
 }
 
 function acceptHeartbeat(value: unknown, fromPeer = false) {

@@ -35,7 +35,7 @@ AGENT_FIELD_GROUPS = {
         imageWorkspaceHasGit imageWorkspacePhase imageWorkspaceReady imageWorkspaceRepo
         imageWorkspaceSubpath inFlight isLead
         lastAnswer lastCompletedTurn manualName model name nativeLimitErrorAt nativeRelease
-        nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeThreadBlock nativeTurnError parentId parkedEvent
+        nativeSafetyBuffering nativeSafetyRetry nativeStatus nativeThreadBlock nativeTurnError parentId parkedEvent cyberAccessProgram
         pendingSettings pendingSettingsAccountKey pinned project projectFolder projectFolderRevision
         provider quickCreate readState reviewDefaults role rootId sharedRoomId startAttempt status
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
@@ -49,10 +49,11 @@ AGENT_FIELD_GROUPS = {
         branch budgetBlocked budgetStartWait cancelledPark capacityRetryCount checkpointError
         checkpointHistoryHead complaintMisses complaintsPresented
         claudeInputRequest claudeOptions claudePreInputRetry cleanedWorktree compactionsObservedOnly
-        connectionRecovery contextRepair contextRepairHistory cyberAccessProgram
+        connectionRecovery contextRepair contextRepairHistory
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
-        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
+        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceHandoffText
+        imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck
         lastContextRepairWait lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
         liveSteerRejectedTurnId maxAgents maxAgentsExplicit nativeEffort nativeFailureHold nativeName

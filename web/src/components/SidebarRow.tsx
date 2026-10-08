@@ -31,6 +31,7 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
+import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type Actions = {
   prepare: () => void;
@@ -148,6 +149,7 @@ const SidebarRowView = memo(function SidebarRowView({
   events,
   actions,
 }: Omit<Props, "bindings"> & { bindingValues: Bindings; events: Bindings }) {
+  reportPromptComposerRender("sidebar-row", row.id);
   const a = row;
   return (
     <div

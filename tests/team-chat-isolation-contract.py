@@ -186,8 +186,9 @@ class TeamChatIsolation(unittest.TestCase):
         worker = self.worker(lead)
         room, event = self.historical(other, worker)
         self.runtime.chat_message(lead['id'], worker['id'], 'Allowed task', 'allowed')
-        with patch.object(self.runtime.pool, 'submit') as submit:
+        with patch.object(self.runtime, 'delivery_executor') as delivery_executor:
             self.runtime.dispatch()
+        submit = delivery_executor.return_value.submit
         batches = [call.args[2] for call in submit.call_args_list if call.args[0] == self.runtime.start]
         self.assertEqual(len(batches), 1)
         self.assertEqual([r['id'] for r in batches[0]], ['chat:allowed:' + worker['id']])

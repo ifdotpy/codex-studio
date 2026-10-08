@@ -159,7 +159,10 @@ class RuntimeWalKeeperContract(unittest.TestCase):
             except BaseException as error:
                 constructor_errors.append(error)
 
-        with patch.object(codex_runtime, '_RuntimeWalKeeper', side_effect=create_keeper):
+        # This fixture covers the history-start failure. A search migration can
+        # sleep for 30 seconds when the host cannot meet its disk-space reserve.
+        with patch.object(Runtime, 'search_migration_start'), \
+                patch.object(codex_runtime, '_RuntimeWalKeeper', side_effect=create_keeper):
             with patch.object(Runtime, '_cleanup_failed_initialization', autospec=True,
                               side_effect=cleanup_and_record):
                 with patch.object(Runtime, 'analytics_history_start', autospec=True,

@@ -1,9 +1,3 @@
-.server-manager-launch {
-  position: fixed;
-  bottom: 8px;
-  left: 12px;
-  z-index: 100;
-}
 .multi-server-shell {
   display: flex;
   width: 100%;
@@ -126,17 +120,4 @@ html[data-server-view] .workspace {
 .server-sidebar {
   font-size: var(--studio-sidebar-font-size);
   font-family: var(--studio-font-family);
-}
-/* On phones the floating Servers button covered the composer footer. Show it
-   only while the conversations drawer is open, in the drawer's free corner. */
-@media (max-width: 760px) {
-  .server-manager-launch {
-    display: none;
-  }
-  body:has(#sidebar) .server-manager-launch {
-    display: inline-flex;
-    bottom: 12px;
-    left: 16px;
-    z-index: 1000;
-  }
 }

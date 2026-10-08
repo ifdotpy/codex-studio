@@ -87,8 +87,11 @@ class MonitorServer(fixture.FakeServer):
             future.set_result({"exitCode": code, "stdout": "", "stderr": ""})
 
     def close(self):
-        for key in tuple(self.commands):
-            self.finish(key)
+        # A timed-out command has an unknown outcome. Disconnecting the fake
+        # transport must not turn it into a successful synthetic completion.
+        if not self.timeout_commands:
+            for key in tuple(self.commands):
+                self.finish(key)
         super().close()
 
 

@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import copy
 import concurrent.futures
 import importlib.util
+import shutil
 import subprocess
 import shutil
 import sys
@@ -23,18 +24,29 @@ spec.loader.exec_module(fixture)
 
 
 class ImageWorkspaceRuntime(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_template_temp = tempfile.TemporaryDirectory(prefix='image-workspace-repo-template-')
+        cls.addClassCleanup(cls.repo_template_temp.cleanup)
+        cls.repo_template = Path(cls.repo_template_temp.name) / 'repo'
+        (cls.repo_template / 'project').mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(cls.repo_template)], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.name', 'Fixture'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.email', 'fixture@example.test'], check=True)
+        # The repo is copied by parallel tests. Background Git maintenance can
+        # create/remove .git/objects/maintenance.lock during copytree.
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'gc.auto', '0'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'maintenance.auto', 'false'], check=True)
+        (cls.repo_template / 'project' / 'tracked.txt').write_text('base\n')
+        subprocess.run(['git', '-C', str(cls.repo_template), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'commit', '-qm', 'base'], check=True)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='image-workspace-runtime-')
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
-        (self.repo / 'project').mkdir(parents=True)
+        shutil.copytree(self.repo_template, self.repo)
         self.repo = self.repo.resolve()
-        subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'config', 'user.name', 'Fixture'], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'config', 'user.email', 'fixture@example.test'], check=True)
-        (self.repo / 'project' / 'tracked.txt').write_text('base\n')
-        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'commit', '-qm', 'base'], check=True)
         self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
         self.lead = self.rt.new_lead({'cwd': str(self.repo)})
@@ -172,6 +184,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
                               (worker + ':initial',)).fetchone()[0]
         self.assertIn('copy of ' + str(self.repo), text)
         self.assertIn('uncommitted changes', text)
+        self.assertIn('End this turn if no more read-only work remains.', text)
+        self.assertIn('When the workspace-ready notice arrives, follow its instruction', text)
         self.assertNotIn('[Studio worker base]', text)
 
     def test_spawn_starts_read_only_even_in_yolo_until_ready_notice(self):
@@ -190,7 +204,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         with self.rt.db() as db:
             text = db.execute('SELECT text FROM runtime_events WHERE id=?',
                               (worker + ':initial',)).fetchone()[0]
-        self.assertIn('read-only until Studio sends a workspace-ready notice', text)
+        self.assertIn('This turn is read-only.', text)
+        self.assertIn('Studio sends a workspace-ready notice when the copy is ready.', text)
         self.assertIn('Read the source folder at ' + record['cwd'] + ' by its absolute path', text)
 
     def test_folder_outside_git_gets_an_image_when_supported(self):
@@ -322,8 +337,23 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             'type': 'workspaceWrite', 'writableRoots': [temp_dir],
             'networkAccess': False})
         eventually(lambda: self.rt.agent(worker_id)['turnId'] is not None)
-        self.rt.server.complete(self.rt.agent(worker_id)['threadId'],
-                                self.rt.agent(worker_id)['turnId'])
+        initial_turn = self.rt.agent(worker_id)['turnId']
+        thread_id = self.rt.agent(worker_id)['threadId']
+        server = self.rt.server
+        second_turn_started = threading.Event()
+        original_notify = server._notify
+
+        def notify_after_second_turn(message):
+            original_notify(message)
+            params = message.get('params', {})
+            turn = params.get('turn', {})
+            if (message.get('method') == 'turn/started' and
+                    params.get('threadId') == thread_id and
+                    turn.get('id') != initial_turn):
+                second_turn_started.set()
+
+        server._notify = notify_after_second_turn
+        self.rt.server.complete(thread_id, initial_turn)
         eventually(lambda: not self.rt.agent(worker_id)['inFlight'])
         mount = self.root / 'protocol-mount'
         project = mount / 'repo' / 'project'
@@ -337,9 +367,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             self.rt.image_base_completed(worker_id, {'state': 'ready'})
             self.rt.dispatch()
-            eventually(lambda: len([params for method, params in self.rt.server.calls
-                                    if method == 'turn/start' and params['threadId'] ==
-                                    self.rt.agent(worker_id)['threadId']]) >= 2)
+            self.assertTrue(second_turn_started.wait(30),
+                            'ready image base did not start the resumed turn')
             notice_turn = [params for method, params in self.rt.server.calls if method == 'turn/start'
                            and params['threadId'] == self.rt.agent(worker_id)['threadId']][-1]
             resume = [params for method, params in self.rt.server.calls if method == 'thread/resume'
@@ -348,6 +377,109 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             self.assertEqual(notice_turn['cwd'], str(project))
             self.assertEqual(notice_turn['sandboxPolicy']['type'], 'workspaceWrite')
             self.assertIn(str(project), notice_turn['input'][0]['text'])
+
+    def active_workspace_handoff(self, provider, lose_reply=False):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state': 'building'})
+        worker_id = self.spawn(provider + ' active')['id']
+        with self.rt.lock, self.rt.db() as db:
+            worker = self.rt.agent(worker_id, db)
+            worker.update(provider=provider, yoloMode=False)
+            self.rt.put(db, 'agents', worker)
+        with patch('codex_claude_auth_wait.require_auth'):
+            self.rt.prepare(self.rt.agent(worker_id))
+            self.rt.dispatch(worker_id)
+            fixture.f.eventually(lambda: self.rt.delivery_receipt(
+                worker_id + ':initial')['status'] == 'delivered')
+        initial = self.rt.agent(worker_id)
+        turn_id = initial['turnId']
+        initial_params = [p for m, p in self.rt.server.calls if m == 'turn/start'][-1]
+        initial_policy = copy.deepcopy(initial_params['sandboxPolicy'])
+        self.assertNotIn(str(self.repo / 'project'), initial_policy.get('writableRoots', []))
+        if provider == 'claude':
+            self.assertEqual(initial_policy['type'], 'readOnly')
+        mount = self.root / (provider + '-active-mount')
+        project = mount / 'repo' / 'project'
+        project.mkdir(parents=True)
+        engine = types.ModuleType('codex_workspace_images')
+        engine.create_workspace = Mock(return_value={
+            'mount': str(mount), 'path': str(mount / 'repo')})
+        engine.ensure_mounted = Mock(return_value={
+            'mount': str(mount), 'path': str(mount / 'repo')})
+        engine.exec_prefix = Mock(return_value=[])
+        handoff_id = 'image-workspace-handoff:' + worker_id
+        ready_id = 'image-workspace-ready:' + worker_id
+        original_call = self.rt.server.call
+        effective = {'cwd': initial_params['cwd'], 'policy': initial_policy}
+
+        def call(method, params, timeout=60):
+            if method == 'turn/start':
+                # Both providers keep the active turn's execution context.
+                if params['threadId'] not in self.rt.server.active_turns:
+                    effective.update(cwd=params['cwd'], policy=params['sandboxPolicy'])
+                if lose_reply and params.get('clientUserMessageId') == handoff_id:
+                    original_call(method, params, timeout)
+                    raise RuntimeError('response timed out; outcome unknown')
+            return original_call(method, params, timeout)
+
+        with patch.dict(sys.modules, {'codex_workspace_images': engine}), \
+                patch.object(self.rt.server, 'call', side_effect=call):
+            self.rt.image_base_completed(worker_id, {'state': 'ready'})
+            self.rt.dispatch(worker_id)
+            fixture.f.eventually(lambda: self.rt.delivery_receipt(handoff_id) is not None)
+            fixture.f.eventually(lambda: self.rt.delivery_receipt(handoff_id)['status'] ==
+                                 ('uncertain' if lose_reply else 'delivered'))
+            self.assertEqual(self.rt.agent(worker_id)['turnId'], turn_id)
+            self.assertEqual(effective, {'cwd': initial_params['cwd'], 'policy': initial_policy})
+            self.assertEqual(self.rt.delivery_receipt(ready_id)['status'], 'pending')
+            with self.rt.db() as db:
+                text = db.execute('SELECT text FROM runtime_events WHERE id=?', (handoff_id,)).fetchone()[0]
+            self.assertIn('Your copy is ready at ' + str(project), text)
+            self.assertIn('End this turn now', text)
+            self.assertNotIn('Write access is enabled', text)
+            self.rt.image_base_completed(worker_id, {'state': 'ready'})
+            self.rt._send_image_workspace_notice(worker_id, 'changed callback text', ready_id)
+            self.rt.dispatch(worker_id)
+            self.assertEqual(sum(m == 'turn/start' and p.get('clientUserMessageId') == handoff_id
+                                 for m, p in self.rt.server.calls), 1)
+            if lose_reply:
+                # Simulate restart after both event commits, before the final marker.
+                with self.rt.lock, self.rt.db() as db:
+                    record = self.rt.agent(worker_id, db)
+                    record.pop('imageWorkspaceNoticeSent', None)
+                    self.rt.put(db, 'agents', record)
+                self.rt.close()
+                self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
+                self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
+                self.rt._send_image_workspace_notice(worker_id, 'changed callback text', ready_id)
+                self.rt.dispatch(worker_id)
+                self.assertEqual(self.rt.delivery_receipt(handoff_id)['status'], 'uncertain')
+                self.assertIsNone(self.rt.server)
+                with self.rt.db() as db:
+                    self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE id=?',
+                                                (handoff_id,)).fetchone()[0], 1)
+                    self.assertEqual(db.execute('SELECT text FROM runtime_events WHERE id=?',
+                                                (handoff_id,)).fetchone()[0], text)
+                return
+            self.rt.server.complete(initial['threadId'], turn_id)
+            fixture.f.eventually(lambda: not self.rt.agent(worker_id)['inFlight'])
+            with patch('codex_claude_auth_wait.require_auth'):
+                self.rt.dispatch(worker_id)
+                fixture.f.eventually(lambda: self.rt.delivery_receipt(ready_id)['status'] == 'delivered')
+            self.assertEqual(effective['cwd'], str(project))
+            self.assertEqual(effective['policy']['type'], 'workspaceWrite')
+            self.assertEqual(effective['policy']['writableRoots'], [str(project)])
+            self.assertNotEqual(self.rt.agent(worker_id)['turnId'], turn_id)
+            engine.create_workspace.assert_called_once()
+
+    def test_codex_ready_notice_reaches_active_turn_once_then_switches_copy(self):
+        self.active_workspace_handoff('codex')
+
+    def test_claude_ready_notice_reaches_active_turn_once_then_switches_copy(self):
+        self.active_workspace_handoff('claude')
+
+    def test_restart_during_ready_notice_delivery_keeps_unknown_without_replay(self):
+        self.active_workspace_handoff('codex', lose_reply=True)
 
     def test_ready_base_during_initial_preparation_preserves_thread_and_input(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')

@@ -60,7 +60,7 @@ class AccountServer(f.FakeServer):
 class ControlledRuntime(f.Runtime):
     def schedule(self):
         while not self.closed:
-            self.changed.wait(0.05)
+            self.changed.wait()
             self.changed.clear()
 
 

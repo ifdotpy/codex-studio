@@ -78,3 +78,78 @@ it("keeps the original stream tracked after replay and aborts it on frame remova
   await original;
   stop();
 });
+
+it("rejects management writes and pairing routes from an owned frame", async () => {
+  let receive!: (event: unknown) => Promise<void>;
+  const replies: Record<string, unknown>[] = [];
+  const fetchRequest = vi.fn(async () => new Response("ok"));
+  const frame = {
+    src: "http://studio-remote.localhost:1234/",
+    isConnected: true,
+    contentWindow: {
+      postMessage: (value: unknown) =>
+        replies.push(value as Record<string, unknown>),
+    },
+  };
+  vi.stubGlobal("window", {
+    addEventListener: (_: string, fn: typeof receive) => (receive = fn),
+    removeEventListener() {},
+  });
+  vi.stubGlobal("document", { body: {} });
+  vi.stubGlobal(
+    "MutationObserver",
+    class {
+      observe() {}
+      disconnect() {}
+    },
+  );
+  vi.stubGlobal("fetch", fetchRequest);
+  const stop = bindShellTransport(
+    new Map([["remote", frame as unknown as HTMLIFrameElement]]),
+  );
+  for (const path of [
+    "/api/multi-server",
+    "/api/multi-server/",
+    "/api/multi%2dserver",
+    "/api/multi-server/v1/pair",
+    "/api/multi-server/v1/auto-pair",
+  ]) {
+    await receive({
+      source: frame.contentWindow,
+      origin: new URL(frame.src).origin,
+      data: {
+        kind: "studio-server-transport",
+        correlation: path,
+        value: {
+          action: "request",
+          serverId: "remote",
+          streamId: path,
+          url: "https://remote.tailnet.ts.net" + path,
+          method: "POST",
+          body: new TextEncoder().encode('{"action":"unrevoke"}').buffer,
+        },
+      },
+    });
+    expect(replies.at(-1)?.error).toBe(
+      "Use the workspace shell for server management.",
+    );
+  }
+  expect(fetchRequest).not.toHaveBeenCalled();
+  await receive({
+    source: frame.contentWindow,
+    origin: new URL(frame.src).origin,
+    data: {
+      kind: "studio-server-transport",
+      correlation: "message",
+      value: {
+        action: "request",
+        serverId: "remote",
+        streamId: "message",
+        url: "https://remote.tailnet.ts.net/api/messages",
+        method: "POST",
+      },
+    },
+  });
+  expect(fetchRequest).toHaveBeenCalledOnce();
+  stop();
+});

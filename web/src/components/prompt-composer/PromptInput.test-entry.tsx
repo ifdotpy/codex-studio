@@ -32,7 +32,6 @@ function IsolatedInputHarness() {
         setDraft={setValue}
         input={input}
         mobile={false}
-        shortViewport={false}
         managed
         canSend={canSend}
         blocked={false}

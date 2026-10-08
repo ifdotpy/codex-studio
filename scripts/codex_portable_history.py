@@ -234,6 +234,18 @@ def _inspect(rt, path, expected=None):
                 header = value
             elif kind == 'ancestor':
                 ancestors.append(value['archive'])
+            elif kind == 'native_unmaterialized' and value.get('emptyProof') is not None:
+                proof = value['emptyProof']
+                proof_native = proof.get('nativeHistory') if isinstance(proof, dict) else None
+                if (not isinstance(proof, dict) or not header
+                        or value.get('threadId') != header['source'].get('threadId')
+                        or proof.get('origin') != 'completed_empty_thread_start'
+                        or not isinstance(proof.get('transferId'), str) or not proof.get('transferId')
+                        or not isinstance(proof_native, dict) or proof_native.get('threadId') != value.get('threadId')
+                        or proof_native.get('nativeTurns') != 0 or proof_native.get('nativeItems') != 0
+                        or proof_native.get('nativeRealtimeItems') != 0
+                        or not proof_native.get('rolloutMissing')):
+                    raise ValueError('Portable history has an invalid checked-empty native proof')
             elif kind == 'studio_item':
                 item = value['item']
                 if not item.get('afterRestore'):
@@ -276,7 +288,7 @@ def _validate(rt, descriptor):
     return current
 
 
-def export_history(rt, agent, transfer_id, source_server):
+def export_history(rt, agent, transfer_id, source_server, *, native_empty_proof=None):
     """Publish once per exact transfer and source. Retry reads the same archive."""
     _identity(transfer_id, 'transfer identity')
     _identity(agent.get('id'), 'chat identity')
@@ -317,10 +329,16 @@ def export_history(rt, agent, transfer_id, source_server):
                 write(record)
             if agent.get('threadId'):
                 _identity(agent['threadId'], 'native thread identity')
-                if source_server is None:
+                if native_empty_proof is not None:
+                    if native_empty_proof.get('threadId') != agent['threadId']:
+                        raise ValueError('Checked-empty native proof belongs to another source thread')
+                    write({'kind': 'native_unmaterialized', 'threadId': agent['threadId'],
+                           'emptyProof': native_empty_proof})
+                elif source_server is None:
                     raise ValueError('The source native history connection is unavailable')
-                for record in _native_records(source_server, agent['threadId']):
-                    write(record)
+                else:
+                    for record in _native_records(source_server, agent['threadId']):
+                        write(record)
             output.write(_encode({'kind': 'footer', 'counts': dict(counts), 'contentSha256': digest.hexdigest()}))
             output.flush()
             os.fsync(output.fileno())
@@ -340,6 +358,20 @@ def export_history(rt, agent, transfer_id, source_server):
         raise ValueError('This transfer already exported another source identity')
     _validate(rt, descriptor)
     return descriptor
+
+
+def has_checked_empty_source_archive(rt, agent, transfer_id):
+    """Return whether this exact transfer already published an empty-source marker."""
+    path = _path(rt, _source(agent), transfer_id)
+    if not path.exists():
+        return False
+    _inspect(rt, path)
+    with path.open('rb') as archive:
+        for raw in archive:
+            record = json.loads(raw)
+            if record.get('kind') == 'native_unmaterialized' and record.get('emptyProof') is not None:
+                return True
+    return False
 
 
 def history_context(rt, descriptor):

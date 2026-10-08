@@ -79,13 +79,25 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
       invitation,
       requestId: "pair-once",
     };
+    const identity = {
+      origin: invitation.origin,
+      serverId: invitation.serverId,
+      inviteId: invitation.inviteId,
+      requestId: attempt.requestId,
+    };
+    expect(await adapter.hasPairAttempt(identity)).toBe(false);
     await expect(adapter.pair(attempt)).rejects.toThrow("response lost");
+    expect(await adapter.hasPairAttempt(identity)).toBe(true);
+    await expect(
+      adapter.hasPairAttempt({ ...identity, serverId: "another-server" }),
+    ).rejects.toThrow("another pairing attempt");
     adapter = createServerCredentials({
       profile: root,
       safeStorage,
       fetchRequest,
     });
     const server = await adapter.pair(attempt);
+    expect(await adapter.hasPairAttempt(identity)).toBe(true);
     expect(calls[0].text).toBe(calls[1].text);
     expect(calls[0].headers["x-studio-nonce"]).not.toBe(
       calls[1].headers["x-studio-nonce"],

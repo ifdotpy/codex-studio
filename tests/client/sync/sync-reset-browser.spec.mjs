@@ -2,7 +2,18 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
+
+const fulfill = (route, response) =>
+  route.fulfill({
+    ...response,
+    headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+  });
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -52,22 +63,22 @@ test("sync reset browser", async ({ browser: _browser }) => {
     });
     const requests = [];
     await page.route("**/sync-reset-check", (route) =>
-      route.fulfill({
+      fulfill(route, {
         contentType: "text/html",
         body: "<!doctype html><title>Sync reset contract</title>",
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      fulfill(route, { json: { workspaceId } }),
     );
     await page.route("**/api/sync/stream**", (route) =>
-      route.fulfill({
+      fulfill(route, {
         contentType: "text/event-stream",
         body: apiSchemaHandshakeSse(),
       }),
     );
     await page.route("**/api/sync/drafts", (route) =>
-      route.fulfill({ json: [] }),
+      fulfill(route, { json: [] }),
     );
     await page.route("**/api/sync/pull?**", async (route) => {
       const url = new URL(route.request().url());
@@ -80,11 +91,11 @@ test("sync reset browser", async ({ browser: _browser }) => {
         fresh: url.searchParams.get("fresh"),
       });
       if (scope === "drafts")
-        return route.fulfill({
+        return fulfill(route, {
           json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
         });
       if (after === 950)
-        return route.fulfill({
+        return fulfill(route, {
           json: { workspaceId, reset: true, floor: 1000, maxSeq: 1000 },
         });
       if (after === 0) {
@@ -101,7 +112,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
             _deleted: false,
           };
         });
-        return route.fulfill({
+        return fulfill(route, {
           json: {
             workspaceId,
             documents,
@@ -115,7 +126,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
         secondPageRequested();
         await secondPageRelease;
         const id = "agent-500";
-        return route.fulfill({
+        return fulfill(route, {
           json: {
             workspaceId,
             documents: [
@@ -137,7 +148,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
         });
       }
       if (after === 1000)
-        return route.fulfill({
+        return fulfill(route, {
           json: {
             workspaceId,
             documents: [],

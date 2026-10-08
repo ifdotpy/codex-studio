@@ -358,7 +358,8 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
     scripts = guest_dir.parents[1] / 'scripts'
     for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py',
-                 'codex_open_file_limit.py', 'codex_records.py']:
+                 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
+                 'codex_private_paths.py']:
         source = scripts / name
         if not source.is_file():
             raise LinuxVMError(f'The Linux VM runtime payload is unavailable: {name}.')

@@ -131,6 +131,22 @@ def wait_for(fn, timeout=5):
 
 
 class ProcessProxyTailDeliveryContract(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX keeps legacy unbounded event frames")
+    def test_large_durable_stdout_event_keeps_legacy_frame_size(self):
+        sender, receiver = socket.socketpair()
+        stream = receiver.makefile("rb")
+        event = {"kind": "stdout", "payload": "x" * 1_100_000}
+        try:
+            writer = threading.Thread(target=process_supervisor._send, args=(sender, event))
+            writer.start()
+            self.assertEqual(process_supervisor._recv(receiver, stream), event)
+            writer.join(timeout=2)
+            self.assertFalse(writer.is_alive())
+        finally:
+            stream.close()
+            sender.close()
+            receiver.close()
+
     def test_process_exit_does_not_overtake_final_stdout_event(self):
         proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
         proxy.detached = False
@@ -441,6 +457,37 @@ class StdoutPersistenceContract(unittest.TestCase):
         exit_events = [event for event in self.saved()[1] if event['kind'] == 'exit']
         self.assertEqual(len(exit_events), 1)
         self.assertEqual(json.loads(exit_events[0]['payload']), {'returnCode':0})
+
+    def test_old_stdout_reader_drops_frame_after_generation_changes_during_storage_wait(self):
+        entered = threading.Event()
+        release = threading.Event()
+        self.child = process_supervisor.Child(self.handle, self.process, 'exact-signature')
+        self.supervisor.children[self.handle] = self.child
+
+        def wait_for_space(_required):
+            entered.set()
+            release.wait(3)
+
+        self.journal.ensure_space = wait_for_space
+        self.process.stdin.write(json.dumps({'method': 'old-generation'}) + '\n')
+        self.process.stdin.flush()
+        self.assertTrue(entered.wait(2))
+        with self.original_db() as db:
+            db.execute('UPDATE handles SET generation=2 WHERE id=?', (self.handle,))
+        release.set()
+        self.process.stdin.write(':close-stdout\n')
+        self.process.stdin.flush()
+        self.process.stdin.close()
+        self.process.wait(timeout=3)
+        self.child.reader.join(timeout=3)
+        self.assertFalse(self.child.reader.is_alive())
+        with self.original_db() as db:
+            row = db.execute('SELECT generation,sequence FROM handles WHERE id=?',
+                             (self.handle,)).fetchone()
+            events = list(db.execute('SELECT kind,generation FROM events WHERE handle=?',
+                                     (self.handle,)))
+        self.assertEqual(tuple(row), (2, 0))
+        self.assertEqual(events, [])
 
     def test_full_insert_rolls_back_and_keeps_stdout_reader(self):
         error = sqlite3.OperationalError('database or disk is full')
@@ -919,8 +966,10 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(completed, 1)
         self.assertEqual(restart_errors, 0)
         # This monitor was never submitted, so it cannot hold the completed turn.
-        self.assertEqual(second.agent(agent['id'])['status'], 'completed')
-        self.assertNotIn('Server restarted during a turn', second.agent(agent['id']).get('error') or '')
+        current = second.agent(agent['id'])
+        self.assertEqual(current['lastCompletedTurnStatus'], 'completed')
+        self.assertEqual(current['status'], 'completed')
+        self.assertNotIn('Server restarted during a turn', current.get('error') or '')
         operations = [json.loads(line)['method'] for line in
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('longTurn'), 1)
@@ -1218,13 +1267,10 @@ class ProcessSupervisorContract(unittest.TestCase):
 
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
-        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
+        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: server)
         def close_runtime():
-            self.assertTrue(all(server is None for server in runtime.servers.values()))
             self.assertEqual(runtime.__dict__.get('_late_servers', []), [])
             self.assertEqual(runtime.__dict__.get('_native_tools_retiring', {}), {})
-            runtime.servers.clear()
-            runtime.server = None
             runtime.close()
         self.addCleanup(close_runtime)
         agent = runtime.create({'name': 'Burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
@@ -1550,6 +1596,60 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    @unittest.expectedFailure  # Product defect: reattach rejects the verified retained Node executable.
+    def test_claude_reattach_keeps_verified_node_after_automatic_discovery_changes(self):
+        original_command = [process_supervisor.process_launch_command(os.getpid())[0], str(self.binary)]
+        replacement = self.root / 'different-node'
+        replacement.write_text('#!/bin/sh\ntouch "' + str(self.root / 'wrong-node-started') + '"\n')
+        replacement.chmod(0o700)
+
+        def connect(command, env):
+            with patch('codex_claude.transport', return_value=(command, env)):
+                server = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
+                                   provider='claude', supervisor_handle='account:claude-fixture')
+            self.servers.append(server)
+            return server
+
+        first = connect(original_command, dict(os.environ))
+        signature = process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')
+        pid = signature['pid']
+        first.close()
+        second = connect([str(replacement), *original_command[1:]],
+                         dict(os.environ, PATH='/usr/bin:/bin', LC_ALL='C'))
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')['pid'], pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')['signature'], signature['signature'])
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+        second.close()
+        for key in ('STUDIO_NODE_BIN', 'STUDIO_CLAUDE_ACCOUNT', 'STUDIO_CLAUDE_OPTIONS',
+                    'CLAUDE_CONFIG_DIR'):
+            with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+                connect([str(replacement), *original_command[1:]],
+                        dict(os.environ, **{key: 'changed-setting'}))
+        with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+            connect([str(replacement), str(self.binary), 'changed-bridge-argument'], dict(os.environ))
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+        retained_launch = process_supervisor.retained_native_launch
+
+        def exit_after_proof(*args):
+            retained = retained_launch(*args)
+            os.kill(pid, signal.SIGTERM)
+            wait_for(lambda: process_supervisor.process_start_time(pid) is None)
+            return retained
+
+        with patch.object(process_supervisor, 'retained_native_launch', side_effect=exit_after_proof):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify the retained supervisor child'):
+                connect([str(replacement), *original_command[1:]], dict(os.environ))
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+
     def test_backend_diagnostics_do_not_change_native_launch(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
@@ -1620,7 +1720,17 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
-    def test_legacy_launch_rejects_account_changes_and_unverified_pid(self):
+    def test_legacy_launch_rejects_unverified_live_process_identity(self):
+        # Keep the handle live: verification must fail closed when its process
+        # start identity cannot be matched before any changed launch is reused.
+        self.server()
+        with patch.object(process_supervisor, 'process_start_matches', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
+                process_supervisor.native_launch_environment(
+                    self.root, 'account:default', ['replacement-native', 'app-server'],
+                    dict(os.environ), None)
+
+    def test_legacy_launch_rejects_account_changes_after_close(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):
             first = self.server()
@@ -1629,9 +1739,6 @@ class ProcessSupervisorContract(unittest.TestCase):
         os.environ['CODEX_AGENTS_BACKEND_ID'] = 'replacement-' + str(uuid.uuid4())
         with patch.dict(os.environ, {'CODEX_HOME': str(self.root/'different-account')}):
             with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
-                self.server()
-        with patch.object(process_supervisor, 'process_start_time', return_value='different start'):
-            with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
                 self.server()
         os.environ['CODEX_AGENTS_BACKEND_ID'] = 'another-backend-' + str(uuid.uuid4())
         wait_for(lambda: status(self.root))
@@ -1734,6 +1841,19 @@ class ProcessSupervisorContract(unittest.TestCase):
         server = self.server()
         server.initialize_result = {'capabilities': {'claudeVersion': 14}}
         server.provider_options = {}
+        def initialized_transport_is_idle():
+            try:
+                accepted = self._operation_accepted('initialized:account:default')
+            except sqlite3.OperationalError:
+                return False
+            return (
+                (self.root / 'native-initialized').exists()
+                and accepted
+                and not server.pending
+                and server.callbacks.empty()
+                and server.clock_replies.empty()
+            )
+        wait_for(initialized_transport_is_idle)
         runtime = object.__new__(Runtime)
         runtime.root = self.root
         runtime.lock = threading.RLock()

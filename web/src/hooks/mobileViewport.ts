@@ -23,7 +23,6 @@ export function useMobileViewport(enabled: boolean) {
       if (!Number.isFinite(height) || height <= 0 || !Number.isFinite(top))
         return;
       const keyboard = layoutHeight - height - top > 100;
-      root.dataset.mobileKeyboard = String(keyboard);
       root.style.setProperty("--mobile-viewport-height", `${height}px`);
       root.style.setProperty("--mobile-viewport-top", `${top}px`);
       root.style.setProperty(
@@ -38,13 +37,12 @@ export function useMobileViewport(enabled: boolean) {
       );
       // Safari can retain a document scroll offset after it reveals a focused input.
       const activeElement = document.activeElement;
-      const androidComposerFocused =
-        /Android/i.test(navigator.userAgent) &&
+      const composerFocused =
         activeElement instanceof HTMLTextAreaElement &&
         activeElement.matches("#composer textarea");
-      // Android's IME language picker dismisses if its geometry update also
-      // forces the page to scroll. Keep the browser's scroll state while typing.
-      if ((window.scrollX || window.scrollY) && !androidComposerFocused)
+      // Keep native keyboard/picker interactions in the browser's control
+      // while the composer is focused, on every platform.
+      if ((window.scrollX || window.scrollY) && !composerFocused)
         window.scrollTo(0, 0);
     };
     const schedule = () => {
@@ -70,7 +68,6 @@ export function useMobileViewport(enabled: boolean) {
         "--mobile-safe-area-top",
       ])
         root.style.removeProperty(property);
-      delete root.dataset.mobileKeyboard;
     };
   }, [enabled]);
 }

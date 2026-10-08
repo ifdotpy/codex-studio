@@ -852,7 +852,15 @@ test("account project ui", async ({ browser: _browser }) => {
       exact: true,
     });
     const otherRow = removalManager.locator('[data-account="other"]');
-    await otherRow.getByRole("button", { name: "Delete account" }).click();
+    await otherRow
+      .getByRole("button", {
+        name: "Actions for another.long.account@example.com",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("menuitem", { name: "Delete account", exact: true })
+      .click();
     const deletion = page.getByRole("dialog", {
       name: "Delete account",
       exact: true,

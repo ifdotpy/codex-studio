@@ -3,20 +3,17 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
-import ast
 import errno
 from pathlib import Path
 import sqlite3
-import time
-import types
+import sys
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
-source = Path(__file__).resolve().parents[1] / "scripts/codex_runtime.py"
-module = ast.parse(source.read_text())
-cls = next(n for n in module.body if isinstance(n, ast.ClassDef) and n.name == "Runtime")
-method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "schedule")
-scope = {"time": time, "startup_memory_mark": lambda _: None}
-exec(compile(ast.Module(body=[method], type_ignores=[]), str(source), "exec"), scope)
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from codex_runtime import Runtime
 
 class SchedulerDiskContract(unittest.TestCase):
     def exercise(self, fail_on):
@@ -34,25 +31,33 @@ class SchedulerDiskContract(unittest.TestCase):
             def wait(self, _):
                 seen.append("wait")
                 if seen.count("wait") > 3: raise AssertionError("Scheduler did not recover")
+                if seen.count("wait") == 3: rt.closed = True
+                return True
             def clear(self): pass
-        rt = types.SimpleNamespace(root=Root(), changed=Wake(), closed=False)
+        rt = Runtime.__new__(Runtime)
+        rt.root, rt.changed, rt.closed = Root(), Wake(), False
+        rt._retry_dirty_workspace_refresh = lambda: None
+        rt._publish_committed_resource_changes = lambda: None
         rt.monitors_tick = lambda: None
         def rules():
             seen.append("rules")
             if seen.count("rules") == 1: raise sqlite3.OperationalError("disk I/O error")
-        def dispatch():
-            seen.append("dispatch"); rt.closed = True
+        def dispatch(**_options):
+            seen.append("dispatch")
         rt.rules_tick = rules
         rt.capacity_tick = lambda: seen.append("capacity")
         rt.usage_resume_tick = lambda: seen.append("usage")
+        rt.accepted_archive_tick = lambda: None
+        rt.retry_monitor_results = lambda: None
+        rt.runtime_maintenance_tick = lambda: None
+        rt.turn_item_links_tick = lambda: None
         rt.dispatch = dispatch
-        scope["schedule"](rt)
-        expected = ["wait", "rules", "wait", "rules"]
-        if "capacity_tick" in scope["schedule"].__code__.co_names:
-            expected.append("capacity")
-        if "usage_resume_tick" in scope["schedule"].__code__.co_names:
-            expected.append("usage")
-        self.assertEqual(seen, expected + ["dispatch"])
+        clock = SimpleNamespace(monotonic=lambda: seen.count("wait") * 1.1,
+                                time=lambda: seen.count("wait") * 1.1)
+        with patch("codex_runtime.time", clock), patch("codex_runtime.startup_memory_mark"):
+            rt.schedule()
+        self.assertEqual(seen, ["wait", "dispatch", "rules", "capacity", "usage",
+                                "wait", "dispatch", "rules", "capacity", "usage", "wait"])
         self.assertIsNone(rt.scheduler_error)
     def test_log_open_failure_recovers(self): self.exercise("open")
     def test_log_write_failure_recovers(self): self.exercise("write")

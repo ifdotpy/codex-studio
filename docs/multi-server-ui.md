@@ -10,14 +10,79 @@ A view also stays active when local draft or dictation storage fails.
 Drafts, sends, uploads, caches, and API schema gates have a separate server identity.
 The local server keeps its existing storage names.
 
+## Automatic discovery
+
+Open **Studio settings > Servers** to manage server access.
+The local server appears first.
+Each row shows its name, address, access status, and relative last contact time.
+The full contact time appears in a tooltip.
+Active servers appear before discovered, unreachable, and revoked servers.
+The section uses the same tabs and fields as the other settings sections.
+
+The local server discovers servers from the same Tailscale user.
+**Pair servers automatically** changes that server's setting for new server pairs.
+Existing credentials stay active when the setting is off.
+**Find servers now** starts a bounded discovery pass.
+The UI allows 105 seconds for that request, including the server's 90-second pass and cleanup.
+A failed or interrupted request keeps its saved request identity.
+
+The UI reads the local access snapshot every 30 seconds.
+Offline failures increase the interval to a maximum of 120 seconds.
+For a paired server without a UI credential, it requests `ui_invite` from the local server.
+It then completes the normal signed UI pair flow without a user step.
+The invitation must match the peer's server ID, origin, and public key.
+Revoked servers cannot gain automatic UI access.
+Server frames can open the Settings section but cannot perform its management actions.
+
+The shell saves both request identities before it requests an invitation.
+Its attempt store contains invitation metadata, without the token.
+On recovery, `ui_invite` returns the same invitation through its stable request identity.
+Client keys and pair bodies remain in the existing credential stores.
+The browser credential store uses IndexedDB. Desktop credentials use native safeStorage.
+Startup upgrades the attempt store before it checks any peer state.
+The upgrade removes legacy tokens even for revoked, excluded, or registered peers.
+It checks the existing credential store for each old pair identity.
+Only a saved credential draft or pair receipt marks a legacy pair as started.
+If that check fails, the token is already removed and automatic access waits.
+Saved attempts use the local server ID and peer credential generation.
+A lost response keeps the same invitation, client key, client ID, body, and request identity.
+An expired invitation gets a new attempt only when pairing has not started.
+An unknown pair result keeps its identity even after invitation expiry.
+Web Locks serialize automatic access across browser tabs.
+Management actions use another shared lock and separate request records.
+An uncertain request blocks a different management action until its result is known.
+A response removes only its own request record.
+The shell reads the current peer snapshot before pairing and before adding UI access.
+Revoke cancels automatic access after the management lock accepts the request for dispatch.
+A blocked request does not cancel access.
+**Add to this UI** clears a local cancellation and retries the normal access flow.
+Frames cannot send management writes or use pairing routes through either transport bridge.
+A failed server attempt backs off for up to five minutes.
+Other servers can still gain access.
+
+**Remove from this UI** deletes its credential and saves an exclusion in this UI profile.
+Automatic access does not add that server again.
+**Add to this UI** clears the exclusion and retries the normal flow.
+Removal does not revoke the server pair.
+**Revoke** asks for confirmation and revokes the peer credential on the local server.
+**Allow again** removes that revocation. A new discovery pass must prove the peer.
+These actions apply only to the local server's peer records.
+Use the target server's UI access controls to revoke a particular UI client.
+
+UI-only hosts and phone pages through Serve keep manual invitation pairing.
+They do not call local discovery or `ui_invite`.
+A UI-only host has no local server or automatic server setting.
+
 ## Pair a UI
 
-1. Open **Studio settings > Server access** on the target computer.
-2. Select **Create pairing invitation**.
-3. Open **Servers** or **Manage** on the UI computer.
-4. Enter the target Tailscale Serve HTTPS address.
-5. Paste the whole invitation.
-6. Select **Pair server**.
+1. Open **Studio settings > Servers** on the target computer.
+2. Select **Add with an invitation** to open **Manual pairing**.
+3. Select **Create pairing invitation**.
+4. Open **Studio settings > Servers** on the UI computer.
+5. Select **Add with an invitation**.
+6. Enter the target Tailscale Serve HTTPS address.
+7. Paste the whole invitation.
+8. Select **Pair server**.
 
 A phone at its configured Tailscale Serve address keeps the existing session and local token flow.
 Only the explicit `studio-ui-only=1` flag selects the UI-only manager.
@@ -161,12 +226,6 @@ The browser fixture uses isolated loopback servers behind a test-only HTTPS addr
 The signed path, query, and body remain unchanged.
 The final server branches must be integrated before a live Tailscale check.
 Regenerate the combined API schema after that integration.
-
-The full resource event unit suite has two baseline failures in this image.
-The same failures occur with the original `origin/main` resource event source.
-The supervisor recovery fixture also times out without changes to its source.
-The runtime type check reports five errors in three unchanged files.
-These failures remain outside this UI change.
 
 Check the final server's export header list after integration:
 

@@ -253,6 +253,10 @@
     order: -1;
     flex: 1 1 100%;
     min-width: 0;
+    flex-wrap: nowrap;
+  }
+  #composer .composer-context-values {
+    flex: 1;
   }
   #composer .composer-context-row .execution-menu {
     max-width: 100%;

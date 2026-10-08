@@ -42,6 +42,8 @@ class RosterCache(unittest.TestCase):
         self.connections = []
         self.scans = []
         self.runtime = Runtime.__new__(Runtime)
+        self.runtime.root = Path(self.tmp.name)
+        self.runtime.closed = False
         self.runtime.lock = threading.RLock()
         self.runtime._agent_record_revision = 0
         db = self.connect()

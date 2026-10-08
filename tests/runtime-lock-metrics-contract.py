@@ -67,14 +67,16 @@ class RuntimeLockMetricsContract(unittest.TestCase):
         self.assertEqual(row["holdMs"]["samples"], SAMPLE_LIMIT)
 
     def test_runtime_lock_is_uninstrumented_without_opt_in(self):
-        with patch.dict(os.environ, {}, clear=True):
+        home = os.environ.get("HOME", str(Path.home()))
+        with patch.dict(os.environ, {"HOME": home}, clear=True):
             self.assertNotIsInstance(runtime_lock(), MeasuredRLock)
-        with patch.dict(os.environ, {"CODEX_RUNTIME_LOCK_METRICS": "1"}, clear=True):
+        with patch.dict(os.environ, {"HOME": home, "CODEX_RUNTIME_LOCK_METRICS": "1"}, clear=True):
             self.assertIsInstance(runtime_lock(), MeasuredRLock)
 
     def test_runtime_uses_the_opt_in_metrics_lock_in_temp_state(self):
         with tempfile.TemporaryDirectory(prefix="studio-lock-metrics-") as folder:
-            with patch.dict(os.environ, {"CODEX_RUNTIME_LOCK_METRICS": "1"}, clear=True):
+            with patch.dict(os.environ, {"CODEX_RUNTIME_LOCK_METRICS": "1",
+                                         "HOME": folder, "CODEX_HOME": folder}, clear=True):
                 runtime = Runtime(folder, server_factory=lambda *_args: None)
                 try:
                     self.assertIsInstance(runtime.lock, MeasuredRLock)

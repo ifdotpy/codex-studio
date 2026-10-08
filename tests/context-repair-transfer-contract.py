@@ -19,6 +19,7 @@ class TransferRepair(f.ContextWait):
     def transfer(self):
         a = self.agent_update(self.a, accountKey='source-account')
         self.runtime.connection_ids['source-account'] = 'source-connection'
+        self.runtime.servers['source-account'] = self.server
         repaired = repair.repair_idle(self.runtime, a['id'])
         parent = repaired['threadId']
         self.transfer_record = {'id':'transfer-exact','leadId':a['id'],'status':'completed','targetAccountKey':'default','members':{

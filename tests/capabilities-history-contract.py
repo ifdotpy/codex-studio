@@ -49,6 +49,9 @@ class Inventory(WorkspaceMixin):
     def connect(self, *_args):
         return self
 
+    def connect_agent(self, _actor):
+        return self
+
 
 class CapabilityHistoryContract(unittest.TestCase):
     def setUp(self):
