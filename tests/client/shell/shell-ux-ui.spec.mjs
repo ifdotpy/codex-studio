@@ -57,12 +57,7 @@ test("Conversation tools menu displays compact prompt navigation", async ({
     if (fixture.exitCode === null) fixture.kill();
   }
 });
-test("Search messages focuses its query input when opened", async ({
-  page,
-}) => {
-  test.fail(
-    "SearchOverlay declares autoFocus, but the open modal leaves focus on its Close button",
-  );
+async function startSearchFocusSetup(page) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-search-focus-"));
   const fixture = spawn(
@@ -74,25 +69,90 @@ test("Search messages focuses its query input when opened", async ({
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
+  const stop = () => {
+    if (fixture.exitCode === null) fixture.kill();
+  };
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
+      const timer = setTimeout(
+        () => reject(Error("Search fixture startup timed out: " + log)),
+        10_000,
       );
-      fixture.once("exit", () => reject(new Error(log)));
+      fixture.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(Number(String(chunk).trim()));
+      });
+      fixture.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Search fixture exited"));
+      });
     });
     await page.goto(`http://127.0.0.1:${port}`);
-    await page
-      .getByRole("button", { name: "Search chats", exact: true })
-      .click();
-    await page
-      .getByRole("dialog", { name: "Search messages", exact: true })
-      .waitFor();
-    await expect(page.getByLabel("Search all conversations")).toBeFocused();
+    await page.locator("#message").waitFor();
+    const dialog = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
+    const query = page.getByLabel("Search all conversations");
+    const open = async (trigger) => {
+      if (trigger === "button")
+        await page
+          .getByRole("button", { name: "Search chats", exact: true })
+          .click();
+      else await page.keyboard.press("Control+k");
+      await dialog.waitFor({ state: "visible" });
+    };
+    const close = async () => {
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "hidden" });
+    };
+    return { stop, dialog, query, open, close };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+test("Search messages opens from the button and Ctrl+K", async ({ page }) => {
+  const setup = await startSearchFocusSetup(page);
+  try {
+    await setup.open("button");
+    await expect(setup.dialog).toBeVisible();
+    await setup.close();
+    await setup.open("hotkey");
+    await expect(setup.dialog).toBeVisible();
   } finally {
-    if (fixture.exitCode === null) fixture.kill();
+    setup.stop();
   }
 });
+
+test("Search messages focuses its query input when opened", async ({
+  page,
+}) => {
+  const setup = await startSearchFocusSetup(page);
+  try {
+    await setup.open("button");
+    const buttonFocus = await setup.query.evaluate(
+      (input) => document.activeElement === input,
+    );
+    await setup.close();
+    await setup.open("hotkey");
+    const hotkeyFocus = await setup.query.evaluate(
+      (input) => document.activeElement === input,
+    );
+    test.fail(
+      true,
+      "SearchOverlay autofocus does not place the query input in focus for both entry paths",
+    );
+    assert.deepEqual(
+      { button: buttonFocus, hotkey: hotkeyFocus },
+      { button: true, hotkey: true },
+    );
+  } finally {
+    setup.stop();
+  }
+});
+
 async function open320Workspace(page) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-header-width-"));
