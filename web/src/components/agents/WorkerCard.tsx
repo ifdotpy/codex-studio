@@ -11,11 +11,11 @@ import {
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { save, saved } from "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { setupModelName } from "./AgentSetupPicker";
-import { useWorkerModels } from "./WorkerModelPicker";
+import { TeamModelCatalog } from "./WorkerOverview";
 import { ProviderMark } from "../AccountTiles";
 import type { Account } from "../Accounts";
 import { accountDisplayName } from "../../accountName";
@@ -108,16 +108,16 @@ export default function WorkerCard({
   remove?: () => void;
   indicator?: ChatIndicator;
 }) {
-  const catalog = useWorkerModels(
-    agent.accountKey || "default",
-    agent.source === "managed",
+  const provider = agent.provider || "codex";
+  const models = useContext(TeamModelCatalog).filter(
+    (row) => !row.provider || row.provider === provider,
   );
-  const info = catalog.models.find(
+  const info = models.find(
     (row) => row.model === agent.model || row.resolvedModel === agent.model,
   );
   const resolved =
     info?.isDefault && info.resolvedModel
-      ? catalog.models.find(
+      ? models.find(
           (row) =>
             row.model !== info.model &&
             (row.model === info.resolvedModel ||
@@ -134,7 +134,6 @@ export default function WorkerCard({
               : info),
           agent.model || "",
         );
-  const provider = agent.provider || "codex";
   const connected = accounts.filter(
     (account) =>
       !account.disconnected && (account.provider || "codex") === provider,

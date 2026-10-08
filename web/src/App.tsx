@@ -180,6 +180,7 @@ import {
   TeamSummary,
   workerState,
   TEAM_PANEL_STATES,
+  TeamModels,
 } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
 import { watchResourceChanges } from "./sync/resourceEvents";
@@ -1688,116 +1689,118 @@ export default function App() {
   const smallTeam = workers.length <= 3;
   const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   const teamPanel = (
-    <aside
-      id="team"
-      aria-label="Team"
-      className={smallTeam ? "team-compact" : undefined}
-    >
-      <div className="team-heading">
-        <h2>Team</h2>
-        <ActionIcon
-          aria-label="Close team"
-          id="team-close"
-          onClick={() => {
-            setTeamOpen(false);
-            setWideTeamOpen(false);
-            save("codex-team-open", false);
-          }}
-        >
-          <X size={16} />
-        </ActionIcon>
-      </div>
-      <TeamSummary
-        workers={workers}
-        answers={answerIds}
-        deferred={deferredIds}
-      />
-      {/* The lead link is only useful from a worker chat. */}
-      {lead && opened !== lead.id && (
-        <Button
-          id="lead-row"
-          variant="subtle"
-          size="compact-sm"
-          title={lead.name || "Main agent"}
-          leftSection={<ArrowLeft size={13} />}
-          onClick={() => open(lead.id)}
-        >
-          Back to main agent
-        </Button>
-      )}
-      {showTeamFilters && (
-        <>
-          <TextInput
-            leftSection={<Search size={14} />}
-            id="worker-search"
-            type="search"
-            aria-label="Find a subagent"
-            placeholder="Find a worker"
-            value={workerQuery}
-            onChange={(e) => setWorkerQuery(e.target.value)}
-          />
-          {query ? (
-            <p className="team-search-count" role="status">
-              {shown.length} {shown.length === 1 ? "match" : "matches"} in this
-              team
-            </p>
-          ) : (
-            <div
-              className="team-filters"
-              role="group"
-              aria-label="Filter subagents"
-            >
-              {[
-                ["all", "All"],
-                ["active", "Active"],
-                ["attention", "Failed"],
-              ].map(([value, label]) => (
-                <UnstyledButton
-                  key={value}
-                  aria-pressed={workerFilter === value}
-                  onClick={() => setWorkerFilter(String(value))}
-                >
-                  {label}
-                </UnstyledButton>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      <div id="workers">
-        {groups.map((group) =>
-          group.workers.length ? (
-            <section
-              className="team-status-group"
-              aria-label={group.name}
-              key={group.name}
-            >
-              {!smallTeam && <h3>{group.name}</h3>}
-              {group.workers.map(worker)}
-            </section>
-          ) : null,
-        )}
-        {!!completed.length && (
-          <details
-            className="worker-group"
-            open={!!query || completedOpen}
-            onToggle={(event) => {
-              if (!query) setCompletedOpen(event.currentTarget.open);
+    <TeamModels accountKey={lead?.accountKey || "default"}>
+      <aside
+        id="team"
+        aria-label="Team"
+        className={smallTeam ? "team-compact" : undefined}
+      >
+        <div className="team-heading">
+          <h2>Team</h2>
+          <ActionIcon
+            aria-label="Close team"
+            id="team-close"
+            onClick={() => {
+              setTeamOpen(false);
+              setWideTeamOpen(false);
+              save("codex-team-open", false);
             }}
           >
-            <summary>Finished</summary>
-            {completed.map(worker)}
-          </details>
+            <X size={16} />
+          </ActionIcon>
+        </div>
+        <TeamSummary
+          workers={workers}
+          answers={answerIds}
+          deferred={deferredIds}
+        />
+        {/* The lead link is only useful from a worker chat. */}
+        {lead && opened !== lead.id && (
+          <Button
+            id="lead-row"
+            variant="subtle"
+            size="compact-sm"
+            title={lead.name || "Main agent"}
+            leftSection={<ArrowLeft size={13} />}
+            onClick={() => open(lead.id)}
+          >
+            Back to main agent
+          </Button>
         )}
-        {!shown.length && (
-          <p className="team-empty" role="status">
-            {query
-              ? "No workers match your search."
-              : "No workers in this group."}
-          </p>
+        {showTeamFilters && (
+          <>
+            <TextInput
+              leftSection={<Search size={14} />}
+              id="worker-search"
+              type="search"
+              aria-label="Find a subagent"
+              placeholder="Find a worker"
+              value={workerQuery}
+              onChange={(e) => setWorkerQuery(e.target.value)}
+            />
+            {query ? (
+              <p className="team-search-count" role="status">
+                {shown.length} {shown.length === 1 ? "match" : "matches"} in
+                this team
+              </p>
+            ) : (
+              <div
+                className="team-filters"
+                role="group"
+                aria-label="Filter subagents"
+              >
+                {[
+                  ["all", "All"],
+                  ["active", "Active"],
+                  ["attention", "Failed"],
+                ].map(([value, label]) => (
+                  <UnstyledButton
+                    key={value}
+                    aria-pressed={workerFilter === value}
+                    onClick={() => setWorkerFilter(String(value))}
+                  >
+                    {label}
+                  </UnstyledButton>
+                ))}
+              </div>
+            )}
+          </>
         )}
-      </div>
-    </aside>
+        <div id="workers">
+          {groups.map((group) =>
+            group.workers.length ? (
+              <section
+                className="team-status-group"
+                aria-label={group.name}
+                key={group.name}
+              >
+                {!smallTeam && <h3>{group.name}</h3>}
+                {group.workers.map(worker)}
+              </section>
+            ) : null,
+          )}
+          {!!completed.length && (
+            <details
+              className="worker-group"
+              open={!!query || completedOpen}
+              onToggle={(event) => {
+                if (!query) setCompletedOpen(event.currentTarget.open);
+              }}
+            >
+              <summary>Finished</summary>
+              {completed.map(worker)}
+            </details>
+          )}
+          {!shown.length && (
+            <p className="team-empty" role="status">
+              {query
+                ? "No workers match your search."
+                : "No workers in this group."}
+            </p>
+          )}
+        </div>
+      </aside>
+    </TeamModels>
   );
   const toggleTeam = () => {
     if (narrowTeam) setTeamOpen(!teamOpen);
