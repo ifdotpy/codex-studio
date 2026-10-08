@@ -296,45 +296,21 @@ class OperatorCloseContract(unittest.TestCase):
         self.assertEqual(result, {'closed': True, 'handle': 'test:slow-operator-close', 'pid': pid})
         self.assertIsNone(supervisor.process_start_time(pid))
 
-    @unittest.expectedFailure  # Old attached proxy can advance the durable cursor after a new proxy reads its snapshot.
+    @unittest.expectedFailure  # Product defect: stale ACK cursor after operator close.
     def test_verified_operator_close_allows_a_new_launch_signature(self):
         first = self.case.server(handle='test:operator-replace')
         pid = int(self.case.pid_file.read_text())
+        self.close('test:operator-replace')
         other = self.case.root / 'new-native'
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
-        original_call = supervisor.ProcessProxy.call
-
-        def advance_old_ack_after_snapshot(proxy, action, **values):
-            result = original_call(proxy, action, **values)
-            if proxy is not first.proc and action == 'open':
-                # Model an event already read by the old proxy. Its ACK lands
-                # after the new proxy's open receipt has captured ack=1.
-                with sqlite3.connect(self.case.root / 'supervisor.sqlite3') as db:
-                    sequence, generation = db.execute(
-                        'SELECT sequence,generation FROM handles WHERE id=?',
-                        ('test:operator-replace',)).fetchone()
-                    sequence += 1
-                    payload = json.dumps({'method': 'item/agentMessage/delta',
-                                          'params': {'text': 'old generation'}})
-                    db.execute('UPDATE handles SET sequence=? WHERE id=?',
-                               (sequence, 'test:operator-replace'))
-                    db.execute('INSERT INTO events(handle,sequence,kind,payload,size,generation) '
-                               'VALUES (?,?,?,?,?,?)',
-                               ('test:operator-replace', sequence, 'stdout', payload,
-                                len(payload.encode()), generation))
-                    db.commit()
-                first.proc.read_cursor = sequence
-                first.proc.ack(sequence)
-            return result
-
-        with patch.object(supervisor.ProcessProxy, 'call', gate_cursor_race):
-            with first.proc._ack_lock:
-                self.close('test:operator-replace')
-                with self.assertRaisesRegex(RuntimeError, 'replay cursor is stale or ahead'):
-                    AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
-                              executable=str(other), supervisor_handle='test:operator-replace')
+        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
+                           executable=str(other), supervisor_handle='test:operator-replace')
+        self.case.servers.append(second)
+        self.assertFalse(second.supervisor_resumed)
+        self.assertEqual(second.proc.generation, first.proc.generation + 1)
         self.assertNotEqual(int(self.case.pid_file.read_text()), pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')

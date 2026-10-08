@@ -5,6 +5,29 @@ import os from "node:os";
 import path from "node:path";
 import { createSessionStore } from "./session-store.mjs";
 
+const faultSessionId = "11111111-1111-4111-8111-111111111111";
+const makeFaultSession = () => ({
+  id: faultSessionId,
+  cwd: "/tmp/work",
+  turns: [
+    {
+      id: "turn-1",
+      status: "completed",
+      items: [{ id: "user-1", content: [{ type: "text", text: "hello" }] }],
+    },
+  ],
+});
+const withTemporaryRoot = async (run) => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "claude-session-store-"),
+  );
+  try {
+    await run(root);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+};
+
 test("session store persists, restores and coordinates cached writes", async () => {
   const id = "11111111-1111-4111-8111-111111111111";
   const makeSession = () => ({
@@ -339,3 +362,267 @@ test("session store persists, restores and coordinates cached writes", async () 
     assert.equal(restored.turns[1].status, "failed");
   });
 });
+
+test("metadata write failure retries without a new journal change", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    session.preview = "old preview";
+    session.updatedAt = 1;
+    await store.persist(session);
+    const before = await store.metadata(faultSessionId);
+    session.preview = "new preview";
+    session.updatedAt = 2;
+
+    const originalRename = fs.rename;
+    fs.rename = async (from, to) => {
+      if (String(to).endsWith(".meta.json"))
+        throw Object.assign(new Error("injected metadata rename failure"), {
+          code: "EIO",
+        });
+      return originalRename(from, to);
+    };
+    try {
+      await assert.rejects(store.persist(session), /injected metadata rename/);
+    } finally {
+      fs.rename = originalRename;
+    }
+
+    await store.persist(session);
+    const saved = await createSessionStore(root).metadata(faultSessionId);
+    assert.equal(saved.preview, "new preview");
+    assert.notEqual(saved.revision, before.revision);
+  }));
+
+test("partial append failure preserves the next queued write", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const originalAppend = fs.appendFile;
+    let failFirstAppend = true;
+    let enterAppend, releaseAppend;
+    const appendEntered = new Promise((resolve) => {
+      enterAppend = resolve;
+    });
+    const appendGate = new Promise((resolve) => {
+      releaseAppend = resolve;
+    });
+    session.turns[0].items.push({ id: "partial-write", text: "preserved" });
+    fs.appendFile = async (file, data, ...options) => {
+      if (file === journal && failFirstAppend) {
+        failFirstAppend = false;
+        await originalAppend(file, String(data).slice(0, 16), ...options);
+        enterAppend();
+        await appendGate;
+        throw Object.assign(new Error("injected partial append failure"), {
+          code: "ENOSPC",
+        });
+      }
+      return originalAppend(file, data, ...options);
+    };
+    const failedWrite = store.persist(session);
+    await appendEntered;
+    session.turns[0].items.push({ id: "queued-write", text: "also saved" });
+    const queuedWrite = store.persist(session);
+    releaseAppend();
+    try {
+      await assert.rejects(failedWrite, /injected partial append/);
+      await queuedWrite;
+    } finally {
+      fs.appendFile = originalAppend;
+    }
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      session,
+    );
+  }));
+
+test("failed append rollback repairs journal before a no-op persist", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const originalSession = structuredClone(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const originalAppend = fs.appendFile;
+    const originalTruncate = fs.truncate;
+    session.turns[0].items.push({ id: "rolled-back", text: "remove me" });
+    fs.appendFile = async (file, data, ...options) => {
+      if (file === journal) {
+        await originalAppend(file, String(data).slice(0, 16), ...options);
+        throw Object.assign(new Error("injected append failure"), {
+          code: "ENOSPC",
+        });
+      }
+      return originalAppend(file, data, ...options);
+    };
+    fs.truncate = async (file, ...options) => {
+      if (file === journal)
+        throw Object.assign(new Error("injected rollback failure"), {
+          code: "EIO",
+        });
+      return originalTruncate(file, ...options);
+    };
+    try {
+      await assert.rejects(store.persist(session), AggregateError);
+    } finally {
+      fs.appendFile = originalAppend;
+      fs.truncate = originalTruncate;
+    }
+
+    session.turns[0].items.pop();
+    assert.deepEqual(session, originalSession);
+    await store.persist(session);
+    assert.equal((await fs.stat(journal)).size, 0);
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      originalSession,
+    );
+  }));
+
+test("restart truncates a torn tail after a Unicode journal record", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    session.turns[0].items.push({
+      id: "unicode-record",
+      text: "Привет 🌍",
+    });
+    await store.persist(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const completeBytes = (await fs.stat(journal)).size;
+    await fs.appendFile(journal, '{"sequence":2');
+
+    const restarted = createSessionStore(root);
+    const recovered = await restarted.get(faultSessionId);
+    assert.deepEqual(recovered, session);
+    assert.equal((await fs.stat(journal)).size, completeBytes);
+    recovered.turns[0].items.push({ id: "after-restart", text: "still valid" });
+    await restarted.persist(recovered);
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      recovered,
+    );
+  }));
+
+test("full append that reports failure rolls back before retry", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1000 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const originalAppend = fs.appendFile;
+    session.turns[0].items.push({ id: "full-write", text: "retry me" });
+    fs.appendFile = async (file, data, ...options) => {
+      if (file === journal) {
+        await originalAppend(file, data, ...options);
+        throw Object.assign(new Error("injected post-write failure"), {
+          code: "EIO",
+        });
+      }
+      return originalAppend(file, data, ...options);
+    };
+    try {
+      await assert.rejects(store.persist(session), /injected post-write/);
+    } finally {
+      fs.appendFile = originalAppend;
+    }
+    assert.equal((await fs.stat(journal)).size, 0);
+    await store.persist(session);
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      session,
+    );
+  }));
+
+test("snapshot publish failure keeps journal replayable", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const snapshot = path.join(root, "sessions", faultSessionId + ".json");
+    const originalRename = fs.rename;
+    session.turns[0].items.push({ id: "before-snapshot", text: "saved" });
+    fs.rename = async (from, to) => {
+      if (to === snapshot)
+        throw Object.assign(new Error("injected snapshot publish failure"), {
+          code: "EIO",
+        });
+      return originalRename(from, to);
+    };
+    try {
+      await assert.rejects(store.persist(session), /injected snapshot publish/);
+    } finally {
+      fs.rename = originalRename;
+    }
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      session,
+    );
+  }));
+
+test("reported journal clear error refreshes length before later append retry", async () =>
+  withTemporaryRoot(async (root) => {
+    const store = createSessionStore(root, { compactRecords: 1 });
+    const session = makeFaultSession();
+    await store.persist(session);
+    const journal = path.join(root, "sessions", faultSessionId + ".jsonl");
+    const originalWriteFile = fs.writeFile;
+    session.turns[0].items.push({ id: "compacted", text: "saved" });
+    fs.writeFile = async (file, data, ...options) => {
+      if (file === journal && data === "") {
+        await originalWriteFile(file, data, ...options);
+        throw Object.assign(new Error("injected post-clear failure"), {
+          code: "EIO",
+        });
+      }
+      return originalWriteFile(file, data, ...options);
+    };
+    try {
+      await assert.rejects(store.persist(session), /injected post-clear/);
+    } finally {
+      fs.writeFile = originalWriteFile;
+    }
+    assert.equal((await fs.stat(journal)).size, 0);
+
+    const originalAppend = fs.appendFile;
+    session.turns[0].items.push({ id: "partial-after-clear", text: "retry" });
+    fs.appendFile = async (file, data, ...options) => {
+      if (file === journal) {
+        await originalAppend(file, String(data).slice(0, 16), ...options);
+        throw Object.assign(new Error("injected later append failure"), {
+          code: "ENOSPC",
+        });
+      }
+      return originalAppend(file, data, ...options);
+    };
+    try {
+      await assert.rejects(store.persist(session), /injected later append/);
+    } finally {
+      fs.appendFile = originalAppend;
+    }
+    assert.equal((await fs.stat(journal)).size, 0);
+    const originalRename = fs.rename;
+    fs.rename = async (from, to) => {
+      if (to === path.join(root, "sessions", faultSessionId + ".json"))
+        throw Object.assign(new Error("injected snapshot publish failure"), {
+          code: "EIO",
+        });
+      return originalRename(from, to);
+    };
+    try {
+      await assert.rejects(
+        store.persist(session),
+        /injected snapshot publish failure/,
+      );
+    } finally {
+      fs.rename = originalRename;
+    }
+    assert.deepEqual(
+      (await createSessionStore(root).readAll(faultSessionId)).session,
+      session,
+    );
+  }));

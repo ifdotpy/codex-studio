@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import anyio
 import json
 import logging
 import sqlite3
@@ -382,12 +383,14 @@ def create_router(context: ApiContext) -> APIRouter:
                     await run_in_threadpool(_active_panel_agents, runtime, resources)
                     if runtime is not None and panel_agent_ids else None
                 )
-                subscription = context.resource_hub().subscribe(
-                    resources,
-                    loop=asyncio.get_running_loop(),
-                    reconnect=last_event_id is not None,
-                    progress_agent_ids=active_panel_agents,
-                )
+                with anyio.CancelScope(shield=True):
+                    subscription = await run_in_threadpool(
+                        context.resource_hub().subscribe,
+                        resources,
+                        loop=asyncio.get_running_loop(),
+                        reconnect=last_event_id is not None,
+                        progress_agent_ids=active_panel_agents,
+                    )
             except (OSError, RuntimeError, ValueError):
                 return cast(StreamingResponse, context.send(
                     request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
@@ -428,7 +431,11 @@ def create_router(context: ApiContext) -> APIRouter:
                         elif event is None:
                             yield _resource_event("heartbeat", subscription.heartbeat())
                 finally:
-                    subscription.close()
+                    # Native file watches can wait for their OS worker to stop.
+                    # Keep that wait outside the HTTP event loop, including when
+                    # the stream is already cancelled by a disconnected client.
+                    with anyio.CancelScope(shield=True):
+                        await run_in_threadpool(subscription.close)
                     if shutdown_wait is not None:
                         shutdown_wait.cancel()
                         await asyncio.gather(shutdown_wait, return_exceptions=True)

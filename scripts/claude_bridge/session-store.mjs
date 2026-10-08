@@ -192,18 +192,19 @@ export function createSessionStore(root, options = {}) {
   };
   const readAll = async (id) => {
     const base = await readBase(id);
-    let log = "";
+    let logBytes = Buffer.alloc(0);
     try {
-      log = await fs.readFile(logFor(id), "utf8");
+      logBytes = await fs.readFile(logFor(id));
     } catch (error) {
       if (error.code !== "ENOENT") throw error;
     }
+    const log = logBytes.toString("utf8");
     const completeLines = log.split("\n");
     const tornTail = completeLines.at(-1) !== "";
     if (tornTail) completeLines.pop();
     const validLogBytes = tornTail
-      ? log.lastIndexOf("\n") + 1
-      : Buffer.byteLength(log);
+      ? logBytes.lastIndexOf(0x0a) + 1
+      : logBytes.length;
     if (tornTail) await fs.truncate(logFor(id), validLogBytes);
     let records = 0;
     for (const line of completeLines) {
@@ -241,6 +242,8 @@ export function createSessionStore(root, options = {}) {
       journalBytes: saved.journalBytes || 0,
       used: ++clock,
       syncSessionBytesOnWrite: true,
+      metadataDirty: true,
+      journalRepairNeeded: false,
     };
     measure(entry);
     sessions.set(id, session);
@@ -330,8 +333,11 @@ export function createSessionStore(root, options = {}) {
         const initial = copy(session);
         await atomicSnapshot(id, initial, 0);
         await fs.writeFile(logFor(id), "", { mode: 0o600 });
-        await writeMetadata(session);
         remember(session, 0, 0, 0, initial, true);
+        const created = entries.get(id);
+        if (created) created.metadataDirty = true;
+        await writeMetadata(session);
+        if (created) created.metadataDirty = false;
         return;
       }
       entry = {
@@ -342,6 +348,8 @@ export function createSessionStore(root, options = {}) {
         journalBytes: saved.journalBytes || 0,
         used: ++clock,
         syncSessionBytesOnWrite: true,
+        metadataDirty: true,
+        journalRepairNeeded: false,
       };
       measure(entry);
       sessions.set(id, session);
@@ -356,32 +364,81 @@ export function createSessionStore(root, options = {}) {
     }
     if (entry.session !== session)
       throw new Error("Claude session object is not the cached identity");
+    const journalFile = logFor(id);
+    if (entry.journalRepairNeeded) {
+      await fs.truncate(journalFile, entry.journalBytes);
+      entry.journalRepairNeeded = false;
+    }
     const changes = [];
     const deltaBytes = diff(entry.shadow, session, [], changes);
-    if (!changes.length) return;
-    // The live session can change while the append waits. Apply the same values written to disk.
-    const frozenChanges = copy(changes);
-    const sequence = entry.sequence + 1;
-    const record = JSON.stringify({ sequence, changes: frozenChanges }) + "\n";
-    await fs.appendFile(logFor(id), record, { mode: 0o600 });
-    entry.shadow = apply(entry.shadow, frozenChanges);
-    entry.sequence = sequence;
-    entry.records++;
-    entry.journalBytes += Buffer.byteLength(record);
-    entry.used = ++clock;
-    entry.shadowBytes += deltaBytes;
-    if (entry.syncSessionBytesOnWrite) {
-      entry.sessionBytes = entry.shadowBytes;
-      entry.syncSessionBytesOnWrite = false;
-    } else entry.sessionBytes += deltaBytes;
-    retainedBytes -= entry.bytes;
-    entry.bytes = Math.max(0, entry.sessionBytes + entry.shadowBytes);
-    retainedBytes += entry.bytes;
-    enforceLimit();
+    if (!changes.length && !entry.metadataDirty) return;
+    if (changes.length) {
+      // The live session can change while the append waits. Apply the same values written to disk.
+      const frozenChanges = copy(changes);
+      const sequence = entry.sequence + 1;
+      const record =
+        JSON.stringify({ sequence, changes: frozenChanges }) + "\n";
+      try {
+        await fs.appendFile(journalFile, record, { mode: 0o600 });
+      } catch (error) {
+        entry.journalRepairNeeded = true;
+        try {
+          await fs.truncate(journalFile, entry.journalBytes);
+          entry.journalRepairNeeded = false;
+        } catch (repairError) {
+          throw new AggregateError(
+            [error, repairError],
+            "Claude session journal append failed and could not be rolled back",
+            { cause: error },
+          );
+        }
+        throw error;
+      }
+      entry.shadow = apply(entry.shadow, frozenChanges);
+      entry.sequence = sequence;
+      entry.records++;
+      entry.journalBytes += Buffer.byteLength(record);
+      entry.used = ++clock;
+      entry.shadowBytes += deltaBytes;
+      if (entry.syncSessionBytesOnWrite) {
+        entry.sessionBytes = entry.shadowBytes;
+        entry.syncSessionBytesOnWrite = false;
+      } else entry.sessionBytes += deltaBytes;
+      retainedBytes -= entry.bytes;
+      entry.bytes = Math.max(0, entry.sessionBytes + entry.shadowBytes);
+      retainedBytes += entry.bytes;
+      enforceLimit();
+      entry.metadataDirty = true;
+    }
     await writeMetadata(session);
-    if (entry.records >= compactRecords || entry.journalBytes >= compactBytes) {
+    entry.metadataDirty = false;
+    if (
+      changes.length &&
+      (entry.records >= compactRecords || entry.journalBytes >= compactBytes)
+    ) {
       await atomicSnapshot(id, entry.shadow, entry.sequence);
-      await fs.writeFile(logFor(id), "", { mode: 0o600 });
+      try {
+        await fs.writeFile(journalFile, "", { mode: 0o600 });
+      } catch (error) {
+        try {
+          const recovered = await readAll(id);
+          if (recovered.sequence !== entry.sequence)
+            throw new Error("Claude session journal changed during compaction");
+          entry.records = recovered.records;
+          entry.journalBytes = recovered.journalBytes;
+          entry.journalRepairNeeded = false;
+        } catch (repairError) {
+          entry.records = 0;
+          entry.journalBytes = 0;
+          entry.journalRepairNeeded = true;
+          throw new AggregateError(
+            [error, repairError],
+            "Claude session journal clear failed and its state could not be read",
+            { cause: error },
+          );
+        }
+        throw error;
+      }
       entry.records = 0;
       entry.journalBytes = 0;
     }

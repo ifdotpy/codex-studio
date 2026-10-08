@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import anyio
 from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
@@ -711,6 +712,58 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("event: token-rates", body)
         self.assertIn('"turnId":"turn-a"', body)
         self.assertIn('"epoch":"', body)
+
+    def test_native_panel_subscribe_and_detach_stay_outside_http_event_loop(self) -> None:
+        context = ContextStub()
+        loop_thread = threading.get_ident()
+        calls: list[tuple[str, int]] = []
+
+        class NativeWatchdog:
+            def subscribe(self, _agent_id: str, _on_change: object):
+                calls.append(("subscribe", threading.get_ident()))
+
+                def detach() -> None:
+                    calls.append(("detach", threading.get_ident()))
+
+                return detach
+
+        context.hub = ResourceHub("workspace-a", progress_watchdog=NativeWatchdog())
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertEqual([name for name, _thread in calls], ["subscribe", "detach"])
+        for name, native_thread in calls:
+            with self.subTest(operation=name):
+                self.assertNotEqual(native_thread, loop_thread)
+
+    def test_cancelled_resource_stream_still_detaches_native_panel(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+        router = create_router(cast(ApiContext, context))
+        route = cast(APIRoute, next(
+            route for route in router.routes
+            if getattr(route, "path", None) == "/api/sync/stream"
+        ))
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        request = ConnectedRequest({
+            "type": "http", "method": "GET", "path": "/api/sync/stream",
+            "query_string": ("protocol=3&resources=" + resources).encode(),
+            "headers": [],
+        })
+
+        async def cancel_stream() -> None:
+            response = await route.endpoint(
+                request, SyncStreamQuery(protocol="3", resources=resources),
+            )
+            iterator = response.body_iterator
+            await anext(iterator)
+            await anext(iterator)
+            self.assertEqual(context.watchdog.agents, ["agent-a"])
+            with anyio.CancelScope() as cancellation:
+                cancellation.cancel()
+                await iterator.aclose()
+            self.assertEqual(context.watchdog.agents, [])
+
+        asyncio.run(cancel_stream())
 
     def test_mismatching_schema_stream_sends_only_handshake_without_subscribing(self) -> None:
         context = ContextStub()

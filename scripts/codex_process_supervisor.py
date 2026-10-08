@@ -662,6 +662,11 @@ class Supervisor:
                         "pid": child.process.pid, "returnCode": child.process.poll()}
         if action == "next":
             cursor = request.get("cursor")
+            # Reader completion is monotonic. Sample it before the journal
+            # query so a just-finished reader cannot hide an event committed
+            # after an empty SELECT.
+            stdout_reader_alive = child.reader.is_alive()
+            stderr_reader_alive = child.stderr.is_alive()
             with self.journal.db() as db:
                 row = db.execute("SELECT sequence,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
                 if type(cursor) is not int or cursor < row[1] or cursor > row[0]:
@@ -670,9 +675,13 @@ class Supervisor:
                                    (handle, cursor)).fetchone()
             if event:
                 return {"event": dict(event), "returnCode": child.process.poll(),
-                        "backpressure": child.paused.is_set()}
+                        "backpressure": child.paused.is_set(),
+                        "stdoutReaderAlive": stdout_reader_alive,
+                        "stderrReaderAlive": stderr_reader_alive}
             return {"event": None, "returnCode": child.process.poll(),
-                    "backpressure": child.paused.is_set()}
+                    "backpressure": child.paused.is_set(),
+                    "stdoutReaderAlive": stdout_reader_alive,
+                    "stderrReaderAlive": stderr_reader_alive}
         if action == "detach":
             return {"detached": True}
         raise ValueError("Unknown supervisor action")
@@ -1175,6 +1184,10 @@ class ProcessProxy:
         while not self.detached:
             result = self.call("next", cursor=self.read_cursor)
             event = result["event"]
+            readers_known = (type(result.get("stdoutReaderAlive")) is bool
+                             and type(result.get("stderrReaderAlive")) is bool)
+            readers_alive = (result.get("stdoutReaderAlive") is True
+                             or result.get("stderrReaderAlive") is True)
             if event:
                 with self.event_lock:
                     if self.detached:
@@ -1200,7 +1213,9 @@ class ProcessProxy:
                     if event["kind"] == "exit":
                         self._returncode = payload.get("returnCode")
                         self.ack(event["sequence"])
-                        return None
+                        if not readers_known:
+                            return None
+                        continue
                     if event["kind"] == "stderr":
                         data = payload.get("data")
                         if not isinstance(data, str) or len(data.encode("utf-8")) > MAX_STDERR_EVENT_BYTES:
@@ -1211,7 +1226,10 @@ class ProcessProxy:
                         # the bounded RotatingLog accepts the complete payload.
                         self.stderr_sink(data)
                     self.ack(event["sequence"])
-            if result["returnCode"] is not None and event is None:
+            if (result["returnCode"] is not None and event is None
+                    and (not readers_known or not readers_alive)):
+                # The child readers append synchronously before they exit. This
+                # is the terminal fence if a reader could not journal its exit.
                 self._returncode = result["returnCode"]
                 return None
             time.sleep(.05)

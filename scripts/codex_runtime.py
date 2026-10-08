@@ -1568,6 +1568,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          ELSE json_extract(record,'$.accountKey') END);
                 CREATE INDEX IF NOT EXISTS runtime_agent_root ON runtime_agents(
                     json_extract(record,'$.rootId'));
+                CREATE INDEX IF NOT EXISTS runtime_agent_live_root ON runtime_agents(
+                    json_extract(record,'$.rootId'),id)
+                    WHERE json_extract(record,'$.deletedAt') IS NULL;
                 CREATE INDEX IF NOT EXISTS runtime_agent_parent ON runtime_agents(
                     json_extract(record,'$.parentId'));
                 CREATE INDEX IF NOT EXISTS runtime_agent_global_active ON runtime_agents(
@@ -1942,9 +1945,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if db.execute(
             "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
         ).fetchone():
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_insert")
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_update")
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_delete")
             def stage_event_resource(agent_id):
                 if isinstance(agent_id, str) and agent_id:
                     self._stage_event_resources(db, agent_id)
@@ -1955,64 +1955,73 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
             db.create_function("studio_stage_event_resource", 1, stage_event_resource)
             db.create_function("studio_stage_transcript_resource", 2, stage_transcript_resource)
-            db.execute("""
-                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_insert
-                AFTER INSERT ON main.runtime_events
-                BEGIN
-                  SELECT studio_stage_event_resource(NEW.agent);
-                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
-                END;
-            """)
-            db.execute("""
-                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_update
-                AFTER UPDATE ON main.runtime_events
-                WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent
-                  OR OLD.kind IS NOT NEW.kind OR OLD.text IS NOT NEW.text
-                  OR OLD.status IS NOT NEW.status OR OLD.created IS NOT NEW.created
-                  OR OLD.epoch IS NOT NEW.epoch OR OLD.turn_id IS NOT NEW.turn_id
-                  OR OLD.error IS NOT NEW.error
-                BEGIN
-                  SELECT studio_stage_event_resource(OLD.agent);
-                  SELECT studio_stage_event_resource(NEW.agent);
-                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
-                  SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
-                END;
-            """)
-            db.execute("""
-                CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_delete
-                AFTER DELETE ON main.runtime_events
-                BEGIN
-                  SELECT studio_stage_event_resource(OLD.agent);
-                  SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
-                END;
-            """)
+            if getattr(db, "_studio_resource_event_trigger_version", None) != 1:
+                # Avoid schema changes on every callback connection reuse.
+                # Functions above still use the current transaction state.
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_insert")
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_update")
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_event_delete")
+                db.execute("""
+                    CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_insert
+                    AFTER INSERT ON main.runtime_events
+                    BEGIN
+                      SELECT studio_stage_event_resource(NEW.agent);
+                      SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
+                    END;
+                """)
+                db.execute("""
+                    CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_update
+                    AFTER UPDATE ON main.runtime_events
+                    WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent
+                      OR OLD.kind IS NOT NEW.kind OR OLD.text IS NOT NEW.text
+                      OR OLD.status IS NOT NEW.status OR OLD.created IS NOT NEW.created
+                      OR OLD.epoch IS NOT NEW.epoch OR OLD.turn_id IS NOT NEW.turn_id
+                      OR OLD.error IS NOT NEW.error
+                    BEGIN
+                      SELECT studio_stage_event_resource(OLD.agent);
+                      SELECT studio_stage_event_resource(NEW.agent);
+                      SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
+                      SELECT studio_stage_transcript_resource(NEW.agent, NEW.kind);
+                    END;
+                """)
+                db.execute("""
+                    CREATE TEMP TRIGGER IF NOT EXISTS studio_resource_event_delete
+                    AFTER DELETE ON main.runtime_events
+                    BEGIN
+                      SELECT studio_stage_event_resource(OLD.agent);
+                      SELECT studio_stage_transcript_resource(OLD.agent, OLD.kind);
+                    END;
+                """)
+                db._studio_resource_event_trigger_version = 1
         if db.execute(
             "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_items'"
         ).fetchone():
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_insert")
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_update")
-            db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_delete")
             db.create_function(
                 "studio_stage_item_transcript",
                 1,
                 lambda agent_id: self._stage_transcript_resource(db, agent_id)
                 if isinstance(agent_id, str) and agent_id else None,
             )
-            db.execute("""
-                CREATE TEMP TRIGGER studio_resource_item_insert
-                AFTER INSERT ON main.runtime_items
-                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
-            """)
-            db.execute("""
-                CREATE TEMP TRIGGER studio_resource_item_update
-                AFTER UPDATE ON main.runtime_items WHEN OLD.record IS NOT NEW.record
-                BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
-            """)
-            db.execute("""
-                CREATE TEMP TRIGGER studio_resource_item_delete
-                AFTER DELETE ON main.runtime_items
-                BEGIN SELECT studio_stage_item_transcript(OLD.agent); END;
-            """)
+            if getattr(db, "_studio_resource_item_trigger_version", None) != 1:
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_insert")
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_update")
+                db.execute("DROP TRIGGER IF EXISTS temp.studio_resource_item_delete")
+                db.execute("""
+                    CREATE TEMP TRIGGER studio_resource_item_insert
+                    AFTER INSERT ON main.runtime_items
+                    BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+                """)
+                db.execute("""
+                    CREATE TEMP TRIGGER studio_resource_item_update
+                    AFTER UPDATE ON main.runtime_items WHEN OLD.record IS NOT NEW.record
+                    BEGIN SELECT studio_stage_item_transcript(NEW.agent); END;
+                """)
+                db.execute("""
+                    CREATE TEMP TRIGGER studio_resource_item_delete
+                    AFTER DELETE ON main.runtime_items
+                    BEGIN SELECT studio_stage_item_transcript(OLD.agent); END;
+                """)
+                db._studio_resource_item_trigger_version = 1
         analytics = local.__dict__.setdefault("after_commit_analytics", {})
         analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
         original_commit, original_rollback = db.commit, db.rollback
@@ -2127,7 +2136,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from studio_api.sync.resources.models import ResourceRef, TasksResource
 
         members = db.execute(
-            "SELECT id FROM runtime_agents WHERE (id=? OR json_extract(record,'$.rootId')=?) "
+            "SELECT id FROM runtime_agents WHERE id=? "
+            "AND json_extract(record,'$.deletedAt') IS NULL "
+            "UNION SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
             "AND json_extract(record,'$.deletedAt') IS NULL",
             (root_id, root_id),
         )

@@ -3,6 +3,7 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -212,6 +213,85 @@ class TurnRecoveryContract(unittest.TestCase):
             self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
                                        (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
 
+    def test_duplicate_exact_start_receipt_on_later_page_stays_unconfirmed(self):
+        a = self.lose_start_receipt()
+        receipt = copy.deepcopy(self.server.native['turns'][0])
+        filler = [{'id': 'unrelated-' + str(i), 'status': 'completed', 'items': []}
+                  for i in range(10)]
+        duplicate = {**receipt, 'id': 'duplicate-native-turn'}
+        self.server.native['turns'] = [receipt, *filler, duplicate]
+        starts = sum(method == 'turn/start' for method, _ in self.server.calls)
+
+        result = self.runtime.reconcile_turn(self.key)
+
+        self.assertIn(result['status'], {'unconfirmed', 'skipped'})
+        current = self.runtime.agent(self.key)
+        self.assertEqual(current['status'], 'starting')
+        self.assertEqual(current['startAttempt']['id'], a['startAttempt']['id'])
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), starts)
+        self.assertEqual([params.get('cursor') for method, params in self.server.calls
+                          if method == 'thread/turns/list'][:2], [None, '10'])
+        for key in a['startAttempt']['events']:
+            self.assertEqual(self.runtime.delivery_receipt(key)['status'], 'uncertain')
+
+    def test_unique_exact_start_receipt_on_later_page_still_recovers(self):
+        a = self.lose_start_receipt()
+        receipt = self.server.native['turns'][0]
+        filler = [{'id': 'unrelated-' + str(i), 'status': 'completed', 'items': []}
+                  for i in range(10)]
+        self.server.native['turns'] = [*filler, receipt]
+        starts = sum(method == 'turn/start' for method, _ in self.server.calls)
+
+        result = self.runtime.reconcile_turn(self.key)
+
+        if result['status'] == 'skipped':
+            fixture.eventually(lambda: self.runtime.agent(self.key).get('lastCompletedTurn') == self.turn)
+        else:
+            self.assertEqual((result['status'], result['turnId']), ('reconciled', self.turn))
+        self.assertEqual(self.runtime.agent(self.key)['lastCompletedTurn'], self.turn)
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), starts)
+        self.assertEqual([params.get('cursor') for method, params in self.server.calls
+                          if method == 'thread/turns/list'][:2], [None, '10'])
+        for key in a['startAttempt']['events']:
+            self.assertEqual(self.runtime.delivery_receipt(key)['status'], 'delivered')
+
+    def test_malformed_start_history_pages_do_not_prove_absence(self):
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.supervisor_mode = True
+        self.server.proc = SimpleNamespace(root=Path(self.temp.name), handle='account:default', generation=2)
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['supervisorIdentity'] = {
+                'stateDir': str(Path(self.temp.name).resolve()), 'handle': 'account:default', 'generation': 1}
+            current['startAttempt']['connectionId'] = 'old-connection'
+            self.runtime.put(db, 'agents', current)
+        call = self.server.call
+        invalid_pages = ({'data': [], 'nextCursor': ''},
+                         {'data': [], 'nextCursor': 7}, {'nextCursor': None})
+        response = {'value': invalid_pages[0]}
+
+        def malformed_page(method, params, timeout=60):
+            if method == 'thread/turns/list':
+                self.server.calls.append((method, params))
+                return response['value']
+            return call(method, params, timeout)
+
+        replacement = patch.object(self.server, 'call', side_effect=malformed_page)
+        replacement.start()
+        self.addCleanup(replacement.stop)
+        for page in invalid_pages:
+            with self.subTest(page=page):
+                response['value'] = page
+                result = self.runtime.reconcile_turn(self.key)
+
+                self.assertEqual(result['status'], 'unconfirmed')
+                current = self.runtime.agent(self.key)
+                self.assertEqual(current['startAttempt']['id'], a['startAttempt']['id'])
+                self.assertEqual(current['status'], 'starting')
+                for key in a['startAttempt']['events']:
+                    self.assertEqual(self.runtime.delivery_receipt(key)['status'], 'uncertain')
+
     def test_absent_input_after_native_child_replacement_restores_exact_batch(self):
         # Inspect restored input before automatic recovery or delivery.
         with patch.object(self.runtime, 'dispatch_candidates', return_value=None):
@@ -226,7 +306,16 @@ class TurnRecoveryContract(unittest.TestCase):
                 current['startAttempt']['connectionId'] = 'old-connection'
                 self.runtime.put(db, 'agents', current)
             before = sum(method == 'turn/start' for method, _ in self.server.calls)
-            result = self.runtime.reconcile_turn(self.key)
+            call = self.server.call
+
+            def final_page_without_cursor(method, params, timeout=60):
+                result = call(method, params, timeout)
+                if method == 'thread/turns/list':
+                    result.pop('nextCursor', None)
+                return result
+
+            with patch.object(self.server, 'call', side_effect=final_page_without_cursor):
+                result = self.runtime.reconcile_turn(self.key)
             self.assertEqual(result['status'], 'input_restored')
             current = self.runtime.agent(self.key)
             self.assertEqual((current['status'], current['inFlight'], current['error']), ('queued', False, None))

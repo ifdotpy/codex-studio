@@ -69,10 +69,16 @@ def monitor_records(db: "sqlite3.Connection", root: str | None = None) -> list["
         params * (1 + len(MONITOR_TERMINAL_STATUSES)),
     ).fetchall()
     records = _decode_records("monitor", rows)
-    active_agents = {row[0] for row in db.execute(
-        "SELECT id FROM runtime_agents WHERE json_extract(record,'$.deletedAt') IS NULL" + active_agent_scope,
-        params,
-    )}
+    owners = sorted({record["agent"] for record in records if isinstance(record.get("agent"), str)})
+    active_agents: set[str] = set()
+    for start in range(0, len(owners), 500):
+        batch = owners[start:start + 500]
+        placeholders = ",".join("?" for _ in batch)
+        active_agents.update(row[0] for row in db.execute(
+            "SELECT id FROM runtime_agents WHERE id IN (" + placeholders + ") "
+            "AND json_extract(record,'$.deletedAt') IS NULL" + active_agent_scope,
+            (*batch, *params),
+        ))
     return [record for record in records if record.get("agent") in active_agents]
 
 

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import subprocess
+import sys
 import tempfile
+import textwrap
 from types import SimpleNamespace
 import threading
 import unittest
@@ -126,6 +129,20 @@ class ProgressWatchdogTests(unittest.TestCase):
         self.assertEqual(observer.watches, [])
         self.assertTrue(observer.stopped)
 
+    def test_parent_directory_change_checks_only_the_exact_progress_revision(self):
+        watcher = ProgressFileWatchdog(self.root)
+        calls = []
+        detach = watcher.subscribe("first", lambda: self.record_callback(calls, True))
+        self.addCleanup(detach)
+        observer = FakeObserver.instances[0]
+        observer.emit("first", "modified", self.first.parent, is_directory=True)
+        observer.emit("first", "modified", self.first.parent / "nested", is_directory=True)
+        with self.callback_condition:
+            self.assertEqual(calls, [])
+        self.first.write_text("Changed through an atomic parent event.\n", encoding="utf-8")
+        observer.emit("first", "modified", self.first.parent, is_directory=True)
+        self.assert_callbacks(calls, [True])
+
     def test_errors_and_recovery_are_each_change_states_even_with_no_revision(self):
         watcher = ProgressFileWatchdog(self.root)
         calls = []
@@ -182,7 +199,7 @@ class ProgressWatchdogTests(unittest.TestCase):
         detach_second()
         self.assertTrue(observer.stopped)
 
-    def test_native_observer_delivers_a_real_inotify_or_fsevents_change(self):
+    def test_native_observer_delivers_a_real_inotify_or_kqueue_change(self):
         # The test suite installs the pinned watchdog dependency in its isolated environment.
         self.patch_observer.stop()
         watcher = ProgressFileWatchdog(self.root)
@@ -193,6 +210,84 @@ class ProgressWatchdogTests(unittest.TestCase):
             self.assertTrue(changed.wait(timeout=5))
         finally:
             detach()
+
+    def test_native_rapid_detach_and_prestart_stop_release_all_threads(self):
+        # A separate process bounds the old native run-loop hang and contains threads.
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", textwrap.dedent("""
+                from pathlib import Path
+                import tempfile
+                import threading
+                from unittest.mock import patch
+                import codex_progress_watch as module
+                from codex_progress import provision_progress
+
+                with tempfile.TemporaryDirectory(prefix="studio-progress-native-race-") as temporary:
+                    root = Path(temporary)
+                    provision_progress(root, "agent")
+                    observer = module._observer_class()()
+                    emitter_class = observer._emitter_class
+                    original_run = emitter_class.run
+                    entered = threading.Event()
+                    release = threading.Event()
+                    failures = []
+
+                    def paused_run(emitter):
+                        entered.set()
+                        if not release.wait(3):
+                            raise RuntimeError("test did not release native emitter")
+                        original_run(emitter)
+
+                    watcher = module.ProgressFileWatchdog(root)
+                    with patch.object(emitter_class, "run", paused_run), \
+                            patch.object(module, "_observer_class", return_value=lambda: observer):
+                        detach = watcher.subscribe("agent", lambda: None)
+                        assert entered.wait(2), "native emitter did not enter its run method"
+                        emitter = next(iter(observer.emitters))
+                        dispatcher = watcher._dispatcher
+
+                        def unsubscribe():
+                            try:
+                                detach()
+                            except BaseException as error:
+                                failures.append(error)
+
+                        thread = threading.Thread(target=unsubscribe, daemon=True)
+                        thread.start()
+                        try:
+                            assert emitter.stopped_event.wait(2), "native emitter did not receive stop"
+                        finally:
+                            release.set()
+                        thread.join(3)
+                        assert not thread.is_alive(), "native unschedule did not finish after pre-start stop"
+                        assert not failures, failures
+                        assert not emitter.is_alive(), "native emitter survived pre-start stop"
+                        assert not observer.is_alive(), "observer survived final detach"
+                        assert dispatcher is None or not dispatcher.is_alive(), "dispatcher survived final detach"
+                    watcher.close()
+
+                    for _ in range(16):
+                        watcher = module.ProgressFileWatchdog(root)
+                        detach = watcher.subscribe("agent", lambda: None)
+                        observer = watcher._observer
+                        emitters = tuple(observer.emitters)
+                        dispatcher = watcher._dispatcher
+                        detach()
+                        detach()
+                        watcher.close()
+                        assert not observer.is_alive(), "rapid detach leaked observer"
+                        assert all(not emitter.is_alive() for emitter in emitters), "rapid detach leaked emitter"
+                        assert dispatcher is None or not dispatcher.is_alive(), "rapid detach leaked dispatcher"
+                        assert watcher._watches == {}, "rapid detach retained native watches"
+                    print("native pre-start stop and 16 rapid detach cycles passed")
+            """)],
+            cwd=Path(__file__).parent,
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("16 rapid detach cycles passed", result.stdout)
 
     def test_native_watch_handles_agent_without_progress_directory_or_file(self):
         self.patch_observer.stop()
@@ -253,12 +348,13 @@ class ProgressWatchdogTests(unittest.TestCase):
         def on_change():
             observer = watcher._observer
             observer_lock_acquired = observer._lock.acquire(timeout=0.5)
+            if observer_lock_acquired:
+                observer._lock.release()
+            # Do not create an observer/condition lock inversion in the probe.
             condition_acquired = watcher._condition.acquire(timeout=0.5)
             callback_lock_results.append((observer_lock_acquired, condition_acquired))
             if condition_acquired:
                 watcher._condition.release()
-            if observer_lock_acquired:
-                observer._lock.release()
             observer_callback.set()
 
         detach_first = watcher.subscribe("first", on_change)

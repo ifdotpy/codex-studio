@@ -489,14 +489,18 @@ function studioTools(s, getTurn) {
         definition.name,
         definition.description,
         schema.shape,
-        async (args) => {
-          const result = await request("item/tool/call", {
-            threadId: s.id,
-            turnId: getTurn()?.id,
-            callId: randomUUID(),
-            tool: definition.name,
-            arguments: args,
-          });
+        async (args, extra) => {
+          const result = await request(
+            "item/tool/call",
+            {
+              threadId: s.id,
+              turnId: getTurn()?.id,
+              callId: randomUUID(),
+              tool: definition.name,
+              arguments: args,
+            },
+            extra?.signal,
+          );
           return {
             isError: result.success === false,
             content: (result.contentItems || []).map((item) => ({
