@@ -3,6 +3,28 @@ from __future__ import annotations
 
 import errno
 import os
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+    import ctypes
+
+
+class _FileDescriptor(Protocol):
+    def fileno(self) -> int: ...
+
+
+class _PosixFcntl(Protocol):
+    def flock(self, fd: int, operation: int) -> None: ...
+
+
+class _WindowsCtypes(Protocol):
+    def WinDLL(self, name: str, *, use_last_error: bool) -> ctypes.CDLL: ...
+    def WinError(self, code: int) -> OSError: ...
+    def get_last_error(self) -> int: ...
+
+
+class _WindowsMsvcrt(Protocol):
+    def get_osfhandle(self, fd: int) -> int: ...
 
 LOCK_SH = 1
 LOCK_EX = 2
@@ -11,7 +33,7 @@ LOCK_UN = 8
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
-def flock(file_or_fd, operation: int) -> None:
+def flock(file_or_fd: int | _FileDescriptor, operation: int) -> None:
     """Lock one byte range, and release it when asked.
 
     POSIX delegates to the native ``flock`` implementation. Windows uses a
@@ -22,7 +44,7 @@ def flock(file_or_fd, operation: int) -> None:
     if os.name != "nt":
         import fcntl
 
-        fcntl.flock(fd, operation)
+        cast(_PosixFcntl, fcntl).flock(fd, operation)
         return
 
     import ctypes
@@ -38,7 +60,9 @@ def flock(file_or_fd, operation: int) -> None:
             ("hEvent", wintypes.HANDLE),
         ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    windows = cast(_WindowsCtypes, ctypes)
+    windows_msvcrt = cast(_WindowsMsvcrt, msvcrt)
+    kernel32 = windows.WinDLL("kernel32", use_last_error=True)
     lock_file = kernel32.LockFileEx
     lock_file.argtypes = [
         wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
@@ -52,13 +76,13 @@ def flock(file_or_fd, operation: int) -> None:
     ]
     unlock_file.restype = wintypes.BOOL
 
-    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    handle = wintypes.HANDLE(windows_msvcrt.get_osfhandle(fd))
     overlapped = Overlapped()
     overlapped.Offset = _WINDOWS_LOCK_OFFSET & 0xFFFFFFFF
     overlapped.OffsetHigh = _WINDOWS_LOCK_OFFSET >> 32
     if operation & LOCK_UN:
         if not unlock_file(handle, 0, 1, 0, ctypes.byref(overlapped)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise windows.WinError(windows.get_last_error())
         return
 
     flags = 0
@@ -68,7 +92,7 @@ def flock(file_or_fd, operation: int) -> None:
         flags |= 0x00000001  # LOCKFILE_FAIL_IMMEDIATELY
     if lock_file(handle, flags, 0, 1, 0, ctypes.byref(overlapped)):
         return
-    error = ctypes.get_last_error()
+    error = windows.get_last_error()
     if operation & LOCK_NB and error in {33, 158}:
         raise BlockingIOError(errno.EAGAIN, "The file lock is already held")
-    raise ctypes.WinError(error)
+    raise windows.WinError(error)

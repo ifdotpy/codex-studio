@@ -5,9 +5,10 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+from typing import Callable, Mapping
 
 
-def which(name: str, *, environment=None) -> str | None:
+def which(name: str, *, environment: Mapping[str, str] | None = None) -> str | None:
     values = os.environ if environment is None else environment
     found = shutil.which(name, path=values.get("PATH"))
     if found or os.name != "nt":
@@ -44,7 +45,7 @@ def command(executable: str | Path, arguments: list[str] | tuple[str, ...]) -> l
         # arguments; callers must use a native executable for arbitrary input.
         if any(any(char in item for char in "%!&|<>^\"\n\r") for item in (path, *arguments)):
             raise ValueError("Command shim arguments contain shell control characters")
-        quote = lambda item: f'"{item}"' if any(char.isspace() for char in item) else item
+        quote: Callable[[str], str] = lambda item: f'"{item}"' if any(char.isspace() for char in item) else item
         comspec = os.environ.get("COMSPEC", "cmd.exe")
         invocation = " ".join(quote(item) for item in (path, *arguments))
         return f'{quote(comspec)} /d /c call {invocation}'
