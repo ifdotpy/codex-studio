@@ -505,7 +505,7 @@ test(
     test.setTimeout(60_000);
     test.fail(
       true,
-      "Suspected regression from f4f176f1; not bisected: 390x844 composer body measures 133.6px against the 110px cap.",
+      "Known mobile composer layout defect: .composer-submit-actions does not shrink, so the composer body exceeds its compact height budget; linked in misc-known-failures.md.",
     );
     const repo = fileURLToPath(new URL("../../../", import.meta.url));
     const root = await mkdtemp(join(tmpdir(), "codex-workspace-composer-"));
