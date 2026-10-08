@@ -1,26 +1,50 @@
 import type { HistoryGroup } from "../../turnHistoryModel";
+import { messageRenderKey } from "../../message-delivery/messageDelivery";
 
 export const HISTORY_WINDOW_THRESHOLD = 80;
-export const HISTORY_ROW_ITEMS = 32;
-export const HISTORY_WINDOW_ROWS = 48;
+export const HISTORY_ROW_ITEMS = 16;
+export const HISTORY_WINDOW_ROWS = 24;
 
-/** Bound a single large native turn as well as a long list of turns. */
-export function windowHistoryRows(groups: HistoryGroup[]): HistoryGroup[] {
-  if (!groups.some((group) => group.items.length > HISTORY_ROW_ITEMS))
+/** Retain committed row boundaries while pages prepend and the last turn grows. */
+export function windowHistoryRows(
+  groups: HistoryGroup[],
+  previous: HistoryGroup[] = [],
+): HistoryGroup[] {
+  if (
+    !previous.length &&
+    groups.every((group) => group.items.length <= HISTORY_ROW_ITEMS)
+  )
     return groups;
+  const present = new Set(
+    groups.flatMap((group) => group.items.map(messageRenderKey)),
+  );
+  const boundaries = new Map<string, string>();
+  for (const row of previous) {
+    const survivor = row.items.find((item) =>
+      present.has(messageRenderKey(item)),
+    );
+    if (survivor) boundaries.set(messageRenderKey(survivor), row.id);
+  }
   return groups.flatMap((group) => {
-    if (group.items.length <= HISTORY_ROW_ITEMS) return [group];
+    if (group.items.length <= HISTORY_ROW_ITEMS) {
+      const id = boundaries.get(messageRenderKey(group.items[0])) || group.id;
+      return [id === group.id ? group : { ...group, id }];
+    }
     const rows: HistoryGroup[] = [];
-    for (
-      let start = 0;
-      start < group.items.length;
-      start += HISTORY_ROW_ITEMS
-    ) {
-      const items = group.items.slice(start, start + HISTORY_ROW_ITEMS);
-      const last = start + items.length === group.items.length;
+    let start = 0;
+    while (start < group.items.length) {
+      let end = start + 1;
+      while (
+        end < group.items.length &&
+        end - start < HISTORY_ROW_ITEMS &&
+        !boundaries.has(messageRenderKey(group.items[end]))
+      )
+        end++;
+      const items = group.items.slice(start, end);
+      const last = end === group.items.length;
       rows.push({
         ...group,
-        id: items[0].id,
+        id: boundaries.get(messageRenderKey(items[0])) || items[0].id,
         items,
         result:
           group.result && items.includes(group.result)
@@ -31,9 +55,23 @@ export function windowHistoryRows(groups: HistoryGroup[]): HistoryGroup[] {
           items.some((item) => item.turnId === turn.items[0].turnId),
         ),
       });
+      start = end;
     }
     return rows;
   });
+}
+
+/** Saved row IDs remain a fallback for clients before message anchors. */
+export function historyWindowAnchor(rows: HistoryGroup[], id: string) {
+  for (const row of rows) {
+    const item = row.items.find(
+      (item) =>
+        messageRenderKey(item) === id || item.id === id || item.sourceId === id,
+    );
+    if (item) return { row, item };
+  }
+  const row = rows.find((row) => row.id === id);
+  return row ? { row, item: row.items[0] } : undefined;
 }
 
 export function historyOffsets(

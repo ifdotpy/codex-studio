@@ -9,10 +9,12 @@ import {
   type RefObject,
 } from "react";
 import { save, saved } from "../../../api";
+import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import type { HistoryGroup } from "../../turnHistoryModel";
 import {
   HISTORY_WINDOW_THRESHOLD,
   historyOffsets,
+  historyWindowAnchor,
   historyWindowRange,
 } from "./historyWindowModel";
 
@@ -43,7 +45,7 @@ export default function HistoryWindow({
     rows.slice(-12).map((row) => row.id),
   );
   const [initialAnchor] = useState(() =>
-    saved<{ id: string; offset: number } | null>(
+    saved<{ id: string; offset: number; kind?: "message" | "row" } | null>(
       `${storageKey}:window-anchor`,
       null,
     ),
@@ -61,19 +63,38 @@ export default function HistoryWindow({
     (rows.length > HISTORY_WINDOW_THRESHOLD ||
       rows.reduce((count, row) => count + row.items.length, 0) > 256);
   const indices = useMemo(() => {
+    const requestedRow = requested
+      ? historyWindowAnchor(rows, requested)?.row.id
+      : undefined;
     const keep = new Set([
       ...visible,
       ...pinned,
-      ...(requested ? [requested] : []),
+      ...(requestedRow ? [requestedRow] : []),
     ]);
     return rows.flatMap((row, index) => (keep.has(row.id) ? [index] : []));
   }, [rows, visible, pinned, requested]);
-  const latest = useRef({ rows, offsets });
-  latest.current = { rows, offsets };
+  const rowsById = useMemo(
+    () => new Map(rows.map((row) => [row.id, row])),
+    [rows],
+  );
+  const latest = useRef({ rows, offsets, rowsById });
+  latest.current = { rows, offsets, rowsById };
   useEffect(() => {
     const root = scrollContainer?.current;
     const node = body.current;
-    if (!active || !root || !node) return;
+    if (!root || !node) return;
+    const reveal = (event: Event) => {
+      const id: unknown = (event as CustomEvent).detail;
+      if (typeof id !== "string") return;
+      const match = historyWindowAnchor(latest.current.rows, id);
+      if (match) {
+        setRequested(match.row.id);
+        setRevealedMessage(match.item.id);
+      }
+    };
+    root.addEventListener("studio-history-reveal", reveal);
+    if (!active)
+      return () => root.removeEventListener("studio-history-reveal", reveal);
     let frame = 0;
     let restoreFrame = 0;
     const persistAnchor = () => {
@@ -87,10 +108,27 @@ export default function HistoryWindow({
       if (root.scrollHeight - root.scrollTop - root.clientHeight < 32) {
         save(`${storageKey}:window-anchor`, null);
       } else if (row) {
-        save(`${storageKey}:window-anchor`, {
-          id: row.dataset.historyRow,
-          offset: row.getBoundingClientRect().top - bounds.top,
+        const metadata = latest.current.rowsById.get(row.dataset.historyRow!);
+        if (!metadata) return;
+        const visible = Array.from(
+          row.querySelectorAll<HTMLElement>(
+            "[data-message]:not([data-lazy-message])",
+          ),
+        ).find((message) => {
+          const box = message.getBoundingClientRect();
+          return (
+            box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
+          );
         });
+        const item = visible
+          ? metadata.items.find((item) => item.id === visible.dataset.message)
+          : metadata.items[0];
+        if (item)
+          save(`${storageKey}:window-anchor`, {
+            id: messageRenderKey(item),
+            kind: visible ? "message" : "row",
+            offset: (visible || row).getBoundingClientRect().top - bounds.top,
+          });
       }
     };
     const update = () => {
@@ -108,7 +146,11 @@ export default function HistoryWindow({
           ? old
           : ids,
       );
-      setRequested((id) => (id && ids.includes(id) ? null : id));
+      setRequested((id) =>
+        id && ids.includes(historyWindowAnchor(current, id)?.row.id || id)
+          ? null
+          : id,
+      );
     };
     const schedule = () => {
       if (!frame) frame = requestAnimationFrame(update);
@@ -117,17 +159,6 @@ export default function HistoryWindow({
     const scrolled = () => {
       schedule();
       persistAnchor();
-    };
-    const reveal = (event: Event) => {
-      const id: unknown = (event as CustomEvent).detail;
-      if (typeof id !== "string") return;
-      const row = latest.current.rows.find((row) =>
-        row.items.some((item) => item.id === id || item.sourceId === id),
-      );
-      if (row) {
-        setRequested(row.id);
-        setRevealedMessage(id);
-      }
     };
     let focusOwner: string | undefined;
     const pin = () => {
@@ -168,7 +199,6 @@ export default function HistoryWindow({
       });
     };
     root.addEventListener("scroll", scrolled, { passive: true });
-    root.addEventListener("studio-history-reveal", reveal);
     document.addEventListener("selectionchange", pin);
     const focusChanged = () => queueMicrotask(pin);
     document.addEventListener("focusin", focusChanged);
@@ -182,19 +212,58 @@ export default function HistoryWindow({
       typeof anchor.id === "string" &&
       Number.isFinite(anchor.offset)
     ) {
-      restoreFrame = requestAnimationFrame(() => {
-        const row = Array.from(
-          node.querySelectorAll<HTMLElement>("[data-history-row]"),
-        ).find((row) => row.dataset.historyRow === anchor.id);
-        if (row) {
+      const match = historyWindowAnchor(latest.current.rows, anchor.id);
+      if (anchor.kind === "message" && match) setRevealedMessage(match.item.id);
+      let attempts = 0;
+      const restoreAnchor = () => {
+        const resolved = historyWindowAnchor(latest.current.rows, anchor.id);
+        const row =
+          resolved &&
+          Array.from(
+            node.querySelectorAll<HTMLElement>("[data-history-row]"),
+          ).find((row) => row.dataset.historyRow === resolved.row.id);
+        const message =
+          row &&
+          resolved &&
+          Array.from(row.querySelectorAll<HTMLElement>("[data-message]")).find(
+            (message) =>
+              message.dataset.message === resolved.item.id ||
+              (!!resolved.item.sourceId &&
+                message.dataset.sourceMessage === resolved.item.sourceId),
+          );
+        if (anchor.kind === "message" && message) {
+          for (
+            let parent = message.parentElement;
+            parent && parent !== node;
+            parent = parent.parentElement
+          )
+            if (parent instanceof HTMLDetailsElement) parent.open = true;
+        }
+        const visibleMessage =
+          message &&
+          !message.hasAttribute("data-lazy-message") &&
+          message.getBoundingClientRect().height > 0;
+        if (
+          anchor.kind === "message" &&
+          resolved &&
+          !visibleMessage &&
+          attempts++ < 20
+        ) {
+          restoreFrame = requestAnimationFrame(restoreAnchor);
+          return;
+        }
+        const target =
+          anchor.kind === "message" && visibleMessage ? message : row;
+        if (target) {
           root.scrollTop +=
-            row.getBoundingClientRect().top -
+            target.getBoundingClientRect().top -
             root.getBoundingClientRect().top -
             anchor.offset;
           rememberLatest.current?.();
         }
         update();
-      });
+      };
+      restoreFrame = requestAnimationFrame(restoreAnchor);
     } else update();
     return () => {
       scheduleUpdate.current = () => {};
@@ -269,7 +338,7 @@ export default function HistoryWindow({
     return (
       <div ref={body} className="history-window-static">
         {rows.map((row) => (
-          <Fragment key={row.id}>{render(row)}</Fragment>
+          <Fragment key={row.id}>{render(row, revealedMessage)}</Fragment>
         ))}
       </div>
     );

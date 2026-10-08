@@ -3,6 +3,7 @@ import {
   Fragment,
   memo,
   useMemo,
+  useLayoutEffect,
   useRef,
   useState,
   type ReactNode,
@@ -95,8 +96,9 @@ function messages(
   render: (message: Message) => ReactNode,
   agentId?: string,
   cwd?: string,
+  revealedMessage?: string,
 ) {
-  return messageGroups(items).map((item) =>
+  return messageGroups(items, false, false, revealedMessage).map((item) =>
     Array.isArray(item) ? (
       <Activity key={item[0].id} items={item} agentId={agentId} />
     ) : (
@@ -200,6 +202,7 @@ const WorkBlock = memo(function WorkBlock({
             <span
               key={item.id}
               data-message={item.id}
+              data-source-message={item.sourceId}
               data-lazy-message
               hidden
             />
@@ -420,10 +423,20 @@ export default function TurnHistory({
       ]),
     );
   }, [items, groups]);
-  const rows = useMemo(
-    () => (scrollContainer ? windowHistoryRows(groups) : groups),
-    [groups, scrollContainer],
-  );
+  const previousRows = useRef<HistoryGroup[]>([]);
+  const rows = useMemo(() => {
+    const partitioned = scrollContainer
+      ? windowHistoryRows(groups, previousRows.current)
+      : groups;
+    return partitioned.map((group) =>
+      group.items[0].role === "user"
+        ? { ...group, id: messageRenderKey(group.items[0]) }
+        : group,
+    );
+  }, [groups, scrollContainer]);
+  useLayoutEffect(() => {
+    previousRows.current = rows;
+  }, [rows]);
   return (
     <HistoryWindow
       rows={rows}
@@ -448,6 +461,7 @@ export default function TurnHistory({
                 renderMessage,
                 agentId,
                 agent?.cwd ?? undefined,
+                revealedMessage,
               )}
             </Fragment>
           );
