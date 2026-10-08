@@ -251,6 +251,9 @@ See [live updates](docs/live-updates.md) for publication and verification.
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](docs/restart-recovery.md) for the exact behavior and limits.
+Use `codex-supervisor enable` to install supervisor mode without the desktop UI.
+For systemd user services and Windows Subsystem for Linux, see
+[Linux and WSL server setup](docs/linux-server-setup.md).
 
 ## iPhone access
 
