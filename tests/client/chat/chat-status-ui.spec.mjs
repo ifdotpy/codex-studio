@@ -2,6 +2,9 @@ import {
   readTestState,
   syncIdentityFixture,
   entityPullFixtureForRequest,
+  entityMutationFixtureResponse,
+  updateEntitySyncFixture,
+  installApiSchemaFixtureHeaders,
   legacySnapshotRoute,
   test,
   expect,
@@ -155,6 +158,7 @@ test("chat-status-ui", async ({ browser }) => {
       viewport: { width: 1440, height: 980 },
     });
     page = await context.newPage();
+    installApiSchemaFixtureHeaders(page);
     const syncPullRequests = [],
       stateRequests = [];
     page.on("request", (request) => {
@@ -167,21 +171,67 @@ test("chat-status-ui", async ({ browser }) => {
     const errors = [],
       writes = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
     const backendIdentity = await (
       await fetch(`${origin}/api/sync/identity`)
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     const workspaceId = identityResponse.workspaceId;
-    let fixtureMaxSeq = 0;
-    let pullTombstones = [];
+    const fixtureDocuments = new Map(
+      updateEntitySyncFixture(state).map((document) => [document.id, document]),
+    );
+    let fixtureMaxSeq = Math.max(
+      0,
+      ...[...fixtureDocuments.values()].map((document) => document.seq),
+    );
+    const rememberFixtureDocuments = (documents) => {
+      for (const document of documents) {
+        fixtureDocuments.set(document.id, document);
+        fixtureMaxSeq = Math.max(fixtureMaxSeq, document.seq);
+      }
+    };
+    const refreshFixtureEntities = () => {
+      const changed = updateEntitySyncFixture(state);
+      rememberFixtureDocuments(changed);
+    };
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({ json: identityResponse }),
     );
     await page.route("**/api/sync/pull?*", (route) => {
       const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope") || "";
+      const transcriptAgent = scope.startsWith("transcript:")
+        ? state.threads.find((agent) => agent.id === scope.slice(11))
+        : undefined;
+      const transcript = scope.startsWith("transcript:")
+        ? {
+            items: transcriptAgent?.lastCompletedTurn
+              ? [
+                  {
+                    id: `result-${transcriptAgent.id}`,
+                    role: "assistant",
+                    text: "The fixture result is complete.",
+                    phase: "final_answer",
+                    turnId: transcriptAgent.lastCompletedTurn,
+                    created: 1,
+                  },
+                ]
+              : [],
+            truncated: false,
+            agent: transcriptAgent || null,
+            historyVersion: "fixture-history-v1",
+            nextAfterCursor: null,
+            nextCursor: null,
+            tail: null,
+            unavailable: null,
+          }
+        : undefined;
       const projection = entityPullFixtureForRequest(state, url, {
         ...(fixtureMaxSeq ? { maxSeq: fixtureMaxSeq } : {}),
-        tombstones: pullTombstones,
+        documents: [...fixtureDocuments.values()],
+        ...(transcript ? { transcript } : {}),
       });
       if (typeof projection.maxSeq === "number")
         fixtureMaxSeq = Math.max(fixtureMaxSeq, projection.maxSeq);
@@ -237,7 +287,12 @@ test("chat-status-ui", async ({ browser }) => {
         read: desired.read,
         revision: desired.expected_revision + 1,
       };
-      await route.fulfill({ json: agent });
+      const response = entityMutationFixtureResponse(state, agent);
+      const syncEntities = /** @type {Array<{ id: string, seq: number }>} */ (
+        response._syncEntities
+      );
+      rememberFixtureDocuments(syncEntities);
+      await route.fulfill({ json: response });
     });
     await page.addInitScript(
       ({ stateDir, id }) => {
@@ -330,21 +385,8 @@ test("chat-status-ui", async ({ browser }) => {
     console.log(
       "PASS sidebar, header, worker statuses; question overrides active work; monitor spinner and question pulse",
     );
-    const removedRequest = state.runtime.requests[0];
     state.runtime.requests = [];
-    fixtureMaxSeq += 1;
-    pullTombstones = [
-      {
-        id: `entity:request:${removedRequest.id}`,
-        seq: fixtureMaxSeq,
-        payload: JSON.stringify({
-          collection: "request",
-          id: removedRequest.id,
-          value: removedRequest,
-        }),
-        _deleted: true,
-      },
-    ];
+    refreshFixtureEntities();
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await status(row(lead), "working");
     await status(page.locator("#conversation-title"), "working");
@@ -461,6 +503,7 @@ test("chat-status-ui", async ({ browser }) => {
       },
       { stateDir: state.stateDir, id: lead.id },
     );
+    refreshFixtureEntities();
     await page.reload();
     const waitLabel = "Waiting for 2 agents, 1 command and 1 monitor";
     const waitSummary = page.locator(
@@ -497,7 +540,17 @@ test("chat-status-ui", async ({ browser }) => {
     Object.assign(worker(1), { status: "completed", inFlight: false });
     state.runtime.tasks = [];
     state.runtime.monitors = [];
+    refreshFixtureEntities();
+    const finalPullResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1" &&
+        Number(url.searchParams.get("after")) >= 290
+      );
+    });
     await page.reload();
+    await finalPullResponse;
     const ended = page.locator('.agent-phase[data-wait-state="ended"]');
     await ended
       .getByText("Turn ended. Send a message to continue.", { exact: true })
