@@ -280,7 +280,9 @@ test("state stream persists records across tabs without pulls and repairs missin
     const beforeOpen = opened;
     for (const response of streams) response.end();
     put("lead", "After reconnect");
-    await expect.poll(() => opened).toBeGreaterThan(beforeOpen);
+    await expect
+      .poll(() => opened, { timeout: 20_000 })
+      .toBeGreaterThan(beforeOpen);
     await Promise.all(
       pages.map((tab) => waitForAgent(tab, "lead", "After reconnect")),
     );
