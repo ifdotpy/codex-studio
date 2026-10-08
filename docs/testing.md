@@ -48,7 +48,9 @@ npm --prefix web run test:browser:list
 Install Playwright's managed Chromium with the locally installed CLI when it is
 not available. `CHROME_BIN` can select an existing compatible browser. Browser
 checks run headlessly. Set `BROWSER=webkit` to select Playwright WebKit after
-installing that browser. Live or installed-environment checks and performance
+installing that browser. The mobile usability checks skip WebKit only when its
+shared runtime library is missing; set `REQUIRE_WEBKIT=1` in capable CI to make
+a missing WebKit executable or library fail the check. Live or installed-environment checks and performance
 measurements are explicitly selected separately from the default browser suite.
 Use `npm --prefix web run test:performance` for the browser performance group.
 To inspect the optional installed-environment group, enable
