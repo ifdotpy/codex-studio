@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import {
   apiSchemaHeaders,
   apiSchemaHandshakeSse,
+  FIXTURE_OPTIMIZE_DEPS,
   installApiSchemaFixtureHeaders,
   test,
   expect,
@@ -19,6 +20,16 @@ test("sync required browser", async ({ page: runnerPage }) => {
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    optimizeDeps: {
+      ...FIXTURE_OPTIMIZE_DEPS,
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
@@ -189,6 +200,16 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
   const server = await createServer({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    optimizeDeps: {
+      ...FIXTURE_OPTIMIZE_DEPS,
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
     server: { host: "127.0.0.1", port: 0 },
   });
   server.middlewares.stack.unshift({
@@ -300,7 +321,7 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
       [3_000, 3],
       [10_000, 4],
     ]) {
-      await page.clock.fastForward(delay);
+      await page.clock.runFor(delay);
       await waitForIdentityCount(expected);
     }
     await page.waitForFunction(
