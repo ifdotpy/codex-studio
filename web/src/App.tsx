@@ -1,3 +1,8 @@
+import ServerAccessSettings from "./servers/ServerAccessSettings";
+import { useServerFrame } from "./servers/frameBridge";
+import { isServerView, isRemoteServerView } from "./servers/environment";
+import { serverStorageEventKey } from "./servers/storage";
+import { serverLocalStorage as localStorage } from "./servers/storage";
 import SearchOverlay from "./components/shell/SearchOverlay";
 import { SettingsSection, SettingsRow } from "./components/ui/primitives";
 import { modalSizes } from "./theme";
@@ -129,6 +134,7 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
 }
 import Sidebar from "./components/Sidebar";
 import {
+  unreadResult,
   chatIndicators,
   backgroundActivities,
   chatActivities,
@@ -334,7 +340,24 @@ export default function App() {
       String(studioPreferences.contentWidth / 100),
     );
   }, [studioPreferences]);
+  useEffect(() => {
+    const preferences = (event: StorageEvent) => {
+      if (event.key !== studioPreferencesStorageKey || !event.newValue) return;
+      try {
+        setStudioPreferences(parseStudioPreferences(event.newValue));
+      } catch {}
+    };
+    window.addEventListener("storage", preferences);
+    return () => window.removeEventListener("storage", preferences);
+  }, []);
   const toggleSidebar = useCallback(() => {
+    if (isServerView) {
+      window.parent.postMessage(
+        { kind: "studio-server-toggle-sidebar" },
+        location.origin,
+      );
+      return;
+    }
     if (mobileClient) {
       setSidebar((visible) => !visible);
       return;
@@ -533,9 +556,9 @@ export default function App() {
     load();
     const stored = (event: StorageEvent) => {
       if (
-        event.key === null ||
-        event.key === creationKey ||
-        event.key?.startsWith(`${creationKey}:request:`)
+        serverStorageEventKey(event) === null ||
+        serverStorageEventKey(event) === creationKey ||
+        serverStorageEventKey(event)?.startsWith(`${creationKey}:request:`)
       ) {
         load();
       }
@@ -982,6 +1005,13 @@ export default function App() {
     const key = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key === "k") {
         e.preventDefault();
+        if (isServerView) {
+          window.parent.postMessage(
+            { kind: "studio-server-search" },
+            location.origin,
+          );
+          return;
+        }
         setSidebar(false);
         setSearchOpen(true);
       }
@@ -1439,7 +1469,7 @@ export default function App() {
           <>
             <p>{agent.cwd}</p>
             <p>To use another folder, start a new chat.</p>
-            {window.codexDesktop && (
+            {window.codexDesktop && !isRemoteServerView && (
               <Button
                 onClick={() =>
                   void window.codexDesktop
@@ -1490,6 +1520,36 @@ export default function App() {
         </>
       )}
     </Modal>
+  );
+  useServerFrame(
+    data,
+    opened,
+    error,
+    (command) => {
+      if (command.action === "open") {
+        open(command.id, command.messageId);
+        document.documentElement.removeAttribute("data-server-projects");
+      } else if (command.action === "new-chat") void newChat(command.path);
+      else if (command.action === "settings") setStudioSettingsOpen(true);
+      else if (command.action === "focus") {
+        window.focus();
+        document.getElementById("message")?.focus();
+        window.dispatchEvent(new Event("focus"));
+      } else if (command.action === "notifications")
+        window.dispatchEvent(
+          new CustomEvent("studio-navigate", { detail: command }),
+        );
+      else if (command.action === "projects") {
+        document.documentElement.dataset.serverProjects = "true";
+        setSidebarCollapsed(false);
+        setSidebar(true);
+      }
+    },
+    new Set(
+      agents
+        .filter((agent) => unreadResult(agent, readState.readStateFor(agent)))
+        .map((agent) => agent.id),
+    ),
   );
   if (!data)
     return schemaMismatch ? (
@@ -1759,10 +1819,19 @@ export default function App() {
         mobile={sidebar}
         collapsed={sidebarCollapsed}
         onSearch={() => {
+          if (isServerView) {
+            window.parent.postMessage(
+              { kind: "studio-server-search" },
+              location.origin,
+            );
+            return;
+          }
           setSidebar(false);
           setSearchOpen(true);
         }}
         close={() => {
+          if (isServerView)
+            delete document.documentElement.dataset.serverProjects;
           if (mobileClient) setSidebar(false);
           else {
             setSidebarCollapsed(true);
@@ -1922,8 +1991,14 @@ export default function App() {
                     data-workspace-section={section}
                     leftSection={<Icon size={14} />}
                     onClick={() => {
-                      if (section === "search") setSearchOpen(true);
-                      else {
+                      if (section === "search") {
+                        if (isServerView)
+                          window.parent.postMessage(
+                            { kind: "studio-server-search" },
+                            location.origin,
+                          );
+                        else setSearchOpen(true);
+                      } else {
                         setWorkspaceSection(section);
                         setWorkspaceOpen(true);
                       }
@@ -2376,6 +2451,7 @@ export default function App() {
               <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
               <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
               <Tabs.Tab value="federation">Federation</Tabs.Tab>
+              <Tabs.Tab value="server-access">Server access</Tabs.Tab>
               <Tabs.Tab value="linux-vm">Linux VM</Tabs.Tab>
               <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
             </Tabs.List>
@@ -2388,6 +2464,9 @@ export default function App() {
                   onError={notify}
                 />
               </section>
+            </Tabs.Panel>
+            <Tabs.Panel value="server-access" pt="md" keepMounted={false}>
+              <ServerAccessSettings active={studioSettingsOpen} />
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">

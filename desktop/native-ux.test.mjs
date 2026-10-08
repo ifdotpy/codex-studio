@@ -160,6 +160,44 @@ test("desktop native settings, notification and speech boundaries work with fixt
   try {
     let f = await fixture();
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
+    const serverFrame = { url: "http://localhost:1234/?studio-server=local" };
+    f.event.senderFrame.frames = [serverFrame];
+    assert.equal(
+      (
+        await f.invoke("serverNativeAction", {
+          serverId: "local",
+          method: "getBackendUpdate",
+        })
+      ).updateRequired,
+      false,
+    );
+    await assert.rejects(
+      f.invoke("serverNativeAction", {
+        serverId: "missing",
+        method: "getBackendUpdate",
+      }),
+      /server view/,
+    );
+    await assert.rejects(
+      f.invoke("serverNativeAction", { serverId: "local", method: "notify" }),
+      /Unknown server native action/,
+    );
+    await assert.rejects(
+      f.invoke("serverCredentialAction", {
+        action: "request",
+        frameOwner: "local",
+        serverId: "other",
+      }),
+      /Invalid server frame owner/,
+    );
+    await assert.rejects(
+      f.handler(
+        { sender: f.event.sender, senderFrame: serverFrame },
+        { method: "getBackendUpdate" },
+      ),
+      /main frame/,
+    );
+
     f.setBackendBuild("old");
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
     f.setBackendBuild("installed");

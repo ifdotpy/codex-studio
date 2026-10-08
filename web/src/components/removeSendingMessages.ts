@@ -1,3 +1,4 @@
+import { serverLocalStorage as localStorage } from "../servers/storage";
 import { get, syncPost, ApiError } from "../api";
 import type { Message, Snapshot } from "../types";
 import { transcriptMessages } from "../hooks";

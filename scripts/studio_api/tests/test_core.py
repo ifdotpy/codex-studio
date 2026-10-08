@@ -1045,12 +1045,21 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(body, [{"id": 1, "text": "hello"}])
         self.assert_security_headers(response)
 
+    def test_only_server_view_html_can_use_same_origin_frames(self) -> None:
+        for path, expected in (("/?studio-server=server-a", "self"), ("/", "none"),
+                               ("/?studio-server=bad%20id", "none"), ("/other?studio-server=server-a", "none")):
+            route, _, query = path.partition("?")
+            request = Request({"type": "http", "method": "GET", "path": route,
+                               "query_string": query.encode(), "headers": []})
+            response = self.context.send(request, b"<h1>Studio</h1>", content_type="text/html")
+            self.assertIn(f"frame-ancestors '{expected}'", response.headers["content-security-policy"])
+
     def assert_security_headers(self, response: Response) -> None:
         self.assertEqual(response.headers["referrer-policy"], "no-referrer")
         self.assertEqual(
             response.headers["content-security-policy"],
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-            "connect-src 'self' https://api.openai.com; "
+            "connect-src 'self' https://api.openai.com https://*.ts.net; "
             "img-src 'self' data: blob: https: http:; "
             "media-src 'self' blob: data:; frame-src 'self' blob:; "
             "frame-ancestors 'none'; base-uri 'none'",

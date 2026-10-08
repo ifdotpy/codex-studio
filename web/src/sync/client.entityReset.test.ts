@@ -112,6 +112,7 @@ describe("entity pull reset wiring", () => {
     expect(mocks.deleteOtherCaches).toHaveBeenCalledWith(
       workspaceId,
       expect.stringMatching(/^[a-f0-9]{64}$/),
+      "",
     );
   });
 

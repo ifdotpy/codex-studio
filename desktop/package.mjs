@@ -2,7 +2,7 @@ import { buildLinuxVM } from "./native/linux-vm/build.mjs";
 import { signingIdentity, signApplication, signCode } from "./signing.mjs";
 import { execFileSync } from "node:child_process";
 import { packager } from "@electron/packager";
-import { cp, mkdir, mkdtemp, rm, access } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, rm, access, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -10,6 +10,9 @@ const root = path.dirname(fileURLToPath(import.meta.url));
 const packageOutput = path.resolve(
   process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
 );
+const uiOnly =
+  process.argv.includes("--ui-only") ||
+  process.env.CODEX_DESKTOP_UI_ONLY === "1";
 const identity = signingIdentity();
 await access(path.join(root, "../web/dist/index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
@@ -31,53 +34,63 @@ try {
     path.join(root, "native/speech-info.plist"),
   ]);
   signCode(speech, identity);
-  const linuxVM = buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
+  const linuxVM = uiOnly
+    ? undefined
+    : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
   const resources = path.join(stage, "workspace");
   await mkdir(path.join(resources, "web"), { recursive: true });
-  await cp(
-    path.join(root, "../requirements.txt"),
-    path.join(resources, "requirements.txt"),
-  );
-  await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
-    recursive: true,
-    filter: (source) =>
-      !source.includes("__pycache__") &&
-      !source.includes("/node_modules") &&
-      !source.endsWith(".pyc"),
-  });
-  execFileSync(
-    "npm",
-    [
-      "--prefix",
-      ".",
-      "ci",
-      "--ignore-scripts",
-      "--no-bin-links",
-      "--omit=optional",
-      "--no-audit",
-      "--no-fund",
-    ],
-    {
-      cwd: path.join(resources, "scripts/claude_bridge"),
-      stdio: "inherit",
-    },
-  );
-  await cp(path.join(root, "../vm/guest"), path.join(resources, "vm/guest"), {
-    recursive: true,
-    filter: (source) =>
-      !source.includes("__pycache__") && !source.endsWith(".pyc"),
-  });
+  if (!uiOnly) {
+    await cp(
+      path.join(root, "../requirements.txt"),
+      path.join(resources, "requirements.txt"),
+    );
+    await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
+      recursive: true,
+      filter: (source) =>
+        !source.includes("__pycache__") &&
+        !source.includes("/node_modules") &&
+        !source.endsWith(".pyc"),
+    });
+    execFileSync(
+      "npm",
+      [
+        "--prefix",
+        ".",
+        "ci",
+        "--ignore-scripts",
+        "--no-bin-links",
+        "--omit=optional",
+        "--no-audit",
+        "--no-fund",
+      ],
+      {
+        cwd: path.join(resources, "scripts/claude_bridge"),
+        stdio: "inherit",
+      },
+    );
+    await cp(path.join(root, "../vm/guest"), path.join(resources, "vm/guest"), {
+      recursive: true,
+      filter: (source) =>
+        !source.includes("__pycache__") && !source.endsWith(".pyc"),
+    });
+  }
   await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
     recursive: true,
   });
-  await cp(
-    path.join(root, "../.agents/skills"),
-    path.join(resources, ".agents/skills"),
-    { recursive: true },
-  );
-  for (const document of ["README.md", "CLI.md", "ORCHESTRATION.md"]) {
-    await cp(path.join(root, "..", document), path.join(resources, document));
+  if (!uiOnly) {
+    await cp(
+      path.join(root, "../.agents/skills"),
+      path.join(resources, ".agents/skills"),
+      { recursive: true },
+    );
+    for (const document of ["README.md", "CLI.md", "ORCHESTRATION.md"]) {
+      await cp(path.join(root, "..", document), path.join(resources, document));
+    }
   }
+  await writeFile(
+    path.join(resources, "studio-install.json"),
+    JSON.stringify({ mode: uiOnly ? "ui-only" : "combined" }),
+  );
   const output = await packager({
     dir: root,
     name: "Codex Studio",
@@ -95,8 +108,7 @@ try {
     extraResource: [
       resources,
       speech,
-      linuxVM,
-      path.join(root, "recover_backend.py"),
+      ...(uiOnly ? [] : [linuxVM, path.join(root, "recover_backend.py")]),
     ],
     extendInfo: {
       NSMicrophoneUsageDescription:

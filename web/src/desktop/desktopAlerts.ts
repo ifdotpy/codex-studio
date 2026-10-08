@@ -31,7 +31,12 @@ export function desktopAlerts(data: Snapshot): DesktopAlert[] {
     });
   };
   for (const agent of agents.values()) {
-    if (!agent.isLead || agent.inFlight) continue;
+    if (
+      !agent.isLead ||
+      agent.inFlight ||
+      (agent as typeof agent & { remoteAnchor?: unknown }).remoteAnchor
+    )
+      continue;
     const turn = agent.lastCompletedTurn;
     if (
       agent.status === "completed" &&

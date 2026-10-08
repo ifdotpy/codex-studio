@@ -1,4 +1,17 @@
 export interface DesktopBridge {
+  serverCredentialAction?(
+    request: import("./servers/desktopCredentials").CredentialRequest,
+  ): Promise<unknown>;
+  onServerStream?(
+    callback: (
+      chunk: import("./servers/desktopCredentials").StreamChunk,
+    ) => void,
+  ): () => void;
+  serverNativeAction?(
+    serverId: string,
+    method: string,
+    value?: unknown,
+  ): Promise<unknown>;
   platform: string;
   requestMicrophone(): Promise<boolean>;
   prepareTranscription(): Promise<string>;
@@ -29,6 +42,7 @@ export interface DesktopBridge {
   }>;
   onNavigate(
     callback: (target: {
+      serverId?: string;
       agentId: string;
       section: "messages";
       itemId?: string;
@@ -37,7 +51,12 @@ export interface DesktopBridge {
   notify(value: {
     title: string;
     body: string;
-    target: { agentId: string; section: "messages"; itemId?: string };
+    target: {
+      serverId?: string;
+      agentId: string;
+      section: "messages";
+      itemId?: string;
+    };
   }): Promise<boolean>;
 }
 declare global {

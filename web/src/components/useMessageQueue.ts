@@ -1,3 +1,5 @@
+import { serverStorageEventKey } from "../servers/storage";
+import { serverLocalStorage as localStorage } from "../servers/storage";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { get, syncPost, ApiError, errorText } from "../api";
 import type { QueueItemDto } from "../api";
@@ -167,7 +169,11 @@ export function useMessageQueue(p: {
     const syncPending = () =>
       setPending({ key, request: readQueueRequest(key) });
     const changed = (event: StorageEvent) => {
-      if (event.key === key || event.key === null) syncPending();
+      if (
+        serverStorageEventKey(event) === key ||
+        serverStorageEventKey(event) === null
+      )
+        syncPending();
     };
     window.addEventListener("storage", changed);
     const stop = onResume(syncPending);
