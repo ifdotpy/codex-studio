@@ -2561,6 +2561,9 @@ export interface components {
       readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
+      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
       retryAt?: number | null;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
@@ -2887,6 +2890,9 @@ export interface components {
       readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
+      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
       retryAt?: number | null;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
@@ -4272,6 +4278,9 @@ export interface components {
       readState?: components["schemas"]["ReadStateDto"] | null;
       /** Readstatesupported */
       readStateSupported?: boolean | null;
+      remoteAnchor?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteOrigin?: components["schemas"]["RemoteParentLinkDto"] | null;
+      remoteWorker?: components["schemas"]["RemoteWorkerLinkDto"] | null;
       /** Retryat */
       retryAt?: number | null;
       reviewDefaults?: components["schemas"]["ReviewDefaultsDto"] | null;
@@ -8405,6 +8414,13 @@ export interface components {
       /** Home */
       home: string;
     };
+    /** RemoteParentLinkDto */
+    RemoteParentLinkDto: {
+      /** Home */
+      home: string;
+      /** Link */
+      link: string;
+    };
     /** RemoteRoomMemberDto */
     RemoteRoomMemberDto: {
       /** Id */
@@ -8415,6 +8431,13 @@ export interface components {
       role?: string | null;
       /** Status */
       status?: string | null;
+    };
+    /** RemoteWorkerLinkDto */
+    RemoteWorkerLinkDto: {
+      /** Link */
+      link: string;
+      /** Server */
+      server: string;
     };
     /** RenameRequest */
     RenameRequest: {

@@ -257,7 +257,9 @@ def voice_tools():
 
 from codex_agent_review import review_tools
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+from codex_multi_server_orchestration import server_tools
+
+TOOLS += server_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -274,7 +276,10 @@ for definition in TOOLS:
         definition["inputSchema"]["properties"]["stall_timeout_seconds"] = {"type": "integer", "minimum": 0, "maximum": 31536000}
         definition["inputSchema"]["properties"]["liveness_command"] = {"type": "string", "maxLength": 12000}
     if definition["name"] == "orchestration_spawn":
+        definition["inputSchema"]["properties"]["server"] = TEXT
+        definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["server"] = TEXT
         definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
+        definition["description"] += " server selects a paired remote server; omit it for local workers. Remote cwd must be absolute. Use one server per batch."
         definition["description"] += " Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry."
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"][
             "profile_id"
@@ -1536,6 +1541,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.recovery_pool.shutdown(wait=False)
             raise
         startup_memory_mark("runtime-init-accounts")
+        self.multi_server()
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             startup_memory_mark("migrations-indexes-start")
@@ -1657,6 +1663,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             )
             held_restart_stops = []
             for a in self.records(db, "agents"):
+                if a.get("remoteWorker") or a.get("remoteAnchor"):
+                    continue
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
@@ -1889,6 +1897,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             fcntl.flock(self.lease, fcntl.LOCK_UN)
             self.lease.close()
+
+    def multi_server(self):
+        service = self.__dict__.get('_cross_server_service')
+        if service is None:
+            from codex_multi_server_orchestration import MultiServerService
+            from codex_server_transport import PairedServerTransport
+            service = MultiServerService(self, PairedServerTransport(self))
+            self._cross_server_service = service
+        return service
 
     def federation(self):
         service = getattr(self, "_federation_service", None)
@@ -3277,6 +3294,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         elif (sync_rooms and table == "projects"
               and (previous or {}).get("peerTeams") != record.get("peerTeams")):
             self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))  # type: ignore[no-untyped-call]
+        service = self.__dict__.get('_cross_server_service')
+        if changed and table == 'agents' and service:
+            service.state(db, record, previous)
         if changed:
             self.sync_workspace_volatile(db)  # type: ignore[no-untyped-call]
         if table == "agents":
@@ -4123,6 +4143,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
+        service = self.__dict__.get('_cross_server_service')
+        if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
+            service.event(db, a, kind, text, key)
+            db.execute('INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                (key, a['id'], kind, text, 'stored_only', time.time(), a['epoch'], None, None))
+            return key
         inserted = db.execute(
             "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
@@ -4511,6 +4537,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "worktreeWarning": (None if not (p and role == "implementer")
                                     or data.get("_worktree", True) or data.get("_imageWorkspace")
                                     else no_worktree_warning(cwd)),
+                **({"remoteOrigin": data["_remoteOrigin"]} if data.get("_remoteOrigin") else {}),
                 "workerBaseRef": data.get("_workerBaseRef"),
                 "workerBaseCommit": data.get("_workerBaseCommit"),
                 "workerBaseBehindMain": data.get("_workerBaseBehindMain"),
@@ -5131,7 +5158,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn", "orchestration_servers"}:
                 continue
             if not lead and definition["name"] == "orchestration_agent_manage":
                 definition = {**definition, "description": "Park yourself or a descendant on a named event, list parked workers, or cancel a wait. Only the lead emits events.",
@@ -5966,6 +5993,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             try:
                 self._retry_dirty_workspace_refresh()
                 self._publish_committed_resource_changes()
+                service = self.__dict__.get('_cross_server_service')
+                if service:
+                    service.tick()
                 self.monitors_tick()
                 self.rules_tick()
                 self.capacity_tick()
@@ -6188,6 +6218,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and (not a.get("inFlight") or
                          db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' "
                                     "AND epoch=? LIMIT 1", (a["id"], a["epoch"])).fetchone())
+                    and not a.get("remoteWorker") and not a.get("remoteAnchor")
                     and a["autoWake"]
                     and (not a.get("nativeFailureHold") or (
                         (a.get("budgetActionWait") or {}).get("action") == "capacity"
@@ -6229,6 +6260,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 root = self.agent(a["rootId"], db)
                 a["concurrency"] = root["concurrency"]
                 busy = bool(a.get("inFlight"))
+                if a.get("remoteOrigin") and not busy and not self.multi_server().admission(db, a):
+                    continue
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
                     continue
@@ -7947,6 +7980,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def spawn_agents(self, actor, args, key):
         """Commit the entire batch, initial events, and receipt together."""
+        if (args.get('server') or any(spec.get('server') for spec in (args.get('agents') or []) if isinstance(spec, dict))):
+            service = self.multi_server()
+            targets = {spec.get('server', args.get('server')) for spec in args.get('agents', []) if isinstance(spec, dict)}
+            if targets == {service.server_id}:
+                args = {**args, 'agents': [{k:v for k,v in spec.items() if k != 'server'} for spec in args['agents']]}
+                args.pop('server', None)
+            else:
+                return service.spawn(actor, args, key)
         specs = args.get("agents")
         if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
             raise ValueError("Supply 1 to 64 agents")
@@ -8155,6 +8196,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         a = None
         claimed = False
         request_outcome = None
+        args = {}
         name = p.get("tool")
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
         if account_key != "default":
@@ -8236,7 +8278,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and args['target'] not in {'user', 'parent', 'lead', 'broadcast', 'all'}:
                     target = args['target']
                     remote_target = target.startswith('remote:') or target.startswith('federated:')
-                    if not remote_target:
+                    if not remote_target and not a.get('remoteOrigin'):
                         request_outcome = 'not_applied'
                         args = {**args, 'target': self.resolve_visible_agent_id(a['id'], target)}
                         request_outcome = None
@@ -8249,12 +8291,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = manage_agent(self, a["id"], args, a["epoch"])
                 elif name == "orchestration_read":
                     value = self.model_read(a["id"], args)
+                elif name == "orchestration_context" and a.get('remoteOrigin') and args.get('topic') in {'plan','complaints'}:
+                    value = self.multi_server().worker_call(a, 'context', args, key)
                 elif name == "orchestration_context":
                     value = self.model_context(a["id"], args)
                 elif name == "orchestration_request":
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
+                elif name == "orchestration_servers":
+                    value = self.multi_server().tools(a, args, key)
+                elif name == "orchestration_task" and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'task', args, key)
                 elif name == "orchestration_task":
                     value = self.model_work(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_search":
@@ -8267,6 +8315,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.monitor_input(
                         args.get("monitor_id"), args, a["id"], a["epoch"]
                     )
+                elif name == "orchestration_complaint" and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'complaint', args, key)
                 elif name == "orchestration_complaint":
                     value = self.complaint(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_title":
@@ -8296,10 +8346,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = request_review(self, a, args, key)
                 elif name == "orchestration_spawn":
                     value = self.spawn_agents(a, args, key)
+                elif name in {"orchestration_status", "orchestration_peers"} and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'directory', {'tool': name, 'arguments': args}, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
                     value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
+                elif name == "orchestration_chat_read" and a.get('remoteOrigin') and not args.get('room_id', '').startswith(('remote:', 'federated:')):
+                    value = self.multi_server().worker_call(a, 'chat_read', args, key)
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
                 elif name == "orchestration_send":
@@ -8403,7 +8457,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         if claimed:
             try:
-                receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
+                receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") and not args.get("server") and not any(s.get("server") for s in args.get("agents", []) if isinstance(s, dict)) else request_outcome))
                 result = receipt.get("result") or result
             except Exception as error:
                 response_error("tool_response_preparation_failed", error, "receipt")
@@ -9044,6 +9098,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Message must have 1 to 12000 characters")
         text = text.strip()
+        actor = self.agent(sender_id)
+        if actor.get('remoteOrigin') and not target.startswith(('federated:', 'remote:')) and target != 'user':
+            return self.multi_server().worker_call(actor, 'message', {
+                'target': target, 'text': text, 'importance': importance,
+                'progress_key': progress_key, 'progress_version': progress_version}, key)
         if target == "user":
             from codex_user_messages import send_to_user
             return send_to_user(self, sender_id, text, key, epoch)
@@ -9804,6 +9863,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return pending_recovery
 
     def enqueue_recovery_event(self, db, a, kind, text, key):
+        service = self.__dict__.get('_cross_server_service')
+        if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
+            return self.enqueue(db, a, kind, text, key)
         pending_recovery = self._recovery_event_pending(a)
         if not pending_recovery:
             return self.enqueue(db, a, kind, text, key)
@@ -10032,13 +10094,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         reason="Stopped by user",
         sender=None,
         sender_epoch=None,
+        _remote_request=None,
     ):
         with self.lock, self.db() as db:
             if sender:
                 caller = self.agent(sender, db)
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
-            self.agent(key, db)
+            target = self.agent(key, db)
+            if _remote_request and target.get('remoteStopRequest') == _remote_request['id']:
+                return {'stopped': [key]}
+            if _remote_request and target.get('remoteControlEpoch', 0) > _remote_request['controlEpoch']:
+                raise ValueError('The remote stop was superseded')
             agents = self.descendant_agents(db, key) if descendants else [self.agent(key, db)]
             ids = {key}
             if descendants:
@@ -10065,6 +10132,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 if cancelled_park:
                     a["cancelledPark"] = {**cancelled_park, "cancelledAtEpoch": a["epoch"]}
+                if _remote_request and a['id'] == key:
+                    a['remoteStopRequest'] = _remote_request['id']
+                    a['remoteControlEpoch'] = _remote_request['controlEpoch']
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
                 if not descendants or a["id"] == key or sender:

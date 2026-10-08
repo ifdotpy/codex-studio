@@ -513,7 +513,20 @@ class AgentOverview(ContractModel):
     resultFile: str | None = None
 
 
+class RemoteWorkerLinkDto(ContractModel):
+    server: str
+    link: str
+
+
+class RemoteParentLinkDto(ContractModel):
+    home: str
+    link: str
+
+
 class AgentEntityDto(ContractModel):
+    remoteWorker: RemoteWorkerLinkDto | None = None
+    remoteOrigin: RemoteParentLinkDto | None = None
+    remoteAnchor: RemoteParentLinkDto | None = None
     id: str
     name: str | None = None
     manualName: bool | None = None
