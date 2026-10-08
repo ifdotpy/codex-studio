@@ -1,8 +1,35 @@
 import { defineConfig } from "@playwright/test";
+import { rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { browserExecutablePath } from "../tests/client/playwright.mjs";
+import { browserExecutablePath } from "../tests/client/browser-executable.mjs";
+import { choosePlaywrightScratchRoot } from "../tests/client/scratch-root.mjs";
+import { getPlaywrightWorkerSelection } from "./playwright-workers.mjs";
 
-const workerLimit = 2;
+const workerSelection = getPlaywrightWorkerSelection();
+const workerLimit = workerSelection.workers;
+process.env.CODEX_PLAYWRIGHT_SELECTED_WORKERS = String(workerLimit);
+const playwrightScratch = choosePlaywrightScratchRoot(process.env, workerLimit);
+process.env.TMPDIR = playwrightScratch.root;
+process.env.CODEX_PLAYWRIGHT_SCRATCH_PARENT = playwrightScratch.root;
+if (playwrightScratch.ownedRoot)
+  process.once("exit", () =>
+    rmSync(playwrightScratch.root, { recursive: true, force: true }),
+  );
+if (!workerSelection.cached)
+  console.log(
+    `Playwright worker bound=${workerSelection.bound} ${JSON.stringify(workerSelection)}`,
+  );
+console.log(
+  `Playwright scratch ${JSON.stringify({
+    root: playwrightScratch.root,
+    memoryBacked: playwrightScratch.memoryBacked,
+    mount: playwrightScratch.mount,
+    availableBytes: playwrightScratch.availableBytes,
+    probeBytes: playwrightScratch.probeBytes,
+    writeFsyncMs: playwrightScratch.writeFsyncMs,
+    tested: playwrightScratch.tested,
+  })}`,
+);
 const globalTimeoutMs = 15 * 60 * 1000;
 const defaultTestTimeoutMs = 30_000;
 const requestedBrowser = process.env.BROWSER ?? "chromium";
@@ -39,11 +66,7 @@ export default defineConfig({
   workers: workerLimit,
   globalTimeout: globalTimeoutMs,
   timeout: defaultTestTimeoutMs,
-  reporter: [
-    ["list"],
-    ["html", { outputFolder: "playwright-report", open: "never" }],
-    ["json", { outputFile: "test-results/results.json" }],
-  ],
+  reporter: [["list"], ["json", { outputFile: "test-results/results.json" }]],
   projects: [
     {
       name: "client",

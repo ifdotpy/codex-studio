@@ -3,16 +3,45 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
+import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
+import { browserExecutablePath } from "./browser-executable.mjs";
+
+const playwrightScratch = choosePlaywrightScratchRoot();
+process.env.TMPDIR = playwrightScratch.root;
+process.env.CODEX_PLAYWRIGHT_SCRATCH_PARENT = playwrightScratch.root;
+if (playwrightScratch.ownedRoot)
+  process.once("exit", () => {
+    rmSync(playwrightScratch.root, { recursive: true, force: true });
+  });
+if (!playwrightScratch.inheritedProbe)
+  console.log(
+    `Playwright scratch ${JSON.stringify({
+      root: playwrightScratch.root,
+      memoryBacked: playwrightScratch.memoryBacked,
+      mount: playwrightScratch.mount,
+      availableBytes: playwrightScratch.availableBytes,
+      probeBytes: playwrightScratch.probeBytes,
+      writeFsyncMs: playwrightScratch.writeFsyncMs,
+      tested: playwrightScratch.tested,
+    })}`,
+  );
 
 const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
-const { chromium } = require("playwright");
 
 const generatedApiSchema = readFileSync(
   new URL("../../web/src/generated/apiSchema.ts", import.meta.url),
@@ -43,6 +72,71 @@ export function readApiSchemaHash() {
   return match[1];
 }
 
+export function apiSchemaHeaders(headers = {}) {
+  return { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(), ...headers };
+}
+
+/** @param {import("playwright").Page | import("playwright").BrowserContext} target */
+export function installApiSchemaFixtureHeaders(target) {
+  const registerRoute = target.route.bind(target);
+  target.route = (url, handler, options) => {
+    if (typeof url !== "string" || !url.startsWith("**/api/"))
+      return registerRoute(url, handler, options);
+    return registerRoute(
+      url,
+      (route) =>
+        handler(
+          new Proxy(route, {
+            get(routeTarget, property) {
+              if (property === "fulfill")
+                return (response = {}) => {
+                  const headers = new Headers(response.headers);
+                  if (!headers.has(API_SCHEMA_HASH_HEADER))
+                    headers.set(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+                  const normalizedHeaders = {};
+                  headers.forEach((value, key) => {
+                    normalizedHeaders[key] = value;
+                  });
+                  return routeTarget.fulfill({
+                    ...response,
+                    headers: normalizedHeaders,
+                  });
+                };
+              const value = Reflect.get(routeTarget, property, routeTarget);
+              return typeof value === "function"
+                ? value.bind(routeTarget)
+                : value;
+            },
+          }),
+          route.request(),
+        ),
+      options,
+    );
+  };
+}
+
+/** @param {import("playwright").Page} page */
+export async function stubSessionCost(page) {
+  await page.route("**/api/session-cost?*", (route) => {
+    const agent = new URL(route.request().url()).searchParams.get("agent");
+    return route.fulfill({
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      json: {
+        rootId: agent || "fixture-root",
+        generation: 1,
+        totalUSD: 0,
+        pricedSamples: 0,
+        breakdown: { providers: {}, models: {} },
+        unknownModels: [],
+        estimated: false,
+        pricingState: "ready",
+        cacheAgeSeconds: 0,
+        refreshing: false,
+      },
+    });
+  });
+}
+
 export function apiSchemaHandshakeSse(body = "", overrides = {}) {
   return `event: api-schema\ndata: ${JSON.stringify(apiSchemaHandshakeEvent(overrides))}\n\n${body}`;
 }
@@ -58,6 +152,29 @@ export function protocol3SseEvent(name, value) {
 const fixtureScopes = new WeakMap();
 const childTerminationWaitMs = 1_000;
 const fixtureCleanupTimeoutMs = 5_000;
+
+function recordStage(stage, values = {}) {
+  const path = process.env.PLAYWRIGHT_STAGE_LOG;
+  if (!path) return;
+  appendFileSync(
+    path,
+    `${JSON.stringify({ stage, at: Date.now(), ...values })}\n`,
+  );
+}
+
+function directoryBytes(path) {
+  let bytes = 0;
+  for (const entry of readdirSync(path, { withFileTypes: true })) {
+    const entryPath = join(path, entry.name);
+    try {
+      if (entry.isDirectory()) bytes += directoryBytes(entryPath);
+      else if (entry.isFile()) bytes += statSync(entryPath).size;
+    } catch {
+      // A concurrent SQLite write may replace or remove a file mid-sample.
+    }
+  }
+  return bytes;
+}
 
 async function waitForChildExit(child) {
   if (child.exitCode !== null || child.signalCode !== null) return;
@@ -114,11 +231,48 @@ async function stopFixtureChild(child) {
 
 const test = baseTest.extend({
   // @ts-expect-error This module adds a private fixture to the shared test type.
+  browserStageTiming: [
+    async ({ playwright, browserName }, use, workerInfo) => {
+      const browserType = playwright[browserName];
+      const launch = browserType.launch;
+      if (process.env.PLAYWRIGHT_STAGE_LOG) {
+        browserType.launch = async function (...args) {
+          const startedAt = Date.now();
+          try {
+            return await launch.apply(this, args);
+          } finally {
+            recordStage("browser_launch", {
+              browserName,
+              workerIndex: workerInfo.workerIndex,
+              durationMs: Date.now() - startedAt,
+            });
+          }
+        };
+      }
+      try {
+        await use();
+      } finally {
+        browserType.launch = launch;
+      }
+    },
+    { scope: "worker", auto: true },
+  ],
   fixtureChildCleanup: [
     // oxlint-disable-next-line no-empty-pattern
     async ({}, use, testInfo) => {
-      const scope = { children: new Set(), errors: [], closing: false };
+      const scope = {
+        children: new Set(),
+        scratchDirs: new Map(),
+        errors: [],
+        closing: false,
+      };
       fixtureScopes.set(testInfo, scope);
+      const testBodyStartedAt = Date.now();
+      recordStage("test_body_start", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+      });
       let testFailed = false;
       let testError;
       try {
@@ -127,7 +281,20 @@ const test = baseTest.extend({
         testFailed = true;
         testError = error;
       }
+      recordStage("test_body_end", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+        durationMs: Date.now() - testBodyStartedAt,
+        status: testInfo.status,
+        expectedStatus: testInfo.expectedStatus,
+      });
       scope.closing = true;
+      recordStage("fixture_cleanup_started", {
+        title: testInfo.titlePath.join(" › "),
+        file: testInfo.file,
+        workerIndex: testInfo.workerIndex,
+      });
       const results = await Promise.allSettled(
         [...scope.children].map(stopFixtureChild),
       );
@@ -166,25 +333,128 @@ export function spawnFixture(command, args, options) {
       "spawnFixture is only available before test cleanup begins",
     );
 
+  const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
+  const home = join(fixtureScratch, "home");
+  const state = join(fixtureScratch, "state");
+  const cache = join(fixtureScratch, "cache");
+  for (const directory of [home, state, cache])
+    mkdirSync(directory, { recursive: true });
   const child = spawn(command, args, {
     ...options,
     env: {
       ...process.env,
       ...options?.env,
-      XDG_CACHE_HOME: join(process.env.TMPDIR || tmpdir(), "fixture-cache"),
+      TMPDIR: playwrightScratch.root,
+      HOME: home,
+      XDG_STATE_HOME: state,
+      XDG_CACHE_HOME: cache,
     },
   });
+  let scratchFailure = "";
+  child.stderr?.on("data", (chunk) => {
+    const text = String(chunk);
+    if (
+      /ENOSPC|EDQUOT|No space left on device|disk quota exceeded|database or disk is full/i.test(
+        text,
+      )
+    )
+      scratchFailure = (scratchFailure + text).slice(-2048);
+  });
+  const fixtureStartedAt = Date.now();
+  const fixtureStateDirectory = args.find((argument) => {
+    if (
+      typeof argument !== "string" ||
+      !argument.startsWith(`${playwrightScratch.root}/`) ||
+      !existsSync(argument)
+    )
+      return false;
+    try {
+      return statSync(argument).isDirectory();
+    } catch {
+      return false;
+    }
+  });
+  const sampleScratch =
+    process.env.PLAYWRIGHT_SCRATCH_MEASURE === "1" &&
+    fixtureStateDirectory !== undefined;
+  let scratchInterval;
+  const recordScratchSize = () =>
+    recordStage("fixture_scratch_size", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      path: fixtureStateDirectory,
+      bytes: directoryBytes(fixtureStateDirectory),
+    });
+  if (sampleScratch) {
+    recordScratchSize();
+    scratchInterval = setInterval(recordScratchSize, 1000);
+    scratchInterval.unref?.();
+  }
+  recordStage("fixture_spawn", {
+    title: testInfo.titlePath.join(" › "),
+    file: testInfo.file,
+    workerIndex: testInfo.workerIndex,
+    pid: child.pid,
+    fixtureStateDirectory,
+  });
+  child.once("spawn", () => {
+    recordStage("fixture_process_started", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+    });
+  });
+  child.stdout?.once("data", () => {
+    recordStage("fixture_ready_output", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+    });
+  });
   scope.children.add(child);
+  scope.scratchDirs.set(child, fixtureScratch);
   child.on("error", (error) => {
     if (/** @type {NodeJS.ErrnoException} */ (error).code !== "ESRCH")
       scope.errors.push(error);
   });
-  child.once("close", () => scope.children.delete(child));
+  child.once("close", (code, signal) => {
+    scope.children.delete(child);
+    if (scratchFailure)
+      scope.errors.push(
+        new Error(
+          `Playwright fixture scratch exhausted (exit ${code ?? signal}): ${scratchFailure.slice(-2048)}`,
+        ),
+      );
+    if (scratchInterval) clearInterval(scratchInterval);
+    if (sampleScratch) recordScratchSize();
+    const scratch = scope.scratchDirs.get(child);
+    if (scratch) {
+      try {
+        rmSync(scratch, { recursive: true, force: true });
+      } catch (error) {
+        scope.errors.push(error);
+      }
+      scope.scratchDirs.delete(child);
+    }
+    recordStage("fixture_exit", {
+      title: testInfo.titlePath.join(" › "),
+      file: testInfo.file,
+      workerIndex: testInfo.workerIndex,
+      pid: child.pid,
+      durationMs: Date.now() - fixtureStartedAt,
+      code,
+      signal,
+    });
+  });
   return child;
 }
 
-export const browserExecutablePath =
-  process.env.CHROME_BIN?.trim() || chromium.executablePath();
+export { browserExecutablePath };
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
 /** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
