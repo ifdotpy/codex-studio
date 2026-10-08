@@ -159,6 +159,12 @@ test("Questions Ux Ui", async ({
       "an open multi-question card does not repeat its first question",
     );
     assert.equal(await card.locator(".request-prompt").count(), 0);
+    assert.equal(
+      await card.getByRole("button", { name: "Defer", exact: true }).count(),
+      0,
+    );
+    assert.equal(await form.getByText("Other", { exact: true }).count(), 0);
+    assert.equal(await page.locator(".jump-slot").isVisible(), false);
     const openLayout = await card.evaluate((element) => {
       const viewport = document
         .querySelector("#messages")

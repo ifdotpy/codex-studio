@@ -524,14 +524,16 @@ function RequestCard({
             </p>
           ) : question ? (
             <>
-              <Button
-                variant="subtle"
-                disabled={sending}
-                aria-label={r.deferred ? "Restore" : "Defer"}
-                onClick={() => void defer()}
-              >
-                {r.deferred ? "Restore" : "Answer later"}
-              </Button>
+              {!open && (
+                <Button
+                  variant="subtle"
+                  disabled={sending}
+                  aria-label={r.deferred ? "Restore" : "Defer"}
+                  onClick={() => void defer()}
+                >
+                  {r.deferred ? "Restore" : "Answer later"}
+                </Button>
+              )}
               <Button
                 ref={trigger}
                 data-answer={r.id}

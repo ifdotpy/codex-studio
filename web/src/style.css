@@ -644,12 +644,9 @@ p {
   font-size: 12px;
   box-shadow: 0 4px 20px #0003;
 }
-/* On narrow screens an open answer form fills the transcript bottom; the
-   floating Latest button would cover its actions. */
-@media (max-width: 760px) {
-  #conversation:has(.request-answer-form) .jump-slot {
-    display: none;
-  }
+/* Keep the Latest button clear of the answer actions. */
+#conversation:has(.request-answer-form) .jump-slot {
+  display: none;
 }
 
 /* Telegram conventions belong only to agent-to-agent rooms. */

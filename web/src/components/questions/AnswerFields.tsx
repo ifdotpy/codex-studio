@@ -166,9 +166,9 @@ export default function AnswerFields({
             {(!question.options?.length || question.isOther) &&
               (question.isSecret ? (
                 <TextInput
-                  label={question.options?.length ? "Other" : undefined}
                   aria-label={question.question}
                   autoFocus={index === 0 && !question.options?.length}
+                  placeholder={question.options?.length ? "Other" : undefined}
                   type="password"
                   value={value.other}
                   onChange={(event) =>
@@ -177,7 +177,6 @@ export default function AnswerFields({
                 />
               ) : (
                 <Textarea
-                  label={question.options?.length ? "Other" : undefined}
                   aria-label={question.question}
                   autoFocus={index === 0 && !question.options?.length}
                   value={value.other}
