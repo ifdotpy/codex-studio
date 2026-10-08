@@ -33,6 +33,10 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         subprocess.run(['git', 'init', '-q', str(cls.repo_template)], check=True)
         subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.name', 'Fixture'], check=True)
         subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.email', 'fixture@example.test'], check=True)
+        # The repo is copied by parallel tests. Background Git maintenance can
+        # create/remove .git/objects/maintenance.lock during copytree.
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'gc.auto', '0'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'maintenance.auto', 'false'], check=True)
         (cls.repo_template / 'project' / 'tracked.txt').write_text('base\n')
         subprocess.run(['git', '-C', str(cls.repo_template), 'add', '.'], check=True)
         subprocess.run(['git', '-C', str(cls.repo_template), 'commit', '-qm', 'base'], check=True)
