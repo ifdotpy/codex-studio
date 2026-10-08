@@ -41,7 +41,8 @@ def _schema() -> dict[str, str]:
     for action in ("insert", "update", "delete"):
         name = "runtime_turn_item_link_" + action + "_v1"
         when = (" WHEN OLD.id IS NOT NEW.id OR OLD.agent IS NOT NEW.agent "
-                "OR OLD.record IS NOT NEW.record OR OLD.created IS NOT NEW.created"
+                "OR OLD.record IS NOT NEW.record OR OLD.created IS NOT NEW.created "
+                "OR OLD.rowid IS NOT NEW.rowid"
                 if action == "update" else "")
         statements = ""
         if action in {"update", "delete"}:
@@ -170,10 +171,12 @@ class Batch:
 
 def backfill_batch(db: sqlite3.Connection, *, row_limit: int = ROW_LIMIT,
                    byte_limit: int = BYTE_LIMIT, seconds_limit: float = SECONDS_LIMIT) -> Batch:
-    """Read at most one page outside the writer, then commit links and cursor.
+    """Read one bounded row at a time, then commit links and cursor.
 
     A source row is indivisible. One oversized row can exceed the read byte/time
-    budget, but its JSON decode does not hold a writer lock. The writer copies
+    budget, but its JSON decode does not hold a writer lock. Byte counters cover
+    consumed records, not physical I/O. The next size probe can read one body
+    before we know that it does not fit. The writer copies
     only IDs and scalar fields. Concurrent source writes take priority over the
     staged legacy value through the persistent triggers and epoch guard.
     """
@@ -195,33 +198,42 @@ def backfill_batch(db: sqlite3.Connection, *, row_limit: int = ROW_LIMIT,
     if coverage.target is None:
         complete = True
     else:
-        query = "SELECT rowid,id,length(CAST(record AS BLOB)) FROM runtime_items WHERE rowid<=?"
-        args: tuple[int, ...] = (coverage.target,)
-        if coverage.cursor is not None:
-            query += " AND rowid>?"
-            args += (coverage.cursor,)
-        cursor = db.execute(query + " ORDER BY rowid LIMIT ?", args + (row_limit,))
-        # Metadata does not copy large record payloads into Python.
-        try:
-            metadata = cursor.fetchall()
-        finally:
-            cursor.close()
-        for source_rowid, source_id, size in metadata:
-            if last != coverage.cursor and (source_bytes + size > byte_limit
-                                            or time.monotonic() - start >= seconds_limit):
+        for _ in range(row_limit):
+            if scanned_rows and (source_bytes >= byte_limit
+                                 or time.monotonic() - start >= seconds_limit):
                 break
-            row = db.execute("SELECT id,agent,json_extract(record,'$.turnId'),created "
-                             "FROM runtime_items WHERE rowid=? AND id=?", (source_rowid, source_id)).fetchone()
+            query = "SELECT rowid,id,length(CAST(record AS BLOB)) FROM runtime_items WHERE rowid<=?"
+            args: tuple[int, ...] = (coverage.target,)
+            if last is not None:
+                query += " AND rowid>?"
+                args += (last,)
+            # CAST can load the record body inside SQLite. LIMIT 1 prevents a
+            # page of large bodies from loading before the next budget check.
+            cursor = db.execute(query + " ORDER BY rowid LIMIT 1", args)
+            try:
+                metadata = cursor.fetchone()
+            finally:
+                cursor.close()
+            if metadata is None:
+                # New and changed rows outside this captured range have already
+                # passed through the triggers. Only an empty range proves done.
+                complete = True
+                last = coverage.target
+                break
+            source_rowid, source_id, size = metadata
+            if scanned_rows and source_bytes + size > byte_limit:
+                break
+            cursor = db.execute("SELECT id,agent,json_extract(record,'$.turnId'),created "
+                                "FROM runtime_items WHERE rowid=? AND id=?", (source_rowid, source_id))
+            try:
+                row = cursor.fetchone()
+            finally:
+                cursor.close()
             if row:
                 staged.append((row[0], row[1], row[2], row[3], coverage.epoch))
             source_bytes += size
             last = source_rowid
             scanned_rows += 1
-        # An empty range is the only completeness proof. New and changed rows
-        # outside this captured range have already passed through the triggers.
-        complete = not metadata
-        if complete:
-            last = coverage.target
     previous_timeout = int(db.execute("PRAGMA busy_timeout").fetchone()[0])
     db.execute("PRAGMA busy_timeout=40")
     started = time.perf_counter()

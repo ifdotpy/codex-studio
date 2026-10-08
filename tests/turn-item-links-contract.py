@@ -145,6 +145,23 @@ class TurnItemLinksContract(unittest.TestCase):
         finally:
             other.close()
 
+    def test_rowid_only_move_behind_cursor_keeps_legacy_row_covered(self):
+        self.insert('first', 'old')
+        self.insert('moved', 'current')
+        links.ensure_tables(self.db)
+        links.backfill_batch(self.db, row_limit=1)
+        self.assertEqual(links._coverage(self.db).cursor, 1)
+        other = self.connect()
+        try:
+            other.execute("UPDATE runtime_items SET rowid=-20 WHERE id='moved'")
+            other.commit()
+        finally:
+            other.close()
+        self.finish()
+        links.update_turn_status(self.db, 'agent', 'current', 'completed')
+        self.db.commit()
+        self.assertEqual(self.status('moved'), 'completed')
+
     def test_commit_failure_rolls_back_links_and_cursor_then_resumes_on_reopen(self):
         for i in range(7):
             self.insert(str(i))
@@ -183,6 +200,35 @@ class TurnItemLinksContract(unittest.TestCase):
         self.assertTrue(self.db.payload_read_transactions)
         self.assertFalse(any(self.db.payload_read_transactions))
         self.finish()
+
+    def test_oversized_row_does_not_read_other_payload_sizes(self):
+        record = json.dumps({'turnId': 'current', 'text': 'x' * 1024 * 1024})
+        self.db.executemany('INSERT INTO runtime_items VALUES(?,?,?,?)',
+                            [(str(i), 'agent', record, i) for i in range(128)])
+        self.db.commit()
+        links.ensure_tables(self.db)
+        sizes = []
+        self.db.create_function('length', 1, lambda value: sizes.append(len(value)) or len(value))
+        first = links.backfill_batch(self.db, row_limit=128, byte_limit=512 * 1024)
+        self.assertEqual(first.rows, 1)
+        self.assertEqual(sizes, [len(record.encode())])
+        self.assertEqual(links._coverage(self.db).cursor, 1)
+        second = links.backfill_batch(self.db, row_limit=128, byte_limit=512 * 1024)
+        self.assertEqual(second.rows, 1)
+        self.assertEqual(sizes, [len(record.encode())] * 2)
+        self.assertEqual(links._coverage(self.db).cursor, 2)
+
+    def test_time_limit_stops_source_size_reads_between_rows(self):
+        for i in range(12):
+            self.insert(str(i), text='x' * 2048)
+        links.ensure_tables(self.db)
+        sizes = []
+        self.db.create_function('length', 1, lambda value: sizes.append(len(value)) or len(value))
+        clock = iter((0.0, .03))
+        with patch.object(links.time, 'monotonic', side_effect=lambda: next(clock)):
+            result = links.backfill_batch(self.db, row_limit=128, seconds_limit=.02)
+        self.assertEqual(result.rows, 1)
+        self.assertEqual(len(sizes), 1)
 
     def test_progress_counters_share_the_cursor_commit(self):
         for i in range(5):
