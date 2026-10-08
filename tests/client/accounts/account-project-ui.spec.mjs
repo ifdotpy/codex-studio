@@ -1006,14 +1006,7 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     assert.equal(await saveAccounts.isDisabled(), true);
     await deletedMembership.click();
-    await page.waitForFunction(
-      () =>
-        document
-          .querySelector(
-            '[role="group"][aria-label="Accounts shown first for this project"] button[data-account-key="other"]',
-          )
-          ?.getAttribute("aria-pressed") === "false",
-    );
+    await deletedMembership.waitFor({ state: "detached" });
     assert.equal(await selectedAccount(), "");
     assert.equal(await saveAccounts.isDisabled(), true);
     await chooseProjectAccount("work");
