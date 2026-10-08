@@ -35,7 +35,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
       );
       await page.goto(server.resolvedUrls.local[0] + "deadline-fixture");
       await page.evaluate(async () => {
-        const { api, syncApi } = await import("/src/api.ts");
+        const { get, post, syncPost } = await import("/src/api.ts");
         window.outcomes = {};
         window.start = Date.now();
         const realNow = Date.now;
@@ -46,9 +46,9 @@ async function runDeadlineChecks(name, engine, executablePath) {
             () => (window.outcomes[key] = "success"),
             (e) => (window.outcomes[key] = e.name),
           );
-        record("read", api("/api/held-read"));
-        record("durable", syncApi("/api/held-durable", { id: "fixed-id" }));
-        record("ordinary", api("/api/held-ordinary", { action: "one-time" }));
+        record("read", get("/api/held-read"));
+        record("durable", syncPost("/api/held-durable", { id: "fixed-id" }));
+        record("ordinary", post("/api/held-ordinary", { action: "one-time" }));
       });
       await page.waitForTimeout(100);
       assert.equal(held.size, 3);
@@ -66,7 +66,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
       await held.get("/api/held-ordinary").fulfill({ json: { ok: true } });
       await page.waitForFunction(() => window.outcomes.ordinary === "success");
       await page.evaluate(async () => {
-        const { api } = await import("/src/api.ts");
+        const { get, post } = await import("/src/api.ts");
         const record = (key, promise) =>
           promise.then(
             () => (window.outcomes[key] = "success"),
@@ -78,14 +78,14 @@ async function runDeadlineChecks(name, engine, executablePath) {
         alreadyAborted.abort();
         record(
           "cancelledRead",
-          api("/api/held-cancel-read", undefined, {
+          get("/api/held-cancel-read", {
             signal: window.cancelWithDeadline.signal,
             timeoutMs: 15000,
           }),
         );
         record(
           "cancelledPost",
-          api(
+          post(
             "/api/held-cancel-post",
             {},
             {
@@ -95,7 +95,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
         );
         record(
           "alreadyAborted",
-          api(
+          post(
             "/api/held-already-aborted",
             {},
             {

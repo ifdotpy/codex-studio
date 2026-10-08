@@ -448,7 +448,6 @@ test("analytics ui", async ({ browser: _browser }) => {
         .textContent(),
       /100,000 \/ 200,000/,
     );
-    await page.screenshot({ path: join(root, "overview-1280.png") });
     await dialog.getByRole("tab", { name: /Tool calls/ }).click();
     await dialog
       .getByRole("heading", { name: "Model-visible tool results" })
@@ -473,7 +472,6 @@ test("analytics ui", async ({ browser: _browser }) => {
       await dialog.locator(".analytics-call-detail pre").textContent(),
       /"modelOutput"/,
     );
-    await page.screenshot({ path: join(root, "calls-1280.png") });
     await dialog.getByRole("button", { name: "Next", exact: true }).click();
     await poll(
       () => observed.some((q) => q.offset === "30"),
@@ -513,7 +511,6 @@ test("analytics ui", async ({ browser: _browser }) => {
     assert.ok(exported.filters.from > now - 86410);
     assert.equal(exported.pagination.hasMore, false);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(root, "resize-390.png") });
     await dialog.locator(".analytics-call-row").first().click();
     await dialog.locator(".analytics-call-detail summary").click();
     const noOverflow = () =>
@@ -531,7 +528,6 @@ test("analytics ui", async ({ browser: _browser }) => {
         .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       "Long IDs and JSON fit",
     );
-    await page.screenshot({ path: join(root, "calls-390.png") });
     await dialog.getByRole("tab", { name: "Activity", exact: true }).click();
     await dialog
       .getByRole("heading", { name: "Compactions", exact: true })
@@ -602,7 +598,6 @@ test("analytics ui", async ({ browser: _browser }) => {
     await dialog
       .getByRole("button", { name: "Load 100 older snapshots" })
       .waitFor({ state: "detached" });
-    await page.screenshot({ path: join(root, "activity-390.png") });
     mode = "error";
     await dialog.getByRole("button", { name: "Refresh analytics" }).click();
     await dialog
@@ -622,7 +617,6 @@ test("analytics ui", async ({ browser: _browser }) => {
     await dialog
       .getByText("No context-window measurements in this period.")
       .waitFor();
-    await page.screenshot({ path: join(root, "empty-390.png") });
     mode = "defer";
     await dialog.getByRole("button", { name: "Refresh analytics" }).click();
     await poll(() => !!deferred, "Pending request");

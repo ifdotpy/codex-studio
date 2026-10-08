@@ -196,7 +196,6 @@ test("Selection Quote Ui", async ({
 
     await select("40 workers");
     await action.waitFor();
-    await page.screenshot({ path: join(root, "selection-quote-desktop.png") });
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
@@ -225,7 +224,6 @@ test("Selection Quote Ui", async ({
       bounds.x >= 0 && bounds.x + bounds.width <= 390,
       "selection action fits a narrow viewport",
     );
-    await page.screenshot({ path: join(root, "selection-quote-mobile.png") });
     await action.tap();
     expected = append(expected, "40 workers");
     assert.equal(

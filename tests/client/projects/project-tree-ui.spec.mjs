@@ -355,10 +355,6 @@ test("project tree ui", async ({ page: runnerPage }) => {
       true,
       "Expanded projects hide non-menu actions without hover",
     );
-    await page.screenshot({
-      path: join(root, "projects-pinned.png"),
-      animations: "disabled",
-    });
     const beforeKeyboard = await chatOrder();
     const keyboardId = beforeKeyboard[2];
     await chatButton(keyboardId).focus();
@@ -599,10 +595,6 @@ test("project tree ui", async ({ page: runnerPage }) => {
         "true",
         "The destination has a visible drop highlight",
       );
-      await page.screenshot({
-        path: join(root, "folder-drop.png"),
-        animations: "disabled",
-      });
       await page.mouse.up();
       assert.equal(await page.locator('[data-folder-drop="true"]').count(), 0);
     };
@@ -763,10 +755,6 @@ test("project tree ui", async ({ page: runnerPage }) => {
       )
       .waitFor();
     await page.getByLabel("Filter projects and chats").fill("");
-    await page.screenshot({
-      path: join(root, "projects-desktop.png"),
-      animations: "disabled",
-    });
     for (const width of [390, 320]) {
       await page.setViewportSize({ width, height: 844 });
       await page.locator("#sidebar-toggle").click();
@@ -780,10 +768,6 @@ test("project tree ui", async ({ page: runnerPage }) => {
           .locator("#sidebar")
           .evaluate((el) => el.scrollWidth <= el.clientWidth),
       );
-      await page.screenshot({
-        path: join(root, `projects-${width}.png`),
-        animations: "disabled",
-      });
       await page.keyboard.press("Escape");
     }
     expect(errors).toEqual([]);

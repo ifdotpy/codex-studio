@@ -179,7 +179,6 @@ test("Session activity integration", async () => {
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       );
-      await page.screenshot({ path: join(root, `activity-${width}.png`) });
       const before = detailReads.length;
       await row.click();
       await page.getByRole("dialog", { name: /Current activity/ }).waitFor();

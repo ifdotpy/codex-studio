@@ -253,11 +253,9 @@ test("rich preview ui", async ({ browser: _browser }) => {
       .click();
     await htmlFrame.getByText("Rendered HTML card").waitFor();
     await htmlCard.scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(root, "desktop.png"), fullPage: true });
     await page.setViewportSize({ width: 390, height: 844 });
     await htmlCard.scrollIntoViewIfNeeded();
     await htmlFrame.getByText("Rendered HTML card").waitFor();
-    await page.screenshot({ path: join(root, "mobile.png"), fullPage: true });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     for (const card of await page.locator(".rich-preview").all()) {
       const box = await card.boundingBox();

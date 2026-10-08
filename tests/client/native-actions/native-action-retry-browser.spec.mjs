@@ -119,9 +119,6 @@ test("Native action retry browser", async () => {
       await page
         .getByRole("button", { name: "Check action request" })
         .waitFor();
-      await page.screenshot({
-        path: join(evidence, `${action}-pending-mobile.png`),
-      });
       await page.locator("#sidebar").waitFor({ state: "hidden" });
       const box = await page.locator(".native-action-pending").boundingBox();
       assert.ok(box.width >= 350 && box.x >= 0 && box.x + box.width <= 391);
@@ -231,7 +228,7 @@ test("Native action retry browser", async () => {
     assert.equal((await calls()).length, beforeBudget);
     assert.deepEqual(errors, []);
     console.log(
-      `PASS ${process.env.BROWSER || "chromium"} iPhone emulation, native action lost reply, reload, exact retry, changed input, legacy rejection, distinct actions, menu action, storage refusal, budget admission. Screenshots: ${evidence}`,
+      `PASS ${process.env.BROWSER || "chromium"} iPhone emulation, native action lost reply, reload, exact retry, changed input, legacy rejection, distinct actions, menu action, storage refusal, budget admission.`,
     );
   } finally {
     await browser?.close();

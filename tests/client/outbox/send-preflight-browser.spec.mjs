@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  expect,
+  installApiSchemaFixtureHeaders,
+  test,
+} from "../playwright.mjs";
 
 test("send-preflight-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -28,6 +32,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
   const workspaceId = "c".repeat(32);
   try {
     const page = fixturePage;
+    installApiSchemaFixtureHeaders(page);
     const errors = [],
       posts = [],
       effects = new Set();

@@ -129,21 +129,18 @@ test("studio settings browser ui", async ({
       "baseline-1440x960",
       JSON.stringify(await captureBaselineGeometry()),
     );
-    await page.screenshot({ path: join(evidence, "baseline-1440x960.png") });
     await page.setViewportSize({ width: 1280, height: 800 });
     await settleLayout();
     console.log(
       "baseline-1280x800",
       JSON.stringify(await captureBaselineGeometry()),
     );
-    await page.screenshot({ path: join(evidence, "baseline-1280x800.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await settleLayout();
     console.log(
       "baseline-390x844",
       JSON.stringify(await captureBaselineGeometry()),
     );
-    await page.screenshot({ path: join(evidence, "baseline-390x844.png") });
     await page.setViewportSize({ width: 1440, height: 960 });
     await settleLayout();
 
@@ -334,9 +331,6 @@ test("studio settings browser ui", async ({
       () => document.documentElement.dataset.mantineColorScheme === "dark",
     );
     await settleLayout();
-    await page.screenshot({
-      path: join(evidence, "settings-max-font-1440x960.png"),
-    });
 
     await settings.getByRole("tab", { name: "Hotkeys", exact: true }).click();
     const shortcut = settings.getByLabel("Toggle sidebar shortcut", {

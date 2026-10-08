@@ -312,11 +312,6 @@ test("workspace ui", async ({ browser: _browser }) => {
     assert.equal(await modal.getByLabel("Script check (optional)").count(), 0);
     await modal.getByLabel("Minimum active subagents").fill("3");
     await modal.getByLabel("Duration (minutes)").fill("2");
-    await page.screenshot({
-      path: join(root, "low-workers-mobile.png"),
-      fullPage: true,
-      animations: "disabled",
-    });
     assert.ok(
       await modal.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       "low worker alert modal does not overflow at 390px",
@@ -556,10 +551,6 @@ test("workspace ui", async ({ browser: _browser }) => {
     }
     await drawer.waitFor();
     await section("Changes");
-    await page.screenshot({
-      path: join(root, "changes-mobile.png"),
-      fullPage: true,
-    });
     assert.ok(
       await drawer.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       "drawer does not overflow at 390px",

@@ -145,9 +145,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         if (result) return result;
         await new Promise((resolve) => setTimeout(resolve, 50));
       }
-      await page
-        .screenshot({ path: join(root, "timeout.png") })
-        .catch(() => {});
       throw Error("Timed out: " + predicate.toString() + " " + log);
     };
     const openSettings = async (name) => {
@@ -197,7 +194,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         .getAttribute("aria-selected"),
       "true",
     );
-    await page.screenshot({ path: join(root, "model-picker-open.png") });
     const listBox = page.locator('[role="listbox"]:visible');
     assert.ok(
       await listBox.evaluate(
@@ -358,7 +354,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
           (node) => node.scrollWidth <= node.clientWidth + 1,
         ),
       );
-      await page.screenshot({ path: join(root, `defaults-${width}.png`) });
       // The open model list stays inside the window at every width.
       await openModelList(defaultModel);
       const box = await listBox.boundingBox();
@@ -366,7 +361,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         box.x >= 0 && box.x + box.width <= width + 1,
         `model list fits ${width}`,
       );
-      await page.screenshot({ path: join(root, `model-picker-${width}.png`) });
     }
     await waitFor(
       async () =>
@@ -505,7 +499,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
       (await state()).find((a) => a.id === first.id).model,
       "gpt-6-luna",
     );
-    await page.screenshot({ path: join(root, "team-defaults.png") });
     for (const width of [1440, 768, 390, 320]) {
       await page.setViewportSize({ width, height: 960 });
 
@@ -561,7 +554,6 @@ test("execution settings ui", async ({ browser: _browser }) => {
         (await state()).find((a) => a.id === fresh.id).yoloMode === true,
     );
     await waitFor(async () => !(await freshYolo.isDisabled()));
-    await page.screenshot({ path: join(root, "lead-yolo.png") });
     await page.keyboard.press("Escape");
     const chatSettings = page.getByRole("dialog", {
       name: "Chat settings",

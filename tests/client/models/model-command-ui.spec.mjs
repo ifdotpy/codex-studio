@@ -290,10 +290,6 @@ db.close()`;
             body.expected_account_key === (main.accountKey || "default"),
         ),
     );
-    await page.screenshot({
-      path: join(root, "desktop-picker.png"),
-      animations: "disabled",
-    });
     await close();
     await attachment.waitFor();
     await composer.fill("/model gpt-5.6-sol");
@@ -464,10 +460,6 @@ db.close()`;
       bounds.x >= 0 && bounds.x + bounds.width <= 391,
       "Picker fits 390px viewport",
     );
-    await page.screenshot({
-      path: join(root, "mobile-picker.png"),
-      animations: "disabled",
-    });
     await close();
     await attachment.waitFor();
     assert.equal(messages.length, 0);

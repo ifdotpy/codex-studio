@@ -95,9 +95,6 @@ test("session activity browser", async ({ browser: _browser }) => {
     assert(
       await strip.evaluate((node) => node.getBoundingClientRect().height <= 34),
     );
-    await page.screenshot({
-      path: join(cacheDir, "session-activity-compact.png"),
-    });
     await strip.locator('[data-activity-id="long-command"]').click();
     assert.deepEqual(
       await page.evaluate(() => window.opened[0]),
@@ -122,9 +119,6 @@ test("session activity browser", async ({ browser: _browser }) => {
     assert(
       await strip.evaluate((node) => node.scrollWidth <= node.clientWidth),
     );
-    await page.screenshot({
-      path: join(cacheDir, "session-activity-mobile.png"),
-    });
     await page.evaluate(() =>
       window.setActivities(
         Array.from({ length: 40 }, (_, index) => ({

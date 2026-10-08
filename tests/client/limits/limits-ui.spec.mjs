@@ -359,10 +359,6 @@ test("limits-ui", async ({ page: fixturePage }) => {
       getComputedStyle(document.querySelector(".account-limits-popover"))
         .opacity === "1",
   );
-  await page.screenshot({
-    path: join(root, "limits-desktop.png"),
-    animations: "disabled",
-  });
   await page.clock.install();
   failLimits = true;
   const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
@@ -551,10 +547,6 @@ test("limits-ui", async ({ page: fixturePage }) => {
       getComputedStyle(document.querySelector(".account-limits-popover"))
         .opacity === "1",
   );
-  await page.screenshot({
-    path: join(root, "limits-reset-credits.png"),
-    animations: "disabled",
-  });
   limits = {
     data: {
       rateLimitsByLimitId: {
@@ -585,10 +577,6 @@ test("limits-ui", async ({ page: fixturePage }) => {
     .allTextContents();
   assert.equal(names[0], "Codex");
   assert.equal(names.at(-1), "GPT-5.3-Codex-Spark");
-  await page.screenshot({
-    path: join(root, "limits-pools-desktop.png"),
-    animations: "disabled",
-  });
 
   limits = {
     data: {
@@ -710,10 +698,6 @@ test("limits-ui", async ({ page: fixturePage }) => {
       getComputedStyle(document.querySelector(".account-limits-popover"))
         .opacity === "1",
   );
-  await page.screenshot({
-    path: join(root, "limits-narrow-desktop.png"),
-    animations: "disabled",
-  });
   const box = await details().boundingBox();
   assert.ok(
     box &&
@@ -890,10 +874,6 @@ test("limits-ui", async ({ page: fixturePage }) => {
       "0px",
       "one border for the notice",
     );
-    await page.screenshot({
-      path: join(root, "usage-limit-notice.png"),
-      animations: "disabled",
-    });
     await page.waitForFunction(async (id) => {
       const snapshot = await window.__readTestState();
       return (

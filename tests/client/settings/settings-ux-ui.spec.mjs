@@ -5,11 +5,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  expect,
+  installApiSchemaFixtureHeaders,
+  test,
+} from "../playwright.mjs";
 import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("settings-ux-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -62,6 +66,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   let holdLimits = true;
   const held = [];
   const page = fixturePage;
+  installApiSchemaFixtureHeaders(page);
   await fixturePage.setViewportSize({ width: 1280, height: 900 });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -306,7 +311,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
       () => document.documentElement.scrollWidth <= innerWidth + 1,
     ),
   );
-  await page.screenshot({ path: join(evidence, "accounts-390.png") });
   await work
     .getByRole("button", { name: "Reconnect account", exact: true })
     .click();
@@ -429,9 +433,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     transfersBeforeDefaultChange,
     "Changing the default account does not transfer the selected chat",
   );
-  await page.screenshot({
-    path: join(evidence, "studio-settings-dark-390.png"),
-  });
   await page.keyboard.press("Escape");
   await reopenedSettings.waitFor({ state: "hidden" });
   await page.getByRole("button", { name: "Chat actions", exact: true }).click();
@@ -449,7 +450,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     (element) => getComputedStyle(element).opacity === "1",
     await manager.elementHandle(),
   );
-  await page.screenshot({ path: join(evidence, "accounts-dark-390.png") });
   assert.equal(
     await page.locator("html").getAttribute("data-mantine-color-scheme"),
     "dark",

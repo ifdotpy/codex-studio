@@ -354,7 +354,6 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
         "6 / 8",
     );
     await history.waitFor({ state: "hidden" });
-    await page.screenshot({ path: join(root, "prompt-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForFunction(
       () =>
@@ -373,7 +372,6 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       "prompt menu fits a narrow viewport",
     );
     assert.equal(await nav.count(), 1);
-    await page.screenshot({ path: join(root, "prompt-mobile.png") });
     await page
       .getByRole("button", { name: "Browse prompts", exact: true })
       .click();

@@ -168,19 +168,16 @@ test("simple messages ui", async ({ browser: _browser }) => {
     await chats.locator(".team-room-rows").evaluate((node) => {
       node.scrollTop = 0;
     });
-    await page.screenshot({ path: join(evidence, "messages-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(250);
     assert.ok(
       await chats.evaluate((node) => node.scrollWidth <= node.clientWidth),
     );
-    await page.screenshot({ path: join(evidence, "messages-mobile.png") });
     await chats.getByRole("button", { name: "Back to chats" }).click();
     assert.equal(await chats.locator(".team-room-detail").isVisible(), false);
     await chats.getByRole("textbox", { name: "Search chats" }).fill("For you");
     assert.equal(await chats.locator("[data-room]").count(), 1);
     await chats.getByRole("textbox", { name: "Search chats" }).fill("");
-    await page.screenshot({ path: join(evidence, "messages-mobile-list.png") });
     await chats.locator('[data-room="you"]').click();
     assert.ok(await chats.locator('[data-feed-item^="request:"]').count());
     assert.deepEqual(errors, []);

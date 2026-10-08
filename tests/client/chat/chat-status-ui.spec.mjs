@@ -389,10 +389,6 @@ test("chat-status-ui", async ({ browser }) => {
     console.log(
       "PASS current chat acknowledges visible result; explicit Unread persists while open and after snapshots",
     );
-    await page.screenshot({
-      path: join(root, "desktop-status.png"),
-      animations: "disabled",
-    });
     await page.setViewportSize({ width: 390, height: 844 });
     await status(page.locator("#conversation-title"), "working");
     await page.locator("#sidebar-toggle").click();
@@ -424,10 +420,6 @@ test("chat-status-ui", async ({ browser }) => {
       true,
       "The mobile header has no horizontal overflow",
     );
-    await page.screenshot({
-      path: join(root, "mobile-status.png"),
-      animations: "disabled",
-    });
     console.log("PASS 390px layout without horizontal overflow");
     // The real Conversation caller, header, and sidebar share the wake rule.
     for (const agent of state.threads)

@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+const fixtureRetryDelays = [2, 6, 24, 60];
+
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
@@ -34,6 +36,7 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       env: {
         ...process.env,
         CAPACITY_UI_FIXTURE: "1",
+        CAPACITY_UI_RETRY_DELAYS: JSON.stringify(fixtureRetryDelays),
       },
     },
   );
@@ -56,6 +59,7 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
+    assert.deepEqual(fixtureRetryDelays, [2, 6, 24, 60]);
     const state = () => readTestState(origin);
     const snapshot = await state();
     const id = snapshot.runtime.agents.find(
@@ -127,6 +131,14 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       8000,
     );
     assert.equal(projectedAgent.value.capacityRetry.status, "scheduled");
+    assert.ok(
+      Math.abs(
+        projectedAgent.value.capacityRetry.dueAt -
+          projectedAgent.value.capacityRetry.updatedAt -
+          fixtureRetryDelays[0],
+      ) < 0.1,
+      "fixture applies the scaled first retry deadline",
+    );
     await page
       .locator('.capacity-retry[data-retry-status="scheduled"]')
       .waitFor();
@@ -162,8 +174,8 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       .getByText("Automatic retry cancelled.", { exact: true })
       .waitFor();
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
-    await page.screenshot({ path: join(root, "capacity-cancel-mobile.png") });
-    await new Promise((resolve) => setTimeout(resolve, 10500));
+    // Let the real Python scheduler cross the configured first deadline.
+    await new Promise((resolve) => setTimeout(resolve, 3100));
     assert.equal(
       (await starts()).length,
       1,
@@ -211,8 +223,12 @@ test("capacity retry ui", async ({ browser: _browser }) => {
       "next retry timer",
     );
     const nextRetry = (await agent()).capacityRetry;
-    assert.equal(Math.round(nextRetry.dueAt - nextRetry.updatedAt), 30);
-    // New user input resets the schedule to the actual ten-second delay.
+    assert.ok(
+      Math.abs(nextRetry.dueAt - nextRetry.updatedAt - fixtureRetryDelays[1]) <
+        0.1,
+      "the next attempt uses the correspondingly scaled retry interval",
+    );
+    // New user input resets the schedule to the scaled first delay.
     await page
       .getByRole("button", { name: "Cancel automatic retry", exact: true })
       .click();
@@ -237,7 +253,7 @@ test("capacity retry ui", async ({ browser: _browser }) => {
     await until(
       async () => (await starts()).length === before + 1,
       "automatic empty retry",
-      16000,
+      8000,
     );
     assert.deepEqual((await starts()).at(-1).input, []);
     assert.equal(

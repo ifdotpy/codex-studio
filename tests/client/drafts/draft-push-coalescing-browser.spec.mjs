@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 
 test("draft pushes coalesce at the production replication boundary", async ({
   context,
@@ -25,6 +25,7 @@ test("draft pushes coalesce at the production replication boundary", async ({
   await server.listen();
   try {
     const page = await context.newPage();
+    installApiSchemaFixtureHeaders(page);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.route("**/check", (route) =>

@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 // Render the production browser notice against account-specific desktop responses.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -12,12 +12,11 @@ test("Browser access notice ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(30_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "browser-access-notice-vite-"));
-  const screenshot = join(tmpdir(), "codex-browser-access-notice.png");
   const entry = join(repo, "web/__browser-access-notice-fixture.jsx");
   const source = `
   import React, {useState} from 'react';
@@ -62,6 +61,7 @@ test("Browser access notice ui", async ({
   try {
     await server.listen();
     const page = runnerPage;
+    installApiSchemaFixtureHeaders(page);
     await page.setViewportSize({ width: 900, height: 520 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -90,12 +90,10 @@ test("Browser access notice ui", async ({
     };
     await set({ accountKey: "disabled", active: true });
     await notice.waitFor();
-    await assert.doesNotReject(() =>
-      notice
-        .getByText(/Browser access is off: The Chrome plugin is disabled/)
-        .waitFor(),
-    );
-    await page.screenshot({ path: screenshot });
+    await notice
+      .getByText(/Browser access is off: The Chrome plugin is disabled/)
+      .waitFor();
+    await notice.getByText(/Chrome plugin is disabled/).waitFor();
     await set({ accountKey: "default", active: true });
     await page.waitForFunction(
       () => document.querySelector("[role=status]") === null,
@@ -106,7 +104,7 @@ test("Browser access notice ui", async ({
     );
     assert.deepEqual(requests, ["default", "disabled", "default"]);
     assert.deepEqual(errors, []);
-    console.log(JSON.stringify({ pass: true, cases: 3, screenshot, requests }));
+    console.log(JSON.stringify({ pass: true, cases: 3, requests }));
   } finally {
     await Promise.all(
       testBrowser

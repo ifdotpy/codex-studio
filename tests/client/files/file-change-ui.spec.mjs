@@ -338,7 +338,6 @@ test("File change", async () => {
       resultRows.find((row) => row.kind === "delete").text,
       removed.text,
     );
-    await page.screenshot({ path: join(directory, "result.png") });
     await page.keyboard.press("Escape");
     await modal.waitFor({ state: "hidden" });
     const documentWidth = await page.evaluate(() => ({
@@ -350,7 +349,6 @@ test("File change", async () => {
       `no horizontal document overflow: ${JSON.stringify(documentWidth)}`,
     );
     await card("edit").scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(directory, "transcript.png") });
     assert.deepEqual(errors, []);
     const result = {
       status: "PASS",

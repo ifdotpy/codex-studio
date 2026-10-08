@@ -364,7 +364,6 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
       "the only mutation checks connection; no prompt is sent",
     );
     expect(errors).toEqual([]);
-    await page.screenshot({ path: join(evidence, "disconnect-recovery.png") });
     console.log(
       JSON.stringify({
         result: "PASS",

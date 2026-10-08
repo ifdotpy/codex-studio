@@ -154,7 +154,6 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
       "yes",
       "prior paragraphs stay mounted",
     );
-    await page.screenshot({ path: join(root, "writing.png") });
     const full =
       'First paragraph. Second sentence begins.\n\nSecond paragraph.\n\n```json\n{"ok":true}\n\n```\nFinal tail';
     event("item/completed", {
@@ -190,7 +189,6 @@ test("sentence stream ui", async ({ page: runnerPage }) => {
       "History has no entrance animation",
     );
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(root, "sentence-mobile.png") });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     await page.locator("#message").fill("Check interruption");
     await page.locator("#send").click();

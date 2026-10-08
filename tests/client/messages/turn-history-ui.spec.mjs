@@ -412,11 +412,7 @@ test("Turn History Ui", async ({
       "active command disclosure choice survives reload",
     );
     await page.locator("#messages").evaluate((el) => (el.scrollTop = 0));
-    await page.screenshot({
-      path: join(directory, "turn-history-desktop.png"),
-    });
     await page.setViewportSize({ width: 390, height: 900 });
-    await page.screenshot({ path: join(directory, "turn-history-390.png") });
     assert(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,

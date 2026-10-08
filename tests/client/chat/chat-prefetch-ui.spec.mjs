@@ -1194,7 +1194,6 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     for (const route of held.splice(0)) await handle(route).catch(() => {});
     await marker("Workspace2-B").waitFor();
     expect(errors).toEqual([]);
-    await page.screenshot({ path: join(dir, "workspace-separated.png") });
     console.log(
       JSON.stringify({
         result: "PASS",

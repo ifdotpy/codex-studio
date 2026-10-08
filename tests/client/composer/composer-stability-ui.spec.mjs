@@ -287,10 +287,6 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await pendingStop.fulfill({ json: {} });
       await updatePhase("completed");
       await stable("turn completed");
-      await page.screenshot({
-        path: join(evidence, `composer-${width}.png`),
-        fullPage: true,
-      });
       expect(errors).toEqual([]);
       await page.close();
       pages.delete(page);

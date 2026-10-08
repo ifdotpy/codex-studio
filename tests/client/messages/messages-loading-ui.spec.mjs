@@ -378,10 +378,6 @@ test("Messages loading", async () => {
       .click();
     await roomDetail.locator(".team-message").waitFor();
     await roomDetail.getByRole("alert").waitFor({ state: "hidden" });
-    await page.screenshot({
-      path: join(root, "messages-desktop.png"),
-      animations: "disabled",
-    });
     const mobile = await prepare(390);
     const mobileDrawer = await openMessages(mobile);
     await mobileDrawer
@@ -448,10 +444,6 @@ test("Messages loading", async () => {
       mobileLayout[".team-room-detail"].bottom <= 901,
       "the room detail stays inside the mobile window",
     );
-    await mobile.screenshot({
-      path: join(root, "messages-mobile.png"),
-      animations: "disabled",
-    });
     await mobileDrawer
       .getByRole("button", { name: "Back to chats", exact: true })
       .click();

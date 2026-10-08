@@ -192,7 +192,6 @@ test("native error ui", async ({ page: runnerPage }) => {
       .getByText("Codex offers gpt-5.6-sol.", { exact: false })
       .waitFor();
     await page.waitForTimeout(250); // Let the dialog enter before the visual capture.
-    await page.screenshot({ path: join(root, "native-safety-confirm.png") });
     await page
       .getByRole("dialog")
       .getByRole("button", { name: "Keep waiting", exact: true })
@@ -200,7 +199,6 @@ test("native error ui", async ({ page: runnerPage }) => {
     await page.getByRole("dialog").waitFor({ state: "detached" });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
-    await page.screenshot({ path: join(root, "native-safety-mobile.png") });
     await page
       .locator(".native-safety")
       .getByRole("button", { name: "Keep waiting", exact: true })
@@ -374,13 +372,11 @@ test("native error ui", async ({ page: runnerPage }) => {
         .count(),
       0,
     );
-    await page.screenshot({ path: join(root, "native-error-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator(".native-error summary").click();
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     const box = await page.locator(".native-error pre").boundingBox();
     assert.ok(box.height <= 181, "error details have bounded height");
-    await page.screenshot({ path: join(root, "native-error-mobile.png") });
     const start = async (text) => {
       await page.setViewportSize({ width: 1200, height: 900 });
       await page.locator("#message").fill(text);
@@ -453,9 +449,6 @@ test("native error ui", async ({ page: runnerPage }) => {
       })
       .waitFor();
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
-    await page.screenshot({
-      path: join(root, "native-limit-recovery-mobile.png"),
-    });
     await page.keyboard.press("Escape");
     for (const [failure, trusted] of [
       [
@@ -590,7 +583,6 @@ test("native error ui", async ({ page: runnerPage }) => {
       .getByRole("button", { name: "Close conversations", exact: true })
       .waitFor({ state: "detached" });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
-    await page.screenshot({ path: join(root, "native-precaution-mobile.png") });
     const previousChats = new Set(
       (await state()).runtime.agents.map((a) => a.id),
     );

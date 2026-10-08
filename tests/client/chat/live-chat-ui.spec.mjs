@@ -10,7 +10,7 @@ test("Live chat ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(60_000);
   const skill = fileURLToPath(new URL("../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
   const proc = spawn(
@@ -147,7 +147,6 @@ test("Live chat ui", async ({
       "yes",
       "prior paragraphs stay mounted",
     );
-    await page.screenshot({ path: join(root, "writing.png") });
     const full =
       'First paragraph.\n\nSecond paragraph.\n\n```json\n{"ok":true}\n\n```\nFinal tail';
     event("item/completed", {
@@ -203,10 +202,8 @@ test("Live chat ui", async ({
       "nonzero exit shown as failure",
     );
     await page.locator('[data-phase="tool"]').waitFor();
-    await page.screenshot({ path: join(root, "tools-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await card.locator(".tool-raw > summary").click();
-    await page.screenshot({ path: join(root, "tools-mobile.png") });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     for (const box of await card.locator("pre").all()) {
       const r = await box.boundingBox();

@@ -181,7 +181,6 @@ test("agent phase browser", async ({ page: runnerPage }) => {
         anchor.y,
         "Open details cannot move the transcript",
       );
-      await page.screenshot({ path: join(evidence, `waiting-${width}.png`) });
       await summary.click();
       await change("agent", 99);
       assert.equal((await phase.boundingBox()).height, box.height);
@@ -213,7 +212,6 @@ test("agent phase browser", async ({ page: runnerPage }) => {
       ),
       [],
     );
-    await page.screenshot({ path: join(evidence, "turn-ended-320.png") });
     await change("completed");
     assert.equal(await phase.count(), 0);
     expect(errors).toEqual([]);

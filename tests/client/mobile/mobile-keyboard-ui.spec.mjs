@@ -233,10 +233,6 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
     );
     await page.evaluate(() => window.composerTextarea.blur());
     await page.evaluate(() => window.retainTestScroll(150));
-    await page.screenshot({
-      path: join(state, "keyboard-open.png"),
-      clip: { x: 0, y: 54, width: 390, height: 390 },
-    });
     // Pinch zoom must not collapse the application to the magnified viewport.
     await page.evaluate(() =>
       window.setTestViewport({ scale: 2, height: 195, offsetTop: 140 }),
@@ -288,7 +284,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
     );
     assert.equal(errors.length, 0, errors.join("\n"));
     console.log(
-      `mobile-keyboard-ui: PASS (keyboard picker stability, offset, scroll reset, close, rotation, pinch, desktop). Screenshot: ${join(state, "keyboard-open.png")}`,
+      `mobile-keyboard-ui: PASS (keyboard picker stability, offset, scroll reset, close, rotation, pinch, desktop). Evidence: ${state}`,
     );
   } catch (error) {
     console.error(log);

@@ -300,7 +300,6 @@ test("read activity ui", async ({ browser: _browser }) => {
       "failures stay visible in the summary",
     );
     assert.equal(await group.getAttribute("open"), null);
-    await page.screenshot({ path: join(root, "compact-group.png") });
     event("item/completed", {
       id: "prose-only",
       type: "agentMessage",
@@ -316,10 +315,8 @@ test("read activity ui", async ({ browser: _browser }) => {
       "assistant prose does not invent calls",
     );
     await page.locator(".turn-work > summary").first().scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(root, "read-activity-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.locator(".turn-work").first().scrollIntoViewIfNeeded();
-    await page.screenshot({ path: join(root, "read-activity-mobile.png") });
     assert.equal(
       await page.evaluate(() => document.body.scrollWidth),
       390,

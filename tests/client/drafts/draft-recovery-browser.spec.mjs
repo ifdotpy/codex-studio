@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 
 test("Draft recovery", async ({ context: testContext }) => {
   test.setTimeout(180_000);
@@ -20,6 +20,7 @@ test("Draft recovery", async ({ context: testContext }) => {
   try {
     const page = await testContext.newPage(),
       errors = [];
+    installApiSchemaFixtureHeaders(page);
     page.on("pageerror", (error) => errors.push(error.message));
     let workspaceId = "b".repeat(32);
     const pushes = [];

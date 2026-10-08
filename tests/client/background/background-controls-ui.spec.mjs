@@ -243,7 +243,6 @@ test("Background controls", async ({ context }) => {
         exact: true,
       })
       .waitFor();
-    await page.screenshot({ path: join(root, "interactive-desktop.png") });
     // The mobile client closes desktop drawers below 761px. Exercise this drawer
     // at a narrow desktop width; mobile has its own client tests.
     await page.setViewportSize({ width: 780, height: 740 });
@@ -252,9 +251,6 @@ test("Background controls", async ({ context }) => {
       780,
     );
     await drawer.locator(".process-input").scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: join(root, "interactive-narrow-desktop.png"),
-    });
     await drawer
       .getByRole("button", { name: "Close input (EOF)", exact: true })
       .click();
@@ -300,7 +296,6 @@ test("Background controls", async ({ context }) => {
       path: "/api/native-command",
       body: { id: "native-task", action: "cancel" },
     });
-    await page.screenshot({ path: join(root, "native-command-controls.png") });
     assert.equal(
       writes.some(
         (w) => w.path === "/api/monitor/input" && w.body.id === "9042",
@@ -338,7 +333,6 @@ test("Background controls", async ({ context }) => {
         .innerText(),
       failedWorker.error,
     );
-    await page.screenshot({ path: join(root, "harness-status.png") });
     assert.deepEqual(errors, []);
     console.log(`PASS background controls browser contract. Evidence: ${root}`);
   } finally {

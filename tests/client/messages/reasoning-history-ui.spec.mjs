@@ -167,9 +167,7 @@ test("Reasoning History Ui", async ({
       "Status update preserves the DOM node",
     );
     assert.equal(await page.locator(".reasoning-duration").count(), 2);
-    await page.screenshot({ path: join(directory, "reasoning-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(directory, "reasoning-mobile.png") });
     assert.equal(
       await page.evaluate(
         () => document.documentElement.scrollWidth > innerWidth,

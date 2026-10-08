@@ -67,16 +67,6 @@ test("product ui", async ({ browser: _browser }) => {
         );
       }, "control fits the viewport");
     };
-    const shot = async (name) => {
-      await page.evaluate(async () => {
-        await new Promise(requestAnimationFrame);
-        await new Promise(requestAnimationFrame);
-      });
-      await page.screenshot({
-        path: join(root, name + ".png"),
-        animations: "disabled",
-      });
-    };
     page.on("pageerror", (e) => errors.push(e.message));
     globalThis.testPage = page;
     await page.goto(origin);
@@ -128,7 +118,6 @@ test("product ui", async ({ browser: _browser }) => {
     });
     await answerField.scrollIntoViewIfNeeded();
     await visibleInViewport(answerField);
-    await shot("question");
     await answerField.press("Escape");
     await answerForm.waitFor({ state: "hidden" });
     await poll(
@@ -159,7 +148,6 @@ test("product ui", async ({ browser: _browser }) => {
       .click();
     await page.getByText("Compacted 2 times.", { exact: true }).waitFor();
     await page.keyboard.press("Escape");
-    await page.screenshot({ path: join(root, "ai-conversation.png") });
     assert.equal(
       await page
         .locator(
@@ -229,7 +217,6 @@ test("product ui", async ({ browser: _browser }) => {
     await page.locator(".unified-message-scroll").evaluate((el) => {
       el.scrollTop = el.scrollHeight;
     });
-    await page.screenshot({ path: join(root, "agent-chat.png") });
     await page.keyboard.press("Escape");
     await page
       .locator("[data-chat]")
@@ -357,22 +344,17 @@ test("product ui", async ({ browser: _browser }) => {
     await page.getByText("5h", { exact: true }).waitFor();
     await page.getByText("58% left", { exact: true }).waitFor();
     await visibleInViewport(page.getByRole("dialog"));
-    await shot("limits");
     await page.locator(".limits-toggle").click();
     await page
       .locator("#messages")
       .getByText("First task", { exact: true })
       .waitFor();
-    await page.waitForTimeout(5200);
-    await page.screenshot({ path: join(root, "lead-chat.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
-    await page.screenshot({ path: join(root, "mobile.png") });
     await page.locator("#messages-toggle").click();
     await visibleInViewport(
       page.getByRole("dialog", { name: "Messages", exact: true }),
     );
-    await shot("mobile-messages");
     await page.keyboard.press("Escape");
     await page
       .getByRole("dialog", { name: "Messages", exact: true })
@@ -387,11 +369,9 @@ test("product ui", async ({ browser: _browser }) => {
     await page.setViewportSize({ width: 320, height: 640 });
     await visibleInViewport(page.locator("#send"));
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
-    await shot("narrow-ai-chat");
     await page.locator("#message").fill("A long draft.\n".repeat(60));
     await visibleInViewport(page.locator("#send"));
     await visibleInViewport(page.locator("#message"));
-    await shot("narrow-draft");
     await page.locator("#message").fill("Lead draft");
     await page
       .getByRole("button", { name: "Account limits", exact: true })
@@ -399,7 +379,6 @@ test("product ui", async ({ browser: _browser }) => {
     await visibleInViewport(
       page.getByRole("region", { name: "Account limits details", exact: true }),
     );
-    await shot("narrow-limits");
     await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.locator(`[data-chat="${newLead.id}"]`).click();
@@ -437,13 +416,11 @@ test("product ui", async ({ browser: _browser }) => {
       .click();
     await page.setViewportSize({ width: 1920, height: 1080 });
     await page.locator("#messages .prose table").waitFor();
-    await shot("wide-ai-chat");
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
       .click();
     await page.locator(".empty-chat").waitFor();
-    await shot("empty-chat");
     assert.deepEqual(errors, [], "no React errors");
     console.log(
       "React product UI: PASS (production build, sidebar rename/delete, agent chat, history, unified messages, model, agent monitor, limits, desktop/mobile)",

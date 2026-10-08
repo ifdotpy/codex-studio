@@ -197,7 +197,6 @@ test("tool images ui", async ({ browser }) => {
         ) < 2,
       "Actual size renders one CSS pixel per image pixel",
     );
-    await page.screenshot({ path: join(root, "native-image-zoom.png") });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     const beforeInline = fileRequests.length;

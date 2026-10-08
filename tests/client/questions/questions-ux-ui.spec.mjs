@@ -314,9 +314,6 @@ test("Questions Ux Ui", async ({
         .locator(".request-question-label")
         .first()
         .scrollIntoViewIfNeeded();
-      await page.screenshot({
-        path: join(root, `question-${width}-${theme}.png`),
-      });
     }
     await page.setViewportSize({ width: 1440, height: 960 });
     const answers = [];

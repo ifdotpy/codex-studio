@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test } from "../playwright.mjs";
+import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 
 test("legacy transcript rows refetch online and stay hidden offline", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const { createServer } = await import(
     new URL(
       "../../../web/node_modules/vite/dist/node/index.js",
@@ -26,6 +26,7 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
   const context = await browser.newContext();
   try {
     const page = await context.newPage();
+    installApiSchemaFixtureHeaders(context);
     let workspaceId = "e".repeat(32);
     let responseMode = "unchanged";
     let deltaReplies = 0;

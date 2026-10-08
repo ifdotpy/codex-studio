@@ -375,10 +375,6 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   await page.evaluate(() => window.dispatchEvent(new Event("online")));
   await page.locator("#error").waitFor({ state: "hidden" });
   expect(errors).toEqual([]);
-  await page.screenshot({
-    path: join(evidence, "snapshot-order.png"),
-    fullPage: true,
-  });
   await writeFile(
     join(evidence, "requests.json"),
     JSON.stringify({ requests, button: { before, during } }, null, 2),

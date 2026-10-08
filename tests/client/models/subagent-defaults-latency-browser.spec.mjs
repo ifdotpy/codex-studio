@@ -210,13 +210,6 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   timings.dialogText = (await dialog.innerText())
     .replace(/\s+/g, " ")
     .slice(0, 400);
-  for (const width of [390, 1440]) {
-    await page.setViewportSize({ width, height: 900 });
-    await page.waitForTimeout(150);
-    await page.screenshot({
-      path: join(root, `${timings.variant}-account-${width}.png`),
-    });
-  }
   // 2. Model change.
   const model = dialog.getByLabel(/model/i).first();
   await page.waitForFunction(() =>
@@ -251,11 +244,6 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     }, lead.id);
   }
   timings.modelSavedMs = Math.round(performance.now() - modelStart);
-  await page.setViewportSize({ width: 1440, height: 900 });
-  await page.waitForTimeout(150);
-  await page.screenshot({
-    path: join(root, `${timings.variant}-model-1440.png`),
-  });
   if (!legacy) {
     // The stored account and the transfer summary survive a reload on the entity path.
     await page.reload();

@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { join } from "node:path";
 import { createRequire } from "node:module";
 test("Mobile usability", async () => {
   test.setTimeout(180_000);
@@ -325,12 +325,9 @@ test("Mobile usability", async () => {
             ),
           };
         });
-        const path = join(evidence, `${width}-${name}.png`);
-        await page.screenshot({ path });
         results.push({
           width,
           name,
-          screenshot: relative(repo, path),
           ...measurement,
         });
         console.log(
@@ -637,7 +634,7 @@ test("Mobile usability", async () => {
       JSON.stringify(results, null, 2) + "\n",
     );
     console.log(
-      `mobile-usability-ui: PASS (${phase}); ${results.length} screenshots`,
+      `mobile-usability-ui: PASS (${phase}); ${results.length} viewport measurements`,
     );
   } finally {
     await browser?.close();

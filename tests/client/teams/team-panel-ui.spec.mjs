@@ -209,7 +209,6 @@ test("Team panel ui", async ({
         .filter({ has: page.locator(`[data-worker="${member.id}"]`) });
       assert.ok((await card.boundingBox()).height < 250, "compact error card");
       assert.equal(await card.locator("pre").isVisible(), false);
-      await panel.screenshot({ path: join(evidence, `team-${width}.png`) });
       await card.locator(".worker-error-details summary").click();
       assert.equal(
         await card.locator("pre").innerText(),

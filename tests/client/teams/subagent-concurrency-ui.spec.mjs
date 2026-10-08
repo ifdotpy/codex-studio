@@ -676,7 +676,6 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     assert.equal((await currentLead()).concurrency, 512);
     assert.deepEqual(prompts, []);
     assert.deepEqual(errors, []);
-    await page.screenshot({ path: join(root, "mobile-subagent-limit.png") });
     console.log(
       JSON.stringify({
         result: "PASS",

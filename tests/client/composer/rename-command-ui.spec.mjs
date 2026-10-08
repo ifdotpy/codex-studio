@@ -70,10 +70,6 @@ test("/rename updates the sidebar without sending a message", async ({
       lead.id,
     );
     assert.equal(messages.length, 0);
-    await page.screenshot({
-      path: join(evidence, "rename-1440.png"),
-      fullPage: true,
-    });
     await input.fill("/rename Exact release title");
     await page.getByRole("button", { name: "Send message" }).click();
     await page.waitForFunction(() =>
@@ -90,13 +86,6 @@ test("/rename updates the sidebar without sending a message", async ({
     );
     assert.equal(messages.length, 0);
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({
-      path: join(evidence, "rename-390.png"),
-      fullPage: true,
-    });
-    console.log(
-      `Screenshots: ${evidence}/rename-1440.png ${evidence}/rename-390.png`,
-    );
   } finally {
     await context.close();
     fixture.kill();

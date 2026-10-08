@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 // Isolated component browser checks. No server state or live model requests.
 import assert from "node:assert/strict";
-import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
-import { writeFile, rm, mkdtemp } from "node:fs/promises";
+import { writeFile, rm } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
@@ -17,7 +16,6 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
   const name = `.rendering-check-${process.pid}`;
   const entry = join(root, "web", `${name}.tsx`);
   const html = join(root, "web", `${name}.html`);
-  const artifacts = await mkdtemp(join(tmpdir(), "studio-rendering-theme-"));
   let server;
   try {
     await writeFile(
@@ -247,12 +245,7 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
         `${theme} code contrast`,
       );
       assert.equal(luminance(colors.background) > 0.5, theme === "light");
-      await page.screenshot({
-        path: join(artifacts, `${theme}.png`),
-        fullPage: true,
-      });
     }
-    console.log(`Theme screenshots: ${artifacts}`);
     expect(errors).toEqual([]);
     console.log(
       "PASS: partial text/code; selection; tool expansion; code controls; copy failure; image privacy, failure, and previews",

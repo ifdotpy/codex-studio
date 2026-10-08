@@ -9,7 +9,7 @@ test("Peer teams browser", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const root = resolve(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -108,6 +108,7 @@ test("Peer teams browser", async ({
     state = await page.evaluate(() => window.fixture);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
+      await project.hover();
       await page
         .getByRole("button", {
           name: "Options for project Project",
@@ -247,10 +248,6 @@ test("Peer teams browser", async ({
       () =>
         !window.fixture.runtime.peerTeams.some((t) => t.members.includes("b")),
     );
-    await page.screenshot({
-      path:
-        process.env.PEER_TEAMS_DRAG_SCREENSHOT || "/tmp/studio-team-drag.png",
-    });
     state.runtime.peerTeams = [];
     // Only explicitly authorized peer rooms involving this chat appear.
     state.runtime.rooms = [
@@ -295,9 +292,6 @@ test("Peer teams browser", async ({
       await form.evaluate((e) => e.scrollWidth <= e.clientWidth),
       true,
     );
-    await page.screenshot({
-      path: process.env.PEER_TEAMS_SCREENSHOT || join(cacheDir, "narrow.png"),
-    });
     assert.deepEqual(errors, []);
     console.log(
       "peer teams UI: create, retry, edit, stale revision, refresh failure, dissolve, room privacy, narrow viewport PASS",

@@ -93,7 +93,6 @@ test("Dictation ui", async ({
       "Original draft",
     );
     await page.setViewportSize({ width: 320, height: 760 });
-    await page.screenshot({ path: "/tmp/studio-dictation-mobile.png" });
     await page.setViewportSize({ width: 700, height: 850 });
     await page.getByRole("button", { name: "Insert into message" }).click();
     assert.equal(

@@ -488,9 +488,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
         `${mode}: one waiting row in the chat`,
       );
       await assertQueueGeometry("queued transcript");
-      await page.screenshot({
-        path: join(evidence, `${mode}-queued-desktop.png`),
-      });
       await page.setViewportSize({ width: 390, height: 844 });
       await row(queuedText).scrollIntoViewIfNeeded();
       await page.waitForTimeout(100);
@@ -501,9 +498,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
         ),
         `${mode}: queued metadata fits the mobile viewport`,
       );
-      await page.screenshot({
-        path: join(evidence, `${mode}-queued-mobile.png`),
-      });
       await publish(a.id, [...queueBase]);
       await page.waitForTimeout(200);
       assert.equal(
@@ -759,9 +753,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
         await remove.getAttribute("title"),
         "Remove from this device. Delivery is not cancelled.",
       );
-      await page.screenshot({
-        path: join(evidence, `${mode}-remove-message.png`),
-      });
       await remove.click();
       await row(dismissedText).waitFor({ state: "hidden" });
       assert.equal(
@@ -915,7 +906,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
         `${mode}: dismissal does not mutate server state or cancel delivery`,
       );
       assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
-      await page.screenshot({ path: join(evidence, `${mode}.png`) });
       await context.close();
       console.log(
         `${mode}: delivery, reconciliation, queue, rejection, local dismissal, focus, scroll, and chat isolation pass`,

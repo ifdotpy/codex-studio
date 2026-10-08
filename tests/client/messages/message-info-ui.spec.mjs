@@ -288,7 +288,6 @@ test("Message info", async ({ browser: testBrowser }) => {
       true,
       "focus stays in popover",
     );
-    await page.screenshot({ path: join(root, "desktop-original-60.png") });
     await page.keyboard.press("Escape");
     await message
       .getByRole("button", { name: "Copy message", exact: true })
@@ -338,7 +337,6 @@ test("Message info", async ({ browser: testBrowser }) => {
       await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       "long IDs wrap",
     );
-    await page.screenshot({ path: join(root, "phone-390.png") });
     await dialog
       .getByRole("button", { name: "Close message information", exact: true })
       .click();

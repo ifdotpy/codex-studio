@@ -151,10 +151,6 @@ test("File Links Ui", async ({
       }
       assert.equal(requests.at(-1).searchParams.get("agent"), agent.id);
       assert.equal(requests.at(-1).searchParams.has("line"), false);
-      if (line === 357)
-        await page.screenshot({
-          path: join(root, "official-build-preview.png"),
-        });
       await page.keyboard.press("Escape");
       await dialog.waitFor({ state: "hidden" });
       assert.equal(page.url(), origin + "/");

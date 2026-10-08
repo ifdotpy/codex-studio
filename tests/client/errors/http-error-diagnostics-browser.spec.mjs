@@ -63,9 +63,9 @@ test("Http error diagnostics browser", async ({
         return route.fulfill({ status: fixture.status, json: fixture.body });
       });
       const result = await page.evaluate(async () => {
-        const { api, ApiError, errorText } = await import("/src/api.ts");
+        const { get, ApiError, errorText } = await import("/src/api.ts");
         try {
-          await api("/api/error-fixture");
+          await get("/api/error-fixture");
           return null;
         } catch (error) {
           return {

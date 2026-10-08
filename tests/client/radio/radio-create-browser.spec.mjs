@@ -161,10 +161,6 @@ test("radio create browser", async ({ page: runnerPage }) => {
         ),
         true,
       );
-      await page.screenshot({
-        path: join(tmpdir(), `studio-radio-create-${width}.png`),
-        fullPage: true,
-      });
     }
     await page.setViewportSize({ width: 1100, height: 950 });
     await create.click();
@@ -213,7 +209,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
     );
     expect(errors).toEqual([]);
     console.log(
-      `PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh, one sidebar row, ordinary chat and project entry. Screenshots ${tmpdir()}/studio-radio-create-{1100,375}.png`,
+      "PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh, one sidebar row, ordinary chat and project entry.",
     );
   } finally {
     await server.close();

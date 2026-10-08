@@ -294,9 +294,6 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         false,
         "No page overflow at " + width,
       );
-      await page.screenshot({
-        path: join(tmpdir(), "studio-current-activity-" + width + ".png"),
-      });
       data.runtime.tasks.find((task) => task.id === "child").status =
         "completed";
       await render("lead");

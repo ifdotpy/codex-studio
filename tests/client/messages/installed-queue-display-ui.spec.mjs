@@ -164,7 +164,6 @@ test("installed queue display ui", async ({ browser: _browser }) => {
     await queuedItem("Revised first instruction").scrollIntoViewIfNeeded();
     assert.equal(await queuedItem("Revised first instruction").count(), 1);
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
-    await page.screenshot({ path: join(root, "queue-mobile.png") });
     assert.deepEqual(errors, []);
     console.log(
       JSON.stringify({

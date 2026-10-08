@@ -200,9 +200,6 @@ test("message-queue-ui", async ({ browser }) => {
           `Short text occupies one row: ${JSON.stringify(size)}`,
         );
         assert.equal(size.previewText, "First input");
-        await page.screenshot({
-          path: join(root, `queue-${width}-${colorScheme}.png`),
-        });
       }
     }
     await page.setViewportSize({ width: 1440, height: 960 });

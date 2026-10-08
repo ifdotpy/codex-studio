@@ -273,9 +273,6 @@ test("work log ui", async ({ browser: _browser }) => {
     await build.getByText("fixture build failed", { exact: true }).waitFor();
     if (await page.locator("#jump-latest").isVisible())
       await page.locator("#jump-latest").click();
-    await page.screenshot({
-      path: join(directory, "thinking-tools-desktop.png"),
-    });
     await page.setViewportSize({ width: 390, height: 900 });
     await page.waitForFunction(
       () =>
@@ -356,9 +353,6 @@ test("work log ui", async ({ browser: _browser }) => {
       toolBounds.y >= 0 && toolBounds.y < 900,
       "call is in the mobile viewport",
     );
-    await page.screenshot({
-      path: join(directory, "thinking-tools-mobile.png"),
-    });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -407,7 +401,6 @@ test("work log ui", async ({ browser: _browser }) => {
       true,
       "closing work never hides the answer",
     );
-    await page.screenshot({ path: join(directory, "answer-desktop.png") });
 
     turn = "reader";
     turnDone = false;
@@ -452,7 +445,6 @@ test("work log ui", async ({ browser: _browser }) => {
     await work().locator(":scope > summary").click();
     await page.setViewportSize({ width: 390, height: 900 });
     await page.waitForTimeout(250);
-    await page.screenshot({ path: join(directory, "answer-mobile.png") });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -568,9 +560,6 @@ test("work log ui", async ({ browser: _browser }) => {
     );
     await page.setViewportSize({ width: 1280, height: 900 });
     await middle.scrollIntoViewIfNeeded();
-    await page.screenshot({
-      path: join(directory, "commentary-between-tools.png"),
-    });
     // New tools preserve the group and the user's open card.
     await blocks
       .first()
@@ -927,7 +916,6 @@ test("work log ui", async ({ browser: _browser }) => {
       "the ungrouped view renders reasoning duration directly",
     );
     await page.setViewportSize({ width: 390, height: 900 });
-    await page.screenshot({ path: join(directory, "commentary-mobile.png") });
     await page.setViewportSize({ width: 1280, height: 900 });
     await page.unroute("**/api/transcript?*");
     await page.reload();

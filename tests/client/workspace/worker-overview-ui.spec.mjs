@@ -497,7 +497,6 @@ test("Worker Overview Ui", async ({
     await selectLead();
     assert.equal(await count("answer"), 0, "answered requests stop counting");
     assert.equal(await count("working"), 7);
-    await page.screenshot({ path: join(root, "worker-overview-desktop.png") });
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
@@ -522,7 +521,6 @@ test("Worker Overview Ui", async ({
       true,
     );
     assert.equal(await card(1).locator("strong").innerText(), longName);
-    await page.screenshot({ path: join(root, "worker-overview-mobile.png") });
     await card(1)
       .getByRole("button", {
         name: `Options for subagent ${longName}`,

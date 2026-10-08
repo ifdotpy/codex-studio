@@ -612,7 +612,6 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         beforeSwitch,
         bottomGap: await gap(),
       });
-      await page.screenshot({ path: join(dir, `conversation-${width}.png`) });
       await page.close();
     }
     await writeFile(

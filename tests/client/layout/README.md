@@ -17,12 +17,44 @@ header can cover controls in the same scroll container. These cases have a
 justification in the report. Native select options, input values, SVG icons,
 and terminal canvas cells require separate checks.
 
-Run the detector regression test with one worker:
+Run the detector regression test:
 
 ```sh
 cd web
-npx playwright test --config playwright.config.ts --project=client --workers=1 text-clipping.spec.mjs
+npx playwright test --config playwright.config.ts --project=client text-clipping.spec.mjs
 ```
 
 The scene runner is `/tmp/ui-compare/clip-audit/run.mjs`. See its README for the
 isolated fixture, five profiles, screenshots, and JSON report.
+
+## Running the client browser suite
+
+From the repository root, run `npm run test:client:browser`. Playwright builds
+the app, then selects workers from the CPUs available to this process and the
+memory currently available to it. `PLAYWRIGHT_WORKERS=<n>` overrides the
+automatic selection for manual runs.
+
+The runner probes temporary filesystems with an `fsync` write sized to the
+selected worker count times the measured per-worker fixture scratch, capped at
+256 MiB. It then chooses the memory-backed candidate with the most verified
+headroom. A failed quota or space probe excludes that candidate; `/tmp` is
+tested like every other candidate. Set `PLAYWRIGHT_SCRATCH_ROOT` to probe and
+select a specific root. The probe is implemented in
+[`scratch-root.mjs`](../scratch-root.mjs).
+Spawned fixture `TMPDIR`, `HOME`, `XDG_STATE_HOME`, `XDG_CACHE_HOME`, and test
+state directories stay under this scratch root.
+
+The CPU limit is the smaller of `os.availableParallelism()` and the cgroup CPU
+quota. The runner samples `/proc/stat` ten times across about two seconds,
+subtracts its own process from each `procs_running` sample, and subtracts the
+80th-percentile competing count from the CPU limit. The memory limit first
+reserves the larger constraint: worker use is at most half of available memory
+and leaves 4 GiB available for the rest of the machine. The per-worker memory
+estimate adds the highest measured marginal tree-PSS slope to the largest
+sampled fixture scratch, then rounds up to a 64 MiB boundary. If headroom cannot
+fit one measured worker while retaining the reserve, the automatic runner
+refuses to start. The automatic worker count is the smaller CPU or memory
+limit. The selector and its current measured inputs live in
+[`playwright-workers.mjs`](../../../web/playwright-workers.mjs). Use
+`PLAYWRIGHT_WORKERS=<n>` to lower or otherwise manually choose concurrency;
+the override still must fit the measured memory ceiling and reserve.

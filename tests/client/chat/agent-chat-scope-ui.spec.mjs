@@ -81,7 +81,6 @@ test("Agent chat scope ui", async ({
       .getByText("Only the second conversation", { exact: true })
       .last()
       .waitFor();
-    await page.screenshot({ path: join(root, "second-chat.png") });
     await select(lead.id);
     assert.equal(await room(`broadcast:${other.id}`).count(), 0);
     assert.equal(await room("broadcast:all").count(), 0);
@@ -113,7 +112,6 @@ test("Agent chat scope ui", async ({
       .filter({ hasText: "Earlier finding 0" })
       .waitFor();
     await dialog.getByRole("button", { name: "Latest messages" }).click();
-    await page.screenshot({ path: join(root, "first-chat.png") });
     const overflow = await dialog.evaluate((el) =>
       [...el.querySelectorAll(".team-room-detail, .team-room-rows")].some(
         (node) => node.scrollWidth > node.clientWidth + 1,
@@ -130,9 +128,7 @@ test("Agent chat scope ui", async ({
     await room(`broadcast:${lead.id}`).click();
     await dialog.getByRole("button", { name: "Back to chats" }).click();
     await dialog.getByRole("textbox", { name: "Search chats" }).waitFor();
-    await page.screenshot({ path: join(root, "narrow-list.png") });
     await room(`broadcast:${lead.id}`).click();
-    await page.screenshot({ path: join(root, "narrow-room.png") });
     await close();
     await page.setViewportSize({ width: 1280, height: 900 });
     await page

@@ -1,5 +1,6 @@
 import {
   legacySnapshotRoute,
+  installApiSchemaFixtureHeaders,
   test,
   expect,
   syncIdentityFixture,
@@ -78,6 +79,7 @@ test("Mobile Send Reliability Browser", async ({
       viewport: { width: 390, height: 844 },
       isMobile: true,
     });
+    installApiSchemaFixtureHeaders(context);
     const errors = [],
       posts = [];
     const pending = new Map();

@@ -169,9 +169,6 @@ test("Chat Create Latency Ui @performance", async ({
     assert.equal(await page.locator("#message").inputValue(), "");
     await page.locator("#message").fill("New draft before the projection");
     assert.equal(await page.locator("#send").isEnabled(), true);
-    await page.screenshot({
-      path: join(evidence, "created-before-refresh.png"),
-    });
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();

@@ -365,10 +365,6 @@ test("Progress Cache Ui", async ({
     await context.setOffline(true);
     await switchFrame(other, texts.other);
     await switchFrame(lead, texts.update);
-    await page.screenshot({
-      path: join(root, "progress-cached-offline-desktop.png"),
-      animations: "disabled",
-    });
     console.log(
       "PASS reload restores durable progress; offline chat switches retain measured content",
     );
@@ -392,10 +388,6 @@ test("Progress Cache Ui", async ({
         () => document.documentElement.scrollWidth <= innerWidth + 1,
       ),
     );
-    await page.screenshot({
-      path: join(root, "progress-cached-offline-mobile.png"),
-      animations: "disabled",
-    });
     await context.setOffline(false);
     await release();
     await writeFile(
@@ -422,10 +414,6 @@ test("Progress Cache Ui", async ({
       assert.ok(
         (await panel().boundingBox()).height <= (width === 390 ? 45 : 33),
       );
-      await page.screenshot({
-        path: join(root, `progress-hidden-${width}.png`),
-        animations: "disabled",
-      });
       await panel().getByRole("button", { name: "Show", exact: true }).click();
       const header = await panel()
         .locator(".agent-panel-heading")
@@ -450,10 +438,6 @@ test("Progress Cache Ui", async ({
         for (const control of [hide, expand])
           assert.ok(control.width >= 44 && control.height >= 44);
       }
-      await page.screenshot({
-        path: join(root, `progress-preview-${width}.png`),
-        animations: "disabled",
-      });
     }
     if (process.env.PROGRESS_SCREENSHOTS) {
       for (const width of [1440, 390]) {

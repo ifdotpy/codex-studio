@@ -269,9 +269,6 @@ test("tool limit history ui", async ({ browser: _browser }) => {
     await page.locator('[data-turn="legacy-limit"]').scrollIntoViewIfNeeded();
     for (const width of [1280, 390]) {
       await page.setViewportSize({ width, height: 1000 });
-      await page.screenshot({
-        path: join(dir, `error-details-pending-${width}.png`),
-      });
     }
     await page.setViewportSize({ width: 1280, height: 1000 });
     releaseErrors();
@@ -361,10 +358,6 @@ test("tool limit history ui", async ({ browser: _browser }) => {
         "normal",
         "limit reason wraps instead of being truncated",
       );
-      await page.screenshot({
-        path: join(dir, `limit-history-${width}.png`),
-        animations: "disabled",
-      });
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,

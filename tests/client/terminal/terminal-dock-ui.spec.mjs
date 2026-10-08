@@ -388,9 +388,6 @@ test("Terminal dock", async () => {
       await dock.evaluate((el) => el.scrollWidth <= el.clientWidth),
       "Collapsed controls fit with 250 terminals",
     );
-    await page.screenshot({
-      path: join(root, "terminal-collapsed-sidebar.png"),
-    });
     await dock.getByRole("button", { name: "Show terminals" }).click();
     await page.waitForFunction(() => {
       const dock = document
@@ -610,7 +607,6 @@ test("Terminal dock", async () => {
         "Earlier output exceeded the retained buffer. The latest output is shown.",
       )
       .waitFor();
-    await page.screenshot({ path: join(root, "terminal-desktop.png") });
     await dock.getByLabel("Find terminal", { exact: true }).fill("npm run dev");
     await dock.getByText("No matching sessions", { exact: true }).waitFor();
     assert.equal(await dock.locator(".terminal-session").count(), 0);
@@ -638,7 +634,6 @@ test("Terminal dock", async () => {
       .getByRole("button", { name: /Release logs Your terminal/ })
       .click();
     await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: join(root, "terminal-mobile.png") });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -823,9 +818,6 @@ test("Terminal dock", async () => {
       "A user shell must not start an agent turn",
     );
     assert.equal(ownerBefore.status, ownerAfter.status);
-    await page.screenshot({
-      path: join(liveRoot, "terminal-live-desktop.png"),
-    });
     const closeResponse = page.waitForResponse(
       (response) =>
         response.url().endsWith("/api/terminals/close") &&
