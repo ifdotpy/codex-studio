@@ -717,15 +717,12 @@ test("progress-fit-browser", async ({ browser, page }) => {
     await current.getByText("Recovery.", { exact: true }).waitFor();
     const beforeHeartbeat = await page.evaluate(() => reports.length);
     await page.evaluate(() => window.advance());
-    await page.waitForFunction(
-      (count) => reports.length > count,
+    await page.waitForTimeout(100);
+    assert.equal(
+      await page.evaluate(() => reports.length),
       beforeHeartbeat,
+      "Resuming without a changed layout does not send a duplicate report",
     );
-    const heartbeat = await page.evaluate(() =>
-      reports.slice(-2).map((item) => item.body),
-    );
-    assert.equal(heartbeat[0].client, heartbeat[1].client);
-    assert(heartbeat[1].sequence > heartbeat[0].sequence);
     await page.evaluate(() => window.reportMode("failed"));
     await change("Failure source.");
     await panel
@@ -838,7 +835,7 @@ test("progress-fit-browser", async ({ browser, page }) => {
       "Narrow default applies without a user choice",
     );
     console.log(
-      `PASS ${browser.browserType().name()}: exact fit, wrapped markers, resize/height/font invalidation, unsupported rejection, source link, full file access, report identity/heartbeat/failure/cancel/409, no overlapping reports`,
+      `PASS ${browser.browserType().name()}: exact fit, wrapped markers, resize/height/font invalidation, unsupported rejection, source link, full file access, report identity/deduplication/failure/cancel/409, no overlapping reports`,
     );
   } finally {
     for (const stream of streams) stream.end();
