@@ -20,6 +20,9 @@ import threading
 import time
 from typing import Any
 
+# The kqueue API exists only in the BSD and macOS builds of select.
+KQUEUE: Any = select
+
 MAX_OUTPUT = 4 * 1024 * 1024
 READ_OUTPUT = 64 * 1024
 SYNC_SECONDS = 5
@@ -168,7 +171,8 @@ def descendant_birth(pid: int) -> str | None:
         except FileNotFoundError:
             return None
     from codex_process_supervisor import process_start_time
-    return process_start_time(pid)  # type: ignore[no-any-return]
+    began: str | None = process_start_time(pid)
+    return began
 
 
 def descendant_matches(pid: int, began: str) -> bool:
@@ -182,6 +186,7 @@ class Descendants:
         self.marker_secret = marker_secret or secrets.token_hex(32)
         self.known: dict[int, str] = {}
         self.kqueue: Any = None
+        self.library: Any = None
         self.root = 0
         self.collected_at = 0.0
         self.stopped: set[int] = set()
@@ -197,7 +202,7 @@ class Descendants:
             import ctypes
             self.library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
             self.library.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
-            self.kqueue = select.kqueue()
+            self.kqueue = KQUEUE.kqueue()
         else:
             raise ValueError('Command descendant cleanup is unavailable on this platform')
 
@@ -209,9 +214,9 @@ class Descendants:
             raise RuntimeError('Cannot prove command process identity')
         self.known[pid] = started
         if self.kqueue is not None:
-            self.kqueue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
-                flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
-                fflags=select.KQ_NOTE_FORK | select.KQ_NOTE_EXIT)], 0, 0)
+            self.kqueue.control([KQUEUE.kevent(pid, filter=KQUEUE.KQ_FILTER_PROC,
+                flags=KQUEUE.KQ_EV_ADD | KQUEUE.KQ_EV_ENABLE,
+                fflags=KQUEUE.KQ_NOTE_FORK | KQUEUE.KQ_NOTE_EXIT)], 0, 0)
 
     def collect(self, *, force: bool = False) -> None:
         process_start_time, process_start_matches = descendant_birth, descendant_matches
@@ -222,7 +227,7 @@ class Descendants:
         self.collected_at = now
         if self.kqueue is not None:
             for event in events:
-                if event.fflags & select.KQ_NOTE_FORK:
+                if event.fflags & KQUEUE.KQ_NOTE_FORK:
                     self.forks[event.ident] = self.forks.get(event.ident, 0) + 1
             import ctypes
             pending = list(self.known)
@@ -252,9 +257,9 @@ class Descendants:
                             self.known[pid] = began
                             self.parents[pid] = parent
                             try:
-                                self.kqueue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
-                                    flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
-                                    fflags=select.KQ_NOTE_FORK | select.KQ_NOTE_EXIT)], 0, 0)
+                                self.kqueue.control([KQUEUE.kevent(pid, filter=KQUEUE.KQ_FILTER_PROC,
+                                    flags=KQUEUE.KQ_EV_ADD | KQUEUE.KQ_EV_ENABLE,
+                                    fflags=KQUEUE.KQ_NOTE_FORK | KQUEUE.KQ_NOTE_EXIT)], 0, 0)
                             except ProcessLookupError:
                                 if process_start_matches(pid, began):
                                     raise
