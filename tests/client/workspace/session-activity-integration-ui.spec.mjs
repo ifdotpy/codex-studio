@@ -2,11 +2,14 @@ import {
   readTestState,
   syncIdentityFixture,
   entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -97,6 +100,7 @@ test("Session activity integration", async () => {
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",
     });
+    installApiSchemaFixtureHeaders(page);
     page.setDefaultTimeout(12000);
     const errors = [],
       detailReads = [];
@@ -222,6 +226,20 @@ test("Session activity integration", async () => {
     );
     historyTasks = [task];
     const beforeLateHistory = taskFeedReads;
+    const notification = await fetch(new URL("/api/sync/notify", origin), {
+      method: "POST",
+      headers: {
+        Origin: origin,
+        "Content-Type": "application/json",
+        "X-Canvas-Token": state.token,
+        ...apiSchemaHeaders(),
+      },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "tasks", agentId: lead.id }],
+      }),
+    });
+    assert.equal(notification.status, 200, await notification.text());
     for (let n = 0; n < 120 && taskFeedReads === beforeLateHistory; n++)
       await new Promise((r) => setTimeout(r, 50));
     assert.ok(taskFeedReads > beforeLateHistory);
