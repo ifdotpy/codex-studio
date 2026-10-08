@@ -1,3 +1,4 @@
+import { Tooltip } from "@mantine/core";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
   type StudioSettingsTab,
@@ -15,7 +16,7 @@ import {
 import { serverStorageEventKey } from "./servers/storage";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import SearchOverlay from "./components/shell/SearchOverlay";
-import { SettingsSection, SettingsRow } from "./components/ui/primitives";
+import { SettingsRow } from "./components/ui/primitives";
 import { modalSizes } from "./theme";
 import { menuActions, renameCommand, studioCommand } from "./nativeCommands";
 import { useDesktopNotifications } from "./hooks/desktopNotifications";
@@ -163,7 +164,6 @@ import ProjectAccount from "./components/ProjectAccount";
 import SessionActivity from "./components/agents/SessionActivity";
 import { useWorkerModels } from "./components/agents/WorkerModelPicker";
 import { UnifiedAgentSettings } from "./components/agents/UnifiedAgentSettings";
-import { AccountTiles } from "./components/AccountTiles";
 import { FederationSettings } from "./components/FederationSettings";
 import { LinuxVMSettings } from "./components/LinuxVMSettings";
 import BrowserAccessNotice from "./components/BrowserAccessNotice";
@@ -299,6 +299,8 @@ export default function App() {
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [codexLoginKey, setCodexLoginKey] = useState("");
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
+  const [workerSettingsOpen, setWorkerSettingsOpen] = useState(false);
+  const [reviewSettingsOpen, setReviewSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
   const preferenceLoad = useMemo(() => {
@@ -2897,143 +2899,166 @@ export default function App() {
       </Modal>
       <Modal
         opened={settingsOpen}
-        closeOnEscape={!accountModalOpen && !mainSettingsOpen}
-        closeOnClickOutside={!accountModalOpen && !mainSettingsOpen}
+        closeOnEscape={
+          !accountModalOpen &&
+          !mainSettingsOpen &&
+          !workerSettingsOpen &&
+          !reviewSettingsOpen
+        }
+        closeOnClickOutside={
+          !accountModalOpen &&
+          !mainSettingsOpen &&
+          !workerSettingsOpen &&
+          !reviewSettingsOpen
+        }
         onClose={() => setSettingsOpen(false)}
         title="Chat settings"
         size={modalSizes.settings}
       >
-        <div className="chat-settings-panel">
-          <SettingsSection title="Conversation">
-            {lead?.source === "managed" && (
-              <SettingsRow label="Subagent parallelism">
-                <SubagentConcurrencyControl
-                  lead={lead}
-                  stateDir={data.stateDir}
-                  workspaceId={workspaceId}
+        <div className="chat-settings-panel chat-settings-rows">
+          {agent?.source === "managed" && (
+            <>
+              <SettingsRow label="Model">
+                <UnifiedAgentSettings
+                  key={"execution:" + agent.id}
+                  state={accounts}
+                  notify={notify}
+                  settingsRow
+                  permissionsTargetId="chat-settings-permissions"
+                  extrasTargetId="chat-settings-modes"
+                  onOpenChange={setMainSettingsOpen}
+                  onAccountModalOpenChange={setAccountModalOpen}
+                  agent={agent}
+                  catalog={agentModels}
+                  team={data?.runtime?.agents || []}
                   refresh={refresh}
                 />
               </SettingsRow>
-            )}
-            <BrowserAccessNotice
-              accountKey={accountKey}
-              active={settingsOpen && (agent || lead)?.provider !== "claude"}
-            />
-            <SettingsRow label="Account" stacked>
-              <Accounts
-                onModalOpenChange={setAccountModalOpen}
-                projectAccountKeys={
-                  data.runtime?.projects
-                    ?.filter(
-                      (project) =>
-                        typeof project.path === "string" &&
-                        ((agent || lead)?.cwd === project.path ||
-                          (agent || lead)?.cwd?.startsWith(`${project.path}/`)),
-                    )
-                    .sort(
-                      (a, b) => (b.path?.length || 0) - (a.path?.length || 0),
-                    )[0]?.accountKeys ?? undefined
-                }
-                renderPicker={(selectAccount, disabled) => (
-                  <AccountTiles
-                    showLabel={false}
-                    label="Account"
-                    accounts={accounts.data.accounts.filter(
-                      (account) =>
-                        !account.disconnected && account.status === "ready",
-                    )}
-                    value={accountKey}
-                    disabled={disabled}
-                    onChange={selectAccount}
-                  />
-                )}
-                state={accounts}
-                agent={agent || lead}
-                accountKey={accountKey}
-                onError={notify}
-                changeAccount={async (key) => {
-                  const selectedAgent = agent || lead;
-                  if (selectedAgent?.isLead) {
-                    const selected = await post("/api/agents/account", {
-                      id: selectedAgent.id,
-                      account_key: key,
-                    });
-                    rememberCreated(selected, data.stateDir);
-                    await refresh();
-                  } else {
-                    accounts.setData(
-                      await post("/api/accounts/default", {
-                        account_key: key,
-                      }),
-                    );
-                  }
-                }}
-              />
-            </SettingsRow>
-            {agent?.cwd && (
-              <SettingsRow label="Project">
-                <Button
-                  id="project"
-                  className="project-picker"
-                  leftSection={<Folder size={15} />}
-                  aria-label="Choose project folder"
-                  title={agent.cwd}
-                  onClick={() => {
-                    setSettingsOpen(false);
-                    project();
-                  }}
-                >
-                  {projectName}
-                  <span className="settings-change-label">Change</span>
-                </Button>
-              </SettingsRow>
-            )}
-          </SettingsSection>
-          <SettingsSection title="Models">
-            {agent?.source === "managed" && (
-              <UnifiedAgentSettings
-                key={"execution:" + agent.id}
-                state={accounts}
-                notify={notify}
-                permissionsTargetId="chat-settings-permissions"
-                inline
-                onOpenChange={setMainSettingsOpen}
-                agent={agent}
-                catalog={agentModels}
-                team={data?.runtime?.agents || []}
+              {lead?.isLead &&
+                (["worker", "review"] as const).map((role) => (
+                  <SettingsRow
+                    key={role}
+                    label={role === "worker" ? "Workers" : "Review"}
+                  >
+                    <UnifiedAgentSettings
+                      state={accounts}
+                      notify={notify}
+                      settingsRow
+                      initialRole={role}
+                      onOpenChange={
+                        role === "worker"
+                          ? setWorkerSettingsOpen
+                          : setReviewSettingsOpen
+                      }
+                      onAccountModalOpenChange={setAccountModalOpen}
+                      agent={lead}
+                      catalog={agentModels}
+                      team={data?.runtime?.agents || []}
+                      refresh={refresh}
+                    />
+                  </SettingsRow>
+                ))}
+            </>
+          )}
+          {lead?.source === "managed" && (
+            <SettingsRow label="Parallel">
+              <SubagentConcurrencyControl
+                compact
+                lead={lead}
+                stateDir={data.stateDir}
+                workspaceId={workspaceId}
                 refresh={refresh}
               />
-            )}
-          </SettingsSection>
-          <div id="chat-settings-permissions" />
-          {agent?.provider === "claude" && (
-            <Suspense fallback={null}>
-              <ClaudeSettings
-                agent={agent}
-                account={selectedAccount}
-                onSignIn={(key) => {
-                  setSettingsOpen(false);
-                  setClaudeLoginKey(key);
-                }}
-              />
-            </Suspense>
+            </SettingsRow>
           )}
-          {agent?.cwd && (
-            <div className="chat-settings-footer">
+          <div id="chat-settings-permissions" />
+          <BrowserAccessNotice
+            compact
+            accountKey={accountKey}
+            active={settingsOpen && (agent || lead)?.provider !== "claude"}
+          />
+          <div className="chat-settings-footer">
+            {agent?.cwd && (
               <Button
                 variant="default"
                 className="settings-new-chat"
                 leftSection={<Plus size={14} />}
+                aria-label="New chat in this project"
                 disabled={creating}
                 onClick={() => {
                   setSettingsOpen(false);
                   void newChat(agent.cwd ?? undefined);
                 }}
               >
-                New chat in this project
+                New chat
               </Button>
-            </div>
-          )}
+            )}
+            {agent?.source === "managed" &&
+              (["compact", "review"] as const)
+                .filter((action) =>
+                  menuActions(agent.provider ?? undefined).includes(action),
+                )
+                .map((action) => {
+                  const disabled =
+                    busy.has(agent.status ?? "") ||
+                    !!agent.inFlight ||
+                    !!nativeThreadError(agent) ||
+                    !agent.threadId;
+                  return (
+                    <Tooltip
+                      key={action}
+                      disabled={!disabled}
+                      label={
+                        !agent.threadId
+                          ? "Available after the chat starts."
+                          : "Wait until the chat is ready."
+                      }
+                    >
+                      <span>
+                        <Button
+                          variant="default"
+                          disabled={disabled}
+                          onClick={() => {
+                            setSettingsOpen(false);
+                            void run(() => submitNativeAction(agent, action));
+                          }}
+                        >
+                          {action === "compact" ? "Compact" : "Review"}
+                        </Button>
+                      </span>
+                    </Tooltip>
+                  );
+                })}
+          </div>
+          <details className="chat-settings-more">
+            <summary>More</summary>
+            <div id="chat-settings-modes" />
+            {agent?.cwd && (
+              <Button
+                leftSection={<Folder size={14} />}
+                aria-label="Choose project folder"
+                onClick={() => {
+                  setSettingsOpen(false);
+                  project();
+                }}
+              >
+                Folder
+              </Button>
+            )}
+            {agent?.provider === "claude" && (
+              <Suspense fallback={null}>
+                <ClaudeSettings
+                  agent={agent}
+                  account={selectedAccount}
+                  permissionsTargetId="chat-settings-permissions"
+                  onSignIn={(key) => {
+                    setSettingsOpen(false);
+                    setClaudeLoginKey(key);
+                  }}
+                />
+              </Suspense>
+            )}
+          </details>
         </div>
       </Modal>
       <Modal
