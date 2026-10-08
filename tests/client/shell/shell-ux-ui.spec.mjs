@@ -464,6 +464,12 @@ test("Shell ux ui", async ({
       compactSnapshot,
       syncContract,
     );
+    await compactPage.route("**/api/sync/pull?*", (route) => {
+      const scope = new URL(route.request().url()).searchParams.get("scope");
+      return scope?.startsWith("transcript:")
+        ? route.continue()
+        : route.fallback();
+    });
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
         json: {
@@ -494,9 +500,19 @@ test("Shell ux ui", async ({
       .filter({ hasText: "Release lead" });
     await releaseLeadRow.click();
     await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    const compactToolsSummary = compactPage.locator(
+      '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+    );
+    await compactToolsSummary.click();
     await expect(
-      compactPage.locator(".conversation-prompt-navigation-slot"),
-    ).toHaveCount(1);
+      compactPage.locator(".conversation-header-tools-menu"),
+    ).toHaveAttribute("open", "");
+    await expect(
+      compactPage.locator(
+        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+      ),
+    ).toBeVisible();
+    await compactToolsSummary.click();
     await compactPage.locator(".native-error").waitFor();
     assert.equal(
       await compactPage.locator(".native-error").count(),
@@ -641,18 +657,22 @@ test("Shell ux ui", async ({
       `Sidebar/team should constrain the workspace: ${JSON.stringify(workspaceBounds)}`,
     );
     await compactPage.locator("#team-close").click();
-    await compactPage
-      .locator(".chat-row")
-      .filter({ hasText: "Release lead" })
-      .click();
-    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    if (
+      (await compactPage
+        .locator("#sidebar-toggle")
+        .getAttribute("aria-expanded")) === "true"
+    ) {
+      await compactPage.locator("#sidebar-toggle").click();
+    }
     await compactPage.waitForFunction(
       () =>
         document.querySelector("#conversation-title").textContent ===
         "Release lead",
     );
     await expect(
-      compactPage.locator(".conversation-prompt-navigation-slot"),
+      compactPage.locator(
+        ".conversation-prompt-navigation-slot .prompt-navigation-compact",
+      ),
     ).toHaveCount(1);
     await compactPage.waitForFunction(
       () =>
