@@ -9,6 +9,7 @@ import {
   workerRateKey,
 } from "../usage/tokenRate";
 import type { TokenRate as Rate } from "../usage/tokenRate";
+import { useVisualActivity } from "../hooks/useVisualActivity";
 
 import "./TokenRate.css";
 
@@ -19,6 +20,7 @@ export default function TokenRate({
   agent: Agent;
   variant?: "footer" | "worker";
 }) {
+  const [visualRef, visualActive] = useVisualActivity<HTMLSpanElement>();
   const scope =
     variant === "worker"
       ? workerRateKey(agent.rootId || "", agent.id)
@@ -39,8 +41,11 @@ export default function TokenRate({
   const current = useRef(0);
   const previousTurn = useRef("");
   useEffect(
-    () => subscribeTokenRate(scope, (value) => setSample({ id: scope, value })),
-    [scope],
+    () =>
+      visualActive
+        ? subscribeTokenRate(scope, (value) => setSample({ id: scope, value }))
+        : undefined,
+    [scope, visualActive],
   );
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -64,6 +69,7 @@ export default function TokenRate({
   const target = visible ? rate.rate : 0;
   const turn = `${agent.id}:${variant === "worker" ? rate?.turnId || "" : agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
+    if (!visualActive) return;
     // The first sample of a new turn must not tween from the previous turn.
     if (
       previousTurn.current !== turn ||
@@ -87,9 +93,10 @@ export default function TokenRate({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [target, turn, motionReduced, visible]);
+  }, [target, turn, motionReduced, visible, visualActive]);
   return (
     <span
+      ref={visualRef}
       className="token-rate"
       data-testid="token-rate"
       data-variant={variant}

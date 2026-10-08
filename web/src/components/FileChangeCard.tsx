@@ -7,6 +7,7 @@ import {
 } from "lucide-react";
 import type { Json, Message } from "../types";
 import FileDiff, { DiffCounts } from "./FileDiff";
+import { useVisualActivityRef } from "../hooks/useVisualActivity";
 import {
   changeLabel,
   fileChanges,
@@ -24,6 +25,7 @@ export default memo(function FileChangeCard({
   status: string;
   cwd?: string;
 }) {
+  const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const [open, setOpen] = useState(true);
   const [sourceOpen, setSourceOpen] = useState(false);
   const files = useMemo(() => {
@@ -44,6 +46,7 @@ export default memo(function FileChangeCard({
   const error = payload.error;
   return (
     <details
+      ref={visualRef}
       className="file-change-card"
       data-message={item.id}
       data-tool-status={status}

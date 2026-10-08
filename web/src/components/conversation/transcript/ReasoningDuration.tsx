@@ -1,10 +1,14 @@
 import { Brain, Clock3 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Message } from "../../../types";
+import { useVisualActivity } from "../../../hooks/useVisualActivity";
 import "./reasoning-duration.css";
 
 export default function ReasoningDuration({ item }: { item: Message }) {
-  const [elapsed, setElapsed] = useState(0);
+  const [visualRef, visualActive] = useVisualActivity<HTMLDivElement>();
+  const [clock, setClock] = useState<{ start: number; elapsed: number } | null>(
+    null,
+  );
   const since =
     typeof item.reasoningSince === "number" ? item.reasoningSince : undefined;
   const observedAt =
@@ -12,16 +16,16 @@ export default function ReasoningDuration({ item }: { item: Message }) {
       ? item.reasoningObservedAt
       : undefined;
   const running = since !== undefined;
+  const start = useMemo(() => performance.now(), [item.id, since, observedAt]);
   useEffect(() => {
-    setElapsed(0);
-    if (!running) return;
-    const start = performance.now();
-    const timer = window.setInterval(
-      () => setElapsed((performance.now() - start) / 1000),
-      1000,
-    );
+    if (!running || !visualActive) return;
+    const update = () =>
+      setClock({ start, elapsed: (performance.now() - start) / 1000 });
+    update();
+    const timer = window.setInterval(update, 1000);
     return () => window.clearInterval(timer);
-  }, [running, item.reasoningSince, item.reasoningObservedAt]);
+  }, [running, start, visualActive]);
+  const elapsed = clock?.start === start ? clock.elapsed : 0;
   const seconds = Math.max(
     0,
     Math.floor(
@@ -36,6 +40,7 @@ export default function ReasoningDuration({ item }: { item: Message }) {
   const Icon = item.observedWait ? Clock3 : Brain;
   return (
     <div
+      ref={visualRef}
       className="reasoning-duration"
       data-message={item.id}
       data-running={running}

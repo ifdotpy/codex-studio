@@ -21,6 +21,7 @@ import {
   toolImageDisplayPayload,
 } from "../../tool-images/toolImages";
 import FileChangeCard from "../../FileChangeCard";
+import { useVisualActivityRef } from "../../../hooks/useVisualActivity";
 
 const names: Record<string, string> = {
   commandExecution: "Run command",
@@ -229,6 +230,7 @@ export const ToolCard = memo(function ToolCard({
   agentId?: string;
   cwd?: string;
 }) {
+  const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const p = payload(item),
     state = status(item, p),
     kind = stringValue(p.type) || item.title || "",
@@ -264,6 +266,7 @@ export const ToolCard = memo(function ToolCard({
     return <FileChangeCard item={item} payload={p} status={state} cwd={cwd} />;
   return (
     <details
+      ref={visualRef}
       className="tool-card"
       data-message={item.id}
       data-tool-status={state}
@@ -482,6 +485,7 @@ export default memo(function Activity({
   items: Message[];
   agentId?: string;
 }) {
+  const visualRef = useVisualActivityRef<HTMLDetailsElement>();
   const summary = activitySummary(items);
   const running = summary.running;
   const reads = items.flatMap((item) => readActivity(payload(item)).targets);
@@ -491,6 +495,7 @@ export default memo(function Activity({
   const hasLimit = items.some((item) => toolLimitNotice(item));
   return (
     <details
+      ref={visualRef}
       className="tool-group"
       data-running={running}
       data-failed={failed}
