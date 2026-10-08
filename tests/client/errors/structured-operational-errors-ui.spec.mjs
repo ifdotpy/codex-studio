@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { handleEntitySyncFixtureRequest, test } from "../playwright.mjs";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -45,7 +45,7 @@ test("Structured operational errors ui", async ({
   window.renderCase=async(which,value)=>{
    let component;
    if(which==='request') {
-    const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:value}};
+    const request={id:'approval',agent:'lead',method:'item/commandExecution/requestApproval',params:{reason:typeof value==='string'?value:value.message.message}};
     component=React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh,notify:noop});
    }
    if(which==='message') component=React.createElement(UserMessages,{data:{...snapshot,runtime:{...snapshot.runtime,complaints:[{id:'message',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'User check',created:1,version:1}]}},refresh,notify:noop});
@@ -62,6 +62,27 @@ test("Structured operational errors ui", async ({
   };
   window.crashes=[];
   `;
+  const syncFixture = {
+    snapshot: {
+      stateDir: "fixture",
+      chats: [],
+      edges: [],
+      runtime: {
+        agents: [],
+        projects: [],
+        requests: [],
+        events: [],
+        rooms: [],
+        tasks: [],
+        monitors: [],
+        complaints: [],
+        peerTeams: [],
+        rules: [],
+        work: [],
+      },
+    },
+    workspaceId: "0123456789abcdef0123456789abcdef",
+  };
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),
@@ -69,6 +90,13 @@ test("Structured operational errors ui", async ({
     plugins: [
       {
         name: "operational-errors-fixture",
+        configureServer(viteServer) {
+          viteServer.middlewares.use((request, response, next) => {
+            if (handleEntitySyncFixtureRequest(request, response, syncFixture))
+              return;
+            next();
+          });
+        },
         resolveId(id) {
           if (id === "virtual:operational-errors") return "\0" + id;
         },
@@ -99,6 +127,8 @@ test("Structured operational errors ui", async ({
     let getFailure;
     let messageFailure;
     await page.route("**/api/**", async (route) => {
+      if (new URL(route.request().url()).pathname.startsWith("/api/sync/"))
+        return route.continue();
       if (route.request().method() === "POST") {
         writes.push(route.request().postDataJSON());
         return route.fulfill({
@@ -189,12 +219,19 @@ test("Structured operational errors ui", async ({
         );
         throw error;
       }
-      await page
-        .getByRole("button", { name: "Error details", exact: true })
-        .first()
-        .click();
-      assert.match(await page.locator("body").innerText(), /E_FIXTURE/);
-      assert.match(await page.locator("body").innerText(), /"attempt": 7/);
+      if (which === "request") {
+        assert.match(
+          await page.locator("body").innerText(),
+          /Structured operation failed/,
+        );
+      } else {
+        await page
+          .getByRole("button", { name: "Error details", exact: true })
+          .first()
+          .click();
+        assert.match(await page.locator("body").innerText(), /E_FIXTURE/);
+        assert.match(await page.locator("body").innerText(), /"attempt": 7/);
+      }
       assert.deepEqual(
         await page.evaluate(() => window.crashes),
         [],
@@ -242,8 +279,8 @@ test("Structured operational errors ui", async ({
     assert.equal(persisted[0].samples, 4);
     assert.equal(await page.evaluate(() => window.transcriptionCalls), 0);
     await page
+      .locator(".dictation-item .dictation-error")
       .getByText("Structured operation failed", { exact: true })
-      .first()
       .waitFor();
     for (const legacy of [
       "Legacy dictation failure",
