@@ -60,7 +60,11 @@ deepest known fixture Unix-socket paths before launching each suite and reports
 an actionable error if an explicitly configured root leaves insufficient path
 space. Set
 `CODEX_SERVER_TEST_TMP_ROOT` to choose a scratch root explicitly. See the [runner](../tests/server/run.py)
-for the resource and scratch-root formulas.
+for the resource and scratch-root formulas. When the selected root is disk-backed,
+the runner measures the median of seven 4 KiB write+fsync probes and scales the
+CPU-derived worker count by `5.5 ms / (5.5 ms + measured fsync latency)`; the
+5.5 ms reference is calibrated from the measured disk-vs-tmpfs runtime-contract
+CPU and wall times. This disk-only I/O bound is reported as `limitingBound=io`.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace

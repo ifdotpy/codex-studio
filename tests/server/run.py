@@ -58,6 +58,7 @@ TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
 MAX_UNIX_SOCKET_PATH_BYTES = 103
 RUNNABLE_SHORT_WINDOW_SECONDS = 2.0
+DISK_IO_CPU_EQUIVALENT_MS = 5.5
 SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
 SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
@@ -704,6 +705,43 @@ def _probe_scratch_capacity(directory, size_bytes):
         probe.unlink(missing_ok=True)
 
 
+def _probe_fsync_latency_ms(directory, samples=7):
+    """Measure median small-file durability latency on the selected disk root."""
+    timings = []
+    for index in range(samples):
+        probe = directory / f".fsync-latency-{os.getpid()}-{index}"
+        descriptor = None
+        try:
+            descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            os.write(descriptor, b"x" * 4096)
+            started = time.perf_counter()
+            os.fsync(descriptor)
+            timings.append((time.perf_counter() - started) * 1000)
+        except OSError:
+            return None
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+            probe.unlink(missing_ok=True)
+    return statistics.median(timings) if timings else None
+
+
+def io_limited_worker_count(fsync_median_ms, cpu_jobs):
+    """Scale disk-backed concurrency by measured sync wait vs calibrated CPU work."""
+    cpu_jobs = max(1, int(cpu_jobs))
+    if fsync_median_ms is None or fsync_median_ms <= 0:
+        return cpu_jobs
+    if not math.isfinite(fsync_median_ms):
+        return 1
+    wait_share = fsync_median_ms / (fsync_median_ms + DISK_IO_CPU_EQUIVALENT_MS)
+    return max(1, min(cpu_jobs, math.floor(cpu_jobs * (1 - wait_share))))
+
+
+def _is_memory_backed_path(path):
+    resolved = Path(path).resolve()
+    return any(resolved == mount or mount in resolved.parents for mount in _tmpfs_mounts())
+
+
 def _memory_scratch_root(required_bytes, measured_footprint_bytes):
     """Create a short tmpfs root that passes a quota-aware write probe."""
     candidates = []
@@ -973,6 +1011,7 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
             "cpuFloor": max(1, math.ceil(cpu_limit / 4)),
             "unclampedCpuCount": cpu_limit,
             "cpuLimit": cpu_limit,
+            "cpuWorkerSlots": 0,
             "otherRunnableProcesses": 0,
             "availableMemoryBytes": memory,
             "memoryBudgetBytes": min(memory // 2, max(0, memory - MEMORY_RESERVE_BYTES)),
@@ -987,6 +1026,7 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
     cpu_floor = max(1, math.ceil(cpu_limit / 4))
     cpu_unclamped = max(1, cpu_limit - other_runnable)
     cpus = max(cpu_floor, cpu_unclamped)
+    cpu_worker_slots = min(cpus, len(entries))
     cpu_bound = "cpu-floor" if cpu_unclamped < cpu_floor else "cpu-median"
     memory = available_memory_bytes()
     peak_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
@@ -1017,6 +1057,7 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
         "cpuFloor": cpu_floor,
         "unclampedCpuCount": cpu_unclamped,
         "cpuLimit": cpu_limit,
+        "cpuWorkerSlots": cpu_worker_slots,
         "otherRunnableProcesses": other_runnable,
         "availableMemoryBytes": memory,
         "memoryBudgetBytes": memory_budget,
@@ -1051,6 +1092,8 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     save_measurements = execute is run_process
     suite_tmp_root = TEST_TMP_ROOT
     owned_tmp_root = None
+    plan = None
+    automatic = workers is None
 
     def run_one(index, relative, kind):
         deadline = expensive_timeout if kind == "expensive" else timeout
@@ -1115,11 +1158,9 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             indexed.remove(calibration)
         plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
-        print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
     elif workers is None:
         plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
-        print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
 
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
@@ -1136,6 +1177,21 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             else:
                 print(f"Scratch root: disk {TEST_TMP_ROOT} (tmpfs capacity unavailable for "
                       f"{measured_footprint * workers} bytes)", flush=True)
+
+    memory_backed = _is_memory_backed_path(suite_tmp_root) if save_measurements else True
+    if save_measurements and not memory_backed:
+        fsync_median_ms = _probe_fsync_latency_ms(suite_tmp_root)
+        if plan is not None:
+            io_workers = io_limited_worker_count(fsync_median_ms, plan["cpuWorkerSlots"])
+            io_workers = min(workers, io_workers)
+            plan["ioFsyncMedianMs"] = fsync_median_ms
+            plan["ioWorkerSlots"] = io_workers
+            if io_workers < workers:
+                workers = io_workers
+                plan["workers"] = workers
+                plan["limitingBound"] = "io"
+    if plan is not None and automatic:
+        print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
 
     indexed.sort(key=lambda item: suite_seconds.get(item[1], 0), reverse=True)
     first_pending_index = len(runnable) - len(indexed) + 1

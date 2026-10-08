@@ -93,7 +93,8 @@ class ServerSuiteRunner(unittest.TestCase):
             commands.append(command)
             return 0, None
 
-        with contextlib.redirect_stdout(io.StringIO()):
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
             RUNNER.run_suites(
                 [("scripts/studio_api/agents/test_router.py", "component")],
                 set(), 1, 1, root=ROOT, execute=execute, workers=1,
@@ -115,7 +116,8 @@ class ServerSuiteRunner(unittest.TestCase):
             return 0, None, ["Expected.test_known_defect"], ["Unexpected.test_fixed_defect"]
 
         output = io.StringIO()
-        with contextlib.redirect_stdout(output):
+        with (contextlib.redirect_stdout(output),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
             runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                 [("failure.py", "safe"), ("native.py", "native"), ("success.py", "safe")],
                 set(), 1, 1, root=ROOT, execute=execute, workers=1)
@@ -153,6 +155,7 @@ class ServerSuiteRunner(unittest.TestCase):
             return 0, None
 
         with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
               mock.patch.object(RUNNER, "_save_profile")):
             runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                 [("first.py", "safe"), ("second.py", "safe")],
@@ -187,6 +190,7 @@ class ServerSuiteRunner(unittest.TestCase):
             "suiteSeconds": {"fast.py": 1.0, "slow.py": 9.0},
         }
         with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
               mock.patch.object(RUNNER, "_load_profile", return_value=profile),
               mock.patch.object(RUNNER, "_save_profile")):
             runnable, skipped, failures, _elapsed = RUNNER.run_suites(
@@ -330,6 +334,48 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
             memory_limited = RUNNER.automatic_worker_count(entries, profile)
         self.assertEqual(memory_limited, 1)
+
+    def test_disk_io_bound_uses_measured_fsync_latency(self):
+        cpu_jobs = 18
+        self.assertEqual(RUNNER.io_limited_worker_count(0.0, cpu_jobs), cpu_jobs)
+        self.assertEqual(RUNNER.io_limited_worker_count(None, cpu_jobs), cpu_jobs)
+        self.assertEqual(RUNNER.io_limited_worker_count(6.858, cpu_jobs), 8)
+        self.assertLess(RUNNER.io_limited_worker_count(20.0, cpu_jobs), 8)
+
+    def test_disk_scratch_io_bound_is_reported_in_automatic_plan(self):
+        profile = {"maxSuiteRssBytes": 100, "maxSuiteScratchBytes": 0,
+                   "suiteSeconds": {"one.py": 1.0}}
+
+        def execute(_command, _cwd, _timeout, _environment):
+            return 0, None, [], []
+
+        output = io.StringIO()
+        with (tempfile.TemporaryDirectory(prefix="server-io-plan-") as directory,
+              mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(directory)),
+              mock.patch.object(RUNNER, "TMP_ROOT_OVERRIDE", directory),
+              mock.patch.object(RUNNER, "_load_profile", return_value=profile),
+              mock.patch.object(RUNNER, "_save_profile"),
+              mock.patch.object(RUNNER, "run_process", side_effect=execute),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_is_memory_backed_path", return_value=False),
+              mock.patch.object(RUNNER, "_probe_fsync_latency_ms", return_value=6.858),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=64 * 1024**3),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0),
+              contextlib.redirect_stdout(output)):
+            runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [(f"suite-{index}.py", "safe") for index in range(24)],
+                set(), 1, 1, root=ROOT, execute=RUNNER.run_process, load_sample_seconds=0,
+            )
+
+        self.assertEqual(len(runnable), 24)
+        self.assertEqual(failures, [])
+        line = next(line for line in output.getvalue().splitlines()
+                    if line.startswith("Selected automatic worker plan: "))
+        plan = json.loads(line.removeprefix("Selected automatic worker plan: "))
+        self.assertEqual(plan["workers"], 7)
+        self.assertEqual(plan["limitingBound"], "io")
+        self.assertEqual(plan["ioFsyncMedianMs"], 6.858)
 
     def test_worker_plan_empty_selection_with_override_has_no_workers(self):
         with (mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
