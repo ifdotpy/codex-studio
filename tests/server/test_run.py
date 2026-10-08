@@ -313,6 +313,18 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(low_memory_plan["memoryWorkerSlots"], 2)
         self.assertEqual(low_memory_plan["limitingBound"], "memory")
 
+        profile_with_tmpfs = {
+            "maxSuiteRssBytes": 1024**3,
+            "maxSuiteScratchBytes": 1024**3,
+        }
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=12 * 1024**3),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
+            tmpfs_plan = RUNNER.worker_plan(entries, profile_with_tmpfs)
+        self.assertEqual(tmpfs_plan["measuredWorkerMemoryBytes"], 2 * 1024**3)
+        self.assertEqual(tmpfs_plan["memoryWorkerSlots"], 3)
+        self.assertEqual(tmpfs_plan["limitingBound"], "memory")
+
         with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=0),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):

@@ -57,6 +57,7 @@ BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
 SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
+SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
 
 try:
@@ -693,7 +694,8 @@ def _memory_scratch_root(required_bytes, measured_footprint_bytes):
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
                 shutil.rmtree(owned)
                 continue
-            probe_bytes = max(SCRATCH_PROBE_MIN_BYTES, measured_footprint_bytes)
+            probe_bytes = min(SCRATCH_PROBE_MAX_BYTES,
+                              max(SCRATCH_PROBE_MIN_BYTES, measured_footprint_bytes))
             if not _probe_scratch_capacity(owned, probe_bytes):
                 shutil.rmtree(owned)
                 continue
@@ -957,8 +959,10 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
     cpu_bound = "cpu-floor" if cpu_unclamped < cpu_floor else "cpu-median"
     memory = available_memory_bytes()
     peak_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
+    peak_scratch = int(profile.get("maxSuiteScratchBytes", 0) or 0)
     memory_budget = min(memory // 2, max(0, memory - MEMORY_RESERVE_BYTES))
-    memory_slots = max(1, memory_budget // peak_rss) if peak_rss else cpus
+    memory_per_worker = peak_rss + peak_scratch
+    memory_slots = max(1, memory_budget // memory_per_worker) if memory_per_worker else cpus
     costs = profile.get("suiteSeconds", {})
     total = sum(float(costs.get(path, 0) or 0) for path, _kind in entries)
     if total <= 0:
@@ -987,6 +991,8 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
         "memoryBudgetBytes": memory_budget,
         "memoryReserveBytes": MEMORY_RESERVE_BYTES,
         "measuredPeakSuiteRssBytes": peak_rss,
+        "measuredPeakSuiteScratchBytes": peak_scratch,
+        "measuredWorkerMemoryBytes": memory_per_worker,
         "memoryWorkerSlots": memory_slots,
         "estimatedSuiteSeconds": total,
         "runnableSuites": len(entries),
@@ -1083,10 +1089,7 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
     elif save_measurements:
-        measured_footprint = max(
-            int(profile.get("maxSuiteScratchBytes", 0) or 0),
-            int(profile.get("maxSuiteRssBytes", 0) or 0),
-        )
+        measured_footprint = int(profile.get("maxSuiteScratchBytes", 0) or 0)
         if measured_footprint:
             owned_tmp_root = _memory_scratch_root(
                 measured_footprint * workers, measured_footprint,

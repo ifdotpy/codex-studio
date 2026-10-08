@@ -40,8 +40,12 @@ The Python server runner samples runnable processes for five seconds and sizes
 its CPU allowance as the larger of one quarter of allowed CPUs and allowed CPUs
 minus median competing runnable processes. It then limits that count by the
 runnable suite count and memory slots. Memory slots divide the smaller of half
-`MemAvailable` and `MemAvailable` minus a 4 GiB reserve by measured peak suite
-RSS. Measured suite durations order the longest suites first. `--jobs` and
+`MemAvailable` and `MemAvailable` minus a 4 GiB reserve by the sum of measured
+peak suite RSS and measured per-suite scratch bytes. Scratch bytes count against
+the memory bound because a selected tmpfs stores them in RAM. The runner probes
+quota by writing and syncing one file per candidate mount, capped at 256 MiB; it
+requires statvfs headroom for measured scratch bytes times selected workers.
+Measured suite durations order the longest suites first. `--jobs` and
 `CODEX_SERVER_TEST_JOBS` override the automatic selection. `--show-jobs` prints
 which resource bound selected the count; use `--load-sample-seconds 0` or
 `CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a fast one-shot plan query.
