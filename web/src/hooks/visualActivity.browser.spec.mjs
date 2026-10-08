@@ -188,6 +188,38 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await page.evaluate(() => window.unmount());
     expect(await page.evaluate(() => window.activeVisualTimers())).toBe(0);
     expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(0);
+    // Without an observer, keep visible-tab updates active after hide/resume.
+    // There is no scroll observer to reactivate an offscreen row in this mode.
+    await page.addInitScript(() => {
+      window.IntersectionObserver = undefined;
+    });
+    await page.reload();
+    await expect
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
+      .toBe(2);
+    await page.evaluate(() => window.setTestingHidden(true));
+    await expect
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
+      .toBe(0);
+    await page.evaluate(() => {
+      window.rate("far", 91);
+      window.setTestingHidden(false);
+    });
+    await expect
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
+      .toBe(2);
+    await page.evaluate(() => window.scrollTo(0, document.body.scrollHeight));
+    await expect(page.locator("#far .token-rate")).toHaveAttribute(
+      "data-visual-active",
+      "true",
+    );
+    await expect(page.locator("#far .token-rate")).toHaveText("91 tok/s");
+    await page.locator("#fold summary").click();
+    await expect
+      .poll(() => page.evaluate(() => window.activeVisualTimers()))
+      .toBe(3);
+    await page.evaluate(() => window.unmount());
+    expect(await page.evaluate(() => window.activeVisualTimers())).toBe(0);
     expect(errors).toEqual([]);
   } finally {
     await page.close();

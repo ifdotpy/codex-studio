@@ -54,7 +54,8 @@ class VisualActivityTracker {
       !this.document.hidden,
     );
     for (const [element, entry] of this.entries) {
-      if (!this.document.hidden) entry.inView = this.inViewport(element);
+      if (!this.document.hidden)
+        entry.inView = this.observer ? this.inViewport(element) : true;
       this.publish(element, entry);
     }
   };
@@ -65,7 +66,7 @@ class VisualActivityTracker {
       return;
     for (const [element, entry] of this.entries) {
       if (!target.contains(element)) continue;
-      entry.inView = this.inViewport(element);
+      entry.inView = this.observer ? this.inViewport(element) : true;
       this.publish(element, entry);
     }
   };
