@@ -363,6 +363,9 @@ class HistoryRouteTests(unittest.TestCase):
             def touch_ui(_agent: str, _db: sqlite3.Connection | None = None) -> None:
                 return None
 
+            def item(self, *args: object, **kwargs: object) -> None:
+                cast(Callable[..., None], Runtime.item)(self, *args, **kwargs)
+
             @contextmanager
             def db(self) -> Iterator[sqlite3.Connection]:
                 yield self.connection
@@ -461,7 +464,52 @@ class HistoryRouteTests(unittest.TestCase):
         searched_room = SearchItemResponse.model_validate(room_item)
         self.assertEqual(searched_room.kind, "room")
         self.assertIsNone(searched_room.role)
+
+        # These producers also create persisted rows on recovery, native errors,
+        # hooks and permission reviews. A notice must not break the whole page.
+        from codex_native_errors import notice
+
+        produce_notice = cast(Callable[..., None], notice)
+        notices = [
+            {"nativeNotice": "warning", "previousError": "Server restarted during a turn."},
+            {"nativeNotice": "error", "nativeError": {"message": "Disconnected", "code": -32000}},
+            {"nativeNotice": "info", "nativeHook": {"id": "hook-1", "status": "completed", "entries": []},
+             "nativeHookQuiet": True},
+            {"nativeNotice": "warning", "nativeReview": {"reviewId": "review-1", "review": {"status": "blocked"}},
+             "details": "Permission review", "accountWide": False},
+        ]
+        for index, metadata in enumerate(notices):
+            with self.subTest(metadata=metadata):
+                severity = metadata["nativeNotice"]
+                # The fixture shares one connection across reads and writes;
+                # the real runtime opens separate read-only connections.
+                connection.execute("PRAGMA query_only=OFF")
+                produce_notice(producer, connection, producer.current, f"notice-{index}", "Native notice",
+                               severity, turnId="turn-9",
+                               **{key: value for key, value in metadata.items() if key != "nativeNotice"})
+                connection.commit()
+                message_id = f"agent-1:native-notice:notice-{index}"
+                page_value = cast(Callable[..., dict[str, object]], Runtime.transcript)(producer, "agent-1", limit=120)
+                with patch.object(self.context.runtime, "transcript", return_value=page_value):
+                    response = self.client.get("/api/transcript/page?id=agent-1")
+                self.assertEqual(response.status_code, 200)
+                row = next(row for row in response.json()["items"] if row["id"] == message_id)
+                for key, value in metadata.items():
+                    self.assertEqual(row[key], value)
+                full = history_service(producer, "agent-1", message_id)
+                with patch("codex_transcript_history.history_item", return_value=full):
+                    detail = self.client.get("/api/transcript/item", params={"id": "agent-1", "message_id": message_id})
+                self.assertEqual(detail.status_code, 200)
+                self.assertEqual(detail.json()["nativeNotice"], severity)
+                search_record = cast(Callable[..., dict[str, object]], WorkMixin.search_item)(producer, message_id)
+                SearchItemResponse.model_validate(search_record)
         connection.close()
+
+    def test_native_notice_contract_rejects_unknown_severity_and_fields(self) -> None:
+        record = {"id": "notice-1", "role": "system", "text": "Native notice"}
+        for extra in ({"nativeNotice": "fatal"}, {"nativeHookQuiet": "true"}, {"secret": "private"}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                TranscriptRecord.model_validate({**record, **extra})
 
     def test_checkpoint_contract_accepts_capture_and_summary_producer_output(self) -> None:
         from codex_workspace import WorkspaceMixin
