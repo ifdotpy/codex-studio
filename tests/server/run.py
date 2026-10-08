@@ -584,7 +584,7 @@ def _suite_command(relative, root):
     return command
 
 
-def _suite_environment(root, temp_root):
+def _suite_environment(root, temp_root, audit_home=False):
     environment = os.environ.copy()
     environment["HOME"] = str(temp_root / "home")
     environment["USERPROFILE"] = str(temp_root / "home")
@@ -605,8 +605,16 @@ def _suite_environment(root, temp_root):
     environment["CODEX_AGENTS_TEST_WORKSPACE_STORE"] = str(workspace_store)
     environment["CODEX_WORKSPACE_STORE"] = str(workspace_store)
     scripts_path = str(root / "scripts")
-    environment["PYTHONPATH"] = os.pathsep.join(
-        item for item in (scripts_path, environment.get("PYTHONPATH", "")) if item)
+    python_paths = [scripts_path]
+    if audit_home:
+        audit_path = str(TESTS / "server" / "audit-home")
+        python_paths.insert(0, audit_path)
+        environment["CODEX_SERVER_TEST_AUDIT_HOME"] = "1"
+        environment["CODEX_SERVER_TEST_REAL_HOME"] = str(Path.home())
+    inherited_pythonpath = environment.get("PYTHONPATH", "")
+    if inherited_pythonpath:
+        python_paths.append(inherited_pythonpath)
+    environment["PYTHONPATH"] = os.pathsep.join(python_paths)
     return environment
 
 
@@ -968,7 +976,8 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
 
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
-               execute=run_process, workers=None, load_sample_seconds=5.0):
+               execute=run_process, workers=None, load_sample_seconds=5.0,
+               audit_home=False):
     runnable = [(path, kind) for path, kind in entries
                 if kind in {"safe", "component"} or kind in opted_in]
     skipped = [(path, kind) for path, kind in entries
@@ -998,7 +1007,7 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 temp_root = Path(temporary)
                 for name in ("home", "cache", "state", "data", "config", "codex-home", "claude-home"):
                     (temp_root / name).mkdir()
-                environment = _suite_environment(root, temp_root)
+                environment = _suite_environment(root, temp_root, audit_home=audit_home)
                 result = execute(
                     _suite_command(relative, root), root, deadline, environment,
                 )
@@ -1152,6 +1161,8 @@ def main():
                         help="maximum concurrent test processes; set CODEX_SERVER_TEST_JOBS instead for an environment override (default: automatic)")
     parser.add_argument("--show-jobs", action="store_true",
                         help="show the automatic worker count without running suites")
+    parser.add_argument("--audit-home", action="store_true",
+                        help="fail Python tests that open or create paths under the real Codex/Claude/state home")
     parser.add_argument("--load-sample-seconds", type=float,
                         default=float(os.environ.get("CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS", "5")),
                         help="runnable-load sampling window in seconds (default: 5; also CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS)")
@@ -1200,7 +1211,8 @@ def main():
         args.jobs = plan["workers"]
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
-        workers=args.jobs, load_sample_seconds=args.load_sample_seconds)
+        workers=args.jobs, load_sample_seconds=args.load_sample_seconds,
+        audit_home=args.audit_home)
     for path, kind in skipped:
         condition = ("an already provisioned, isolated Linux VM and --include vm"
                      if kind == "vm" else f"--include {kind}")

@@ -9,6 +9,7 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import threading
@@ -230,6 +231,28 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(saved["maxSuiteRssBytes"], 300)
             self.assertEqual(saved["maxSuiteScratchBytes"], 200)
             self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
+
+    def test_audit_home_blocks_real_user_state_access_in_child_python(self):
+        with tempfile.TemporaryDirectory(prefix="server-audit-home-") as directory:
+            suite_root = Path(directory)
+            environment = RUNNER._suite_environment(ROOT, suite_root, audit_home=True)
+            target = Path(environment["CODEX_SERVER_TEST_REAL_HOME"]) / ".codex" / "auth.json"
+            result = subprocess.run(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).open('rb')", str(target)],
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("real-home audit blocked open", result.stderr)
+
+            safe_target = suite_root / "home" / "fixture"
+            safe_target.parent.mkdir()
+            safe_result = subprocess.run(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ok')",
+                 str(safe_target)],
+                cwd=ROOT, env=environment, capture_output=True, text=True, timeout=5,
+            )
+            self.assertEqual(safe_result.returncode, 0, safe_result.stderr)
+            self.assertEqual(safe_target.read_text(), "ok")
 
     def test_concurrent_tmpfs_roots_are_unique_and_cleanup_is_owned(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-root-race-") as temp:

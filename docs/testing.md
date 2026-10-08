@@ -36,9 +36,15 @@ production build. Browser checks build the renderer before exercising it.
 use the server runner's `--help` for filtering and optional categories.
 `test:server` also runs the colocated JavaScript bridge tests. To filter Python
 contracts, use `npm run test:server:python -- --filter <name>`.
-The Python server runner sizes its process pool as the minimum of CPUs available
-to the process, available memory divided by measured peak suite RSS, and the
-runnable suite count. Measured suite durations order the longest suites first.
+The Python server runner samples runnable processes for five seconds and sizes
+its CPU allowance as the larger of one quarter of allowed CPUs and allowed CPUs
+minus median competing runnable processes. It then limits that count by the
+runnable suite count and memory slots. Memory slots divide the smaller of half
+`MemAvailable` and `MemAvailable` minus a 4 GiB reserve by measured peak suite
+RSS. Measured suite durations order the longest suites first. `--jobs` and
+`CODEX_SERVER_TEST_JOBS` override the automatic selection. `--show-jobs` prints
+which resource bound selected the count; use `--load-sample-seconds 0` or
+`CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a fast one-shot plan query.
 The checked-in [timing seed](../tests/server/timing-baseline.json) comes from
 the exact base run; by default, successful runs update a local profile under
 the short test cache root. On Linux, the runner uses a writable tmpfs scratch
@@ -50,7 +56,11 @@ Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
 directories under the selected scratch root, so parallel suites do not share
-mutable test state.
+mutable test state. `--audit-home` enables a Python audit hook in each suite and
+its Python children; it fails if they open or create anything under the real
+user's `.codex`, `.claude`, or `.local/state/codex-agents` directories. Use this
+to verify isolation without reading or logging file contents. The hook does not
+inspect non-Python child processes.
 
 For a focused client check, forward a file filter to Vitest or Playwright:
 
