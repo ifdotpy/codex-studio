@@ -20,6 +20,7 @@ spec.loader.exec_module(fixture)
 eventually = fixture.fixture.f.eventually
 from codex_process_supervisor import status
 from codex_server_exec import job_path
+from codex_process_supervisor import process_start_time, process_start_matches
 
 
 class Commands(unittest.TestCase):
@@ -233,7 +234,10 @@ class Commands(unittest.TestCase):
         self.assertEqual(recovered['outcome'], 'applied')
         self.assertEqual((self.b.folder / 'lost-count').read_text(), 'x')
         requests = [json.loads(r['raw']) for r in self.wire if r['target'] == fixture.ROUTE and json.loads(r['raw'])['action'] == 'exec']
-        self.assertEqual([r['requestId'] for r in requests], [key, key])
+        self.assertEqual([r['requestId'] for r in requests], [key])
+        probes = [json.loads(r['raw']) for r in self.wire if r['target'] == fixture.ROUTE and json.loads(r['raw'])['action'] == 'exec_receipt']
+        self.assertEqual(len(probes), 1)
+        self.assertEqual(probes[0]['payload']['handle'], key)
 
     def test_missing_start_evidence_after_crash_never_replays(self):
         manager = self.b.runtime.multi_server().commands()
@@ -336,6 +340,127 @@ class Commands(unittest.TestCase):
                         'command': ['true'], **arguments}, 'invalid-command')
         with self.a.runtime.read_db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_server_outbox').fetchone()[0], 0)
+
+    def test_review_receipt_is_private_to_the_command_lead(self):
+        response = self.start([sys.executable, '-c', 'print("private-command-output")'], timeout=3)
+        other = self.a.runtime.prepare(self.a.runtime.new_lead({'cwd': str(self.a.folder)}))
+        with self.assertRaises(PermissionError):
+            self.a.runtime.multi_server().tools(other, {'action': 'receipt', 'server': self.b.server_id,
+                'request_id': response['requestId']}, 'foreign-receipt')
+        receipt = self.a.runtime.request_action(self.lead['id'], {'action': 'get', 'request_id': 'start-command'})
+        with self.assertRaises(ValueError):
+            self.a.runtime.model_read(other['id'], {'output_ref': receipt['id']})
+        self.drive(lambda: bool(self.events(self.a, self.lead['id'], kind='monitor_exit')))
+        notice = self.events(self.a, self.lead['id'], kind='monitor_exit')[0]
+        with self.assertRaises(ValueError):
+            self.a.runtime.model_read(other['id'], {'output_ref': 'event:' + notice['id']})
+        local = self.call('exec', 'local-receipt-command', cwd=str(self.a.folder), command=['true'], timeout=3)
+        self.assertEqual(self.call('receipt', local['requestId'])['result']['value']['exitCode'], 0)
+
+    def test_review_new_sessions_cannot_survive_exec(self):
+        for mode in ('normal', 'cancel', 'timeout'):
+            with self.subTest(mode=mode):
+                marker = self.b.folder / ('escaped-' + mode)
+                child = 'import os,time;from pathlib import Path;Path(' + repr(str(marker)) + ').write_text(str(os.getpid()));time.sleep(60)'
+                parent = ('import subprocess,sys,time;from pathlib import Path;'
+                    'subprocess.Popen([sys.executable,"-c",' + repr(child) + '],start_new_session=True,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);'
+                    '\nwhile not Path(' + repr(str(marker)) + ').exists(): time.sleep(.01)\n' +
+                    ('time.sleep(60)' if mode != 'normal' else ''))
+                response = self.start([sys.executable, '-c', parent], 'escaped-' + mode,
+                                      timeout=1 if mode == 'timeout' else 120)
+                eventually(marker.exists)
+                pid = int(marker.read_text())
+                began = process_start_time(pid)
+                def clean(pid=pid, began=began):
+                    if began and process_start_matches(pid, began):
+                        os.kill(pid, signal.SIGKILL)
+                self.addCleanup(clean)
+                handle = response['value']['handle']
+                if mode == 'cancel':
+                    self.call('exec_cancel', 'cancel-escaped', server=self.b.server_id, handle=handle)
+                value = response['value'] if mode == 'timeout' else self.finish(handle)
+                self.assertIsNone(process_start_time(pid), (mode, pid, value))
+                self.assertGreaterEqual(value['stoppedDescendants'], 1)
+
+    def test_review_completed_adapters_release_supervisor_rows(self):
+        for number in range(10):
+            handle = self.start(['true'], 'retire-' + str(number), timeout=3)['value']['handle']
+            eventually(lambda: handle not in self.b.runtime.multi_server().commands().active)
+        import sqlite3
+        with sqlite3.connect(self.b.state / 'supervisor.sqlite3') as db:
+            for table in ('handles', 'operations', 'events', 'child_identities'):
+                self.assertEqual(db.execute('SELECT count(*) FROM ' + table).fetchone()[0], 0, table)
+
+    def test_review_config_crash_and_delivered_envelopes_do_not_keep_env(self):
+        import codex_server_exec
+        write = codex_server_exec.atomic_json
+        def interrupted(path, value):
+            write(path, value)
+            if path.suffix == '.json' and path.name.endswith('.config.json'):
+                raise RuntimeError('fixture crash after private config')
+        with patch('codex_server_exec.atomic_json', side_effect=interrupted):
+            response = self.start(['true'], 'config-crash', env={'PRIVATE_EXEC_VALUE': 'secret-fixture-env'})
+        self.assertEqual(response['outcome'], 'unknown')
+        with self.b.runtime.read_db() as db:
+            self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_server_exec WHERE id=?', (response['requestId'],)).fetchone())
+        with self.a.runtime.read_db() as db:
+            body = db.execute('SELECT body FROM runtime_server_outbox WHERE id=?', (response['requestId'],)).fetchone()[0]
+        self.assertNotIn('secret-fixture-env', body)
+        self.assertEqual(self.a.runtime.multi_server().deliver(response['requestId'])['outcome'], 'unknown')
+
+    def test_review_output_pages_expire_with_the_snapshot(self):
+        self.drop_action = 'exec'
+        initial = self.start([sys.executable, '-c', 'print("retained-fixture-output")'], timeout=3)
+        self.assertEqual(initial['outcome'], 'unknown')
+        handle = self.a.runtime.multi_server().deliver(initial['requestId'])['value']['handle']
+        with patch('time.time', return_value=time.time() + 6 * 86400):
+            page = self.call('exec_read', 'retained-page', server=self.b.server_id, handle=handle)
+        native = self.a.runtime.request_action(self.lead['id'], {'action': 'get', 'request_id': 'retained-page'})
+        copied = self.a.runtime.model_read(self.lead['id'], {'output_ref': native['id']})
+        self.assertIn('retained-fixture-output', copied['text'])
+        self.tool(self.a, self.lead, 'orchestration_read', {'output_ref': native['id']}, 'copied-page')
+        future = time.time() + 8 * 86400
+        with patch('time.time', return_value=future):
+            saved = self.a.runtime.model_read(self.lead['id'], {'output_ref': native['id']})
+            self.assertNotIn('retained-fixture-output', json.dumps(saved))
+            self.assertNotIn('retained-fixture-output', json.dumps(self.a.runtime.request_action(
+                self.lead['id'], {'action': 'get', 'request_id': 'retained-page'})))
+            self.a.runtime.multi_server().prune()
+            self.b.runtime.multi_server().prune()
+            receipt = self.call('receipt', page['requestId'], server=self.b.server_id)
+        self.assertNotIn('retained-fixture-output', json.dumps(receipt))
+        for endpoint in (self.a, self.b):
+            with endpoint.runtime.read_db() as db:
+                results = db.execute('SELECT result FROM runtime_server_' + ('outbox' if endpoint == self.a else 'inbox')).fetchall()
+            self.assertNotIn('retained-fixture-output', json.dumps([r[0] for r in results]))
+        with self.a.runtime.read_db() as db:
+            for alias in ('retained-page', 'copied-page'):
+                key = db.execute('SELECT request FROM runtime_tool_request_aliases WHERE agent=? AND alias=?',
+                                 (self.lead['id'], alias)).fetchone()[0]
+                self.assertNotIn('retained-fixture-output', db.execute('SELECT result FROM runtime_tool_results WHERE id=?', (key,)).fetchone()[0])
+
+    def test_review_normal_exit_stops_descendants_that_hold_output_pipes(self):
+        command = 'import subprocess,sys;subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"],start_new_session=True)'
+        value = self.start([sys.executable, '-c', command], 'pipe-descendant', timeout=3)['value']
+        self.assertFalse(value['timedOut'])
+        self.assertLess(value['duration'], 3)
+        self.assertGreaterEqual(value['stoppedDescendants'], 1)
+
+    def test_review_binary_tail_does_not_stall_the_cursor(self):
+        from codex_server_exec import Buffer
+        buffer = Buffer(100)
+        buffer.append(b'abc\xff\xe2')
+        self.assertEqual(buffer.read(0, 100)['nextOffset'], 5)
+
+    def test_review_utf8_page_cursors_preserve_valid_characters(self):
+        handle = self.start([sys.executable, '-c', 'print("€"*30000,end="")'], timeout=3)['value']['handle']
+        text, offset = '', 0
+        while offset < 90000:
+            value = self.read(handle, stdout_offset=offset)
+            self.assertGreater(value['stdoutNextOffset'], offset)
+            offset = value['stdoutNextOffset']
+            text += value['stdout']
+        self.assertEqual(text, '€' * 30000)
 
 
 if __name__ == '__main__':

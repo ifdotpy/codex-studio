@@ -11,6 +11,7 @@ import queue
 import sys
 import uuid
 import selectors
+import select
 import signal
 import subprocess
 import threading
@@ -20,6 +21,30 @@ from typing import Any
 MAX_OUTPUT = 4 * 1024 * 1024
 READ_OUTPUT = 64 * 1024
 SYNC_SECONDS = 5
+
+
+def output_expiry(value: dict[str, Any]) -> float | None:
+    """Find the command expiry in a server receipt or an output-reference page."""
+    if (isinstance(value.get('outputExpiresAt'), (float, int))
+            and ('handle' in value or 'outputRef' in value)):
+        return float(value['outputExpiresAt'])
+    for field in ('value', 'result'):
+        nested = value.get(field)
+        if isinstance(nested, dict):
+            expiry = output_expiry(nested)
+            if expiry is not None:
+                return expiry
+    return None
+
+
+def expire_tool_output(result: dict[str, Any]) -> dict[str, Any]:
+    """Keep command pages out of cached tool replies after their expiry."""
+    expiry = result.get('serverOutputExpiresAt')
+    if isinstance(expiry, (float, int)) and time.time() >= expiry:
+        return {'success': True, 'contentItems': [{'type': 'inputText', 'text':
+            json.dumps({'outcome': 'unknown', 'expired': True,
+                        'detail': 'The command output has expired. Do not run the command again.'})}]}
+    return result
 
 
 def validate(payload: dict[str, Any]) -> dict[str, Any]:
@@ -66,11 +91,30 @@ class Buffer:
             del self.tail[:len(self.tail) - tail_size]
 
     def read(self, offset: int, limit: int) -> dict[str, Any]:
-        if offset < len(self.head):
+        if self.total <= self.limit:
+            start, data, gap = offset, (self.head + self.tail)[offset:offset + limit], 0
+        elif offset < len(self.head):
             start, data, gap = offset, self.head[offset:offset + limit], 0
         else:
             start = max(offset, self.total - len(self.tail))
             data, gap = self.tail[start - (self.total - len(self.tail)):][:limit], start - offset
+        # Carry a partial UTF-8 character into the next byte page. A retained
+        # tail can start inside a discarded character; account for that gap.
+        if gap:
+            while data and data[0] & 0xc0 == 0x80:
+                data = data[1:]
+                start += 1
+                gap += 1
+        raw = bytes(data)
+        try:
+            raw.decode('utf-8')
+        except UnicodeDecodeError as error:
+            if (error.reason == 'unexpected end of data' and error.end == len(raw)
+                    and start + len(raw) < self.total):
+                data = data[:error.start]
+                if not data and self.total > self.limit and offset < len(self.head):
+                    page = self.read(len(self.head), limit)
+                    return page | {'gapBytes': page['offset'] - offset}
         return {'offset': start, 'nextOffset': start + len(data), 'gapBytes': gap,
                 'text': bytes(data).decode('utf-8', errors='replace'), 'totalBytes': self.total,
                 'truncated': self.total > self.limit}
@@ -96,6 +140,185 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
 
 def job_path(root: Path, key: str, suffix: str) -> Path:
     return root / (hashlib.sha256(key.encode()).hexdigest() + suffix)
+
+
+def descendant_birth(pid: int) -> str | None:
+    if sys.platform.startswith('linux'):
+        try:
+            # Linux start ticks avoid the second-resolution ps birth stamp.
+            fields = Path('/proc/' + str(pid) + '/stat').read_text().rsplit(')', 1)[1].split()
+            return None if fields[0] == 'Z' else fields[19]
+        except FileNotFoundError:
+            return None
+    from codex_process_supervisor import process_start_time
+    return process_start_time(pid)  # type: ignore[no-any-return]
+
+
+def descendant_matches(pid: int, began: str) -> bool:
+    return descendant_birth(pid) == began
+
+
+class Descendants:
+    """Track fork ancestry, including children that create another session."""
+    def __init__(self, key: str, started_at: float) -> None:
+        self.key, self.started_at = key, started_at
+        self.known: dict[int, str] = {}
+        self.kqueue: Any = None
+        self.root = 0
+        self.collected_at = 0.0
+        self.stopped: set[int] = set()
+        self.unproved: set[int] = set()
+        if sys.platform.startswith('linux'):
+            import ctypes
+            # Orphans remain children of this adapter after their parent exits.
+            if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):
+                raise RuntimeError('Cannot retain command descendant ownership')
+        elif sys.platform == 'darwin':
+            import ctypes
+            self.library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+            self.library.proc_listchildpids.argtypes = [ctypes.c_int, ctypes.c_void_p, ctypes.c_int]
+            self.kqueue = select.kqueue()
+        else:
+            raise ValueError('Command descendant cleanup is unavailable on this platform')
+
+    def bind(self, pid: int) -> None:
+        process_start_time = descendant_birth
+        self.root = pid
+        started = process_start_time(pid)
+        if not started:
+            raise RuntimeError('Cannot prove command process identity')
+        self.known[pid] = started
+        if self.kqueue is not None:
+            self.kqueue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                fflags=select.KQ_NOTE_FORK | select.KQ_NOTE_EXIT)], 0, 0)
+
+    def collect(self, *, force: bool = False) -> None:
+        process_start_time, process_start_matches = descendant_birth, descendant_matches
+        events = self.kqueue.control(None, 4096, 0) if self.kqueue is not None else []
+        now = time.monotonic()
+        if not force and not events and now - self.collected_at < .1:
+            return
+        self.collected_at = now
+        if self.kqueue is not None:
+            for event in events:
+                if event.fflags & select.KQ_NOTE_FORK and process_start_time(event.ident) is None:
+                    self.unproved.add(event.ident)
+            import ctypes
+            pending = list(self.known)
+            while pending:
+                parent = pending.pop()
+                if not process_start_matches(parent, self.known[parent]):
+                    continue
+                buffer = (ctypes.c_int * 4096)()
+                size = self.library.proc_listchildpids(parent, buffer, ctypes.sizeof(buffer))
+                if size < 0:
+                    raise RuntimeError('The command process tree cannot be read')
+                if size >= ctypes.sizeof(buffer):
+                    raise RuntimeError('The command process tree exceeds the cleanup limit')
+                for pid in buffer[:max(0, size) // ctypes.sizeof(ctypes.c_int)]:
+                    if pid and pid not in self.known:
+                        began = process_start_time(pid)
+                        if began and process_start_matches(parent, self.known[parent]):
+                            # Recheck the parent link after reading the child
+                            # birth stamp. A PID reused by another parent is not
+                            # proof of a command descendant.
+                            current = (ctypes.c_int * 4096)()
+                            length = self.library.proc_listchildpids(parent, current, ctypes.sizeof(current))
+                            if length < 0 or length >= ctypes.sizeof(current):
+                                raise RuntimeError('The command child identity cannot be read')
+                            if pid not in current[:length // ctypes.sizeof(ctypes.c_int)] or not process_start_matches(pid, began):
+                                continue
+                            self.known[pid] = began
+                            try:
+                                self.kqueue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
+                                    flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
+                                    fflags=select.KQ_NOTE_FORK | select.KQ_NOTE_EXIT)], 0, 0)
+                            except ProcessLookupError:
+                                if process_start_matches(pid, began):
+                                    raise
+                            pending.append(pid)
+            return
+        processes: dict[int, tuple[int, str]] = {}
+        for path in Path('/proc').iterdir():
+            if not path.name.isdecimal():
+                continue
+            try:
+                fields = (path / 'stat').read_text().rsplit(')', 1)[1].split()
+                if fields[0] != 'Z':
+                    processes[int(path.name)] = (int(fields[1]), fields[19])
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+        roots = {os.getpid(), *(pid for pid, began in self.known.items() if process_start_matches(pid, began))}
+        for _ in range(len(processes)):
+            added = set()
+            for pid, (parent, began) in processes.items():
+                if (parent in roots and pid not in roots and parent in processes
+                        and process_start_matches(parent, processes[parent][1]) and process_start_matches(pid, began)):
+                    added.add(pid)
+                    self.known[pid] = began
+            if not added:
+                break
+            roots.update(added)
+
+    def stop(self) -> int:
+        process_start_matches = descendant_matches
+        deadline = time.monotonic() + 3
+        while True:
+            try:
+                self.collect(force=True)
+                if self.kqueue is not None:
+                    self.marked_processes()
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                # A failed scan cannot justify killing an unproved PID. Still
+                # stop every process whose identity was already proved.
+                self.unproved.add(0)
+            alive = {pid: began for pid, began in self.known.items() if process_start_matches(pid, began)}
+            if not alive:
+                return len(self.stopped - {self.root})
+            # Stop forking before the second tree walk. Check the birth time
+            # immediately before each signal so a reused PID is never killed.
+            for pid, began in alive.items():
+                if process_start_matches(pid, began):
+                    try:
+                        os.kill(pid, signal.SIGSTOP)
+                    except ProcessLookupError:
+                        pass
+            try:
+                self.collect(force=True)
+            except (OSError, RuntimeError, subprocess.SubprocessError):
+                self.unproved.add(0)
+            for pid, began in self.known.items():
+                if process_start_matches(pid, began):
+                    try:
+                        os.kill(pid, signal.SIGKILL)
+                        self.stopped.add(pid)
+                    except ProcessLookupError:
+                        pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError('Command descendants remain after the cleanup deadline')
+            time.sleep(.02)
+
+    def marked_processes(self) -> None:
+        from codex_process_supervisor import process_launch_environment, process_start_time, process_start_matches
+        rows = subprocess.check_output(['/bin/ps', '-axo', 'pid=,uid='], text=True, timeout=2)
+        for line in rows.splitlines():
+            pid, uid = map(int, line.split())
+            if uid != os.getuid() or pid in self.known or pid == os.getpid():
+                continue
+            try:
+                environment = process_launch_environment(pid)
+                if environment.get('STUDIO_EXEC_ID') != self.key:
+                    continue
+                began = process_start_time(pid)
+                if began and float(began) >= self.started_at and process_start_matches(pid, began):
+                    self.known[pid] = began
+            except (OSError, RuntimeError, ValueError):
+                continue
+
+    def close(self) -> None:
+        if self.kqueue is not None:
+            self.kqueue.close()
 
 
 class ServerExec:
@@ -125,6 +348,17 @@ class ServerExec:
             rows = db.execute("SELECT * FROM runtime_server_exec WHERE json_extract(record,'$.status') IN ('starting','running','unknown')").fetchall()
         for row in rows:
             self._restore(row['owner'], row['actor'], row['id'])
+        with self.runtime.read_db() as db:
+            completed = db.execute("SELECT id FROM runtime_server_exec WHERE json_extract(record,'$.status') NOT IN ('starting','running','unknown')").fetchall()
+        for row in completed:
+            self._retire(row['id'])
+
+    def _retire(self, key: str) -> None:
+        from codex_process_supervisor import retire_command
+        try:
+            retire_command(self.runtime.root, 'server-command:' + hashlib.sha256(key.encode()).hexdigest())
+        except Exception as error:
+            self.service._unknown_diagnostic(key, 'exec_retirement', error)
 
     def _record(self, principal: str, actor: str, key: str) -> dict[str, Any]:
         with self.runtime.read_db() as db:
@@ -176,6 +410,7 @@ class ServerExec:
             snapshot = self._snapshot(key)
             if snapshot and snapshot['record']['status'] not in {'starting', 'running'}:
                 self._save(principal, actor, key, snapshot['record'])
+                self._retire(key)
                 return
             config = json.loads(job_path(self.folder, key, '.config.json').read_text())
             self._attach(principal, actor, key, config, restore=True)
@@ -187,6 +422,7 @@ class ServerExec:
                 snapshot = self._snapshot(key)
                 if snapshot and snapshot['record']['status'] not in {'starting', 'running'}:
                     self._save(principal, actor, key, snapshot['record'])
+                    self._retire(key)
                     return
             except (OSError, ValueError):
                 pass
@@ -216,6 +452,7 @@ class ServerExec:
         record = {'handle': key, 'serverId': self.service.server_id, 'status': 'starting',
                   'startedAt': time.time(), 'finishedAt': None, 'exitCode': None, 'signal': None,
                   'duration': None, 'timedOut': False, 'outputLimit': p['output_limit']}
+        record['outputExpiresAt'] = record['startedAt'] + 7 * 86400
         config_path = job_path(self.folder, key, '.config.json')
         # macOS framework launchers replace argv[0] after exec. Launch the
         # current interpreter's OS-reported executable directly so retained
@@ -228,7 +465,6 @@ class ServerExec:
                 raise ValueError('The command service is closed')
             if len(self.active) >= 32:
                 raise ValueError('The server already has 32 command handles in progress')
-            atomic_json(config_path, config)
             # The claim precedes supervisor open and the adapter's own Popen fence.
             with self.runtime.db() as db:
                 db.execute('INSERT INTO runtime_server_exec VALUES(?,?,?,?)',
@@ -236,6 +472,7 @@ class ServerExec:
                 db.execute('INSERT INTO runtime_server_exec_audit VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
                            (key, actor, principal, self.service.server_id, p['cwd'],
                             hashlib.sha256(json.dumps(argv, ensure_ascii=False).encode()).hexdigest(), record['startedAt']))
+            atomic_json(config_path, config)
             self._attach(principal, actor, key, config, restore=False)
         if p['timeout'] <= SYNC_SECONDS:
             deadline = time.monotonic() + SYNC_SECONDS + 3
@@ -266,6 +503,7 @@ class ServerExec:
                     record.update(status='unknown', finishedAt=time.time(),
                                   error='The command adapter exited without a result; outcome unknown')
                 self._save(principal, actor, key, record)
+                proxy.call('retireCommand', generation=proxy.generation)
         except Exception as error:
             if not self.closed:
                 self.service._unknown_diagnostic(key, 'exec', error)
@@ -284,11 +522,14 @@ class ServerExec:
         if not isinstance(key, str) or not isinstance(actor, str):
             raise ValueError('Supply a command handle and actor')
         record = self._record(principal, actor, key)
+        if time.time() >= record.get('outputExpiresAt', record['startedAt'] + 7 * 86400):
+            raise ValueError('The command output has expired')
         snapshot = self._snapshot(key)
         if snapshot:
             if record['status'] != 'unknown' or snapshot['record']['status'] not in {'starting', 'running'}:
                 record = snapshot['record']
         result = dict(record)
+        result.setdefault('outputExpiresAt', record['startedAt'] + 7 * 86400)
         for name in ('stdout', 'stderr'):
             offset = p.get(name + '_offset', 0)
             if type(offset) is not int or offset < 0:
@@ -350,8 +591,12 @@ class ServerExec:
                 raise RuntimeError('Command observer did not detach; preserve state ownership')
 
     def prune(self, now: float) -> None:
+        with self.runtime.read_db() as db:
+            completed = db.execute("SELECT id FROM runtime_server_exec WHERE json_extract(record,'$.status') NOT IN ('starting','running')").fetchall()
+        for row in completed:
+            self._retire(row['id'])
         with self.lock, self.runtime.db() as db:
-            rows = db.execute("SELECT id FROM runtime_server_exec WHERE json_extract(record,'$.finishedAt')<?",
+            rows = db.execute("SELECT id FROM runtime_server_exec WHERE json_extract(record,'$.startedAt')<?",
                               (now - 7 * 86400,)).fetchall()
             for row in rows:
                 if row['id'] in self.active:
@@ -394,6 +639,7 @@ def child(config_path: Path) -> None:
     print(json.dumps({'id': 1, 'result': {'serverCommand': key}}), flush=True)
     began = time.monotonic()
     process = None
+    tree = Descendants(key, record['startedAt'])
     try:
         marker = job_path(folder, key, '.started')
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -404,8 +650,16 @@ def child(config_path: Path) -> None:
             os.fsync(directory)
         finally:
             os.close(directory)
-        process = subprocess.Popen(config['argv'], cwd=p['cwd'], env={**config['launchEnv'], **p['env']},
+        process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--command', str(config_path)],
+            cwd=p['cwd'], env={**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': key},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        # The bootstrap stops before exec. Register kernel fork tracking before
+        # the command can create and orphan a child in another process group.
+        waited, state = os.waitpid(process.pid, os.WUNTRACED)
+        if waited != process.pid or not os.WIFSTOPPED(state):
+            raise RuntimeError('The command bootstrap did not stop before execution')
+        tree.bind(process.pid)
+        os.kill(process.pid, signal.SIGCONT)
         assert process.stdin is not None and process.stdout is not None and process.stderr is not None
         os.set_blocking(process.stdin.fileno(), False)
         record['status'] = 'running'
@@ -420,6 +674,7 @@ def child(config_path: Path) -> None:
             selector.register(process.stdout, selectors.EVENT_READ, stdout)
             selector.register(process.stderr, selectors.EVENT_READ, stderr)
             while selector.get_map() or process.poll() is None:
+                tree.collect()
                 now = time.monotonic()
                 while len(pending) < 64 * 1024 and not controls.empty():
                     control = controls.get_nowait()
@@ -429,12 +684,9 @@ def child(config_path: Path) -> None:
                         pending.extend(control['params']['input'].encode())
                         close_input |= control['params'].get('close_stdin', False)
                 cancelled |= shutdown.is_set() or cancel.is_set()
-                if killed_at is None and (cancelled or now >= began + p['timeout']):
-                    record['timedOut'] = not cancelled
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                if killed_at is None and (cancelled or now >= began + p['timeout'] or process.poll() is not None):
+                    record['timedOut'] = not cancelled and now >= began + p['timeout']
+                    record['stoppedDescendants'] = tree.stop()
                     killed_at = now
                 if killed_at is not None and now - killed_at > 2:
                     break
@@ -469,18 +721,32 @@ def child(config_path: Path) -> None:
     finally:
         if process is not None:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait(timeout=2)
+                record['stoppedDescendants'] = tree.stop()
+                record['cleanupUnknownForks'] = len(tree.unproved)
+                if tree.unproved:
+                    record.update(status='unknown', error='A descendant fork lost its ancestry; inspect the target server')
+            except Exception:
+                record.update(status='unknown', error='Descendant cleanup is incomplete; inspect the target server',
+                              stoppedDescendants=len(tree.stopped - {tree.root}),
+                              cleanupUnknownForks=max(1, len(tree.unproved)))
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                record.update(status='unknown', error='The command process still runs; inspect the target server',
+                              cleanupUnknownForks=max(1, len(tree.unproved)))
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
+        tree.close()
         record.update(duration=time.monotonic() - began, finishedAt=time.time())
         publish()
 
 
 if __name__ == '__main__':
+    if len(sys.argv) == 3 and sys.argv[1] == '--command':
+        config = json.loads(Path(sys.argv[2]).read_text())
+        os.kill(os.getpid(), signal.SIGSTOP)
+        os.execvpe(config['argv'][0], config['argv'], os.environ)
     if len(sys.argv) != 3 or sys.argv[1] != '--child':
         raise SystemExit('This adapter is started by the process supervisor')
     child(Path(sys.argv[2]))

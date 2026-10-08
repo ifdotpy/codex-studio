@@ -52,7 +52,19 @@ def expired_receipt(key: str) -> dict[str, Any]:
             'detail': 'The receipt has expired. This identity cannot execute again.'}
 
 
+def live_receipt(result: dict[str, Any]) -> dict[str, Any]:
+    value = result.get('value')
+    if isinstance(value, dict) and value.get('outputExpiresAt', float('inf')) <= time.time():
+        return expired_receipt(result['requestId'])
+    return result
+
+
 def compact_receipt(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    if action == 'exec_receipt' and result.get('outcome') == 'applied':
+        # This effect-free probe always reads the original receipt again. Its
+        # own receipt must not retain another copy of the command output.
+        return {**result, 'value': {'requestId': result['value'].get('requestId'),
+                                   'outcome': result['value'].get('outcome')}}
     if action != 'chunk' or result.get('outcome') != 'applied':
         return result
     return {**result, 'value': {k: v for k, v in result['value'].items() if k != 'data'}}
@@ -232,6 +244,10 @@ class MultiServerService:
                 CREATE TABLE IF NOT EXISTS runtime_server_retired (
                     id TEXT NOT NULL, direction TEXT NOT NULL, signature TEXT NOT NULL,
                     server TEXT, PRIMARY KEY(id,direction));
+                CREATE TABLE IF NOT EXISTS runtime_server_output_tools (
+                    id TEXT PRIMARY KEY, expires REAL NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_server_output_tools_expiry
+                    ON runtime_server_output_tools(expires);
                 CREATE TABLE IF NOT EXISTS runtime_server_sequence (
                     id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
                 INSERT OR IGNORE INTO runtime_server_sequence VALUES(1,0);
@@ -244,6 +260,13 @@ class MultiServerService:
                 db.execute('UPDATE runtime_server_' + table + ' SET created_at=? WHERE created_at=0', (time.time(),))
                 db.execute('UPDATE runtime_server_' + table + ' SET completed_at=? WHERE completed_at=0 AND state=?', (time.time(), 'complete'))
             maximum = db.execute('SELECT COALESCE(MAX(rowid),0) FROM runtime_server_outbox').fetchone()[0]
+            if 'fingerprint' not in {r[1] for r in db.execute('PRAGMA table_info(runtime_server_outbox)')}:
+                db.execute('ALTER TABLE runtime_server_outbox ADD COLUMN fingerprint TEXT')
+            if 'actor' not in {r[1] for r in db.execute('PRAGMA table_info(runtime_server_retired)')}:
+                db.execute('ALTER TABLE runtime_server_retired ADD COLUMN actor TEXT')
+            for column in ('principal', 'actor'):
+                if column not in {r[1] for r in db.execute('PRAGMA table_info(runtime_server_inbox)')}:
+                    db.execute('ALTER TABLE runtime_server_inbox ADD COLUMN ' + column + ' TEXT')
             db.execute('UPDATE runtime_server_sequence SET value=MAX(value,?) WHERE id=1', (maximum,))
 
     def commands(self) -> Any:
@@ -308,16 +331,17 @@ class MultiServerService:
         body = encoded({'requestId': key, 'action': action, 'payload': payload})
         if len(body.encode('utf-8')) > 256 * 1024:
             raise ValueError('The remote request exceeds 256 KiB; use a smaller batch')
-        row = db.execute('SELECT server,body FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
-        if row and (row[0] != server or row[1] != body):
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        row = db.execute('SELECT server,body,fingerprint FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+        if row and (row[0] != server or (row[2] or hashlib.sha256(row[1].encode()).hexdigest()) != digest):
             raise ValueError('This request id has different content')
         retired = db.execute('SELECT signature,server FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'out')).fetchone()
         if retired:
             if retired['server'] != server or retired['signature'] != hashlib.sha256(body.encode()).hexdigest():
                 raise ValueError('This request id has different content')
             return key
-        db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state,created_at) VALUES (?,?,?,?,?)',
-                   (key, server, body, 'queued', time.time()))
+        db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state,created_at,fingerprint) VALUES (?,?,?,?,?,?)',
+                   (key, server, body, 'queued', time.time(), digest))
         self.runtime.changed.set()
         return key
 
@@ -332,7 +356,7 @@ class MultiServerService:
                 raise ValueError('Unknown remote request receipt')
             envelope, server = json.loads(row['body']), row['server']
             if row['state'] == 'complete' and envelope['action'] != 'chunk':
-                return json.loads(row['result'])  # type: ignore[no-any-return]
+                return live_receipt(json.loads(row['result']))
             if envelope['action'] == 'input' and db.execute("""
                 SELECT 1 FROM runtime_server_outbox earlier
                 WHERE earlier.rowid < (SELECT rowid FROM runtime_server_outbox WHERE id=?)
@@ -343,22 +367,33 @@ class MultiServerService:
                 """, (key, server, envelope['payload']['worker'], envelope['payload']['link'])).fetchone():
                 return {'requestId': key, 'outcome': 'unknown', 'queued': True,
                         'waitingFor': 'The earlier input receipt'}
+        result: dict[str, Any]
         try:
-            result = (self.receive(self.server_id, envelope) if server == self.server_id
-                      else self.transport.request(server, envelope, timeout=TIMEOUT))
+            if envelope['action'] == 'exec' and envelope['payload'].get('receiptDigest'):
+                probe = {'requestId': identity('exec-receipt', key), 'action': 'exec_receipt',
+                    'payload': {'handle': key, 'actor': envelope['payload']['actor'],
+                                'digest': envelope['payload']['receiptDigest']}}
+                reply = (self.receive(self.server_id, probe) if server == self.server_id
+                         else self.transport.request(server, probe, timeout=TIMEOUT))
+                result = reply['value'] if reply.get('outcome') == 'applied' else {'requestId': key, 'outcome': 'unknown'}
+            else:
+                result = (self.receive(self.server_id, envelope) if server == self.server_id
+                          else self.transport.request(server, envelope, timeout=TIMEOUT))
             if result.get('requestId') != key or result.get('outcome') not in {'applied', 'not_applied', 'unknown'}:
                 raise RuntimeError('The paired server returned an invalid receipt')
         except Exception as error:
             with self.runtime.lock, self.runtime.db() as db:
+                self._compact_exec(db, envelope)
                 final = self._retry(db, envelope, type(error).__name__)
                 if final is not None:
                     return final
             return {'requestId': key, 'outcome': 'unknown', 'status': 'offline', 'queued': True}
         with self.runtime.lock, self.runtime.db() as db:
+            self._compact_exec(db, envelope)
             current = db.execute('SELECT state,result FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
             if current['state'] == 'complete' and envelope['action'] != 'chunk':
                 # A concurrent response cannot reopen a terminal unknown input.
-                return json.loads(current['result'])  # type: ignore[no-any-return]
+                return live_receipt(json.loads(current['result']))
             if result['outcome'] != 'unknown':
                 db.execute("UPDATE runtime_server_outbox SET state='complete',result=?,error=NULL,completed_at=? WHERE id=?",
                            (encoded(compact_receipt(envelope['action'], result)), time.time(), key))
@@ -386,11 +421,19 @@ class MultiServerService:
                     return final
         return result
 
+    def _compact_exec(self, db: Any, envelope: dict[str, Any]) -> None:
+        if envelope['action'] != 'exec' or envelope['payload'].get('receiptDigest'):
+            return
+        digest = hashlib.sha256(encoded([self.server_id, 'exec', envelope['payload']]).encode()).hexdigest()
+        body = encoded({**envelope, 'payload': {'actor': envelope['payload']['actor'], 'receiptDigest': digest}})
+        db.execute('UPDATE runtime_server_outbox SET body=?,fingerprint=COALESCE(fingerprint,?) WHERE id=?',
+                   (body, hashlib.sha256(encoded(envelope).encode()).hexdigest(), envelope['requestId']))
+
     def _retry(self, db: Any, envelope: dict[str, Any], error: str | None) -> dict[str, Any] | None:
         key = envelope['requestId']
         row = db.execute('SELECT * FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
         if row['state'] == 'complete' and envelope['action'] != 'chunk':
-            return json.loads(row['result'])  # type: ignore[no-any-return]
+            return live_receipt(json.loads(row['result']))
         attempts = row['attempts'] + 1
         action = envelope['action']
         bound = {'input': INPUT_ATTEMPTS, 'spawn': SPAWN_ATTEMPTS}.get(action)
@@ -470,11 +513,27 @@ class MultiServerService:
                     except FileNotFoundError:
                         pass
         with self.runtime.db() as db:
-            for row in db.execute("SELECT id,server,body FROM runtime_server_outbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,)).fetchall():
-                db.execute('INSERT OR IGNORE INTO runtime_server_retired VALUES(?,?,?,?)',
-                    (row['id'], 'out', hashlib.sha256(row['body'].encode()).hexdigest(), row['server']))
+            from codex_server_exec import expire_tool_output
+            for row in db.execute('SELECT id,expires FROM runtime_server_output_tools WHERE expires<=?', (now,)).fetchall():
+                expired = expire_tool_output({'serverOutputExpiresAt': row['expires']})
+                db.execute('UPDATE runtime_tool_results SET result=? WHERE id=?', (encoded(expired), row['id']))
+                receipt = self.runtime.tool_request(row['id'], db)
+                if receipt and receipt.get('result'):
+                    receipt['result'] = expired
+                    self.runtime.put(db, 'tool_requests', receipt)
+                db.execute('DELETE FROM runtime_server_output_tools WHERE id=?', (row['id'],))
+            for table in ('outbox', 'inbox'):
+                for row in db.execute('SELECT id FROM runtime_server_' + table +
+                        " WHERE json_extract(result,'$.value.outputExpiresAt')<=?", (now,)).fetchall():
+                    db.execute('UPDATE runtime_server_' + table + ' SET result=? WHERE id=?',
+                               (encoded(expired_receipt(row['id'])), row['id']))
+            for row in db.execute("SELECT id,server,body,fingerprint FROM runtime_server_outbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,)).fetchall():
+                envelope = json.loads(row['body'])
+                actor = envelope['payload'].get('actor') if envelope['action'].startswith('exec') else None
+                db.execute('INSERT OR IGNORE INTO runtime_server_retired(id,direction,signature,server,actor) VALUES(?,?,?,?,?)',
+                    (row['id'], 'out', row['fingerprint'] or hashlib.sha256(row['body'].encode()).hexdigest(), row['server'], actor))
                 db.execute('DELETE FROM runtime_server_outbox WHERE id=?', (row['id'],))
-            db.execute("INSERT OR IGNORE INTO runtime_server_retired SELECT id,'in',signature,NULL FROM runtime_server_inbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,))
+            db.execute("INSERT OR IGNORE INTO runtime_server_retired(id,direction,signature,server) SELECT id,'in',signature,NULL FROM runtime_server_inbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,))
             db.execute("DELETE FROM runtime_server_inbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,))
         if self._command_service is not None:
             self._command_service.prune(now)
@@ -694,12 +753,12 @@ class MultiServerService:
             if row:
                 if row['signature'] != signature:
                     raise ValueError('This request id has different content')
-                if row['result'] and action != 'chunk':
-                    return json.loads(row['result'])  # type: ignore[no-any-return]
+                if row['result'] and action not in {'chunk', 'exec_receipt'}:
+                    return live_receipt(json.loads(row['result']))
                 # Preserve the crash boundary. Only an exact durable effect can
                 # reconcile a running receipt; no second execution is allowed.
                 if (row['state'] == 'waiting'
-                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read'}
+                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
                     # Reads have no effect. Slot admission is a compare-and-set reservation, with no
@@ -712,7 +771,8 @@ class MultiServerService:
                     result = {'requestId': key, 'outcome': 'applied', 'value': evidence}
                     db.execute("UPDATE runtime_server_inbox SET state='complete',result=?,completed_at=? WHERE id=?", (encoded(result), time.time(), key))
                     return result
-            db.execute('INSERT OR IGNORE INTO runtime_server_inbox(id,signature,state,result,created_at) VALUES (?,?,?,NULL,?)', (key, signature, 'running', time.time()))
+            db.execute('INSERT OR IGNORE INTO runtime_server_inbox(id,signature,state,result,created_at,principal,actor) VALUES (?,?,?,NULL,?,?,?)',
+                       (key, signature, 'running', time.time(), principal, payload.get('actor') if isinstance(payload.get('actor'), str) else None))
             if row and row['state'] == 'waiting':
                 # Waiting proves that this envelope has not executed an effect.
                 # Reserve it again before an input can cross the native boundary.
@@ -824,6 +884,26 @@ class MultiServerService:
         return None
 
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
+        if action == 'exec_receipt':
+            with self.runtime.db() as db:
+                original = db.execute('SELECT * FROM runtime_server_inbox WHERE id=?', (p['handle'],)).fetchone()
+                if not original:
+                    return {'requestId': p['handle'], 'outcome': 'unknown'}
+                if original['principal'] is None and original['actor'] is None:
+                    # Receipts from the previous schema still need ownership
+                    # proof before a new effect-free probe can read them.
+                    job = db.execute('SELECT owner,actor FROM runtime_server_exec WHERE id=?', (p['handle'],)).fetchone()
+                    if not job or job['owner'] != principal or job['actor'] != p.get('actor'):
+                        raise PermissionError('The command receipt belongs to another actor or server')
+                elif original['principal'] != principal or original['actor'] != p.get('actor'):
+                    raise PermissionError('The command receipt belongs to another actor or server')
+                if original['signature'] != p.get('digest'):
+                    raise PermissionError('The receipt fingerprint belongs to another request')
+                if original['result']:
+                    return live_receipt(json.loads(original['result']))
+                evidence = self._evidence(db, 'exec', {}, p['handle'])
+                return ({'requestId': p['handle'], 'outcome': 'applied', 'value': evidence} if evidence
+                        else {'requestId': p['handle'], 'outcome': 'unknown'})
         if action == 'exec':
             return cast(dict[str, Any], self.commands().start(principal, p, key))
         if action == 'exec_read':
@@ -1028,10 +1108,11 @@ class MultiServerService:
             return {'localServer': self.server_id, 'servers': [{**s, **({'status': 'offline'} if s['id'] in pending else {})} for s in self.transport.servers()]}
         if action in {'exec', 'exec_read', 'exec_input', 'exec_cancel'}:
             return self._exec_tool(actor, args, key)
-        server = args.get('server')
+        server = args.get('server', self.server_id if action == 'receipt' else None)
         if not isinstance(server, str):
             raise ValueError('Select a paired server')
-        if server not in {s['id'] for s in self.transport.servers()}:
+        if (server not in {s['id'] for s in self.transport.servers()}
+                and not (action == 'receipt' and server == self.server_id)):
             raise ValueError('Select a paired server')
         if action == 'fetch':
             return self._fetch(actor, args, key)
@@ -1039,15 +1120,23 @@ class MultiServerService:
             raise ValueError('Select list, projects, folders, git, fetch, or receipt')
         if action == 'receipt':
             with self.runtime.read_db() as db:
-                row = db.execute('SELECT server,state,result,error FROM runtime_server_outbox WHERE id=?', (args.get('request_id'),)).fetchone()
+                row = db.execute('SELECT server,state,result,error,body FROM runtime_server_outbox WHERE id=?', (args.get('request_id'),)).fetchone()
+                if row:
+                    envelope = json.loads(row['body'])
+                    if envelope['action'].startswith('exec') and envelope['payload'].get('actor') != actor['id']:
+                        raise PermissionError('The command receipt belongs to another lead')
                 if not row:
                     row = db.execute('SELECT server,state,result,NULL AS error FROM runtime_server_fetch WHERE id=?', (args.get('request_id'),)).fetchone()
-                if not row and db.execute('SELECT 1 FROM runtime_server_retired WHERE id=? AND direction=? AND server=?',
-                        (args.get('request_id'), 'out', server)).fetchone():
-                    return {'state': 'expired', 'result': expired_receipt(args['request_id']), 'error': None}
+                if not row:
+                    retired = db.execute('SELECT actor FROM runtime_server_retired WHERE id=? AND direction=? AND server=?',
+                        (args.get('request_id'), 'out', server)).fetchone()
+                    if retired:
+                        if retired['actor'] and retired['actor'] != actor['id']:
+                            raise PermissionError('The command receipt belongs to another lead')
+                        return {'state': 'expired', 'result': expired_receipt(args['request_id']), 'error': None}
             if not row or row['server'] != server:
                 raise ValueError('Unknown remote request receipt')
-            return {'state': row['state'], 'result': json.loads(row['result']) if row['result'] else None, 'error': row['error']}
+            return {'state': row['state'], 'result': live_receipt(json.loads(row['result'])) if row['result'] else None, 'error': row['error']}
         payload: dict[str, Any] = {k: args[k] for k in ('cwd', 'argv') if k in args}
         key = identity(actor['id'], action, key)
         with self.runtime.db() as db:

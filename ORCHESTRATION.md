@@ -611,7 +611,7 @@ The output limit defaults to 256 KiB and cannot exceed 4 MiB across stdout and s
 Output retains the head and tail of each stream and reports discarded bytes.
 
 A timeout above five seconds returns a handle. `exec_read` reads output with byte offsets and a fresh request ID.
-Each read returns at most 64 KiB. `exec_input` sends text or closes stdin. `exec_cancel` stops the process group.
+Each read returns at most 64 KiB. `exec_input` sends text or closes stdin. `exec_cancel` stops the command and its proven descendants.
 Each command accepts at most 32 input requests. Each input request permits at most 64 KiB of text.
 Only the lead that created the handle can read or control it. A final `monitor_exit` event reaches that lead.
 The process supervisor retains commands during planned backend restarts. The new backend attaches to the existing adapter.
@@ -619,8 +619,22 @@ The backend never starts a command without the supervisor. Durable claims and ad
 If the start outcome remains unknown, inspect the target server before any replacement command.
 
 The target audit stores actor, source and target server IDs, cwd, argv hash, start, end, exit code, and signal.
-It stores no command text, environment values, or output. Private output and start files expire after seven days.
-Audit metadata expires after 90 days. Signed server transport preserves the existing owner identity and receipt checks.
+It stores no command text, environment values, or output.
+Private config, output, and start files expire seven days after command acceptance.
+Saved server pages, tool receipts, and Studio output references use the same expiry.
+Provider conversation history keeps its existing retention rules. Audit metadata expires after 90 days.
+After the first delivery attempt, the source envelope retains only the actor and payload digest.
+Further retries inspect the target receipt. They cannot send the command or environment again.
+An offline first attempt can therefore leave the outcome unknown. Inspect the target before a replacement command.
+Signed server transport preserves the existing owner identity and receipt checks.
+
+Commands cannot leave background daemons. Normal exit, cancel, and timeout stop proven descendants, including separate sessions.
+The result reports `stoppedDescendants`. Linux retains orphan children with `PR_SET_CHILD_SUBREAPER`.
+macOS combines child PID records, kernel fork events, and a unique `STUDIO_EXEC_ID` environment marker.
+The marker scan requires the same user and a process start time after command acceptance.
+A daemon that removes the marker before its ancestry is observed can escape proof on macOS.
+Lost fork proof returns cleanup status `unknown` and `cleanupUnknownForks`. Studio never kills a process without identity proof.
+Completed command adapters release their supervisor handles, pipes, and journal rows after the final status is saved.
 
 Prefer native Codex primitives when they remove a Studio mechanism and preserve its behavior.
 Experimental APIs are acceptable. Keep one execution path for each operation.

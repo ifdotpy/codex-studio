@@ -123,7 +123,12 @@ Input and cancel require stable request IDs. Exact retries cannot repeat effects
 Each command accepts at most 32 input requests, each with at most 64 KiB of text.
 Planned backend restarts preserve commands through the process supervisor.
 An unknown outcome requires inspection. Do not start the same command with a new ID.
-Command output and private start files expire after seven days. Audit metadata expires after 90 days.
+Command output, private config and start files, saved pages, receipts, and Studio output references expire seven days after acceptance.
+Provider conversation history keeps its existing retention rules. Audit metadata expires after 90 days.
+After the first delivery attempt, retries inspect the target receipt without sending command text or environment values again.
+Commands cannot leave background daemons. Exit, cancel, and timeout stop proven descendants, including separate sessions.
+The result reports `stoppedDescendants`. On macOS, a daemon can remove its marker before Studio observes its ancestry.
+Unproved cleanup returns `unknown` with `cleanupUnknownForks`. Inspect the server before a replacement command.
 
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
