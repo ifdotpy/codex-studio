@@ -208,6 +208,10 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                     sys.path.insert(0, str(root / "scripts"))
                 if backend is not None and backend.poll() is None:
                     _stop_backend(backend)
+                if backend is not None:
+                    with backend_log_path.open("ab", buffering=0) as output:
+                        output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
+                                      + "\n").encode("utf-8"))
                 backend_enabled = request["action"] != "stop-backend"
                 result = "backend-stopped" if not backend_enabled else "backend-restarted"
                 _write_control_result(state, handled_request, result)
@@ -238,8 +242,9 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                     if supervisor is not None and supervisor.poll() is not None:
                         raise RuntimeError("The native process supervisor exited")
                     time.sleep(0.25)
-                output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
-                              + "\n").encode("utf-8"))
+                if pending_request is None:
+                    output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
+                                  + "\n").encode("utf-8"))
             if stopping.is_set():
                 break
             if pending_request is not None:
@@ -256,6 +261,10 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                 except subprocess.TimeoutExpired:
                     process.kill()
                     process.wait(timeout=5)
+        if backend is not None and stop_all_request:
+            with backend_log_path.open("ab", buffering=0) as output:
+                output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
+                              + "\n").encode("utf-8"))
         if stop_all_request:
             _write_control_result(state, stop_all_request, "stopped-all")
         for sig, handler in previous_handlers.items():
