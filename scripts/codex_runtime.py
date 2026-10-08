@@ -1803,6 +1803,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if federation_enabled:
                 self.federation().start()
             if server_factory is AppServer:
+                self.paired_access().start_discovery()
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
             self.resume_read_only_image_bases()

@@ -1114,6 +1114,40 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/multi-server/v1/auto-pair": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Auto Pair */
+    post: operations["auto_pair_api_multi_server_v1_auto_pair_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/multi-server/v1/identity": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Discovery Identity */
+    get: operations["discovery_identity_api_multi_server_v1_identity_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/multi-server/v1/pair": {
     parameters: {
       query?: never;
@@ -2153,7 +2187,14 @@ export interface components {
        * Action
        * @enum {string}
        */
-      action: "create_invite" | "pair" | "revoke" | "accept_invite";
+      action:
+        | "create_invite"
+        | "pair"
+        | "revoke"
+        | "accept_invite"
+        | "auto_pair"
+        | "unrevoke"
+        | "settings";
       /** Actorid */
       actorId: string;
       /** Clientid */
@@ -2174,6 +2215,8 @@ export interface components {
     };
     /** AccessClient */
     AccessClient: {
+      /** Autopair */
+      autoPair?: boolean | null;
       /** Clientid */
       clientId: string;
       /** Created */
@@ -2189,6 +2232,8 @@ export interface components {
       label: string;
       /** Lastaccess */
       lastAccess: number | null;
+      /** Lastseen */
+      lastSeen?: number | null;
       /** Origin */
       origin: string | null;
       /** Publickey */
@@ -2201,7 +2246,7 @@ export interface components {
        * Status
        * @enum {string}
        */
-      status: "paired" | "revoked";
+      status: "paired" | "revoked" | "discovered" | "unreachable";
       /** Tailscaleuser */
       tailscaleUser: string;
     };
@@ -2229,6 +2274,11 @@ export interface components {
       /** Token */
       token: string;
     };
+    /** AccessSettings */
+    AccessSettings: {
+      /** Autopair */
+      autoPair: boolean;
+    };
     /** AccessSnapshot */
     AccessSnapshot: {
       /** Syncentities */
@@ -2247,6 +2297,7 @@ export interface components {
       protocol: 1;
       /** Servers */
       servers: components["schemas"]["AccessClient"][];
+      settings: components["schemas"]["AccessSettings"];
     };
     /** Account */
     Account: {
@@ -4294,6 +4345,24 @@ export interface components {
      * @enum {string}
      */
     AttributionOperation: "ps" | "resident" | "nativeStatus" | "lockSample";
+    /** AutoPairRequest */
+    AutoPairRequest: {
+      /** Label */
+      label: string;
+      /** Origin */
+      origin: string;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 1;
+      /** Publickey */
+      publicKey: string;
+      /** Requestid */
+      requestId: string;
+      /** Serverid */
+      serverId: string;
+    };
     /** BranchDraft */
     BranchDraft: {
       /** Assets */
@@ -5754,6 +5823,40 @@ export interface components {
       name: string;
       /** Path */
       path: string;
+    };
+    /** DiscoverServers */
+    DiscoverServers: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "discover";
+      /** Requestid */
+      requestId: string;
+    };
+    /** DiscoveryIdentity */
+    DiscoveryIdentity: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Autopair */
+      autoPair: boolean;
+      /** Label */
+      label: string;
+      /** Origin */
+      origin: string | null;
+      /**
+       * Protocol
+       * @constant
+       */
+      protocol: 1;
+      /** Publickey */
+      publicKey: string;
+      /** Serverid */
+      serverId: string;
+      /** Tailscaleuser */
+      tailscaleUser: string | null;
     };
     /** DraftDocumentInput */
     DraftDocumentInput: {
@@ -10069,6 +10172,18 @@ export interface components {
       /** Token */
       token: string;
     };
+    /** SetAccessSettings */
+    SetAccessSettings: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "settings";
+      /** Autopair */
+      autoPair: boolean;
+      /** Requestid */
+      requestId?: string | null;
+    };
     /** SetEnabledRequest */
     SetEnabledRequest: {
       /**
@@ -11952,6 +12067,18 @@ export interface components {
      * @enum {string}
      */
     TransferStatus: "pending" | "completed" | "cancelled";
+    /** UiInvite */
+    UiInvite: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "ui_invite";
+      /** Requestid */
+      requestId: string;
+      /** Serverid */
+      serverId: string;
+    };
     /** UiSummaryResponse */
     UiSummaryResponse: {
       /** Alerts */
@@ -11973,6 +12100,18 @@ export interface components {
       catalogPending?: boolean | null;
       /** Error */
       error: string;
+    };
+    /** UnrevokeServer */
+    UnrevokeServer: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "unrevoke";
+      /** Clientid */
+      clientId: string;
+      /** Requestid */
+      requestId: string;
     };
     /** UsageLimitsData */
     UsageLimitsData: {
@@ -17618,7 +17757,11 @@ export interface operations {
         "application/json":
           | components["schemas"]["CreateInvite"]
           | components["schemas"]["RevokeClient"]
-          | components["schemas"]["AcceptInvite"];
+          | components["schemas"]["AcceptInvite"]
+          | components["schemas"]["DiscoverServers"]
+          | components["schemas"]["UiInvite"]
+          | components["schemas"]["SetAccessSettings"]
+          | components["schemas"]["UnrevokeServer"];
       };
     };
     responses: {
@@ -17768,6 +17911,266 @@ export interface operations {
         };
         content: {
           "application/json": components["schemas"]["AccessAuditResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unauthorized */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Too Many Requests */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bad Gateway */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gateway Timeout */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  auto_pair_api_multi_server_v1_auto_pair_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["AutoPairRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DevicePairResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unauthorized */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Too Many Requests */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bad Gateway */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gateway Timeout */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  discovery_identity_api_multi_server_v1_identity_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["DiscoveryIdentity"];
         };
       };
       /** @description Bad Request */

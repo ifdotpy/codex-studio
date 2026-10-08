@@ -21,11 +21,14 @@ import subprocess
 import tempfile
 import threading
 import time
-from typing import Any, ContextManager, Protocol, cast
+from typing import Any, ContextManager, Protocol, TYPE_CHECKING, cast
 import uuid
 
 from codex_multi_server_crypto import CryptoProcess
 from codex_remote import RemoteAccess, validate_origin
+
+if TYPE_CHECKING:
+    from codex_server_discovery import ServerDiscovery
 
 PROTOCOL = 1
 CLOCK_SKEW_SECONDS = 300
@@ -153,7 +156,7 @@ def _owner_login() -> str:
     return login.strip().lower()
 
 
-def _peer_login(headers: Headers) -> str:
+def _peer_details(headers: Headers) -> tuple[str, dict[str, Any]]:
     try:
         address = ipaddress.ip_address(headers.get("X-Forwarded-For") or "")
     except ValueError:
@@ -171,7 +174,11 @@ def _peer_login(headers: Headers) -> str:
     supplied = headers.get_all("Tailscale-User-Login", [])
     if len(supplied) > 1 or (supplied and supplied[0].strip().lower() != login.strip().lower()):
         raise AccessError(403, "owner_mismatch", "The Tailscale identity does not match")
-    return login.strip().lower()
+    return login.strip().lower(), node
+
+
+def _peer_login(headers: Headers) -> str:
+    return _peer_details(headers)[0]
 
 
 def _exchange(url: str, method: str, headers: dict[str, str], raw: bytes, timeout: float) -> dict[str, Any]:
@@ -218,7 +225,20 @@ class MultiServerService:
             self.prune(db)
 
     def close(self) -> None:
+        discovery = getattr(self, "_discovery_service", None)
+        if discovery is not None:
+            discovery.close()
         self.crypto.shutdown()
+
+    def discovery(self) -> ServerDiscovery:
+        with self.lock:
+            if not hasattr(self, "_discovery_service"):
+                from codex_server_discovery import ServerDiscovery
+                self._discovery_service = ServerDiscovery(self)
+            return self._discovery_service
+
+    def start_discovery(self) -> None:
+        self.discovery().start()
 
     def _login(self, headers: Headers | None = None) -> str:
         address = (headers.get("X-Forwarded-For") or "") if headers is not None else "owner"
@@ -361,7 +381,7 @@ class MultiServerService:
     def servers(self) -> list[dict[str, Any]]:
         with self.runtime.read_db() as db:
             rows = db.execute("SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server'").fetchall()
-        return [self._public(cast(dict[str, Any], _record(row))) for row in rows]
+        return self.discovery().servers([self._public(cast(dict[str, Any], _record(row))) for row in rows])
 
     def paired_servers(self) -> list[dict[str, Any]]:
         return self.servers()
@@ -386,7 +406,7 @@ class MultiServerService:
                 record = cast(dict[str, Any], _record(row))
                 invites.append({key: record.get(key) for key in ("inviteId", "expires", "created", "status")})
         return {"protocol": PROTOCOL, "identity": self.identity(), "clients": clients,
-                "servers": [client for client in clients if client["kind"] == "server"], "invites": invites}
+                "servers": self.servers(), "invites": invites, "settings": {"autoPair": self.discovery().enabled()}}
 
     def create_invite(self, body: dict[str, Any], actor: str = "local") -> dict[str, Any]:
         request_id = _id(body.get("requestId"), "request ID")
@@ -448,9 +468,27 @@ class MultiServerService:
             raise AccessError(401, "clock_difference", "The request timestamp is outside the allowed clock difference")
         if not re.fullmatch(r"[A-Za-z0-9_-]{32}", nonce):
             raise AccessError(401, "invalid_nonce", "The request nonce is invalid")
+        from codex_server_discovery import AUTO_PAIR_PATH
         pairing = method == "POST" and target == PAIR_PATH
+        auto_pairing = method == "POST" and target == AUTO_PAIR_PATH
+        recovery = False
         body: dict[str, Any] = {}
-        if pairing:
+        if auto_pairing:
+            self._pairing_limit()
+            body = json.loads(raw)
+            if not isinstance(body, dict):
+                raise AccessError(400, "invalid_pairing", "The server proof requires a JSON object")
+            if body.get("serverId") != client_id or body.get("requestId") != request_id or body.get("protocol") != PROTOCOL:
+                raise AccessError(400, "invalid_pairing", "The server identity or protocol does not match")
+            key = body.get("publicKey")
+            with self.runtime.read_db() as db:
+                existing = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (client_id,)).fetchone())
+            if existing and existing.get("status") == "revoked":
+                raise AccessError(403, "client_revoked", "The server is revoked")
+            if existing and (existing.get("publicKey") != key or existing.get("kind") != "server"):
+                raise AccessError(403, "identity_mismatch", "The registered server identity differs")
+            principal = {"clientId": client_id, "kind": "server", "publicKey": key}
+        elif pairing:
             self._pairing_limit()
             try:
                 body = json.loads(raw)
@@ -469,7 +507,7 @@ class MultiServerService:
             if existing and existing.get("status") == "revoked":
                 raise AccessError(403, "client_revoked", "The client is revoked")
             fingerprint = hashlib.sha256(method.encode() + b"\n" + target.encode() + b"\n" + raw).hexdigest()
-            recovery = existing and existing.get("pairingRequestId") == request_id and existing.get("pairingHash") == fingerprint
+            recovery = bool(existing and existing.get("pairingRequestId") == request_id and existing.get("pairingHash") == fingerprint)
             if not recovery:
                 with self.runtime.read_db() as db:
                     invite = _record(db.execute("SELECT record FROM runtime_access_invites WHERE id=?", (body.get("inviteId"),)).fetchone())
@@ -499,14 +537,15 @@ class MultiServerService:
             raise AccessError(503, "crypto_unavailable", "The Ed25519 verification service is unavailable") from None
         if valid is not True:
             raise AccessError(401, "invalid_signature", "The request signature is invalid")
-        owner, observed = self._login(), self._login(headers)
+        owner = self._login()
+        observed = self.discovery().verify_auto(headers, body) if auto_pairing else self._login(headers)
         if owner != observed or (principal.get("tailscaleUser") not in (None, observed)):
             self.identity_cache.clear()
             raise AccessError(403, "owner_mismatch", "The Tailscale client must be the server owner")
         now = int(time.time())
         with self._write() as db:
             db.execute("DELETE FROM runtime_access_nonces WHERE created<?", (now - CLOCK_SKEW_SECONDS * 2,))
-            if pairing and not recovery:
+            if (pairing or auto_pairing) and not recovery:
                 unpaired = db.execute("""SELECT count(*) FROM runtime_access_nonces n
                     LEFT JOIN runtime_access_clients c ON c.id=n.client WHERE c.id IS NULL""").fetchone()[0]
                 if unpaired >= MAX_UNPAIRED_NONCES:
@@ -518,7 +557,7 @@ class MultiServerService:
                 db.execute("INSERT INTO runtime_access_nonces VALUES(?,?,?)", (client_id, nonce, now))
             except sqlite3.IntegrityError:
                 raise AccessError(401, "nonce_replay", "The request nonce was already used") from None
-            if not pairing:
+            if not pairing and not auto_pairing:
                 current = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (client_id,)).fetchone())
                 if not current or current.get("status") != "paired":
                     raise AccessError(403, "client_revoked", "The client is revoked")
@@ -526,7 +565,7 @@ class MultiServerService:
                 db.execute("UPDATE runtime_access_clients SET record=? WHERE id=?", (_json(current), client_id))
         return {**principal, "clientId": client_id, "serverId": client_id if principal.get("kind") == "server" else None,
                 "targetServerId": server_id, "requestId": request_id, "tailscaleUser": observed,
-                "pairing": pairing}
+                "pairing": pairing, "autoPairing": auto_pairing}
 
     def pair(self, principal: dict[str, Any], body: dict[str, Any]) -> dict[str, Any]:
         if not principal.get("pairing") or body.get("kind") not in {"ui", "server"}:
@@ -607,10 +646,11 @@ class MultiServerService:
                         token = self._invite_token(receipt["inviteId"], request_id).encode()
                         receipt["body"] = base64.b64encode(template[:offset] + token + template[offset:]).decode()
                     return receipt
-                if method == "POST" and target == PAIR_PATH:
+                if method == "POST" and target in {PAIR_PATH, "/api/multi-server/v1/auto-pair"}:
+                    prefix = "pairing" if target == PAIR_PATH else "autoPairing"
                     client = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (client_id,)).fetchone())
-                    if client and client.get("pairingRequestId") == request_id and client.get("pairingHash") == fingerprint:
-                        response = _json(client["pairingReceipt"]).encode()
+                    if client and client.get(prefix + "RequestId") == request_id and client.get(prefix + "Hash") == fingerprint:
+                        response = _json(client[prefix + "Receipt"]).encode()
                         receipt = {"status": 200, "headers": [["content-type", "application/json"],
                                    ["content-length", str(len(response))], ["cache-control", "no-store"]],
                                    "body": base64.b64encode(response).decode(), "completed": time.time()}
@@ -696,6 +736,16 @@ class MultiServerService:
                 self._audit(db, server_id, "accept_invite", actor)
         return self.snapshot()
 
+    def ui_invite(self, server_id: str, request_id: str) -> dict[str, Any]:
+        peer = self.paired_server(server_id)
+        key = str(uuid.uuid5(uuid.NAMESPACE_URL, "studio-ui-invite:" + self.local_server_id + ":" + server_id + ":" + request_id))
+        result = self.request(server_id, "POST", "/api/multi-server", {"action": "create_invite", "requestId": key}, key)
+        invitation = result.get("invitation")
+        if (not isinstance(invitation, dict) or invitation.get("serverId") != server_id
+                or invitation.get("origin") != peer["origin"] or invitation.get("publicKey") != peer["publicKey"]):
+            raise AccessError(403, "identity_mismatch", "The UI invitation does not match the paired server")
+        return result
+
     def request(self, server_id: str, method: str, path: str, body: dict[str, Any] | None,
                 request_id: str, timeout: float = 15) -> dict[str, Any]:
         peer = self.paired_server(server_id)
@@ -710,7 +760,8 @@ class MultiServerService:
         if not path.startswith("/api/") or "#" in path or any(ord(character) < 32 for character in path):
             raise AccessError(400, "invalid_target", "Use an API path on the paired server")
         method = method.upper()
-        journal = not (method == "POST" and path == "/api/servers/orchestration")
+        journal = not (method == "POST" and path in {"/api/servers/orchestration", "/api/multi-server/v1/auto-pair"})
+        secret_response = method == "POST" and path == "/api/multi-server" and body is not None and body.get("action") == "create_invite"
         raw = _json(body).encode() if body is not None else b""
         if body is not None:
             for name in ("requestId", "request_id"):
@@ -756,5 +807,6 @@ class MultiServerService:
         if journal:
             with self._write() as db:
                 db.execute("UPDATE runtime_access_outbound SET record=? WHERE server=? AND request_id=?",
-                           (_json({"outcome": "complete", "value": value, "completed": time.time()}), server_id, request_id))
+                           (_json({"outcome": "redacted", "completed": time.time()} if secret_response else
+                                  {"outcome": "complete", "value": value, "completed": time.time()}), server_id, request_id))
         return value

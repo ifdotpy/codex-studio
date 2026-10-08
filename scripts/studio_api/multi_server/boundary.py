@@ -17,7 +17,7 @@ from studio_api.middleware import (
     FEDERATION_PATHS, HeaderView, REQUEST_READ_TIMEOUT_SECONDS, _request_limit,
 )
 from studio_api.multi_server.router import service_for
-from studio_api.multi_server.models import DevicePairRequest
+from studio_api.multi_server.models import DevicePairRequest, AutoPairRequest
 from studio_api.schema import API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER
 
 if TYPE_CHECKING:
@@ -183,6 +183,16 @@ class MultiServerBoundary:
         if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}:
             await _failure(cors_send, AccessError(405, "method_refused", "The HTTP method is not supported"))
             return
+        if method == "GET" and path == "/api/multi-server/v1/identity":
+            try:
+                identity_service = await asyncio.to_thread(service_for, self.context)
+                owner = await asyncio.to_thread(identity_service.discovery().owner_proof, headers)
+                scope["studio_discovery_owner"] = owner
+                scope["studio_principal"] = {"kind": "identity", "tailscaleUser": owner}
+                await self.app(scope, receive, cors_send)
+            except AccessError as error:
+                await _failure(cors_send, error)
+            return
         # The established mobile flow remains behind its exact Serve origin,
         # browser-origin checks and local session token. Partial device proof
         # cannot fall back to that flow.
@@ -203,9 +213,10 @@ class MultiServerBoundary:
             query = scope.get("query_string", b"")
             if query:
                 target += "?" + query.decode("ascii")
-            if method == "POST" and target == "/api/multi-server/v1/pair":
+            if method == "POST" and target in {"/api/multi-server/v1/pair", "/api/multi-server/v1/auto-pair"}:
                 try:
-                    DevicePairRequest.model_validate_json(raw)
+                    model = DevicePairRequest if target.endswith("/pair") else AutoPairRequest
+                    model.model_validate_json(raw)
                 except ValidationError:
                     raise AccessError(400, "invalid_pairing", "The pairing request is invalid") from None
             service = await asyncio.to_thread(service_for, self.context)
@@ -281,7 +292,7 @@ class MultiServerBoundary:
                 response_headers = start.get("headers", [])
                 transient = start["status"] >= 500 or start["status"] in {401, 403, 408, 425, 426, 429}
                 prehandler_failure = bool(scope.get("studio_prehandler_failure")) or scope.get("endpoint") is None
-                failed_pair = path == "/api/multi-server/v1/pair" and start["status"] >= 400
+                failed_pair = path in {"/api/multi-server/v1/pair", "/api/multi-server/v1/auto-pair"} and start["status"] >= 400
                 if reserved and scope.get("studio_outcome_unknown") and not failed_pair:
                     await _failure(identified_send, AccessError(503, "outcome_unknown", "The operation outcome is unknown. Keep the request ID"))
                     return

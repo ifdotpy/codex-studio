@@ -242,7 +242,7 @@ The recipient requires all these checks before registration:
 
 - Both servers report `autoPair:true`.
 - A fresh `whois` result identifies the same owner, with no node tags.
-- The node DNS name from `whois` equals the claimed origin host.
+- The node DNS name from `whois` (`Node.Name`, or `Node.DNSName`) equals the claimed origin host.
 - The caller's identity endpoint returns the same server ID, origin, and public key.
 - The caller has no revocation on the recipient.
 - The signature, timestamp, nonce, and request ID pass the v1 checks.
