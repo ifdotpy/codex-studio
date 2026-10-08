@@ -115,10 +115,22 @@ test("Mobile usability", async () => {
     const lead = snapshot.threads.find(
       (agent) => agent.name === "Release lead",
     );
-    browser = await webkit.launch({
-      headless: true,
-      executablePath: webkitPath,
-    });
+    try {
+      browser = await webkit.launch({
+        headless: true,
+        executablePath: webkitPath,
+      });
+    } catch (error) {
+      const missingLibrary = String(error).match(
+        /error while loading shared libraries: ([^:]+): cannot open shared object file/,
+      )?.[1];
+      if (missingLibrary)
+        test.skip(
+          true,
+          `WebKit system library is unavailable: ${missingLibrary}`,
+        );
+      throw error;
+    }
     for (const width of [375, 390, 430, 1440]) {
       const desktop = width === 1440;
       const height = desktop

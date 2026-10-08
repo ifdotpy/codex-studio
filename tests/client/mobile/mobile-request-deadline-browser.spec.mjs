@@ -20,7 +20,20 @@ async function runDeadlineChecks(name, engine, executablePath) {
   });
   await server.listen();
   try {
-    const browser = await engine.launch({ headless: true, executablePath });
+    let browser;
+    try {
+      browser = await engine.launch({ headless: true, executablePath });
+    } catch (error) {
+      const missingLibrary = String(error).match(
+        /error while loading shared libraries: ([^:]+): cannot open shared object file/,
+      )?.[1];
+      if (name === "webkit" && missingLibrary)
+        test.skip(
+          true,
+          `WebKit system library is unavailable: ${missingLibrary}`,
+        );
+      throw error;
+    }
     try {
       const page = await browser.newPage();
       await page.route("**/deadline-fixture", (r) =>
