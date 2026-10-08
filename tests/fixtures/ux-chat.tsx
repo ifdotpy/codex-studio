@@ -42,6 +42,18 @@ function Fixture() {
       nativeNotices: [],
     },
   };
+  const accountsState = {
+    data: {
+      accounts: [],
+      archivedAccounts: [],
+      defaultAccountKey: "default",
+      logins: [],
+    },
+    setData: () => {},
+    error: "",
+    refresh: async () => null,
+    scope: data.stateDir,
+  };
   const getDraft = useCallback(
     (session: string) => currentDrafts.current[session] || "",
     [],
@@ -92,6 +104,7 @@ function Fixture() {
         <Conversation
           id={id}
           syncWorkspaceId={"a".repeat(32)}
+          accountsState={accountsState}
           agent={agent}
           data={data}
           getDraft={getDraft}

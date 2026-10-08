@@ -5,7 +5,14 @@ import { tmpdir } from "node:os";
 import { join, dirname, extname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  syncProtocolFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Ux Chat Ui", async ({
   browser: _testBrowser,
@@ -41,6 +48,25 @@ test("Ux Chat Ui", async ({
     `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-chat.tsx")}"></script></html>`,
   );
   let server;
+  const syncStreams = new Set();
+  let syncRevision = 0;
+  let transcriptSeq = 1;
+  const publishTranscriptChange = () => {
+    const resource = { kind: "transcript", agentId: "lead" };
+    const revision = ++syncRevision;
+    for (const stream of syncStreams)
+      stream.write(
+        `event: resources\ndata: ${JSON.stringify({
+          epoch: "ux-chat-epoch",
+          protocol: 3,
+          reason: "change",
+          resources: [resource],
+          resourceVersions: [],
+          revision,
+          workspaceId: "a".repeat(32),
+        })}\n\n`,
+      );
+  };
   try {
     await build({
       configFile: false,
@@ -80,6 +106,95 @@ test("Ux Chat Ui", async ({
     server = createServer(async (request, response) => {
       try {
         const path = new URL(request.url, "http://fixture").pathname;
+        const requestUrl = new URL(request.url, "http://fixture");
+        if (path === "/api/sync/stream") {
+          const resources = JSON.parse(
+            requestUrl.searchParams.get("resources") || "[]",
+          );
+          response.writeHead(200, {
+            "Cache-Control": "no-cache",
+            "Content-Type": "text/event-stream",
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+          });
+          response.write(apiSchemaHandshakeSse());
+          syncStreams.add(response);
+          response.on("close", () => syncStreams.delete(response));
+          response.write(
+            `event: resources\ndata: ${JSON.stringify({
+              epoch: "ux-chat-epoch",
+              protocol: 3,
+              reason: "initial",
+              resources,
+              resourceVersions: [],
+              revision: ++syncRevision,
+              workspaceId: "a".repeat(32),
+            })}\n\n`,
+          );
+          return;
+        }
+        if (path === "/api/fixture-restore") {
+          historyVersion = "restored-version";
+          latestItems = records.slice(12);
+          transcriptSeq++;
+          publishTranscriptChange();
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        if (path === "/api/fixture-live-update") {
+          latestItems = latestItems.map((item) =>
+            item.id === "item-13"
+              ? { ...item, text: "Latest message after live update" }
+              : item,
+          );
+          transcriptSeq++;
+          publishTranscriptChange();
+          response.statusCode = 204;
+          response.end();
+          return;
+        }
+        if (path === "/api/sync/identity") {
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(
+            JSON.stringify({ workspaceId: "a".repeat(32), syncProtocol: 2 }),
+          );
+          return;
+        }
+        if (path === "/api/sync/protocol") {
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(JSON.stringify(syncProtocolFixture()));
+          return;
+        }
+        if (path === "/api/sync/pull") {
+          const scope = requestUrl.searchParams.get("scope");
+          const after = Number(requestUrl.searchParams.get("after") || 0);
+          const document = {
+            id: scope,
+            seq: transcriptSeq,
+            payload: JSON.stringify(
+              snapshot(scope?.slice("transcript:".length)),
+            ),
+            _deleted: false,
+          };
+          response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+          response.setHeader("Content-Type", "application/json");
+          response.end(
+            JSON.stringify({
+              workspaceId: "a".repeat(32),
+              generation: 1,
+              documents:
+                scope?.startsWith("transcript:") && after < document.seq
+                  ? [document]
+                  : [],
+              checkpoint: { seq: after < document.seq ? document.seq : after },
+              maxSeq: transcriptSeq,
+              initialHigh: transcriptSeq,
+            }),
+          );
+          return;
+        }
         const file = join(
           temporary,
           "dist",
@@ -101,9 +216,9 @@ test("Ux Chat Ui", async ({
     });
     await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
     const page = testPage;
-    await page.setViewportSize({ width: 1100, height: 800 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.setViewportSize({ width: 1100, height: 800 });
     page.setDefaultTimeout(10000);
     const records = Array.from({ length: 14 }, (_, index) => ({
       id: `item-${index}`,
@@ -124,7 +239,9 @@ test("Ux Chat Ui", async ({
     const writes = [];
     const pageRequests = [];
     let holdAround = false,
-      pendingAround;
+      pendingAround,
+      resolveAroundStarted;
+    let aroundStarted = Promise.resolve();
     const releaseAround = () => {
       pendingAround?.();
       pendingAround = undefined;
@@ -141,8 +258,9 @@ test("Ux Chat Ui", async ({
       const url = new URL(request.url());
       const path = url.pathname;
       const id = url.searchParams.get("id");
-      if (path === "/api/sync/identity")
-        return route.fulfill({ json: { workspaceId: "a".repeat(32) } });
+      if (path.startsWith("/api/sync/")) return route.continue();
+      if (path === "/api/fixture-restore") return route.continue();
+      if (path === "/api/fixture-live-update") return route.continue();
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
       if (path === "/api/transcript/stream")
@@ -177,10 +295,12 @@ test("Ux Chat Ui", async ({
           nextCursor,
           nextAfterCursor = null;
         if (url.searchParams.has("around")) {
-          if (holdAround)
+          if (holdAround) {
             await new Promise((resolve) => {
               pendingAround = resolve;
+              resolveAroundStarted?.();
             });
+          }
           items = records.slice(2, 6);
           nextCursor = "item-2";
           nextAfterCursor = "item-5";
@@ -347,7 +467,14 @@ test("Ux Chat Ui", async ({
     await page.locator("#earlier-messages").click();
     await page.locator('[data-message="item-6"]').waitFor();
     assert.equal(await page.locator('[data-message="item-13"]').count(), 1);
-    await page.waitForTimeout(2300);
+    await page.evaluate(() =>
+      fetch("/api/fixture-live-update", { method: "POST" }),
+    );
+    await page.waitForFunction(() =>
+      document
+        .querySelector('[data-message="item-13"]')
+        ?.textContent.includes("Latest message after live update"),
+    );
     assert.equal(
       await page.locator('[data-message="item-6"]').count(),
       1,
@@ -405,9 +532,12 @@ test("Ux Chat Ui", async ({
 
     // Sending during a distant history read expresses new intent and cancels that view change.
     holdAround = true;
+    aroundStarted = new Promise((resolve) => {
+      resolveAroundStarted = resolve;
+    });
     await page.evaluate(() => window.chatFixture.jump("item-3"));
-    for (let attempt = 0; !pendingAround && attempt < 100; attempt++)
-      await page.waitForTimeout(20);
+    await aroundStarted;
+    resolveAroundStarted = undefined;
     assert.ok(pendingAround, "the historical page read is pending");
     await composer.fill("Send while history loads");
     await page.locator("#send").click();
@@ -416,7 +546,11 @@ test("Ux Chat Ui", async ({
     );
     holdAround = false;
     releaseAround();
-    await page.waitForTimeout(100);
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[data-message="item-13"]') &&
+        !document.querySelector('[data-message="item-3"]'),
+    );
     assert.equal(await page.locator('[data-message="item-13"]').count(), 1);
     assert.equal(await page.locator('[data-message="item-3"]').count(), 0);
     assert.equal(
@@ -531,9 +665,12 @@ test("Ux Chat Ui", async ({
     await page.locator('[data-message="item-10"]').waitFor();
     await page.locator("#earlier-messages").click();
     await page.locator('[data-message="item-6"]').waitFor();
-    historyVersion = "restored-version";
-    latestItems = records.slice(12);
-    await page.waitForTimeout(2300);
+    await page.evaluate(() =>
+      fetch("/api/fixture-restore", { method: "POST" }),
+    );
+    await page.waitForFunction(
+      () => !document.querySelector('[data-message="item-6"]'),
+    );
     assert.equal(
       await page.locator('[data-message="item-6"]').count(),
       0,
@@ -553,6 +690,7 @@ test("Ux Chat Ui", async ({
       `PASS: chat send, Tab navigation, long draft, complete history, exact search, branch draft and restore boundaries. ${temporary}`,
     );
   } finally {
+    for (const stream of syncStreams) stream.destroy();
     if (server) await new Promise((resolve) => server.close(resolve));
     await rm(temporary, { recursive: true, force: true });
   }
