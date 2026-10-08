@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Isolated 40-worker UI fixture. No model calls or user state."""
 import importlib.util
+import json
 from pathlib import Path
 import sys
 import os
@@ -16,6 +17,19 @@ sys.path.insert(0, str(skill / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
+
+if os.environ.get('CAPACITY_UI_FIXTURE'):
+    import codex_capacity_retry
+
+    retry_delays_json = os.environ.get('CAPACITY_UI_RETRY_DELAYS')
+    if retry_delays_json is not None:
+        retry_delays = json.loads(retry_delays_json)
+        if (not isinstance(retry_delays, list) or len(retry_delays) != len(codex_capacity_retry.DELAYS)
+                or any(not isinstance(delay, (int, float)) or delay <= 0 for delay in retry_delays)):
+            raise ValueError('CAPACITY_UI_RETRY_DELAYS must contain four positive numbers')
+        # Keep the real retry state machine, but scale its configured deadlines for
+        # this browser fixture. Production defaults remain covered by the contract test.
+        codex_capacity_retry.DELAYS = tuple(retry_delays)
 
 spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-contract.py')
 m = importlib.util.module_from_spec(spec)
