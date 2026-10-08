@@ -1,341 +1,28 @@
 import {
   test,
   expect,
-  handleEntitySyncFixtureRequest,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   apiSchemaHandshakeSse,
 } from "../playwright.mjs";
-import { createServer } from "node:http";
-import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
-import crypto from "node:crypto";
+import { fixture } from "./multi-server-fixture.mjs";
 import { execFileSync } from "node:child_process";
-const root = fileURLToPath(new URL("../../../", import.meta.url));
-const workspaceId = "b".repeat(32);
-async function fixture(label, signed = false) {
-  const keys = crypto.generateKeyPairSync("ed25519");
-  const publicKey = keys.publicKey
-    .export({ format: "pem", type: "spki" })
-    .toString();
-  const serverId = label.toLowerCase();
-  const serve = `https://${serverId}.tailnet.ts.net`;
-  const invitation = {
-    protocol: 1,
-    inviteId: "invite-" + serverId,
-    token: "secret-" + serverId,
-    serverId,
-    label,
-    origin: serve,
-    publicKey,
-    tailscaleUser: "owner",
-    expires: Math.floor(Date.now() / 1000) + 900,
-  };
-  const clients = new Map();
-  const accessClients = [
-    { clientId: "old-ui", label: "Old UI", status: "paired" },
-  ];
-  const writes = [];
-  const pairs = [];
-  const streams = new Set();
-  const nonces = new Set();
-  const notify = [];
-  const agent = {
-    id: "overlap",
-    name: `${label} chat`,
-    isLead: true,
-    rootId: "overlap",
-    source: "managed",
-    cwd: "/same/project",
-    status: "waiting",
-    autoWake: true,
-    canSend: true,
-    model: "fixture-model",
-    accountKey: "default",
-    inFlight: false,
-    archived: false,
-    deletedAt: null,
-  };
-  const snapshot = {
-    token: "local-only",
-    stateDir: "/same/state",
-    chats: [],
-    edges: [],
-    threads: [agent],
-    runtime: {
-      agents: [agent],
-      projects: [
-        {
-          path: "/same/project",
-          name: `${label} project`,
-          id: "/same/project",
-          folders: [],
-          peerTeams: [],
-        },
-      ],
-      rooms: [],
-      tasks: [],
-      monitors: [],
-      complaints: [],
-      peerTeams: [],
-      requests: [],
-      rules: [],
-      events: [],
-      work: [],
-      nativeNotices: [],
-      sidebarOrder: null,
-      rateLimits: null,
-      rateLimitsByAccount: {},
-    },
-  };
-  let offline = false;
-  const server = createServer(async (request, response) => {
-    response.setHeader("Access-Control-Allow-Origin", "*");
-    response.setHeader("Access-Control-Allow-Headers", "*");
-    response.setHeader(
-      "Access-Control-Expose-Headers",
-      "X-Studio-Server, X-Studio-API-Schema, X-Studio-API-Schema-Mismatch, ETag, Content-Disposition, X-Log-Truncated",
-    );
-    if (request.method === "OPTIONS") {
-      response.writeHead(204);
-      response.end();
-      return;
-    }
-    if (offline && request.url.startsWith("/api/")) {
-      response.writeHead(503);
-      response.end("{}");
-      return;
-    }
-    const url = new URL(request.url, "http://fixture.invalid");
-    const json = (value, status = 200) => {
-      response.writeHead(status, {
-        "Content-Type": "application/json",
-        [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
-      });
-      response.end(JSON.stringify(value));
-    };
-    let bytes = Buffer.alloc(0);
-    for await (const chunk of request) bytes = Buffer.concat([bytes, chunk]);
-    const body = bytes.length ? JSON.parse(bytes.toString()) : {};
-    if (signed && url.pathname.startsWith("/api/")) {
-      const h = request.headers;
-      const ownKey = url.pathname.endsWith("/pair")
-        ? body.publicKey
-        : clients.get(h["x-studio-client"]);
-      const canonical = [
-        "studio-multi-server-v1",
-        request.method,
-        url.pathname + url.search,
-        serverId,
-        h["x-studio-client"],
-        h["x-studio-timestamp"],
-        h["x-studio-nonce"],
-        h["x-studio-request-id"],
-        crypto.createHash("sha256").update(bytes).digest("hex"),
-      ].join("\n");
-      if (
-        !ownKey ||
-        h["x-studio-server"] !== serverId ||
-        h["x-canvas-token"] ||
-        nonces.has(h["x-studio-nonce"]) ||
-        !crypto.verify(
-          null,
-          Buffer.from(canonical),
-          ownKey,
-          Buffer.from(h["x-studio-signature"] || "", "base64"),
-        )
-      ) {
-        json({ error: "Invalid signature" }, 401);
-        return;
-      }
-      nonces.add(h["x-studio-nonce"]);
-      if (body.requestId || body.request_id)
-        expect(h["x-studio-request-id"]).toBe(
-          body.requestId || body.request_id,
-        );
-    }
-    if (url.pathname === "/api/monitor/log") {
-      response.writeHead(200, {
-        "Content-Type": "text/plain",
-        "Content-Disposition": 'attachment; filename="remote-monitor.log"',
-        "X-Log-Truncated": "true",
-      });
-      response.end("remote log");
-      return;
-    }
-    if (url.pathname === "/api/multi-server/v1/pair") {
-      pairs.push(bytes.toString());
-      clients.set(body.clientId, body.publicKey);
-      json({ ...invitation, clientId: body.clientId, paired: true });
-      return;
-    }
-    if (url.pathname === "/api/sync/stream") {
-      streams.add(response);
-      response.on("close", () => streams.delete(response));
-    }
-    if (url.pathname === "/api/sync/drafts") {
-      json([]);
-      return;
-    }
-    if (
-      handleEntitySyncFixtureRequest(request, response, {
-        snapshot,
-        workspaceId,
-        onStreamReady: (send) => notify.push(send),
-      })
-    )
-      return;
-    if (url.pathname === "/api/multi-server") {
-      if (body.action === "create_invite") {
-        json({ invitation, expires: invitation.expires });
-        return;
-      }
-      if (body.action === "revoke") accessClients[0].status = "revoked";
-      json({
-        protocol: 1,
-        identity: invitation,
-        clients: accessClients,
-        servers: [],
-        invites: [],
-      });
-      return;
-    }
-    if (url.pathname === "/api/session") {
-      json({ token: snapshot.token });
-      return;
-    }
-    if (url.pathname === "/api/state") {
-      json(snapshot);
-      return;
-    }
-    if (url.pathname === "/api/accounts") {
-      json({
-        accounts: [
-          {
-            id: "default",
-            label: "Fixture",
-            provider: "codex",
-            status: "ready",
-          },
-        ],
-        defaultAccountKey: "default",
-        archivedAccounts: [],
-        logins: [],
-      });
-      return;
-    }
-    if (url.pathname === "/api/models") {
-      json({
-        models: [
-          {
-            model: "fixture-model",
-            displayName: "Fixture",
-            supportedReasoningEfforts: [],
-          },
-        ],
-      });
-      return;
-    }
-    if (url.pathname === "/api/messages") {
-      writes.push({ ...body, _canvasToken: request.headers["x-canvas-token"] });
-      json({ id: body.id, status: "queued" });
-      return;
-    }
-    if (url.pathname === "/api/search") {
-      json({
-        results: [
-          {
-            id: "result-" + serverId,
-            kind: "message",
-            agent: "overlap",
-            room: "",
-            text: `${label}: ${url.searchParams.get("q")}`,
-          },
-        ],
-      });
-      return;
-    }
-    if (url.pathname.startsWith("/api/")) {
-      json({
-        items: [],
-        queues: [],
-        accounts: [],
-        models: [],
-        token: snapshot.token,
-      });
-      return;
-    }
-    try {
-      const filename = path.join(
-        root,
-        "web/dist",
-        url.pathname === "/" ? "index.html" : url.pathname,
-      );
-      const file = await readFile(filename);
-      response.setHeader(
-        "Content-Type",
-        filename.endsWith(".js")
-          ? "text/javascript"
-          : filename.endsWith(".css")
-            ? "text/css"
-            : "text/html",
-      );
-      if (url.pathname === "/")
-        response.setHeader(
-          "Content-Security-Policy",
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors " +
-            (url.searchParams.has("studio-server")
-              ? "'self' http://127.0.0.1:* http://localhost:*"
-              : "'none'") +
-            "; base-uri 'none'",
-        );
-      response.end(file);
-    } catch {
-      response.writeHead(404);
-      response.end();
-    }
-  });
-  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  return {
-    origin: `http://127.0.0.1:${server.address().port}`,
-    invitation,
-    writes,
-    pairs,
-    complete() {
-      Object.assign(agent, {
-        threadId: "thread-overlap",
-        status: "completed",
-        lastCompletedTurn: "turn-completed",
-        lastCompletedTurnStatus: "completed",
-        tail: `${label} reply`,
-      });
-      notify.forEach((send) => send([{ kind: "state" }]));
-    },
-    offline(value) {
-      offline = value;
-      if (value) for (const stream of streams) stream.destroy();
-    },
-    async close() {
-      for (const stream of streams) stream.destroy();
-      await new Promise((resolve) => {
-        server.close(resolve);
-        server.closeAllConnections();
-      });
-    },
-  };
-}
 test("one UI routes overlapping chats to two and three signed servers without reload", async ({
   page,
   context,
 }, testInfo) => {
-  test.setTimeout(120000);
+  test.setTimeout(180000);
   page.setDefaultTimeout(15000);
   const local = await fixture("Local");
   const remote = await fixture("Remote", true);
   const third = await fixture("Third", true);
   const errors = [];
-  page.on("pageerror", (error) => errors.push(error.message));
+  let draftQuotaFault = false;
+  page.on("pageerror", (error) => {
+    // The storage adapter also reports the deliberate quota fault globally.
+    if (draftQuotaFault && error.name === "QuotaExceededError") return;
+    errors.push(error.message);
+  });
   try {
     await context.addInitScript(
       ({ destinations }) => {
@@ -458,17 +145,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await cdp.send("Performance.enable");
     const browserCdp = await context.browser().newBrowserCDPSession();
     const measurements = [];
-    for (const count of [2, 3]) {
-      if (count === 3) {
-        await page.getByRole("button", { name: "Manage", exact: true }).click();
-        await pair(third);
-      }
-      const start = Date.now();
-      await page.reload();
-      await expect(
-        page.locator(".server-sidebar [data-chat='overlap']"),
-      ).toHaveCount(count);
-      const startupMs = Date.now() - start;
+    const measure = async (servers, stage, startupMs) => {
       let heap = (await cdp.send("Performance.getMetrics")).metrics.find(
         (row) => row.name === "JSHeapUsedSize",
       ).value;
@@ -500,13 +177,75 @@ test("one UI routes overlapping chats to two and three signed servers without re
           .trim()
           .split(/\s+/)
           .reduce((sum, value) => sum + Number(value), 0) * 1024;
-      measurements.push({
-        servers: count,
+      return {
+        servers,
+        stage,
         startupMs,
         jsHeapUsedBytes: heap,
         browserResidentBytes: rss,
         frames: page.frames().length,
-      });
+      };
+    };
+    await page.clock.install();
+    for (const count of [2, 3]) {
+      if (count === 3) {
+        await page.getByRole("button", { name: "Manage", exact: true }).click();
+        await pair(third);
+      }
+      const start = Date.now();
+      await page.reload();
+      await expect(
+        page.locator(".server-sidebar [data-chat='overlap']"),
+      ).toHaveCount(count);
+      const startupMs = Date.now() - start;
+      await page.locator('[data-server="local"] .server-chat').click();
+      await page
+        .frameLocator('iframe[title="Studio on This computer"]')
+        .locator("#message")
+        .fill(`idle draft ${count}`);
+      await page
+        .locator(
+          `[data-server="${count === 2 ? "remote" : "third"}"] .server-chat`,
+        )
+        .click();
+      measurements.push(await measure(count, "mounted", startupMs));
+      await page.clock.fastForward(5 * 60 * 1000 + 30000);
+      await expect(page.locator("iframe")).toHaveCount(1);
+      const afterIdle = await measure(count, "idle-unloaded", null);
+      measurements.push(afterIdle);
+      local.complete(`idle-${count}`);
+      await page.clock.fastForward(30000);
+      await expect(
+        page.locator('[data-server="local"] .server-chat'),
+      ).toContainText("●");
+      await expect
+        .poll(() =>
+          page.evaluate(() =>
+            window.__studioNotifications.some((row) =>
+              row.title.includes("Local chat: Reply ready"),
+            ),
+          ),
+        )
+        .toBe(true);
+      // Remount each view before the existing caller checks below.
+      for (const id of count === 2
+        ? ["local", "remote"]
+        : ["local", "remote", "third"]) {
+        await page.locator(`[data-server="${id}"] .server-chat`).click();
+        await expect(
+          page
+            .locator(`iframe[src*="studio-server=${id}"]`)
+            .contentFrame()
+            .locator("#message"),
+        ).toBeVisible();
+        if (id === "local")
+          await expect(
+            page
+              .locator(`iframe[src*="studio-server=${id}"]`)
+              .contentFrame()
+              .locator("#message"),
+          ).toHaveValue(`idle draft ${count}`);
+      }
     }
     await page.locator('[data-server="local"] .server-chat').click();
     const localFrame = page.frameLocator(
@@ -559,6 +298,9 @@ test("one UI routes overlapping chats to two and three signed servers without re
     await expect(
       page.locator('[data-server="remote"] [role="status"]'),
     ).toHaveText("Online", { timeout: 20000 });
+    await page.evaluate(() => {
+      window.__studioNotifications = [];
+    });
     local.complete();
     third.complete();
     await expect(
@@ -718,6 +460,51 @@ test("one UI routes overlapping chats to two and three signed servers without re
       'attachment; filename="remote-monitor.log"',
     );
     expect(exported.get("X-Log-Truncated")).toBe("true");
+    draftQuotaFault = true;
+    await remoteWindow.evaluate(() => {
+      const original = Storage.prototype.setItem;
+      const put = IDBObjectStore.prototype.put,
+        add = IDBObjectStore.prototype.add;
+      window.__restoreDraftStorage = () => {
+        Storage.prototype.setItem = original;
+        IDBObjectStore.prototype.put = put;
+        IDBObjectStore.prototype.add = add;
+      };
+      for (const method of ["put", "add"]) {
+        const originalMethod = IDBObjectStore.prototype[method];
+        IDBObjectStore.prototype[method] = function (...args) {
+          if (this.transaction.db.name.endsWith("--drafts"))
+            throw new DOMException(
+              "Full fixture storage",
+              "QuotaExceededError",
+            );
+          return originalMethod.apply(this, args);
+        };
+      }
+      Storage.prototype.setItem = function (key, value) {
+        if (
+          key.includes("codex-chat-draft:") ||
+          (key.includes("codex-drafts:") && key.includes(":pending:"))
+        )
+          throw new DOMException("Full fixture storage", "QuotaExceededError");
+        original.call(this, key, value);
+      };
+    });
+    await remoteFrame.locator("#message").fill("unsaved draft must stay open");
+    await expect(remoteFrame.locator("[data-draft-sync-status]")).toContainText(
+      "Keep this chat open",
+    );
+    await page.locator('[data-server="third"] .server-chat').click();
+    await page.clock.fastForward(5 * 60 * 1000 + 30000);
+    await expect(page.locator('iframe[title="Studio on Remote"]')).toHaveCount(
+      1,
+    );
+    await page.locator('[data-server="remote"] .server-chat').click();
+    await expect(remoteFrame.locator("#message")).toHaveValue(
+      "unsaved draft must stay open",
+    );
+    await remoteWindow.evaluate(() => window.__restoreDraftStorage());
+    draftQuotaFault = false;
     await remoteWindow.evaluate(async () => {
       const registration =
         await navigator.serviceWorker.register("/studio-sw.js");

@@ -2,7 +2,11 @@
 
 The shell has one project list, message search, unread count, and notification list.
 Each server has a label and a separate connection status.
-Chat selection keeps each server view active.
+The selected server view stays active.
+A hidden idle view unloads after five minutes.
+Selection restores its drafts, cache, and open chat from its own storage.
+A view stays active during a turn, upload, dictation, or write.
+A view also stays active when local draft or dictation storage fails.
 Drafts, sends, uploads, caches, and API schema gates have a separate server identity.
 The local server keeps its existing storage names.
 
@@ -43,7 +47,9 @@ Caller arguments cannot change that owner.
 A frame cannot reach the shell bridge or a sibling frame.
 Native keys and signatures stay in the main process.
 The shell can pair or remove servers, but cannot request signatures for a frame.
-Removal stops the frame's streams and subscribers.
+Removal stops the frame's streams, subscribers, and transcription.
+Navigation and frame destruction also stop transcription and remove its listeners.
+A duplicate stream identifier cannot remove the original stream's cleanup record.
 
 A browser shell on loopback also uses a separate origin for each server view.
 Browser keys stay in the shell's IndexedDB.
@@ -51,6 +57,18 @@ Frames receive no key.
 A message broker matches the live frame window, its origin, and its server before each request.
 The browser broker refuses requests for another server.
 Preferences and theme cross these origins through validated messages.
+
+The shell polls `GET /api/ui-summary` for unloaded servers every 30 seconds.
+Each poll has a 15-second deadline.
+Offline failures increase the interval to a maximum of 120 seconds.
+The response contains projects, chats, unread flags, notification summaries, and a busy flag.
+The endpoint reads the durable entity projection without changes to read receipts.
+Remote polls use the same paired signature boundary.
+The native bridge permits only this exact method and path for shell reads.
+It rejects query strings, fragments, request bodies, and calls from server frames.
+The browser shell builds the same fixed request.
+Its frame broker rejects summary actions.
+Search restores unloaded views and waits for their stores before it sends the search command.
 
 A browser shell on a non-loopback host cannot serve these loopback origins to another computer.
 Its frames keep the shell origin.
@@ -101,19 +119,43 @@ It uses identical workspace, project, and chat identifiers across three servers.
 The test covers a lost pair response across reload, draft isolation, send ownership, merged search, reconnect, notifications, unread counts, theme, shortcuts, and mobile controls.
 The native checks use hidden windows and separate state directories and ports.
 
-Measurements on 2026-10-08 use the production renderer, Chromium, and one chat per server.
+Product measurements on 2026-10-08 use the hidden packaged UI-only Electron application.
+Each run has one chat per server and a separate native profile.
+The process measurement uses `ps` after 60 seconds without a debugger on the server workers.
+Resident memory includes all Electron helper processes, including renderers.
+It excludes the main process and test runner.
+The native preload disables service workers in server views.
+The measurement confirms zero running service workers.
+The fixture replaces key storage only in its disposable profile.
+Actual native Ed25519 signatures authenticate each HTTP request.
+
+| Servers | Mounted helper memory | Idle helper memory | Mounted renderer count | Idle renderer count |
+| ------- | --------------------- | ------------------ | ---------------------- | ------------------- |
+| 2       | 703,610,880 bytes     | 508,592,128 bytes  | 3                      | 2                   |
+| 3       | 846,446,592 bytes     | 509,427,712 bytes  | 4                      | 2                   |
+
+Idle removal releases 195,018,752 bytes with two servers and 337,018,880 bytes with three servers.
+The selected frame and shell keep two renderer processes.
+Run the same measurement against a package:
+
+```sh
+CODEX_UI_EXECUTABLE='/path/to/Codex Studio.app/Contents/MacOS/Codex Studio' node desktop/multi-server-memory.mjs
+```
+
+Browser diagnostics use Chromium with debugger sessions attached to each renderer.
 The reload measurement ends when all merged chat rows appear.
-JavaScript heap measurements sum the shell and each separate renderer process for the persistent server frames.
-The resident memory measurement includes all processes of the test browser.
-It excludes Electron and a real Tailscale network.
+The heap measurement sums the shell and separate server renderer processes.
+Resident memory includes all processes of the test browser.
 
-| Servers | Reload to chat rows | JavaScript heap  | Browser resident memory | Server frames |
-| ------- | ------------------- | ---------------- | ----------------------- | ------------- |
-| 2       | 665 ms              | 61,229,868 bytes | 1,722,302,464 bytes     | 2             |
-| 3       | 1398 ms             | 83,799,756 bytes | 2,045,280,256 bytes     | 3             |
+| Servers | Reload to chat rows | Mounted JavaScript heap | Idle JavaScript heap | Mounted browser memory | Idle browser memory |
+| ------- | ------------------- | ----------------------- | -------------------- | ---------------------- | ------------------- |
+| 2       | 1128 ms             | 70,024,536 bytes        | 50,895,896 bytes     | 1,781,481,472 bytes    | 1,787,920,384 bytes |
+| 3       | 669 ms              | 87,013,724 bytes        | 55,883,176 bytes     | 2,150,973,440 bytes    | 2,153,906,176 bytes |
 
-The third server adds 322,977,792 bytes of browser resident memory in this run.
-Separate origins require separate renderer processes in Chromium.
+Debugger sessions keep browser service worker renderer processes alive after frame removal.
+These browser numbers do not measure the packaged product's memory reduction.
+The browser test also checks unread updates and notifications after removal.
+It checks draft restoration and blocks removal when both draft stores reject writes.
 
 The browser fixture uses isolated loopback servers behind a test-only HTTPS address adapter.
 The signed path, query, and body remain unchanged.

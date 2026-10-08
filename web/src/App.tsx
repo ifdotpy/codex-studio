@@ -1,3 +1,4 @@
+import { useServerActivity } from "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import {
@@ -534,7 +535,9 @@ export default function App() {
     conflicts: draftConflicts,
     dismissDraft,
     error: draftError,
+    localPersistenceFailed,
   } = useSyncedDrafts();
+  useServerActivity(localPersistenceFailed || sending);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),

@@ -121,6 +121,7 @@ try {
       /^\/dist($|\/)/,
       /^\/node_modules($|\/)/,
       /^\/test\.mjs$/,
+      /^\/multi-server-memory\.mjs$/,
       /^\/(?:backend-test|recovery-test|recovery-renderer-test|renderer-recovery-test|window-state-test|package-test)\.(?:mjs|cjs|py)$/,
       /^\/recover_backend\.py$/,
       /^\/__pycache__($|\/)/,

@@ -148,8 +148,11 @@ test("desktop native settings, notification and speech boundaries work with fixt
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
       AbortController,
+      URL,
       setTimeout,
       clearTimeout,
+      setInterval,
+      clearInterval,
       console: { log: ready, error: console.error },
     });
     await started;
@@ -206,6 +209,55 @@ test("desktop native settings, notification and speech boundaries work with fixt
         value: { serverId: "local", method: "notify" },
       }),
       /Unknown server native action/,
+    );
+    for (const url of [
+      "/api/session",
+      "/api/sync/pull",
+      "/api/ui-summary?server=B",
+      "/api/ui-summary#B",
+      "/api/ui-summary/",
+    ]) {
+      await assert.rejects(
+        f.invoke("serverCredentialAction", {
+          action: "summary",
+          serverId: "remote",
+          credentialId: "missing",
+          url: "https://remote.tailnet.ts.net" + url,
+          method: "GET",
+        }),
+        /Invalid shell summary request/,
+      );
+    }
+    await assert.rejects(
+      f.invoke("serverCredentialAction", {
+        action: "summary",
+        serverId: "remote",
+        url: "https://remote.tailnet.ts.net/api/ui-summary",
+        method: "POST",
+      }),
+      /Invalid shell summary request/,
+    );
+    await assert.rejects(
+      f.invoke("serverCredentialAction", {
+        action: "summary",
+        serverId: "remote",
+        credentialId: "missing",
+        url: "https://remote.tailnet.ts.net/api/ui-summary",
+        method: "GET",
+      }),
+      /server key is unavailable/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: {
+          action: "summary",
+          serverId: "remote",
+          url: "https://remote.tailnet.ts.net/api/ui-summary",
+          method: "GET",
+        },
+      }),
+      /Invalid shell summary request/,
     );
     await assert.rejects(
       f.handler(serverEvent, {
@@ -400,6 +452,74 @@ test("desktop native settings, notification and speech boundaries work with fixt
       }),
       /Transcribe/,
     );
+    for (const action of ["release", "navigate", "destroy"]) {
+      const remoteFrame = {
+        url: `http://${require("./frame-owner.cjs").serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+        parent: f.event.senderFrame,
+        processId: 12,
+        routingId: 34,
+        send: (...args) => f.event.sender.send(...args),
+        destroyed: false,
+        isDestroyed() {
+          return this.destroyed;
+        },
+      };
+      f.event.senderFrame.frames = [remoteFrame];
+      const remoteEvent = { sender: f.event.sender, senderFrame: remoteFrame };
+      const remoteInvoke = (method, value) =>
+        f.handler(remoteEvent, { method, value });
+      const remotePermit = await remoteInvoke("prepareTranscription");
+      const progressReady = new Promise((resolve) =>
+        f.event.sender.once("sent", resolve),
+      );
+      const listenerBaseline = f.event.sender.listenerCount(
+        "did-start-navigation",
+      );
+      const remoteActive = remoteInvoke("transcribeAudio", {
+        id: "remote-recording",
+        audio: data,
+        locale: "en-US",
+        permit: remotePermit,
+      });
+      const aborted = assert.rejects(remoteActive, /canceled/);
+      await progressReady;
+      assert.equal(
+        f.event.sender.listenerCount("did-start-navigation"),
+        listenerBaseline + 1,
+      );
+      if (action === "release") await f.invoke("releaseServerView", "remote");
+      if (action === "navigate")
+        f.event.sender.emit("did-start-navigation", {
+          isMainFrame: false,
+          frame: remoteFrame,
+        });
+      if (action === "destroy") remoteFrame.destroyed = true;
+      let deadline;
+      try {
+        await Promise.race([
+          aborted,
+          new Promise((_, reject) => {
+            deadline = setTimeout(
+              () =>
+                reject(
+                  new Error(`Frame ${action} did not abort transcription`),
+                ),
+              2000,
+            );
+          }),
+        ]);
+        assert.equal(
+          f.event.sender.listenerCount("did-start-navigation"),
+          listenerBaseline,
+        );
+      } finally {
+        clearTimeout(deadline);
+        remoteFrame.destroyed = false;
+        await remoteInvoke("cancelTranscription", "remote-recording");
+        await aborted;
+      }
+      assert.equal(f.event.sender.listenerCount("destroyed"), 0);
+    }
     const controller = new AbortController();
     await assert.rejects(
       transcribe({ audio: data, locale: "en-US" }, helper, {

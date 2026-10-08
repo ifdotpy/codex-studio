@@ -1,3 +1,4 @@
+import { useServerActivity } from "../servers/activity";
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import { nativeStatusMessage } from "./conversation/nativeStatus";
@@ -557,6 +558,7 @@ export default function Conversation(p: {
     (row) => row.agent === p.id,
   );
   const uploading = addingFiles || pendingFiles.length > 0;
+  useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);

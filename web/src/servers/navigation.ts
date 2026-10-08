@@ -11,6 +11,7 @@ export type ServerNavigation = {
     unread: boolean;
   }[];
   ready: boolean;
+  busy?: boolean;
   alerts: DesktopAlert[];
   opened: string | null;
   error: string;
@@ -76,6 +77,7 @@ export function navigationSnapshot(
   }
   return {
     ready: !!data,
+    busy: !!data?.threads.some((agent) => agent.inFlight),
     alerts,
     projects: [...projects.values()],
     chats,

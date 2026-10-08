@@ -82,6 +82,14 @@ let microphoneOwner;
 const transcriptionPermits = new Map();
 const activeNotifications = new Set();
 let transcriptionRunning = null;
+function releaseServerView(serverId) {
+  for (const stream of serverStreams.values())
+    if (stream.serverId === serverId) stream.controller.abort();
+  for (const [token, permit] of transcriptionPermits)
+    if (permit.serverId === serverId) transcriptionPermits.delete(token);
+  if (transcriptionRunning?.serverId === serverId) transcriptionRunning.abort();
+  if (microphoneOwner === serverId) microphoneUntil = 0;
+}
 function notificationTarget(value) {
   if (!value || value.section !== "messages")
     throw new Error("Invalid notification target.");
@@ -278,15 +286,16 @@ async function nativeAction(event, request) {
     case "releaseServerView": {
       if (owner) throw new Error("Use the workspace shell.");
       const serverId = string(request.value, 128);
-      for (const stream of serverStreams.values())
-        if (stream.serverId === serverId) stream.controller.abort();
+      releaseServerView(serverId);
       return;
     }
     case "serverCredentialAction": {
       const value = request.value;
       if (
         !value ||
-        !["pair", "request", "cancel", "forget"].includes(value.action)
+        !["pair", "request", "summary", "cancel", "forget"].includes(
+          value.action,
+        )
       )
         throw new Error("Invalid server credential action.");
       if (
@@ -298,6 +307,46 @@ async function nativeAction(event, request) {
         throw new Error("Invalid server frame owner.");
       if (owner && ["pair", "forget"].includes(value.action))
         throw new Error("Use the server manager.");
+      if (value.action === "summary") {
+        if (
+          owner ||
+          value.frameOwner ||
+          value.method !== "GET" ||
+          value.body ||
+          new URL(value.url).pathname !== "/api/ui-summary" ||
+          new URL(value.url).search ||
+          new URL(value.url).hash
+        )
+          throw new Error("Invalid shell summary request.");
+        const controller = new AbortController();
+        const deadline = setTimeout(() => controller.abort(), 15000);
+        try {
+          let response;
+          if (value.serverId === "local") {
+            if (uiOnly || new URL(value.url).origin !== backend.origin)
+              throw new Error("The request does not belong to this server.");
+            response = await fetch(value.url, {
+              method: "GET",
+              headers: value.headers,
+              signal: controller.signal,
+              redirect: "error",
+            });
+          } else
+            response = await serverCredentials.request(
+              value,
+              controller.signal,
+            );
+          trusted(event);
+          return {
+            status: response.status,
+            statusText: response.statusText,
+            headers: [...response.headers],
+            body: await response.arrayBuffer(),
+          };
+        } finally {
+          clearTimeout(deadline);
+        }
+      }
       if (value.action === "pair") {
         if (value.frameOwner) throw new Error("Pair from the server manager.");
         return serverCredentials.pair(value);
@@ -546,16 +595,49 @@ async function nativeAction(event, request) {
       const id = string(request.value?.id, 128);
       const controller = new AbortController();
       const sender = event.sender;
-      transcriptionRunning = {
+      const frame = event.senderFrame;
+      const running = {
         id,
         sender,
         controller,
         serverId: event.studioServerId,
+        abort: () => {},
       };
-      const abort = () => controller.abort();
-      const navigate = (_event, _url, _inPlace, isMainFrame) => {
-        if (isMainFrame) abort();
+      transcriptionRunning = running;
+      const cleanup = () => {
+        sender.removeListener("destroyed", abort);
+        sender.removeListener("did-start-navigation", navigate);
+        clearInterval(liveness);
       };
+      const abort = () => {
+        controller.abort();
+        cleanup();
+      };
+      running.abort = abort;
+      const navigate = (
+        details,
+        _url,
+        _inPlace,
+        isMainFrame,
+        processId,
+        routingId,
+      ) => {
+        if (
+          details.isMainFrame ||
+          isMainFrame ||
+          details.frame === frame ||
+          (processId === frame.processId && routingId === frame.routingId)
+        )
+          abort();
+      };
+      const liveness = setInterval(() => {
+        if (
+          frame.isDestroyed?.() ||
+          (frame !== sender.mainFrame &&
+            !sender.mainFrame.frames.includes(frame))
+        )
+          abort();
+      }, 1000);
       sender.once("destroyed", abort);
       sender.on("did-start-navigation", navigate);
       try {
@@ -573,9 +655,8 @@ async function nativeAction(event, request) {
           },
         });
       } finally {
-        sender.removeListener("destroyed", abort);
-        sender.removeListener("did-start-navigation", navigate);
-        transcriptionRunning = null;
+        cleanup();
+        if (transcriptionRunning === running) transcriptionRunning = null;
       }
     }
     case "cancelTranscription": {
@@ -745,6 +826,7 @@ async function start() {
     : await startUiHost({ resources: backendResources, port: 0 });
   serverCredentials =
     require("./server-credentials.cjs").createServerCredentials({
+      fetchRequest: (request) => fetch(request),
       profile: app.getPath("userData"),
       safeStorage,
     });

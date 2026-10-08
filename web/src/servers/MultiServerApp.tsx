@@ -2,6 +2,8 @@ import { Button, TextInput, Modal, useMantineColorScheme } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import App from "../App";
 import { frameURL } from "./frameOrigin";
+import { canUnloadFrame } from "./idleFrames";
+import { fetchServerSummary } from "./summary";
 import { bindShellTransport } from "./shellTransport";
 import {
   localServer,
@@ -81,6 +83,59 @@ export default function MultiServerApp() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const pending = useRef(new Map<string, ServerCommand>());
+  const [unloaded, setUnloaded] = useState(new Set<string>());
+  const unloadedRef = useRef(unloaded);
+  unloadedRef.current = unloaded;
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const serversRef = useRef(servers);
+  serversRef.current = servers;
+  const lastSelected = useRef(current);
+  const readyFrames = useRef(new Set<string>());
+  const lifecycle = useRef(
+    new Map<
+      string,
+      {
+        idleSince: number;
+        busy: boolean;
+        activity: boolean;
+        known: boolean;
+        ready: boolean;
+      }
+    >(),
+  );
+  const life = (id: string) => {
+    if (!lifecycle.current.has(id))
+      lifecycle.current.set(id, {
+        idleSince: Date.now(),
+        busy: false,
+        activity: false,
+        known: false,
+        ready: false,
+      });
+    return lifecycle.current.get(id)!;
+  };
+  useEffect(() => {
+    life(lastSelected.current).idleSince = Date.now();
+    life(current).idleSince = Date.now();
+    lastSelected.current = current;
+  }, [current]);
+  const mount = (id: string) => {
+    if (unloadedRef.current.has(id)) {
+      readyFrames.current.delete(id);
+      Object.assign(life(id), {
+        idleSince: Date.now(),
+        known: false,
+        ready: false,
+      });
+    }
+    setUnloaded((old) => {
+      if (!old.has(id)) return old;
+      const next = new Set(old);
+      next.delete(id);
+      return next;
+    });
+  };
   const targetOrigin = (id: string) =>
     new URL(frames.current.get(id)?.src || location.href).origin;
   useEffect(() => bindShellTransport(frames.current), []);
@@ -92,6 +147,8 @@ export default function MultiServerApp() {
       );
   };
   const select = useCallback((id: string) => {
+    mount(id);
+    life(id).idleSince = Date.now();
     setSelected(id);
     localStorage.setItem("studio-selected-server", id);
     setMobileOpen(false);
@@ -111,13 +168,137 @@ export default function MultiServerApp() {
   const send = (id: string, command: ServerCommand) => {
     select(id);
     const frame = frames.current.get(id);
-    if (!frame || !navigation[id]) pending.current.set(id, command);
+    if (!frame || !readyFrames.current.has(id))
+      pending.current.set(id, command);
     else
       frame.contentWindow?.postMessage(
         { kind: "studio-server-command", serverId: id, command },
         targetOrigin(id),
       );
   };
+  const applyNavigation = (id: string, value: ServerNavigation) => {
+    setNavigation((old) => ({ ...old, [id]: value }));
+    if (value.ready) {
+      const previous = notificationState.current.get(id);
+      const alerts = value.alerts || [];
+      const seen = previous || new Set<string>();
+      const fresh = previous
+        ? alerts.filter((alert) => !seen.has(alert.id))
+        : [];
+      for (const alert of alerts) seen.add(alert.id);
+      notificationState.current.set(id, seen);
+      for (const alert of fresh) {
+        const server =
+          readServers().find((row) => row.id === id) || localServer();
+        const title = `${server.label}: ${alert.title}`.slice(0, 160);
+        if (window.codexDesktop)
+          void window.codexDesktop
+            .notify({
+              title,
+              body: alert.body,
+              target: { ...alert.target, serverId: id },
+            })
+            .catch(() => {});
+        else if (
+          "Notification" in window &&
+          Notification.permission === "granted"
+        ) {
+          const notification = new Notification(title, {
+            body: alert.body,
+            tag: `${id}:${alert.id}`,
+          });
+          notification.onclick = () => {
+            notification.close();
+            send(id, { action: "notifications", ...alert.target });
+          };
+        }
+      }
+    }
+    if (pending.current.has(id) && value.ready && frames.current.has(id)) {
+      const command = pending.current.get(id)!;
+      pending.current.delete(id);
+      frames.current
+        .get(id)
+        ?.contentWindow?.postMessage(
+          { kind: "studio-server-command", serverId: id, command },
+          targetOrigin(id),
+        );
+    }
+  };
+  const applyNavigationRef = useRef(applyNavigation);
+  applyNavigationRef.current = applyNavigation;
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const remove: string[] = [];
+      for (const [id, state] of lifecycle.current) {
+        if (id === currentRef.current || state.busy || state.activity)
+          state.idleSince = Date.now();
+        if (
+          frames.current.has(id) &&
+          canUnloadFrame(
+            id === currentRef.current,
+            state.ready && state.known,
+            state.busy || state.activity,
+            state.idleSince,
+            Date.now(),
+          )
+        ) {
+          remove.push(id);
+          readyFrames.current.delete(id);
+        }
+      }
+      if (remove.length) setUnloaded((old) => new Set([...old, ...remove]));
+    }, 15000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    const timers = new Set<ReturnType<typeof setTimeout>>();
+    const controllers = new Set<AbortController>();
+    let stopped = false;
+    for (const server of serversRef.current.filter((row) =>
+      unloaded.has(row.id),
+    )) {
+      let delay = 30000;
+      const poll = async () => {
+        const controller = new AbortController();
+        controllers.add(controller);
+        const deadline = setTimeout(() => controller.abort(), 15000);
+        try {
+          const value = await fetchServerSummary(server, controller.signal);
+          if (
+            stopped ||
+            controller.signal.aborted ||
+            !unloadedRef.current.has(server.id)
+          )
+            return;
+          const opened = navigation[server.id]?.opened || null;
+          applyNavigationRef.current(server.id, { ...value, opened });
+          setStatus((old) => ({ ...old, [server.id]: "live" }));
+          delay = 30000;
+        } catch {
+          if (!stopped)
+            setStatus((old) => ({ ...old, [server.id]: "offline" }));
+          delay = Math.min(delay * 2, 120000);
+        } finally {
+          clearTimeout(deadline);
+          controllers.delete(controller);
+          if (!stopped) {
+            const timer = setTimeout(() => {
+              timers.delete(timer);
+              void poll();
+            }, delay);
+            timers.add(timer);
+          }
+        }
+      };
+      void poll();
+    }
+    return () => {
+      stopped = true;
+      for (const timer of timers) clearTimeout(timer);
+      for (const controller of controllers) controller.abort();
+    };
+  }, [unloaded, paired]);
   useEffect(() => {
     const stored = (event: StorageEvent) => {
       if (event.key === SERVER_REGISTRY_KEY || event.key === null)
@@ -194,7 +375,15 @@ export default function MultiServerApp() {
         event.source !== frames.current.get(id)?.contentWindow
       )
         return;
-      if (event.data.kind === "studio-server-preferences") {
+      if (
+        event.data.kind === "studio-server-activity" &&
+        typeof event.data.busy === "boolean"
+      ) {
+        const state = life(id);
+        state.known = true;
+        if (state.activity !== event.data.busy) state.idleSince = Date.now();
+        state.activity = event.data.busy;
+      } else if (event.data.kind === "studio-server-preferences") {
         try {
           const value = parseStudioPreferences(
             JSON.stringify(event.data.preferences),
@@ -227,62 +416,12 @@ export default function MultiServerApp() {
           !Array.isArray(value.chats)
         )
           return;
-        setNavigation((old) => ({ ...old, [id]: value }));
-        if (value.ready) {
-          const previous = notificationState.current.get(id);
-          const alerts = value.alerts || [];
-          const seen = previous || new Set<string>();
-          const fresh = previous
-            ? alerts.filter((alert) => !seen.has(alert.id))
-            : [];
-          for (const alert of alerts) seen.add(alert.id);
-          notificationState.current.set(id, seen);
-          for (const alert of fresh) {
-            const server =
-              readServers().find((row) => row.id === id) || localServer();
-            const title = `${server.label}: ${alert.title}`.slice(0, 160);
-            if (window.codexDesktop)
-              void window.codexDesktop
-                .notify({
-                  title,
-                  body: alert.body,
-                  target: { ...alert.target, serverId: id },
-                })
-                .catch(() => {});
-            else if (
-              "Notification" in window &&
-              Notification.permission === "granted"
-            ) {
-              const notification = new Notification(title, {
-                body: alert.body,
-                tag: `${id}:${alert.id}`,
-              });
-              notification.onclick = () => {
-                setSelected(id);
-                setMobileOpen(false);
-                notification.close();
-                frames.current.get(id)?.contentWindow?.postMessage(
-                  {
-                    kind: "studio-server-command",
-                    serverId: id,
-                    command: { action: "notifications", ...alert.target },
-                  },
-                  targetOrigin(id),
-                );
-              };
-            }
-          }
-        }
-        if (pending.current.has(id) && value.ready) {
-          const command = pending.current.get(id)!;
-          pending.current.delete(id);
-          frames.current
-            .get(id)
-            ?.contentWindow?.postMessage(
-              { kind: "studio-server-command", serverId: id, command },
-              targetOrigin(id),
-            );
-        }
+        const state = life(id);
+        if (state.busy !== !!value.busy) state.idleSince = Date.now();
+        state.busy = !!value.busy;
+        state.ready = value.ready;
+        if (value.ready) readyFrames.current.add(id);
+        applyNavigationRef.current(id, value);
       } else if (
         event.data.kind === "studio-server-status" &&
         [
@@ -302,15 +441,7 @@ export default function MultiServerApp() {
     () =>
       window.codexDesktop?.onNavigate((target) => {
         if (!target.serverId) return;
-        select(target.serverId);
-        frames.current.get(target.serverId)?.contentWindow?.postMessage(
-          {
-            kind: "studio-server-command",
-            serverId: target.serverId,
-            command: { action: "notifications", ...target },
-          },
-          targetOrigin(target.serverId),
-        );
+        send(target.serverId, { action: "notifications", ...target });
       }),
     [select],
   );
@@ -506,19 +637,21 @@ export default function MultiServerApp() {
             <Button onClick={() => setManager(true)}>Pair server</Button>
           </div>
         )}
-        {servers.map((server) => (
-          <iframe
-            key={`${server.id}:${server.credentialId || "local"}`}
-            title={`Studio on ${server.label}`}
-            ref={(frame) => {
-              if (frame) frames.current.set(server.id, frame);
-              else frames.current.delete(server.id);
-            }}
-            src={frameURL(server)}
-            hidden={current !== server.id}
-            allow="microphone; clipboard-read; clipboard-write"
-          />
-        ))}
+        {servers
+          .filter((server) => !unloaded.has(server.id))
+          .map((server) => (
+            <iframe
+              key={`${server.id}:${server.credentialId || "local"}`}
+              title={`Studio on ${server.label}`}
+              ref={(frame) => {
+                if (frame) frames.current.set(server.id, frame);
+                else frames.current.delete(server.id);
+              }}
+              src={frameURL(server)}
+              hidden={current !== server.id}
+              allow="microphone; clipboard-read; clipboard-write"
+            />
+          ))}
       </main>
       {management}
       <Modal
@@ -535,7 +668,21 @@ export default function MultiServerApp() {
             const requestId = crypto.randomUUID();
             searchRequest.current = requestId;
             setSearchResults({});
-            for (const server of servers)
+            for (const server of servers) {
+              mount(server.id);
+              life(server.id).idleSince = Date.now();
+              const command: ServerCommand = {
+                action: "search",
+                requestId,
+                query: searchQuery.trim(),
+              };
+              if (
+                !frames.current.has(server.id) ||
+                !readyFrames.current.has(server.id)
+              ) {
+                pending.current.set(server.id, command);
+                continue;
+              }
               frames.current.get(server.id)?.contentWindow?.postMessage(
                 {
                   kind: "studio-server-command",
@@ -548,6 +695,7 @@ export default function MultiServerApp() {
                 },
                 targetOrigin(server.id),
               );
+            }
           }}
         >
           <TextInput

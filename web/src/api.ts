@@ -1,3 +1,4 @@
+import { beginServerActivity } from "./servers/activity";
 import { beginServerMutation } from "./servers/mutationIdentity";
 import {
   serverLocalStorage as localStorage,
@@ -583,6 +584,7 @@ export async function post<Path extends PathsFor<"post">>(
   const timeoutMs = options.timeoutMs ?? (mutation ? 15000 : undefined);
   const controller = requestController(options, timeoutMs);
   let responseRejected = false;
+  const stopActivity = beginServerActivity();
   try {
     const fetchOptions = {
       parseAs: "json" as const,
@@ -633,6 +635,7 @@ export async function post<Path extends PathsFor<"post">>(
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;
   } finally {
+    stopActivity();
     controller.finish();
   }
 }

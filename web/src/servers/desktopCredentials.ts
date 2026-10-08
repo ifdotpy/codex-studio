@@ -4,7 +4,7 @@ import { parseInvitation, requestIdentity } from "./pairing";
 import { serverViewId } from "./environment";
 import type { DesktopBridge } from "../desktop";
 export type CredentialRequest = {
-  action: "pair" | "request" | "cancel" | "forget";
+  action: "pair" | "request" | "summary" | "cancel" | "forget";
   serverId?: string;
   credentialId?: string;
   origin?: string;

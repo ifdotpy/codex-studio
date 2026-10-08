@@ -29,6 +29,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         { kind: "studio-server-transport-result", correlation, result, error },
         event.origin,
       );
+    let ownedKey: string | undefined;
     try {
       if (
         typeof correlation !== "string" ||
@@ -57,6 +58,7 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         throw new Error("The request does not belong to this server.");
       const controller = new AbortController();
       active.set(key, { controller, frame });
+      ownedKey = key;
       const request = new Request(value.url!, {
         method: value.method,
         headers: value.headers,
@@ -116,7 +118,10 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         reply({ ...metadata, body });
       }
     } catch (error) {
-      active.delete(owner + ":" + value?.streamId);
+      if (ownedKey) {
+        active.get(ownedKey)?.controller.abort();
+        active.delete(ownedKey);
+      }
       reply(undefined, (error as Error).message);
     }
   };
