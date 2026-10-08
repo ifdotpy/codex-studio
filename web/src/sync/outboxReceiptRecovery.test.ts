@@ -64,6 +64,26 @@ function fixture(entries: Entry[]) {
 
 afterEach(() => vi.resetAllMocks());
 
+it("reconciles a delivered receipt before transcript observation", async () => {
+  const { docs } = fixture([{ id: "visible" }]);
+
+  await reconcileOutboxReceipts(
+    "chat",
+    [{ id: "visible", status: "delivered", materialized: true }],
+    "workspace",
+  );
+  await acknowledgeOutbox(["visible"]);
+
+  const reconciled = JSON.parse(docs[0].getLatest().payload);
+  expect(reconciled.status).toBe("accepted");
+  expect(reconciled.receipt).toMatchObject({
+    id: "visible",
+    status: "delivered",
+    materialized: true,
+  });
+  expect(reconciled.displayPending).toBe(false);
+});
+
 it("reconciles delivered receipts after transcript observation without showing them again", async () => {
   const { docs } = fixture([
     { id: "hidden" },
@@ -91,6 +111,43 @@ it("reconciles delivered receipts after transcript observation without showing t
   });
   expect(hidden.displayPending).toBe(false);
   expect(docs[1].getLatest().payload).toBe(otherRoomBefore);
+});
+
+it("keeps retired copies hidden without confirmed delivery and for failed or uncertain receipts", async () => {
+  const { docs } = fixture([
+    { id: "not-materialized", displayPending: false },
+    { id: "pending", displayPending: false },
+    { id: "uncertain", status: "uncertain", displayPending: false },
+    { id: "failed", status: "failed", displayPending: false },
+  ]);
+  const failedBefore = docs[3].getLatest().payload;
+
+  await reconcileOutboxReceipts(
+    "chat",
+    [
+      { id: "not-materialized", status: "delivered", materialized: false },
+      { id: "pending", status: "pending", materialized: true },
+      { id: "uncertain", status: "uncertain", materialized: true },
+      { id: "failed", status: "failed", materialized: true },
+    ],
+    "workspace",
+  );
+
+  const values = Object.fromEntries(
+    docs.map((doc) => [doc.id, JSON.parse(doc.getLatest().payload)]),
+  );
+  expect(values["not-materialized"].displayPending).toBe(false);
+  expect(values.pending.displayPending).toBe(false);
+  expect(values.uncertain).toMatchObject({
+    status: "uncertain",
+    displayPending: false,
+    receipt: { status: "uncertain", materialized: true },
+  });
+  expect(values.failed).toMatchObject({
+    status: "failed",
+    displayPending: false,
+  });
+  expect(docs[3].getLatest().payload).toBe(failedBefore);
 });
 
 it("clears only acknowledged copies with confirmed saved originals across chats", async () => {
