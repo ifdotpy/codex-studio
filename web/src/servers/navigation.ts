@@ -1,3 +1,7 @@
+import {
+  isStudioSettingsTab,
+  type StudioSettingsTab,
+} from "../components/StudioSettingsTabs";
 import type { DesktopAlert } from "../desktop/desktopAlerts";
 import type { Snapshot } from "../types";
 export type ServerNavigation = {
@@ -20,7 +24,7 @@ export type ServerCommand =
   | { action: "open"; id: string; messageId?: string }
   | { action: "new-chat"; path?: string }
   | { action: "projects" }
-  | { action: "settings" }
+  | { action: "settings"; tab?: StudioSettingsTab }
   | { action: "search"; query: string; requestId: string }
   | { action: "notifications"; agentId: string; itemId?: string }
   | { action: "focus" };
@@ -98,7 +102,8 @@ export function isServerCommand(value: unknown): value is ServerCommand {
     ? typeof command.id === "string" && !!command.id
     : command.action === "new-chat"
       ? command.path === undefined || typeof command.path === "string"
-      : command.action === "settings" ||
+      : (command.action === "settings" &&
+          (command.tab === undefined || isStudioSettingsTab(command.tab))) ||
         command.action === "projects" ||
         command.action === "focus";
 }

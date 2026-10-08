@@ -288,8 +288,9 @@ const accessClient = createClient<
 export async function serverAccess(
   method: "GET" | "POST",
   body?: import("./servers/accessContract").ServerAccessRequest,
+  timeoutMs = 15000,
 ) {
-  const controller = requestController({}, 15000);
+  const controller = requestController({}, timeoutMs);
   try {
     const result =
       method === "GET"

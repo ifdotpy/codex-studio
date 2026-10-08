@@ -1,6 +1,7 @@
+import { ActionButton } from "../components/ui/primitives";
 import { Button, Textarea, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { serverAccess, errorText } from "../api";
+import { serverAccess, errorText, refreshSession } from "../api";
 import { serverLocalStorage as localStorage } from "./storage";
 import type { ServerAccessState, ServerAccessRequest } from "./accessContract";
 export default function ServerAccessSettings({ active }: { active: boolean }) {
@@ -51,7 +52,8 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
     }
     setBusy(true);
     setError("");
-    void serverAccess("POST", body)
+    void refreshSession()
+      .then(() => serverAccess("POST", body))
       .then(async (result) => {
         if ("invitation" in result)
           setInvitation(JSON.stringify(result.invitation, null, 2));
@@ -63,7 +65,8 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
       .finally(() => setBusy(false));
   };
   return (
-    <section aria-label="Server access">
+    <section className="settings-group" aria-label="Server access">
+      <h2>UI access to this server</h2>
       <p>Pair your other Studio UI with this server through Tailscale Serve.</p>
       {state && (
         <p>
@@ -76,7 +79,8 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
         maxLength={80}
         onChange={(event) => setLabel(event.currentTarget.value)}
       />
-      <Button
+      <ActionButton
+        actionRole="secondary"
         disabled={busy}
         onClick={() =>
           run({
@@ -87,7 +91,7 @@ export default function ServerAccessSettings({ active }: { active: boolean }) {
         }
       >
         Create pairing invitation
-      </Button>
+      </ActionButton>
       {pending.current && (
         <Button
           disabled={busy}
