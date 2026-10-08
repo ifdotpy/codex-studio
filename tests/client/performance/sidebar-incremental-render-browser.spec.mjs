@@ -99,7 +99,7 @@ window.fixtureAgent=agents[19];window.fixtureReady=true;
             // resource transport has separate protocol and recovery contracts.
             build.onLoad({ filter: /resourceEvents\.ts$/ }, () => ({
               contents:
-                "export function watchResourceChanges(){return()=>{}};export function watchResourceConnection(){return()=>{}};",
+                "export function watchResourceChanges(){return()=>{}};export function watchResourceConnection(){return()=>{}};export function acknowledgeEntitySequences(){};",
               loader: "ts",
             }));
             build.onLoad(

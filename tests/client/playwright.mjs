@@ -235,6 +235,25 @@ const test = baseTest.extend({
     async ({ playwright, browserName }, use, workerInfo) => {
       const browserType = playwright[browserName];
       const launch = browserType.launch;
+      const memoryPeak = { rssBytes: 0, pssBytes: 0, samples: 0 };
+      const sampleMemory = () => {
+        try {
+          const rollup = readFileSync("/proc/self/smaps_rollup", "utf8");
+          const rssKb = Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]);
+          const pssKb = Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]);
+          if (!Number.isFinite(rssKb) || !Number.isFinite(pssKb)) return;
+          memoryPeak.rssBytes = Math.max(memoryPeak.rssBytes, rssKb * 1024);
+          memoryPeak.pssBytes = Math.max(memoryPeak.pssBytes, pssKb * 1024);
+          memoryPeak.samples += 1;
+        } catch {
+          // Keep tests portable to systems without procfs.
+        }
+      };
+      sampleMemory();
+      const memorySampler = process.env.PLAYWRIGHT_STAGE_LOG
+        ? setInterval(sampleMemory, 1_000)
+        : undefined;
+      memorySampler?.unref();
       if (process.env.PLAYWRIGHT_STAGE_LOG) {
         browserType.launch = async function (...args) {
           const startedAt = Date.now();
@@ -252,6 +271,18 @@ const test = baseTest.extend({
       try {
         await use();
       } finally {
+        if (memorySampler) {
+          clearInterval(memorySampler);
+          sampleMemory();
+          recordStage("worker_memory_peak", {
+            workerPid: process.pid,
+            workerIndex: workerInfo.workerIndex,
+            browserName,
+            rssBytes: memoryPeak.rssBytes,
+            pssBytes: memoryPeak.pssBytes,
+            samples: memoryPeak.samples,
+          });
+        }
         browserType.launch = launch;
       }
     },
