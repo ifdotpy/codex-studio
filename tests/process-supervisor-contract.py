@@ -458,6 +458,37 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.assertEqual(len(exit_events), 1)
         self.assertEqual(json.loads(exit_events[0]['payload']), {'returnCode':0})
 
+    def test_old_stdout_reader_drops_frame_after_generation_changes_during_storage_wait(self):
+        entered = threading.Event()
+        release = threading.Event()
+        self.child = process_supervisor.Child(self.handle, self.process, 'exact-signature')
+        self.supervisor.children[self.handle] = self.child
+
+        def wait_for_space(_required):
+            entered.set()
+            release.wait(3)
+
+        self.journal.ensure_space = wait_for_space
+        self.process.stdin.write(json.dumps({'method': 'old-generation'}) + '\n')
+        self.process.stdin.flush()
+        self.assertTrue(entered.wait(2))
+        with self.original_db() as db:
+            db.execute('UPDATE handles SET generation=2 WHERE id=?', (self.handle,))
+        release.set()
+        self.process.stdin.write(':close-stdout\n')
+        self.process.stdin.flush()
+        self.process.stdin.close()
+        self.process.wait(timeout=3)
+        self.child.reader.join(timeout=3)
+        self.assertFalse(self.child.reader.is_alive())
+        with self.original_db() as db:
+            row = db.execute('SELECT generation,sequence FROM handles WHERE id=?',
+                             (self.handle,)).fetchone()
+            events = list(db.execute('SELECT kind,generation FROM events WHERE handle=?',
+                                     (self.handle,)))
+        self.assertEqual(tuple(row), (2, 0))
+        self.assertEqual(events, [])
+
     def test_full_insert_rolls_back_and_keeps_stdout_reader(self):
         error = sqlite3.OperationalError('database or disk is full')
         error.sqlite_errorcode = sqlite3.SQLITE_FULL

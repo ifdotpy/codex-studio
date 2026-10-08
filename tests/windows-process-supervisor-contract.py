@@ -299,6 +299,19 @@ class WindowsSupervisorContract(unittest.TestCase):
         reader.close()
         connection.close()
 
+    def test_process_proxy_keeps_authenticated_idle_connection(self):
+        env = os.environ.copy()
+        env["DESCENDANT_PID_FILE"] = str(self.descendant_file)
+        proxy = supervisor.ProcessProxy(
+            self.root, "test:idle-proxy",
+            [sys.executable, "-u", str(self.child_file)], env, str(self.root), None,
+        )
+        try:
+            time.sleep(2.5)
+            self.assertEqual(proxy.call("status")["returnCode"], None)
+        finally:
+            proxy.detach()
+
     def test_pipe_dacl_is_protected_and_contains_only_the_owner(self):
         connection = supervisor._connect(self.root)
         windows = __import__("codex_windows_supervisor")

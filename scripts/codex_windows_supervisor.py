@@ -205,7 +205,9 @@ class NamedPipeReader:
         self.connection = connection
         self.buffer = bytearray()
 
-    def readline(self, limit=1024 * 1024 + 1):
+    def readline(self, limit=1024 * 1024 + 1, *, timeout=None):
+        read_timeout = self.connection.timeout if timeout is None else timeout
+        deadline = None if read_timeout is None else time.monotonic() + read_timeout
         while True:
             newline = self.buffer.find(b"\n")
             if newline >= 0:
@@ -213,14 +215,26 @@ class NamedPipeReader:
                     raise ValueError("Supervisor frame exceeds the size limit")
                 result = bytes(self.buffer[:newline + 1])
                 del self.buffer[:newline + 1]
+                self.connection.settimeout(read_timeout)
                 return result
             if len(self.buffer) >= limit:
                 raise ValueError("Supervisor frame exceeds the size limit")
+            if deadline is None and self.buffer:
+                deadline = time.monotonic() + PIPE_READ_TIMEOUT
+            if deadline is None:
+                self.connection.settimeout(None)
+            else:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Named-pipe read timed out")
+                self.connection.settimeout(remaining)
             chunk = self.connection.read(65536)
             if not chunk:
                 if self.buffer:
                     raise ConnectionError("Supervisor connection ended inside a frame")
                 return b""
+            if deadline is None:
+                deadline = time.monotonic() + PIPE_READ_TIMEOUT
             self.buffer.extend(chunk)
 
     def close(self):
@@ -428,10 +442,11 @@ def create_pipe_server(endpoint, connection_handler):
 def _dispatch_pipe_client(connection, connection_handler):
     reader = NamedPipeReader(connection)
     try:
-        first_line = reader.readline(1024 * 1024 + 1)
+        first_line = reader.readline(1024 * 1024 + 1, timeout=PIPE_READ_TIMEOUT)
         if not first_line or len(first_line) > 1024 * 1024:
             raise ValueError("Supervisor frame exceeds the size limit")
         verify_pipe_client(connection.handle)
+        connection.settimeout(None)
         connection_handler(connection, reader, first_line)
     except Exception as error:
         print("Supervisor named-pipe client rejected: " + type(error).__name__

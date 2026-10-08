@@ -343,6 +343,11 @@ def _valid_process_start(value):
 class Child:
     def __init__(self, handle, process, signature):
         self.handle, self.process, self.signature = handle, process, signature
+        with process.supervisor.journal.db() as db:
+            row = db.execute("SELECT generation FROM handles WHERE id=?", (handle,)).fetchone()
+            if not row:
+                raise RuntimeError("Cannot start a child reader without a journal generation")
+            self.generation = row[0]
         self.lock = threading.RLock()
         self.append_lock = threading.Lock()
         self.output = threading.Condition(self.lock)
@@ -375,6 +380,8 @@ class Child:
                     used = journal.outstanding_bytes(db, self.handle)
                     row = db.execute("SELECT sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                     if not row:
+                        return
+                    if row[1] != self.generation:
                         return
                     if pending and row[1] != pending[1]:
                         raise RuntimeError("Supervisor output generation changed before its receipt")
