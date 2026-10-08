@@ -19,10 +19,11 @@ spec.loader.exec_module(fixture)
 class BusyInputCapacityContract(unittest.TestCase):
     def setUp(self):
         if self._testMethodName == 'test_team_only_limit_keeps_the_reserved_slot':
-            self.team_only_child_statuses = self._prepare_team_only_scenarios()
+            (self.team_only_child_statuses, self.team_only_post_release) = self._prepare_team_only_scenarios()
 
     def _prepare_team_only_scenarios(self):
         observed = []
+        post_release = []
         for fast in (False, True):
             with patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': '32'}):
                 runtime, lead, children = self.team(concurrency=5, global_concurrency=32)
@@ -46,11 +47,39 @@ class BusyInputCapacityContract(unittest.TestCase):
                     self.assertEqual(len(self.active(runtime)), 4)
                     self.assertEqual(len(self.slots(runtime)), 5)
                     runtime.dispatch(children[-1]['id'] if fast else None)
-                    observed.append(runtime.agent(children[-1]['id'])['status'])
-                    self.assertEqual(len(runtime.server.active_turns), 4)
+                    observed.append({
+                        'status': runtime.agent(children[-1]['id'])['status'],
+                        'activeTurns': len(runtime.server.active_turns),
+                    })
+                    self.assertFalse(runtime.agent(lead['id'])['inFlight'])
                     release.set()
                     self.assertTrue(start_finished.wait(10), 'busy input start did not return after release')
-        return observed
+                fixture.fixture.eventually(
+                    lambda: runtime.delivery_receipt('busy-input')['status'] == 'delivered')
+                self.assertTrue(runtime.agent(lead['id'])['inFlight'])
+                active_after_receipt = len(self.active(runtime))
+                active_turns_after_receipt = len(runtime.server.active_turns)
+                start_count = sum(
+                    method == 'turn/start' and params.get('clientUserMessageId') == 'busy-input'
+                    for method, params in runtime.server.calls)
+                new_lead = runtime.agent(lead['id'])
+                new_turn = new_lead['turnId']
+                runtime.server.complete(new_lead['threadId'], new_lead['turnId'])
+                slots_after_completion = len(self.slots(runtime))
+                runtime.dispatch(children[-1]['id'])
+                fixture.fixture.eventually(
+                    lambda: runtime.agent(children[-1]['id'])['status'] in {'running', 'queued', 'starting'})
+                post_release.append({
+                    'active': active_after_receipt,
+                    'activeTurns': active_turns_after_receipt,
+                    'startCount': start_count,
+                    'newTurn': new_turn,
+                    'oldTurn': lead['turnId'],
+                    'slotsAfterCompletion': slots_after_completion,
+                    'childStatus': runtime.agent(children[-1]['id'])['status'],
+                    'activeAfterChildDispatch': len(self.active(runtime)),
+                })
+        return observed, post_release
 
     def team(self, concurrency=8, global_concurrency=5):
         global_limit = patch.dict('os.environ', {'CODEX_CANVAS_CONCURRENCY': str(global_concurrency)})
@@ -120,7 +149,17 @@ class BusyInputCapacityContract(unittest.TestCase):
 
     @unittest.expectedFailure  # Owner decision pending: team-only limit does not retain the reserved slot.
     def test_team_only_limit_keeps_the_reserved_slot(self):
-        self.assertEqual(self.team_only_child_statuses, ['queued', 'queued'])
+        self.assertEqual([scenario['status'] for scenario in self.team_only_child_statuses],
+                         ['queued', 'queued'])
+        self.assertEqual([scenario['activeTurns'] for scenario in self.team_only_child_statuses],
+                         [4, 4])
+        self.assertEqual([state['active'] for state in self.team_only_post_release], [5, 5])
+        self.assertEqual([state['activeTurns'] for state in self.team_only_post_release], [5, 5])
+        self.assertEqual([state['startCount'] for state in self.team_only_post_release], [1, 1])
+        self.assertTrue(all(state['newTurn'] != state['oldTurn'] for state in self.team_only_post_release))
+        self.assertEqual([state['slotsAfterCompletion'] for state in self.team_only_post_release], [4, 4])
+        self.assertEqual([state['childStatus'] for state in self.team_only_post_release], ['running', 'running'])
+        self.assertEqual([state['activeAfterChildDispatch'] for state in self.team_only_post_release], [5, 5])
 
     def test_known_busy_rejection_releases_the_slot_without_losing_input(self):
         runtime, lead, children = self.team()

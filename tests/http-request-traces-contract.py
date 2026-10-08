@@ -166,7 +166,7 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.assertTrue(self.finished.wait(.5))
         token = json.loads(response["body"])["token"]
         # FastAPI's GET-only route returns method-not-allowed; the ASGI migration
-        # replaced the old handler's path-level 404 behavior (92e2db1d).
+        # replaced the old handler's path-level 404 behavior (94437118).
         self.assertEqual(self.request("/api/session", "POST", token)["status"], 405)
         query = "protocol=3&resources=%5B%7B%22kind%22%3A%22drafts%22%7D%5D"
         stream = self.request("/api/sync/stream?" + query, read_limit=128)
@@ -294,7 +294,7 @@ class HttpRequestTracesContract(unittest.TestCase):
 
     def test_an_inherited_old_handler_frame_cannot_start_an_unfinishable_trace(self):
         # The former BaseHTTPRequestHandler frame no longer exists after the
-        # ASGI server migration (92e2db1d). Keep the current-path lifecycle check.
+        # ASGI server migration (94437118). Keep the current-path lifecycle check.
         self.assertFalse(hasattr(self.server, "RequestHandlerClass"))
         self.assertEqual(self.request("/api/session")["status"], 200)
         self.assertTrue(self.finished.wait(.5))

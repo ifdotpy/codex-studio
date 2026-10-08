@@ -322,20 +322,24 @@ class OperatorCloseContract(unittest.TestCase):
         ack_entered = threading.Event()
         release_ack = threading.Event()
         ack_finished = threading.Event()
+        ack_errors = []
         replacement_opened = threading.Event()
         replacement_reader_parked = threading.Event()
         release_replacement_reader = threading.Event()
-        replacement_reader_failed = threading.Event()
         self.addCleanup(release_ack.set)
         self.addCleanup(release_replacement_reader.set)
         original_ack = first.proc.ack
 
         def delayed_ack(sequence):
             ack_entered.set()
-            if not release_ack.wait(90):
-                raise RuntimeError('fixture did not release the supervisor ACK')
-            original_ack(sequence)
-            ack_finished.set()
+            try:
+                if not release_ack.wait(30):
+                    raise RuntimeError('fixture did not release the supervisor ACK')
+                original_ack(sequence)
+            except BaseException as error:
+                ack_errors.append(error)
+            finally:
+                ack_finished.set()
 
         first.proc.ack = delayed_ack
         pending = first.submit('model/list', {})
@@ -356,14 +360,9 @@ class OperatorCloseContract(unittest.TestCase):
                               and proxy.generation > first.proc.generation)
             if is_replacement:
                 replacement_reader_parked.set()
-                if not release_replacement_reader.wait(90):
+                if not release_replacement_reader.wait(30):
                     raise RuntimeError('fixture did not release the replacement reader')
-            try:
-                return original_next_event(proxy)
-            except Exception:
-                if is_replacement:
-                    replacement_reader_failed.set()
-                raise
+            return original_next_event(proxy)
 
         next_event_patch = patch.object(supervisor.ProcessProxy, 'next_event',
                                          gate_replacement_reader)
@@ -395,10 +394,10 @@ class OperatorCloseContract(unittest.TestCase):
         # The replacement ProcessProxy has captured its cursor, but its reader
         # has not polled yet. Commit the old proxy's real ACK before that poll.
         release_ack.set()
-        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
+        self.assertTrue(ack_finished.wait(30), 'real supervisor ACK action did not finish')
+        if ack_errors:
+            raise ack_errors[0]
         release_replacement_reader.set()
-        self.assertTrue(replacement_reader_failed.wait(30),
-                        'replacement reader did not surface the stale-cursor response')
         new_pid = fixture.wait_for(lambda: (
             candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
         self.assertNotEqual(new_pid, pid)

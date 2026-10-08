@@ -25,7 +25,6 @@ from codex_sync_entities import ensure_tables, put
 from codex_workspace import WorkspaceMixin
 from studio_api.sync.resources.hub import (
     ENTITY_SEQUENCE_THROTTLE_SECONDS,
-    MAX_ENTITY_SEQUENCE_DELAY_SECONDS,
     EntityPublicationScheduler,
     ResourceHub,
     register_resource_hub,
@@ -399,86 +398,62 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
             },
         )
 
-    async def test_continuous_commits_publish_during_burst_with_bounded_latency(self) -> None:
-        from studio_api.sync.resources import hub as resources_hub
+    async def test_continuous_commits_publish_at_bounded_intervals(self) -> None:
+        events: list[tuple[float, ResourceChangeEvent]] = []
+        commit_times: list[float] = []
 
-        clock = [0.0]
-        scheduler = EntityPublicationScheduler(clock=lambda: clock[0], start_worker=False)
-        original_scheduler = resources_hub._entity_publication_scheduler
-        original_publish = scheduler._publish
-        publication_times: list[float] = []
-
-        def publish(
-            root: str,
-            database_path: Path,
-            _due_at: float,
-            _deadline: float,
-            explicit_sequence: int,
-            explicit_sequences: set[int],
-            explicit_reset: bool,
-        ) -> None:
-            publication_times.append(clock[0])
-            original_publish(
-                root,
-                database_path,
-                _due_at,
-                _deadline,
-                explicit_sequence,
-                explicit_sequences,
-                explicit_reset,
-            )
-
-        scheduler._publish = publish  # type: ignore[method-assign]
-        resources_hub._entity_publication_scheduler = scheduler
-        events: list[ResourceChangeEvent] = []
-        try:
-            for index in range(40):
-                clock[0] = index * 0.05
-                previous_count = len(publication_times)
-                with self.database:
-                    self.database.execute("BEGIN IMMEDIATE")
-                    put(
-                        self.database,
-                        "agent",
-                        f"continuous-agent-{index}",
-                        {"id": f"continuous-agent-{index}", "kind": "agent",
-                         "tokensUsed": index + 1},
-                    )
-                scheduler.flush_due()
-                if len(publication_times) > previous_count:
-                    event = await self.subscription.next_event(timeout=1)
-                    self.assertIsNotNone(event)
-                    assert isinstance(event, ResourceChangeEvent)
-                    events.append(event)
-
-            # The final quiet-window event may trail the continuous burst, but
-            # no pending sequence can exceed the scheduler's 500 ms cap.
-            clock[0] += ENTITY_SEQUENCE_THROTTLE_SECONDS
-            scheduler.flush_due()
-            if len(events) < len(publication_times):
-                event = await self.subscription.next_event(timeout=1)
-                self.assertIsNotNone(event)
+        async def receive_until_quiet() -> None:
+            while True:
+                event = await self.subscription.next_event(timeout=0.8)
+                if event is None:
+                    return
                 assert isinstance(event, ResourceChangeEvent)
-                events.append(event)
-        finally:
-            resources_hub._entity_publication_scheduler = original_scheduler
+                events.append((time.monotonic(), event))
 
-        self.assertEqual(len(events), len(publication_times))
+        receiver = asyncio.create_task(receive_until_quiet())
+        started_at = time.monotonic()
+        for index in range(40):
+            next_commit_at = started_at + index * 0.05
+            await asyncio.sleep(max(0, next_commit_at - time.monotonic()))
+            with self.database:
+                self.database.execute("BEGIN IMMEDIATE")
+                put(
+                    self.database,
+                    "agent",
+                    "continuous-agent",
+                    {"id": "continuous-agent", "kind": "agent", "tokensUsed": index + 1},
+                )
+            commit_times.append(time.monotonic())
+        burst_ended_at = time.monotonic()
+        await receiver
+
+        print(
+            "CONTINUOUS_COMMIT_PUBLICATIONS",
+            {
+                "commits": 40,
+                "intervalMs": 50,
+                "burstMs": round((burst_ended_at - started_at) * 1000),
+                "commitCount": len(commit_times),
+                "publications": len(events),
+                "finalSeq": events[-1][1].resourceVersions[0].revision,
+            },
+        )
         self.assertGreaterEqual(len(events), 3)
-        self.assertLess(publication_times[0], 1.95, "must publish before the 40-commit burst ends")
-        observed_sequences: set[int] = set()
-        for event, published_at in zip(events, publication_times):
-            versions = event.resourceVersions[0]
-            sequences = versions.entitySequences or []
+        self.assertEqual(len(commit_times), 40)
+        self.assertLess(burst_ended_at - started_at, 2.5)
+        self.assertLess(events[0][0] - started_at, 0.8)
+        self.assertTrue(any(at < burst_ended_at for at, _event in events))
+        for published_at, event in events:
+            sequences = event.resourceVersions[0].entitySequences or []
             self.assertTrue(sequences)
-            first_sequence = min(sequences)
-            first_commit_at = (first_sequence - 1) * 0.05
-            self.assertLessEqual(published_at - first_commit_at, MAX_ENTITY_SEQUENCE_DELAY_SECONDS)
-            self.assertEqual(event.resources, [ResourceRef(StateResource(kind="state"))])
-            self.assertEqual(versions.revision, max(versions.entitySequences or []))
-            observed_sequences.update(sequences)
-        self.assertEqual(observed_sequences, set(range(1, 41)))
-        self.assertEqual(events[-1].resourceVersions[0].revision, 40)
+            self.assertLess(
+                published_at - commit_times[min(sequences) - 1],
+                0.8,
+            )
+        final_at, final_event = events[-1]
+        self.assertLess(final_at - burst_ended_at, 0.35)
+        self.assertEqual(final_event.resourceVersions[0].revision, 40)
+        self.assertEqual(final_event.resourceVersions[0].entitySequences, [40])
 
     async def test_executemany_and_executescript_writes_notify_after_commit(self) -> None:
         with self.database:

@@ -1221,7 +1221,11 @@ class ProcessSupervisorContract(unittest.TestCase):
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
         runtime = Runtime(self.root/'runtime', server_factory=lambda *args: server)
-        self.addCleanup(runtime.close)
+        def close_runtime():
+            self.assertEqual(runtime.__dict__.get('_late_servers', []), [])
+            self.assertEqual(runtime.__dict__.get('_native_tools_retiring', {}), {})
+            runtime.close()
+        self.addCleanup(close_runtime)
         agent = runtime.create({'name': 'Burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
         with runtime.lock, runtime.db() as db:
             agent = runtime.agent(agent['id'], db)

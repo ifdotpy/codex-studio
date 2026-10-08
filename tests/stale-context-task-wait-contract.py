@@ -109,8 +109,8 @@ class StaleTaskWait(f.ContextWait):
         # Runtime's session-name worker may finish an independent metadata RPC
         # while this test drives the wait transition. Keep the no-replay
         # assertion focused on calls that can resend or restart this input.
-        calls = [(method, params) for method, params in self.server.calls
-                 if method != 'thread/name/set']
+        calls = copy.deepcopy([(method, params) for method, params in self.server.calls
+                               if method != 'thread/name/set'])
         with self.runtime.lock, self.runtime.db() as db:
             current = self.runtime.agent(self.a['id'], db)
             current['contextRepairWait']['nextCheckAt'] = 0

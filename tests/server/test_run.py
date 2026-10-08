@@ -150,7 +150,7 @@ class ServerSuiteRunner(unittest.TestCase):
 
         def execute(command, _cwd, _timeout, _environment):
             commands.append(command)
-            return 0, None
+            return 0, None, [], []
 
         with (contextlib.redirect_stdout(io.StringIO()),
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None)):
@@ -160,7 +160,7 @@ class ServerSuiteRunner(unittest.TestCase):
             )
 
         self.assertEqual(len(commands), 1)
-        self.assertTrue(commands[0][-4].endswith("server_test_entry.py"))
+        self.assertTrue(commands[0][-4].endswith("suite_entry.py"))
         self.assertEqual(commands[0][-3:], ["module", "studio_api.agents.test_router", "-v"])
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
@@ -209,7 +209,7 @@ class ServerSuiteRunner(unittest.TestCase):
             barrier.wait(timeout=10)
             with lock:
                 active -= 1
-            return 0, None
+            return 0, None, [], []
 
         with (contextlib.redirect_stdout(io.StringIO()),
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
@@ -240,7 +240,7 @@ class ServerSuiteRunner(unittest.TestCase):
 
         def execute(command, _cwd, _timeout, _environment):
             executed.append(Path(command[-1]).name)
-            return 0, None
+            return 0, None, [], []
 
         profile = {
             "maxSuiteRssBytes": 100,
@@ -259,6 +259,33 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(skipped, [])
         self.assertEqual(failures, [])
         self.assertEqual(executed, ["slow.py", "fast.py"])
+
+    def test_latest_run_replaces_the_previous_peak_rss_profile(self):
+        profile = {"suiteSeconds": {}, "maxSuiteRssBytes": 900}
+        captured = []
+
+        def execute(_command, _cwd, _timeout, _environment):
+            return 0, None, [], []
+
+        def save(saved):
+            captured.append(dict(saved))
+
+        with (tempfile.TemporaryDirectory(prefix="server-rss-profile-") as directory,
+              contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_load_profile", return_value=profile),
+              mock.patch.object(RUNNER, "_save_profile", side_effect=save),
+              mock.patch.object(RUNNER, "_measured_child_peak_rss_bytes", return_value=123),
+              mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
+              mock.patch.object(RUNNER, "_memory_scratch_root", return_value=None),
+              mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(directory)),
+              mock.patch.object(RUNNER, "run_process", execute)):
+            _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
+                [("one.py", "safe")], set(), 1, 1, root=ROOT,
+                execute=execute, workers=1,
+            )
+
+        self.assertEqual(failures, [])
+        self.assertEqual(captured[0]["maxSuiteRssBytes"], 123)
 
     def test_concurrent_profile_writers_merge_with_unique_atomic_temporaries(self):
         try:
@@ -287,153 +314,45 @@ class ServerSuiteRunner(unittest.TestCase):
                 self.assertEqual(writer.exitcode, 0)
             saved = json.loads(profile_path.read_text(encoding="utf-8"))
             self.assertEqual(saved["suiteSeconds"], {"first.py": 3.0, "second.py": 4.0})
-            self.assertEqual(saved["maxSuiteRssBytes"], 300)
+            self.assertIn(saved["maxSuiteRssBytes"], {100, 300})
             self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
 
-    def test_profile_keeps_maximum_rss_without_decay(self):
-        with tempfile.TemporaryDirectory(prefix="server-profile-maximum-") as directory:
-            profile_path = Path(directory) / "runner-profile.json"
-            profile_path.write_text(json.dumps({
-                "suiteSeconds": {"old.py": 2.0},
-                "maxSuiteRssBytes": 1000,
-            }))
-            profile = {"suiteSeconds": {"new.py": 3.0}, "maxSuiteRssBytes": 500}
-            with (mock.patch.object(RUNNER, "PROFILE_PATH", profile_path),
-                  mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(directory))):
-                RUNNER._save_profile(profile)
-            saved = json.loads(profile_path.read_text())
-            self.assertEqual(saved["maxSuiteRssBytes"], 1000)
-            self.assertEqual(saved["suiteSeconds"], {"old.py": 2.0, "new.py": 3.0})
-
-    def test_concurrent_runner_claims_share_cpu_and_memory_budget(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-claims-") as temp:
-            plans = [
-                {"workers": 16, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
-                 "measuredWorkerMemoryBytes": 100_000_000, "limitingBound": "memory"}
-                for _ in range(2)
-            ]
-            gate = threading.Barrier(2)
-
-            def reserve(plan):
-                gate.wait(timeout=5)
-                return RUNNER._reserve_runner_workers(plan)
-
-            with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", Path(temp)):
-                with ThreadPoolExecutor(max_workers=2) as pool:
-                    tokens = list(pool.map(reserve, plans))
-                try:
-                    workers = [plan["workers"] for plan in plans]
-                    self.assertLessEqual(sum(workers), 32)
-                    self.assertLessEqual(sum(workers) * 100_000_000, 12_600_000_000)
-                finally:
-                    for token in tokens:
-                        RUNNER._release_runner_workers(token)
-            self.assertEqual(json.loads((Path(temp) / "runner-live.json").read_text()), [])
-
-    def test_runner_waits_for_competing_claim_then_replans(self):
+    def test_runner_waits_then_replans_after_lock_release(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-wait-") as temp:
-            plan = {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
-                    "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
-            now = [0.0]
-            replanned = []
-            with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", Path(temp)):
-                holder = RUNNER._reserve_runner_workers(dict(plan))
-
-                def release_on_wait(_duration):
-                    now[0] += _duration
-                    RUNNER._release_runner_workers(holder)
-
-                output = io.StringIO()
+            lock_path = Path(temp) / "runner-live.lock"
+            entered = threading.Event()
+            release = threading.Event()
+            acquired = threading.Event()
+            output = io.StringIO()
+            def first():
+                with RUNNER._runner_live_lock():
+                    entered.set()
+                    release.wait(timeout=5)
+            def second():
                 with contextlib.redirect_stdout(output):
-                    token = RUNNER._reserve_runner_workers(
-                        dict(plan),
-                        replan=lambda: (replanned.append(True) or dict(plan)),
-                        wait_seconds=2, poll_interval=0.25,
-                        clock=lambda: now[0], sleep=release_on_wait,
-                    )
-                try:
-                    self.assertEqual(now[0], 0.25)
-                    self.assertTrue(replanned)
-                    self.assertEqual(plan["workers"], 21)
-                    self.assertIn("waiting for another test run to finish: 21 jobs claimed by pid", output.getvalue())
-                finally:
-                    RUNNER._release_runner_workers(token)
+                    with RUNNER._runner_live_lock():
+                        acquired.set()
+                        # Planning happens in run_suites after the lock is acquired.
+                        RUNNER.worker_plan([("one.py", "safe")], {}, override=1)
+            with mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", lock_path):
+                a = threading.Thread(target=first); a.start()
+                self.assertTrue(entered.wait(timeout=2))
+                b = threading.Thread(target=second); b.start()
+                time.sleep(0.1)
+                self.assertFalse(acquired.is_set())
+                release.set(); a.join(timeout=2); b.join(timeout=2)
+            self.assertTrue(acquired.is_set())
+            self.assertIn("waiting for another test run to finish", output.getvalue())
 
-    def test_dead_runner_claim_is_removed_before_planning(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-dead-claim-") as temp:
-            root = Path(temp)
-            registry = root / "runner-live.json"
-            registry.write_text(json.dumps([{"pid": 999999999, "token": "dead",
-                                             "workers": 21, "workerMemoryBytes": 500}]))
-            plan = {"workers": 16, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
-                    "measuredWorkerMemoryBytes": 100_000_000, "limitingBound": "memory"}
-            with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", root):
-                token = RUNNER._reserve_runner_workers(plan)
-                try:
-                    claims = json.loads(registry.read_text())
-                    self.assertEqual(len(claims), 1)
-                    self.assertEqual(claims[0]["token"], token)
-                    self.assertEqual(plan["workers"], 16)
-                finally:
-                    RUNNER._release_runner_workers(token)
-
-    def test_runner_claim_wait_expires_and_uses_available_fallback(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-wait-expiry-") as temp:
-            plan = {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
-                    "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
-            now = [0.0]
-            with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", Path(temp)):
-                holder = RUNNER._reserve_runner_workers(dict(plan))
-
-                def advance_clock(duration):
-                    now[0] += duration
-
-                output = io.StringIO()
-                with contextlib.redirect_stdout(output):
-                    token = RUNNER._reserve_runner_workers(
-                        dict(plan), wait_seconds=1, poll_interval=0.5,
-                        clock=lambda: now[0], sleep=advance_clock,
-                    )
-                try:
-                    self.assertEqual(now[0], 1.0)
-                    self.assertIn("runner claim wait expired after 1s", output.getvalue())
-                    self.assertTrue(json.loads((Path(temp) / "runner-live.json").read_text()))
-                finally:
-                    RUNNER._release_runner_workers(token)
-                    RUNNER._release_runner_workers(holder)
-
-    def test_registry_claims_are_shared_across_distinct_scratch_roots(self):
-        with tempfile.TemporaryDirectory(prefix="server-runner-shared-registry-") as temp:
-            base = Path(temp)
-            scratch_a, scratch_b = base / "scratch-a", base / "scratch-b"
-            scratch_a.mkdir(); scratch_b.mkdir()
-            plan_a = {"workers": 16, "cpuLimit": 32, "memoryBudgetBytes": 8_000_000_000,
-                      "measuredWorkerMemoryBytes": 100_000_000, "limitingBound": "cpu-median"}
-            plan_b = dict(plan_a)
-            with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", base / "registry"), \
-                    mock.patch.object(RUNNER, "TEST_TMP_ROOT", scratch_a):
-                token_a = RUNNER._reserve_runner_workers(plan_a)
-            try:
-                with mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", base / "registry"), \
-                        mock.patch.object(RUNNER, "TEST_TMP_ROOT", scratch_b):
-                    token_b = RUNNER._reserve_runner_workers(plan_b)
-                try:
-                    self.assertEqual(plan_a["workers"], 16)
-                    self.assertEqual(plan_b["workers"], 16)
-                    claims = json.loads((base / "registry" / "runner-live.json").read_text())
-                    self.assertEqual(len(claims), 2)
-                    self.assertFalse((scratch_a / "runner-live.json").exists())
-                    self.assertFalse((scratch_b / "runner-live.json").exists())
-                finally:
-                    RUNNER._release_runner_workers(token_b)
-            finally:
-                RUNNER._release_runner_workers(token_a)
-
-    def test_registry_discards_reused_pid_with_changed_start_time(self):
-        claim = {"pid": 123, "startTime": "old-start", "token": "old", "workers": 4}
-        with (mock.patch.object(RUNNER, "_process_id_is_live", return_value=True),
-              mock.patch.object(RUNNER, "_process_start_time", return_value="new-start")):
-            self.assertFalse(RUNNER._runner_identity_is_live(claim["pid"], claim["startTime"]))
+    def test_runner_lock_released_after_abnormal_exit(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-abnormal-") as temp:
+            lock_path = Path(temp) / "runner-live.lock"
+            with mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", lock_path):
+                with self.assertRaisesRegex(RuntimeError, "fixture failure"):
+                    with RUNNER._runner_live_lock():
+                        raise RuntimeError("fixture failure")
+                with RUNNER._runner_live_lock():
+                    self.assertTrue(lock_path.exists())
 
     def test_explicit_jobs_reduction_is_reported(self):
         output = io.StringIO()
@@ -447,7 +366,7 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "_unix_socket_path_error", return_value=None),
               mock.patch.object(RUNNER, "_save_profile"),
               tempfile.TemporaryDirectory(prefix="server-explicit-registry-") as registry,
-              mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", Path(registry)),
+              mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", Path(registry) / "runner-live.lock"),
               contextlib.redirect_stdout(output)):
             _runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
                 [("one.py", "safe"), ("two.py", "safe")], set(), 1, 1,
@@ -479,6 +398,36 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(safe_result.returncode, 0, safe_result.stderr)
             self.assertEqual(safe_target.read_text(), "ok")
 
+    def test_runner_artifacts_are_siblings_of_fixture_workspaces(self):
+        with tempfile.TemporaryDirectory(prefix="server-artifact-layout-") as directory:
+            suite_root = Path(directory) / "suite"
+            suite_root.mkdir()
+            workspace = suite_root / "workspace"
+            workspace.mkdir()
+            artifacts = RUNNER._runner_artifact_root(suite_root)
+            outcome = artifacts / "unittest-outcomes.jsonl"
+            audit = artifacts / "audit-home.log"
+
+            self.assertEqual(artifacts.parent, suite_root)
+            self.assertFalse(outcome.is_relative_to(workspace))
+            self.assertFalse(audit.is_relative_to(workspace))
+            self.assertFalse(workspace.is_relative_to(artifacts))
+
+    def test_runner_sets_outcome_and_audit_files_outside_workspace_subtrees(self):
+        with tempfile.TemporaryDirectory(prefix="server-artifact-env-") as directory:
+            suite_root = Path(directory) / "suite"
+            suite_root.mkdir()
+            workspace = suite_root / "workspace"
+            workspace.mkdir()
+            environment = RUNNER._suite_environment(ROOT, suite_root, audit_home=True)
+            runner_root = RUNNER._runner_artifact_root(suite_root)
+            outcome = runner_root / "unittest-outcomes.jsonl"
+            audit = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"])
+
+            self.assertEqual(audit.parent, runner_root)
+            self.assertFalse(outcome.is_relative_to(workspace))
+            self.assertFalse(audit.is_relative_to(workspace))
+
     def test_audit_home_allows_only_the_resolved_executable_for_read_and_exec(self):
         with tempfile.TemporaryDirectory(prefix="server-audit-allow-exec-") as directory:
             root = Path(directory)
@@ -507,6 +456,13 @@ class ServerSuiteRunner(unittest.TestCase):
             audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"]).read_text()
             self.assertIn("ALLOWED_READ\t" + str(executable.resolve()), audit_log)
             self.assertIn("ALLOWED_EXEC\t" + str(executable.resolve()), audit_log)
+            empty_allow = environment.copy()
+            empty_allow["CODEX_SERVER_TEST_AUDIT_ALLOW_EXECUTABLE"] = ""
+            blocked_empty = subprocess.run(
+                [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).open('rb')", str(executable)],
+                cwd=ROOT, env=empty_allow, capture_output=True, text=True, timeout=5)
+            self.assertNotEqual(blocked_empty.returncode, 0)
+            self.assertIn("real-home audit blocked open", blocked_empty.stderr)
             environment["CODEX_BIN"] = str(executable)
             pass_through = subprocess.run(
                 [sys.executable, "-c", "import os,subprocess,sys; subprocess.run([sys.executable, '-c', 'pass'], env=os.environ.copy(), check=True)"],
@@ -514,8 +470,7 @@ class ServerSuiteRunner(unittest.TestCase):
             )
             self.assertEqual(pass_through.returncode, 0, pass_through.stderr)
             audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"]).read_text()
-            self.assertIn("ALLOWED_CONFIG\t" + str(executable.resolve()), audit_log)
-            self.assertIn("ALLOWED_ISOLATED_ENV\tCodex child homes outside protected state", audit_log)
+            self.assertIn("ALLOWED_ISOLATED_ENV\tCODEX_BIN passed with isolated homes", audit_log)
 
             unsafe_environment = environment.copy()
             unsafe_environment["CODEX_HOME"] = str(fake_home / ".codex")
@@ -540,10 +495,10 @@ class ServerSuiteRunner(unittest.TestCase):
                   mock.patch.object(RUNNER, "_tmpfs_mounts", side_effect=lambda: iter([mount])),
                   mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True),
                   mock.patch.object(RUNNER.shutil, "disk_usage",
-                                    return_value=type("Usage", (), {"free": 100 * 1024**2,
-                                                                     "total": 100 * 1024**2})())):
+                                    return_value=type("Usage", (), {"free": 300 * 1024**2,
+                                                                     "total": 500 * 1024**2})())):
                 with ThreadPoolExecutor(max_workers=2) as pool:
-                    roots = list(pool.map(lambda _: RUNNER._memory_scratch_root(), range(2)))
+                    roots = list(pool.map(lambda _: RUNNER._memory_scratch_root(1), range(2)))
             self.assertTrue(all(roots))
             self.assertNotEqual(roots[0], roots[1])
             self.assertTrue(all(root.is_dir() for root in roots))
@@ -560,10 +515,12 @@ class ServerSuiteRunner(unittest.TestCase):
             unmarked = mount / "csst-unmarked"
             for directory in (dead, live, unmarked):
                 directory.mkdir()
-            (dead / RUNNER.SCRATCH_OWNER_FILE).write_text("222", encoding="ascii")
-            (live / RUNNER.SCRATCH_OWNER_FILE).write_text("111", encoding="ascii")
-            with mock.patch.object(RUNNER, "_runner_identity_is_live",
-                                   side_effect=lambda pid, _start: int(pid) == 111):
+            (dead / RUNNER.SCRATCH_OWNER_FILE).write_text(
+                json.dumps({"pid": 222, "startTime": "old"}), encoding="ascii")
+            (live / RUNNER.SCRATCH_OWNER_FILE).write_text(
+                json.dumps({"pid": 111, "startTime": "live"}), encoding="ascii")
+            with mock.patch.object(RUNNER, "_process_start_time",
+                                   side_effect=lambda pid: "live" if int(pid) == 111 else None):
                 RUNNER._cleanup_stale_scratch_roots([mount])
             self.assertFalse(dead.exists())
             self.assertTrue(live.is_dir())
@@ -643,7 +600,7 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
               mock.patch.object(RUNNER, "available_memory_bytes", return_value=64 * 1024**3),
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0),
-              mock.patch.object(RUNNER, "RUNNER_REGISTRY_DIR", Path(directory) / "registry"),
+              mock.patch.object(RUNNER, "RUNNER_LOCK_PATH", Path(directory) / "registry" / "runner-live.lock"),
               contextlib.redirect_stdout(output)):
             runnable, _skipped, failures, _elapsed = RUNNER.run_suites(
                 [(f"suite-{index}.py", "safe") for index in range(24)],
@@ -755,15 +712,15 @@ class ServerSuiteRunner(unittest.TestCase):
                   mock.patch.object(RUNNER.shutil, "disk_usage",
                                     return_value=type("Usage", (), {"free": 10 * 1024**2,
                                                                      "total": 100 * 1024**2})())):
-                self.assertIsNone(RUNNER._memory_scratch_root())
+                self.assertIsNone(RUNNER._memory_scratch_root(2))
 
             with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
                   mock.patch.object(RUNNER, "_tmpfs_mounts", return_value=iter([mount])),
                   mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True) as probe,
                   mock.patch.object(RUNNER.shutil, "disk_usage",
-                                    return_value=type("Usage", (), {"free": 100 * 1024**2,
-                                                                     "total": 100 * 1024**2})())):
-                owned = RUNNER._memory_scratch_root()
+                                    return_value=type("Usage", (), {"free": 300 * 1024**2,
+                                                                     "total": 500 * 1024**2})())):
+                owned = RUNNER._memory_scratch_root(1)
             self.assertIsNotNone(owned)
             self.assertEqual(owned.parent, mount)
             self.assertLessEqual(len(os.fsencode(owned)), 200)
@@ -892,7 +849,7 @@ class ServerSuiteRunner(unittest.TestCase):
             time.sleep(.08)
             self.assertEqual(marker.stat().st_size, size, "grandchild continued after timeout")
 
-    def test_run_process_preserves_suite_failure_text_without_scratch_relabel(self):
+    def test_run_process_preserves_suite_failure_text(self):
         command = [sys.executable, "-c",
                    "import sys; print('OSError: [Errno 122] Disk quota exceeded'); sys.exit(1)"]
         with contextlib.redirect_stdout(io.StringIO()):
@@ -938,7 +895,8 @@ class ServerSuiteRunner(unittest.TestCase):
         for human_output in (
                 "test_known ... ok\\nuncaught thread traceback ... expected failure",
                 "garbage test_fixed ... skipped\\nrandom stderr output"):
-            self.assertEqual(RUNNER._parse_test_outcomes(records, human_output), expected)
+            self.assertNotEqual(human_output, records)
+            self.assertEqual(RUNNER._parse_test_outcomes(records), expected)
 
     def test_successful_exit_kills_leftover_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-success-cleanup-") as temp:

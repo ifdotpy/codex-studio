@@ -42,40 +42,42 @@ runnable tasks)`. The plan then applies the hard memory limit and suite-count
 limit. Memory jobs divide the smaller of half `MemAvailable` and
 `MemAvailable - 4 GiB` by peak suite RSS. Linux `MemAvailable` already reflects
 memory currently occupied by tmpfs/shmem, so scratch is not counted a second
-time. The runner selects tmpfs when available, requires a free-space margin of
-at least 64 MiB or one quarter of the mount (whichever is larger), and runs a
-64 MiB write+fsync quota probe. The probe has caught roots that report free
+time. The runner selects tmpfs only when free space is at least 256 MiB per planned
+worker, then runs a 64 MiB write+fsync quota probe. The bound rounds up the
+measured peak of about 4.5 GiB across 25 workers (184 MiB per worker) to leave
+headroom for concurrent suite scratch. The probe has caught roots that report free
 space but cannot actually write. If tmpfs is unavailable, it uses disk scratch
 with the same CPU/memory plan; disk-backed full runs under heavy load are not
 currently green (see [known failures](../tests/KNOWN-FAILURES.md)).
 
 Measured suite durations only order the longest suites first. Profile data is
-stored per repository in the short test cache. The plan line reports
+stored per repository in the short test cache; peak RSS is replaced with the
+latest completed run's measurement, so one outlier affects planning only until
+the next run. The plan line reports
 `availableCpus` (CPU allowance after competing load and floor), `otherRunnableProcesses`
 (sampled competitors), `cpuLimit` (affinity/cgroup ceiling), `cpuFloor`,
 `availableMemoryBytes`, `memoryBudgetBytes` (half available memory, retaining the
 4 GiB reserve), `measuredPeakSuiteRssBytes`, `measuredWorkerMemoryBytes`,
-`memoryWorkerSlots`, `cpuWorkerSlots`, `unclampedCpuCount`, `runnerCpuSlots`,
-`runnerMemorySlots`, `estimatedSuiteSeconds`, `runnableSuites`, `workers`,
+`memoryWorkerSlots`, `cpuWorkerSlots`, `unclampedCpuCount`,
+`estimatedSuiteSeconds`, `runnableSuites`, `workers`,
 `codexExecutable` (the one resolved app-server executable or null), and
-`limitingBound` (CPU, memory, suite count, explicit request, or shared runner
-registry). `cpuLimit` is the affinity/cgroup ceiling; `cpuFloor` is the
+`limitingBound` (CPU, memory, suite count, or explicit request). `cpuLimit` is the affinity/cgroup ceiling; `cpuFloor` is the
 quarter-CPU minimum. `otherRunnableProcesses` is the five-second median minus
-the planner's own runnable sample. `runnerWaitExpired` appears only if a shared
-claim wait reaches its bound. `--jobs` and `CODEX_SERVER_TEST_JOBS` request a
+the planner's own runnable sample. `--jobs` and `CODEX_SERVER_TEST_JOBS` request a
 job count; if a resource bound reduces it, the runner prints the reduction.
 `--show-jobs` is advisory and does not reserve slots; use
 `--load-sample-seconds 0` or `CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a
-fast query. The summary lines report passed/failed/skipped and elapsed time,
-then the exact expected-failure and unexpected-success test IDs. Those IDs are
+fast query. The summary reports suite counts (plain assertion scripts count once per suite),
+opt-in/environment skips, runner errors, and elapsed time. It then prints the exact
+expected-failure and unexpected-success test IDs and structured unittest outcome counts. Those IDs are
 pinned in `tests/server/expected_failures.txt`; a mismatch fails the run.
 Known product issues and reproductions are in
 [`tests/KNOWN-FAILURES.md`](../tests/KNOWN-FAILURES.md), while expectation edits
 are tracked in [`tests/TEST-STATUS-CHANGES.md`](../tests/TEST-STATUS-CHANGES.md).
 Use `python3 tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
-Concurrent runners share a per-user registry; a runner that would receive less
-than half its planned workers prints `waiting for another test run to finish`
-and waits up to three minutes before using the remaining capacity.
+Concurrent runners serialize on one per-user lock held for the whole run. A waiting
+runner prints `waiting for another test run to finish`, then samples load and plans
+workers after the lock is released. The operating system releases the lock if a runner exits abnormally.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
@@ -88,10 +90,11 @@ plan, and permits that exact resolved path as the `CODEX_BIN` and audit-policy
 environment values passed to the isolated supervisor. The audit also requires
 `HOME`, `CODEX_HOME`, and all `XDG_*` home paths in each launched Codex child to
 stay outside protected state; this redirected child environment is the
-isolation boundary for native executable state. The audit itself observes
-Python-level filesystem open/list/stat/mutation, SQLite connect, and subprocess
-argv/environment events; it cannot observe filesystem access performed
-internally by non-Python native child processes. The host binary is statically
+isolation boundary for native executable state. The audit hooks observe Python-level
+`open`, list, create, remove, rename, SQLite connect, and `subprocess.Popen`
+argv/environment events. They do not observe metadata checks, `exec*`, `posix_spawn`, shell `system`, or filesystem access performed
+internally by non-Python native child processes. The child isolation relies on its
+redirected `HOME`/`CODEX_HOME`/`XDG_*`; the audit does not inspect native child internals. The host binary is statically
 linked, so there are no adjacent shared-library paths to allow. The runner
 fails if any blocked access was logged and prints the allowed executable
 separately.
@@ -154,7 +157,7 @@ logged. If no executable resolves, this suite is reported as an environment
 skip with the missing Codex executable named. There is no fake-binary split:
 all 15 tests exercise PTY process creation and the real supervisor/app-server
 lifecycle protocol, so a stub would remove the contract under test. On the
-verified head the default run reports 322 passed suites, 0 failures, and 62
+verified head the default run reports 330 passed suites, 0 failures, and 62
 opt-in skips.
 `npm --prefix web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by

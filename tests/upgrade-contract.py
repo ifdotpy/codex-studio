@@ -193,6 +193,11 @@ class UpgradeContract(unittest.TestCase):
                         stack.enter_context(patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()))
                         runtime.search_migration_start()
                         codex_analytics_storage.start(runtime)
+                        # Exercise payload migration while the other old-state
+                        # migration workers are writing the shared database.
+                        codex_payload_migrate.run(
+                            state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
+                            batch_bytes=128 * 1024, max_batches=None)
                         deadline = time.monotonic() + 30
                         while time.monotonic() < deadline:
                             with runtime.db() as db:
@@ -203,12 +208,6 @@ class UpgradeContract(unittest.TestCase):
                             time.sleep(.02)
                         self.assertEqual(phase, "complete")
                         self.assertEqual(analytics_status, "complete")
-                        # The old-state migrations share canvas.sqlite3. Wait
-                        # for the background search and analytics writers to
-                        # finish before running the payload migration.
-                        codex_payload_migrate.run(
-                            state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
-                            batch_bytes=128 * 1024, max_batches=None)
                     with sqlite3.connect(state / "canvas.sqlite3") as db:
                         payload_states = dict(db.execute(
                             "SELECT name,complete FROM runtime_payload_migrations"))
@@ -329,7 +328,7 @@ class SupervisorUpgradeContract(unittest.TestCase):
             filename = state / "background-recovery.json"
             filename.write_text(json.dumps(config))
             loaded = recover_backend.load_config(filename, state)
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ, {"HOME": str(state)}, clear=True):
                 env = recover_backend.launch_environment(loaded, state)
             self.assertNotIn("CODEX_AGENTS_SUPERVISOR_MODE", env)
             self.assertEqual(recover_backend.supervisor_tick(loaded, state)[1], "disabled")
@@ -338,7 +337,7 @@ class SupervisorUpgradeContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:
             state = Path(directory).resolve()
             (state / "background-recovery.json").write_text('{"supervisorEnabled":true}\n')
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ, {"HOME": str(state)}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "AppServers were not started"):
                     AppServer(state, lambda _: None, lambda _: None, lambda: None, executable="/usr/bin/true")
 
