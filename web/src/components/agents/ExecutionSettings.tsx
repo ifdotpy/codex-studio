@@ -115,6 +115,7 @@ type SettingsProps = {
   teamDefaults?: boolean;
   initialRole?: SetupRole;
   settingsRow?: boolean;
+  showAccountSummary?: boolean;
   extrasTargetId?: string;
   nextTurnSupported?: boolean;
   onOpenChange?: (opened: boolean) => void;
@@ -243,6 +244,7 @@ function ScopedExecutionSettings({
   permissionsOnly = false,
   initialRole = "orchestrator",
   settingsRow = false,
+  showAccountSummary = false,
   extrasTargetId,
   permissionsTargetId,
   onAccountChange,
@@ -1232,9 +1234,10 @@ function ScopedExecutionSettings({
         {displayModel(summaryCatalog, summaryModel)}
         {summaryEffort && ` · ${title(summaryEffort)}`}
         {summaryRole !== "review" &&
-          connectedAccounts.filter(
-            (account) => (account.provider || "codex") === summaryProvider,
-          ).length > 1 &&
+          (showAccountSummary ||
+            connectedAccounts.filter(
+              (account) => (account.provider || "codex") === summaryProvider,
+            ).length > 1) &&
           ` · ${setupAccountName(accounts.find((account) => account.id === summaryAccount))}`}
       </span>
     </Button>
