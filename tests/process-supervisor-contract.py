@@ -130,6 +130,183 @@ def wait_for(fn, timeout=5):
     raise AssertionError('timed out waiting for private process fixture')
 
 
+class ProcessProxyTailDeliveryContract(unittest.TestCase):
+    def test_process_exit_does_not_overtake_final_stdout_event(self):
+        proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
+        proxy.detached = False
+        proxy.event_lock = threading.RLock()
+        proxy.cursor = 0
+        proxy.read_cursor = 0
+        proxy.sequence = 0
+        proxy.generation = 1
+        proxy.remote_to_local = {}
+        proxy.ack_pending = set()
+        proxy._returncode = None
+        stderr = []
+        proxy.stderr_sink = stderr.append
+        frames = iter([
+            {'event': None, 'returnCode': 0,
+             'stdoutReaderAlive': True, 'stderrReaderAlive': True},
+            {'event': {'sequence': 1, 'kind': 'stdout',
+                       'payload': json.dumps({'method': 'item/completed',
+                                              'params': {'itemId': 'final-tail'}}),
+                       'generation': 1}, 'returnCode': 0,
+             'stdoutReaderAlive': True, 'stderrReaderAlive': True},
+            {'event': {'sequence': 2, 'kind': 'exit',
+                       'payload': json.dumps({'returnCode': 0}),
+                       'generation': 1}, 'returnCode': 0,
+             'stdoutReaderAlive': False, 'stderrReaderAlive': True},
+            {'event': {'sequence': 3, 'kind': 'stderr',
+                       'payload': json.dumps({'data': 'final-stderr-tail'}),
+                       'generation': 1}, 'returnCode': 0,
+             'stdoutReaderAlive': False, 'stderrReaderAlive': True},
+            {'event': None, 'returnCode': 0,
+             'stdoutReaderAlive': False, 'stderrReaderAlive': False},
+        ])
+
+        def call(action, **values):
+            if action == 'ack':
+                return {}
+            return next(frames)
+
+        proxy.call = call
+        self.assertEqual(proxy.next_event(),
+                         (1, json.dumps({'method': 'item/completed',
+                                         'params': {'itemId': 'final-tail'}}) + '\n'))
+        self.assertIsNone(proxy.next_event())
+        self.assertEqual(proxy._returncode, 0)
+        self.assertEqual(stderr, ['final-stderr-tail'])
+
+    def test_finished_readers_are_terminal_when_exit_receipt_is_missing(self):
+        proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
+        proxy.detached = False
+        proxy.event_lock = threading.RLock()
+        proxy.cursor = 0
+        proxy.read_cursor = 0
+        proxy.sequence = 0
+        proxy.generation = 1
+        proxy.ack_pending = set()
+        proxy.remote_to_local = {}
+        proxy._returncode = None
+        calls = []
+
+        def call(action, **values):
+            calls.append(action)
+            if action != 'next' or len(calls) > 1:
+                raise AssertionError('terminal proxy must stop after both readers finish')
+            return {'event': None, 'returnCode': 1,
+                    'stdoutReaderAlive': False, 'stderrReaderAlive': False}
+
+        proxy.call = call
+        self.assertIsNone(proxy.next_event())
+        self.assertEqual(proxy._returncode, 1)
+        self.assertEqual(calls, ['next'])
+
+    def test_legacy_exit_receipt_remains_terminal_without_reader_status(self):
+        proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
+        proxy.detached = False
+        proxy.event_lock = threading.RLock()
+        proxy.cursor = 0
+        proxy.read_cursor = 0
+        proxy.sequence = 0
+        proxy.generation = 1
+        proxy.ack_pending = set()
+        proxy.remote_to_local = {}
+        proxy._returncode = None
+        calls = []
+
+        def call(action, **values):
+            calls.append(action)
+            if action == 'ack':
+                return {}
+            return {'event': {'sequence': 1, 'kind': 'exit',
+                              'payload': json.dumps({'returnCode': 0}),
+                              'generation': 1}, 'returnCode': 0}
+
+        proxy.call = call
+        self.assertIsNone(proxy.next_event())
+        self.assertEqual(proxy._returncode, 0)
+        self.assertEqual(calls, ['next', 'ack'])
+
+
+class SupervisorNextReaderFenceContract(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='supervisor-next-fence-')
+        self.root = Path(self.temp.name)
+        self.supervisor = process_supervisor.Supervisor(self.root)
+        self.supervisor.journal = process_supervisor.Journal(self.root)
+        self.handle = 'account:next-fence-fixture'
+        with self.supervisor.journal.db() as db:
+            db.execute('INSERT INTO handles(id,signature,pid,created,generation) VALUES (?,?,?,?,1)',
+                       (self.handle, 'fixture-signature', 42, time.time()))
+
+        class Reader:
+            alive = True
+            def is_alive(self):
+                return self.alive
+
+        self.child = type('ChildFixture', (), {})()
+        self.child.handle = self.handle
+        self.child.process = type('ProcessFixture', (), {'poll': lambda _: 0})()
+        self.child.paused = threading.Event()
+        self.child.reader = Reader()
+        self.child.stderr = Reader()
+        self.supervisor.children[self.handle] = self.child
+        original_db = self.supervisor.journal.db
+        child = self.child
+
+        class Cursor:
+            def __init__(self, cursor, db, race):
+                self.cursor, self.db, self.race = cursor, db, race
+            def fetchone(self):
+                row = self.cursor.fetchone()
+                if self.race and row is None:
+                    payload = json.dumps({'method': 'item/completed',
+                                          'params': {'itemId': 'arrived-after-select'}})
+                    self.db.execute('UPDATE handles SET sequence=1 WHERE id=?', (child.handle,))
+                    self.db.execute('INSERT INTO events(handle,sequence,kind,payload,size,generation) '
+                                    'VALUES (?,?,?,?,?,1)',
+                                    (child.handle, 1, 'stdout', payload, len(payload.encode())))
+                    self.db.commit()
+                    child.reader.alive = False
+                    child.stderr.alive = False
+                return row
+
+        class Connection:
+            def __init__(self, db):
+                self.db = db
+            def __getattr__(self, name):
+                return getattr(self.db, name)
+            def execute(self, sql, params=()):
+                cursor = self.db.execute(sql, params)
+                race = sql.startswith('SELECT sequence,kind,payload,generation FROM events')
+                return Cursor(cursor, self.db, race)
+
+        @contextmanager
+        def database():
+            with original_db() as db:
+                yield Connection(db)
+
+        self.supervisor.journal.db = database
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        self.supervisor.journal.close()
+        self.temp.cleanup()
+
+    def test_reader_completion_sample_precedes_empty_event_query(self):
+        first = self.supervisor.handle({'action': 'next', 'handle': self.handle, 'cursor': 0})
+        self.assertIsNone(first['event'])
+        self.assertTrue(first['stdoutReaderAlive'])
+        self.assertTrue(first['stderrReaderAlive'])
+        second = self.supervisor.handle({'action': 'next', 'handle': self.handle, 'cursor': 0})
+        self.assertEqual(second['event']['kind'], 'stdout')
+        self.assertEqual(json.loads(second['event']['payload'])['params']['itemId'],
+                         'arrived-after-select')
+        self.assertFalse(second['stdoutReaderAlive'])
+        self.assertFalse(second['stderrReaderAlive'])
+
+
 class StdoutPersistenceContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-')
@@ -316,6 +493,52 @@ class StdoutPersistenceContract(unittest.TestCase):
         self.assertEqual(operation['response_sequence'], 1)
         self.assertTrue(self.child.reader.is_alive())
         self.assert_recovered_once()
+
+    def test_process_exit_waits_for_delayed_final_stdout_persistence(self):
+        self.inject(OSError(28, 'fixture storage delay'))
+        frame = {'method': 'item/completed', 'params': {'itemId': 'delayed-tail'}}
+        self.process.stdin.write(json.dumps(frame) + '\n')
+        self.process.stdin.close()
+        self.assertTrue(self.failed.wait(2))
+        self.process.wait(timeout=2)
+        self.assertTrue(self.child.reader.is_alive())
+
+        proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
+        proxy.handle = self.handle
+        proxy.detached = False
+        proxy.event_lock = threading.RLock()
+        proxy.cursor = 0
+        proxy.read_cursor = 0
+        proxy.sequence = 0
+        proxy.generation = 1
+        proxy.ack_pending = set()
+        proxy.remote_to_local = {}
+        proxy._returncode = None
+        proxy.stderr_sink = lambda _: None
+        queried = threading.Event()
+
+        def call(action, **values):
+            result = self.supervisor.handle({'action': action, 'handle': self.handle, **values})
+            if action == 'next':
+                queried.set()
+            return result
+
+        proxy.call = call
+        delivered = []
+        reader = threading.Thread(target=lambda: delivered.append(proxy.next_event()), daemon=True)
+        reader.start()
+        self.assertTrue(queried.wait(2))
+        self.assertIsNotNone(self.process.poll())
+        self.assertEqual(delivered, [])
+        self.release.set()
+        reader.join(timeout=2)
+        self.assertFalse(reader.is_alive())
+        self.assertEqual(len(delivered), 1)
+        sequence, raw = delivered[0]
+        payload = json.loads(raw)
+        self.assertEqual(sequence, 1)
+        payload.pop('_studioSupervisorReceivedAt')
+        self.assertEqual(payload, frame)
 
     def test_stdout_end_does_not_report_exit_while_native_child_is_alive(self):
         error = sqlite3.OperationalError('database or disk is full')
@@ -599,14 +822,21 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertIsInstance(receipt, (int, float), 'Journal the supervisor receipt time before replay')
 
         entered, release_restore, constructed = threading.Event(), threading.Event(), threading.Event()
+        scheduler_entered, release_scheduler = threading.Event(), threading.Event()
         observed, result, errors = [], [], []
         original_restore = Runtime.supervisor_reattached
+        original_schedule = Runtime.schedule
         def restore(runtime, *args):
             observed.append(runtime)
             entered.set()
             if not release_restore.wait(4):
                 raise RuntimeError('The fixture restore gate timed out')
             return original_restore(runtime, *args)
+        def gated_schedule(runtime):
+            scheduler_entered.set()
+            if not release_scheduler.wait(5):
+                raise RuntimeError('The fixture scheduler gate timed out')
+            return original_schedule(runtime)
         def construct():
             try:
                 with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
@@ -615,7 +845,8 @@ class ProcessSupervisorContract(unittest.TestCase):
                 errors.append(error)
             finally:
                 constructed.set()
-        with patch.object(Runtime, 'supervisor_reattached', restore):
+        with patch.object(Runtime, 'supervisor_reattached', restore), \
+                patch.object(Runtime, 'schedule', gated_schedule):
             worker = threading.Thread(target=construct)
             worker.start()
             try:
@@ -633,6 +864,8 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(errors, [])
         second = result[0]
         self.addCleanup(second.close)
+        self.addCleanup(release_scheduler.set)
+        self.assertTrue(scheduler_entered.wait(3), 'The fixture scheduler must reach its gate')
         with patch('codex_native_runtime.executable_for', return_value={'path':str(self.binary)}):
             replacement = second.connect()
         self.assertTrue(replacement.supervisor_resumed)
@@ -659,6 +892,14 @@ class ProcessSupervisorContract(unittest.TestCase):
             notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:native-monitor'").fetchall()
         self.assertEqual(len(notices), 1)
         self.assertEqual(json.loads(notices[0]['text'])['status'], 'lost')
+        # Consume this independent notice so it does not queue a second turn.
+        with second.db() as db:
+            notice = db.execute("SELECT status FROM runtime_events WHERE id='monitor:native-monitor'").fetchone()
+            self.assertEqual(notice['status'], 'pending')
+            delivered = db.execute("UPDATE runtime_events SET status='delivered' "
+                                   "WHERE id='monitor:native-monitor' AND status='pending'")
+            self.assertEqual(delivered.rowcount, 1)
+        release_scheduler.set()
         wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
         partial = self._stored_runtime_item(second, agent['id'], 'long-item')
         self.assertEqual(partial['text'], 'buffered-')
@@ -978,7 +1219,14 @@ class ProcessSupervisorContract(unittest.TestCase):
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
         runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
-        self.addCleanup(runtime.close)
+        def close_runtime():
+            self.assertTrue(all(server is None for server in runtime.servers.values()))
+            self.assertEqual(runtime.__dict__.get('_late_servers', []), [])
+            self.assertEqual(runtime.__dict__.get('_native_tools_retiring', {}), {})
+            runtime.servers.clear()
+            runtime.server = None
+            runtime.close()
+        self.addCleanup(close_runtime)
         agent = runtime.create({'name': 'Burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
         with runtime.lock, runtime.db() as db:
             agent = runtime.agent(agent['id'], db)
