@@ -2924,12 +2924,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             records = cached.get("records") if isinstance(cached, dict) else None
             changes = None
             if key is not None and before is not None and isinstance(records, dict):
-                dependencies = frozenset(row for row in key[1] if row[0] != "agents")
-                previous_dependencies = frozenset(row for row in before[1] if row[0] != "agents")
+                membership = {"agents", "work", "transfers"}
+                dependencies = frozenset(row for row in key[1] if row[0] not in membership)
+                previous_dependencies = frozenset(row for row in before[1] if row[0] not in membership)
                 if dependencies == previous_dependencies:
                     generation = next(value for kind, value in key[1] if kind == "agents")
                     previous_generation = next(value for kind, value in before[1] if kind == "agents")
                     changes = self.scheduler_changed_ids(db, previous_generation, generation)
+                    if changes is not None:
+                        affected = set(changes)
+                        changed_dependencies = key[1] ^ before[1]
+                        affected.update(value for kind, value in changed_dependencies if kind == "work")
+                        roots = [value for kind, value in changed_dependencies if kind == "transfers"]
+                        # Root lookups use runtime_agent_root. Owner and transfer
+                        # membership share the same snapshot as agent changes.
+                        for offset in range(0, len(roots), 256):
+                            batch = roots[offset:offset + 256]
+                            affected.update(row[0] for row in db.execute(
+                                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId') IN (" +
+                                ",".join("?" * len(batch)) + ")", batch).fetchall())
+                        changes = list(affected)
             if changes is None:
                 rows = db.execute(query + " ORDER BY rowid").fetchall()
             else:
@@ -3368,9 +3382,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                              for key in ("deletedAt", "cwd", "isLead", "parentId", "rootId")):
                 from codex_peer_teams import sync_entities as sync_peer_team_entities
                 sync_peer_team_entities(self, db, {previous.get("cwd"), record.get("cwd")})
-        elif table == "work":
-            # Work ownership and status retain deleted owners in the scheduler roster.
-            self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
                 ResourceRef, RoomResource, TaskResource, WorkspaceResource,
