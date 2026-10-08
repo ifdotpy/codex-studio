@@ -10,11 +10,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-test("remove-sending pointer hit target", async ({ page }) => {
-  test.fail(
-    "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
-  );
-  test.setTimeout(120_000);
+async function setupSendingRemovePointer(page) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-remove-hit-test-"));
   const fixture = spawn(
@@ -27,12 +23,17 @@ test("remove-sending pointer hit target", async ({ page }) => {
   );
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
+  let startupTimeout;
   const port = await new Promise((resolve, reject) => {
+    startupTimeout = setTimeout(
+      () => reject(new Error(`Sending-message fixture did not start: ${log}`)),
+      10_000,
+    );
     fixture.stdout.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
-  });
+  }).finally(() => clearTimeout(startupTimeout));
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
@@ -52,7 +53,7 @@ test("remove-sending pointer hit target", async ({ page }) => {
   }).then(async (response) => {
     assert.equal(response.status, 200, await response.text());
   });
-  page.setDefaultTimeout(15_000);
+  page.setDefaultTimeout(10_000);
   await page.setViewportSize({ width: 1440, height: 960 });
   await page.goto(origin);
   await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
@@ -67,12 +68,9 @@ test("remove-sending pointer hit target", async ({ page }) => {
     name: "Copy message",
     exact: true,
   });
-  await remove.waitFor();
-  await page.mouse.move(24, 24);
-  const unhovered = {
-    remove: await remove.boundingBox(),
-    copy: await copy.boundingBox(),
-  };
+  await card.waitFor({ state: "visible", timeout: 10_000 });
+  await remove.waitFor({ state: "visible", timeout: 10_000 });
+  await copy.waitFor({ state: "visible", timeout: 10_000 });
   const body = await card.locator(".prose.plain").boundingBox();
   await page.mouse.move(body.x + body.width / 2, body.y + body.height / 2, {
     steps: 5,
@@ -83,28 +81,36 @@ test("remove-sending pointer hit target", async ({ page }) => {
     removeBox.y + removeBox.height / 2,
     { steps: 5 },
   );
-  const hovered = {
-    remove: await remove.boundingBox(),
-    copy: await copy.boundingBox(),
-  };
+  const hovered = await remove.boundingBox();
   const center = {
-    x: hovered.remove.x + hovered.remove.width / 2,
-    y: hovered.remove.y + hovered.remove.height / 2,
+    x: hovered.x + hovered.width / 2,
+    y: hovered.y + hovered.height / 2,
   };
   const hit = await page.evaluate(({ x, y }) => {
     const target = document.elementFromPoint(x, y);
     return target?.closest("button")?.getAttribute("aria-label") ?? null;
   }, center);
-  console.log(
-    JSON.stringify({
-      viewport: await page.evaluate(() => ({
-        width: innerWidth,
-        hoverNone: matchMedia("(hover: none)").matches,
-      })),
-      unhovered,
-      hovered,
-      hit,
-    }),
+  return { card, remove, copy, hit, center };
+}
+
+test("sending outgoing message exposes both delivery controls", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  page.setDefaultTimeout(10_000);
+  const { card, remove, copy } = await setupSendingRemovePointer(page);
+  await card.getByRole("status").waitFor({ state: "visible" });
+  await remove.waitFor({ state: "visible" });
+  await copy.waitFor({ state: "visible" });
+});
+
+test("remove-sending pointer hit target", async ({ page }) => {
+  test.setTimeout(30_000);
+  page.setDefaultTimeout(10_000);
+  const { card, hit, center } = await setupSendingRemovePointer(page);
+  assert.equal(hit, "Copy message");
+  test.fail(
+    "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
   );
   await page.mouse.click(center.x, center.y);
   await expect(card).toBeHidden({ timeout: 1000 });

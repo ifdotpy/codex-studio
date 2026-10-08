@@ -24,7 +24,10 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3.14",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
+    },
   );
   let browser,
     context,
@@ -287,23 +290,9 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       }
       if (rendered) {
         await entry(text).waitFor();
-        const status = entry(text).getByRole("status");
-        const body = posts.findLast((post) => post.text === text);
-        await expect
-          .poll(
-            async () => {
-              if (await status.count()) {
-                const label = await status.innerText();
-                if (["Starting…", "Waiting for agent", "Sent"].includes(label))
-                  return label;
-              }
-              return (await serverTranscriptHas(body, text))
-                ? "materialized"
-                : null;
-            },
-            { timeout: 10_000 },
-          )
-          .not.toBeNull();
+        await expect(entry(text).getByRole("status")).toHaveText(
+          "Waiting for agent",
+        );
       } else {
         const body = posts.at(-1);
         assert.ok(

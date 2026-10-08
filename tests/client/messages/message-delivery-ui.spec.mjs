@@ -27,11 +27,7 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
-test("remove message button remains reachable by pointer", async ({ page }) => {
-  test.fail(
-    "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
-  );
-  test.setTimeout(120_000);
+async function setupUncertainRemovePointer(page) {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -43,12 +39,17 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
   );
   let log = "";
   fixture.stderr.on("data", (chunk) => (log += chunk));
+  let startupTimeout;
   const port = await new Promise((resolve, reject) => {
+    startupTimeout = setTimeout(
+      () => reject(new Error(`Message fixture did not start: ${log}`)),
+      10_000,
+    );
     fixture.stdout.once("data", (chunk) =>
       resolve(Number(String(chunk).trim())),
     );
     fixture.once("exit", () => reject(new Error(log)));
-  });
+  }).finally(() => clearTimeout(startupTimeout));
   const origin = `http://127.0.0.1:${port}`;
   const state = await readTestState(origin);
   const lead = state.threads.find((agent) => agent.name === "Release lead");
@@ -80,23 +81,17 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
     name: "Quote message",
     exact: true,
   });
+  await message.waitFor({ state: "visible", timeout: 10_000 });
+  await remove.waitFor({ state: "visible", timeout: 10_000 });
+  await quote.waitFor({ state: "visible", timeout: 10_000 });
   await remove.scrollIntoViewIfNeeded();
-  await page.mouse.move(10, 10);
-  const unhovered = await Promise.all([
-    remove.boundingBox(),
-    quote.boundingBox(),
-  ]);
   const messageBox = await message.boundingBox();
   await page.mouse.move(
     messageBox.x + messageBox.width / 2,
     messageBox.y + messageBox.height / 2,
     { steps: 5 },
   );
-  const hovered = await Promise.all([
-    remove.boundingBox(),
-    quote.boundingBox(),
-  ]);
-  const box = hovered[0];
+  const box = await remove.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2, {
     steps: 5,
   });
@@ -108,13 +103,29 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
     );
     return center?.closest("button")?.getAttribute("aria-label") || null;
   });
-  console.log(
-    JSON.stringify({
-      viewport: await page.evaluate(() => innerWidth),
-      unhovered,
-      hovered,
-      hit,
-    }),
+  return { message, remove, quote, hit, box };
+}
+
+test("uncertain outgoing message exposes both delivery controls", async ({
+  page,
+}) => {
+  test.setTimeout(30_000);
+  page.setDefaultTimeout(10_000);
+  const { message, remove, quote } = await setupUncertainRemovePointer(page);
+  await message
+    .locator(".message-delivery-error")
+    .waitFor({ state: "visible" });
+  await remove.waitFor({ state: "visible" });
+  await quote.waitFor({ state: "visible" });
+});
+
+test("remove message button remains reachable by pointer", async ({ page }) => {
+  test.setTimeout(30_000);
+  page.setDefaultTimeout(10_000);
+  const { message, hit, box } = await setupUncertainRemovePointer(page);
+  assert.equal(hit, "Quote message");
+  test.fail(
+    "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
   );
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await message.waitFor({ state: "hidden", timeout: 1000 });
