@@ -110,6 +110,53 @@ it("matches transcript rows by receipt identity and retains edited text and atta
   );
 });
 
+it("retires delivered local cards outside the page only with exact saved input proof", () => {
+  const latest = [{ id: "lead:new", role: "assistant", text: "Latest reply" }];
+  const delivered = {
+    ...receipt,
+    displayPending: true,
+    receipt: { id: "one", status: "delivered", materialized: true },
+  };
+  const result = outgoingTranscript(latest, [delivered]);
+  assert.deepEqual(result.items, latest);
+  assert.deepEqual(result.observed, ["one"]);
+  for (const materialized of [false, undefined]) {
+    const unproven = {
+      ...delivered,
+      receipt: { ...delivered.receipt, materialized },
+    };
+    assert.equal(outgoingTranscript(latest, [unproven]).items.length, 2);
+    assert.deepEqual(outgoingTranscript(latest, [unproven]).observed, []);
+  }
+  for (const status of ["queued", "sending", "uncertain", "failed", "paused"]) {
+    assert.equal(
+      outgoingTranscript(latest, [{ ...delivered, status }]).items.length,
+      2,
+    );
+  }
+  for (const status of ["pending", "reserved", "dispatching", "uncertain"]) {
+    assert.equal(
+      outgoingTranscript(latest, [
+        { ...delivered, receipt: { ...delivered.receipt, status } },
+      ]).items.length,
+      2,
+    );
+  }
+  const original = {
+    id: "lead:batch-second",
+    clientMessageId: "one",
+    role: "user",
+    text: "Same text",
+    materialized: true,
+  };
+  assert.deepEqual(outgoingTranscript([original], [delivered]).items, [
+    original,
+  ]);
+  assert.deepEqual(outgoingTranscript([original], [delivered]).observed, [
+    "one",
+  ]);
+});
+
 it("keeps explicit delivery modes queued until a message is dispatched", () => {
   for (const delivery of ["after_tool", "steer"]) {
     const local = { ...receipt, body: { ...receipt.body, delivery } };

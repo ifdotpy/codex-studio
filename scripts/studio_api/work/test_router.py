@@ -32,6 +32,9 @@ class FakeContext:
         self.canvas = SimpleNamespace()
         self.sent_values: list[object] = []
 
+    def workspace_id(self) -> str:
+        return "workspace-1"
+
     def send(self, request: Request, value: object, status: int = 200, **_: object) -> Response:
         self.sent_values.append(value)
         if status >= 400:
@@ -213,6 +216,18 @@ class WorkRouterTests(unittest.TestCase):
         context.runtime.user_delivery_receipts.assert_called_once_with("agent-1", ["message-1"])
         self.assertEqual(rejected.status_code, 400)
         self.assertEqual(context.runtime.user_delivery_receipts.call_count, 1)
+
+    def test_receipts_preserve_optional_materialization_proof(self) -> None:
+        context = FakeContext()
+        value = {"agent": "agent-1", "items": [
+            {"id": "first", "status": "delivered", "materialized": True},
+            {"id": "second", "status": "delivered", "materialized": False},
+            {"id": "legacy", "status": "delivered"},
+        ]}
+        context.runtime.user_delivery_receipts = Mock(return_value=value)
+        response = make_client(context).get('/api/messages/receipts?agent=agent-1&ids=[]')
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json(), {**value, "workspaceId": "workspace-1"})
 
     def test_queue_request_schema_is_discriminated_and_requires_action_fields(self) -> None:
         schema = make_client(FakeContext()).get("/openapi.json").json()

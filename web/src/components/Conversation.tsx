@@ -358,7 +358,8 @@ export default function Conversation(p: {
         .filter(
           (entry) =>
             ["accepted", "uncertain"].includes(entry.status) &&
-            entry.receipt?.status !== "delivered",
+            (entry.receipt?.status !== "delivered" ||
+              entry.receipt.materialized !== true),
         )
         .map((entry) => entry.id),
       ...history
