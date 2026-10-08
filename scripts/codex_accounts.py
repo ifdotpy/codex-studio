@@ -140,7 +140,7 @@ class AccountStore:
             raise ValueError("Unknown Codex account")
         return self.data["accounts"][key]
 
-    def refresh(self, key):
+    def refresh(self, key, verified_metadata=None):
         import copy
         for _ in range(2):
             with self.lock:
@@ -149,7 +149,9 @@ class AccountStore:
                     return {k: v for k, v in row.items() if not k.startswith("_")}
                 provider, home = row.get("provider"), row.get("home")
                 claude_options = copy.deepcopy(row.get("claudeOptions"))
-            if provider == "claude":
+            if provider == "claude" and verified_metadata is not None:
+                metadata = verified_metadata
+            elif provider == "claude":
                 from codex_claude import auth_metadata as claude_auth
                 metadata = claude_auth(claude_options)
             else:
@@ -385,13 +387,13 @@ class AccountStore:
             self._save()
             return key
 
-    def register_claude(self, options=None, label=None):
+    def register_claude(self, options=None, label=None, verified_metadata=None):
         """Register native config without copying credentials or starting sign-in."""
         from codex_claude import profile_options, auth_metadata as claude_auth, installed
         options = profile_options(options)
         if not installed(options):
             raise ValueError("The Claude Code executable is missing")
-        metadata = claude_auth(options, force=True)
+        metadata = verified_metadata if verified_metadata is not None else claude_auth(options, force=True)
         if metadata["status"] != "ready":
             raise ValueError("Sign in to this Claude Code configuration with a subscription first")
         identity = json.dumps({k: options.get(k, "") for k in ("binaryPath", "configDir")}, sort_keys=True)
@@ -452,6 +454,19 @@ class AccountStore:
             }
             self._save()
             return key
+
+    def find_claude_config(self, config_dir):
+        """Return the registered account for this exact native config path."""
+        from codex_claude import profile_options
+        target = profile_options({'configDir': config_dir}).get('configDir')
+        with self.lock:
+            for key, row in self.data['accounts'].items():
+                if row.get('provider') != 'claude':
+                    continue
+                options = profile_options(row.get('claudeOptions'))
+                if options.get('configDir') == target:
+                    return {**row, 'id': key}
+        return None
 
     def update_claude(self, key, options, label=None):
         """Update launch settings; native identity paths need a separate profile."""

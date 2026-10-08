@@ -53,6 +53,11 @@ class LoginManager:
         self.lock = threading.RLock()
         self.jobs = {}
         self.deadline = deadline
+        for path in self.directory.glob('*.json'):
+            try:
+                self._job(path.stem)
+            except (ValueError, OSError, KeyError, TypeError, json.JSONDecodeError):
+                continue
 
     def _path(self, rid):
         return self.directory / (request_id(rid) + '.json')
@@ -65,7 +70,8 @@ class LoginManager:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, 'w') as stream:
             metadata = {key: job[key] for key in (
-                'flow', 'requestHash', 'emailHint', 'label', 'configDir', 'binaryPath', 'codeSubmitted'
+                'flow', 'requestHash', 'emailHint', 'label', 'configDir', 'binaryPath', 'codeSubmitted',
+                'cleanupDone'
             ) if key in job}
             json.dump({'receipt': receipt, 'metadata': metadata}, stream)
             stream.flush()
@@ -86,11 +92,68 @@ class LoginManager:
                 job = {'receipt': saved}
             self.jobs[rid] = job
             receipt = job['receipt']
+            if job.get('flow') == 'add' and not job.get('cleanupDone'):
+                job['cleanupDone'] = False
+            if job.get('flow') == 'add':
+                account = self.runtime.accounts.find_claude_config(job.get('configDir'))
+                if account:
+                    receipt.update(status='ready', accountKey=account['id'], email=account.get('email'),
+                                   plan=account.get('plan'), chatsRefreshed=True)
+                    receipt.pop('error', None)
+                    job['cleanupDone'] = True
+                    self._save(job)
             if receipt['status'] in ACTIVE:
                 self._finish(job, 'error', 'Studio restarted during sign-in. Start a new sign-in request.')
                 if job.get('flow') == 'add':
-                    shutil.rmtree(job.get('configDir', ''), ignore_errors=True)
+                    self._cleanup_add(job)
+            elif job.get('flow') == 'add' and receipt['status'] != 'ready':
+                self._cleanup_add(job)
         return self.jobs[rid]
+
+    def _cleanup_add(self, job):
+        if job.get('cleanupDone'):
+            return True
+        rid = job['receipt']['requestId']
+        expected = (self.directory / ('config-' + request_id(rid))).resolve()
+        config = Path(job.get('configDir', '')).resolve()
+        if config != expected:
+            return False
+        try:
+            shutil.rmtree(config, ignore_errors=False)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            return False
+        if config.exists():
+            return False
+        job['cleanupDone'] = True
+        self._save(job)
+        return True
+
+    def _supervised_auth_metadata(self, job, profile, env):
+        binary = codex_claude.installed(profile)
+        if not binary:
+            return {'status': 'error', 'accountId': None, 'email': None, 'plan': None}
+        deadline = min(self.deadline, 8)
+        process = subprocess.Popen(
+            [sys.executable, '-B', str(Path(__file__).resolve()), '--supervise',
+             str(deadline), binary, 'auth', 'status', '--json'],
+            env=env, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            start_new_session=True, pass_fds=(job['lease'].fileno(),),
+        )
+        try:
+            stdout, _ = process.communicate(timeout=deadline + 3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            return {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                    'error': 'Cannot read Claude Code sign-in status', '_authErrorKind': 'timeout'}
+        return codex_claude.auth_metadata_from_output(
+            process.returncode, stdout.decode('utf-8', errors='replace')
+        )
 
     def _finish(self, job, status, error=None):
         job['receipt'].update(status=status)
@@ -229,7 +292,7 @@ class LoginManager:
                 },
                 'flow': 'add', 'requestHash': request_hash, 'emailHint': email,
                 'label': label, 'configDir': config_path, 'binaryPath': binary,
-                'codeSubmitted': False, 'lease': lease,
+                'codeSubmitted': False, 'cleanupDone': False, 'lease': lease,
             }
             self.jobs[rid] = job
             try:
@@ -333,7 +396,7 @@ class LoginManager:
             with self.lock:
                 if job['receipt']['status'] not in ACTIVE:
                     return
-            metadata = codex_claude.auth_metadata(profile, force=True)
+            metadata = self._supervised_auth_metadata(job, profile, env)
             if adding:
                 with self.lock:
                     if job['receipt']['status'] not in ACTIVE:
@@ -356,7 +419,8 @@ class LoginManager:
                         self._finish(job, 'error', 'Claude sign-in failed. Start a new sign-in request.')
                     else:
                         account_key = self.runtime.accounts.register_claude(
-                            {'binaryPath': binary, 'configDir': job['configDir']}, job['label']
+                            {'binaryPath': binary, 'configDir': job['configDir']}, job['label'],
+                            verified_metadata=metadata,
                         )
                         job['receipt'].update(
                             accountKey=account_key, email=actual_email, plan=metadata['plan'],
@@ -371,7 +435,7 @@ class LoginManager:
                         or current.get('accountId') != profile['accountId']
                         or current.get('disconnected')):
                     raise ValueError('Account settings changed during sign-in')
-            refreshed = self.runtime.accounts.refresh(job['receipt']['accountKey'])
+            refreshed = self.runtime.accounts.refresh(job['receipt']['accountKey'], verified_metadata=metadata)
             with self.lock:
                 if job['receipt']['status'] not in ACTIVE:
                     return
@@ -401,7 +465,8 @@ class LoginManager:
                 process.stdout.close()
             job['lease'].close()
             if job.get('flow') == 'add' and job['receipt']['status'] != 'ready':
-                shutil.rmtree(job['configDir'], ignore_errors=True)
+                with self.lock:
+                    self._cleanup_add(job)
             if publication_needed:
                 publish_account_change(self.runtime.root)
 

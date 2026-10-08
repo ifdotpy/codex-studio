@@ -36,17 +36,26 @@ class Accounts:
             raise ValueError('Unknown account')
         return self.profile
 
-    def refresh(self, key):
+    def refresh(self, key, verified_metadata=None):
+        if verified_metadata is not None:
+            return verified_metadata
         metadata = codex_claude.auth_metadata(self.profile, force=True)
         return {**metadata, 'status': metadata['status'] if metadata['accountId'] == self.profile['accountId'] else 'changed'}
 
-    def register_claude(self, options, label):
+    def register_claude(self, options, label, verified_metadata=None):
         profile = {'provider':'claude', 'claudeOptions':options}
-        metadata = codex_claude.auth_metadata(profile, force=True)
+        metadata = verified_metadata or codex_claude.auth_metadata(profile, force=True)
         if metadata['status'] != 'ready':
             raise ValueError('not signed in')
-        self.registered.append({'options':dict(options), 'label':label, **metadata})
-        return 'claude-added-' + str(len(self.registered))
+        key = 'claude-added-' + str(len(self.registered) + 1)
+        self.registered.append({'accountKey':key, 'options':dict(options), 'label':label, **metadata})
+        return key
+
+    def find_claude_config(self, config_dir):
+        for account in self.registered:
+            if account['options'].get('configDir') == config_dir:
+                return {'id':account['accountKey'], **account}
+        return None
 
 
 class LoginTests(unittest.TestCase):
@@ -60,6 +69,9 @@ class LoginTests(unittest.TestCase):
 import json, os, pathlib, sys, time, signal
 root = pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])
 if sys.argv[1:3] == ['auth','status']:
+    if (root / 'status-block').exists():
+        (root / 'status-pid').write_text(str(os.getpid()))
+        while True: time.sleep(1)
     p = root / 'status.json'
     print(p.read_text() if p.exists() else json.dumps({'loggedIn':False}))
     sys.exit(0)
@@ -313,6 +325,41 @@ os._exit(0)
         self.assertFalse(config.exists())
         self.assertTrue((self.root / 'claude-logins' / (rid + '.json')).exists())
 
+    def test_add_restart_keeps_config_when_account_was_saved_before_receipt(self):
+        rid = str(uuid.uuid4())
+        config = self.root / 'claude-logins' / ('config-' + rid)
+        config.mkdir(parents=True)
+        options = {'binaryPath':str(self.binary), 'configDir':str(config.resolve())}
+        key = self.rt.accounts.register_claude(options, 'Recovered', verified_metadata={
+            'status':'ready', 'accountId':'claude:expected@example.com',
+            'email':'expected@example.com', 'plan':'max',
+        })
+        job = {'receipt':{'requestId':rid, 'accountKey':'pending-' + rid, 'status':'pending',
+                          'email':'expected@example.com'},
+               'flow':'add', 'configDir':str(config.resolve()), 'binaryPath':str(self.binary),
+               'requestHash':'hash', 'emailHint':'expected@example.com', 'label':'Recovered',
+               'cleanupDone':False}
+        self.login._save(job)
+        result = LoginManager(self.rt).status(rid)
+        self.assertEqual(result['status'], 'ready')
+        self.assertEqual(result['accountKey'], key)
+        self.assertTrue(config.is_dir())
+
+    def test_terminal_unregistered_add_retries_cleanup_on_restart(self):
+        rid = str(uuid.uuid4())
+        config = self.root / 'claude-logins' / ('config-' + rid)
+        config.mkdir(parents=True)
+        job = {'receipt':{'requestId':rid, 'accountKey':'pending-' + rid, 'status':'error',
+                          'error':'rejected'},
+               'flow':'add', 'configDir':str(config.resolve()), 'binaryPath':str(self.binary),
+               'requestHash':'hash', 'emailHint':None, 'label':'Rejected', 'cleanupDone':False}
+        self.login._save(job)
+        restarted = LoginManager(self.rt)
+        self.assertEqual(restarted.jobs[rid]['receipt']['status'], 'error')
+        self.assertFalse(config.exists())
+        saved = json.loads((restarted._path(rid)).read_text())
+        self.assertTrue(saved['metadata']['cleanupDone'])
+
     def test_cancel_only_owned_process_and_no_restart_of_receipt(self):
         rid = self.start()
         self.await_status(rid, {'pending'})
@@ -372,6 +419,43 @@ os._exit(0)
         self.assertEqual(self.login.status(rid)['status'],'error')
         self.assertIn('restarted',self.login.status(rid)['error'])
 
+    def test_backend_exit_stops_supervised_auth_status_process(self):
+        (self.config / 'status-block').touch()
+        rid = str(uuid.uuid4())
+        script = """
+import os, json, threading, time
+from pathlib import Path
+from types import SimpleNamespace
+from codex_claude_login import LoginManager
+profile = json.loads(os.environ['FIXTURE_PROFILE'])
+rt = SimpleNamespace(root=Path(os.environ['FIXTURE_ROOT']), accounts=SimpleNamespace(
+    lock=threading.RLock(), _row=lambda key: profile))
+manager = LoginManager(rt, deadline=10)
+rid = os.environ['FIXTURE_REQUEST']
+manager.start('claude-test', rid)
+while manager.status(rid)['status'] == 'starting': time.sleep(.02)
+manager.code(rid, 'valid-code')
+status_pid = Path(profile['claudeOptions']['configDir']) / 'status-pid'
+end = time.monotonic() + 4
+while not status_pid.exists() and time.monotonic() < end: time.sleep(.02)
+if not status_pid.exists(): raise SystemExit('status process did not start')
+os._exit(0)
+"""
+        env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
+               'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_PROFILE':json.dumps(self.profile),
+               'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=7)
+        pid = int((self.config / 'status-pid').read_text())
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(.03)
+        else:
+            self.fail('Supervised auth status survived backend exit')
+
     def test_configuration_lock_and_restart_receipt(self):
         rid = self.start()
         self.await_status(rid, {'pending'})
@@ -399,6 +483,7 @@ os._exit(0)
         canvas.runtime = self.rt
         self.rt._claude_login = self.login
         server = make_server(canvas)
+        server.server.context._maintenance_last = time.monotonic()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         origin = f'http://127.0.0.1:{server.server_port}'
@@ -431,8 +516,9 @@ os._exit(0)
             self.assertEqual(request(path + '/cancel', {'request_id':rid}, headers)[1]['status'],'cancelled')
         finally:
             server.shutdown()
+            thread.join(timeout=5)
+            self.assertFalse(thread.is_alive(), 'HTTP server did not stop')
             server.server_close()
-            thread.join()
 
     def test_config_change_during_login_does_not_report_success(self):
         rid = self.start()
