@@ -18,6 +18,10 @@ an explicit remote-parent link. Existing `orchestration_send`,
 the lead's server. Workers submit results through `orchestration_task`. Review
 decisions return to the worker. Worker directory reads and complaints also use
 the home team. Native input still uses the destination's existing delivery path.
+Remote input keeps its delivery mode. Remote input rejects attachments before
+acceptance. An input cannot resume a worker after a concurrent stop changes its
+epoch. Explicit parent resume rebinds the remote link to the parent's new epoch.
+A resume that arrives before its stop or parent update waits for those operations.
 
 The home server reserves the batch's execution slots before it sends the
 request. A remote worker requires home admission before each subsequent turn.
@@ -45,12 +49,19 @@ The Git tool accepts complete forms: `status --porcelain=v1`, `branch --list`,
 `rev-parse HEAD`, `rev-parse --show-toplevel`, `log -n COUNT` (1 to 50), and
 `show --no-patch FULL_COMMIT_HASH`. It disables optional Git locks, hooks,
 fsmonitor, and the pager. Other commands fail before execution.
+The commands disable signature programs, external diffs, textconv, lazy object
+fetch, and external Git transports. Local fetch rejects URL rewrites that match
+the bundle path. Only the local file transport is permitted for fetch.
 
 Fetch uses a Git bundle through the paired channel. The server keeps the
 export for the original request. Each chunk and the complete bundle have a
-SHA256 checksum. The bundle has a 256 MiB limit. Local Git verifies it before
+SHA256 checksum. The home server supplies known commits. The export excludes
+those commits when they exist on the remote server. A commit already present
+requires no bundle. The bundle has a 256 MiB limit. Local Git verifies it before
 fetch. Fetch changes `FETCH_HEAD`; branch review and merge remain separate
 operations. Task acceptance keeps a remote workspace for review on its server.
+Chunk receipts store metadata, without the chunk data. A durable release request
+deletes the export after fetch. The scheduler deletes exports older than 24 hours.
 
 ## Receipts and offline state
 
@@ -63,11 +74,16 @@ The scheduler retries the same envelope after connection loss. It does not
 repeat native model input. Source servers queue child results, messages, task
 submissions, and stops until the destination returns. A late state or result
 cannot reopen a stopped home team. A monotonic sequence rejects old snapshots.
+Transport errors affect one envelope. Retry delays increase from 5 seconds to
+300 seconds. Completed queue and inbox rows expire after 7 days. Compact identity
+and fingerprint records prevent expired requests from executing again.
 
 An unfinished inbound receipt stays unknown unless an exact committed effect
 proves the result. Spawn, input, task, message, stop, and state receipts can use
 that evidence. Missing evidence never permits another mutation. A crash before
 a fetch receipt can leave its result unknown; inspect `FETCH_HEAD` before use.
+A stop marker does not prove a native stop. The stop receipt stays unknown until
+the worker has no active native turn or input.
 
 ## Checks
 

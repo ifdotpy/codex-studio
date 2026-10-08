@@ -5,9 +5,11 @@ isolate_supervisor_environment()
 import copy
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
+import time
 import unittest
 from unittest.mock import patch
 
@@ -412,6 +414,344 @@ class CrossServer(unittest.TestCase):
         again = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
             'branch': 'worker', 'destination': str(target)}, 'fetch-one')
         self.assertEqual(again, result)
+
+    def review_repo(self):
+        repo = self.root / 'remote' / 'review-repo'
+        repo.mkdir()
+        def git(*args, **kwargs):
+            return subprocess.check_output(['git', '-C', str(repo), *args], text=True, **kwargs).strip()
+        git('init', '-q', '-b', 'worker')
+        git('config', 'user.name', 'Fixture')
+        git('config', 'user.email', 'fixture@example.test')
+        git('config', 'commit.gpgSign', 'false')
+        (repo / 'file').write_text('base')
+        git('add', 'file')
+        git('commit', '-qm', 'base')
+        return repo, git
+
+    def test_review_git_read_never_executes_repo_gpg(self):
+        repo, git = self.review_repo()
+        marker = self.root / 'gpg-executed'
+        program = self.root / 'gpg-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 1\n')
+        program.chmod(0o700)
+        raw = git('cat-file', 'commit', 'HEAD')
+        header, body = raw.split('\n\n', 1)
+        signed = header + '\ngpgsig -----BEGIN PGP SIGNATURE-----\n fixture\n -----END PGP SIGNATURE-----\n\n' + body + '\n'
+        sha = git('hash-object', '-t', 'commit', '-w', '--stdin', input=signed)
+        git('update-ref', 'refs/heads/worker', sha)
+        git('config', 'log.showSignature', 'true')
+        git('config', 'gpg.program', str(program))
+        git('config', 'gpg.format', 'openpgp')
+        git('log', '-n', '1')
+        self.assertTrue(marker.exists(), 'The unsafe control must execute the configured program')
+        marker.unlink()
+        for index, argv in enumerate((['log', '-n', '1'], ['show', '--no-patch', sha])):
+            receipt = self.network['remote'].receive('home', {'requestId': 'safe-git-' + str(index),
+                'action': 'git', 'payload': {'cwd': str(repo), 'argv': argv}})
+            self.assertEqual(receipt['outcome'], 'applied')
+        self.assertFalse(marker.exists())
+
+    def test_review_fetch_never_executes_insteadof_transport(self):
+        repo, _ = self.review_repo()
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        target = self.root / 'home' / 'ext-target'
+        target.mkdir()
+        subprocess.run(['git', '-C', str(target), 'init', '-q'], check=True)
+        marker, program = self.root / 'ext-executed', self.root / 'ext-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 1\n')
+        program.chmod(0o700)
+        subprocess.run(['git', '-C', str(target), 'config', 'protocol.ext.allow', 'always'], check=True)
+        subprocess.run(['git', '-C', str(target), 'config', 'url.ext::' + str(program) + ' .insteadOf',
+            tempfile.gettempdir() + '/'], check=True)
+        subprocess.run(['git', '-C', str(target), 'config', '--add', 'url.ext::' + str(program) + ' .insteadOf',
+            str(Path(tempfile.gettempdir()).resolve()) + '/'], check=True)
+        refused = None
+        try:
+            self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+                'branch': 'worker', 'destination': str(target)}, 'safe-fetch')
+        except (ValueError, subprocess.CalledProcessError) as error:
+            refused = error
+        self.assertFalse(marker.exists())
+        self.assertIsInstance(refused, ValueError)
+        self.assertIn('URL rewrite', str(refused))
+
+    def test_review_transport_exception_does_not_block_other_peers(self):
+        class AccessError(Exception):
+            status = 503
+        service = self.network['home']
+        with self.home.db() as db:
+            service.queue(db, 'offline', 'projects', {}, 'bad-peer')
+            service.queue(db, 'healthy', 'projects', {}, 'good-peer')
+        def request(server, envelope, **kwargs):
+            if server == 'offline':
+                raise AccessError('Unavailable')
+            return {'requestId': envelope['requestId'], 'outcome': 'applied', 'value': {}}
+        with patch.object(service.transport, 'request', side_effect=request):
+            service.tick()
+            f.f.eventually(lambda: not service._running)
+            with self.home.read_db() as db:
+                self.assertEqual(db.execute('SELECT state FROM runtime_server_outbox WHERE id=?', ('good-peer',)).fetchone()[0], 'complete')
+            with patch('codex_multi_server_orchestration.time.time', return_value=1000):
+                service.deliver('bad-peer')
+                with self.home.read_db() as db:
+                    first = db.execute('SELECT next_at FROM runtime_server_outbox WHERE id=?', ('bad-peer',)).fetchone()[0]
+                service.deliver('bad-peer')
+                with self.home.read_db() as db:
+                    second = db.execute('SELECT next_at FROM runtime_server_outbox WHERE id=?', ('bad-peer',)).fetchone()[0]
+                self.assertGreater(second, first)
+                self.assertLessEqual(second, 1300)
+
+    def test_review_stop_marker_is_not_native_completion_evidence(self):
+        worker = self.spawn()['agents'][0]['id']
+        with self.remote.lock, self.remote.db() as db:
+            a = self.remote.agent(worker, db)
+            a.update(status='running', inFlight=True, turnId='active-native-turn')
+            self.remote.put(db, 'agents', a)
+        self.home.stop(worker, True)
+        with patch.object(self.remote, 'interrupt', side_effect=OSError('Crash before native interrupt')) as interrupt:
+            self.drain('home')
+            envelope = self.transports['home'].calls[-1]
+            self.assertEqual(self.network['remote'].receive('home', envelope)['outcome'], 'unknown')
+            self.assertEqual(interrupt.call_count, 1)
+        with self.remote.lock, self.remote.db() as db:
+            a = self.remote.agent(worker, db)
+            a.update(inFlight=False, turnId=None)
+            self.remote.put(db, 'agents', a)
+        self.assertEqual(self.network['remote'].receive('home', envelope)['outcome'], 'applied')
+
+    def test_review_stopped_snapshot_clears_slot_and_new_admission_counts_all_slots(self):
+        worker = self.spawn()['agents'][0]['id']
+        with self.home.lock, self.home.db() as db:
+            a = self.home.agent(worker, db)
+            a.update(autoWake=False, inFlight=True, remoteReservation=True)
+            self.home.put(db, 'agents', a)
+            root = self.home.agent(self.lead['id'], db)
+            root['concurrency'] = 1
+            self.home.put(db, 'agents', root)
+        origin = a['remoteWorker']
+        self.network['home'].receive('remote', {'requestId': 'stopped-snapshot', 'action': 'state', 'payload': {
+            'link': origin['link'], 'worker': worker, 'sequence': 1000,
+            'record': {'status': 'paused', 'inFlight': False, 'epoch': 1}}})
+        self.assertFalse(self.home.agent(worker)['remoteReservation'])
+        self.home.send(worker, 'Resume', 'slot-resume', resume=True)
+        local = self.home.create({'name': 'Local', 'prompt': 'Inspect', 'role': 'reviewer'}, parent=self.lead['id'], defer=True)
+        with self.home.lock, self.home.db() as db:
+            local.update(status='running', inFlight=True, autoWake=True)
+            self.home.put(db, 'agents', local)
+            a = self.home.agent(worker, db)
+            a['remoteReservation'] = True  # Delayed reservation flag without an active slot.
+            self.home.put(db, 'agents', a)
+        result = self.network['home'].receive('remote', {'requestId': 'new-slot', 'action': 'admit',
+            'payload': {'link': origin['link'], 'worker': worker, 'epoch': 1}})
+        self.assertEqual(result['outcome'], 'unknown')
+
+    def test_review_stop_waits_for_uncertain_native_input_slot(self):
+        worker = self.spawn()['agents'][0]['id']
+        with self.remote.lock, self.remote.db() as db:
+            a = self.remote.agent(worker, db)
+            db.execute('INSERT INTO runtime_events VALUES(?,?,?,?,?,?,?,?,?)',
+                ('busy-native-input', worker, 'followup', 'Uncertain native input', 'uncertain', time.time(), a['epoch'], None, None))
+            a.update(status='completed', inFlight=False, turnId=None,
+                startAttempt={'activeAtReservation': True, 'epoch': a['epoch'], 'events': ['busy-native-input']})
+            self.remote.put(db, 'agents', a)
+            self.assertIn(worker, {slot['id'] for slot in self.remote.dispatch_active_slots(db)})
+        self.home.stop(worker, True)
+        self.assertEqual(self.drain('home')[-1]['outcome'], 'unknown')
+        envelope = self.transports['home'].calls[-1]
+        self.drain()
+        self.assertTrue(self.home.agent(worker)['inFlight'])
+        with self.remote.lock, self.remote.db() as db:
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id='busy-native-input'")
+            a = self.remote.agent(worker, db)
+            a.pop('startAttempt', None)
+            self.remote.put(db, 'agents', a)
+        self.drain()
+        self.assertFalse(self.home.agent(worker)['inFlight'])
+        self.assertEqual(self.network['remote'].receive('home', envelope)['outcome'], 'applied')
+
+    def test_review_input_cannot_resume_after_concurrent_stop(self):
+        worker = self.spawn()['agents'][0]['id']
+        self.home.send(worker, 'Next task', 'racing-input', resume=True)
+        original = self.remote.send
+        def race(*args, **kwargs):
+            self.remote.stop(worker, True)
+            return original(*args, **kwargs)
+        with patch.object(self.remote, 'send', side_effect=race):
+            results = self.drain('home')
+        self.assertEqual(results[-1]['outcome'], 'not_applied')
+        self.assertFalse(self.remote.agent(worker)['autoWake'])
+
+    def test_review_admission_counts_busy_slots_and_waits_for_old_admission(self):
+        worker = self.spawn()['agents'][0]['id']
+        local = self.home.create({'name': 'Local', 'prompt': 'Inspect', 'role': 'reviewer'}, parent=self.lead['id'], defer=True)
+        with self.home.lock, self.home.db() as db:
+            root = self.home.agent(self.lead['id'], db)
+            root['concurrency'] = 1
+            self.home.put(db, 'agents', root)
+            local.update(status='running', inFlight=True, autoWake=True)
+            self.home.put(db, 'agents', local)
+        origin = self.home.agent(worker)['remoteWorker']
+        envelope = {'requestId': 'busy-slot', 'action': 'admit',
+            'payload': {'link': origin['link'], 'worker': worker, 'epoch': 0}}
+        with self.subTest(slots='two active slots'):
+            self.assertEqual(self.network['home'].receive('remote', envelope)['outcome'], 'unknown')
+        with self.home.lock, self.home.db() as db:
+            local.update(status='completed', inFlight=False)
+            self.home.put(db, 'agents', local)
+            a = self.home.agent(worker, db)
+            a['remoteAdmissionRequest'] = 'old-admission'
+            self.home.put(db, 'agents', a)
+        envelope['requestId'] = 'next-slot'
+        with self.subTest(slots='old admission still active'):
+            self.assertEqual(self.network['home'].receive('remote', envelope)['outcome'], 'unknown')
+        self.network['home'].receive('remote', {'requestId': 'old-turn-terminal', 'action': 'state', 'payload': {
+            'link': origin['link'], 'worker': worker, 'sequence': 1000,
+            'record': {'status': 'completed', 'inFlight': False, 'epoch': 0, 'admissionId': 'old-admission'}}})
+        self.assertEqual(self.network['home'].receive('remote', envelope)['outcome'], 'applied')
+
+    def test_review_explicit_resume_rebinds_parent_epoch(self):
+        task = self.home.work_action(self.lead['id'], {'action': 'create', 'title': 'Inspect'}, 'resume-task', actor=self.lead['id'])
+        worker = self.spawn(task_id=task['id'])['agents'][0]['id']
+        self.home.stop(self.lead['id'], True)
+        self.drain('home')
+        self.drain()
+        self.home.send(self.lead['id'], 'Resume the team', 'resume-parent', resume=True)
+        self.home.send(worker, 'Resume the task', 'resume-child', resume=True)
+        self.drain('home')
+        with self.remote.lock, self.remote.db() as db:
+            self.network['remote'].admission(db, self.remote.agent(worker, db))
+        self.drain()
+        with self.remote.read_db() as db:
+            self.assertTrue(self.network['remote'].admission(db, self.remote.agent(worker, db)))
+        actor = self.remote.agent(worker)
+        result = self.network['remote'].worker_call(actor, 'task', {'action': 'get', 'task_id': task['id']}, 'resume-get')
+        self.assertEqual(result['id'], task['id'])
+        self.assertIn('id', self.remote.chat_message(worker, 'parent', 'Resumed', 'resume-message', actor['epoch']))
+        self.assertEqual(self.network['remote'].worker_call(actor, 'context', {'topic': 'plan'}, 'resume-context')['topic'], 'plan')
+
+    def test_review_remote_input_preserves_delivery_modes(self):
+        worker = self.spawn()['agents'][0]['id']
+        for delivery in ('queue', 'steer', 'after_tool', 'after_turn'):
+            self.home.send(worker, 'Task ' + delivery, 'delivery-' + delivery, resume=True, delivery=delivery)
+        self.drain('home')
+        with self.remote.read_db() as db:
+            modes = [json.loads(row[0])['delivery'] for row in db.execute('SELECT record FROM runtime_event_meta WHERE id IN ('
+                'SELECT id FROM runtime_events WHERE agent=? AND text LIKE ?)', (worker, 'Task %'))]
+        self.assertCountEqual(modes, ['queue', 'steer', 'after_tool', 'after_turn'])
+
+    def test_review_resume_waits_for_delayed_stop_and_parent_update(self):
+        worker = self.spawn()['agents'][0]['id']
+        self.home.stop(self.lead['id'], True)
+        self.home.send(self.lead['id'], 'Resume the team', 'delayed-parent', resume=True)
+        self.home.send(worker, 'Delayed resume', 'delayed-worker', resume=True)
+        with self.home.read_db() as db:
+            envelopes = [json.loads(row[0]) for row in db.execute('SELECT body FROM runtime_server_outbox ORDER BY rowid')]
+        stop = next(e for e in envelopes if e['action'] == 'stop')
+        message = next(e for e in envelopes if e['action'] == 'input' and e['payload']['text'] == 'Delayed resume')
+        service = self.network['remote']
+        self.assertEqual(service.receive('home', message)['outcome'], 'unknown')
+        with self.remote.read_db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (message['requestId'],)).fetchone())
+        self.assertEqual(service.receive('home', stop)['outcome'], 'applied')
+        self.assertEqual(service.receive('home', message)['outcome'], 'unknown')
+        rebind = next(e for e in envelopes if e['action'] == 'rebind')
+        self.assertEqual(service.receive('home', rebind)['outcome'], 'applied')
+        original = self.remote.send
+        def lose_result(*args, **kwargs):
+            original(*args, **kwargs)
+            raise OSError('Lost the committed input result')
+        with patch.object(self.remote, 'send', side_effect=lose_result) as send:
+            self.assertEqual(service.receive('home', message)['outcome'], 'unknown')
+            self.assertEqual(service.receive('home', message)['outcome'], 'applied')
+            self.assertEqual(send.call_count, 1)
+        self.assertTrue(self.remote.agent(worker)['autoWake'])
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE id=?', (message['requestId'],)).fetchone()[0], 1)
+
+    def test_review_remote_input_rejects_assets_before_acceptance(self):
+        worker = self.spawn()['agents'][0]['id']
+        with self.assertRaisesRegex(ValueError, 'attachment'):
+            self.home.send(worker, 'Attachment', 'asset-input', assets=['asset-one'], resume=True)
+        with self.home.read_db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', ('asset-input',)).fetchone())
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_event_meta WHERE id=?', ('asset-input',)).fetchone())
+
+    def test_review_incremental_fetch_releases_bundle_and_does_not_store_chunk_data(self):
+        repo, git = self.review_repo()
+        (repo / 'old-blob').write_bytes(os.urandom(2 * 1024 * 1024))
+        git('add', 'old-blob')
+        git('commit', '-qm', 'Existing history')
+        target = self.root / 'home' / 'incremental-target'
+        subprocess.run(['git', 'clone', '-q', str(repo), str(target)], check=True)
+        (repo / 'new-blob').write_bytes(os.urandom(350 * 1024))
+        git('add', 'new-blob')
+        git('commit', '-qm', 'New work')
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        def used_bytes(runtime):
+            with runtime.read_db() as db:
+                pages = db.execute('PRAGMA page_count').fetchone()[0] - db.execute('PRAGMA freelist_count').fetchone()[0]
+                return pages * db.execute('PRAGMA page_size').fetchone()[0]
+        initial_bytes = {runtime.root: used_bytes(runtime) for runtime in (self.home, self.remote)}
+        result = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'incremental-fetch')
+        with self.subTest(bound='incremental'):
+            self.assertLess(result['bytes'], 512 * 1024)
+            self.assertGreater(result['bytes'], 256 * 1024)
+        self.assertEqual(result['commit'], git('rev-parse', 'HEAD'))
+        with self.subTest(bound='release'):
+            self.assertEqual(list((self.remote.root / 'server-exports').glob('*.bundle')), [])
+        for runtime in (self.home, self.remote):
+            with self.subTest(bound='database size', server=runtime.root):
+                self.assertLess(used_bytes(runtime) - initial_bytes[runtime.root], 256 * 1024)
+            with runtime.read_db() as db:
+                for table in ('outbox', 'inbox'):
+                    results = [row[0] for row in db.execute('SELECT result FROM runtime_server_' + table + ' WHERE result IS NOT NULL')]
+                    with self.subTest(bound='chunk data', server=runtime.root, table=table):
+                        self.assertFalse(any('"data":' in result for result in results))
+                        self.assertLess(sum(map(len, results)), 64 * 1024)
+        same = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'already-fetched')
+        self.assertEqual(same['commit'], result['commit'])
+        self.assertEqual(same['bytes'], 0)
+
+    def test_review_prune_preserves_request_tombstones_and_state_sequence(self):
+        worker = self.spawn()['agents'][0]['id']
+        self.home.send(worker, 'One input', 'aged-input', resume=True)
+        self.drain('home')
+        envelope = self.transports['home'].calls[-1]
+        old = time.time() - 8 * 86400
+        export = self.remote.root / 'server-exports' / 'stale.bundle'
+        export.parent.mkdir(exist_ok=True)
+        export.write_bytes(b'expired')
+        os.utime(export, (old, old))
+        with patch('codex_multi_server_orchestration.time.time', return_value=time.time() + 8 * 86400):
+            for runtime in (self.home, self.remote):
+                runtime.multi_server().tick()
+                f.f.eventually(lambda: not runtime.multi_server()._running)
+        self.assertFalse(export.exists())
+        self.assertEqual(self.network['remote'].receive('home', envelope)['outcome'], 'unknown')
+        calls = len(self.transports['home'].calls)
+        self.assertTrue(self.spawn()['expired'])
+        self.assertEqual(len(self.transports['home'].calls), calls)
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.spawn(prompt='A changed expired request')
+        self.assertEqual(self.network['home'].tools(self.lead, {'action': 'receipt', 'server': 'remote',
+            'request_id': envelope['requestId']}, 'expired-receipt')['state'], 'expired')
+        changed = copy.deepcopy(envelope)
+        changed['payload']['text'] = 'Different content'
+        with self.assertRaisesRegex(ValueError, 'different content'):
+            self.network['remote'].receive('home', changed)
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE id=?', (envelope['requestId'],)).fetchone()[0], 1)
+        self.drain()
+        previous = self.home.agent(worker).get('remoteStateSequence', 0)
+        with self.remote.lock, self.remote.db() as db:
+            a = self.remote.agent(worker, db)
+            a.update(status='completed', inFlight=False)
+            self.remote.put(db, 'agents', a)
+        self.drain()
+        self.assertGreater(self.home.agent(worker)['remoteStateSequence'], previous)
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

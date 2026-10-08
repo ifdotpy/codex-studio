@@ -5018,6 +5018,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         sender=None,
         sender_epoch=None,
         radio_question=None,
+        _expected_epoch=None,
     ):
         assets = assets or []
         if (
@@ -5033,6 +5034,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         message_id = message_id or uid()
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
+            if _expected_epoch is not None and a['epoch'] != _expected_epoch:
+                raise ValueError('The worker was stopped before input acceptance')
+            if a.get('remoteWorker') and assets:
+                raise ValueError('Remote worker input does not support attachments')
             if safety_retry_active(a):
                 raise ValueError('Wait for the model change before sending another message')
             if sender:

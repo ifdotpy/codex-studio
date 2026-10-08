@@ -23,6 +23,8 @@ import uuid
 TIMEOUT = 20
 MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
+RECEIPT_AGE = 7 * 86400
+EXPORT_AGE = 86400
 PATH = '/api/servers/orchestration'
 
 
@@ -41,11 +43,69 @@ def encoded(value: Any) -> str:
     return json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
 
 
+def expired_receipt(key: str) -> dict[str, Any]:
+    return {'requestId': key, 'outcome': 'unknown', 'expired': True,
+            'detail': 'The receipt has expired. This identity cannot execute again.'}
+
+
+def compact_receipt(action: str, result: dict[str, Any]) -> dict[str, Any]:
+    if action != 'chunk' or result.get('outcome') != 'applied':
+        return result
+    return {**result, 'value': {k: v for k, v in result['value'].items() if k != 'data'}}
+
+
+def retry_delay(attempts: int) -> int:
+    return min(300, 5 << min(max(attempts, 0), 6))
+
+
+def git_environment() -> dict[str, str]:
+    environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
+    environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
+                       GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1')
+    return environment
+
+
+def git_command(directory: Path | str, *arguments: str, file_transport: bool = False) -> list[str]:
+    config = ['core.fsmonitor=false', 'core.hooksPath=/dev/null', 'core.pager=cat',
+              'log.showSignature=false', 'gpg.program=false', 'gpg.ssh.program=false',
+              'gpg.x509.program=false', 'diff.external=', 'protocol.allow=never',
+              'protocol.ext.allow=never', 'protocol.ssh.allow=never',
+              'protocol.http.allow=never', 'protocol.https.allow=never',
+              'protocol.file.allow=' + ('always' if file_transport else 'never')]
+    command = ['git', '--no-pager', '--no-optional-locks']
+    for setting in config:
+        command.extend(['-c', setting])
+    return [*command, '-C', str(directory), *arguments]
+
+
+def git_read(directory: Path | str, *arguments: str) -> tuple[bytes, int]:
+    output, code, truncated = bounded_command(git_command(directory, *arguments))
+    if truncated:
+        raise ValueError('The Git metadata exceeds 64 KiB')
+    return output, code
+
+
+def reject_url_rewrite(directory: str, source: str) -> None:
+    output, code = git_read(directory, 'config', '-z', '--get-regexp', r'^url\..*\.insteadof$')
+    if code not in {0, 1}:
+        raise ValueError('Git could not check the local transport configuration')
+    for entry in output.split(b'\0'):
+        if not entry:
+            continue
+        _name, separator, prefix = entry.partition(b'\n')
+        if not separator:
+            raise ValueError('Invalid Git URL rewrite configuration')
+        value = os.fsdecode(prefix)
+        if source.startswith(value) or ('file://' + source).startswith(value):
+            raise ValueError('A Git URL rewrite matches the local bundle path')
+
+
 class MultiServerService:
     def __init__(self, runtime: Any, transport: Transport) -> None:
         self.runtime, self.transport = runtime, transport
         self._running = False
         self._claim_lock = threading.RLock()
+        self._pruned_at = 0.0
         with runtime.db() as db:
             db.executescript('''
                 CREATE TABLE IF NOT EXISTS runtime_server_outbox (
@@ -62,7 +122,22 @@ class MultiServerService:
                 CREATE TABLE IF NOT EXISTS runtime_server_fetch (
                     id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,
                     state TEXT NOT NULL, result TEXT);
+                CREATE TABLE IF NOT EXISTS runtime_server_retired (
+                    id TEXT NOT NULL, direction TEXT NOT NULL, signature TEXT NOT NULL,
+                    server TEXT, PRIMARY KEY(id,direction));
+                CREATE TABLE IF NOT EXISTS runtime_server_sequence (
+                    id INTEGER PRIMARY KEY CHECK(id=1), value INTEGER NOT NULL);
+                INSERT OR IGNORE INTO runtime_server_sequence VALUES(1,0);
             ''')
+            for table in ('outbox', 'inbox'):
+                columns = {row[1] for row in db.execute('PRAGMA table_info(runtime_server_' + table + ')')}
+                for column in ('created_at', 'completed_at'):
+                    if column not in columns:
+                        db.execute('ALTER TABLE runtime_server_' + table + ' ADD COLUMN ' + column + ' REAL NOT NULL DEFAULT 0')
+                db.execute('UPDATE runtime_server_' + table + ' SET created_at=? WHERE created_at=0', (time.time(),))
+                db.execute('UPDATE runtime_server_' + table + ' SET completed_at=? WHERE completed_at=0 AND state=?', (time.time(), 'complete'))
+            maximum = db.execute('SELECT COALESCE(MAX(rowid),0) FROM runtime_server_outbox').fetchone()[0]
+            db.execute('UPDATE runtime_server_sequence SET value=MAX(value,?) WHERE id=1', (maximum,))
 
     @property
     def server_id(self) -> str:
@@ -81,8 +156,13 @@ class MultiServerService:
         row = db.execute('SELECT server,body FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
         if row and (row[0] != server or row[1] != body):
             raise ValueError('This request id has different content')
-        db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state) VALUES (?,?,?,?)',
-                   (key, server, body, 'queued'))
+        retired = db.execute('SELECT signature,server FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'out')).fetchone()
+        if retired:
+            if retired['server'] != server or retired['signature'] != hashlib.sha256(body.encode()).hexdigest():
+                raise ValueError('This request id has different content')
+            return key
+        db.execute('INSERT OR IGNORE INTO runtime_server_outbox(id,server,body,state,created_at) VALUES (?,?,?,?,?)',
+                   (key, server, body, 'queued', time.time()))
         self.runtime.changed.set()
         return key
 
@@ -91,22 +171,28 @@ class MultiServerService:
         # uncertain operation. Do not hold runtime or SQLite locks during HTTP.
         with self.runtime.read_db() as db:
             row = db.execute('SELECT * FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
-            if row['state'] == 'complete':
-                return json.loads(row['result'])  # type: ignore[no-any-return]
+            if not row:
+                if db.execute('SELECT 1 FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'out')).fetchone():
+                    return expired_receipt(key)
+                raise ValueError('Unknown remote request receipt')
             envelope, server = json.loads(row['body']), row['server']
+            if row['state'] == 'complete' and envelope['action'] != 'chunk':
+                return json.loads(row['result'])  # type: ignore[no-any-return]
         try:
             result = self.transport.request(server, envelope, timeout=TIMEOUT)
             if result.get('requestId') != key or result.get('outcome') not in {'applied', 'not_applied', 'unknown'}:
                 raise RuntimeError('The paired server returned an invalid receipt')
-        except (OSError, RuntimeError, TimeoutError) as error:
+        except Exception as error:
             with self.runtime.db() as db:
-                db.execute("UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=? WHERE id=? AND state!='complete'",
-                           (time.time() + 5, type(error).__name__, key))
+                db.execute("UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=?,"
+                           "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END "
+                           "WHERE id=? AND (state!='complete' OR json_extract(body,'$.action')='chunk')",
+                           (time.time() + retry_delay(row['attempts']), type(error).__name__, key))
             return {'requestId': key, 'outcome': 'unknown', 'status': 'offline', 'queued': True}
         with self.runtime.lock, self.runtime.db() as db:
             if result['outcome'] != 'unknown':
-                db.execute("UPDATE runtime_server_outbox SET state='complete',result=?,error=NULL WHERE id=?",
-                           (encoded(result), key))
+                db.execute("UPDATE runtime_server_outbox SET state='complete',result=?,error=NULL,completed_at=? WHERE id=?",
+                           (encoded(compact_receipt(envelope['action'], result)), time.time(), key))
                 if envelope['action'] == 'spawn':
                     if result['outcome'] == 'applied':
                         self._spawn_received(db, envelope['payload'], result['value'])
@@ -126,8 +212,9 @@ class MultiServerService:
                         self.runtime.put(db, 'agents', worker)
                         self.runtime.changed.set()
             else:
-                db.execute('UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=NULL WHERE id=?',
-                           (time.time() + 5, key))
+                db.execute("UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=NULL,"
+                           "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END WHERE id=?",
+                           (time.time() + retry_delay(row['attempts']), key))
         return result
 
     def tick(self) -> None:
@@ -137,6 +224,8 @@ class MultiServerService:
             self._running = True
         def run() -> None:
             try:
+                if time.time() - self._pruned_at > 3600:
+                    self.prune()
                 with self.runtime.read_db() as db:
                     keys = [r[0] for r in db.execute("SELECT id FROM runtime_server_outbox WHERE state='queued' AND next_at<=? ORDER BY rowid LIMIT 8", (time.time(),))]
                 for key in keys:
@@ -147,6 +236,26 @@ class MultiServerService:
                 with self._claim_lock:
                     self._running = False
         self.runtime.delivery_executor().submit(run)
+
+    def prune(self) -> None:
+        now = time.time()
+        folder = self.runtime.root / 'server-exports'
+        if folder.is_dir():
+            for path in folder.iterdir():
+                if path.suffix in {'.bundle', '.partial'}:
+                    try:
+                        if path.stat().st_mtime < now - EXPORT_AGE:
+                            path.unlink(missing_ok=True)
+                    except FileNotFoundError:
+                        pass
+        with self.runtime.db() as db:
+            for row in db.execute("SELECT id,server,body FROM runtime_server_outbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,)).fetchall():
+                db.execute('INSERT OR IGNORE INTO runtime_server_retired VALUES(?,?,?,?)',
+                    (row['id'], 'out', hashlib.sha256(row['body'].encode()).hexdigest(), row['server']))
+                db.execute('DELETE FROM runtime_server_outbox WHERE id=?', (row['id'],))
+            db.execute("INSERT OR IGNORE INTO runtime_server_retired SELECT id,'in',signature,NULL FROM runtime_server_inbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,))
+            db.execute("DELETE FROM runtime_server_inbox WHERE state='complete' AND completed_at<?", (now - RECEIPT_AGE,))
+        self._pruned_at = now
 
     def spawn(self, actor: dict[str, Any], args: dict[str, Any], key: str) -> dict[str, Any]:
         specs = args.get('agents')
@@ -176,6 +285,13 @@ class MultiServerService:
             # A remote batch reserves execution slots before the remote server
             # can start. Unknown/offline batches retain these slots.
             previous_request = db.execute('SELECT server,body,state,result,error FROM runtime_server_outbox WHERE id=?', (identity(link_id, 'spawn'),)).fetchone()
+            retired_request = db.execute('SELECT 1 FROM runtime_server_retired WHERE id=? AND direction=?', (identity(link_id, 'spawn'), 'out')).fetchone()
+            if retired_request:
+                old = self.link(db, link_id)
+                if old['server'] != server or old['specs'] != [{k:v for k,v in s.items() if k != 'server'} for s in specs]:
+                    raise ValueError('This request id has different content')
+                return {**expired_receipt(key), 'remoteRequestId': identity(link_id, 'spawn'), 'server': server,
+                    'agents': [{'id': w, 'name': s['name'], 'cwd': s['cwd'], 'server': server} for w,s in zip(workers,specs)]}
             if previous_request:
                 old = json.loads(previous_request['body'])['payload']
                 if previous_request['server'] != server or old['specs'] != [{k:v for k,v in s.items() if k != 'server'} for s in specs]:
@@ -247,18 +363,27 @@ class MultiServerService:
             # A late spawn receipt cannot replace a newer worker snapshot.
             if not proxy['autoWake'] or proxy.get('remoteStateSequence'):
                 continue
-            proxy.update(cwd=summary['cwd'], branch=summary.get('branch'), status='starting')
+            proxy.update(cwd=summary['cwd'], branch=summary.get('branch'),
+                         workerBaseCommit=summary.get('baseCommit'), status='starting')
             self.runtime.put(db, 'agents', proxy)
 
     def event(self, db: Any, agent: dict[str, Any], kind: str, text: str, key: str) -> str | None:
         remote = agent.get('remoteWorker')
         if remote:
+            metadata = db.execute('SELECT record FROM runtime_event_meta WHERE id=?', (key,)).fetchone()
+            metadata = json.loads(metadata[0]) if metadata else {}
+            if metadata.get('assets'):
+                raise ValueError('Remote worker input does not support attachments')
+            link = self.link(db, remote['link'])
             return self.queue(db, remote['server'], 'input', {'link': remote['link'], 'worker': agent['id'],
-                'kind': kind, 'text': text, 'epoch': agent.get('remoteEpoch', 0), 'controlEpoch': agent['epoch']}, identity('input', key))
+                'kind': kind, 'text': text, 'delivery': metadata.get('delivery', 'queue'),
+                'parentEpoch': link['parentEpoch'],
+                'epoch': agent.get('remoteEpoch', 0), 'controlEpoch': agent['epoch']}, identity('input', key))
         anchor = agent.get('remoteAnchor')
         if anchor:
+            link = self.link(db, anchor['link'])
             return self.queue(db, anchor['home'], 'event', {'link': anchor['link'], 'kind': kind,
-                'text': text}, identity('event', key))
+                'parentEpoch': link['parentEpoch'], 'text': text}, identity('event', key))
         return None
 
     def admission(self, db: Any, worker: dict[str, Any]) -> bool:
@@ -267,23 +392,35 @@ class MultiServerService:
             return admission.get('state') == 'granted'
         key = identity(worker['id'], 'admit', str(worker['epoch']), uuid.uuid4().hex)
         origin = worker['remoteOrigin']
+        link = self.link(db, origin['link'])
         self.queue(db, origin['home'], 'admit', {'link': origin['link'], 'worker': worker['id'],
-            'epoch': worker['epoch']}, key)
+            'parentEpoch': link['parentEpoch'], 'epoch': worker['epoch']}, key)
         worker['remoteAdmission'] = {'id': key, 'epoch': worker['epoch'], 'state': 'pending'}
         self.runtime.put(db, 'agents', worker)
         return False
 
     def state(self, db: Any, agent: dict[str, Any], previous: dict[str, Any] | None) -> None:
+        if previous and not previous['autoWake'] and agent['autoWake']:
+            for row in db.execute("SELECT id,record FROM runtime_server_links WHERE json_extract(record,'$.side')='home' AND json_extract(record,'$.parent')=?", (agent['id'],)).fetchall():
+                link = json.loads(row['record'])
+                link['parentEpoch'] = agent['epoch']
+                db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), row['id']))
+                self.queue(db, link['server'], 'rebind', {'link': row['id'], 'parentEpoch': agent['epoch']},
+                    identity(row['id'], 'rebind', str(agent['epoch'])))
         origin = agent.get('remoteOrigin')
         if origin and agent.get('remoteAdmission') and agent['status'] in {'completed', 'failed', 'paused', 'interrupted'} and not agent.get('inFlight'):
             agent.pop('remoteAdmission', None)
             self.runtime.put(db, 'agents', agent)
-        fields = ('status', 'cwd', 'branch', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
-        if origin and (previous is None or any(agent.get(k) != previous.get(k) for k in fields)):
+        fields = ('status', 'cwd', 'branch', 'workerBaseCommit', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
+        if origin and (previous is None or any(agent.get(k) != previous.get(k) for k in fields)
+                       or agent.get('startAttempt') != previous.get('startAttempt')):
             key = identity(agent['id'], 'state', uuid.uuid4().hex)
-            sequence = db.execute('SELECT COALESCE(MAX(rowid),0)+1 FROM runtime_server_outbox').fetchone()[0]
+            sequence = db.execute('UPDATE runtime_server_sequence SET value=value+1 WHERE id=1 RETURNING value').fetchone()[0]
+            link = self.link(db, origin['link'])
+            record = {k: agent.get(k) for k in fields}
+            record['inFlight'] = any(a['id'] == agent['id'] for a in self.runtime.dispatch_active_slots(db))
             self.queue(db, origin['home'], 'state', {'link': origin['link'], 'worker': agent['id'],
-                'sequence': sequence, 'record': {**{k: agent.get(k) for k in fields},
+                'parentEpoch': link['parentEpoch'], 'sequence': sequence, 'record': {**record,
                     'admissionId': (agent.get('remoteAdmission') or {}).get('id') or agent.get('remoteLastAdmission')}}, key)
         remote = agent.get('remoteWorker')
         if remote and previous and previous['autoWake'] and not agent['autoWake']:
@@ -293,11 +430,13 @@ class MultiServerService:
     def worker_call(self, actor: dict[str, Any], action: str, args: dict[str, Any], key: str) -> dict[str, Any]:
         origin = actor['remoteOrigin']
         key = identity(actor['id'], action, key)
-        payload = {'link': origin['link'], 'worker': actor['id'], 'epoch': actor['epoch'], 'args': args}
         with self.runtime.lock, self.runtime.db() as db:
             current = self.runtime.checked_actor(db, actor['id'], actor['id'])
             if current['epoch'] != actor['epoch']:
                 raise ValueError('The worker was stopped')
+            link = self.link(db, origin['link'])
+            payload = {'link': origin['link'], 'worker': actor['id'], 'epoch': actor['epoch'],
+                'parentEpoch': link['parentEpoch'], 'args': args}
             self.queue(db, origin['home'], action, payload, key)
         receipt = self.deliver(key)
         if receipt['outcome'] == 'not_applied':
@@ -315,15 +454,21 @@ class MultiServerService:
             raise ValueError('Invalid cross-server request')
         signature = hashlib.sha256(encoded([principal, action, payload]).encode()).hexdigest()
         with self._claim_lock, self.runtime.db() as db:
+            retired = db.execute('SELECT signature FROM runtime_server_retired WHERE id=? AND direction=?', (key, 'in')).fetchone()
+            if retired:
+                if retired['signature'] != signature:
+                    raise ValueError('This request id has different content')
+                return expired_receipt(key)
             row = db.execute('SELECT * FROM runtime_server_inbox WHERE id=?', (key,)).fetchone()
             if row:
                 if row['signature'] != signature:
                     raise ValueError('This request id has different content')
-                if row['result']:
+                if row['result'] and action != 'chunk':
                     return json.loads(row['result'])  # type: ignore[no-any-return]
                 # Preserve the crash boundary. Only an exact durable effect can
                 # reconcile a running receipt; no second execution is allowed.
-                if (action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context'}
+                if (row['state'] == 'waiting'
+                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
                     # Reads have no effect. Slot admission is a compare-and-set reservation, with no
@@ -334,12 +479,22 @@ class MultiServerService:
                     if evidence is None:
                         return {'requestId': key, 'outcome': 'unknown'}
                     result = {'requestId': key, 'outcome': 'applied', 'value': evidence}
-                    db.execute("UPDATE runtime_server_inbox SET state='complete',result=? WHERE id=?", (encoded(result), key))
+                    db.execute("UPDATE runtime_server_inbox SET state='complete',result=?,completed_at=? WHERE id=?", (encoded(result), time.time(), key))
                     return result
-            db.execute('INSERT OR IGNORE INTO runtime_server_inbox VALUES (?,?,?,NULL)', (key, signature, 'running'))
+            db.execute('INSERT OR IGNORE INTO runtime_server_inbox(id,signature,state,result,created_at) VALUES (?,?,?,NULL,?)', (key, signature, 'running', time.time()))
+            if row and row['state'] == 'waiting':
+                # Waiting proves that this envelope has not executed an effect.
+                # Reserve it again before an input can cross the native boundary.
+                db.execute("UPDATE runtime_server_inbox SET state='running' WHERE id=?", (key,))
         try:
             value = self._receive(principal, action, payload, key)
+            if action == 'input' and value.get('waiting'):
+                with self.runtime.db() as db:
+                    db.execute("UPDATE runtime_server_inbox SET state='waiting' WHERE id=?", (key,))
+                return {'requestId': key, 'outcome': 'unknown', 'waitingFor': 'The stop or parent update'}
             if action == 'admit' and not value.get('granted'):
+                return {'requestId': key, 'outcome': 'unknown'}
+            if action == 'stop' and value.get('pending'):
                 return {'requestId': key, 'outcome': 'unknown'}
             result = {'requestId': key, 'outcome': 'applied', 'value': value}
         except (ValueError, PermissionError) as error:
@@ -348,10 +503,18 @@ class MultiServerService:
             # Native/OS failures can follow a committed effect. Keep unknown.
             return {'requestId': key, 'outcome': 'unknown'}
         with self.runtime.db() as db:
-            db.execute("UPDATE runtime_server_inbox SET state='complete',result=? WHERE id=?", (encoded(result), key))
+            db.execute("UPDATE runtime_server_inbox SET state='complete',result=?,completed_at=? WHERE id=?",
+                (encoded(compact_receipt(action, result)), time.time(), key))
         return result
 
     def _evidence(self, db: Any, action: str, payload: dict[str, Any], key: str) -> dict[str, Any] | None:
+        if action == 'release':
+            path = self.runtime.root / 'server-exports' / (str(uuid.UUID(payload['export'])) + '.bundle')
+            if not path.exists():
+                return {'released': payload['export']}
+        if action == 'rebind':
+            if self.link(db, payload['link'])['parentEpoch'] >= payload['parentEpoch']:
+                return {'rebound': True}
         row = db.execute('SELECT result FROM runtime_operation_receipts WHERE id=?', (key,)).fetchone()
         if row:
             value = json.loads(row[0])
@@ -378,7 +541,8 @@ class MultiServerService:
                 return {'export': export_id, 'bytes': path.stat().st_size, 'sha256': file_digest(path), 'branch': payload['branch']}
         if action == 'stop':
             worker = self.runtime.agent(payload['worker'], db)
-            if worker.get('remoteStopRequest') == key:
+            if (worker.get('remoteStopRequest') == key and not worker.get('inFlight') and not worker.get('turnId')
+                    and not any(a['id'] == worker['id'] for a in self.runtime.dispatch_active_slots(db))):
                 return {'stopped': [worker['id']]}
         if action == 'state':
             worker = self.runtime.agent(payload['worker'], db)
@@ -389,7 +553,7 @@ class MultiServerService:
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
         if action == 'spawn':
             return self._remote_spawn(principal, p, key)
-        if action in {'projects', 'folders', 'git', 'export', 'chunk'}:
+        if action in {'projects', 'folders', 'git', 'export', 'chunk', 'release'}:
             return self._git_action(action, p, key)
         with self.runtime.lock, self.runtime.db() as db:
             link_id = p.get('link')
@@ -399,6 +563,16 @@ class MultiServerService:
             expected = link['server'] if link['side'] == 'home' else link['home']
             if principal != expected:
                 raise PermissionError('The remote-parent link belongs to another server')
+            if action == 'rebind':
+                if link['side'] != 'remote' or type(p.get('parentEpoch')) is not int or p['parentEpoch'] < link['parentEpoch']:
+                    raise ValueError('The parent epoch was superseded')
+                link['parentEpoch'] = p['parentEpoch']
+                db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), link_id))
+                return {'rebound': True}
+            if link['side'] == 'home' and p.get('parentEpoch', link['parentEpoch']) != link['parentEpoch']:
+                if action in {'event', 'state'}:
+                    return {'stored': False, 'reason': 'The parent epoch was superseded'}
+                raise ValueError('The parent epoch was superseded')
             if action in {'input', 'stop'}:
                 if link['side'] != 'remote' or p.get('worker') not in link['workers']:
                     raise PermissionError('Worker is outside this remote-parent link')
@@ -424,12 +598,13 @@ class MultiServerService:
                 budget_admission(self.runtime, db, worker)
                 if root['concurrency'] == 0:
                     return {'granted': False}
-                if worker.get('remoteAdmissionRequest') == key:
+                slots = [a for a in self.runtime.dispatch_active_slots(db) if a['rootId'] == root['id'] and a['id'] != root['id']]
+                if worker.get('remoteReservation') and worker.get('remoteAdmissionRequest') == key:
                     return {'granted': True}
-                if not worker.get('remoteReservation'):
-                    slots = self.runtime.dispatch_active_slots(db)
-                    if sum(a['rootId']==root['id'] and a['id']!=root['id'] for a in slots) >= root['concurrency']:
-                        return {'granted': False}
+                initial = bool(worker.get('remoteReservation') and not worker.get('remoteAdmissionRequest')
+                    and any(a['id'] == worker['id'] for a in slots))
+                if len(slots) - int(initial) >= root['concurrency']:
+                    return {'granted': False}
                 worker.update(remoteReservation=True, remoteAdmissionRequest=key, inFlight=True, status='starting')
                 self.runtime.put(db, 'agents', worker)
                 return {'granted': True}
@@ -441,7 +616,7 @@ class MultiServerService:
                 worker['remoteEpoch'] = max(worker.get('remoteEpoch', 0), record['epoch'])
                 if not worker['autoWake'] or self.runtime.agent(link['parent'], db)['epoch'] != link['parentEpoch']:
                     if record.get('status') in {'paused','failed','completed','interrupted'} and not record.get('inFlight'):
-                        worker['inFlight'] = False
+                        worker.update(inFlight=False, remoteReservation=False)
                     self.runtime.put(db, 'agents', worker)
                     return {'stored': False, 'reason': 'The parent or worker was stopped'}
                 if (record.get('status') in {'completed','failed','paused','interrupted'}
@@ -449,7 +624,7 @@ class MultiServerService:
                         and record.get('admissionId') != worker['remoteAdmissionRequest']):
                     self.runtime.put(db, 'agents', worker)
                     return {'stored': False, 'reason': 'This snapshot belongs to an earlier admission'}
-                worker.update({k: record[k] for k in ('status', 'cwd', 'branch', 'inFlight', 'tokensUsed', 'error') if k in record})
+                worker.update({k: record[k] for k in ('status', 'cwd', 'branch', 'workerBaseCommit', 'inFlight', 'tokensUsed', 'error') if k in record})
                 if record.get('status') in {'completed', 'failed', 'paused', 'idle', 'interrupted'} and not record.get('inFlight'):
                     worker['remoteReservation'] = False
                 worker['inFlight'] = bool(worker.get('remoteReservation') or record.get('inFlight'))
@@ -481,6 +656,11 @@ class MultiServerService:
                 worker['remoteEpoch'] = p['epoch']
                 self.runtime.put(db, 'agents', worker)
             if action == 'input':
+                if (p.get('parentEpoch', link['parentEpoch']) > link['parentEpoch']
+                        or p.get('controlEpoch', 0) > worker.get('remoteControlEpoch', 0)):
+                    return {'waiting': True}
+                if p.get('parentEpoch', link['parentEpoch']) != link['parentEpoch']:
+                    raise ValueError('The parent epoch was superseded')
                 if p.get('controlEpoch', 0) != worker.get('remoteControlEpoch', 0):
                     raise ValueError('The remote worker control epoch changed')
                 if p['kind'] in {'user', 'followup'}:
@@ -491,10 +671,15 @@ class MultiServerService:
                     self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key)
                     return {'eventId': key}
         if action == 'input':
-            return cast(dict[str, Any], self.runtime.send(worker['id'], p['text'], key, manual=p['kind']=='user', resume=True))
+            return cast(dict[str, Any], self.runtime.send(worker['id'], p['text'], key, manual=p['kind']=='user',
+                resume=True, delivery=p.get('delivery', 'queue'), _expected_epoch=worker['epoch']))
         if action == 'stop':
-            return cast(dict[str, Any], self.runtime.stop(worker['id'], True, reason=p['reason'],
-                _remote_request={'id': key, 'controlEpoch': p['controlEpoch']}))
+            value = self.runtime.stop(worker['id'], True, reason=p['reason'],
+                _remote_request={'id': key, 'controlEpoch': p['controlEpoch']})
+            with self.runtime.read_db() as db:
+                if self._evidence(db, 'stop', p, key) is None:
+                    return {'pending': True}
+            return cast(dict[str, Any], value)
         if action == 'chat_read':
             return cast(dict[str, Any], self.runtime.chat_read(p['args']['room_id'], worker['id'], p['args'].get('before'), model=True))
         if action == 'context':
@@ -572,6 +757,9 @@ class MultiServerService:
                 row = db.execute('SELECT server,state,result,error FROM runtime_server_outbox WHERE id=?', (args.get('request_id'),)).fetchone()
                 if not row:
                     row = db.execute('SELECT server,state,result,NULL AS error FROM runtime_server_fetch WHERE id=?', (args.get('request_id'),)).fetchone()
+                if not row and db.execute('SELECT 1 FROM runtime_server_retired WHERE id=? AND direction=? AND server=?',
+                        (args.get('request_id'), 'out', server)).fetchone():
+                    return {'state': 'expired', 'result': expired_receipt(args['request_id']), 'error': None}
             if not row or row['server'] != server:
                 raise ValueError('Unknown remote request receipt')
             return {'state': row['state'], 'result': json.loads(row['result']) if row['result'] else None, 'error': row['error']}
@@ -597,8 +785,14 @@ class MultiServerService:
                     if len(names) == 200:
                         break
             return {'cwd': str(directory), 'folders': sorted(names), 'truncated': len(names) == 200}
+        if action == 'release':
+            path = self.runtime.root / 'server-exports' / (str(uuid.UUID(p['export'])) + '.bundle')
+            path.unlink(missing_ok=True)
+            return {'released': p['export']}
         if action == 'chunk':
             path = self.runtime.root / 'server-exports' / (str(uuid.UUID(p['export'])) + '.bundle')
+            if not path.is_file():
+                raise ValueError('The Git bundle has expired or was released')
             size = path.stat().st_size
             offset = p.get('offset')
             if type(offset) is not int or not 0 <= offset < size:
@@ -615,7 +809,17 @@ class MultiServerService:
             branch = p.get('branch')
             if not isinstance(branch, str) or branch.startswith('-'):
                 raise ValueError('Supply a worker branch')
-            subprocess.run(['git', 'check-ref-format', '--branch', branch], check=True, capture_output=True, timeout=10)
+            if git_read(directory, 'check-ref-format', '--branch', branch)[1] != 0:
+                raise ValueError('Invalid worker branch')
+            known = p.get('known', [])
+            if not isinstance(known, list) or len(known) > 16 or any(not commit_hash(c) for c in known):
+                raise ValueError('Supply at most 16 complete commit hashes')
+            exclusions = [c for c in known if git_read(directory, 'cat-file', '-e', c + '^{commit}')[1] == 0]
+            tip, code = git_read(directory, 'rev-parse', '--verify', 'refs/heads/' + branch)
+            if code or not commit_hash(tip.decode().strip()):
+                raise ValueError('Unknown worker branch')
+            if any(git_read(directory, 'merge-base', '--is-ancestor', tip.decode().strip(), commit)[1] == 0 for commit in exclusions):
+                return {'alreadyHave': tip.decode().strip(), 'bytes': 0, 'branch': branch}
             export_id = identity(key, 'bundle')
             folder = self.runtime.root / 'server-exports'
             folder.mkdir(exist_ok=True)
@@ -624,7 +828,7 @@ class MultiServerService:
                 if shutil.disk_usage(folder).free < MAX_BUNDLE:
                     raise RuntimeError('Insufficient disk space for a Git bundle')
                 temporary = folder / (export_id + '.partial')
-                export_bundle(directory, branch, temporary)
+                export_bundle(directory, branch, temporary, exclusions)
                 temporary.replace(path)
             return {'export': export_id, 'bytes': path.stat().st_size, 'sha256': file_digest(path), 'branch': branch}
         argv = p.get('argv')
@@ -641,8 +845,9 @@ class MultiServerService:
             allowed = len(argv) == 3 and len(argv[2]) in {40, 64} and all(c in '0123456789abcdef' for c in argv[2])
         if not allowed:
             raise ValueError('Unsupported read-only Git command')
-        command = ['git', '--no-pager', '--no-optional-locks', '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
-                   '-C', str(directory), *argv]
+        if argv[0] in {'log', 'show'}:
+            argv = [argv[0], '--no-show-signature', '--no-ext-diff', '--no-textconv', *argv[1:]]
+        command = git_command(directory, *argv)
         raw, code, truncated = bounded_command(command)
         return {'exitCode': code, 'output': raw.decode('utf-8', errors='replace'), 'truncated': truncated}
 
@@ -653,9 +858,20 @@ class MultiServerService:
         branch, destination = args.get('branch'), args.get('destination', actor['cwd'])
         if not isinstance(branch, str) or not branch or branch.startswith('-'):
             raise ValueError('Supply a worker branch')
-        subprocess.run(['git', 'check-ref-format', '--branch', branch], check=True, capture_output=True, timeout=10)
         destination = str(Path(destination).expanduser().resolve())
-        subprocess.run(['git', '-C', destination, 'rev-parse', '--git-dir'], check=True, capture_output=True, timeout=10)
+        if git_read(destination, 'check-ref-format', '--branch', branch)[1] != 0:
+            raise ValueError('Invalid worker branch')
+        if git_read(destination, 'rev-parse', '--git-dir')[1] != 0:
+            raise ValueError('Supply an existing local Git repository')
+        known = []
+        for reference in ('HEAD', 'origin/main', 'FETCH_HEAD'):
+            output, code = git_read(destination, 'rev-parse', '--verify', reference + '^{commit}')
+            known_commit = output.decode().strip()
+            if code == 0 and commit_hash(known_commit):
+                known.append(known_commit)
+        base = worker.get('workerBaseCommit')
+        if commit_hash(base) and git_read(destination, 'cat-file', '-e', base + '^{commit}')[1] == 0:
+            known.append(base)
         with self.runtime.lock, self.runtime.db() as db:
             signature, previous = self.runtime.operation_receipt(db, key, {'worker': worker['id'], 'branch': branch, 'destination': destination})
             if previous is not None:
@@ -668,12 +884,18 @@ class MultiServerService:
             db.execute('INSERT OR IGNORE INTO runtime_server_fetch VALUES (?,?,?,?,NULL)',
                 (key, args['server'], signature, 'preparing'))
             export_key = identity(key, 'export')
-            self.queue(db, args['server'], 'export', {'cwd': worker['cwd'], 'branch': branch}, export_key)
+            prior_export = db.execute('SELECT body FROM runtime_server_outbox WHERE id=?', (export_key,)).fetchone()
+            export = json.loads(prior_export['body'])['payload'] if prior_export else {
+                'cwd': worker['cwd'], 'branch': branch, 'known': sorted(set(known))}
+            self.queue(db, args['server'], 'export', export, export_key)
         receipt = self.deliver(export_key)
         if receipt['outcome'] != 'applied':
             return receipt
         metadata = receipt['value']
-        if type(metadata.get('bytes')) is not int or not 0 < metadata['bytes'] <= MAX_BUNDLE:
+        already = metadata.get('alreadyHave')
+        if already and (not commit_hash(already) or git_read(destination, 'cat-file', '-e', already + '^{commit}')[1] != 0):
+            raise ValueError('The advertised commit is absent from the local repository')
+        if type(metadata.get('bytes')) is not int or not (metadata['bytes'] == 0 and already or 0 < metadata['bytes'] <= MAX_BUNDLE):
             raise ValueError('Invalid remote bundle size')
         with tempfile.TemporaryDirectory(prefix='studio-server-fetch-') as temporary:
             path = Path(temporary) / 'worker.bundle'
@@ -697,29 +919,46 @@ class MultiServerService:
                     stream.write(data)
                     digest.update(data)
                     offset += len(data)
-            if digest.hexdigest() != metadata['sha256']:
+            if not already and digest.hexdigest() != metadata['sha256']:
                 raise ValueError('The remote bundle checksum differs')
-            subprocess.run(['git', '-C', destination, 'bundle', 'verify', str(path)], check=True, capture_output=True, timeout=30)
+            if not already:
+                subprocess.run(git_command(destination, 'bundle', 'verify', str(path)),
+                    env=git_environment(), check=True, capture_output=True, timeout=30)
+            source = destination if already else str(path.resolve())
+            reject_url_rewrite(destination, source)
             # FETCH_HEAD is the only ref changed; branch integration belongs to
             # the orchestrator's separate review and merge action.
             with self.runtime.db() as db:
                 claimed = db.execute("UPDATE runtime_server_fetch SET state='fetching' WHERE id=? AND state='preparing'", (key,)).rowcount
             if not claimed:
                 return {'requestId': key, 'outcome': 'unknown', 'detail': 'The original local Git fetch is already reserved.'}
-            subprocess.run(['git', '-C', destination, 'fetch', '--no-tags', str(path), 'refs/heads/' + branch],
-                           check=True, capture_output=True, timeout=60)
-            commit = subprocess.check_output(['git', '-C', destination, 'rev-parse', 'FETCH_HEAD'], text=True, timeout=10).strip()
+            subprocess.run(git_command(destination, 'fetch', '--no-tags', source,
+                already or 'refs/heads/' + branch, file_transport=True),
+                env=git_environment(), check=True, capture_output=True, timeout=60)
+            output, code = git_read(destination, 'rev-parse', 'FETCH_HEAD')
+            commit = output.decode().strip()
+            if code or not commit_hash(commit):
+                raise RuntimeError('Git did not return a final fetch commit')
         value = {'requestId': key, 'server': args['server'], 'branch': branch, 'commit': commit,
                  'bytes': metadata['bytes'], 'destination': destination}
         with self.runtime.db() as db:
             self.runtime.save_receipt(db, key, signature, value)
             db.execute("UPDATE runtime_server_fetch SET state='complete',result=? WHERE id=?", (encoded(value), key))
+            if not already:
+                release_key = identity(key, 'release')
+                self.queue(db, args['server'], 'release', {'export': metadata['export']}, release_key)
+        if not already:
+            self.deliver(release_key)
         return value
 
 
-def export_bundle(directory: Path, branch: str, path: Path) -> None:
-    command = ['git', '-C', str(directory), 'bundle', 'create', '-', 'refs/heads/' + branch]
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+def commit_hash(value: Any) -> bool:
+    return isinstance(value, str) and len(value) in {40, 64} and all(c in '0123456789abcdef' for c in value)
+
+
+def export_bundle(directory: Path, branch: str, path: Path, exclusions: list[str]) -> None:
+    command = git_command(directory, 'bundle', 'create', '-', 'refs/heads/' + branch, *('^' + c for c in exclusions))
+    process = subprocess.Popen(command, env=git_environment(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert process.stdout is not None
     size = 0
     deadline = time.monotonic() + 60
@@ -752,7 +991,7 @@ def export_bundle(directory: Path, branch: str, path: Path) -> None:
 
 
 def bounded_command(command: list[str]) -> tuple[bytes, int, bool]:
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    process = subprocess.Popen(command, env=git_environment(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert process.stdout is not None
     data = bytearray()
     deadline = time.monotonic() + 10
