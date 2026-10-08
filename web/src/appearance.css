@@ -363,11 +363,6 @@
     font-size: 13px;
     padding-inline: 10px;
   }
-  /* Safari keeps layout media queries tall while the keyboard reduces visibility. */
-  html[data-mobile-keyboard="true"] #message {
-    max-height: 80px !important;
-    overflow-y: auto !important;
-  }
   .chat-settings-panel :is(.mantine-Button-label, .account-picker-label) {
     min-width: 0;
     white-space: normal;
