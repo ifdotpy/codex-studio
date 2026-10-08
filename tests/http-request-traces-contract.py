@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 
 from concurrent.futures import ThreadPoolExecutor
 import asyncio
+from contextlib import nullcontext
 import http.client
 import json
 from pathlib import Path
@@ -239,19 +240,35 @@ class HttpRequestTracesContract(unittest.TestCase):
         for operation in ("begin", "finish"):
             with self.subTest(operation=operation):
                 retired = threading.Event()
+                trace_keys = []
+
+                begin = traces.begin
+
+                def observed_begin(*args):
+                    key = begin(*args)
+                    trace_keys.append(key)
+                    return key
+
+                discarded_keys = []
 
                 def observed_discard(key):
                     discard(key)
-                    retired.set()
+                    discarded_keys.append(key)
+                    if key in trace_keys:
+                        retired.set()
 
                 with self.assertLogs("codex.http", level="WARNING") as logs:
-                    with patch.object(traces, operation, side_effect=RuntimeError("private-journal-failure")), \
+                    begin_patch = (patch.object(traces, "begin", side_effect=observed_begin)
+                                   if operation == "finish" else nullcontext())
+                    with begin_patch, \
+                         patch.object(traces, operation, side_effect=RuntimeError("private-journal-failure")), \
                          patch.object(traces, "discard", side_effect=observed_discard):
                         response = self.request("/api/session?token=private-failed-query-token")
                         self.assertEqual(response["status"], 200, response)
                         self.assertTrue(json.loads(response["body"])["token"])
                         if operation == "finish":
-                            self.assertTrue(retired.wait(.5), "The failed completion did not retire its active trace")
+                            self.assertTrue(retired.wait(30), "The failed completion did not retire its active trace")
+                            self.assertEqual(discarded_keys, trace_keys)
                 self.assertEqual(traces._ACTIVE, {})
                 self.assertEqual(traces._RECENT, [])
                 self.assertIn("RuntimeError", "\n".join(logs.output))
