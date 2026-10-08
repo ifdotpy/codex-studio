@@ -1344,9 +1344,23 @@ class RuntimeContract(unittest.TestCase):
         lead = self.lead()
         # Reserve the input, but stop before native submission.
         from unittest.mock import patch
-        with patch.object(self.runtime.delivery_executor(), 'submit', return_value=None):
+        submission_blocked = threading.Event()
+        executor = self.runtime.delivery_executor()
+        original_submit = executor.submit
+
+        def stop_before_start(function, *args, **kwargs):
+            if getattr(function, '__name__', None) == 'start':
+                submission_blocked.set()
+                return None
+            return original_submit(function, *args, **kwargs)
+
+        with patch.object(executor, 'submit', side_effect=stop_before_start):
             self.runtime.send(lead['id'], 'Pending result', 'stable-event')
             self.runtime.dispatch()
+            self.assertTrue(submission_blocked.wait(5), 'dispatch did not reach its start hook')
+            pending = self.runtime.agent(lead['id'])
+            self.assertEqual(pending['status'], 'starting')
+            self.assertFalse(pending['startAttempt']['submitted'])
             self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(lead['id'])['status'], 'queued')

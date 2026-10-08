@@ -1720,6 +1720,16 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_legacy_launch_rejects_unverified_live_process_identity(self):
+        # Keep the handle live: verification must fail closed when its process
+        # start identity cannot be matched before any changed launch is reused.
+        self.server()
+        with patch.object(process_supervisor, 'process_start_matches', return_value=False):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
+                process_supervisor.native_launch_environment(
+                    self.root, 'account:default', ['replacement-native', 'app-server'],
+                    dict(os.environ), None)
+
     def test_legacy_launch_rejects_account_changes_after_close(self):
         with patch.object(process_supervisor, 'native_launch_environment',
                           side_effect=lambda root, handle, command, env, cwd: dict(env)):

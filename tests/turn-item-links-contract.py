@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Private SQLite fixtures for bounded terminal item links. No native requests."""
+from __future__ import annotations
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
-
-from __future__ import annotations
 
 import hashlib
 import json
