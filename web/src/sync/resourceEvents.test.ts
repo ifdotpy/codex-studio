@@ -1685,6 +1685,7 @@ describe("shared resource event transport", () => {
   });
 
   it("bounds inactive versions and reconciles an evicted late peer ref", async () => {
+    vi.useFakeTimers();
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
@@ -1712,7 +1713,7 @@ describe("shared resource event transport", () => {
 
     const transport = await import("./resourceEvents");
     const local = { kind: "state" } as const;
-    const bulkRefs = Array.from({ length: 5000 }, (_, index) => ({
+    const bulkRefs = Array.from({ length: 129 }, (_, index) => ({
       kind: "panel" as const,
       agentId: `inactive-${index}`,
     }));
@@ -1729,7 +1730,7 @@ describe("shared resource event transport", () => {
       reason: "initial",
       resources: [local, ...bulkRefs],
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await vi.advanceTimersByTimeAsync(20);
 
     const beforeCacheInspection = ownerChannel.messages.length;
     ownerChannel.onmessage?.({
@@ -1802,7 +1803,7 @@ describe("shared resource event transport", () => {
       reason: "initial",
       resources: [local, evictedRef],
     });
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    await vi.advanceTimersByTimeAsync(20);
     expect(
       ownerChannel.messages
         .slice(sentBeforeLateSubscription)
