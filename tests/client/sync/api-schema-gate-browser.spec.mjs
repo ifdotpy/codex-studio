@@ -318,7 +318,12 @@ test("cold three silent stream handshakes escalate to the mismatch gate", async 
         "Studio has been updated. Update this tab to continue syncing and sending.",
     }),
   ).toBeVisible({ timeout: 5_000 });
-  assert.ok(streams >= 3, "three silent handshake attempts were made");
+  assert.equal(streams, 3, "exactly three silent handshake attempts were made");
+  assert.equal(
+    await page.evaluate(() => window.studioSchemaGateOpenStreams),
+    3,
+    "all three silent stream handshakes opened without a frame",
+  );
   await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
 });
 
