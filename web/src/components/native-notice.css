@@ -8,6 +8,17 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+
+.native-policy-composer-warning {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem 0.55rem;
+  padding: 0.55rem 0.75rem;
+  color: var(--mantine-color-orange-9);
+  background: var(--mantine-color-orange-0);
+  border-radius: var(--mantine-radius-sm);
+  font-size: var(--mantine-font-size-sm);
+}
 .native-error > small {
   display: block;
   margin-top: 4px;

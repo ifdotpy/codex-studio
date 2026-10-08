@@ -142,6 +142,10 @@ with c.runtime.lock, c.runtime.db() as db:
     a.update(compactions=2, contextUsage={'tokens':80000,'window':200000,'at':__import__('time').time()})
     c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
+with c.runtime.lock, c.runtime.db() as db:
+    other_record = c.runtime.agent(other['id'], db)
+    other_record['cyberAccessProgram'] = 'standard'
+    c.runtime.put(db, 'agents', other_record)
 if os.environ.get('QUESTIONS_UX_UI_FIXTURE'):
     with c.runtime.lock, c.runtime.db() as db:
         c.runtime.put(db, 'requests', {'id': 'other-question', 'method': 'agent/asyncQuestion', 'agent': other['id'], 'status': 'pending',

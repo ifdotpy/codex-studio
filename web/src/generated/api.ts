@@ -2643,6 +2643,8 @@ export interface components {
       created?: number | null;
       /** Cwd */
       cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
@@ -2972,6 +2974,8 @@ export interface components {
       created?: number | null;
       /** Cwd */
       cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
@@ -4359,6 +4363,8 @@ export interface components {
       created?: number | null;
       /** Cwd */
       cwd?: string | null;
+      /** Cyberaccessprogram */
+      cyberAccessProgram?: string | null;
       /** Daybreakenabled */
       daybreakEnabled?: boolean | null;
       /** Deletedat */
