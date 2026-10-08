@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 import uuid
 from unittest.mock import patch
@@ -73,6 +74,20 @@ class CrossProviderWorkers(unittest.TestCase):
 
     def workers(self):
         return [a for a in read_runtime_state(self.rt)["agents"] if a.get("parentId")]
+
+    def turn_started_event(self, server, thread_id):
+        started = threading.Event()
+        original_notify = server._notify
+
+        def notify_after_turn_started(message):
+            original_notify(message)
+            params = message.get("params", {})
+            if (message.get("method") == "turn/started" and
+                    params.get("threadId") == thread_id):
+                started.set()
+
+        server._notify = notify_after_turn_started
+        return started
 
     def spawn(self, workers, call_id=None):
         self.lead = self.rt.prepare(self.rt.agent(self.lead["id"]))
@@ -280,8 +295,13 @@ class CrossProviderWorkers(unittest.TestCase):
         self.assertEqual(downstream["room"], upstream["room"])
         self.assertEqual([m["sender"] for m in self.rt.chat_read(downstream["room"], lead["id"])["messages"]],
                          [lead["id"], child["id"]])
+        lead_started = self.turn_started_event(claude, lead["threadId"])
+        child_started = self.turn_started_event(codex, child["threadId"])
         self.rt.dispatch()
-        f.f.eventually(lambda: all(self.rt.agent(key)["status"] == "running" for key in (lead["id"], child["id"])))
+        self.assertTrue(lead_started.wait(30), "Claude lead did not start its queued turn")
+        self.assertTrue(child_started.wait(30), "Codex child did not start its queued turn")
+        self.assertEqual(self.rt.agent(lead["id"])["status"], "running")
+        self.assertEqual(self.rt.agent(child["id"])["status"], "running")
         for server, text in ((codex, "Check the second case"), (claude, "The first case is confirmed")):
             turns = [params for method, params in server.calls if method == "turn/start"]
             self.assertIn(text, turns[-1]["input"][0]["text"])
