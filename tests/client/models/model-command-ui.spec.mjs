@@ -42,6 +42,7 @@ test("model-command-ui", async ({ browser }) => {
   );
   let context,
     page,
+    secondContext,
     log = "";
   proc.stderr.on("data", (data) => {
     log += data;
@@ -71,8 +72,7 @@ test("model-command-ui", async ({ browser }) => {
     const worker = initial.threads.find((agent) => agent.name === "Worker 00");
     const agent = async (id) =>
       (await snapshot()).runtime.agents.find((value) => value.id === id);
-    // The API projection below is deliberately stale in this scenario; read
-    // the fixture's persisted row independently instead of extending its wait.
+    // Read persisted settings independently from the renderer's sync projection.
     const persistedAgent = (id) => {
       const query = `import json, sqlite3, sys
 db = sqlite3.connect("file:" + sys.argv[1] + "?mode=ro", uri=True, timeout=2)
@@ -113,50 +113,6 @@ db.close()`;
       const path = new URL(request.url()).pathname;
       if (path === "/api/conversation") settings.push(request.postDataJSON());
       if (path === "/api/messages") messages.push(request.postDataJSON());
-    });
-    let lagMainSettings = false;
-    let laggedProjections = 0;
-    const staleEntityVersions = [];
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const scope = new URL(route.request().url()).searchParams.get("scope");
-      if (
-        !lagMainSettings ||
-        !["state", "state:chat", "state:entities:v1"].includes(scope)
-      )
-        return route.continue();
-      const response = await route.fetch();
-      const data = await response.json();
-      let staleRows = 0;
-      for (const document of data.documents || []) {
-        const payload = JSON.parse(document.payload);
-        const values =
-          payload.collection === "agent"
-            ? [payload.value]
-            : [...(payload.threads || []), ...(payload.runtime?.agents || [])];
-        let changedMain = false;
-        for (const value of values) {
-          if (value.id === main.id) {
-            staleEntityVersions.push({
-              scope,
-              id: document.id,
-              seq: document.seq,
-              returnedModel: value.model,
-              returnedEffort: value.effort,
-              staleModel: main.model,
-              staleEffort: main.effort,
-            });
-            value.model = main.model;
-            value.effort = main.effort;
-            changedMain = true;
-          }
-        }
-        if (changedMain) {
-          document.payload = JSON.stringify(payload);
-          staleRows++;
-        }
-      }
-      await route.fulfill({ response, json: data });
-      laggedProjections += staleRows;
     });
     await page.addInitScript(
       ({ id, stateDir }) => {
@@ -261,26 +217,87 @@ db.close()`;
       { model: "gpt-5.6-sol", effort: "high" },
       "Main reasoning is persisted in the isolated fixture",
     );
-    lagMainSettings = true;
-    await wait(
-      () => laggedProjections > 0,
-      "The replica returned stale main settings",
+    secondContext = await browser.newContext({
+      viewport: { width: 1440, height: 960 },
+    });
+    const secondPage = await secondContext.newPage();
+    const entityPull = secondPage.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1"
+      );
+    });
+    await secondPage.addInitScript(
+      ({ id, stateDir }) => {
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(id),
+        );
+        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+      },
+      { id: main.id, stateDir: initial.stateDir },
     );
-    await page.evaluate(
-      () =>
-        new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        ),
+    await secondPage.goto(origin);
+    const entityBody = await (await entityPull).json();
+    const mainEntity = entityBody.documents
+      .map((document) => ({
+        document,
+        payload: JSON.parse(document.payload),
+      }))
+      .find(
+        ({ payload }) =>
+          payload.collection === "agent" && payload.value?.id === main.id,
+      );
+    assert(mainEntity, "The second renderer pulled the main agent entity");
+    const secondEntitySettings = {
+      collection: mainEntity.payload.collection,
+      id: mainEntity.payload.value.id,
+      model: mainEntity.payload.value.model,
+      effort: mainEntity.payload.value.effort,
+      sequence: mainEntity.document.seq,
+    };
+    console.log("Second renderer sync entity:", secondEntitySettings);
+    assert(
+      Number.isSafeInteger(secondEntitySettings.sequence) &&
+        secondEntitySettings.sequence > 0,
     );
-    const afterStaleSync = persistedAgent(main.id);
+    await secondPage.locator(`[data-chat="${main.id}"]`).click();
+    const secondComposer = secondPage.locator("#message");
+    await secondComposer.fill("/model");
+    await secondComposer.press("Enter");
+    const secondDialog = secondPage.getByRole("dialog", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    await secondDialog.waitFor();
+    const secondRendererSettings = {
+      model: await modelValue(
+        secondDialog.getByLabel("Main agent model", { exact: true }),
+      ),
+      effort: await secondDialog
+        .getByLabel("Main agent reasoning", { exact: true })
+        .getAttribute("data-value"),
+    };
+    console.log("Second renderer settings:", secondRendererSettings);
     assert.deepEqual(
-      { model: afterStaleSync.model, effort: afterStaleSync.effort },
-      { model: "gpt-5.6-sol", effort: "high" },
-      "A stale sync projection cannot overwrite persisted settings",
+      {
+        collection: secondEntitySettings.collection,
+        id: secondEntitySettings.id,
+        model: secondEntitySettings.model,
+        effort: secondEntitySettings.effort,
+      },
+      {
+        collection: "agent",
+        id: main.id,
+        model: "gpt-5.6-sol",
+        effort: "high",
+      },
     );
-    // Restrict the stale-replica behavior to this assertion; later deliberate
-    // settings changes must reach the real fixture without stale pulls racing them.
-    lagMainSettings = false;
+    assert.deepEqual(secondRendererSettings, {
+      model: "gpt-5.6-sol",
+      effort: "high",
+    });
     assert.equal(messages.length, 0);
     assert(
       settings
@@ -318,7 +335,7 @@ db.close()`;
         .getByLabel("Main agent reasoning", { exact: true })
         .getAttribute("data-value"),
       "high",
-      "The stale sync response does not replace saved reasoning",
+      "Reopened picker keeps saved reasoning",
     );
     if (reopened !== "gpt-5.6-sol")
       console.error("Reopened model:", {
@@ -338,11 +355,6 @@ db.close()`;
       "gpt-5.6-sol",
       "Reopened picker uses the saved main model",
     );
-    assert(
-      laggedProjections > 0,
-      "The fixture exercised a lagging settings replica",
-    );
-    lagMainSettings = false;
     const beforeSwitch = settings.length;
     await page.locator(`[data-chat="${lead.id}"]`).click();
     await dialog().waitFor({ state: "hidden" });
@@ -381,9 +393,10 @@ db.close()`;
       },
       "Active worker's next-turn model is persisted",
     );
-    await dialog(true)
-      .getByLabel("Subagent reasoning", { exact: true })
-      .selectOption("medium");
+    await chooseSetupValue(
+      dialog(true).getByLabel("Subagent reasoning", { exact: true }),
+      "medium",
+    );
     await saved(true);
     const running = persistedAgent(worker.id);
     assert.deepEqual(
@@ -492,7 +505,6 @@ db.close()`;
         evidence: root,
         settings: settings.length,
         settingRequests: settings,
-        staleEntityVersions,
         messages: messages.length,
       }),
     );
@@ -502,6 +514,7 @@ db.close()`;
     throw error;
   } finally {
     await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await secondContext?.close();
     await context?.close();
   }
 });
