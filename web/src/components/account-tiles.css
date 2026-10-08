@@ -59,3 +59,13 @@
   font-size: 14px;
   font-weight: 500;
 }
+
+/* Tiles read as cards: every tile has a quiet surface; the selected one adds
+   the accent outline. */
+.setup-account {
+  background: light-dark(#f1f2f6, #26262b);
+  border-radius: 8px;
+}
+.setup-account:hover:not(:disabled) {
+  background: light-dark(#e8eaf0, #2f3038);
+}

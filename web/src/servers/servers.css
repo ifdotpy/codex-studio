@@ -140,3 +140,9 @@ html[data-server-view] .workspace {
     z-index: 1000;
   }
 }
+/* Desktop: keep the button off the sidebar's Terminals row. */
+@media (min-width: 761px) {
+  .server-manager-launch {
+    left: 252px;
+  }
+}
