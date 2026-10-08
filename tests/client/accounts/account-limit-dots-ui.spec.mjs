@@ -365,7 +365,28 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
             reads.some((read) => read.key === account.id && read.cached),
           ),
       );
-      assert.ok(reads.every((read) => read.key === "default" || read.cached));
+      assert.equal(reads.length, 7, JSON.stringify(reads));
+      assert.ok(
+        reads.every((read) => read.cached),
+        JSON.stringify(reads),
+      );
+      assert.equal(
+        new Set(reads.map((read) => read.key)).size,
+        7,
+        JSON.stringify(reads),
+      );
+      const defaultDot = page.locator(
+        '.account-limits-dot-target[data-account-key="default"]',
+      );
+      await defaultDot.click();
+      const defaultLimits = page.getByRole("region", {
+        name: "Account limits details",
+        exact: true,
+      });
+      await defaultLimits.waitFor();
+      assert.match(await defaultLimits.innerText(), /90%\s+left/);
+      await page.keyboard.press("Escape");
+      await defaultLimits.waitFor({ state: "hidden" });
       // The dots share the footer row with Limits; the footer stays one row.
       const row = await page.evaluate(() => {
         const box = (selector) =>

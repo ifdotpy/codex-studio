@@ -772,7 +772,9 @@ export default function App() {
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
   const limitsWatchers = useRef(new Map<string, () => void>());
-  const limitsCacheHydratedAccounts = useRef(new Set<string>());
+  const limitsCacheHydrations = useRef(
+    new Map<string, { token: object; promise: Promise<boolean> }>(),
+  );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -917,14 +919,17 @@ export default function App() {
     for (const key of usageAccountKeys.split("\n")) {
       const account = accountsForLimits.current.find((item) => item.id === key);
       if (account?.disconnected) {
-        limitsCacheHydratedAccounts.current.delete(key);
+        limitsCacheHydrations.current.delete(key);
         continue;
       }
-      limitsCacheHydratedAccounts.current.delete(key);
+      if (limitsCacheHydrations.current.has(key)) continue;
+      const token = {};
       const hydration = get("/api/limits", {
         query: { account_key: key, cached: "1" },
       })
         .then((result) => {
+          if (limitsCacheHydrations.current.get(key)?.token !== token)
+            return false;
           const currentAccount = accountsForLimits.current.find(
             (item) => item.id === key,
           );
@@ -934,7 +939,6 @@ export default function App() {
             !result.data
           )
             return false;
-          limitsCacheHydratedAccounts.current.add(key);
           setLimitsByAccount((old) => {
             const previous = accountLimits(
               old[key],
@@ -947,7 +951,7 @@ export default function App() {
           return true;
         })
         .catch(() => false);
-      void hydration;
+      limitsCacheHydrations.current.set(key, { token, promise: hydration });
     }
     // Account metadata validates this key through the ref above; the request
     // identity depends only on workspace + usageAccountKeys. Replacing the
@@ -958,7 +962,7 @@ export default function App() {
     return () => {
       for (const stop of limitsWatchers.current.values()) stop();
       limitsWatchers.current.clear();
-      limitsCacheHydratedAccounts.current.clear();
+      limitsCacheHydrations.current.clear();
     };
   }, [data?.stateDir]);
   useEffect(() => {
@@ -974,16 +978,29 @@ export default function App() {
     }
     for (const key of keys) {
       if (limitsWatchers.current.has(key)) continue;
-      const stop = watchResourceReads(
+      let active = true;
+      const stopWatching = watchResourceReads(
         { kind: "limits", accountKey: key },
         limitsBaselineReader(
-          () => limitsCacheHydratedAccounts.current.has(key),
+          () =>
+            limitsCacheHydrations.current.get(key)?.promise ??
+            Promise.resolve(false),
           () => reloadLimitsForRef.current(key),
+          () => {
+            const account = accountsForLimits.current.find(
+              (item) => item.id === key,
+            );
+            return active && !account?.disconnected;
+          },
         ),
         () => {
           // reloadLimitsFor stores errors in visible account state.
         },
       );
+      const stop = () => {
+        active = false;
+        stopWatching();
+      };
       limitsWatchers.current.set(key, stop);
     }
   }, [data?.stateDir, accountKey, usageAccountKeys]);
