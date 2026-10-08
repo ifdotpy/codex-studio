@@ -41,4 +41,7 @@ provider command selection (`9c1f666d`), workspace refresh (`658f8cef`), and
 reviewer/worker archival (`2f5e85ee`). The process-supervisor idle-upgrade test
 also waits for the fake native child's initialized marker, durable ACK, and
 empty transport queues before asserting retirement; this preserves its existing
-assertions while removing a handshake timing race.
+assertions while removing a handshake timing race. The capacity retry exhaustion
+test now waits for the fake server's turn/started callback to complete before
+reading its durable retry count; it preserves the existing no-input-replay and
+retry-count assertions.
