@@ -6,6 +6,7 @@ import {
   useRef,
   useState,
   type ReactNode,
+  type RefObject,
 } from "react";
 import {
   ChevronRight,
@@ -35,6 +36,8 @@ import {
 import "./turn-history.css";
 import { messageRenderKey } from "../../message-delivery/messageDelivery";
 import ReasoningDuration from "./ReasoningDuration";
+import HistoryWindow from "./HistoryWindow";
+import { windowHistoryRows } from "./historyWindowModel";
 
 type CommandVisibility = boolean | ReadonlyMap<string, boolean>;
 
@@ -42,13 +45,15 @@ function messageGroups(
   items: Message[],
   showCompletedCommands: CommandVisibility = false,
   includeReasoning = false,
+  revealedMessage?: string,
 ) {
   const showItem = (item: Message) =>
-    typeof showCompletedCommands === "boolean"
+    item.id === revealedMessage ||
+    (typeof showCompletedCommands === "boolean"
       ? showCompletedCommands
       : item.turnId
         ? (showCompletedCommands.get(item.turnId) ?? true)
-        : true;
+        : true);
   const groups: (Message | Message[])[] = [];
   for (let index = 0; index < items.length; index++) {
     const item = items[index];
@@ -129,12 +134,10 @@ const WorkBlock = memo(function WorkBlock({
       saved<Record<string, boolean>>(key, {})[id] ??
       (active || tools.length < 3),
   );
-  const [visited, setVisited] = useState(open);
   const summary = activitySummary(tools);
   const hasLimit = tools.some((item) => toolLimitNotice(item));
   const update = (value: boolean) => {
     setOpen(value);
-    if (value) setVisited(true);
     save(
       key,
       Object.fromEntries([
@@ -187,10 +190,12 @@ const WorkBlock = memo(function WorkBlock({
       </summary>
       <div className="turn-work-body">
         {items.map((item) => {
-          if (item.role === "reasoning")
-            return <ReasoningDuration key={item.id} item={item} />;
-          return visited ? (
-            <ToolCard key={item.id} item={item} agentId={agentId} />
+          return open ? (
+            item.role === "reasoning" ? (
+              <ReasoningDuration key={item.id} item={item} />
+            ) : (
+              <ToolCard key={item.id} item={item} agentId={agentId} />
+            )
           ) : (
             <span
               key={item.id}
@@ -216,6 +221,7 @@ function Turn({
   failurePending,
   failureLookupFailed,
   retryFailure,
+  revealedMessage,
 }: {
   group: HistoryGroup;
   storageKey: string;
@@ -227,6 +233,7 @@ function Turn({
   failurePending: boolean;
   failureLookupFailed: boolean;
   retryFailure: () => void;
+  revealedMessage?: string;
 }) {
   const result = group.result;
   const turns = group.turns || [group];
@@ -247,8 +254,8 @@ function Turn({
   if (commandVisibility !== savedCommandVisibility)
     setSavedCommandVisibility(commandVisibility);
   const groupedMessages = useMemo(
-    () => messageGroups(group.items, commandVisibility, true),
-    [group.items, commandVisibility],
+    () => messageGroups(group.items, commandVisibility, true, revealedMessage),
+    [group.items, commandVisibility, revealedMessage],
   );
   const visibleError = group.items.some(
     (item) =>
@@ -354,6 +361,8 @@ export default function TurnHistory({
   agentId,
   onJump,
   agent,
+  scrollContainer,
+  rememberScroll,
 }: {
   items: Message[];
   agent?: Agent;
@@ -363,6 +372,8 @@ export default function TurnHistory({
   renderMessage: (message: Message) => ReactNode;
   agentId?: string;
   onJump: (id: string) => void;
+  scrollContainer?: RefObject<HTMLDivElement | null>;
+  rememberScroll?: () => void;
 }) {
   reportPromptComposerRender("turn-history", agentId);
   const { items, loading, failed, retry } = useTurnErrors(
@@ -409,16 +420,21 @@ export default function TurnHistory({
       ]),
     );
   }, [items, groups]);
-  if (!enabled)
-    return (
-      <>{messages(items, renderMessage, agentId, agent?.cwd ?? undefined)}</>
-    );
+  const rows = useMemo(
+    () => (scrollContainer ? windowHistoryRows(groups) : groups),
+    [groups, scrollContainer],
+  );
   return (
-    <>
-      {groups.map((group) => {
+    <HistoryWindow
+      rows={rows}
+      storageKey={storageKey}
+      rememberScroll={rememberScroll}
+      scrollContainer={scrollContainer}
+      render={(group, revealedMessage) => {
         const outcomeTurn = group.turns?.at(-1) || group;
         const turnId = outcomeTurn.items[0].turnId;
         if (
+          !enabled ||
           group.items[0].role === "user" ||
           !group.items[0].turnId ||
           typeof group.items[0].turnId !== "string" ||
@@ -439,6 +455,7 @@ export default function TurnHistory({
           <Turn
             key={group.id}
             group={group}
+            revealedMessage={revealedMessage}
             failurePending={loading.has(turnId)}
             failureLookupFailed={failed.has(turnId)}
             retryFailure={() => retry(turnId)}
@@ -450,7 +467,7 @@ export default function TurnHistory({
             onJump={onJump}
           />
         );
-      })}
-    </>
+      }}
+    />
   );
 }
