@@ -15,8 +15,11 @@ and the affected integration contracts before delivery.
   limiting repeated search-index work.
 - [UI synchronization](sync/README.md): refresh the data that changed and preserve
   reconnect and offline behavior.
-- Cross-component benchmark scenarios were removed and are available at commit
-  `3507feea`.
+- [Message delivery scenario](sync/benchmarks/message_delivery/README.md): measure
+  synthetic agent-message delivery through sync invalidation and HTTP reads.
+- [Runtime load scenario](studio_api/benchmarks/runtime_load/README.md): exercise
+  the production HTTP and browser paths with 256 synthetic active workers.
+- Other benchmark scenarios remain available at commit `3507feea`.
 - `codex_canvas.py`: HTTP entry point and request handling.
 - `codex_runtime.py`: agent lifecycle and provider coordination.
 - [Root README](../README.md#checks): backend and application checks.
