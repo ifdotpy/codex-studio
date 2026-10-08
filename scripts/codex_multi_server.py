@@ -366,7 +366,8 @@ class MultiServerService:
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            flags = os.O_RDONLY | (os.O_NOFOLLOW if os.name != "nt" else 0)
+            fd = os.open(path, flags)
             with os.fdopen(fd) as stream:
                 metadata = os.fstat(stream.fileno())
                 if (not stat.S_ISREG(metadata.st_mode)
