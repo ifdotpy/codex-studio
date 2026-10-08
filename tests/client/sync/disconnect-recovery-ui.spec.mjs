@@ -215,13 +215,20 @@ test("disconnect recovery ui", async ({ page: runnerPage }) => {
     await button.click();
     await page
       .getByRole("status")
-      .filter({ hasText: "Native history remains unavailable." })
+      .filter({
+        hasText: "Could not confirm the previous outcome. Review the history",
+      })
       .waitFor();
     assert.doesNotMatch(
       await page.getByRole("status").innerText(),
       /Connection checked/,
       "a failed transport or history read cannot claim a successful connection check",
     );
+    await page.locator(".studio-recovery-banner details summary").click();
+    await page
+      .locator(".studio-recovery-banner details p")
+      .getByText("Native history remains unavailable.", { exact: true })
+      .waitFor();
     assert.match(
       await page.locator(".native-error").innerText(),
       /Server restarted during a turn/,
