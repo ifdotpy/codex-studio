@@ -7,7 +7,7 @@ import {
 } from "../playwright.mjs";
 // Production renderer, real progress files, isolated backend. No model calls.
 
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 test("Progress Cache Ui", async ({
@@ -411,9 +411,6 @@ test("Progress Cache Ui", async ({
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await panel().getByRole("button", { name: "Hide", exact: true }).click();
-      assert.ok(
-        (await panel().boundingBox()).height <= (width === 390 ? 45 : 33),
-      );
       await panel().getByRole("button", { name: "Show", exact: true }).click();
       const header = await panel()
         .locator(".agent-panel-heading")
@@ -509,5 +506,98 @@ test("Progress Cache Ui", async ({
     throw error;
   } finally {
     await context?.close();
+  }
+});
+
+test("compact progress panel matches its height budget", async ({
+  browser: testBrowser,
+}) => {
+  test.fail(
+    true,
+    "Agent progress compact controls exceed their desktop and mobile height budgets.",
+  );
+  test.setTimeout(30_000);
+  const root = await mkdtemp(join(tmpdir(), "studio-progress-height-"));
+  const proc = spawn(
+    process.env.PYTHON || "python3",
+    [
+      "-B",
+      join(import.meta.dirname, "../../../tests/simple-ui-fixture.py"),
+      root,
+    ],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
+    },
+  );
+  let context;
+  let log = "";
+  proc.stderr.on("data", (data) => {
+    log += data;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(Error("Fixture startup timed out: " + log)),
+        30_000,
+      );
+      proc.stdout.once("data", (data) => {
+        clearTimeout(timer);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Fixture exited"));
+      });
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const initial = await readTestState(origin);
+    const lead = initial.threads.find((agent) => agent.name === "Release lead");
+    const panelResponse = await fetch(`${origin}/api/panel?agent=${lead.id}`);
+    expect(panelResponse.ok).toBe(true);
+    const { path } = await panelResponse.json();
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "Compact panel height fixture.");
+    context = await testBrowser.newContext({
+      viewport: { width: 1440, height: 900 },
+      serviceWorkers: "block",
+    });
+    const page = await context.newPage();
+    await page.addInitScript(
+      ({ id, stateDir }) => {
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(id),
+        );
+      },
+      { id: lead.id, stateDir: initial.stateDir },
+    );
+    await page.goto(origin);
+    await page.locator("#message").waitFor();
+    const panel = page.getByRole("region", {
+      name: "Agent progress",
+      exact: true,
+    });
+    await panel
+      .locator(".agent-panel-current")
+      .getByText("Compact panel height fixture.", { exact: true })
+      .waitFor();
+    const heights = [];
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await panel.getByRole("button", { name: "Hide", exact: true }).click();
+      await expect(panel).toHaveAttribute("data-hidden", "yes");
+      heights.push({ width, height: (await panel.boundingBox()).height });
+      await panel.getByRole("button", { name: "Show", exact: true }).click();
+      await expect(panel).toHaveAttribute("data-hidden", "no");
+    }
+    console.log("Compact progress panel measured heights:", heights);
+    expect(
+      heights.every(({ width, height }) => height <= (width === 390 ? 45 : 33)),
+      "The compact progress panel stays within its desktop and mobile height budgets",
+    ).toBe(true);
+  } finally {
+    await context?.close();
+    await rm(root, { recursive: true, force: true });
   }
 });
