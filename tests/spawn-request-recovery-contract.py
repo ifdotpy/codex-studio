@@ -42,8 +42,20 @@ class SpawnRequestRecovery(unittest.TestCase):
                                    {'name': 'second', 'prompt': 'Inspect second', 'role': 'reviewer'}]}}}
 
     def response(self, call):
-        f.eventually(lambda: any(r['id'] == call for r in self.runtime.server.responses), timeout=3)
-        return next(r['result'] for r in self.runtime.server.responses if r['id'] == call)
+        ready = threading.Event()
+        original_write = self.runtime.server.write
+
+        def write_and_signal(value):
+            original_write(value)
+            if value.get('id') == call:
+                ready.set()
+
+        with patch.object(self.runtime.server, 'write', side_effect=write_and_signal):
+            response = next((r for r in self.runtime.server.responses if r['id'] == call), None)
+            if response is None:
+                self.assertTrue(ready.wait(30), f'no response for tool call {call}')
+                response = next(r for r in self.runtime.server.responses if r['id'] == call)
+        return response['result']
 
     def value(self, result):
         return json.loads(result['contentItems'][0]['text'])
