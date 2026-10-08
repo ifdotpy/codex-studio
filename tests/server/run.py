@@ -94,8 +94,6 @@ NON_TESTS = {
     "tests/simple-ui-fixture.py": "browser fixture helper",
     "tests/native-action-ui-fixture.py": "browser fixture helper",
     "tests/provider-replay-server.py": "provider subprocess fixture, not a test entrypoint",
-    "tests/skill-catalog-live-update-contract.py":
-        "parameterized helper; requires --patch and --baseline",
     "tests/server/rpc_replay_contract.py": "shared fixture RPC allowlist",
     "tests/sync-live-patch-http-contract.py":
         "fixture harness requiring an injected legacy HTTP server and runtime",
