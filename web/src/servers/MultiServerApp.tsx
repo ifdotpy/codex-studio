@@ -1,9 +1,15 @@
+import StudioSettingsTabs, {
+  isStudioSettingsTab,
+} from "../components/StudioSettingsTabs";
+import { ServerSettingsContext } from "./ServerSettingsContext";
+import { useServerDiscovery } from "./useServerDiscovery";
+import { modalSizes } from "../theme";
 import {
   Button,
   TextInput,
   Modal,
   useMantineColorScheme,
-  Portal,
+  Tabs,
 } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import App from "../App";
@@ -53,12 +59,17 @@ export default function MultiServerApp() {
     ? selected
     : servers[0]?.id || "";
   const [manager, setManager] = useState(uiOnly && !paired.length);
+  const discovery = useServerDiscovery(
+    !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
+    (server) => add(server, false),
+  );
   const [navigation, setNavigation] = useState<
     Record<string, ServerNavigation>
   >({});
   const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
     {},
   );
+  const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   type SearchRow = GetResult<"/api/search">["results"][number];
@@ -280,6 +291,7 @@ export default function MultiServerApp() {
           const opened = navigation[server.id]?.opened || null;
           applyNavigationRef.current(server.id, { ...value, opened });
           setStatus((old) => ({ ...old, [server.id]: "live" }));
+          setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
           delay = 30000;
         } catch {
           if (!stopped)
@@ -389,6 +401,8 @@ export default function MultiServerApp() {
         state.known = true;
         if (state.activity !== event.data.busy) state.idleSince = Date.now();
         state.activity = event.data.busy;
+      } else if (event.data.kind === "studio-server-open-settings") {
+        setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
         try {
           const value = parseStudioPreferences(
@@ -437,8 +451,11 @@ export default function MultiServerApp() {
           "degraded",
           "schema-mismatch",
         ].includes(event.data.status)
-      )
+      ) {
         setStatus((old) => ({ ...old, [id]: event.data.status }));
+        if (event.data.status === "live")
+          setLastSeen((old) => ({ ...old, [id]: Date.now() / 1000 }));
+      }
     };
     window.addEventListener("message", receive);
     return () => window.removeEventListener("message", receive);
@@ -451,7 +468,7 @@ export default function MultiServerApp() {
       }),
     [select],
   );
-  const add = (server: StudioServer) => {
+  const add = (server: StudioServer, focus = true) => {
     if (server.id === "local")
       throw new Error("The remote server returned an invalid identity.");
     const old = readServers();
@@ -459,7 +476,7 @@ export default function MultiServerApp() {
     if (same && same.origin !== server.origin)
       throw new Error("This server identity belongs to another address.");
     writeServers([...old.filter((row) => row.id !== server.id), server]);
-    select(server.id);
+    if (focus) select(server.id);
   };
   const remove = (server: StudioServer) => {
     writeServers(readServers().filter((row) => row.id !== server.id));
@@ -467,29 +484,55 @@ export default function MultiServerApp() {
   };
   const management = (
     <ServerManager
-      opened={manager}
-      close={() => setManager(false)}
       servers={servers}
       add={add}
       remove={remove}
+      discovery={discovery}
+      localEnabled={
+        !uiOnly &&
+        ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname)
+      }
+      statuses={status}
+      lastSeen={lastSeen}
     />
+  );
+  const settings = (
+    <Modal
+      opened={manager}
+      onClose={() => setManager(false)}
+      size={modalSizes.settings}
+      title="Studio settings"
+      classNames={{ body: "studio-settings-body" }}
+    >
+      <div className="studio-settings-panel" data-testid="studio-settings">
+        <Tabs
+          value="servers"
+          className="studio-settings-tabs"
+          onChange={(tab) => {
+            if (!isStudioSettingsTab(tab) || tab === "servers") return;
+            setManager(false);
+            send(current, { action: "settings", tab });
+          }}
+        >
+          <StudioSettingsTabs serversOnly={!servers.length} />
+          <Tabs.Panel value="servers" pt="md">
+            {management}
+          </Tabs.Panel>
+        </Tabs>
+      </div>
+    </Modal>
   );
   if (!uiOnly && !paired.length)
     return (
-      <>
+      <ServerSettingsContext.Provider
+        value={{
+          panel: management,
+          activate: () => setManager(true),
+          close: () => setManager(false),
+        }}
+      >
         <App />
-        {/* A portal lets the button sit above the mobile conversations drawer. */}
-        <Portal>
-          <Button
-            className="server-manager-launch"
-            size="xs"
-            onClick={() => setManager(true)}
-          >
-            Servers
-          </Button>
-        </Portal>
-        {management}
-      </>
+      </ServerSettingsContext.Provider>
     );
   const unread = servers.reduce(
     (count, server) =>
@@ -519,8 +562,13 @@ export default function MultiServerApp() {
               <span aria-label={`${unread} unread chats`}>({unread})</span>
             )}
           </strong>
-          <Button size="xs" variant="subtle" onClick={() => setManager(true)}>
-            Manage
+          <Button
+            size="xs"
+            variant="subtle"
+            onClick={() => setManager(true)}
+            aria-label="Studio settings"
+          >
+            Settings
           </Button>
         </header>
         <Button variant="subtle" onClick={() => setSearchOpen(true)}>
@@ -643,7 +691,7 @@ export default function MultiServerApp() {
         {!servers.length && (
           <div className="startup">
             <p>No server is paired.</p>
-            <Button onClick={() => setManager(true)}>Pair server</Button>
+            <Button onClick={() => setManager(true)}>Open Settings</Button>
           </div>
         )}
         {servers
@@ -662,7 +710,7 @@ export default function MultiServerApp() {
             />
           ))}
       </main>
-      {management}
+      {settings}
       <Modal
         opened={searchOpen}
         onClose={() => setSearchOpen(false)}

@@ -1,7 +1,13 @@
+import StudioSettingsTabs, {
+  isStudioSettingsTab,
+  type StudioSettingsTab,
+} from "./components/StudioSettingsTabs";
+import { useServerSettings } from "./servers/ServerSettingsContext";
 import { useServerActivity } from "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import {
+  serverViewId,
   isServerView,
   isRemoteServerView,
   serverParentOrigin,
@@ -259,6 +265,27 @@ export default function App() {
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioSettingsOpen, setStudioSettingsOpen] = useState(false);
+  const [studioSettingsTab, setStudioSettingsTab] =
+    useState<StudioSettingsTab>("accounts");
+  const serverSettings = useServerSettings();
+  useEffect(() => {
+    if (studioSettingsOpen && studioSettingsTab === "servers")
+      serverSettings?.activate();
+  }, [studioSettingsOpen, studioSettingsTab]);
+  const activateSettingsTab = (value: string | null) => {
+    if (!isStudioSettingsTab(value)) return;
+    setStudioSettingsTab(value);
+    if (value === "servers") {
+      if (serverSettings) serverSettings.activate();
+      else if (serverViewId && window.parent !== window) {
+        setStudioSettingsOpen(false);
+        window.parent.postMessage(
+          { kind: "studio-server-open-settings", serverId: serverViewId },
+          serverParentOrigin,
+        );
+      }
+    }
+  };
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
@@ -1587,8 +1614,10 @@ export default function App() {
         open(command.id, command.messageId);
         document.documentElement.removeAttribute("data-server-projects");
       } else if (command.action === "new-chat") void newChat(command.path);
-      else if (command.action === "settings") setStudioSettingsOpen(true);
-      else if (command.action === "focus") {
+      else if (command.action === "settings") {
+        setStudioSettingsTab(command.tab || "accounts");
+        setStudioSettingsOpen(true);
+      } else if (command.action === "focus") {
         window.focus();
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
@@ -2503,21 +2532,21 @@ export default function App() {
         transitionProps={{ duration: 0 }}
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
-        onClose={() => setStudioSettingsOpen(false)}
+        onClose={() => {
+          setStudioSettingsOpen(false);
+          serverSettings?.close();
+        }}
         size={modalSizes.settings}
         title="Studio settings"
         classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
-          <Tabs defaultValue="accounts" className="studio-settings-tabs">
-            <Tabs.List aria-label="Studio settings">
-              <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
-              <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
-              <Tabs.Tab value="federation">Federation</Tabs.Tab>
-              <Tabs.Tab value="server-access">Server access</Tabs.Tab>
-              <Tabs.Tab value="linux-vm">Linux VM</Tabs.Tab>
-              <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
-            </Tabs.List>
+          <Tabs
+            value={studioSettingsTab}
+            onChange={activateSettingsTab}
+            className="studio-settings-tabs"
+          >
+            <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
                 <Accounts
@@ -2528,8 +2557,10 @@ export default function App() {
                 />
               </section>
             </Tabs.Panel>
-            <Tabs.Panel value="server-access" pt="md" keepMounted={false}>
-              <ServerAccessSettings active={studioSettingsOpen} />
+            <Tabs.Panel value="servers" pt="md" keepMounted={false}>
+              {serverSettings?.panel || (
+                <ServerAccessSettings active={studioSettingsOpen} />
+              )}
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">
