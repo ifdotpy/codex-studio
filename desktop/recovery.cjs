@@ -7,19 +7,11 @@ const { promisify } = require("node:util");
 const installedApplicationPath =
   "/Applications/Codex Studio.app/Contents/Resources/app.asar";
 const { executable, stateDirectory } = require("./backend.cjs");
+const {
+  restartKeys,
+  savedLaunchEnvironment,
+} = require("./restart-environment.cjs");
 const runFile = promisify(execFile);
-const restartKeys = [
-  "CODEX_HOME",
-  "CODEX_CANVAS_CWD",
-  "CODEX_CANVAS_CONCURRENCY",
-  "CODEX_BIN",
-  "CODEX_AGENTS_PYTHON",
-  "SHELL",
-  "LANG",
-  "LC_ALL",
-  "CODEX_AGENTS_SUPERVISOR_MODE",
-  "CODEX_AGENTS_SUPERVISOR_FALLBACK",
-];
 
 function atomicJSON(filename, data) {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
@@ -275,14 +267,6 @@ async function configureRecovery({
   const service = `${domain}/${files.label}`;
   const authoritative =
     restartEnvironment && typeof restartEnvironment === "object";
-  const launchEnv = { ...env };
-  if (authoritative) {
-    for (const key of restartKeys) {
-      delete launchEnv[key];
-      if (typeof restartEnvironment[key] === "string")
-        launchEnv[key] = restartEnvironment[key];
-    }
-  }
   let saved = {};
   try {
     saved = JSON.parse(fs.readFileSync(files.config, "utf8"));
@@ -294,10 +278,21 @@ async function configureRecovery({
     typeof saved.supervisorEnabled !== "boolean"
   )
     throw new Error("The saved supervisor setting is invalid.");
+  const launchEnv = savedLaunchEnvironment(env, saved, files.state);
+  if (authoritative) {
+    for (const key of restartKeys) {
+      delete launchEnv[key];
+      if (typeof restartEnvironment[key] === "string")
+        launchEnv[key] = restartEnvironment[key];
+    }
+  }
+  const requestedSupervisorMode = authoritative
+    ? restartEnvironment.CODEX_AGENTS_SUPERVISOR_MODE
+    : env.CODEX_AGENTS_SUPERVISOR_MODE;
   const supervisorEnabled =
-    launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === undefined
+    requestedSupervisorMode === undefined
       ? saved.supervisorEnabled === true
-      : launchEnv.CODEX_AGENTS_SUPERVISOR_MODE === "1";
+      : requestedSupervisorMode === "1";
   const python =
     enabled || supervisorEnabled ? executable("python3", launchEnv) : null;
   const safetyPython = python || executable("python3", launchEnv);
@@ -347,7 +342,11 @@ async function configureRecovery({
   for (const key of restartKeys)
     if (key !== "CODEX_AGENTS_SUPERVISOR_MODE" && launchEnv[key] !== undefined)
       environment[key] = launchEnv[key];
-  environment.PATH = `${path.dirname(codex)}:${env.PATH || "/usr/bin:/bin"}`;
+  const launchPath = launchEnv.PATH || "/usr/bin:/bin";
+  environment.PATH =
+    launchPath.split(path.delimiter)[0] === path.dirname(codex)
+      ? launchPath
+      : `${path.dirname(codex)}:${launchPath}`;
   const config = {
     version: 1,
     enabled: true,
