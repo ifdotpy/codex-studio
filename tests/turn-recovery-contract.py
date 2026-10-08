@@ -124,13 +124,16 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
     def test_late_start_reply_clears_timeout_and_binds_input(self):
-        a = self.lose_start_receipt()
-        before = sum(method == 'turn/start' for method, _ in self.server.calls)
-        self.runtime.start_accepted(self.key, a['startAttempt'], {'turn': {'id': self.turn}})
-        current = self.runtime.agent(self.key)
-        self.assertEqual((current['status'], current['turnId'], current['error']),
-                         ('running', self.turn, None))
-        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+        # This test owns delivery of the late receipt. Prevent periodic recovery
+        # from observing the aged fixture and completing the simulated turn first.
+        with patch.object(self.runtime, 'queue_turn_recovery'):
+            a = self.lose_start_receipt()
+            before = sum(method == 'turn/start' for method, _ in self.server.calls)
+            self.runtime.start_accepted(self.key, a['startAttempt'], {'turn': {'id': self.turn}})
+            current = self.runtime.agent(self.key)
+            self.assertEqual((current['status'], current['turnId'], current['error']),
+                             ('running', self.turn, None))
+            self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
     def test_observed_turn_clears_stale_timeout_error(self):
         self.lose_start_receipt()
