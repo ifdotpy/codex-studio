@@ -207,7 +207,7 @@ class WindowsServerContract(unittest.TestCase):
                                  "backend-stopped")
                 _wait_until(lambda: _port_owner(port) is None)
                 exit_events = []
-                for line in (root / "entrypoint.log").read_text(encoding="utf-8", errors="replace").splitlines():
+                for line in (state / "backend.log").read_text(encoding="utf-8", errors="replace").splitlines():
                     try:
                         event = json.loads(line)
                     except json.JSONDecodeError:
