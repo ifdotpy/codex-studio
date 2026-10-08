@@ -10,7 +10,7 @@ test("another entry URL keeps one Studio tree after lazy modules load", async ({
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-single-mount-"));
   const fixture = spawnFixture(
-    process.env.PYTHON_BIN || "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), state],
     {
       stdio: ["ignore", "pipe", "pipe"],
