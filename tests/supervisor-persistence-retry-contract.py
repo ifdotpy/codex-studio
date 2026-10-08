@@ -41,9 +41,11 @@ def fragment(sequence, text, item='response'):
 
 
 class ReceiptProc:
-    def __init__(self, durable):
+    def __init__(self, durable, changed):
         self.handle = 'fixture:account'
         self.durable = durable
+        self.changed = changed
+        self.acknowledged = threading.Event()
         self.cursor = 0
         self.acks = []
         self.batches = {}
@@ -68,6 +70,8 @@ class ReceiptProc:
             raise AssertionError('Supervisor ACK preceded the durable SQLite cursor')
         self.acks.append(sequence)
         self.cursor = sequence
+        self.acknowledged.set()
+        self.changed.set()
 
 
 class DispatchFixture:
@@ -89,7 +93,17 @@ class DispatchFixture:
         server.request = request
         server.supervisor_event_applied = lookup
         server.supervisor_commit = commit
-        server.proc = ReceiptProc(durable)
+        self.changed = threading.Event()
+        server.proc = ReceiptProc(durable, self.changed)
+        fail_transport = server.fail_transport
+
+        def signal_transport_failure(error):
+            try:
+                fail_transport(error)
+            finally:
+                self.changed.set()
+
+        server.fail_transport = signal_transport_failure
         self.worker = threading.Thread(target=server.dispatch, daemon=True)
 
     def start(self, events, request=False):
@@ -101,9 +115,10 @@ class DispatchFixture:
     def wait(self, condition, timeout=3):
         deadline = time.monotonic() + timeout
         while not condition():
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.changed.wait(remaining):
                 raise AssertionError('The expected dispatch state did not arrive')
-            time.sleep(.005)
+            self.changed.clear()
 
     def close(self):
         self.server.reader_done.set()
@@ -387,10 +402,13 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             try:
                 self.assertTrue(analytics_started.wait(3))
                 self.assertEqual(durable(), 2, 'The stream cursor commits before analytics begins')
+                self.assertTrue(fixture.server.proc.acknowledged.wait(30),
+                                'The durable cursor must be acknowledged while analytics is blocked')
+                self.assertFalse(release_analytics.is_set())
                 self.assertEqual(fixture.server.proc.acks, [2],
                                  'A durable stream cursor is acknowledged without waiting for analytics')
                 sender.start()
-                self.assertTrue(sent.wait(.5), 'User send must complete while stream analytics remains blocked')
+                self.assertTrue(sent.wait(30), 'User send must complete while stream analytics remains blocked')
                 self.assertEqual(send_errors, [])
                 self.assertEqual(receipts, [{'id': 'during-analytics', 'status': 'queued'}])
                 self.assertFalse(release_analytics.is_set())
