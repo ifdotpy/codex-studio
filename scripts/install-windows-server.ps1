@@ -13,6 +13,17 @@ $entrypointPath = Join-Path $installRoot 'codex_windows_server.py'
 $sourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $python = (Resolve-Path -LiteralPath $Python).Path
 
+function Get-ServeProxy($ServeStatus, [string]$HostName, [int]$Port) {
+    if (-not $ServeStatus.Web) { return $null }
+    $binding = $ServeStatus.Web.PSObject.Properties["${HostName}:$Port"]
+    if (-not $binding) { return $null }
+    $handlers = $binding.Value.Handlers
+    if (-not $handlers) { return $null }
+    $root = $handlers.PSObject.Properties['/']
+    if (-not $root) { return $null }
+    return $root.Value.Proxy
+}
+
 if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'scripts\codex_canvas.py'))) {
     throw "Source root has no scripts\codex_canvas.py: $sourceRoot"
 }
@@ -23,11 +34,11 @@ if (-not (Test-Path -LiteralPath $python)) {
 $tailscale = Get-Command tailscale.exe -ErrorAction Stop
 $before = (& $tailscale.Source serve status --json | ConvertFrom-Json)
 $serveHost = 'kukuka-win.tailf00fa0.ts.net'
-$https443 = $before.Web.PSObject.Properties["${serveHost}:443"].Value.Handlers.PSObject.Properties['/'].Value.Proxy
+$https443 = Get-ServeProxy $before $serveHost 443
 if ($https443 -ne 'http://127.0.0.1:4720') {
     throw "Serve HTTPS 443 does not point to the existing WSL server. Found: $https443"
 }
-$https8443 = $before.Web.PSObject.Properties["${serveHost}:8443"].Value.Handlers.PSObject.Properties['/'].Value.Proxy
+$https8443 = Get-ServeProxy $before $serveHost 8443
 if ($https8443 -and $https8443 -ne 'http://127.0.0.1:4630') {
     throw "Serve HTTPS 8443 already has a different target. Found: $https8443"
 }
@@ -69,8 +80,8 @@ if (-not $listener) {
 & $tailscale.Source serve --bg --https=8443 http://127.0.0.1:4630
 if ($LASTEXITCODE -ne 0) { throw "Tailscale Serve returned exit code $LASTEXITCODE" }
 $after = (& $tailscale.Source serve status --json | ConvertFrom-Json)
-$actual443 = $after.Web.PSObject.Properties["${serveHost}:443"].Value.Handlers.PSObject.Properties['/'].Value.Proxy
-$actual8443 = $after.Web.PSObject.Properties["${serveHost}:8443"].Value.Handlers.PSObject.Properties['/'].Value.Proxy
+$actual443 = Get-ServeProxy $after $serveHost 443
+$actual8443 = Get-ServeProxy $after $serveHost 8443
 if ($actual443 -ne 'http://127.0.0.1:4720' -or $actual8443 -ne 'http://127.0.0.1:4630') {
     throw "Serve verification failed. HTTPS 443=$actual443, HTTPS 8443=$actual8443"
 }
