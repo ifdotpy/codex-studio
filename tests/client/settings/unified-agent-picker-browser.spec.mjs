@@ -306,6 +306,9 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           page.getByRole("button", { name: role, exact: true }),
         ).toHaveAttribute("aria-pressed", "true");
         await page.keyboard.press("Escape");
+        await expect(page.locator(".execution-dropdown:visible")).toHaveCount(
+          0,
+        );
       }
       await reviewRow.click();
       await page
@@ -332,6 +335,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       await capture("chat-settings-model-rows");
       for (const scene of ["chat-account", "project", "shared"]) {
         await page.evaluate((scene) => window.scene(scene), scene);
+        if (scene === "shared")
+          await page
+            .getByRole("button", { name: "Settings for agent 1" })
+            .click();
         const group = page.getByLabel(
           scene === "chat-account"
             ? "Account"
@@ -361,9 +368,11 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           await expect(
             page.getByLabel("Model for agent 1", { exact: true }),
           ).toHaveAttribute("data-value", "default");
-          await page
-            .getByLabel("Reasoning for agent 1", { exact: true })
-            .selectOption("high");
+          await chooseSetupValue(
+            page.getByLabel("Reasoning for agent 1", { exact: true }),
+            "high",
+          );
+          await page.keyboard.press("Escape");
           await page
             .getByRole("button", { name: "Create", exact: true })
             .click();

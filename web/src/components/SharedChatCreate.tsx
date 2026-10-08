@@ -1,11 +1,12 @@
-import { AccountTiles } from "./AccountTiles";
-import { Button, NativeSelect, TextInput } from "@mantine/core";
+import { ProviderMark, setupAccountName } from "./AccountTiles";
+import { Button, NativeSelect, Popover, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
 import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
-import { ModelPicker, type ModelOption } from "./ModelPicker";
+import { AgentSetupPicker, setupModelName } from "./agents/AgentSetupPicker";
+import "./agents/execution-settings.css";
 import "./shared-chat-create.css";
 
 type Participant = {
@@ -41,12 +42,24 @@ function ParticipantFields({
   valid: (ready: boolean) => void;
 }) {
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
-  const options: ModelOption[] = catalog.models.map((row) => ({
-    value: row.model,
-    label: row.displayName || row.model,
-    ...(row.description ? { description: row.description } : {}),
-    isDefault: row.isDefault ?? false,
-  }));
+  const [opened, setOpened] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
+  const readyAccounts = accounts.accounts.filter(
+    (account) => !account.disconnected && account.status === "ready",
+  );
+  const account = accounts.accounts.find(
+    (item) => item.id === value.account_key,
+  );
+  const provider = account?.provider || "codex";
+  const [browsedProvider, setBrowsedProvider] = useState<string>(provider);
+  useEffect(() => setBrowsedProvider(provider), [provider]);
+  const providers = [
+    ...new Set(readyAccounts.map((item) => item.provider || "codex")),
+  ];
+  const chooseAccount = (account_key: string | null) => {
+    if (account_key && account_key !== value.account_key)
+      change({ account_key, model: "" });
+  };
   const info = catalog.models.find((row) => row.model === value.model);
   const reasoningEfforts =
     info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
@@ -65,57 +78,109 @@ function ParticipantFields({
     !!info,
     frozen,
   ]);
+  const effort = value.effort || info?.defaultReasoningEffort || "Default";
+  const summary = [
+    setupModelName(info, value.model) ||
+      (catalog.loading ? "Loading models…" : "Select a model"),
+    effort[0].toUpperCase() + effort.slice(1),
+    setupAccountName(account),
+  ]
+    .filter(Boolean)
+    .join(" · ");
   return (
-    <fieldset className="shared-create-participant" disabled={frozen}>
-      <legend>Agent {index + 1}</legend>
-      <AccountTiles
-        visibleLabel="Account"
-        label={`Account for agent ${index + 1}`}
-        accounts={accounts.accounts.filter(
-          (account) => !account.disconnected && account.status === "ready",
-        )}
-        value={value.account_key}
-        disabled={frozen}
-        onChange={(account_key) => change({ account_key, model: "" })}
-      />
-      <ModelPicker
-        label={`Model for agent ${index + 1}`}
-        visibleLabel="Model"
-        value={value.model}
-        disabled={frozen || catalog.loading || !!catalog.error}
-        placeholder={catalog.loading ? "Loading models…" : "Select a model"}
-        options={options}
-        onChange={(model) => change({ ...value, model, effort: undefined })}
-      />
-      {!!reasoningEfforts.length && (
-        <NativeSelect
-          label="Reasoning"
-          aria-label={`Reasoning for agent ${index + 1}`}
-          value={value.effort || ""}
-          data={[
-            {
-              value: "",
-              label: `Default${typeof info?.defaultReasoningEffort === "string" ? ` (${info.defaultReasoningEffort})` : ""}`,
-            },
-            ...reasoningEfforts.map((effort) => ({
-              value: effort,
-              label: effort,
-            })),
-          ]}
-          onChange={(e) =>
-            change({ ...value, effort: e.currentTarget.value || undefined })
-          }
-        />
-      )}
-      {catalog.error && (
-        <div role="alert">
-          {catalog.error}{" "}
-          <Button size="compact-xs" onClick={catalog.retry}>
-            Retry models
+    <div
+      className="shared-create-row shared-create-participant"
+      onFocusCapture={(event) => {
+        if (opened && event.target instanceof HTMLElement)
+          event.target.setAttribute("data-mantine-stop-propagation", "true");
+      }}
+      onKeyDownCapture={(event) => {
+        if (opened && event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpened(false);
+          trigger.current?.focus();
+        }
+      }}
+    >
+      <span>Agent {index + 1}</span>
+      <Popover
+        opened={opened && !frozen}
+        onChange={setOpened}
+        position="bottom-end"
+        width={360}
+        trapFocus
+        returnFocus
+      >
+        <Popover.Target>
+          <Button
+            ref={trigger}
+            type="button"
+            className="shared-create-chip"
+            aria-label={`Settings for agent ${index + 1}`}
+            aria-expanded={opened && !frozen}
+            data-mantine-stop-propagation={opened ? "true" : undefined}
+            disabled={frozen}
+            leftSection={<ProviderMark provider={provider} />}
+            onClick={() => setOpened((old) => !old)}
+          >
+            <span>{summary}</span>
           </Button>
-        </div>
-      )}
-    </fieldset>
+        </Popover.Target>
+        <Popover.Dropdown className="execution-dropdown shared-create-picker">
+          <AgentSetupPicker
+            role="orchestrator"
+            roles={[]}
+            onRole={() => {}}
+            provider={browsedProvider}
+            providers={providers}
+            onProvider={setBrowsedProvider}
+            accounts={readyAccounts}
+            accountKey={value.account_key}
+            accountLabel={`Account for agent ${index + 1}`}
+            onAccount={chooseAccount}
+            models={catalog.models.map((row) => ({
+              value: row.model,
+              label: setupModelName(row),
+              isDefault: row.isDefault,
+            }))}
+            model={value.model}
+            modelLabel={`Model for agent ${index + 1}`}
+            onModel={(model) => change({ ...value, model, effort: undefined })}
+            efforts={
+              reasoningEfforts.length
+                ? [
+                    { value: "", label: "Default" },
+                    ...reasoningEfforts.map((item) => ({
+                      value: item,
+                      label: item[0].toUpperCase() + item.slice(1),
+                    })),
+                  ]
+                : []
+            }
+            effort={value.effort || ""}
+            effortLabel={`Reasoning for agent ${index + 1}`}
+            onEffort={(next) => change({ ...value, effort: next || undefined })}
+            disabled={frozen || catalog.loading || !!catalog.error}
+            accountDisabled={frozen}
+            fastAvailable={false}
+            fast={false}
+            onFast={() => {}}
+            daybreakAvailable={false}
+            daybreak={false}
+            onDaybreak={() => {}}
+          />
+          {catalog.error && (
+            <div role="alert">
+              {catalog.error}{" "}
+              <Button type="button" size="compact-xs" onClick={catalog.retry}>
+                Retry models
+              </Button>
+            </div>
+          )}
+        </Popover.Dropdown>
+      </Popover>
+    </div>
   );
 }
 export default function SharedChatCreate({
@@ -267,26 +332,29 @@ export default function SharedChatCreate({
         void submit();
       }}
     >
-      <p>
-        One conversation with two agents. Both see every message and reply one
-        at a time.
-      </p>
-      <NativeSelect
-        label="Project"
-        value={path}
-        disabled={!!attempt}
-        data={[{ value: "", label: "Select a project" }, ...projects]}
-        onChange={(e) => setPath(e.currentTarget.value)}
-      />
-      {path && <small className="shared-create-path">{path}</small>}
-      <TextInput
-        label="Chat name"
-        placeholder="Optional"
-        value={name}
-        disabled={!!attempt}
-        maxLength={80}
-        onChange={(e) => setName(e.currentTarget.value)}
-      />
+      {(projects.length > 1 || !path) && (
+        <div className="shared-create-row">
+          <span>Project</span>
+          <NativeSelect
+            aria-label="Project"
+            value={path}
+            disabled={!!attempt}
+            data={[{ value: "", label: "Select a project" }, ...projects]}
+            onChange={(e) => setPath(e.currentTarget.value)}
+          />
+        </div>
+      )}
+      <div className="shared-create-row">
+        <span>Name</span>
+        <TextInput
+          aria-label="Chat name"
+          placeholder="Optional"
+          value={name}
+          disabled={!!attempt}
+          maxLength={80}
+          onChange={(e) => setName(e.currentTarget.value)}
+        />
+      </div>
       <div className="shared-create-participants">
         {participants.map((value, index) => (
           <ParticipantFields
