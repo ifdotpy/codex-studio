@@ -385,3 +385,7 @@
   flex: 0 0 auto;
   width: auto;
 }
+/* A working spinner uses the accent color so it stands out from muted states. */
+#team .worker-state.worker-state-running {
+  color: var(--mantine-primary-color-filled);
+}
