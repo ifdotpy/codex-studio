@@ -1,8 +1,8 @@
 // Isolated component fixture. All API requests use local test responses.
 import { createServer } from "node:http";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, extname } from "node:path";
+import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
@@ -40,7 +40,9 @@ test("Ux Chat Ui", async ({
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
   const require = createRequire(join(repo, "web/package.json"));
-  const { build } = await import(require.resolve("vite"));
+  const { createServer: createViteServer } = await import(
+    require.resolve("vite")
+  );
   const temporary = await mkdtemp(join(tmpdir(), "studio-chat-ux-"));
   const entry = join(temporary, "index.html");
   await writeFile(
@@ -48,6 +50,7 @@ test("Ux Chat Ui", async ({
     `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-chat.tsx")}"></script></html>`,
   );
   let server;
+  let vite;
   const syncStreams = new Set();
   let syncRevision = 0;
   let transcriptSeq = 1;
@@ -68,10 +71,12 @@ test("Ux Chat Ui", async ({
       );
   };
   try {
-    await build({
+    vite = await createViteServer({
       configFile: false,
       root: temporary,
       logLevel: "error",
+      server: { middlewareMode: true, hmr: false },
+      optimizeDeps: { include: ["react/jsx-dev-runtime"] },
       resolve: {
         alias: [
           { find: /^react$/, replacement: require.resolve("react") },
@@ -96,11 +101,6 @@ test("Ux Chat Ui", async ({
             replacement: require.resolve("@mantine/core/styles.css"),
           },
         ],
-      },
-      build: {
-        outDir: join(temporary, "dist"),
-        emptyOutDir: true,
-        rollupOptions: { input: entry },
       },
     });
     server = createServer(async (request, response) => {
@@ -195,20 +195,10 @@ test("Ux Chat Ui", async ({
           );
           return;
         }
-        const file = join(
-          temporary,
-          "dist",
-          path === "/" ? "index.html" : path,
-        );
-        response.setHeader(
-          "Content-Type",
-          {
-            ".html": "text/html",
-            ".js": "text/javascript",
-            ".css": "text/css",
-          }[extname(file)] || "text/plain",
-        );
-        response.end(await readFile(file));
+        vite.middlewares(request, response, () => {
+          response.statusCode = 404;
+          response.end("Not found");
+        });
       } catch {
         response.statusCode = 404;
         response.end();
@@ -706,6 +696,7 @@ test("Ux Chat Ui", async ({
   } finally {
     for (const stream of syncStreams) stream.destroy();
     if (server) await new Promise((resolve) => server.close(resolve));
+    await vite?.close();
     await rm(temporary, { recursive: true, force: true });
   }
 });
