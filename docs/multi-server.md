@@ -213,3 +213,91 @@ read limit. Tailscale identity commands and crypto commands have bounded
 timeouts. Transport calls have a 15-second default timeout. Tests must cover
 pairing retry, signature tampering, unpaired reads and writes, replay,
 revocation, restart receipts, and authenticated sync.
+
+## Auto-discovery
+
+Servers of the same Tailscale owner discover and pair without an invitation.
+Browsers and phones keep the invitation flow. Discovery never changes Serve.
+Auto-pair is enabled by default on each server.
+
+### Public identity and mutual server proof
+
+`GET /api/multi-server/v1/identity` returns
+`{protocol:1,serverId,label,origin,publicKey,tailscaleUser,autoPair}`.
+The endpoint requires the configured Serve HTTPS origin and a fresh Tailscale
+`whois` check of the server owner. It requires no Studio signature. Direct
+loopback requests and requests from another owner fail with HTTP 403.
+The response contains only public data.
+
+`POST /api/multi-server/v1/auto-pair` accepts
+`{protocol:1,serverId,label,origin,publicKey,requestId}`.
+The caller signs the exact bytes with the existing v1 headers. The client ID
+in `X-Studio-Client` must equal the caller's `serverId`. The target ID in
+`X-Studio-Server` identifies the recipient.
+The response is
+`{protocol:1,serverId,clientId,label,origin,publicKey,tailscaleUser,paired:true}`.
+Here `serverId` identifies the recipient and `clientId` identifies the caller.
+
+The recipient requires all these checks before registration:
+
+- Both servers report `autoPair:true`.
+- A fresh `whois` result identifies the same owner, with no node tags.
+- The node DNS name from `whois` equals the claimed origin host.
+- The caller's identity endpoint returns the same server ID, origin, and public key.
+- The caller has no revocation on the recipient.
+- The signature, timestamp, nonce, and request ID pass the v1 checks.
+
+The caller pins the returned recipient identity before it registers that peer.
+Each side stores the existing server credential record and an `auto_pair` audit
+record. An exact retry uses the same body and request ID, with a fresh nonce.
+It creates no second registration or audit record. Failed proof stores no
+mutation receipt. Revocation takes precedence over discovery and saved receipts.
+
+### Discovery and local management
+
+The backend runs discovery at start and every 300 seconds. Each pass reads
+`tailscale status --json`. It selects online, untagged peers with Self's UserID
+and a valid Tailscale DNS name. It probes their identity endpoint over HTTPS.
+Each probe has a five-second timeout. A pass uses at most four concurrent probes,
+64 candidates, and a 90-second deadline. Unknown services are ignored quietly.
+A pass does not overlap another pass on the same server.
+
+The existing session authenticates these `POST /api/multi-server` actions:
+
+| Body                                      | Response                       | Access                        |
+| ----------------------------------------- | ------------------------------ | ----------------------------- |
+| `{action:"discover",requestId}`           | Access snapshot after the pass | Local session only            |
+| `{action:"settings",autoPair,requestId?}` | Access snapshot                | Local session or signed owner |
+| `{action:"unrevoke",clientId,requestId}`  | Access snapshot                | Local session or signed owner |
+| `{action:"ui_invite",serverId,requestId}` | `{invitation,expires}`         | Local session only            |
+
+An access snapshot adds `settings:{autoPair}`. Its `servers` list contains the
+existing server fields and `lastSeen` (Unix seconds or null) and `autoPair`
+(boolean or null). The status values are:
+
+| Status        | Meaning                                                         |
+| ------------- | --------------------------------------------------------------- |
+| `discovered`  | A valid identity is known. Pairing is not complete.             |
+| `paired`      | The server credential is active.                                |
+| `revoked`     | The owner revoked the credential. Discovery cannot restore it.  |
+| `unreachable` | A previously discovered server did not answer the latest probe. |
+
+`clients` keeps the credential records. Orchestration uses only active `paired`
+server credentials. The discovery list preserves a paired or revoked status when
+that peer is offline. `lastSeen` changes only after a valid identity response.
+Disabling auto-pair preserves existing credentials. `unrevoke` removes the
+revocation and the old credential; a later discovery must prove the peer again.
+It fails if the requested client is not a revoked server.
+
+`ui_invite` asks the selected paired server to run signed `create_invite`, using
+one derived stable request ID. It returns the standard invitation to the local
+UI. An exact retry returns the same invitation while it is valid. The recipient's
+receipt omits the token. The caller stores only the request fingerprint and
+public outcome metadata, and obtains the secret again through the signed route.
+No log or durable receipt contains the invitation secret.
+
+Proof failures return the existing `{error,code}` format. HTTP 403 covers owner,
+origin, identity, disabled auto-pair, and revocation errors. HTTP 409 covers a
+request conflict or an active discovery pass. Identity or transport outages
+return HTTP 503 or 504 for explicit operations. Background discovery records
+unreachable known peers and ignores unknown services without log output.
