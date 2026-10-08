@@ -770,6 +770,7 @@ export default function App() {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
+  const limitsWatchers = useRef(new Map<string, () => void>());
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -943,13 +944,26 @@ export default function App() {
   }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
   useEffect(() => {
     if (!data?.stateDir) return;
+    return () => {
+      for (const stop of limitsWatchers.current.values()) stop();
+      limitsWatchers.current.clear();
+    };
+  }, [data?.stateDir]);
+  useEffect(() => {
+    if (!data?.stateDir) return;
     const keys = new Set([
       accountKey,
       ...usageAccountKeys.split("\n").filter(Boolean),
     ]);
-    const stops = [...keys].map((key) => {
+    for (const [key, stop] of limitsWatchers.current) {
+      if (keys.has(key)) continue;
+      stop();
+      limitsWatchers.current.delete(key);
+    }
+    for (const key of keys) {
+      if (limitsWatchers.current.has(key)) continue;
       let baseline = true;
-      return watchResourceReads(
+      const stop = watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
           if (baseline) {
@@ -962,10 +976,8 @@ export default function App() {
           // reloadLimitsFor stores errors in visible account state.
         },
       );
-    });
-    return () => {
-      for (const stop of stops) stop();
-    };
+      limitsWatchers.current.set(key, stop);
+    }
   }, [data?.stateDir, accountKey, usageAccountKeys]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.
