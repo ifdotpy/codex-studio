@@ -18,6 +18,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import traceback
 from typing import Any, Protocol, cast
 import uuid
 
@@ -27,6 +28,7 @@ CHUNK = 128 * 1024
 RECEIPT_AGE = 7 * 86400
 EXPORT_AGE = 86400
 INPUT_ATTEMPTS = 8
+SPAWN_ATTEMPTS = 8
 PATH = '/api/servers/orchestration'
 
 
@@ -204,6 +206,7 @@ class MultiServerService:
         self._claim_lock = threading.RLock()
         # The scheduler claim must never wait behind an inbound SQLite writer.
         self._tick_lock = threading.Lock()
+        self._diagnostic_lock = threading.Lock()
         self._pruned_at = 0.0
         with runtime.db() as db:
             db.executescript('''
@@ -338,17 +341,35 @@ class MultiServerService:
         if row['state'] == 'complete' and envelope['action'] != 'chunk':
             return json.loads(row['result'])  # type: ignore[no-any-return]
         attempts = row['attempts'] + 1
-        if envelope['action'] == 'input' and attempts >= INPUT_ATTEMPTS:
+        action = envelope['action']
+        bound = {'input': INPUT_ATTEMPTS, 'spawn': SPAWN_ATTEMPTS}.get(action)
+        if bound is not None and attempts >= bound:
             result = {'requestId': key, 'outcome': 'unknown', 'terminal': True,
                       'detail': 'outcome unknown, inspect the worker'}
             db.execute("UPDATE runtime_server_outbox SET state='complete',attempts=?,result=?,completed_at=?,error=? WHERE id=?",
                 (attempts, encoded(result), time.time(), error, key))
-            worker = self.runtime.agent(envelope['payload']['worker'], db)
+            workers = (envelope['payload']['workers'] if action == 'spawn'
+                       else [envelope['payload']['worker']])
+            text = 'Remote ' + action + ' ' + key + ': outcome unknown, inspect the worker ' + ', '.join(workers) + '.'
+            if action == 'spawn':
+                for worker_id in workers:
+                    proxy = self.runtime.agent(worker_id, db)
+                    if proxy.get('remoteStateSequence') or proxy.get('remoteAdmissionRequest'):
+                        # Reverse-channel evidence already proves a worker
+                        # exists. Keep its current state and occupied slot.
+                        continue
+                    # No native turn was proved absent. Release the local
+                    # reservation, but never resend or replace this spawn.
+                    proxy.update(status='paused', inFlight=False, remoteReservation=False,
+                                 error=text)
+                    self.runtime.put(db, 'agents', proxy)
+                # Keep task ownership: an unknown worker may still exist.
+                # Reassignment requires inspection of the remote effect.
+            worker = self.runtime.agent(workers[0], db)
             lead = self.runtime.agent(worker['rootId'], db)
-            text = 'Remote input ' + key + ': outcome unknown, inspect the worker ' + worker['id'] + '.'
             self.runtime.enqueue_recovery_event(db, lead, 'agent_message', encoded({
                 'sender': worker['id'], 'sender_name': worker['name'], 'text': text,
-                'request_id': key}), identity('input-unknown-notice', key))
+                'request_id': key}), identity(action + '-unknown-notice', key))
             return result
         db.execute("UPDATE runtime_server_outbox SET attempts=?,next_at=?,error=?,"
                    "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END WHERE id=?",
@@ -656,13 +677,44 @@ class MultiServerService:
             result = {'requestId': key, 'outcome': 'applied', 'value': value}
         except (ValueError, PermissionError) as error:
             result = {'requestId': key, 'outcome': 'not_applied', 'error': str(error)}
-        except Exception:
+        except Exception as error:
             # Native/OS failures can follow a committed effect. Keep unknown.
+            self._unknown_diagnostic(key, action, error)
             return {'requestId': key, 'outcome': 'unknown'}
         with self.runtime.db() as db:
             db.execute("UPDATE runtime_server_inbox SET state='complete',result=?,completed_at=? WHERE id=?",
                 (encoded(compact_receipt(action, result)), time.time(), key))
         return result
+
+    def _unknown_diagnostic(self, key: str, action: str, error: Exception) -> None:
+        # Arbitrary exception text can include prompts, credentials, or a whole
+        # HTTP body. Only fixed native messages and OS errno descriptions are
+        # safe to publish. Frames have no source text, locals, or full paths.
+        try:
+            safe_messages = {'No installed Codex version passed the protocol checks',
+                             'Codex compatibility check is in progress'}
+            message = str(error)
+            if message not in safe_messages:
+                message = (os.strerror(error.errno) if isinstance(error, OSError) and error.errno
+                           else 'Exception message redacted because it can contain private data')
+            diagnostic = {'event': 'cross_server_outcome_unknown', 'at': time.time(),
+                'requestId': key, 'action': action, 'errorType': type(error).__name__, 'message': message,
+                'traceback': [{'file': Path(frame.filename).name, 'line': frame.lineno,
+                               'function': frame.name} for frame in traceback.extract_tb(error.__traceback__)]}
+            path = self.runtime.root / 'orchestration-errors.log'
+            # Keep diagnostics even when account startup failed before there
+            # was an app-server log. No effect or receipt depends on this file.
+            from codex_log_rotation import RotatingLog
+            with self._diagnostic_lock:
+                log = RotatingLog(path, max_bytes=1024 * 1024, backups=2)
+                try:
+                    path.chmod(0o600)
+                    log.write(encoded(diagnostic) + '\n')
+                    path.chmod(0o600)
+                finally:
+                    log.close()
+        except Exception:
+            pass
 
     def _evidence(self, db: Any, action: str, payload: dict[str, Any], key: str) -> dict[str, Any] | None:
         if action == 'release':

@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import platform
 import re
 import selectors
 import shutil
@@ -141,6 +142,40 @@ def _version(path, home):
     return match[1]
 
 
+def native_candidate(path):
+    """Resolve an npm launcher to its platform bundle without executing JS."""
+    path = Path(path).expanduser().resolve()
+    if path.name != 'codex.js' or path.parent.name != 'bin':
+        return path
+    package = path.parent.parent
+    metadata = package / 'package.json'
+    if not metadata.is_file() or metadata.stat().st_size > 1024 * 1024:
+        raise ValueError('Codex npm launcher has no valid package metadata')
+    record = json.loads(metadata.read_text())
+    if not isinstance(record, dict) or record.get('name') != '@openai/codex':
+        raise ValueError('Codex npm launcher has an unexpected package name')
+    architecture = {'arm64': 'arm64', 'aarch64': 'arm64',
+                    'x86_64': 'x64', 'AMD64': 'x64'}.get(platform.machine())
+    system = {'Darwin': ('darwin', 'apple-darwin'),
+              'Linux': ('linux', 'unknown-linux-musl')}.get(platform.system())
+    if not architecture or not system:
+        raise ValueError('Codex npm launcher has an unsupported native platform')
+    package_name = 'codex-' + system[0] + '-' + architecture
+    triple = ('aarch64' if architecture == 'arm64' else 'x86_64') + '-' + system[1]
+    vendor = package / 'vendor'
+    # Match Node's upward node_modules search, including npm hoisting and pnpm
+    # package links. Legacy packages keep vendor beside package.json instead.
+    for directory in (package, *package.parents):
+        dependency = directory / 'node_modules' / '@openai' / package_name
+        if (dependency / 'package.json').is_file():
+            vendor = dependency / 'vendor'
+            break
+    binary = vendor / triple / 'bin' / 'codex'
+    if not binary.is_file():
+        raise ValueError('Codex npm platform package has no native executable')
+    return binary.resolve()
+
+
 def discover_candidates(*, env=None):
     """Return newest-first candidates plus errors; CODEX_BIN is not a version pin."""
     env = os.environ if env is None else env
@@ -156,10 +191,11 @@ def discover_candidates(*, env=None):
     with tempfile.TemporaryDirectory(prefix='studio-native-discovery-') as home:
         for path in paths:
             resolved = str(Path(path).expanduser().resolve())
-            if resolved in seen:
-                continue
-            seen.add(resolved)
             try:
+                resolved = str(native_candidate(path))
+                if resolved in seen:
+                    continue
+                seen.add(resolved)
                 identity = file_identity(resolved)
                 companions = companion_identities(resolved)
                 identity['companions'] = companions
