@@ -81,6 +81,7 @@ test("cold response mismatch shows the gate and update reload reaches rebuild te
     ).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
   } finally {
+    await page.unrouteAll({ behavior: "wait" });
     fixture.kill();
   }
 });
