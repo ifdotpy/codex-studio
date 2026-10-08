@@ -24,7 +24,7 @@ spec.loader.exec_module(fixture)
 class ManualRuntime(Runtime):
     def schedule(self):
         while not self.closed:
-            self.changed.wait(.1)
+            self.changed.wait()
             self.changed.clear()
 
 
@@ -360,7 +360,7 @@ class UsageResumeContract(unittest.TestCase):
         self.assertGreater(before['dueAt'], before['updatedAt'])
         self.assertAlmostEqual(before['plannedAt'], reset, delta=1)
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = ManualRuntime(Path(self.temp.name), fixture.FakeServer)
         after = self.runtime.agent(self.key)['usageResume']
         self.assertEqual(after['id'], before['id'])
         self.assertEqual(after['status'], 'scheduled')

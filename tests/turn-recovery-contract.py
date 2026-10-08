@@ -32,6 +32,7 @@ class RecoveryServer(fixture.FakeServer):
         self.before_apply = None
         self.read_entered = threading.Event()
         self.read_gate = None
+        self.calls_changed = threading.Event()
 
     def call(self, method, params, timeout=60):
         if method == 'thread/turns/list':
@@ -60,7 +61,10 @@ class RecoveryServer(fixture.FakeServer):
             if not params['includeTurns']:
                 result.pop('turns', None)
             return {'thread': result}
-        return super().call(method, params, timeout)
+        result = super().call(method, params, timeout)
+        if method == 'turn/start':
+            self.calls_changed.set()
+        return result
 
     def after_events(self, callback):
         if self.before_apply:
@@ -68,20 +72,52 @@ class RecoveryServer(fixture.FakeServer):
         callback()
 
 
+class QuietRecoveryRuntime(Runtime):
+    """Keep periodic turn recovery out of intermediate-state fixture assertions."""
+
+    def __init__(self, *args, **kwargs):
+        self.periodic_turn_recovery_enabled = False
+        self.turn_recovery_finished = threading.Event()
+        self.start_receipt_finished = threading.Event()
+        super().__init__(*args, **kwargs)
+
+    def queue_turn_recovery(self, agents, *, force_id=None):
+        if self.periodic_turn_recovery_enabled:
+            return super().queue_turn_recovery(agents, force_id=force_id)
+        return None
+
+    def run_turn_recovery(self, key):
+        try:
+            return super().run_turn_recovery(key)
+        finally:
+            self.turn_recovery_finished.set()
+
+    def start_accepted(self, agent_id, attempt, result):
+        try:
+            return super().start_accepted(agent_id, attempt, result)
+        finally:
+            self.start_receipt_finished.set()
+
+
 class TurnRecoveryContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), RecoveryServer)
+        self.runtime = QuietRecoveryRuntime(Path(self.temp.name), RecoveryServer)
         self.server = self.runtime.connect()
+        self.runtime.start_receipt_finished.clear()
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = a['id']
-        fixture.eventually(lambda: bool(self.runtime.agent(self.key).get('turnId')))
-        fixture.eventually(lambda: bool((self.runtime.agent(self.key).get('startAttempt') or {}).get('turnId')))
+        self.assertTrue(self.runtime.start_receipt_finished.wait(30))
         self.a = self.runtime.agent(self.key)
+        self.assertTrue(self.a.get('turnId'))
+        self.assertTrue((self.a.get('startAttempt') or {}).get('turnId'))
         self.turn = self.a['turnId']
         self.server.native = {'id': self.a['threadId'], 'status': {'type': 'idle'}, 'turns': [
             {'id': self.turn, 'status': 'completed', 'items': [
                 {'id': 'answer', 'type': 'agentMessage', 'text': 'Full final answer', 'phase': 'final_answer'}]}]}
+
+    def queue_turn_recovery(self, agents, *, force_id=None):
+        return Runtime.queue_turn_recovery(self.runtime, agents, force_id=force_id)
 
     def tearDown(self):
         if self.server.read_gate:
@@ -106,12 +142,9 @@ class TurnRecoveryContract(unittest.TestCase):
         return a
 
     def test_unknown_start_receipt_recovers_completion_without_resubmission(self):
-        # This test owns the explicit reconciliation call. Keep the periodic
-        # scheduler from racing it after the fixture ages the start receipt.
-        with patch.object(self.runtime, 'queue_turn_recovery'):
-            a = self.lose_start_receipt()
-            before = sum(method == 'turn/start' for method, _ in self.server.calls)
-            result = self.runtime.reconcile_turn(self.key)
+        a = self.lose_start_receipt()
+        before = sum(method == 'turn/start' for method, _ in self.server.calls)
+        result = self.runtime.reconcile_turn(self.key)
         self.assertEqual(result['status'], 'reconciled')
         current = self.runtime.agent(self.key)
         self.assertEqual(current['status'], 'completed')
@@ -124,27 +157,21 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
     def test_late_start_reply_clears_timeout_and_binds_input(self):
-        # This test owns delivery of the late receipt. Prevent periodic recovery
-        # from observing the aged fixture and completing the simulated turn first.
-        with patch.object(self.runtime, 'queue_turn_recovery'):
-            a = self.lose_start_receipt()
-            before = sum(method == 'turn/start' for method, _ in self.server.calls)
-            self.runtime.start_accepted(self.key, a['startAttempt'], {'turn': {'id': self.turn}})
-            current = self.runtime.agent(self.key)
-            self.assertEqual((current['status'], current['turnId'], current['error']),
-                             ('running', self.turn, None))
-            self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
+        a = self.lose_start_receipt()
+        before = sum(method == 'turn/start' for method, _ in self.server.calls)
+        self.runtime.start_accepted(self.key, a['startAttempt'], {'turn': {'id': self.turn}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['turnId'], current['error']),
+                         ('running', self.turn, None))
+        self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
     def test_observed_turn_clears_stale_timeout_error(self):
-        # This test owns the notification. Keep periodic reconciliation from
-        # completing the aged synthetic turn before the notification is applied.
-        with patch.object(self.runtime, 'queue_turn_recovery'):
-            self.lose_start_receipt()
-            self.server.notify({'method': 'turn/started', 'params': {
-                'threadId': self.a['threadId'], 'turn': {'id': self.turn, 'status': 'inProgress'}}})
-            current = self.runtime.agent(self.key)
-            self.assertEqual((current['status'], current['turnId'], current['error']),
-                             ('running', self.turn, None))
+        self.lose_start_receipt()
+        self.server.notify({'method': 'turn/started', 'params': {
+            'threadId': self.a['threadId'], 'turn': {'id': self.turn, 'status': 'inProgress'}}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['turnId'], current['error']),
+                         ('running', self.turn, None))
 
     def test_dispatch_clears_saved_timeout_after_turn_was_observed(self):
         self.lose_start_receipt()
@@ -169,8 +196,10 @@ class TurnRecoveryContract(unittest.TestCase):
         self.lose_start_receipt()
         with self.runtime.db() as db:
             agents = self.runtime.scheduler_agents(db)
-        self.runtime.queue_turn_recovery(agents, force_id=self.key)
-        fixture.eventually(lambda: self.runtime.agent(self.key)['status'] == 'completed')
+        self.runtime.turn_recovery_finished.clear()
+        self.queue_turn_recovery(agents, force_id=self.key)
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
 
     def test_unknown_start_absent_from_history_preserves_original_reservation(self):
         a = self.lose_start_receipt()
@@ -238,29 +267,26 @@ class TurnRecoveryContract(unittest.TestCase):
                                        (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
 
     def test_old_unknown_start_becomes_a_hold_and_late_reply_still_binds(self):
-        # This test owns the reconciliation sequence; the periodic scheduler
-        # must not race the explicit hold and late-receipt assertions below.
-        with patch.object(self.runtime, 'queue_turn_recovery'):
-            a = self.lose_start_receipt()
-            self.server.native['turns'] = []
-            with self.runtime.lock, self.runtime.db() as db:
-                current = self.runtime.agent(self.key, db)
-                current['startAttempt']['created'] = time.time() - 700
-                self.runtime.put(db, 'agents', current)
-            result = self.runtime.reconcile_turn(self.key)
-            self.assertEqual(result['status'], 'held')
-            current = self.runtime.agent(self.key)
-            self.assertEqual((current['status'], current['inFlight']), ('interrupted', False))
-            self.assertEqual(current['startOutcomeHold']['stage'], 'held')
-            self.assertIn('Start outcome unknown', current['error'])
-            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
-            with self.runtime.db() as db:
-                self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
-                                           (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
-            self.runtime.start_accepted(self.key, current['startAttempt'], {'turn': {'id': self.turn}})
-            current = self.runtime.agent(self.key)
-            self.assertEqual((current['status'], current['inFlight'], current['error']), ('running', True, None))
-            self.assertNotIn('startOutcomeHold', current)
+        a = self.lose_start_receipt()
+        self.server.native['turns'] = []
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['created'] = time.time() - 700
+            self.runtime.put(db, 'agents', current)
+        result = self.runtime.reconcile_turn(self.key)
+        self.assertEqual(result['status'], 'held')
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['inFlight']), ('interrupted', False))
+        self.assertEqual(current['startOutcomeHold']['stage'], 'held')
+        self.assertIn('Start outcome unknown', current['error'])
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+        self.runtime.start_accepted(self.key, current['startAttempt'], {'turn': {'id': self.turn}})
+        current = self.runtime.agent(self.key)
+        self.assertEqual((current['status'], current['inFlight'], current['error']), ('running', True, None))
+        self.assertNotIn('startOutcomeHold', current)
 
     def test_old_unknown_start_waits_for_callback_backlog(self):
         self.lose_start_receipt()
@@ -275,29 +301,27 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
 
     def test_old_unknown_start_waits_for_supervisor_ack(self):
-        # Commits wake automatic recovery. This fixture owns two manual probes.
-        with patch.object(self.runtime, 'queue_turn_recovery', return_value=None):
-            self.lose_start_receipt()
-            self.server.native['turns'] = []
-            self.server.supervisor_mode = True
-            class Journal:
-                def __init__(self):
-                    self.acknowledged = 2
-                    self.actions = []
-                def call(self, action):
-                    self.actions.append(action)
-                    return {'sequence': 3, 'acknowledged': self.acknowledged, 'backpressure': False}
-            journal = Journal()
-            self.server.proc = journal
-            with self.runtime.lock, self.runtime.db() as db:
-                current = self.runtime.agent(self.key, db)
-                current['startAttempt']['created'] = time.time() - 700
-                self.runtime.put(db, 'agents', current)
-            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
-            self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
-            journal.acknowledged = 3
-            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'held')
-            self.assertEqual(journal.actions, ['status', 'status'])
+        self.lose_start_receipt()
+        self.server.native['turns'] = []
+        self.server.supervisor_mode = True
+        class Journal:
+            def __init__(self):
+                self.acknowledged = 2
+                self.actions = []
+            def call(self, action):
+                self.actions.append(action)
+                return {'sequence': 3, 'acknowledged': self.acknowledged, 'backpressure': False}
+        journal = Journal()
+        self.server.proc = journal
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(self.key, db)
+            current['startAttempt']['created'] = time.time() - 700
+            self.runtime.put(db, 'agents', current)
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+        self.assertNotIn('startOutcomeHold', self.runtime.agent(self.key))
+        journal.acknowledged = 3
+        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'held')
+        self.assertEqual(journal.actions, ['status', 'status'])
 
     def test_start_pace_counts_only_recent_unresolved_codex_starts(self):
         now = time.time()
@@ -361,7 +385,7 @@ class TurnRecoveryContract(unittest.TestCase):
         submitted = []
         with patch.object(self.runtime.recovery_pool, 'submit',
                           side_effect=lambda *args: submitted.append(args)):
-            self.runtime.queue_turn_recovery(agents)
+            self.queue_turn_recovery(agents)
         self.assertEqual(len(submitted), 1)
         self.assertEqual(submitted[0][1], self.key)
 
@@ -370,11 +394,7 @@ class TurnRecoveryContract(unittest.TestCase):
             {'id': 'newer-' + str(i), 'status': 'completed', 'items': []} for i in range(31)
         ] + self.server.native['turns']
         result = self.runtime.reconcile_turn(self.key)
-        if result.get('status') == 'skipped':
-            # The background scheduler may have applied this exact recovery first.
-            fixture.eventually(lambda: (self.runtime.agent(self.key).get('turnRecovery') or {}).get('turnId') == self.turn)
-        else:
-            self.assertEqual((result.get('status'), result.get('outcome')), ('reconciled', 'completed'))
+        self.assertEqual((result.get('status'), result.get('outcome')), ('reconciled', 'completed'))
         self.assertEqual((self.runtime.agent(self.key).get('turnRecovery') or {}).get('outcome'), 'completed')
         self.assertEqual(self.runtime.agent(self.key)['lastAnswer'], 'Full final answer')
         pages = [p for m, p in self.server.calls if m == 'thread/turns/list']
@@ -458,9 +478,11 @@ class TurnRecoveryContract(unittest.TestCase):
         self.assertFalse(any(n in {'command/exec/terminate', 'turn/interrupt'} for n, _ in self.server.calls))
 
     def test_existing_pending_message_delivered_once(self):
+        self.runtime.start_receipt_finished.clear()
         self.runtime.send(self.key, 'Next task', message_id='next-task')
         self.runtime.reconcile_turn(self.key)
-        fixture.eventually(lambda: self.runtime.agent(self.key).get('turnId') not in (None, self.turn))
+        self.assertTrue(self.runtime.start_receipt_finished.wait(30))
+        self.assertNotIn(self.runtime.agent(self.key).get('turnId'), (None, self.turn))
         self.runtime.reconcile_turn(self.key)  # Native evidence only names the old turn.
         starts = [p for n, p in self.server.calls if n == 'turn/start']
         self.assertEqual(len(starts), 2)
@@ -494,8 +516,11 @@ class TurnRecoveryContract(unittest.TestCase):
             a['activity'] = {'phase': 'writing', 'at': time.time() - 130}
             a['lastEvent'] = '2020-01-01T00:00:00Z'
             self.runtime.put(db, 'agents', a)
+        self.runtime.turn_recovery_finished.clear()
+        self.runtime.periodic_turn_recovery_enabled = True
         self.runtime.changed.set()
-        fixture.eventually(lambda: not self.runtime.agent(self.key)['inFlight'])
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertFalse(self.runtime.agent(self.key)['inFlight'])
         self.assertEqual(self.runtime.agent(self.key)['status'], 'completed')
         self.assertEqual(len([1 for method, _ in self.server.calls if method == 'turn/start']), 1)
 
@@ -516,9 +541,16 @@ class TurnRecoveryContract(unittest.TestCase):
     def test_orphan_busy_flag_clears_when_native_idle_and_input_starts_once(self):
         self.orphan()
         starts = len([1 for method, _ in self.server.calls if method == 'turn/start'])
+        self.runtime.turn_recovery_finished.clear()
+        self.runtime.periodic_turn_recovery_enabled = True
         self.runtime.changed.set()
-        fixture.eventually(lambda: self.runtime.agent(self.key).get('turnRecovery', {}).get('outcome') == 'idle')
-        fixture.eventually(lambda: len([1 for method, _ in self.server.calls if method == 'turn/start']) == starts + 1)
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.assertEqual(self.runtime.agent(self.key).get('turnRecovery', {}).get('outcome'), 'idle')
+        while len([1 for method, _ in self.server.calls if method == 'turn/start']) < starts + 1:
+            self.server.calls_changed.clear()
+            if len([1 for method, _ in self.server.calls if method == 'turn/start']) >= starts + 1:
+                break
+            self.assertTrue(self.server.calls_changed.wait(30), 'recovered input was not started')
         a = self.runtime.agent(self.key)
         self.assertNotIn('steerRejectedTurnId', a)
         for _ in range(3):
@@ -543,15 +575,15 @@ class TurnRecoveryContract(unittest.TestCase):
         self.server.native['status']['type'] = 'active'
         self.server.read_gate = threading.Event()
         with self.runtime.lock:
-            self.runtime.queue_turn_recovery([self.a], force_id=self.key)
-            self.runtime.queue_turn_recovery([self.a], force_id=self.key)
+            self.queue_turn_recovery([self.a], force_id=self.key)
+            self.queue_turn_recovery([self.a], force_id=self.key)
         self.assertTrue(self.server.read_entered.wait(2))
         self.assertTrue(self.runtime.lock.acquire(timeout=.2))
         self.runtime.lock.release()
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)
         self.server.read_gate.set()
-        fixture.eventually(lambda: not self.runtime._turn_recovery_busy)
-        self.runtime.queue_turn_recovery([self.a])
+        self.assertTrue(self.runtime.turn_recovery_finished.wait(30))
+        self.queue_turn_recovery([self.a])
         self.assertEqual(len([n for n, _ in self.server.calls if n == 'thread/read']), 1)
 
 

@@ -30,10 +30,20 @@ def load(name):
     return module
 fixture = load('runtime-contract')
 
+
+class QuietRuntime(Runtime):
+    """These contracts drive runtime operations directly, not scheduler ticks."""
+
+    def schedule(self):
+        while not self.closed:
+            self.changed.wait()
+            self.changed.clear()
+
+
 class CriticalRuntimeContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = QuietRuntime(Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
 
     def prepare_worker(self, worker):

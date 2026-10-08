@@ -133,7 +133,7 @@ def wait_for(fn, timeout=5):
 def quiet_runtime_schedule(runtime):
     """Keep unrelated follow-up events queued while a recovery test finishes."""
     while not runtime.closed:
-        runtime.changed.wait(.05)
+        runtime.changed.wait()
         runtime.changed.clear()
 
 

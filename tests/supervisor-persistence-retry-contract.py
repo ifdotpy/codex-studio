@@ -131,7 +131,7 @@ class DispatchFixture:
 class QuietRuntime(Runtime):
     def schedule(self):
         while not self.closed:
-            self.changed.wait(.05)
+            self.changed.wait()
             self.changed.clear()
 
 
