@@ -36,56 +36,65 @@ production build. Browser checks build the renderer before exercising it.
 use the server runner's `--help` for filtering and optional categories.
 `test:server` also runs the colocated JavaScript bridge tests. To filter Python
 contracts, use `npm run test:server:python -- --filter <name>`.
-The Python server runner samples runnable processes for five seconds and sizes
-its CPU allowance as the larger of one quarter of allowed CPUs and allowed CPUs
-minus the higher of the maximum competing runnable count in the first two
-seconds and the five-second median. This catches short bursts without allowing
-a stale one-minute load average to suppress a later run. It then limits that count by the
-runnable suite count and memory slots. Memory slots divide the smaller of half
-`MemAvailable` and `MemAvailable` minus a 4 GiB reserve by the sum of measured
-peak suite RSS and measured per-suite scratch bytes. Scratch bytes count against
-the memory bound because a selected tmpfs stores them in RAM. The runner probes
-quota by writing and syncing one file per candidate mount, capped at 256 MiB; it
-requires statvfs headroom for measured scratch bytes times selected workers.
-Measured suite durations order the longest suites first. `--jobs` and
-`CODEX_SERVER_TEST_JOBS` override the automatic selection. `--show-jobs` prints
-which resource bound selected the count; use `--load-sample-seconds 0` or
-`CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a fast one-shot plan query.
-The checked-in [timing seed](../tests/server/timing-baseline.json) comes from
-the exact base run; by default, successful runs update a repository-keyed local
-profile under the short test cache root. Complete runs refresh aggregate RSS
-and scratch peaks and decay prior peaks by 10% per run; filtered runs do not
-decay them. On Linux, the runner uses a writable tmpfs scratch
-mount when its free capacity covers the measured per-suite footprint for the
-selected worker count, then falls back to the short cache root. It checks the
-deepest known fixture Unix-socket paths before launching each suite and reports
-an actionable error if an explicitly configured root leaves insufficient path
-space. Scratch roots record their owning runner PID; a later run removes only
-marked roots whose owner process has exited. Set
-`CODEX_SERVER_TEST_TMP_ROOT` to choose a scratch root explicitly. See the [runner](../tests/server/run.py)
-for the resource and scratch-root formulas. When the selected root is disk-backed,
-the runner measures the median of seven 4 KiB write+fsync probes and scales the
-CPU-derived worker count by `5.5 ms / (5.5 ms + measured fsync latency)`; the
-5.5 ms reference is calibrated from the measured disk-vs-tmpfs runtime-contract
-CPU and wall times. Probe results varied substantially across runs, so this is
-a coarse guard against slow disk-backed scratch, not a precise runtime estimate.
-This disk-only I/O bound is reported as `limitingBound=io`.
-Before starting suites, each runner atomically claims its selected CPU and
-measured memory slots in a shared live-runner registry under the short test
-cache root. Concurrent invocations reduce their plans against active claims;
-claims from exited processes are discarded. If an active claim would leave a
-runner with less than half its planned workers, it waits up to three minutes,
-then replans; after the bound it continues with available slots. `--show-jobs`
-is an advisory plan and does not reserve slots.
+The Python server runner samples runnable processes for five seconds and uses
+their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
+runnable tasks)`. The plan then applies the hard memory limit and suite-count
+limit. Memory jobs divide the smaller of half `MemAvailable` and
+`MemAvailable - 4 GiB` by peak suite RSS. Linux `MemAvailable` already reflects
+memory currently occupied by tmpfs/shmem, so scratch is not counted a second
+time. The runner selects tmpfs when available, requires a free-space margin of
+at least 64 MiB or one quarter of the mount (whichever is larger), and runs a
+64 MiB write+fsync quota probe. The probe has caught roots that report free
+space but cannot actually write. If tmpfs is unavailable, it uses disk scratch
+with the same CPU/memory plan; disk-backed full runs under heavy load are not
+currently green (see [known failures](../tests/KNOWN-FAILURES.md)).
+
+Measured suite durations only order the longest suites first. Profile data is
+stored per repository in the short test cache. The plan line reports
+`availableCpus` (CPU allowance after competing load and floor), `otherRunnableProcesses`
+(sampled competitors), `cpuLimit` (affinity/cgroup ceiling), `cpuFloor`,
+`availableMemoryBytes`, `memoryBudgetBytes` (half available memory, retaining the
+4 GiB reserve), `measuredPeakSuiteRssBytes`, `measuredWorkerMemoryBytes`,
+`memoryWorkerSlots`, `cpuWorkerSlots`, `unclampedCpuCount`, `runnerCpuSlots`,
+`runnerMemorySlots`, `estimatedSuiteSeconds`, `runnableSuites`, `workers`,
+`codexExecutable` (the one resolved app-server executable or null), and
+`limitingBound` (CPU, memory, suite count, explicit request, or shared runner
+registry). `cpuLimit` is the affinity/cgroup ceiling; `cpuFloor` is the
+quarter-CPU minimum. `otherRunnableProcesses` is the five-second median minus
+the planner's own runnable sample. `runnerWaitExpired` appears only if a shared
+claim wait reaches its bound. `--jobs` and `CODEX_SERVER_TEST_JOBS` request a
+job count; if a resource bound reduces it, the runner prints the reduction.
+`--show-jobs` is advisory and does not reserve slots; use
+`--load-sample-seconds 0` or `CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a
+fast query. The summary lines report passed/failed/skipped and elapsed time,
+then the exact expected-failure and unexpected-success test IDs. Those IDs are
+pinned in `tests/server/expected_failures.txt`; a mismatch fails the run.
+Known product issues and reproductions are in
+[`tests/KNOWN-FAILURES.md`](../tests/KNOWN-FAILURES.md), while expectation edits
+are tracked in [`tests/TEST-STATUS-CHANGES.md`](../tests/TEST-STATUS-CHANGES.md).
+Use `python3 tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
+Concurrent runners share a per-user registry; a runner that would receive less
+than half its planned workers prints `waiting for another test run to finish`
+and waits up to three minutes before using the remaining capacity.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
 directories under the selected scratch root, so parallel suites do not share
-mutable test state. `--audit-home` enables a Python audit hook in each suite and
-its Python children; it fails if they open or create anything under the real
-user's `.codex`, `.claude`, or `.local/state/codex-agents` directories. Use this
-to verify isolation without reading or logging file contents. The hook does not
-inspect non-Python child processes.
+mutable test state. `--audit-home` uses Python audit hooks in suites and Python
+children to block and record access to the real user's `.codex`, `.claude`, and
+`.local/state/codex-agents` trees. For the default PTY suite only, it allows a
+read-only open and exec of the single canonical `codexExecutable` printed in the
+plan, and permits that exact resolved path as the `CODEX_BIN` and audit-policy
+environment values passed to the isolated supervisor. The audit also requires
+`HOME`, `CODEX_HOME`, and all `XDG_*` home paths in each launched Codex child to
+stay outside protected state; this redirected child environment is the
+isolation boundary for native executable state. The audit itself observes
+Python-level filesystem open/list/stat/mutation, SQLite connect, and subprocess
+argv/environment events; it cannot observe filesystem access performed
+internally by non-Python native child processes. The host binary is statically
+linked, so there are no adjacent shared-library paths to allow. The runner
+fails if any blocked access was logged and prints the allowed executable
+separately.
 
 For a focused client check, forward a file filter to Vitest or Playwright:
 
@@ -132,6 +141,21 @@ contract. `npm run test:desktop:native` selects the hidden Electron application
 check and needs desktop dependencies. The commands `test:server:transport` and
 `test:server:images` retain the process transport and macOS image-helper checks.
 `test:native:schema` explicitly enables the installed Codex schema check.
+`tests/terminals-contract.py` contains 15 PTY/app-server integration tests and
+runs by default when a Codex executable is available. The runner resolves the
+binary once (`CODEX_BIN`, then `codex` on `PATH`, then `~/.local/bin/codex`),
+prints the resolved path in its plan, and passes that one path to this suite
+and the decoy-supervisor isolation test while keeping `HOME`, `CODEX_HOME`, and
+`XDG_*` isolated. With `--audit-home`,
+the audit permits only read-only open and exec of that exact resolved executable
+under the real home; adjacent shared libraries are not needed for this host's
+statically linked executable. All other real-home state stays blocked and
+logged. If no executable resolves, this suite is reported as an environment
+skip with the missing Codex executable named. There is no fake-binary split:
+all 15 tests exercise PTY process creation and the real supervisor/app-server
+lifecycle protocol, so a stub would remove the contract under test. On the
+verified head the default run reports 322 passed suites, 0 failures, and 62
+opt-in skips.
 `npm --prefix web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by
 successful browser discovery or mocked unit tests.

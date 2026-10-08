@@ -30,6 +30,8 @@ isolate_supervisor_environment()
 
 ROOT = Path(__file__).resolve().parents[2]
 TESTS = ROOT / "tests"
+TERMINALS_SUITE = "tests/terminals-contract.py"
+CODEX_BIN_SUITES = frozenset({TERMINALS_SUITE, "tests/test_isolation_contract.py"})
 COMPONENT_ROOTS = (
     "scripts/analytics/tests",
     "scripts/sync/tests",
@@ -53,17 +55,15 @@ EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
+RUNNER_REGISTRY_DIR = Path.home() / ".cache" / "cs" / "st"
 REPOSITORY_KEY = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
-PROFILE_PATH = TEST_TMP_ROOT / f"runner-profile-{REPOSITORY_KEY}.json"
+PROFILE_PATH = RUNNER_REGISTRY_DIR / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
 MAX_UNIX_SOCKET_PATH_BYTES = 103
-RUNNABLE_SHORT_WINDOW_SECONDS = 2.0
-DISK_IO_CPU_EQUIVALENT_MS = 5.5
 SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
-SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
 SCRATCH_OWNER_FILE = ".codex-server-test-owner"
 RUNNER_REGISTRY_LOCK = threading.Lock()
@@ -78,6 +78,31 @@ ACTIVE_SUITE_INTERRUPTERS = set()
 SUITE_OUTCOME_LOCK = threading.Lock()
 EXPECTED_FAILURES = []
 UNEXPECTED_SUCCESSES = []
+HOME_AUDIT_BLOCKED_PATHS = []
+HOME_AUDIT_ALLOWED_EXECUTABLES = []
+HOME_AUDIT_CODEX_BIN_PASSTHROUGHS = []
+HOME_AUDIT_ISOLATED_ENV_EVENTS = []
+EXPECTED_FAILURES_PATH = TESTS / "server" / "expected_failures.txt"
+
+
+def resolve_codex_executable():
+    """Resolve the single app-server executable used by terminal integration tests."""
+    explicit = os.environ.get("CODEX_BIN")
+    if explicit:
+        candidate = Path(explicit).expanduser()
+    else:
+        located = shutil.which("codex")
+        candidate = Path(located) if located else Path.home() / ".local" / "bin" / "codex"
+    try:
+        resolved = candidate.resolve(strict=True)
+        if not resolved.is_file() or not os.access(resolved, os.X_OK):
+            return None
+    except OSError:
+        return None
+    return str(resolved)
+
+
+RESOLVED_CODEX_BIN = resolve_codex_executable()
 
 NATIVE_SUITES = frozenset({
     "tests/account-transfer-native.py", "tests/agent-review-native.py",
@@ -316,12 +341,10 @@ def run_process(command, cwd, timeout, environment):
     with ACTIVE_SUITE_LOCK:
         ACTIVE_SUITE_INTERRUPTERS.add(interrupt_group)
 
-    relay_thread, scratch_errors, outcomes = _relay_suite_output(process)
+    relay_thread, outcomes = _relay_suite_output(process)
 
     def finish(returncode, error):
         relay_thread.join()
-        if scratch_errors and (error is not None or returncode):
-            error = "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
         return returncode, error, outcomes["expected"], outcomes["unexpected"]
 
     try:
@@ -361,11 +384,8 @@ def run_process(command, cwd, timeout, environment):
 
 
 def _relay_suite_output(process):
-    """Stream output while spotting scratch exhaustion for infrastructure reports."""
-    scratch_errors = []
+    """Stream output and collect unittest expected-failure outcomes."""
     outcomes = {"expected": [], "unexpected": []}
-    markers = (b"enospc", b"edquot", b"no space left on device",
-               b"disk quota exceeded", b"errno 28", b"errno 122")
 
     def relay():
         output = getattr(process, "stdout", None)
@@ -373,14 +393,13 @@ def _relay_suite_output(process):
             return
         try:
             for line in iter(output.readline, b""):
-                lowered = line.lower()
-                if any(marker in lowered for marker in markers):
-                    scratch_errors.append(True)
                 decoded = line.decode(errors="replace").strip()
                 if " ... expected failure" in decoded:
-                    outcomes["expected"].append(decoded.split(" ... expected failure", 1)[0])
+                    outcomes["expected"].append(_unittest_outcome_id(
+                        decoded.split(" ... expected failure", 1)[0]))
                 elif " ... unexpected success" in decoded:
-                    outcomes["unexpected"].append(decoded.split(" ... unexpected success", 1)[0])
+                    outcomes["unexpected"].append(_unittest_outcome_id(
+                        decoded.split(" ... unexpected success", 1)[0]))
                 try:
                     stream = sys.stdout
                     if hasattr(stream, "buffer"):
@@ -396,7 +415,18 @@ def _relay_suite_output(process):
 
     thread = threading.Thread(target=relay, name="server-suite-output", daemon=True)
     thread.start()
-    return thread, scratch_errors, outcomes
+    return thread, outcomes
+
+
+def _unittest_outcome_id(line):
+    marker = line.rfind("(")
+    identity = line[marker + 1:-1] if marker >= 0 and line.endswith(")") else line
+    return ".".join(identity.split(".")[-2:])
+
+
+def _pinned_expected_failure_ids():
+    return {line.strip() for line in EXPECTED_FAILURES_PATH.read_text(encoding="utf-8").splitlines()
+            if line.strip() and not line.lstrip().startswith("#")}
 
 
 def _supports_waitid_nowait():
@@ -429,12 +459,10 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
         raise
     finally:
         os.close(write_fd)
-    relay_thread, scratch_errors, outcomes = _relay_suite_output(process)
+    relay_thread, outcomes = _relay_suite_output(process)
 
     def finish(returncode, error):
         relay_thread.join()
-        if scratch_errors and (error is not None or returncode):
-            error = "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
         return returncode, error, outcomes["expected"], outcomes["unexpected"]
 
     def terminate_group():
@@ -593,7 +621,7 @@ def _suite_command(relative, root):
     return command
 
 
-def _suite_environment(root, temp_root, audit_home=False):
+def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment = os.environ.copy()
     environment["HOME"] = str(temp_root / "home")
     environment["USERPROFILE"] = str(temp_root / "home")
@@ -604,8 +632,29 @@ def _suite_environment(root, temp_root, audit_home=False):
     environment["XDG_CONFIG_HOME"] = str(temp_root / "config")
     environment["CODEX_HOME"] = str(temp_root / "codex-home")
     environment["CODEX_AGENTS_PYTHON"] = sys.executable
-    environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent),
-                                           environment.get("PATH", "")))
+    # A host-local `codex` shim commonly resolves into ~/.codex/packages. Do
+    # not let isolated tests discover or launch it. Keep unrelated PATH tools,
+    # but remove entries whose codex executable resolves into protected state.
+    protected_codex = (Path.home() / ".codex").resolve()
+    inherited_path = []
+    for entry in environment.get("PATH", "").split(os.pathsep):
+        candidate = Path(entry or ".") / "codex"
+        try:
+            if candidate.resolve().is_relative_to(protected_codex):
+                continue
+        except OSError:
+            pass
+        inherited_path.append(entry)
+    environment["PATH"] = os.pathsep.join((str(Path(sys.executable).parent), *inherited_path))
+    configured_codex = environment.get("CODEX_BIN")
+    if configured_codex:
+        try:
+            if Path(configured_codex).resolve().is_relative_to(protected_codex):
+                environment.pop("CODEX_BIN", None)
+        except OSError:
+            pass
+    if relative in CODEX_BIN_SUITES and RESOLVED_CODEX_BIN:
+        environment["CODEX_BIN"] = RESOLVED_CODEX_BIN
     environment["CLAUDE_CONFIG_DIR"] = str(temp_root / "claude-home")
     workspace_store = temp_root / "studio-test-workspaces-store"
     workspace_store.mkdir()
@@ -620,6 +669,9 @@ def _suite_environment(root, temp_root, audit_home=False):
         python_paths.insert(0, audit_path)
         environment["CODEX_SERVER_TEST_AUDIT_HOME"] = "1"
         environment["CODEX_SERVER_TEST_REAL_HOME"] = str(Path.home())
+        environment["CODEX_SERVER_TEST_AUDIT_LOG"] = str(temp_root / "audit-home.log")
+        if relative in CODEX_BIN_SUITES and RESOLVED_CODEX_BIN:
+            environment["CODEX_SERVER_TEST_AUDIT_ALLOW_EXECUTABLE"] = RESOLVED_CODEX_BIN
     inherited_pythonpath = environment.get("PYTHONPATH", "")
     if inherited_pythonpath:
         python_paths.append(inherited_pythonpath)
@@ -675,17 +727,6 @@ def _tmpfs_mounts():
     yield from sorted(mounts, key=lambda path: (len(os.fsencode(path)), str(path)))
 
 
-def _directory_size_bytes(directory):
-    total = 0
-    for current, _directories, files in os.walk(directory):
-        for filename in files:
-            try:
-                total += (Path(current) / filename).stat().st_size
-            except OSError:
-                continue
-    return total
-
-
 def _probe_scratch_capacity(directory, size_bytes):
     """Verify usable quota by writing, syncing, and deleting a temporary file."""
     probe = directory / ".scratch-capacity-probe"
@@ -708,38 +749,6 @@ def _probe_scratch_capacity(directory, size_bytes):
         if descriptor is not None:
             os.close(descriptor)
         probe.unlink(missing_ok=True)
-
-
-def _probe_fsync_latency_ms(directory, samples=7):
-    """Measure median small-file durability latency on the selected disk root."""
-    timings = []
-    for index in range(samples):
-        probe = directory / f".fsync-latency-{os.getpid()}-{index}"
-        descriptor = None
-        try:
-            descriptor = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-            os.write(descriptor, b"x" * 4096)
-            started = time.perf_counter()
-            os.fsync(descriptor)
-            timings.append((time.perf_counter() - started) * 1000)
-        except OSError:
-            return None
-        finally:
-            if descriptor is not None:
-                os.close(descriptor)
-            probe.unlink(missing_ok=True)
-    return statistics.median(timings) if timings else None
-
-
-def io_limited_worker_count(fsync_median_ms, cpu_jobs):
-    """Scale disk-backed concurrency by measured sync wait vs calibrated CPU work."""
-    cpu_jobs = max(1, int(cpu_jobs))
-    if fsync_median_ms is None or fsync_median_ms <= 0:
-        return cpu_jobs
-    if not math.isfinite(fsync_median_ms):
-        return 1
-    wait_share = fsync_median_ms / (fsync_median_ms + DISK_IO_CPU_EQUIVALENT_MS)
-    return max(1, min(cpu_jobs, math.floor(cpu_jobs * (1 - wait_share))))
 
 
 def _is_memory_backed_path(path):
@@ -783,32 +792,16 @@ def _cleanup_stale_scratch_roots(mounts=None):
 @contextmanager
 def _runner_registry_guard():
     """Serialize cross-process runner claims in the shared test cache."""
-    directory = TEST_TMP_ROOT
+    directory = RUNNER_REGISTRY_DIR
     directory.mkdir(parents=True, exist_ok=True)
     lock_path = directory / "runner-live.lock"
     with RUNNER_REGISTRY_LOCK, lock_path.open("a+b") as lock_file:
-        if os.name == "nt":  # pragma: no cover - Windows
-            import msvcrt
-
-            lock_file.seek(0)
-            if lock_file.read(1) == b"":
-                lock_file.seek(0)
-                lock_file.write(b"0")
-                lock_file.flush()
-            lock_file.seek(0)
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-        else:
-            import fcntl
-
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        import fcntl
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         try:
             yield directory / "runner-live.json"
         finally:
-            if os.name == "nt":  # pragma: no cover - Windows
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-            else:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _read_live_runner_claims(path):
@@ -819,7 +812,28 @@ def _read_live_runner_claims(path):
     if not isinstance(claims, list):
         return []
     return [claim for claim in claims
-            if isinstance(claim, dict) and _process_id_is_live(int(claim.get("pid", 0) or 0))]
+            if isinstance(claim, dict)
+            and _runner_identity_is_live(claim.get("pid"), claim.get("startTime"))]
+
+
+def _process_start_time(process_id):
+    try:
+        stat = Path(f"/proc/{int(process_id)}/stat").read_text(encoding="ascii")
+        fields = stat[stat.rfind(")") + 2:].split()
+        return fields[19]
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def _runner_identity_is_live(process_id, start_time):
+    try:
+        process_id = int(process_id)
+    except (TypeError, ValueError):
+        return False
+    if not _process_id_is_live(process_id):
+        return False
+    current = _process_start_time(process_id)
+    return current == str(start_time) if current is not None else True
 
 
 def _write_live_runner_claims(path, claims):
@@ -886,7 +900,8 @@ def _reserve_runner_workers(plan, *, replan=None, wait_seconds=180.0,
                     plan["workers"] = selected
                     plan["limitingBound"] = "runner-registry"
                 claims.append({
-                    "pid": os.getpid(), "token": token, "workers": selected,
+                "pid": os.getpid(), "startTime": _process_start_time(os.getpid()),
+                "token": token, "workers": selected,
                     "workerMemoryBytes": worker_memory,
                 })
                 _write_live_runner_claims(registry_path, claims)
@@ -908,23 +923,23 @@ def _release_runner_workers(token):
         _write_live_runner_claims(registry_path, claims)
 
 
-def _memory_scratch_root(required_bytes, measured_footprint_bytes):
-    """Create a short tmpfs root that passes a quota-aware write probe."""
+def _memory_scratch_root():
+    """Create short tmpfs scratch after a free-space margin and quota probe."""
     mounts = list(_tmpfs_mounts())
     _cleanup_stale_scratch_roots(mounts)
     candidates = []
     for mount in mounts:
         owned = None
         try:
-            if shutil.disk_usage(mount).free < required_bytes:
+            usage = shutil.disk_usage(mount)
+            if usage.free < max(64 * 1024**2, usage.total // 4):
                 continue
             owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
             (owned / SCRATCH_OWNER_FILE).write_text(str(os.getpid()), encoding="ascii")
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
                 shutil.rmtree(owned)
                 continue
-            probe_bytes = min(SCRATCH_PROBE_MAX_BYTES,
-                              max(SCRATCH_PROBE_MIN_BYTES, measured_footprint_bytes))
+            probe_bytes = SCRATCH_PROBE_MIN_BYTES
             if not _probe_scratch_capacity(owned, probe_bytes):
                 shutil.rmtree(owned)
                 continue
@@ -1051,29 +1066,23 @@ def _instantaneous_runnable_process_count():
 
 def sample_runnable_other_process_count(window_seconds=5.0, interval_seconds=0.5,
                                        *, sample=None, clock=None, sleep=None):
-    """Combine a short-window high sample with the sustained sample median."""
+    """Estimate competing runnable work from the sample-window median."""
     if not Path("/proc/stat").is_file():
         return 0
     sample = _instantaneous_runnable_process_count if sample is None else sample
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
     samples = []
-    short_samples = []
     started = clock()
     deadline = started + max(0.0, window_seconds)
     while True:
         value = sample()
         samples.append(value)
-        if clock() - started <= min(RUNNABLE_SHORT_WINDOW_SECONDS, max(0.0, window_seconds)):
-            short_samples.append(value)
         remaining = deadline - clock()
         if remaining <= 0:
             break
         sleep(min(interval_seconds, remaining))
-    # A sustained median can miss a bursty neighboring runner. Use the higher
-    # of that median and the short-window maximum.
-    short_high = max(short_samples, default=0)
-    observed = max(short_high, statistics.median(samples)) if samples else 0
+    observed = statistics.median(samples) if samples else 0
     # Each sample includes this main thread, which is runnable while planning.
     return max(0, math.ceil(observed) - 1)
 
@@ -1092,26 +1101,12 @@ def _profile_file_lock():
     PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     lock_path = PROFILE_PATH.with_suffix(".lock")
     with lock_path.open("a+b") as lock_file:
-        lock_file.seek(0, os.SEEK_END)
-        if lock_file.tell() == 0:
-            lock_file.write(b"\0")
-            lock_file.flush()
-        lock_file.seek(0)
-        if os.name == "nt":  # pragma: no cover - Windows
-            import msvcrt
-            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
-            try:
-                yield
-            finally:
-                lock_file.seek(0)
-                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
-        else:
-            import fcntl
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+        import fcntl
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
 
 def _load_profile():
@@ -1127,38 +1122,17 @@ def _load_profile():
     return profile
 
 
-def _save_profile(profile, observed_metrics=None):
-    TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
+def _save_profile(profile):
+    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
     with _profile_file_lock():
         merged = _read_profile_file(PROFILE_PATH)
-        previous_maximums = {
-            key: merged.get(key)
-            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes")
-        }
-        previous_metrics_started_at = float(merged.get("metricsStartedAt", 0) or 0)
+        previous_rss = int(merged.get("maxSuiteRssBytes", 0) or 0)
         suites = dict(merged.get("suiteSeconds", {}))
         suites.update(profile.get("suiteSeconds", {}))
         merged.update(profile)
         merged["suiteSeconds"] = suites
-        merged["metricsStartedAt"] = max(
-            previous_metrics_started_at,
-            float(profile.get("metricsStartedAt", 0) or 0),
-        )
-        if observed_metrics is not None:
-            current_started = float(observed_metrics.get("startedAt", 0) or 0)
-            if current_started >= previous_metrics_started_at:
-                for key, observed_key in (("maxSuiteRssBytes", "peakRssBytes"),
-                                          ("maxSuiteScratchBytes", "peakScratchBytes")):
-                    previous = int(previous_maximums.get(key, 0) or 0)
-                    observed = int(observed_metrics.get(observed_key, 0) or 0)
-                    merged[key] = max(observed, int(previous * 0.9))
-                merged["metricsStartedAt"] = current_started
-        else:
-            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes"):
-                values = [int(value) for value in (previous_maximums.get(key), profile.get(key))
-                          if value is not None]
-                if values:
-                    merged[key] = max(values)
+        current_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
+        merged["maxSuiteRssBytes"] = max(previous_rss, current_rss)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{PROFILE_PATH.name}.", suffix=".tmp", dir=PROFILE_PATH.parent,
         )
@@ -1179,11 +1153,6 @@ def _measured_child_peak_rss_bytes():
     if sys.platform == "darwin":
         return peak
     return peak * 1024
-
-
-def automatic_worker_count(entries, profile=None, override=None):
-    """Size from CPUs, memory per measured peak suite RSS, and suite count."""
-    return worker_plan(entries, profile, override=override)["workers"]
 
 
 def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
@@ -1207,6 +1176,7 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
             "memoryWorkerSlots": 0,
             "estimatedSuiteSeconds": 0,
             "runnableSuites": 0,
+            "codexExecutable": RESOLVED_CODEX_BIN,
         }
     other_runnable = (0 if override is not None else
                       sample_runnable_other_process_count(window_seconds=sample_seconds))
@@ -1217,9 +1187,9 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
     cpu_bound = "cpu-floor" if cpu_unclamped < cpu_floor else "cpu-median"
     memory = available_memory_bytes()
     peak_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
-    peak_scratch = int(profile.get("maxSuiteScratchBytes", 0) or 0)
     memory_budget = min(memory // 2, max(0, memory - MEMORY_RESERVE_BYTES))
-    memory_per_worker = peak_rss + peak_scratch
+    # MemAvailable already reflects pages currently occupied by tmpfs/shmem.
+    memory_per_worker = peak_rss
     memory_slots = max(1, memory_budget // memory_per_worker) if memory_per_worker else cpus
     costs = profile.get("suiteSeconds", {})
     total = sum(float(costs.get(path, 0) or 0) for path, _kind in entries)
@@ -1250,63 +1220,88 @@ def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
         "memoryBudgetBytes": memory_budget,
         "memoryReserveBytes": MEMORY_RESERVE_BYTES,
         "measuredPeakSuiteRssBytes": peak_rss,
-        "measuredPeakSuiteScratchBytes": peak_scratch,
         "measuredWorkerMemoryBytes": memory_per_worker,
         "memoryWorkerSlots": memory_slots,
         "estimatedSuiteSeconds": total,
         "runnableSuites": len(entries),
+        "codexExecutable": RESOLVED_CODEX_BIN,
     }
 
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                execute=run_process, workers=None, load_sample_seconds=5.0,
                audit_home=False):
-    runnable = [(path, kind) for path, kind in entries
-                if kind in {"safe", "component"} or kind in opted_in]
-    skipped = [(path, kind) for path, kind in entries
-               if kind not in {"safe", "component"} and kind not in opted_in]
+    runnable = []
+    skipped = []
+    for path, kind in entries:
+        if path == TERMINALS_SUITE and not RESOLVED_CODEX_BIN:
+            skipped.append((path, "environment"))
+        elif kind in {"safe", "component"} or kind in opted_in:
+            runnable.append((path, kind))
+        else:
+            skipped.append((path, kind))
     failures = []
     with SUITE_OUTCOME_LOCK:
         EXPECTED_FAILURES.clear()
         UNEXPECTED_SUCCESSES.clear()
+        HOME_AUDIT_BLOCKED_PATHS.clear()
+        HOME_AUDIT_ALLOWED_EXECUTABLES.clear()
+        HOME_AUDIT_CODEX_BIN_PASSTHROUGHS.clear()
+        HOME_AUDIT_ISOLATED_ENV_EVENTS.clear()
     started = time.monotonic()
-    metrics_started_at = time.time()
     if not runnable:
         return runnable, skipped, failures, time.monotonic() - started
 
     profile = _load_profile()
     suite_seconds = dict(profile.get("suiteSeconds", {}))
     max_suite_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
-    observed_peak_rss = 0
-    observed_peak_scratch = 0
     save_measurements = execute is run_process
-    all_suites_selected = save_measurements and {path for path, _kind in entries} == {
-        path for path, _kind in inventory()
-    }
     suite_tmp_root = TEST_TMP_ROOT
     owned_tmp_root = None
     plan = None
     automatic = workers is None
+    explicit_jobs = workers
 
     def run_one(index, relative, kind):
         deadline = expensive_timeout if kind == "expensive" else timeout
         print(f"[{index}/{len(runnable)}] {relative} (deadline {deadline:g}s)", flush=True)
         suite_started = time.monotonic()
-        scratch_bytes = 0
         try:
             with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-") as temporary:
                 temp_root = Path(temporary)
                 socket_path_error = _unix_socket_path_error(temp_root)
                 if socket_path_error:
                     return (relative, socket_path_error,
-                            time.monotonic() - suite_started, 0, scratch_bytes)
+                            time.monotonic() - suite_started, 0)
                 for name in ("home", "cache", "state", "data", "config", "codex-home", "claude-home"):
                     (temp_root / name).mkdir()
-                environment = _suite_environment(root, temp_root, audit_home=audit_home)
+                environment = _suite_environment(root, temp_root, audit_home=audit_home,
+                                                 relative=relative)
                 result = execute(
                     _suite_command(relative, root), root, deadline, environment,
                 )
-                scratch_bytes = _directory_size_bytes(temp_root)
+                if audit_home:
+                    audit_log = Path(environment["CODEX_SERVER_TEST_AUDIT_LOG"])
+                    if audit_log.exists() and audit_log.stat().st_size:
+                        audit_events = audit_log.read_text(encoding="utf-8", errors="replace").splitlines()
+                        blocked = [line for line in audit_events
+                                   if not line.startswith("ALLOWED_")]
+                        with SUITE_OUTCOME_LOCK:
+                            HOME_AUDIT_BLOCKED_PATHS.extend(blocked)
+                            HOME_AUDIT_ALLOWED_EXECUTABLES.extend(
+                                f"{relative}={line.split(chr(9), 1)[1]}" for line in audit_events
+                                if line.startswith("ALLOWED_EXEC\t")
+                            )
+                            HOME_AUDIT_CODEX_BIN_PASSTHROUGHS.extend(
+                                line.split("\t", 1)[1] for line in audit_events
+                                if line.startswith("ALLOWED_CONFIG\t")
+                            )
+                            HOME_AUDIT_ISOLATED_ENV_EVENTS.extend(
+                                line.partition("\t")[2] for line in audit_events
+                                if line.startswith("ALLOWED_ISOLATED_ENV\t")
+                            )
+                        if blocked:
+                            return relative, "real-home audit blocked: " + "; ".join(blocked), time.monotonic() - suite_started, 0
                 if len(result) >= 4:
                     returncode, error, expected, unexpected = result
                 else:
@@ -1316,41 +1311,19 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                     EXPECTED_FAILURES.extend(f"{relative}::{name}" for name in expected)
                     UNEXPECTED_SUCCESSES.extend(f"{relative}::{name}" for name in unexpected)
         except OSError as error:
-            return relative, f"could not start: {error}", time.monotonic() - suite_started, 0, scratch_bytes
+            return relative, f"could not start: {error}", time.monotonic() - suite_started, 0
         peak_rss = _measured_child_peak_rss_bytes()
         if error:
-            return relative, error, time.monotonic() - suite_started, peak_rss, scratch_bytes
+            return relative, error, time.monotonic() - suite_started, peak_rss
         if returncode:
-            return relative, f"exit {returncode}", time.monotonic() - suite_started, peak_rss, scratch_bytes
-        return relative, None, time.monotonic() - suite_started, peak_rss, scratch_bytes
+            return relative, f"exit {returncode}", time.monotonic() - suite_started, peak_rss
+        return relative, None, time.monotonic() - suite_started, peak_rss
 
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     indexed = [(index, relative, kind)
                for index, (relative, kind) in enumerate(runnable, start=1)]
 
-    # On a fresh machine, measure the slowest known suite before sizing the
-    # pool. The calibration suite is part of the selected run, not extra work.
-    if workers is None and not max_suite_rss:
-        calibration = next((item for item in indexed if item[1] == "tests/runtime-contract.py"), None)
-        if calibration is not None:
-            relative, error, suite_elapsed, peak_rss, scratch_bytes = run_one(
-                1, calibration[1], calibration[2],
-            )
-            suite_seconds[relative] = suite_elapsed
-            max_suite_rss = max(max_suite_rss, peak_rss)
-            observed_peak_rss = max(observed_peak_rss, peak_rss)
-            observed_peak_scratch = max(observed_peak_scratch, scratch_bytes)
-            profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss,
-                            "maxSuiteScratchBytes": max(
-                                int(profile.get("maxSuiteScratchBytes", 0) or 0), scratch_bytes,
-                            )})
-            if save_measurements:
-                _save_profile(profile)
-            status = f"failed ({error})" if error else "passed"
-            print(f"Finished {relative}: {status}, {suite_elapsed:.2f}s", flush=True)
-            if error:
-                failures.append((relative, error))
-            indexed.remove(calibration)
+    if workers is None:
         plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
     elif workers is None:
@@ -1363,32 +1336,12 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
     elif save_measurements:
-        measured_footprint = int(profile.get("maxSuiteScratchBytes", 0) or 0)
-        if measured_footprint:
-            owned_tmp_root = _memory_scratch_root(
-                measured_footprint * workers, measured_footprint,
-            )
-            if owned_tmp_root is not None:
-                suite_tmp_root = owned_tmp_root
-                print(f"Scratch root: tmpfs {owned_tmp_root} ({measured_footprint * workers} bytes required)",
-                      flush=True)
-            else:
-                print(f"Scratch root: disk {TEST_TMP_ROOT} (tmpfs capacity unavailable for "
-                      f"{measured_footprint * workers} bytes)", flush=True)
-
-    memory_backed = _is_memory_backed_path(suite_tmp_root) if save_measurements else True
-    if save_measurements and not memory_backed:
-        fsync_median_ms = _probe_fsync_latency_ms(suite_tmp_root)
-        if plan is not None:
-            io_workers = io_limited_worker_count(fsync_median_ms, plan["cpuWorkerSlots"])
-            io_workers = min(workers, io_workers)
-            plan["ioFsyncMedianMs"] = fsync_median_ms
-            plan["ioWorkerSlots"] = io_workers
-            if io_workers < workers:
-                workers = io_workers
-                plan["workers"] = workers
-                plan["limitingBound"] = "io"
-    planned_workers = plan["workers"]
+        owned_tmp_root = _memory_scratch_root()
+        if owned_tmp_root is not None:
+            suite_tmp_root = owned_tmp_root
+            print(f"Scratch root: tmpfs {owned_tmp_root}", flush=True)
+        else:
+            print(f"Scratch root: disk {TEST_TMP_ROOT} (tmpfs unavailable; standard plan retained)", flush=True)
     requested_workers = plan["workers"]
 
     def replan_after_registry_wait():
@@ -1397,22 +1350,17 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             override=None if automatic else requested_workers,
             sample_seconds=load_sample_seconds if automatic else 0,
         )
-        if save_measurements and not memory_backed:
-            fsync_median_ms = _probe_fsync_latency_ms(suite_tmp_root)
-            io_workers = io_limited_worker_count(fsync_median_ms, refreshed["cpuWorkerSlots"])
-            refreshed["ioFsyncMedianMs"] = fsync_median_ms
-            refreshed["ioWorkerSlots"] = io_workers
-            if io_workers < refreshed["workers"]:
-                refreshed["workers"] = io_workers
-                refreshed["limitingBound"] = "io"
         return refreshed
 
     claim_token = _reserve_runner_workers(plan, replan=replan_after_registry_wait)
     workers = plan["workers"]
     if automatic:
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
-    elif plan["workers"] != planned_workers:
-        print("Adjusted selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
+    else:
+        print("Selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
+        if explicit_jobs is not None and plan["workers"] < explicit_jobs:
+            print(f"explicit --jobs reduced from {explicit_jobs} to {plan['workers']} by "
+                  f"{plan['limitingBound']} resource bound", flush=True)
 
     indexed.sort(key=lambda item: suite_seconds.get(item[1], 0), reverse=True)
     first_pending_index = len(runnable) - len(indexed) + 1
@@ -1426,14 +1374,9 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             futures.append(pool.submit(run_one, *item))
         completed = as_completed(futures)
         for future in completed:
-            relative, error, suite_elapsed, peak_rss, scratch_bytes = future.result()
+            relative, error, suite_elapsed, peak_rss = future.result()
             suite_seconds[relative] = suite_elapsed
             max_suite_rss = max(max_suite_rss, peak_rss)
-            observed_peak_rss = max(observed_peak_rss, peak_rss)
-            observed_peak_scratch = max(observed_peak_scratch, scratch_bytes)
-            profile["maxSuiteScratchBytes"] = max(
-                int(profile.get("maxSuiteScratchBytes", 0) or 0), scratch_bytes,
-            )
             status = f"failed ({error})" if error else "passed"
             print(f"Finished {relative}: {status}, {suite_elapsed:.2f}s", flush=True)
             if error:
@@ -1455,16 +1398,21 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         _release_runner_workers(claim_token)
     order = {relative: index for index, (relative, _kind) in enumerate(runnable)}
     failures.sort(key=lambda failure: order[failure[0]])
+    if execute is run_process:
+        with SUITE_OUTCOME_LOCK:
+            observed = set(EXPECTED_FAILURES)
+            unexpected = set(UNEXPECTED_SUCCESSES)
+        runnable_paths = {path for path, _kind in runnable}
+        pinned = {test_id for test_id in _pinned_expected_failure_ids()
+                  if test_id.split("::", 1)[0] in runnable_paths}
+        if observed != pinned:
+            failures.append(("expected-failures", f"pinned set mismatch: missing={sorted(pinned-observed)}; "
+                             f"extra={sorted(observed-pinned)}"))
+        if unexpected:
+            failures.append(("unexpected-successes", f"expected-failure tests unexpectedly passed: {sorted(unexpected)}"))
     profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss})
     if save_measurements:
-        if all_suites_selected and observed_peak_rss:
-            _save_profile(profile, observed_metrics={
-                "startedAt": metrics_started_at,
-                "peakRssBytes": observed_peak_rss,
-                "peakScratchBytes": observed_peak_scratch,
-            })
-        else:
-            _save_profile(profile)
+        _save_profile(profile)
     return runnable, skipped, failures, time.monotonic() - started
 
 
@@ -1505,7 +1453,7 @@ def main():
     parser.add_argument("--show-jobs", action="store_true",
                         help="show the automatic worker count without running suites")
     parser.add_argument("--audit-home", action="store_true",
-                        help="fail Python tests that open or create paths under the real Codex/Claude/state home")
+                        help="block and report Python filesystem, SQLite, or subprocess access under real user state")
     parser.add_argument("--load-sample-seconds", type=float,
                         default=float(os.environ.get("CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS", "5")),
                         help="runnable-load sampling window in seconds (default: 5; also CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS)")
@@ -1527,13 +1475,14 @@ def main():
     if args.show_jobs:
         opted_in = set(args.include)
         runnable = [(path, kind) for path, kind in entries
-                    if kind in {"safe", "component"} or kind in opted_in]
+                    if (kind in {"safe", "component"} or kind in opted_in)
+                    and (path != TERMINALS_SUITE or RESOLVED_CODEX_BIN)]
         plan = worker_plan(runnable, override=args.jobs, sample_seconds=load_sample_seconds)
         print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
-              f"CPUs allowed - max(short-window maximum, {load_sample_seconds:g}-second median) "
-              "of sampled runnable tasks excluding this runner), "
-              "floor(min(50% of available memory, available memory - 4 GiB reserve) / "
-              "measured peak suite RSS), runnable suite count); explicit jobs override the CPU bound")
+              f"CPUs allowed - {load_sample_seconds:g}-second median of sampled runnable tasks "
+              "excluding this runner), floor(min(50% of available memory, available memory - "
+              "4 GiB reserve) / measured peak suite RSS), runnable suite count); explicit jobs "
+              "request a count subject to memory and runner capacity")
         print("Worker plan: " + json.dumps(plan, sort_keys=True))
         return 0
     if args.list:
@@ -1554,34 +1503,51 @@ def main():
             print("No server tests matched the filter.", file=sys.stderr)
         return 2
     opted_in = set(args.include)
-    runnable_for_plan = [(path, kind) for path, kind in entries
-                         if kind in {"safe", "component"} or kind in opted_in]
-    if args.jobs is not None:
-        plan = worker_plan(runnable_for_plan, override=args.jobs,
-                           sample_seconds=load_sample_seconds)
-        print("Selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
-        args.jobs = plan["workers"]
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
         workers=args.jobs, load_sample_seconds=load_sample_seconds,
         audit_home=args.audit_home)
     for path, kind in skipped:
-        condition = ("an already provisioned, isolated Linux VM and --include vm"
-                     if kind == "vm" else f"--include {kind}")
-        print(f"SKIP {path}: requires {condition}")
+        if kind == "environment":
+            print(f"SKIP {path}: no executable Codex app-server found (set CODEX_BIN, install codex on PATH, or install ~/.local/bin/codex)")
+        else:
+            condition = ("an already provisioned, isolated Linux VM and --include vm"
+                         if kind == "vm" else f"--include {kind}")
+            print(f"SKIP {path}: requires {condition}")
     if not runnable:
         print(f"No runnable server suites: {len(skipped)} skipped (opt-in).", file=sys.stderr)
         return 2
+    opt_in_skips = sum(kind != "environment" for _path, kind in skipped)
+    environment_skips = len(skipped) - opt_in_skips
     print(f"Server suites: {len(runnable) - len(failures)} passed, {len(failures)} failed, "
-          f"{len(skipped)} skipped (opt-in), {elapsed:.1f}s")
+          f"{opt_in_skips} skipped (opt-in), {environment_skips} skipped (environment), {elapsed:.1f}s")
     with SUITE_OUTCOME_LOCK:
         expected = sorted(EXPECTED_FAILURES)
         unexpected = sorted(UNEXPECTED_SUCCESSES)
     print(f"Expected failures: {len(expected)}" + ("; " + ", ".join(expected) if expected else ""))
     print(f"Unexpected successes: {len(unexpected)}" + ("; " + ", ".join(unexpected) if unexpected else ""))
+    if args.audit_home:
+        with SUITE_OUTCOME_LOCK:
+            blocked = sorted(HOME_AUDIT_BLOCKED_PATHS)
+            allowed_execs = sorted(set(HOME_AUDIT_ALLOWED_EXECUTABLES))
+            codex_bin_passes = len(HOME_AUDIT_CODEX_BIN_PASSTHROUGHS)
+            isolated_env_events = len(HOME_AUDIT_ISOLATED_ENV_EVENTS)
+        print(f"HOME audit: {len(blocked)} blocked accesses" +
+              ("; " + "; ".join(blocked) if blocked else ""))
+        print("HOME audit permitted real-home executable: " +
+              (RESOLVED_CODEX_BIN or "none"))
+        fixture_execs = sorted({entry.split("=", 1)[1] for entry in allowed_execs
+                                if entry.split("=", 1)[1] != RESOLVED_CODEX_BIN})
+        print(f"HOME audit synthetic fixture exec targets: {len(fixture_execs)}")
+        if fixture_execs:
+            fixture_sources = sorted({entry.split("=", 1)[0] for entry in allowed_execs
+                                      if entry.split("=", 1)[1] != RESOLVED_CODEX_BIN})
+            print("HOME audit synthetic fixture source suites: " + ", ".join(fixture_sources))
+        print(f"HOME audit isolated CODEX_BIN pass-throughs: {codex_bin_passes}")
+        print(f"HOME audit isolated Codex child environments: {isolated_env_events}")
     for path, reason in failures:
         print(f"FAIL {path}: {reason}")
-    return 1 if failures else 0
+    return 1 if failures or unexpected else 0
 
 
 if __name__ == "__main__":
