@@ -672,7 +672,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await appearanceTab.waitFor();
       await appearanceTab.click();
       await studioSettings
-        .getByRole("region", { name: "Theme", exact: true })
+        .getByRole("radiogroup", { name: "Studio theme", exact: true })
         .waitFor();
       console.log(`PERF studio-settings-open-ms=${roundedOpenMs}`);
       await studioSettings.screenshot({
