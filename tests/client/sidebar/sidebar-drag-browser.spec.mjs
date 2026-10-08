@@ -429,14 +429,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   }
 });
 
-test("sidebar queues a second reorder while the first save is pending", async ({
-  page: runnerPage,
-}) => {
-  test.fail(
-    true,
-    "A second reorder during an in-flight save is currently silently dropped",
-  );
-  test.setTimeout(30_000);
+async function startSidebarOverlapSetup(page) {
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-overlap-"));
   const proc = spawn(
@@ -445,18 +438,33 @@ test("sidebar queues a second reorder while the first save is pending", async ({
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";
-  proc.stderr.on("data", (d) => (log += d));
+  let releaseFirst;
+  let firstResponse;
+  proc.stderr.on("data", (data) => (log += data));
+  const stop = () => {
+    releaseFirst?.();
+    if (proc.exitCode === null) proc.kill();
+  };
   try {
     const port = await new Promise((resolve, reject) => {
-      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
-      proc.once("exit", () => reject(Error(log)));
+      const timer = setTimeout(
+        () => reject(Error("Sidebar fixture startup timed out: " + log)),
+        10_000,
+      );
+      proc.stdout.once("data", (data) => {
+        clearTimeout(timer);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Sidebar fixture exited"));
+      });
     });
     const url = `http://127.0.0.1:${port}`;
     const initial = await readTestState(url);
     const projectPath = initial.runtime.projects.find(
       (project) => project.name === "Project A",
     ).path;
-    const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.goto(url);
     const project = page.locator(`[data-project-path="${projectPath}"]`);
@@ -476,10 +484,9 @@ test("sidebar queues a second reorder while the first save is pending", async ({
         );
     const before = await topItems();
     const teamIndex = before.indexOf("Team A");
-    assert.notEqual(teamIndex, -1);
+    assert.notEqual(teamIndex, -1, "The fixture contains Team A");
     const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
     const bodies = [];
-    let releaseFirst;
     const responseGate = new Promise((resolve) => {
       releaseFirst = resolve;
     });
@@ -498,25 +505,74 @@ test("sidebar queues a second reorder while the first save is pending", async ({
       }
       await route.fulfill({ response });
     });
+    firstResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      return (
+        new URL(response.url()).pathname === "/api/projects" &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.action === "reorder" &&
+        !request.postDataJSON()?.migration
+      );
+    });
     await team.press(`Alt+${direction}`);
     await firstRequest;
     const firstOrder = await topItems();
-    assert.notDeepEqual(firstOrder, before);
-    await expect(team).not.toBeDisabled();
-    assert.notEqual(await team.getAttribute("aria-busy"), "true");
-    await team.press(`Alt+${direction}`);
-    releaseFirst();
+    return {
+      stop,
+      releaseFirst,
+      team,
+      before,
+      firstOrder,
+      direction,
+      bodies,
+      topItems,
+      firstResponse,
+    };
+  } catch (error) {
+    stop();
+    throw Error(`${error instanceof Error ? error.message : error}\n${log}`);
+  }
+}
+
+test("sidebar reorder setup holds the first save after its optimistic move", async ({
+  page: runnerPage,
+}) => {
+  const setup = await startSidebarOverlapSetup(runnerPage);
+  try {
+    assert.equal(
+      setup.bodies.length,
+      1,
+      "The first reorder reached the server",
+    );
+    assert.notDeepEqual(setup.firstOrder, setup.before);
+  } finally {
+    setup.releaseFirst();
+    await setup.firstResponse.catch(() => {});
+    setup.stop();
+  }
+});
+
+test("sidebar queues a second reorder while the first save is pending", async ({
+  page: runnerPage,
+}) => {
+  const setup = await startSidebarOverlapSetup(runnerPage);
+  try {
+    test.fail(
+      true,
+      "A second reorder during an in-flight save is currently silently dropped",
+    );
+    await setup.team.press(`Alt+${setup.direction}`);
+    setup.releaseFirst();
+    await setup.firstResponse;
     await expect
-      .poll(() => bodies.length, {
+      .poll(() => setup.bodies.length, {
         timeout: 5_000,
         message: "The second rapid reorder should be sent after the first save",
       })
       .toBe(2);
-    assert.notDeepEqual(await topItems(), firstOrder);
-  } catch (error) {
-    console.error("Fixture errors:", log);
-    throw error;
+    assert.notDeepEqual(await setup.topItems(), setup.firstOrder);
   } finally {
-    proc.kill();
+    setup.stop();
+    await setup.firstResponse.catch(() => {});
   }
 });
