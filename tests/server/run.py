@@ -56,6 +56,8 @@ MEMORY_RESERVE_BYTES = 4 * 1024**3
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
+MAX_UNIX_SOCKET_PATH_BYTES = 103
+RUNNABLE_SHORT_WINDOW_SECONDS = 2.0
 SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
 SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
@@ -619,6 +621,26 @@ def _suite_environment(root, temp_root, audit_home=False):
     return environment
 
 
+def _unix_socket_path_error(temp_root):
+    """Return an early, actionable error if nested fixture sockets cannot fit."""
+    if os.name == "nt":  # pragma: no cover - AF_UNIX path limits differ on Windows
+        return None
+    # Cover the deepest socket paths used by shutdown, isolation and default
+    # supervisor fixtures, including their nested TemporaryDirectory names.
+    prospective = (
+        temp_root / "studio-shutdown-00000000" / "state" / "canvas.sock",
+        temp_root / "studio-decoy-supervisor-00000000" / "supervisor.sock",
+        temp_root / "state" / "codex-agents" / "supervisor.sock",
+    )
+    longest = max(prospective, key=lambda path: len(os.fsencode(path)))
+    path_bytes = len(os.fsencode(longest))
+    if path_bytes > MAX_UNIX_SOCKET_PATH_BYTES:
+        return (f"suite scratch path leaves no room for AF_UNIX sockets: {longest} "
+                f"({path_bytes} bytes; limit {MAX_UNIX_SOCKET_PATH_BYTES}); "
+                "choose a shorter CODEX_SERVER_TEST_TMP_ROOT")
+    return None
+
+
 def _tmpfs_mounts():
     """Yield writable tmpfs mount points available to this process."""
     if not sys.platform.startswith("linux"):
@@ -822,22 +844,31 @@ def _instantaneous_runnable_process_count():
 
 def sample_runnable_other_process_count(window_seconds=5.0, interval_seconds=0.5,
                                        *, sample=None, clock=None, sleep=None):
-    """Use a median sample window of runnable tasks, excluding this runner."""
+    """Combine a short-window high sample with the sustained sample median."""
     if not Path("/proc/stat").is_file():
         return 0
     sample = _instantaneous_runnable_process_count if sample is None else sample
     clock = time.monotonic if clock is None else clock
     sleep = time.sleep if sleep is None else sleep
     samples = []
-    deadline = clock() + max(0.0, window_seconds)
+    short_samples = []
+    started = clock()
+    deadline = started + max(0.0, window_seconds)
     while True:
-        samples.append(sample())
+        value = sample()
+        samples.append(value)
+        if clock() - started <= min(RUNNABLE_SHORT_WINDOW_SECONDS, max(0.0, window_seconds)):
+            short_samples.append(value)
         remaining = deadline - clock()
         if remaining <= 0:
             break
         sleep(min(interval_seconds, remaining))
+    # A sustained median can miss a bursty neighboring runner. Use the higher
+    # of that median and the short-window maximum.
+    short_high = max(short_samples, default=0)
+    observed = max(short_high, statistics.median(samples)) if samples else 0
     # Each sample includes this main thread, which is runnable while planning.
-    return max(0, math.ceil(statistics.median(samples)) - 1) if samples else 0
+    return max(0, math.ceil(observed) - 1)
 
 
 def _read_profile_file(path):
@@ -1029,6 +1060,10 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         try:
             with tempfile.TemporaryDirectory(dir=suite_tmp_root, prefix=f"{index:03d}-") as temporary:
                 temp_root = Path(temporary)
+                socket_path_error = _unix_socket_path_error(temp_root)
+                if socket_path_error:
+                    return (relative, socket_path_error,
+                            time.monotonic() - suite_started, 0, scratch_bytes)
                 for name in ("home", "cache", "state", "data", "config", "codex-home", "claude-home"):
                     (temp_root / name).mkdir()
                 environment = _suite_environment(root, temp_root, audit_home=audit_home)
@@ -1200,7 +1235,8 @@ def main():
                     if kind in {"safe", "component"} or kind in opted_in]
         plan = worker_plan(runnable, override=args.jobs, sample_seconds=args.load_sample_seconds)
         print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
-              f"CPUs allowed - median of {args.load_sample_seconds:g}-second sampled runnable tasks excluding this runner), "
+              f"CPUs allowed - max(short-window maximum, {args.load_sample_seconds:g}-second median) "
+              "of sampled runnable tasks excluding this runner), "
               "floor(min(50% of available memory, available memory - 4 GiB reserve) / "
               "measured peak suite RSS), runnable suite count); explicit jobs override the CPU bound")
         print("Worker plan: " + json.dumps(plan, sort_keys=True))

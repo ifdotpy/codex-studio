@@ -367,7 +367,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(plans[2]["workers"], 8)
         self.assertEqual(plans[2]["limitingBound"], "cpu-floor")
 
-    def test_runnable_load_sampler_uses_five_second_median_and_excludes_runner(self):
+    def test_runnable_load_sampler_keeps_short_bursts_and_sustained_median(self):
         samples = iter([1, 3, 5, 8, 4, 2, 7, 3, 1, 4, 6])
         now = [0.0]
 
@@ -380,8 +380,15 @@ class ServerSuiteRunner(unittest.TestCase):
                 sample=lambda: next(samples),
                 clock=lambda: now[0],
                 sleep=sleep,
-            ), 3)
+            ), 7)
         self.assertEqual(now[0], 5.0)
+
+    def test_long_scratch_root_is_rejected_before_socket_fixtures_start(self):
+        self.assertIsNone(RUNNER._unix_socket_path_error(Path("/tmp/cs")))
+        too_long = Path("/tmp") / ("x" * 90)
+        error = RUNNER._unix_socket_path_error(too_long)
+        self.assertIn("AF_UNIX", error)
+        self.assertIn("choose a shorter CODEX_SERVER_TEST_TMP_ROOT", error)
 
     def test_show_jobs_load_sample_window_can_come_from_environment(self):
         entries = [("only.py", "safe")]
@@ -396,7 +403,8 @@ class ServerSuiteRunner(unittest.TestCase):
               contextlib.redirect_stdout(output)):
             self.assertEqual(RUNNER.main(), 0)
         sample.assert_called_once_with(window_seconds=0.0)
-        self.assertIn("median of 0-second sampled", output.getvalue())
+        self.assertIn("short-window maximum", output.getvalue())
+        self.assertIn("0-second median", output.getvalue())
 
     def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:

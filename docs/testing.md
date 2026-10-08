@@ -38,7 +38,9 @@ use the server runner's `--help` for filtering and optional categories.
 contracts, use `npm run test:server:python -- --filter <name>`.
 The Python server runner samples runnable processes for five seconds and sizes
 its CPU allowance as the larger of one quarter of allowed CPUs and allowed CPUs
-minus median competing runnable processes. It then limits that count by the
+minus the higher of the maximum competing runnable count in the first two
+seconds and the five-second median. This catches short bursts without allowing
+a stale one-minute load average to suppress a later run. It then limits that count by the
 runnable suite count and memory slots. Memory slots divide the smaller of half
 `MemAvailable` and `MemAvailable` minus a 4 GiB reserve by the sum of measured
 peak suite RSS and measured per-suite scratch bytes. Scratch bytes count against
@@ -53,7 +55,10 @@ The checked-in [timing seed](../tests/server/timing-baseline.json) comes from
 the exact base run; by default, successful runs update a local profile under
 the short test cache root. On Linux, the runner uses a writable tmpfs scratch
 mount when its free capacity covers the measured per-suite footprint for the
-selected worker count, then falls back to the short cache root. Set
+selected worker count, then falls back to the short cache root. It checks the
+deepest known fixture Unix-socket paths before launching each suite and reports
+an actionable error if an explicitly configured root leaves insufficient path
+space. Set
 `CODEX_SERVER_TEST_TMP_ROOT` to choose a scratch root explicitly. See the [runner](../tests/server/run.py)
 for the resource and scratch-root formulas.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
