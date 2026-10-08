@@ -6,7 +6,14 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  handleEntitySyncFixtureRequest,
+  readApiSchemaHash,
+  syncIdentityFixture,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Model Catalog Pending Browser", async ({
   browser: _testBrowser,
@@ -39,6 +46,14 @@ test("Model Catalog Pending Browser", async ({
     join(tmpdir(), "studio-model-catalog-pending-"),
   );
   const picker = join(root, "web/src/components/agents/WorkerModelPicker.tsx");
+  const identity = syncIdentityFixture("0123456789abcdef0123456789abcdef");
+  const resourceNotifiers = new Set();
+  let resourceNotifySequence = 0;
+  const syncFixture = {
+    snapshot: {},
+    workspaceId: identity.workspaceId,
+    onStreamReady: (notify) => resourceNotifiers.add(notify),
+  };
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),
@@ -50,35 +65,40 @@ test("Model Catalog Pending Browser", async ({
       {
         name: "model-catalog-pending-harness",
         enforce: "pre",
+        configureServer(server) {
+          server.middlewares.stack.unshift({
+            route: "",
+            handle(request, response, next) {
+              const url = new URL(request.url || "/", "http://localhost");
+              if (url.pathname === "/api/sync/notify") {
+                const chunks = [];
+                request.on("data", (chunk) => chunks.push(chunk));
+                request.on("end", () => {
+                  const body = JSON.parse(Buffer.concat(chunks).toString());
+                  for (const notify of resourceNotifiers)
+                    notify(body.resources);
+                  response.setHeader("Content-Type", "application/json");
+                  response.end(
+                    JSON.stringify({
+                      accepted: true,
+                      requestId: body.requestId,
+                    }),
+                  );
+                });
+                return;
+              }
+              if (
+                handleEntitySyncFixtureRequest(request, response, syncFixture)
+              )
+                return;
+              next();
+            },
+          });
+        },
         resolveId(id) {
           if (id === "virtual:model-catalog-pending") return "\0" + id;
-          if (id === "../watchResourceReads")
-            return "\0virtual:model-catalog-resource-watch";
         },
         load(id) {
-          if (id === "\0virtual:model-catalog-resource-watch")
-            return `export function watchResourceReads(_resources, read, failed) {
-              let active = true;
-              let reading = false;
-              let dirty = false;
-              const refresh = () => {
-                if (!active) return;
-                dirty = true;
-                if (reading) return;
-                reading = true;
-                void (async () => {
-                  while (active && dirty) {
-                    dirty = false;
-                    try { await read(); }
-                    catch (error) { if (active) failed(error); }
-                  }
-                  reading = false;
-                })();
-              };
-              window.emitCatalogResourceChange = refresh;
-              refresh();
-              return () => { active = false; dirty = false; };
-            }`;
           if (process.env.BASELINE === "1" && id === picker)
             return execFileSync(
               "git",
@@ -131,6 +151,34 @@ test("Model Catalog Pending Browser", async ({
       window.catalogReplies = [];
       window.catalogRequests = [];
       window.abortedCatalogs = 0;
+      window.catalogRetryTimers = new Map();
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      const nativeClearTimeout = window.clearTimeout.bind(window);
+      let retryTimerSequence = 100000;
+      window.setTimeout = (callback, delay, ...args) => {
+        const stack = new Error().stack || "";
+        if (
+          delay !== 1000 ||
+          !stack.includes("watchResourceReads.ts:") ||
+          stack.includes("resourceEvents.ts:")
+        )
+          return nativeSetTimeout(callback, delay, ...args);
+        const id = ++retryTimerSequence;
+        window.catalogRetryTimers.set(id, {
+          callback: () => callback(...args),
+          stack,
+        });
+        return id;
+      };
+      window.clearTimeout = (id) => {
+        window.catalogRetryTimers.delete(id);
+        nativeClearTimeout(id);
+      };
+      window.runCatalogRetry = () => {
+        const [id, callback] = window.catalogRetryTimers.entries().next().value;
+        window.catalogRetryTimers.delete(id);
+        callback.callback();
+      };
       const nativeFetch = window.fetch.bind(window);
       window.fetch = async (url, options) => {
         const requestUrl = url instanceof Request ? url.url : String(url);
@@ -183,9 +231,30 @@ test("Model Catalog Pending Browser", async ({
     };
     const requestCount = () =>
       page.evaluate(() => window.catalogRequests.length);
+    const retryTimerCount = () =>
+      page.evaluate(() => window.catalogRetryTimers.size);
+    const notifyResourceChange = async () => {
+      const response = await fetch(
+        new URL("/api/sync/notify", server.resolvedUrls.local[0]),
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "X-Canvas-Token": "model-catalog-fixture",
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+          },
+          body: JSON.stringify({
+            requestId: `catalog-change-${++resourceNotifySequence}`,
+            resources: [{ kind: "models" }],
+          }),
+        },
+      );
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ accepted: true });
+    };
     const emitResourceChange = async () => {
       const before = await requestCount();
-      await page.evaluate(() => window.emitCatalogResourceChange());
+      await notifyResourceChange();
       await page.waitForFunction(
         (before) => window.catalogRequests.length > before,
         before,
@@ -201,8 +270,14 @@ test("Model Catalog Pending Browser", async ({
     await reset([pending, ready("late-model")]);
     assert.equal(await page.evaluate(() => window.catalogResult.loading), true);
     assert.equal(await page.evaluate(() => window.catalogResult.error), "");
+    assert.equal(
+      await retryTimerCount(),
+      0,
+      "pending catalog waits for a model resource change",
+    );
     await emitResourceChange();
     await hasModel("late-model");
+    assert.equal(await retryTimerCount(), 0);
 
     const beforeRetry = await requestCount();
     await page.evaluate(() => {
@@ -224,6 +299,11 @@ test("Model Catalog Pending Browser", async ({
       await page.evaluate(() => window.catalogResult.loading),
       false,
     );
+    assert.equal(
+      await retryTimerCount(),
+      0,
+      "explicitly retried pending catalog waits for a model resource change",
+    );
     await emitResourceChange();
     await hasModel("updated-model");
     assert.deepEqual(
@@ -232,6 +312,7 @@ test("Model Catalog Pending Browser", async ({
       ),
       ["updated-model"],
     );
+    assert.equal(await retryTimerCount(), 0);
 
     await reset([ready("old-worker-model")], "first", true);
     await hasModel("old-worker-model");
@@ -259,6 +340,11 @@ test("Model Catalog Pending Browser", async ({
     await hasModel("partial-worker-model");
     await hasModel("old-worker-model");
     assert.equal(await requestCount(), beforeWorkerRetry + 1);
+    assert.equal(
+      await retryTimerCount(),
+      0,
+      "partial worker catalog waits for a model resource change",
+    );
     await emitResourceChange();
     await hasModel("complete-worker-model");
     assert.deepEqual(
@@ -271,8 +357,6 @@ test("Model Catalog Pending Browser", async ({
     const permanentReplies = [
       { status: 400, body: { error: "Model catalog is pending" } },
       { status: 400, body: { error: "Pending", catalogPending: "true" } },
-      { status: 503, body: { error: "Pending", catalogPending: true } },
-      { network: true },
     ];
     for (const reply of permanentReplies) {
       await page.evaluate((reply) => {
@@ -281,6 +365,42 @@ test("Model Catalog Pending Browser", async ({
       }, reply);
       await page.waitForFunction(() => !!window.catalogResult.error);
       await hasModel("complete-worker-model");
+      assert.equal(await retryTimerCount(), 0);
+    }
+    for (const reply of [
+      { status: 503, body: { error: "Temporary failure" } },
+      { network: true },
+    ]) {
+      const beforeRetryableFailure = await requestCount();
+      const retainedModel = await page.evaluate(
+        () => window.catalogResult.models[0]?.model,
+      );
+      await page.evaluate(
+        ({ reply, recoveredReply }) => {
+          window.catalogReplies = [reply, recoveredReply];
+          window.catalogResult.retry();
+        },
+        { reply, recoveredReply: ready("recovered-model") },
+      );
+      await page.waitForFunction(
+        (before) => window.catalogRequests.length > before,
+        beforeRetryableFailure,
+      );
+      await page.waitForFunction(() => !!window.catalogResult.error);
+      await hasModel(retainedModel);
+      assert.equal(
+        await retryTimerCount(),
+        1,
+        "retryable read failure schedules one watcher retry",
+      );
+      await page.evaluate(() => window.runCatalogRetry());
+      await page.waitForFunction(
+        (before) => window.catalogRequests.length > before + 1,
+        beforeRetryableFailure,
+      );
+      await hasModel("recovered-model");
+      await page.waitForFunction(() => window.catalogResult.error === "");
+      assert.equal(await retryTimerCount(), 0);
     }
     for (const unavailableAccounts of [
       undefined,
@@ -302,12 +422,14 @@ test("Model Catalog Pending Browser", async ({
         await page.evaluate(() => window.catalogResult.loading),
         false,
       );
+      assert.equal(await retryTimerCount(), 0);
     }
 
     await reset([pending, ready("must-not-load")]);
     await page.evaluate(() => window.mountCatalog("first", false, false));
-    await page.evaluate(() => window.emitCatalogResourceChange());
+    await notifyResourceChange();
     assert.equal(await page.evaluate(() => window.catalogRequests.length), 1);
+    assert.equal(await retryTimerCount(), 0);
 
     await reset([{ ...ready("old-account-model"), hold: true }]);
     await page.evaluate(() => {
