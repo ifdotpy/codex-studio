@@ -34,6 +34,7 @@ class _WorkHost(RecordStore, Protocol):
     db_path: Path
     lock: "ContextManager[object]"
     closed: bool
+    _close_event: threading.Event
     changed: threading.Event
     search_migration_thread: threading.Thread | None
     search_migration_error: str | None
@@ -827,10 +828,12 @@ class WorkMixin:
                 self.search_migration_error = None
                 if blocked_for_space:
                     delay = 30
-                time.sleep(delay)
+                if self._close_event.wait(delay):
+                    return
             except Exception as error:
                 self.search_migration_error = str(error)[:500]
-                time.sleep(5)
+                if self._close_event.wait(5):
+                    return
 
     def _search_migration_batch(self: "_WorkHost", db: "sqlite3.Connection", batch_size: "int"=5, max_bytes: "int"=64 * 1024) -> "bool":
         state = db.execute("SELECT cursor FROM runtime_search_rollout WHERE id=1").fetchone()

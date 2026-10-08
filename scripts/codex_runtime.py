@@ -1496,6 +1496,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self._committed_resource_overflow = False
         self._committed_resource_lock = threading.Lock()
         self.closed = False
+        self._close_event = threading.Event()
         self._fast_delivery_enabled = False
         self._wal_keeper = None
         self._shutdown_writers_drained = False
@@ -1802,6 +1803,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def _cleanup_failed_initialization(self, original_error):
         errors = []
         self.closed = True
+        self._close_event.set()
         self.changed.set()
         with self.start_lock:
             servers = list({id(server): server for server in [
@@ -10686,6 +10688,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     capture_restart(agent)
                     self.put(db, "agents", agent)
             self.closed = True
+        self._close_event.set()
         with self.ui_condition:
             self.ui_condition.notify_all()
         self.changed.set()

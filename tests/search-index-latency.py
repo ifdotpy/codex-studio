@@ -116,12 +116,16 @@ class SearchIndex(unittest.TestCase):
                     connection.close()
             work.db = db
             steps = []
-            def sleep(_seconds):
-                steps.append(1)
-                if len(steps) > 500:
-                    work.closed = True
-            with patch("codex_work.time.sleep", side_effect=sleep), \
-                    patch("codex_work.shutil.disk_usage", return_value=type("U", (), {"free": 64 * 1024**3})()):
+            class CloseSignal:
+                def wait(self, _seconds):
+                    steps.append(1)
+                    if len(steps) > 500:
+                        work.closed = True
+                        return True
+                    return False
+
+            work._close_event = CloseSignal()
+            with patch("codex_work.shutil.disk_usage", return_value=type("U", (), {"free": 64 * 1024**3})()):
                 work._search_migration_run()
             self.assertIsNone(getattr(work, "search_migration_error", None))
             check = sqlite3.connect(path)
@@ -168,16 +172,20 @@ class SearchIndex(unittest.TestCase):
                 closed = False
                 lock = threading.RLock()
                 db_path = path
+                class CloseSignal:
+                    def __init__(self, runtime):
+                        self.runtime = runtime
+                    def wait(self, _seconds):
+                        self.runtime.closed = True
+                        return True
                 @contextmanager
                 def db(self):
                     yield owner.db
             migrator = Migrator()
             class Usage:
                 free = 0
-            def pause(_seconds):
-                migrator.closed = True
-            with patch.object(codex_work.shutil, "disk_usage", return_value=Usage()), \
-                    patch.object(codex_work.time, "sleep", side_effect=pause):
+            migrator._close_event = Migrator.CloseSignal(migrator)
+            with patch.object(codex_work.shutil, "disk_usage", return_value=Usage()):
                 migrator._search_migration_run()
             self.assertEqual(self.db.execute(
                 "SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()[0], "waiting_for_space")
