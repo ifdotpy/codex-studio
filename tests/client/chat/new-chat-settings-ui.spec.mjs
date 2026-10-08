@@ -1,6 +1,6 @@
 import { test, expect, spawnFixture } from "../playwright.mjs";
 import { chooseSetupValue } from "../../setup-controls.mjs";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -10,11 +10,20 @@ test("new chat chips open each role, save settings and disappear after send", as
   test.setTimeout(120000);
   const root = join(import.meta.dirname, "../../..");
   const evidence = await mkdtemp(join(tmpdir(), "studio-new-chat-settings-"));
+  for (const folder of ["home", "codex", "claude"]) {
+    await mkdir(join(evidence, folder));
+  }
   const fixture = spawnFixture(
     "python3",
     ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      env: {
+        HOME: join(evidence, "home"),
+        CODEX_HOME: join(evidence, "codex"),
+        CLAUDE_CONFIG_DIR: join(evidence, "claude"),
+        TOKEN_RATE_WORKER_COUNT: "1",
+      },
     },
   );
   let log = "";
@@ -75,6 +84,9 @@ test("new chat chips open each role, save settings and disappear after send", as
     );
     expect((await mainSave).ok()).toBe(true);
     await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("dialog", { name: "Main agent settings", exact: true }),
+    ).toHaveCount(0);
     await expect(main).toContainText(" · High · ");
     await workers.click();
     await expect(
@@ -91,6 +103,9 @@ test("new chat chips open each role, save settings and disappear after send", as
     );
     expect((await workerSave).ok()).toBe(true);
     await page.keyboard.press("Escape");
+    await expect(
+      page.getByRole("dialog", { name: "Subagent defaults", exact: true }),
+    ).toHaveCount(0);
     await expect(workers).toContainText(" · Medium · ");
     await page.reload();
     await expect(main).toContainText(" · High · ");
