@@ -14,6 +14,7 @@ COMMANDS = (
     "codex-canvas",
     "codex-chat",
     "codex-control",
+    "codex-supervisor",
     "codex-daemon",
     "codex-graph",
     "codex-models",
