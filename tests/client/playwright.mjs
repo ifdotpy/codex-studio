@@ -17,6 +17,10 @@ import {
 } from "node:fs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
+import {
+  persistWorkerMemorySample,
+  sampleProcessTreeMemory,
+} from "../../web/playwright-workers.mjs";
 
 const playwrightScratch = choosePlaywrightScratchRoot();
 process.env.TMPDIR = playwrightScratch.root;
@@ -249,24 +253,47 @@ const test = baseTest.extend({
     async ({ playwright, browserName }, use, workerInfo) => {
       const browserType = playwright[browserName];
       const launch = browserType.launch;
-      const memoryPeak = { rssBytes: 0, pssBytes: 0, samples: 0 };
+      const memoryPeak = {
+        rssBytes: 0,
+        pssBytes: 0,
+        processTreeRssBytes: 0,
+        processTreePssBytes: 0,
+        processTreeProcessCount: 0,
+        processTreeBreakdown: [],
+        samples: 0,
+      };
       const sampleMemory = () => {
         try {
+          const tree = sampleProcessTreeMemory(process.pid);
+          if (!tree.processCount || !tree.pssBytes) return;
+          if (tree.pssBytes > memoryPeak.processTreePssBytes)
+            memoryPeak.processTreeBreakdown = tree.processes;
+          memoryPeak.processTreeRssBytes = Math.max(
+            memoryPeak.processTreeRssBytes,
+            tree.rssBytes,
+          );
+          memoryPeak.processTreePssBytes = Math.max(
+            memoryPeak.processTreePssBytes,
+            tree.pssBytes,
+          );
+          memoryPeak.processTreeProcessCount = Math.max(
+            memoryPeak.processTreeProcessCount,
+            tree.processCount,
+          );
           const rollup = readFileSync("/proc/self/smaps_rollup", "utf8");
           const rssKb = Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]);
           const pssKb = Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]);
-          if (!Number.isFinite(rssKb) || !Number.isFinite(pssKb)) return;
-          memoryPeak.rssBytes = Math.max(memoryPeak.rssBytes, rssKb * 1024);
-          memoryPeak.pssBytes = Math.max(memoryPeak.pssBytes, pssKb * 1024);
+          if (Number.isFinite(rssKb) && Number.isFinite(pssKb)) {
+            memoryPeak.rssBytes = Math.max(memoryPeak.rssBytes, rssKb * 1024);
+            memoryPeak.pssBytes = Math.max(memoryPeak.pssBytes, pssKb * 1024);
+          }
           memoryPeak.samples += 1;
         } catch {
           // Keep tests portable to systems without procfs.
         }
       };
       sampleMemory();
-      const memorySampler = process.env.PLAYWRIGHT_STAGE_LOG
-        ? setInterval(sampleMemory, 1_000)
-        : undefined;
+      const memorySampler = setInterval(sampleMemory, 1_000);
       memorySampler?.unref();
       if (process.env.PLAYWRIGHT_STAGE_LOG) {
         browserType.launch = async function (...args) {
@@ -285,15 +312,33 @@ const test = baseTest.extend({
       try {
         await use();
       } finally {
-        if (memorySampler) {
-          clearInterval(memorySampler);
-          sampleMemory();
+        clearInterval(memorySampler);
+        sampleMemory();
+        let workerMemorySelection = {};
+        try {
+          workerMemorySelection = JSON.parse(
+            process.env.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
+          );
+        } catch {
+          // A malformed inherited selector should not fail fixture cleanup.
+        }
+        persistWorkerMemorySample({
+          runId: workerMemorySelection.workerMemoryRunId,
+          workerPid: process.pid,
+          processTreePssBytes: memoryPeak.processTreePssBytes,
+          processTreeBreakdown: memoryPeak.processTreeBreakdown,
+        });
+        if (process.env.PLAYWRIGHT_STAGE_LOG) {
           recordStage("worker_memory_peak", {
             workerPid: process.pid,
             workerIndex: workerInfo.workerIndex,
             browserName,
             rssBytes: memoryPeak.rssBytes,
             pssBytes: memoryPeak.pssBytes,
+            processTreeRssBytes: memoryPeak.processTreeRssBytes,
+            processTreePssBytes: memoryPeak.processTreePssBytes,
+            processTreeProcessCount: memoryPeak.processTreeProcessCount,
+            processTreeBreakdown: memoryPeak.processTreeBreakdown,
             samples: memoryPeak.samples,
           });
         }

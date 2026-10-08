@@ -55,6 +55,9 @@ const specialProjects =
     : [];
 
 export default defineConfig({
+  globalTeardown: fileURLToPath(
+    new URL("./playwright-memory-teardown.mjs", import.meta.url),
+  ),
   testDir: "..",
   testMatch: [
     fileURLToPath(new URL("../tests/client/**/*.spec.mjs", import.meta.url)),

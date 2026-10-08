@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
+import { mkdirSync, readdirSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// A real-spec run with eight workers reached 4.77 GiB peak tree PSS, or
-// roughly 0.60 GiB per worker; MemAvailable fell by about 0.75 GiB/worker.
-// Use 640 MiB PSS plus a 384 MiB runtime/Vite variance reserve, then add the
-// measured 17.64 MiB fixture scratch and round up to a 64 MiB boundary.
+// Keep the current worker policy while process-tree measurements are gathered.
 const measuredWorkerPssBytes = 640 * 1024 * 1024;
 const workerRuntimeReserveBytes = 384 * 1024 * 1024;
 export const measuredFixtureScratchBytes = 18 * 1024 * 1024;
@@ -25,6 +24,157 @@ const minimumAvailableMemoryReserveBytes = 4 * 1024 * 1024 * 1024;
 const minimumCpuWorkerFraction = 0.25;
 const runnableSampleCount = 11;
 const runnableSampleIntervalMs = 500;
+
+function memoryStateDirectory(environment = process.env) {
+  return join(
+    environment.XDG_STATE_HOME || join(os.homedir(), ".local", "state"),
+    "codex-studio",
+    "playwright-worker-memory",
+  );
+}
+
+export function sampleProcessTreeMemory(
+  rootPid,
+  readProcFile = (path) => readFileSync(path, "utf8"),
+) {
+  const pending = [String(rootPid)];
+  const seen = new Set();
+  let rssBytes = 0;
+  let pssBytes = 0;
+  const processes = [];
+  while (pending.length) {
+    const pid = pending.pop();
+    if (seen.has(pid)) continue;
+    seen.add(pid);
+    try {
+      const rollup = readProcFile(`/proc/${pid}/smaps_rollup`);
+      const rssKb = Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]);
+      const pssKb = Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]);
+      if (Number.isFinite(rssKb) && Number.isFinite(pssKb)) {
+        const process = {
+          pid: Number(pid),
+          rssBytes: rssKb * 1024,
+          pssBytes: pssKb * 1024,
+          name: "unknown",
+          command: "",
+        };
+        try {
+          process.name = readProcFile(`/proc/${pid}/comm`).trim();
+        } catch {
+          // Process may exit between smaps and comm reads.
+        }
+        try {
+          process.command = readProcFile(`/proc/${pid}/cmdline`)
+            .replace(/\0/g, " ")
+            .trim();
+        } catch {
+          // Keep the comm label when cmdline is unavailable.
+        }
+        processes.push(process);
+        rssBytes += process.rssBytes;
+        pssBytes += process.pssBytes;
+      }
+    } catch {
+      // A short-lived descendant may exit between reading children and smaps.
+    }
+    try {
+      const children = readProcFile(`/proc/${pid}/task/${pid}/children`)
+        .trim()
+        .split(/\s+/)
+        .filter(Boolean);
+      pending.push(...children);
+    } catch {
+      // Not every process exposes children (for example after it exits).
+    }
+  }
+  return { rssBytes, pssBytes, processCount: seen.size, processes };
+}
+
+export function persistWorkerMemorySample({
+  environment = process.env,
+  runId,
+  workerPid,
+  processTreePssBytes,
+  processTreeBreakdown,
+}) {
+  if (
+    !runId ||
+    !Number.isSafeInteger(processTreePssBytes) ||
+    processTreePssBytes <= 0
+  )
+    return;
+  const directory = join(memoryStateDirectory(environment), "runs", runId);
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, `worker-${workerPid}.json`),
+    JSON.stringify({
+      workerPid,
+      processTree: true,
+      processTreePssBytes,
+      processTreeBreakdown,
+    }),
+  );
+}
+
+export function completeWorkerMemoryRun(environment = process.env) {
+  let selection;
+  try {
+    selection = JSON.parse(
+      environment.CODEX_PLAYWRIGHT_WORKER_SELECTION || "{}",
+    );
+  } catch {
+    return;
+  }
+  const runId = selection.workerMemoryRunId;
+  if (typeof runId !== "string") return;
+  const stateDirectory = memoryStateDirectory(environment);
+  const runDirectory = join(stateDirectory, "runs", runId);
+  let samples = [];
+  try {
+    samples = readdirSync(runDirectory)
+      .filter((name) => /^worker-\d+\.json$/.test(name))
+      .map((name) => JSON.parse(readFileSync(join(runDirectory, name), "utf8")))
+      .filter(
+        (entry) =>
+          entry.processTree === true &&
+          Number.isSafeInteger(entry.processTreePssBytes) &&
+          entry.processTreePssBytes > 0,
+      );
+  } catch {
+    return;
+  }
+  if (!samples.length) return;
+  const profile = {
+    runId,
+    completedAt: Date.now(),
+    processTree: true,
+    processTreePssBytes: Math.max(
+      ...samples.map((entry) => entry.processTreePssBytes),
+    ),
+    workerCount: samples.length,
+    processTreeBreakdown: samples.reduce(
+      (largest, entry) =>
+        entry.processTreePssBytes > (largest?.processTreePssBytes ?? 0)
+          ? {
+              processTreePssBytes: entry.processTreePssBytes,
+              processes: entry.processTreeBreakdown,
+            }
+          : largest,
+      undefined,
+    )?.processes,
+  };
+  mkdirSync(stateDirectory, { recursive: true });
+  const latestPath = join(stateDirectory, "latest.json");
+  try {
+    const current = JSON.parse(readFileSync(latestPath, "utf8"));
+    if (current.completedAt > profile.completedAt) return;
+  } catch {
+    // No previous completed profile is available.
+  }
+  const temporaryPath = `${latestPath}.${process.pid}.${randomUUID()}.tmp`;
+  writeFileSync(temporaryPath, JSON.stringify(profile));
+  renameSync(temporaryPath, latestPath);
+}
 
 function readText(path) {
   try {
@@ -186,6 +336,7 @@ function workerSelection(environment = process.env) {
     Math.max(0, memoryAvailable - minimumAvailableMemoryReserveBytes),
   );
   const memoryLimit = Math.floor(memoryBudget / measuredWorkerMemoryBytes);
+  const workerMemoryRunId = `${Date.now()}-${process.pid}-${randomUUID()}`;
   const decision = choosePlaywrightWorkerCount({
     cpuLimit,
     competingRunnable,
@@ -205,6 +356,7 @@ function workerSelection(environment = process.env) {
     maximumMemoryFraction,
     minimumCpuWorkerFraction,
     measuredWorkerPssBytes,
+    workerMemoryRunId,
     workerRuntimeReserveBytes,
     measuredFixtureScratchBytes,
     measuredWorkerMemoryBytes,
