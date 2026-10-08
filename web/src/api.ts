@@ -1,3 +1,10 @@
+import { beginServerActivity } from "./servers/activity";
+import { beginServerMutation } from "./servers/mutationIdentity";
+import {
+  serverLocalStorage as localStorage,
+  serverSessionStorage as sessionStorage,
+} from "./servers/storage";
+import { apiOrigin, serverFetch } from "./servers/transport";
 import createClient from "openapi-fetch";
 import type { FetchResponse } from "openapi-fetch";
 import type {
@@ -240,39 +247,74 @@ export async function updateRendererAndReload() {
   }
 }
 
-export const client = createClient<paths, "application/json">({
-  baseUrl: globalThis.location?.origin ?? "http://localhost",
-  fetch: async (request) => {
-    if (schemaMismatch) throw new ApiSchemaMismatchError();
-    const headers = new Headers(request.headers);
-    headers.set(API_SCHEMA_HASH_HEADER, API_SCHEMA_HASH);
-    const response = await globalThis.fetch(new Request(request, { headers }));
-    const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
-    if (
-      response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
-      (serverHash && serverHash !== API_SCHEMA_HASH) ||
-      (response.ok &&
-        new URL(request.url).pathname === "/api/sync/identity" &&
-        !serverHash)
-    ) {
-      markApiSchemaMismatch();
-      // Do not let a response from another contract reach a projection or
-      // mutation persister. The update gate is still raised before rejection.
-      throw new ApiSchemaMismatchError(true);
-    } else if (serverHash === API_SCHEMA_HASH) {
-      matchingSchemaResponseGeneration++;
-      clearSchemaUpdateAttemptAfterMatch();
-      for (const listener of matchingSchemaListeners) {
-        try {
-          listener();
-        } catch {
-          // Schema confirmation observers must not break a successful request.
-        }
+const fetchApiRequest = async (request: Request) => {
+  if (schemaMismatch) throw new ApiSchemaMismatchError();
+  const headers = new Headers(request.headers);
+  headers.set(API_SCHEMA_HASH_HEADER, API_SCHEMA_HASH);
+  const response = await serverFetch(new Request(request, { headers }));
+  const serverHash = response.headers.get(API_SCHEMA_HASH_HEADER);
+  if (
+    response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1" ||
+    (serverHash && serverHash !== API_SCHEMA_HASH) ||
+    (response.ok &&
+      new URL(request.url).pathname === "/api/sync/identity" &&
+      !serverHash)
+  ) {
+    markApiSchemaMismatch();
+    // Do not let a response from another contract reach a projection or
+    // mutation persister. The update gate is still raised before rejection.
+    throw new ApiSchemaMismatchError(true);
+  } else if (serverHash === API_SCHEMA_HASH) {
+    matchingSchemaResponseGeneration++;
+    clearSchemaUpdateAttemptAfterMatch();
+    for (const listener of matchingSchemaListeners) {
+      try {
+        listener();
+      } catch {
+        // Schema confirmation observers must not break a successful request.
       }
     }
-    return response;
-  },
+  }
+  return response;
+};
+export const client = createClient<paths, "application/json">({
+  baseUrl: apiOrigin(),
+  fetch: fetchApiRequest,
 });
+// Pairing's versioned wire contract is independent of the generated workspace API.
+const accessClient = createClient<
+  import("./servers/accessContract").ServerAccessPaths
+>({ baseUrl: apiOrigin(), fetch: fetchApiRequest });
+export async function serverAccess(
+  method: "GET" | "POST",
+  body?: import("./servers/accessContract").ServerAccessRequest,
+) {
+  const controller = requestController({}, 15000);
+  try {
+    const result =
+      method === "GET"
+        ? await accessClient.GET("/api/multi-server", {
+            signal: controller.signal,
+          })
+        : await accessClient.POST("/api/multi-server", {
+            body: body!,
+            signal: controller.signal,
+            headers: {
+              "X-Canvas-Token": token,
+              "X-Canvas-Workspace": workspace,
+            },
+          });
+    if (!result.response.ok)
+      throw errorPayload(result.error, result.response.status);
+    if (!result.data) throw new Error("The server access response is empty.");
+    return result.data;
+  } catch (error) {
+    if (controller.timedOut()) throw new NetworkTimeoutError();
+    throw error;
+  } finally {
+    controller.finish();
+  }
+}
 
 // The openapi-fetch generic accepts a correlated path/init pair. TypeScript
 // cannot preserve that correlation inside the generic transport functions;
@@ -538,8 +580,11 @@ export async function post<Path extends PathsFor<"post">>(
   options: PostOptions = {},
 ): Promise<PostResult<Path>> {
   if (schemaMismatch) throw new ApiSchemaMismatchError();
-  const timeoutMs = options.timeoutMs;
+  const mutation = await beginServerMutation(path, body);
+  const timeoutMs = options.timeoutMs ?? (mutation ? 15000 : undefined);
   const controller = requestController(options, timeoutMs);
+  let responseRejected = false;
+  const stopActivity = beginServerActivity();
   try {
     const fetchOptions = {
       parseAs: "json" as const,
@@ -547,6 +592,7 @@ export async function post<Path extends PathsFor<"post">>(
       ...(controller.signal ? { signal: controller.signal } : {}),
       headers: {
         "Content-Type": "application/json",
+        ...(mutation ? { "X-Studio-Request-Id": mutation.requestId } : {}),
         "X-Canvas-Token": options.sessionToken ?? token,
         ...((options.workspaceId ?? workspace)
           ? { "X-Canvas-Workspace": options.workspaceId ?? workspace }
@@ -554,6 +600,10 @@ export async function post<Path extends PathsFor<"post">>(
       },
     };
     const result = await requestPost(path, fetchOptions as JsonPostInit<Path>);
+    if (!result.response.ok) {
+      responseRejected = true;
+      mutation?.reject(result.response.status, result.error);
+    }
     if (
       !result.response.ok &&
       result.response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1"
@@ -561,7 +611,10 @@ export async function post<Path extends PathsFor<"post">>(
       throw new ApiSchemaMismatchError(true);
     if (!result.response.ok)
       throw errorPayload(result.error, result.response.status);
-    if (!("data" in result)) return undefined as PostResult<Path>;
+    if (!("data" in result)) {
+      mutation?.finish();
+      return undefined as PostResult<Path>;
+    }
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
     const data = result.data as PostResult<Path>;
@@ -575,11 +628,14 @@ export async function post<Path extends PathsFor<"post">>(
     } finally {
       if (coverage) coverage.checkpoint.settleInFlightCoverage(coverage.token);
     }
+    mutation?.finish();
     return data;
   } catch (error) {
+    if (!responseRejected) mutation?.unknown();
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;
   } finally {
+    stopActivity();
     controller.finish();
   }
 }

@@ -1850,6 +1850,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/ui-summary": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Ui Summary */
+    get: operations["ui_summary_api_ui_summary_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/usage-resume": {
     parameters: {
       query?: never;
@@ -10583,6 +10600,50 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
+    /** SummaryAlert */
+    SummaryAlert: {
+      /** Body */
+      body: string;
+      /** Id */
+      id: string;
+      target: components["schemas"]["SummaryTarget"];
+      /** Title */
+      title: string;
+    };
+    /** SummaryChat */
+    SummaryChat: {
+      /** Archived */
+      archived: boolean;
+      /** Id */
+      id: string;
+      /** Name */
+      name: string;
+      /** Path */
+      path: string;
+      /** Status */
+      status: string;
+      /** Unread */
+      unread: boolean;
+    };
+    /** SummaryProject */
+    SummaryProject: {
+      /** Name */
+      name: string;
+      /** Path */
+      path: string;
+    };
+    /** SummaryTarget */
+    SummaryTarget: {
+      /** Agentid */
+      agentId: string;
+      /** Itemid */
+      itemId?: string | null;
+      /**
+       * Section
+       * @default messages
+       */
+      section?: string;
+    };
     /** SupervisorDiagnostics */
     SupervisorDiagnostics: {
       /** Fallback */
@@ -11891,6 +11952,19 @@ export interface components {
      * @enum {string}
      */
     TransferStatus: "pending" | "completed" | "cancelled";
+    /** UiSummaryResponse */
+    UiSummaryResponse: {
+      /** Alerts */
+      alerts: components["schemas"]["SummaryAlert"][];
+      /** Busy */
+      busy: boolean;
+      /** Chats */
+      chats: components["schemas"]["SummaryChat"][];
+      /** Projects */
+      projects: components["schemas"]["SummaryProject"][];
+      /** Ready */
+      ready: boolean;
+    };
     /** UnavailableAccount */
     UnavailableAccount: {
       /** Accountkey */
@@ -21130,6 +21204,44 @@ export interface operations {
       };
       /** @description Not Found */
       404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  ui_summary_api_ui_summary_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["UiSummaryResponse"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
         headers: {
           [name: string]: unknown;
         };

@@ -1,3 +1,8 @@
+import {
+  openServerEvents,
+  type ServerEventSource,
+} from "../servers/eventSource";
+import { serverStorageName } from "../servers/environment";
 import type { components } from "../generated/api";
 import {
   API_SCHEMA_HASH,
@@ -135,7 +140,7 @@ const peerSubscriptions = new Map<
 let workspaceId: string | undefined;
 let tabId = "";
 let channel: BroadcastChannel | undefined;
-let source: EventSource | undefined;
+let source: ServerEventSource | undefined;
 let coordinatorActive = false;
 let coordinatorReady = false;
 let initializing = false;
@@ -772,7 +777,7 @@ function openSource() {
       resources: JSON.stringify(resources),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
-    const connected = new EventSource(`/api/sync/stream?${query}`);
+    const connected = openServerEvents(`/api/sync/stream?${query}`);
     source = connected;
     let schemaHandshakeReceived = false;
     let connectionOpened = false;
@@ -969,7 +974,9 @@ function startAsOwner() {
   ownerRequestPending = true;
   void locks
     .request(
-      `codex-sync-stream:${location.origin}:${requestedWorkspaceId}`,
+      serverStorageName(
+        `codex-sync-stream:${location.origin}:${requestedWorkspaceId}`,
+      ),
       { mode: "exclusive", signal: requestController.signal },
       async (lock) => {
         if (ownerRequestController === requestController) {
@@ -1051,7 +1058,7 @@ async function initialize() {
     try {
       if (typeof BroadcastChannel !== "undefined") {
         channel = new BroadcastChannel(
-          `codex-sync-${location.origin}-${workspaceId}`,
+          serverStorageName(`codex-sync-${location.origin}-${workspaceId}`),
         );
         channel.onmessage = (event: MessageEvent<unknown>) => {
           try {

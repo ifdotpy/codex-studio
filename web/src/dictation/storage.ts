@@ -1,3 +1,4 @@
+import { serverStorageName } from "../servers/environment";
 export type Recording = {
   id: string;
   chatId: string;
@@ -13,7 +14,10 @@ export type Recording = {
 };
 const database = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("codex-studio-dictation", 1);
+    const request = indexedDB.open(
+      serverStorageName("codex-studio-dictation"),
+      1,
+    );
     request.onupgradeneeded = () => {
       request.result.createObjectStore("recordings", { keyPath: "id" });
       request.result.createObjectStore("chunks", { keyPath: ["id", "index"] });
@@ -81,7 +85,11 @@ export async function trashRecording(row: Recording) {
   });
 }
 export async function restoreRecording(row: Recording) {
-  await updateRecording({ id: row.id, chatId: row.chatId, deletedAt: undefined });
+  await updateRecording({
+    id: row.id,
+    chatId: row.chatId,
+    deletedAt: undefined,
+  });
 }
 export async function deletedRecordings(chatId: string) {
   const all = await transaction<Recording[]>(["recordings"], "readonly", (tx) =>

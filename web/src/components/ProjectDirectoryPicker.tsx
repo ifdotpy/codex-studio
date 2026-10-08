@@ -1,3 +1,4 @@
+import { isRemoteServerView } from "../servers/environment";
 import { ActionIcon, Button, TextInput, UnstyledButton } from "@mantine/core";
 import { ArrowUp, ChevronRight, Folder, Search } from "lucide-react";
 import { useEffect, useState } from "react";
@@ -81,7 +82,7 @@ export default function ProjectDirectoryPicker({
           Open path
         </Button>
       </form>
-      {window.codexDesktop && (
+      {window.codexDesktop && !isRemoteServerView && (
         <Button
           variant="light"
           onClick={() => {
