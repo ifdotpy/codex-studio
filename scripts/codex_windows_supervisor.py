@@ -11,6 +11,11 @@ import threading
 import time
 import uuid
 from ctypes import wintypes
+from typing import Any, Callable, cast
+
+
+# POSIX typeshed does not expose Windows-only ctypes APIs such as WinDLL.
+_windows_ctypes = cast(Any, ctypes)
 
 
 ERROR_PIPE_CONNECTED = 535
@@ -32,9 +37,9 @@ CTRL_BREAK_EVENT = 1
 _INVALID_HANDLE = ctypes.c_void_p(-1).value
 
 
-def _api():
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+def _api() -> tuple[Any, Any]:
+    kernel32 = _windows_ctypes.WinDLL("kernel32", use_last_error=True)
+    advapi32 = _windows_ctypes.WinDLL("advapi32", use_last_error=True)
     kernel32.LocalFree.argtypes = [wintypes.HANDLE]
     kernel32.LocalFree.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
@@ -42,11 +47,11 @@ def _api():
     return kernel32, advapi32
 
 
-def _error():
-    return ctypes.WinError(ctypes.get_last_error())
+def _error() -> OSError:
+    return cast(OSError, _windows_ctypes.WinError(_windows_ctypes.get_last_error()))
 
 
-def _sid_string(sid):
+def _sid_string(sid: Any) -> str:
     kernel32, advapi32 = _api()
     result = wintypes.LPWSTR()
     advapi32.ConvertSidToStringSidW.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
@@ -54,12 +59,12 @@ def _sid_string(sid):
     if not advapi32.ConvertSidToStringSidW(sid, ctypes.byref(result)):
         raise _error()
     try:
-        return result.value
+        return cast(str, result.value)
     finally:
         kernel32.LocalFree(result)
 
 
-def current_user_sid():
+def current_user_sid() -> str:
     kernel32, advapi32 = _api()
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     token = wintypes.HANDLE()
@@ -85,7 +90,7 @@ def current_user_sid():
 
 
 class _SecurityDescriptor:
-    def __init__(self, sddl):
+    def __init__(self, sddl: str) -> None:
         _, advapi32 = _api()
         self.kernel32, self.advapi32 = _api()
         self.pointer = wintypes.LPVOID()
@@ -99,10 +104,10 @@ class _SecurityDescriptor:
         ):
             raise _error()
 
-    def close(self):
+    def close(self) -> None:
         if self.pointer:
             self.kernel32.LocalFree(self.pointer)
-            self.pointer = None
+            self.pointer = cast(wintypes.LPVOID, None)
 
 
 class _SecurityAttributes(ctypes.Structure):
@@ -113,7 +118,7 @@ class _SecurityAttributes(ctypes.Structure):
     ]
 
 
-def pipe_identity(root, *, create=False):
+def pipe_identity(root: str | Path, *, create: bool = False) -> str:
     path = Path(root) / "supervisor.pipe-id"
     try:
         identity = path.read_text(encoding="ascii").strip()
@@ -144,11 +149,11 @@ def pipe_identity(root, *, create=False):
     return identity
 
 
-def pipe_endpoint(root, identity):
+def pipe_endpoint(root: str | Path, identity: str) -> str:
     return r"\\.\pipe\CodexStudioSupervisor-" + identity
 
 
-def _lease_identity(root):
+def _lease_identity(root: str | Path) -> int:
     value = json.loads((Path(root) / "supervisor.lock").read_text(encoding="utf-8"))
     pid = value.get("pid")
     if not isinstance(pid, int) or pid <= 0:
@@ -156,7 +161,7 @@ def _lease_identity(root):
     return pid
 
 
-def _token_user_sid(token):
+def _token_user_sid(token: Any) -> str:
     kernel32, advapi32 = _api()
     needed = wintypes.DWORD()
     advapi32.GetTokenInformation.argtypes = [
@@ -172,7 +177,7 @@ def _token_user_sid(token):
     return _sid_string(sid)
 
 
-def verify_pipe_server(handle, root):
+def verify_pipe_server(handle: Any, root: str | Path) -> None:
     kernel32, advapi32 = _api()
     server_pid = wintypes.ULONG()
     kernel32.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
@@ -201,11 +206,13 @@ def verify_pipe_server(handle, root):
 
 
 class NamedPipeReader:
-    def __init__(self, connection):
+    def __init__(self, connection: NamedPipeConnection) -> None:
         self.connection = connection
         self.buffer = bytearray()
 
-    def readline(self, limit=1024 * 1024 + 1, *, timeout=None):
+    def readline(
+        self, limit: int = 1024 * 1024 + 1, *, timeout: float | None = None
+    ) -> bytes:
         read_timeout = self.connection.timeout if timeout is None else timeout
         deadline = None if read_timeout is None else time.monotonic() + read_timeout
         while True:
@@ -237,15 +244,15 @@ class NamedPipeReader:
                 deadline = time.monotonic() + PIPE_READ_TIMEOUT
             self.buffer.extend(chunk)
 
-    def close(self):
+    def close(self) -> None:
         pass
 
 
 class NamedPipeConnection:
-    def __init__(self, handle):
+    def __init__(self, handle: Any) -> None:
         self.handle = wintypes.HANDLE(handle)
         self.closed = False
-        self.timeout = None
+        self.timeout: float | None = None
         self.kernel32, _ = _api()
         self.kernel32.ReadFile.argtypes = [
             wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
@@ -266,15 +273,15 @@ class NamedPipeConnection:
         self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
         self.kernel32.CloseHandle.restype = wintypes.BOOL
 
-    def settimeout(self, timeout):
+    def settimeout(self, timeout: float | None) -> None:
         self.timeout = timeout
 
-    def makefile(self, mode="r", encoding=None):
+    def makefile(self, mode: str = "r", encoding: str | None = None) -> NamedPipeReader:
         if mode != "r":
             raise ValueError("Named-pipe client supports a read stream only")
         return NamedPipeReader(self)
 
-    def read(self, size):
+    def read(self, size: int) -> bytes:
         deadline = None if self.timeout is None else time.monotonic() + self.timeout
         if deadline is not None:
             while True:
@@ -282,10 +289,10 @@ class NamedPipeConnection:
                 if not self.kernel32.PeekNamedPipe(
                     self.handle, None, 0, None, ctypes.byref(available), None
                 ):
-                    code = ctypes.get_last_error()
+                    code = _windows_ctypes.get_last_error()
                     if code in (ERROR_BROKEN_PIPE, ERROR_NO_DATA):
                         return b""
-                    raise ctypes.WinError(code)
+                    raise _windows_ctypes.WinError(code)
                 if available.value:
                     break
                 remaining = deadline - time.monotonic()
@@ -295,13 +302,13 @@ class NamedPipeConnection:
         buffer = ctypes.create_string_buffer(size)
         count = wintypes.DWORD()
         if not self.kernel32.ReadFile(self.handle, buffer, size, ctypes.byref(count), None):
-            code = ctypes.get_last_error()
+            code = _windows_ctypes.get_last_error()
             if code in (ERROR_BROKEN_PIPE, ERROR_NO_DATA):
                 return b""
-            raise ctypes.WinError(code)
+            raise _windows_ctypes.WinError(code)
         return buffer.raw[:count.value]
 
-    def sendall(self, data):
+    def sendall(self, data: bytes) -> None:
         offset = 0
         while offset < len(data):
             count = wintypes.DWORD()
@@ -313,16 +320,16 @@ class NamedPipeConnection:
                 raise ConnectionError("Named-pipe write returned no data")
             offset += count.value
 
-    def shutdown(self, _how):
+    def shutdown(self, _how: int) -> None:
         return None
 
-    def close(self):
+    def close(self) -> None:
         if not self.closed:
             self.closed = True
             self.kernel32.CloseHandle(self.handle)
 
 
-def connect_pipe(root, timeout=10):
+def connect_pipe(root: str | Path, timeout: float = 10) -> NamedPipeConnection:
     kernel32, _ = _api()
     deadline = time.monotonic() + timeout
     kernel32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
@@ -350,13 +357,13 @@ def connect_pipe(root, timeout=10):
             connection = NamedPipeConnection(handle)
             connection.settimeout(timeout)
             return connection
-        error = ctypes.get_last_error()
+        error = _windows_ctypes.get_last_error()
         if error not in (ERROR_PIPE_BUSY, ERROR_FILE_NOT_FOUND) or time.monotonic() >= deadline:
-            raise ctypes.WinError(error)
+            raise _windows_ctypes.WinError(error)
         kernel32.WaitNamedPipeW(endpoint, max(1, min(500, int((deadline - time.monotonic()) * 1000))))
 
 
-def verify_pipe_client(handle):
+def verify_pipe_client(handle: Any) -> None:
     kernel32, advapi32 = _api()
     advapi32.ImpersonateNamedPipeClient.argtypes = [wintypes.HANDLE]
     advapi32.ImpersonateNamedPipeClient.restype = wintypes.BOOL
@@ -391,13 +398,16 @@ def verify_pipe_client(handle):
         _revert_to_self_or_exit(advapi32, kernel32, handle)
 
 
-def _revert_to_self_or_exit(advapi32, kernel32, handle):
+def _revert_to_self_or_exit(advapi32: Any, kernel32: Any, handle: Any) -> None:
     if not advapi32.RevertToSelf():
         kernel32.CloseHandle(handle)
         os._exit(70)
 
 
-def create_pipe_server(endpoint, connection_handler):
+ConnectionHandler = Callable[[NamedPipeConnection, NamedPipeReader, bytes], None]
+
+
+def create_pipe_server(endpoint: str, connection_handler: ConnectionHandler) -> None:
     """Accept same-user local clients with an explicit protected DACL."""
     kernel32, _ = _api()
     descriptor = _SecurityDescriptor("D:P(A;;GA;;;{})".format(current_user_sid()))
@@ -425,7 +435,7 @@ def create_pipe_server(endpoint, connection_handler):
                 raise _error()
             first_instance = False
             connected = kernel32.ConnectNamedPipe(handle, None)
-            if not connected and ctypes.get_last_error() != ERROR_PIPE_CONNECTED:
+            if not connected and _windows_ctypes.get_last_error() != ERROR_PIPE_CONNECTED:
                 kernel32.CloseHandle(handle)
                 continue
             connection = NamedPipeConnection(handle)
@@ -439,7 +449,7 @@ def create_pipe_server(endpoint, connection_handler):
         descriptor.close()
 
 
-def _dispatch_pipe_client(connection, connection_handler):
+def _dispatch_pipe_client(connection: NamedPipeConnection, connection_handler: ConnectionHandler) -> None:
     reader = NamedPipeReader(connection)
     try:
         first_line = reader.readline(1024 * 1024 + 1, timeout=PIPE_READ_TIMEOUT)
@@ -504,12 +514,12 @@ class _BasicAccountingInformation(ctypes.Structure):
 
 
 class Job:
-    def __init__(self, handle, identity):
+    def __init__(self, handle: Any, identity: str) -> None:
         self.handle = wintypes.HANDLE(handle)
         self.identity = identity
         self.kernel32, _ = _api()
 
-    def contains(self, process_handle):
+    def contains(self, process_handle: Any) -> bool:
         result = wintypes.BOOL()
         self.kernel32.IsProcessInJob.argtypes = [wintypes.HANDLE, wintypes.HANDLE, ctypes.POINTER(wintypes.BOOL)]
         self.kernel32.IsProcessInJob.restype = wintypes.BOOL
@@ -517,13 +527,13 @@ class Job:
             raise _error()
         return bool(result.value)
 
-    def terminate(self, exit_code=1):
+    def terminate(self, exit_code: int = 1) -> None:
         self.kernel32.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
         self.kernel32.TerminateJobObject.restype = wintypes.BOOL
         if not self.kernel32.TerminateJobObject(self.handle, exit_code):
             raise _error()
 
-    def active_processes(self):
+    def active_processes(self) -> int:
         self.kernel32.QueryInformationJobObject.argtypes = [
             wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID,
             wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
@@ -536,7 +546,7 @@ class Job:
             raise _error()
         return int(info.ActiveProcesses)
 
-    def wait_empty(self, timeout=2):
+    def wait_empty(self, timeout: float = 2) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if self.active_processes() == 0:
@@ -544,13 +554,13 @@ class Job:
             time.sleep(0.05)
         return self.active_processes() == 0
 
-    def close(self):
+    def close(self) -> None:
         if self.handle:
             self.kernel32.CloseHandle(self.handle)
             self.handle = wintypes.HANDLE()
 
 
-def create_job():
+def create_job() -> Job:
     kernel32, _ = _api()
     identity = "Local\\CodexStudioSupervisorJob-" + uuid.uuid4().hex
     descriptor = _SecurityDescriptor("D:P(A;;GA;;;{})".format(current_user_sid()))
@@ -576,7 +586,7 @@ def create_job():
     return job
 
 
-def open_job(identity):
+def open_job(identity: str) -> Job | None:
     kernel32, _ = _api()
     kernel32.OpenJobObjectW.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.LPCWSTR]
     kernel32.OpenJobObjectW.restype = wintypes.HANDLE
@@ -586,7 +596,7 @@ def open_job(identity):
     return Job(handle, identity)
 
 
-def assign_process(process, job):
+def assign_process(process: Any, job: Job) -> None:
     kernel32, _ = _api()
     kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
     kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
@@ -594,9 +604,9 @@ def assign_process(process, job):
         raise _error()
 
 
-def resume_process(process):
+def resume_process(process: Any) -> None:
     _, _ = _api()
-    ntdll = ctypes.WinDLL("ntdll")
+    ntdll = _windows_ctypes.WinDLL("ntdll")
     resume = ntdll.NtResumeProcess
     resume.argtypes = [wintypes.HANDLE]
     resume.restype = wintypes.LONG
@@ -605,7 +615,7 @@ def resume_process(process):
         raise OSError("NtResumeProcess failed with NTSTATUS 0x{:08x}".format(status & 0xFFFFFFFF))
 
 
-def membership_for_pid(job, pid):
+def membership_for_pid(job: Job, pid: int) -> bool | None:
     kernel32, _ = _api()
     kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
     kernel32.OpenProcess.restype = wintypes.HANDLE
@@ -618,8 +628,11 @@ def membership_for_pid(job, pid):
         kernel32.CloseHandle(process)
 
 
-def graceful_stop(job, process, pid, creation_time, process_start_time, *,
-                  expected_job_identity, wait=2):
+def graceful_stop(
+    job: Job, process: Any, pid: int, creation_time: str,
+    process_start_time: Callable[[int], str | None], *,
+    expected_job_identity: str, wait: float = 2,
+) -> str:
     """Send a bounded console stop, then terminate only a verified job tree."""
     if process_start_time(pid) != creation_time or not job.contains(process._handle):
         raise RuntimeError("Refusing to stop a process with changed or unknown job identity")
@@ -653,8 +666,11 @@ def graceful_stop(job, process, pid, creation_time, process_start_time, *,
     return "killed" if job.wait_empty() else "termination-failed"
 
 
-def graceful_stop_pid(job, pid, creation_time, process_start_time, *,
-                      expected_job_identity, wait=1.5):
+def graceful_stop_pid(
+    job: Job, pid: int, creation_time: str,
+    process_start_time: Callable[[int], str | None], *,
+    expected_job_identity: str, wait: float = 1.5,
+) -> str:
     """Stop only a verified job; never signal a PID after closing its handle."""
     if job.identity != expected_job_identity:
         raise RuntimeError("Refusing to stop a process with changed Job Object identity")
