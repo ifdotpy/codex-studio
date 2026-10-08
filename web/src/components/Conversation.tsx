@@ -602,11 +602,13 @@ export default function Conversation(p: {
     !historical && !after,
   );
   const threadBlock = nativeThreadError(agent);
-  const [modelCommandOpen, setModelCommandOpen] = useState(false);
+  const [, setModelCommandOpen] = useState(false);
   const [modelCommandRequest, setModelCommandRequest] = useState(0);
+  // Load the chat account catalog up front: the closed composer trigger
+  // needs it to name the model behind a default alias.
   const modelCatalog = useWorkerModels(
     p.agent?.accountKey || "default",
-    modelCommandOpen,
+    p.agent?.source === "managed",
   );
   useEffect(() => {
     setModelCommandOpen(false);
