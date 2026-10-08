@@ -989,11 +989,17 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
     if (previous._deleted) continue;
     const next = nextById.get(id);
     if (!next) {
+      const previousEntity = JSON.parse(previous.payload);
       pullState.documents.set(
         id,
         generatedSyncEntity({
           ...previous,
           seq: ++pullState.maxSeq,
+          payload: JSON.stringify({
+            collection: previousEntity.collection,
+            id: previousEntity.id,
+            value: {},
+          }),
           _deleted: true,
         }),
       );
@@ -1129,6 +1135,9 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
   }
   if (url.pathname === "/api/sync/stream") {
     const epoch = randomUUID().replaceAll("-", "");
+    const requestedResources = JSON.parse(
+      url.searchParams.get("resources") || "[]",
+    );
     let revision = 0;
     let eventId = 0;
     response.writeHead(200, {
@@ -1151,7 +1160,7 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
       epoch,
       protocol: RESOURCE_STREAM_PROTOCOL,
       reason: "initial",
-      resources: [{ kind: "state" }],
+      resources: requestedResources,
       // No per-resource versions: the page must always pull after a fixture frame.
       resourceVersions: [],
       revision: ++revision,
