@@ -39,9 +39,15 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       const scope = url.searchParams.get("scope");
       const after = Number(url.searchParams.get("after"));
       pulls.push({ scope, after });
-      if (scope === "drafts")
+      if (scope === "drafts" || scope === "state:entities:v1")
         return route.fulfill({
-          json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
+          json: {
+            workspaceId,
+            generation: 1,
+            documents: [],
+            maxSeq: 0,
+            checkpoint: { seq: 0 },
+          },
         });
       if (scope !== "transcript:lead")
         throw new Error(`Unexpected sync scope ${scope}`);
@@ -57,8 +63,11 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
                   delta: true,
                   items: [{ id: "item-a", text: "delta without a local base" }],
                 }),
+                _deleted: false,
               },
             ],
+            generation: 1,
+            maxSeq: 2,
             checkpoint: { seq: 2 },
           },
         });
@@ -69,10 +78,19 @@ test("legacy transcript rows refetch online and stay hidden offline", async ({
       return route.fulfill({
         json: {
           workspaceId,
+          generation: 1,
           documents:
             after === 0
-              ? [{ id: scope, seq: 1, payload: JSON.stringify(snapshot) }]
+              ? [
+                  {
+                    id: scope,
+                    seq: 1,
+                    payload: JSON.stringify(snapshot),
+                    _deleted: false,
+                  },
+                ]
               : [],
+          maxSeq: Math.max(after, after === 0 ? 1 : 0),
           checkpoint: { seq: after === 0 ? 1 : after },
         },
       });

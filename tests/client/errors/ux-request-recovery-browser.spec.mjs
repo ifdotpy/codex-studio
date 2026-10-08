@@ -1,4 +1,9 @@
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  protocol3SseEvent,
+  test,
+} from "../playwright.mjs";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -32,7 +37,7 @@ test("Ux request recovery browser", async ({
   const accounts={accounts:[{id:'ready',label:'Ready account',status:'ready'},{id:'expired',label:'Expired account',status:'signedOut'}],defaultAccountKey:'ready'};
   window.selected=[];window.saves=0;window.failRefresh=mode==='confirmed';
   const saved=async()=>{window.saves++;if(window.failRefresh){window.failRefresh=false;throw Error('Snapshot unavailable');}};
-  function AccountsFixture(){const state=useAccounts('/fixture');return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[{id:'ready',label:'New account',status:'ready'}],defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
+  function AccountsFixture(){const state=useAccounts('/fixture');React.useEffect(()=>{void state.refresh()},[state.refresh]);return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[{id:'ready',label:'New account',status:'ready'}],defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
   let body=mode==='picker'?<Picker initialPath='/project' onSelect={async path=>window.selected.push(path)}/>:
   mode==='claude'||mode==='deadline'?<ClaudeSettings agent={agent}/>:
   mode.startsWith('accounts')?<AccountsFixture/>:
@@ -93,8 +98,11 @@ test("Ux request recovery browser", async ({
       const page = await runnerContext.newPage();
       await page.setViewportSize({ width: 390, height: 844 });
       page.setDefaultTimeout(3000);
+      installApiSchemaFixtureHeaders(page);
       const writes = [],
-        errors = [];
+        errors = [],
+        unexpectedReads = [];
+      const workspaceId = "a".repeat(32);
       page.on("pageerror", (error) => errors.push(error.message));
       let reads = 0,
         releaseOld;
@@ -110,6 +118,46 @@ test("Ux request recovery browser", async ({
           path = url.pathname;
         if (path === "/api/models")
           return route.fulfill({ json: { data: [] } });
+        if (path === "/api/limits")
+          return route.fulfill({ json: { data: null } });
+        if (path === "/api/sync/identity")
+          return route.fulfill({
+            json: { workspaceId, syncProtocol: 2 },
+          });
+        if (path === "/api/sync/stream") {
+          const resources = JSON.parse(
+            url.searchParams.get("resources") || "[]",
+          );
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: apiSchemaHandshakeSse(
+              protocol3SseEvent("resources", {
+                epoch: "request-recovery-fixture",
+                protocol: 3,
+                reason: "initial",
+                resources,
+                resourceVersions: resources.map((resource) => ({
+                  resource,
+                  revision: 1,
+                })),
+                revision: 1,
+                workspaceId,
+              }),
+            ),
+          });
+        }
+        if (path === "/api/sync/pull") {
+          const after = Number(url.searchParams.get("after") || 0);
+          return route.fulfill({
+            json: {
+              workspaceId,
+              generation: 1,
+              documents: [],
+              maxSeq: after,
+              checkpoint: { seq: after },
+            },
+          });
+        }
         if (path === "/api/directories") {
           const typed = url.searchParams.get("path") || "/project";
           return route.fulfill({
@@ -154,6 +202,13 @@ test("Ux request recovery browser", async ({
             },
           });
         }
+        if (request.method() !== "POST") {
+          unexpectedReads.push(path);
+          return route.fulfill({
+            status: 500,
+            json: { error: `Unexpected GET ${path}` },
+          });
+        }
         writes.push(request.postDataJSON());
         if (mode === "project-deadline" && writes.length === 1) return;
         if (mode === "rejected" && writes.length === 1)
@@ -172,7 +227,7 @@ test("Ux request recovery browser", async ({
         await page.goto(`${server.resolvedUrls.local[0]}?case=${mode}`);
         if (mode === "picker") {
           const use = page.getByRole("button", {
-            name: "Use this folder",
+            name: "Add project",
             exact: true,
           });
           await page.waitForFunction(
@@ -184,7 +239,9 @@ test("Ux request recovery browser", async ({
             false,
             "A typed path must not select the old directory",
           );
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () => !document.querySelector(".directory-footer button")?.disabled,
           );
@@ -193,7 +250,9 @@ test("Ux request recovery browser", async ({
             "/other",
           ]);
           await page.getByLabel("Folder path").fill("~/work");
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () =>
               document.querySelector(".directory-location")?.textContent ===
@@ -290,8 +349,9 @@ test("Ux request recovery browser", async ({
             false,
           );
           await page
-            .getByLabel("Default account for new chats")
-            .selectOption("ready");
+            .getByRole("group", { name: "Default account for new chats" })
+            .getByRole("button", { name: "Select account Ready account" })
+            .click();
           assert.equal(
             await page
               .getByRole("button", { name: "Save accounts", exact: true })
@@ -336,19 +396,27 @@ test("Ux request recovery browser", async ({
             results.push({ mode, passed: true });
             continue;
           }
-          assert.equal(
-            await page
-              .getByLabel(
-                name
-                  ? "Folder name"
-                  : mode === "move"
-                    ? "Move to folder"
-                    : "Default account for new chats",
-              )
-              .isEnabled(),
-            false,
-            "Unconfirmed requests must retain their exact data",
-          );
+          if (name || mode === "move") {
+            assert.equal(
+              await page
+                .getByLabel(name ? "Folder name" : "Move to folder")
+                .isEnabled(),
+              false,
+              "Unconfirmed requests must retain their exact data",
+            );
+          } else {
+            const defaultAccount = page.getByRole("group", {
+              name: "Default account for new chats",
+            });
+            assert.equal(
+              await defaultAccount.getAttribute("aria-disabled"),
+              "true",
+            );
+            assert.equal(
+              await defaultAccount.getAttribute("data-value"),
+              "ready",
+            );
+          }
           await page
             .getByRole("button", {
               name:
@@ -366,6 +434,11 @@ test("Ux request recovery browser", async ({
           assert.equal(writes.length, mode === "confirmed" ? 1 : 2);
           if (writes.length === 2) assert.deepEqual(writes[0], writes[1]);
         }
+        assert.deepEqual(
+          unexpectedReads,
+          [],
+          "unknown GETs are fixture failures",
+        );
         assert.deepEqual(errors, []);
         results.push({ mode, passed: true });
       } catch (error) {

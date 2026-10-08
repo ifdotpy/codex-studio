@@ -1,7 +1,13 @@
 // Unsupported endpoints fail visibly and never bypass the durable outbox.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("sync required browser", async ({ page: runnerPage }) => {
   const { createServer } = await import(
@@ -23,6 +29,7 @@ test("sync required browser", async ({ page: runnerPage }) => {
     let status = 404,
       probes = 0,
       sends = 0;
+    installApiSchemaFixtureHeaders(page);
     await page.route("**/sync-check", (route) =>
       route.fulfill({
         contentType: "text/html",
@@ -189,7 +196,10 @@ test("draft bootstrap retries pause and recover on explicit activity", async ({
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value, status = 200) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
+        res.writeHead(
+          status,
+          apiSchemaHeaders({ "Content-Type": "application/json" }),
+        );
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") {

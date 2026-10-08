@@ -17,9 +17,16 @@ test("native error ui", async ({ page: runnerPage }) => {
   );
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
   const proc = spawn(
-    "python3",
+    process.env.PYTHON_BIN || "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        CAPACITY_UI_FIXTURE: "1",
+        CAPACITY_UI_RETRY_DELAYS: JSON.stringify([60, 60, 60, 60]),
+      },
+    },
   );
   let log = "",
     page;
@@ -120,6 +127,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       name: "Warnings",
       exact: true,
     });
+    await accountNotice.getByText("Details", { exact: true }).click();
     assert.deepEqual(
       JSON.parse(await accountNotice.locator("pre").innerText()),
       accountDetails,
@@ -150,7 +158,11 @@ test("native error ui", async ({ page: runnerPage }) => {
         .count(),
       0,
     );
-    await accountNotice
+    const featureNotice = accountNotice
+      .locator("article")
+      .filter({ hasText: featureWarning });
+    await featureNotice.locator("summary").click();
+    await featureNotice
       .getByText('"current_time_reminder"', { exact: false })
       .waitFor();
     await page.keyboard.press("Escape");
@@ -224,6 +236,14 @@ test("native error ui", async ({ page: runnerPage }) => {
       .locator('[data-phase="retrying"]')
       .getByText("Reconnecting 1/5", { exact: true })
       .waitFor();
+    const retryDetails = page.locator('[data-phase="retrying"] details');
+    assert.equal(
+      await retryDetails.count(),
+      1,
+      "retry diagnostics disclosure is present",
+    );
+    await retryDetails.locator("summary").click();
+    assert.equal(await retryDetails.evaluate((details) => details.open), true);
     await page
       .locator('[data-phase="retrying"] pre')
       .getByText("The request failed. Another attempt starts in 2 seconds.", {
@@ -233,18 +253,25 @@ test("native error ui", async ({ page: runnerPage }) => {
     event("error", {
       willRetry: true,
       error: {
-        message: { message: "Reconnecting 2/5" },
+        message: "Reconnecting 2/5",
         codexErrorInfo: "other",
-        additionalDetails: {
+        additionalDetails: JSON.stringify({
           message: "The request failed. Another attempt starts in 2 seconds.",
           httpStatusCode: 503,
-        },
+        }),
       },
     });
     await page
       .locator('[data-phase="retrying"]')
       .getByText("Reconnecting 2/5", { exact: true })
       .waitFor();
+    assert.equal(
+      await page
+        .locator('[data-phase="retrying"] details')
+        .evaluate((details) => details.open),
+      true,
+      "retry diagnostics stay open when the status updates in place",
+    );
     assert.deepEqual(
       JSON.parse(await page.locator('[data-phase="retrying"] pre').innerText()),
       {
@@ -256,6 +283,35 @@ test("native error ui", async ({ page: runnerPage }) => {
       await page.locator("#conversation-status").innerText(),
       "Reconnecting 2/5",
     );
+    event("error", {
+      willRetry: true,
+      error: {
+        message: { message: "Reconnecting 3/5" },
+        codexErrorInfo: "other",
+        additionalDetails: {
+          message: "The request failed. Another attempt starts in 2 seconds.",
+          httpStatusCode: 503,
+          code: "E_FIXTURE",
+          data: { retryable: false, attempt: 7 },
+        },
+      },
+    });
+    await page
+      .locator('[data-phase="retrying"]')
+      .getByText("Reconnecting 3/5", { exact: true })
+      .waitFor({ timeout: 5000 });
+    assert.equal(
+      await page
+        .locator('[data-phase="retrying"] details')
+        .evaluate((details) => details.open),
+      true,
+      "retry diagnostics stay open after the next retry status update",
+    );
+    const structuredProviderDetails = JSON.parse(
+      await page.locator('[data-phase="retrying"] pre').innerText(),
+    );
+    assert.equal(structuredProviderDetails.code, "E_FIXTURE");
+    assert.equal(structuredProviderDetails.data.attempt, 7);
     event("item/agentMessage/delta", {
       itemId: "native-text",
       delta: "Connection restored",
@@ -404,9 +460,10 @@ test("native error ui", async ({ page: runnerPage }) => {
       message: "Model is at capacity",
       codexErrorInfo: "serverOverloaded",
     });
-    await page
-      .locator(".native-error.warning")
-      .getByText("Model is at capacity", { exact: true })
+    const capacityError = page.locator(".native-error.warning");
+    await capacityError.waitFor();
+    await capacityError
+      .getByText("Waiting for the account sign-in", { exact: true })
       .waitFor();
     await page
       .locator(".native-notice.warning")
