@@ -1737,6 +1737,19 @@ class ProcessSupervisorContract(unittest.TestCase):
         server = self.server()
         server.initialize_result = {'capabilities': {'claudeVersion': 14}}
         server.provider_options = {}
+        def initialized_transport_is_idle():
+            try:
+                accepted = self._operation_accepted('initialized:account:default')
+            except sqlite3.OperationalError:
+                return False
+            return (
+                (self.root / 'native-initialized').exists()
+                and accepted
+                and not server.pending
+                and server.callbacks.empty()
+                and server.clock_replies.empty()
+            )
+        wait_for(initialized_transport_is_idle)
         runtime = object.__new__(Runtime)
         runtime.root = self.root
         runtime.lock = threading.RLock()

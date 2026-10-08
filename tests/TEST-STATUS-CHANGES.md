@@ -38,4 +38,7 @@ The earlier fixture correction commit `645ff2d6` also synchronized asynchronous
 assertions without changing their expected product values: analytics capture
 (`98b9aeed`), per-agent event delivery (`28d90c39`), catalog retry (`c333034e`),
 provider command selection (`9c1f666d`), workspace refresh (`658f8cef`), and
-reviewer/worker archival (`2f5e85ee`).
+reviewer/worker archival (`2f5e85ee`). The process-supervisor idle-upgrade test
+also waits for the fake native child's initialized marker, durable ACK, and
+empty transport queues before asserting retirement; this preserves its existing
+assertions while removing a handshake timing race.
