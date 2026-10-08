@@ -477,7 +477,7 @@ test("account project ui", async ({ browser: _browser }) => {
         .click();
     };
     const dialog = page.getByRole("dialog", {
-      name: "Project account",
+      name: "Project settings",
       exact: true,
     });
     await closeSettings();
@@ -485,22 +485,29 @@ test("account project ui", async ({ browser: _browser }) => {
     agents[0].status = "running";
     agents[0].inFlight = true;
     await openProject("fixture");
-    const selection = dialog.getByLabel("Default account for new chats");
-    assert.equal(await selection.inputValue(), "work");
-    await dialog
-      .getByRole("checkbox", {
-        name: "another.long.account@example.com",
-        exact: true,
-      })
-      .check();
-    await selection.selectOption("other");
+    const selection = dialog.getByRole("group", {
+      name: "Default account for new chats",
+      exact: true,
+    });
+    const memberships = dialog.getByRole("group", {
+      name: "Accounts shown first for this project",
+      exact: true,
+    });
+    const addMembership = async (key) => {
+      const tile = memberships.locator(`[data-account-key="${key}"]`);
+      if ((await tile.getAttribute("aria-pressed")) !== "true")
+        await tile.click();
+    };
+    assert.equal(await selection.getAttribute("data-value"), "work");
+    await addMembership("other");
+    await selection.locator('[data-account-key="other"]').click();
     conflict = true;
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
     await dialog.getByRole("alert").waitFor();
     assert.equal(
-      await selection.inputValue(),
+      await selection.getAttribute("data-value"),
       "other",
       "Conflict keeps selected account",
     );
@@ -542,10 +549,8 @@ test("account project ui", async ({ browser: _browser }) => {
       "Project worker base saves through project settings",
     );
     await openProject("arbitrary");
-    await dialog
-      .getByRole("checkbox", { name: "work@example.com", exact: true })
-      .check();
-    await selection.selectOption("work");
+    await addMembership("work");
+    await selection.locator('[data-account-key="work"]').click();
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
@@ -808,7 +813,7 @@ test("account project ui", async ({ browser: _browser }) => {
         .click();
       await openProject("fixture");
       assert.equal(
-        await selection.inputValue(),
+        await selection.getAttribute("data-value"),
         width === 390 ? "other" : "work",
       );
       await page.waitForFunction(
@@ -826,16 +831,10 @@ test("account project ui", async ({ browser: _browser }) => {
           (element) => element.scrollWidth <= element.clientWidth,
         ),
       );
-      await dialog
-        .getByRole("checkbox", {
-          name:
-            width === 390
-              ? "work@example.com"
-              : "another.long.account@example.com",
-          exact: true,
-        })
-        .check();
-      await selection.selectOption(width === 390 ? "work" : "other");
+      await addMembership(width === 390 ? "work" : "other");
+      await selection
+        .locator(`[data-account-key="${width === 390 ? "work" : "other"}"]`)
+        .click();
       await dialog
         .getByRole("button", { name: "Save accounts", exact: true })
         .click();
@@ -875,13 +874,10 @@ test("account project ui", async ({ browser: _browser }) => {
     await closeSettings();
 
     await openProject("fixture");
-    const deletedMembership = dialog.getByRole("checkbox", {
-      name: "another.long.account@example.com (deleted, remove from project)",
-      exact: true,
-    });
-    assert.equal(await deletedMembership.isChecked(), true);
+    const deletedMembership = memberships.locator('[data-account-key="other"]');
+    assert.equal(await deletedMembership.getAttribute("aria-pressed"), "true");
     assert.equal(
-      await selection.inputValue(),
+      await selection.getAttribute("data-value"),
       "",
       "the deleted default requires an explicit replacement despite another linked account",
     );
@@ -889,12 +885,12 @@ test("account project ui", async ({ browser: _browser }) => {
       name: "Save accounts",
       exact: true,
     });
-    assert.equal(await saveAccounts.isDisabled(), true);
+    assert.equal(await saveAccounts.count(), 0);
     await deletedMembership.click();
     await deletedMembership.waitFor({ state: "detached" });
-    assert.equal(await selection.inputValue(), "");
+    assert.equal(await selection.getAttribute("data-value"), "");
     assert.equal(await saveAccounts.isDisabled(), true);
-    await selection.selectOption("work");
+    await selection.locator('[data-account-key="work"]').click();
     assert.equal(await saveAccounts.isDisabled(), false);
     await saveAccounts.click();
     await dialog.waitFor({ state: "hidden" });
