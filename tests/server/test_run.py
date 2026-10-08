@@ -32,13 +32,23 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("tests/portable-smoke.mjs", paths)
         self.assertIn("tests/state-contract-smoke.mjs", paths)
         self.assertIn("tests/swarm-retry-contract.mjs", paths)
+        self.assertIn("scripts/sync/benchmarks/message_delivery/test_benchmark.py", paths)
+        self.assertIn("scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py", paths)
+        self.assertIn("scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs", paths)
+        self.assertEqual(categories["scripts/sync/benchmarks/message_delivery/test_benchmark.py"], "expensive")
+        self.assertEqual(categories["scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py"], "expensive")
+        self.assertEqual(categories["scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs"], "expensive")
         self.assertNotIn("tests/sync-live-patch-http-contract.py", paths)
         self.assertIn("tests/sync-live-patch-http-contract.py", RUNNER.NON_TESTS)
         self.assertEqual(categories["tests/workspace-native-turn.py"], "native")
         self.assertEqual(categories["tests/workspace-protocol.py"], "native")
         self.assertEqual(categories["tests/tool-parity.py"], "native")
         self.assertEqual(categories["tests/time-awareness.py"], "safe")
-        source_roots = (ROOT / "tests",)
+        source_roots = (
+            ROOT / "tests",
+            ROOT / "scripts" / "sync" / "benchmarks" / "message_delivery",
+            ROOT / "scripts" / "studio_api" / "benchmarks" / "runtime_load",
+        )
         for source_root in source_roots:
             for path in source_root.rglob("*.py"):
                 relative = path.relative_to(ROOT).as_posix()
@@ -54,7 +64,8 @@ class ServerSuiteRunner(unittest.TestCase):
         expected = {
             path.relative_to(ROOT).as_posix()
             for path in component_root.rglob("test_*.py")
-            if path.is_file() and not path.is_symlink()
+            if (path.is_file() and not path.is_symlink()
+                and path.relative_to(ROOT).as_posix() not in RUNNER.EXPENSIVE_SUITES)
         }
         self.assertTrue(expected, "FastAPI package has no colocated component tests")
         self.assertTrue(expected.issubset(paths))

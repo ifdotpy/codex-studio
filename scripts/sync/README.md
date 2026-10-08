@@ -24,6 +24,10 @@ events are transient invalidations, not durable projection cursors.
 
 ## Checks
 
+The [message delivery scenario](benchmarks/message_delivery/README.md) measures
+synthetic agent messages reaching an HTTP client through sync invalidation and
+pulls or the direct transcript read path.
+
 ```sh
 python3 -B -m unittest discover -s scripts/sync/tests -v
 python3 -B scripts/sync/benchmarks/benchmark.py --check
