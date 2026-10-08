@@ -585,6 +585,9 @@ test("account project ui", async ({ browser: _browser }) => {
     };
     const openProject = async (name) => {
       await closeSettings();
+      await page.locator(".mantine-Modal-overlay").waitFor({
+        state: "hidden",
+      });
       const button = page.getByRole("button", {
         name: `Options for project ${name}`,
         exact: true,
@@ -977,7 +980,6 @@ test("account project ui", async ({ browser: _browser }) => {
       .click();
     await otherRow.waitFor({ state: "detached" });
     assert.equal(archivedAccounts[0].id, "other");
-    await deletion.getByRole("button", { name: "Close", exact: true }).click();
     await deletion.waitFor({ state: "hidden" });
     await page
       .getByRole("dialog", { name: "Studio settings", exact: true })

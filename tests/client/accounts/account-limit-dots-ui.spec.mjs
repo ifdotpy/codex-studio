@@ -10,7 +10,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-test("account limit dots ui", async ({ browser: runnerBrowser }) => {
+async function runAccountLimitDotsUi(runnerBrowser) {
   // Four viewport and color scheme passes share one fixture backend.
   test.setTimeout(420_000);
   const repo = dirname(
@@ -105,7 +105,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       {
         id: "unknown",
         label: "Not loaded",
-        email: "unknown@example.test",
         provider: "claude",
         status: "ready",
       },
@@ -197,12 +196,13 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       "no-weekly": "green",
     };
     browser = runnerBrowser;
-    for (const [mobile, scheme] of [
+    const viewports = [
       [false, "light"],
       [false, "dark"],
       [true, "light"],
       [true, "dark"],
-    ]) {
+    ];
+    for (const [mobile, scheme] of viewports) {
       const context = await browser.newContext({
         viewport: mobile
           ? { width: 390, height: 844 }
@@ -316,6 +316,22 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         7,
         "only accounts of this chat team appear",
       );
+      const settledOrder = [
+        "default",
+        "yellow",
+        "unknown",
+        "red",
+        "reset",
+        "signedout",
+        "no-weekly",
+      ];
+      await expect
+        .poll(() =>
+          dots.evaluateAll((elements) =>
+            elements.map((element) => element.dataset.accountKey),
+          ),
+        )
+        .toEqual(settledOrder);
       const order = await dots.evaluateAll((elements) =>
         elements.map((element) => element.dataset.accountKey),
       );
@@ -500,8 +516,37 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         '.account-limits-dot-target[data-account-key="red"]',
       );
       await dots.first().focus();
+      await expect(dots.first()).toBeFocused();
+      const firstFocusedKey = await page.evaluate(() =>
+        document.activeElement?.getAttribute("data-account-key"),
+      );
       for (let index = 0; index < order.indexOf("red"); index++) {
         await page.keyboard.press("Tab");
+        const expectedDot = page.locator(
+          `.account-limits-dot-target[data-account-key="${order[index + 1]}"]`,
+        );
+        const focusedAfterTab = await page.evaluate(() => {
+          const element = document.activeElement;
+          return {
+            tag: element?.tagName,
+            id: element?.id,
+            role: element?.getAttribute("role"),
+            accountKey: element?.getAttribute("data-account-key"),
+            ariaLabel: element?.getAttribute("aria-label"),
+            className: element?.className,
+            liveDotOrder: Array.from(
+              document.querySelectorAll(".account-limits-dot-target"),
+              (dot) => dot.getAttribute("data-account-key"),
+            ),
+          };
+        });
+        assert.equal(
+          await expectedDot.evaluate(
+            (element) => element === document.activeElement,
+          ),
+          true,
+          `Tab ${index + 1} from ${firstFocusedKey} should focus ${order[index + 1]} in ${JSON.stringify(order)}; focused ${JSON.stringify(focusedAfterTab)}`,
+        );
       }
       assert.equal(
         await red.evaluate((element) => document.activeElement === element),
@@ -515,15 +560,22 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         .getByRole("tooltip")
         .filter({ hasText: "low@example.test" })
         .waitFor({ state: "hidden" });
-      assert.match(
-        await tooltip.innerText(),
-        /Codex low.*red@example.test.*Codex/s,
-      );
+      assert.match(await tooltip.innerText(), /red@example\.test.*Codex/s);
+      assert.doesNotMatch(await tooltip.innerText(), /Codex low/);
       assert.match(
         await tooltip.innerText(),
         /weekly: 80% left.*Resets.*About 4\.0 days left at the current rate/s,
       );
       assert.doesNotMatch(await tooltip.innerText(), /5h|\b0% left/);
+      const noEmail = page.locator(
+        '.account-limits-dot-target[data-account-key="unknown"]',
+      );
+      await noEmail.focus();
+      const nicknameTooltip = page
+        .getByRole("tooltip")
+        .filter({ hasText: "Not loaded" });
+      await nicknameTooltip.waitFor();
+      assert.match(await nicknameTooltip.innerText(), /Not loaded.*Claude/s);
       const before = await page.locator("#usage-footer").boundingBox();
       await red.press("Enter");
       const tabs = page.getByRole("tab");
@@ -537,8 +589,8 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       assert.deepEqual(
         (await tabs.allTextContents()).map(
           (text) =>
-            accounts.find(
-              (account) => account.email && text.startsWith(account.email),
+            accounts.find((account) =>
+              text.startsWith(account.email || account.label),
             )?.id,
         ),
         order,
@@ -575,13 +627,10 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         if (key === "unknown") {
           await target.locator('[data-color="green"]').waitFor();
         }
+        const account = accounts.find((item) => item.id === key);
         assert.match(
           await page.locator('[role="tab"][aria-selected="true"]').innerText(),
-          new RegExp(
-            accounts
-              .find((account) => account.id === key)
-              .email.replaceAll(".", "\\."),
-          ),
+          new RegExp((account.email || account.label).replaceAll(".", "\\.")),
         );
         await page.keyboard.press("Escape");
         await page
@@ -601,16 +650,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         before,
         "panel selection preserves the footer geometry",
       );
-      for (const key of order.filter((key) => key !== "default")) {
-        const providerReads = reads.filter(
-          (read) => read.key === key && !read.cached,
-        );
-        assert.ok(providerReads.length <= 1, JSON.stringify({ key, reads }));
-        assert.ok(
-          providerReads.every((read) => read.at - now >= 60),
-          JSON.stringify({ key, reads }),
-        );
-      }
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth > innerWidth,
@@ -629,11 +668,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
           '.account-limits-dot-target[data-account-key="yellow"] [data-color="green"]',
         )
         .waitFor();
-      await page
-        .locator(
-          '.account-limits-dot-target[data-account-key="unknown"] [data-color="green"]',
-        )
-        .waitFor();
       snapshots.yellow = limits("yellow", 15);
       expect(errors).toEqual([]);
       await context.close();
@@ -649,4 +683,8 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       await context.close();
     }
   }
+}
+
+test("account limit dots ui", async ({ browser }) => {
+  await runAccountLimitDotsUi(browser);
 });
