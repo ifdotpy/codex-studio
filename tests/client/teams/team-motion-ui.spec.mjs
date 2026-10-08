@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 import {
-  API_SCHEMA_HASH_HEADER,
-  readApiSchemaHash,
-  syncIdentityFixture,
+  readFixtureSyncContract,
   legacySnapshotRoute,
+  stubEntityState,
   test,
   expect,
   spawnFixture as spawn,
@@ -71,7 +70,6 @@ test("Team Motion Ui", async ({
     const target = initial.threads.find(
       (a) => a.rootId === lead.id && a.name === "Worker 00",
     );
-    let phase = 0;
     let created = false;
     const releases = [];
     let holdOldList = false,
@@ -92,8 +90,27 @@ test("Team Motion Ui", async ({
     const page = testPage;
     const syncPullRequests = [],
       stateRequests = [];
-    let entitySequence = 0;
-    let targetProjection;
+    const setWorkerStatus = (status) => {
+      for (const agent of initial.runtime.agents) {
+        if (agent.rootId !== lead.id || agent.isLead) continue;
+        agent.status = agent.id === target.id ? status : "running";
+        if (agent.name === "Worker 01") agent.status = "queued";
+        if (agent.id === target.id) {
+          agent.overview = {
+            task: "Verify the exact response receipt.",
+            result:
+              "Verified the exact response receipt. " +
+              "Keep this explanation open while the worker starts. ".repeat(10),
+          };
+        } else {
+          agent.overview = {
+            task: "Independent worker task",
+            result: "Independent worker report",
+          };
+        }
+      }
+    };
+    setWorkerStatus("queued");
     page.on("request", (request) => {
       const path = new URL(request.url()).pathname;
       if (path === "/api/sync/pull") syncPullRequests.push(request.url());
@@ -101,94 +118,8 @@ test("Team Motion Ui", async ({
         stateRequests.push(request.url());
     });
     await page.setViewportSize({ width: 1440, height: 980 });
-    await page.addInitScript(() => {
-      const NativeEventSource = window.EventSource;
-      const sources = [];
-      function TrackingEventSource(url, options) {
-        const source = new NativeEventSource(url, options);
-        source.__resourceEvents = [];
-        source.addEventListener("resources", (event) => {
-          source.__resourceEvents.push(JSON.parse(event.data));
-        });
-        sources.push(source);
-        return source;
-      }
-      TrackingEventSource.prototype = NativeEventSource.prototype;
-      Object.setPrototypeOf(TrackingEventSource, NativeEventSource);
-      window.EventSource = TrackingEventSource;
-      window.__resourceEventSources = sources;
-    });
-    const backendIdentity = await (
-      await fetch(`${origin}/api/sync/identity`)
-    ).json();
-    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({
-        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
-        json: identityResponse,
-      }),
-    );
-    await page.route("**/api/sync/pull?*", async (route) => {
-      const url = new URL(route.request().url());
-      if (url.searchParams.get("scope") !== "state:entities:v1")
-        return route.continue();
-      const response = await route.fetch();
-      const data = await response.json();
-      if (data.reset) return route.fulfill({ response, json: data });
-      let sequence = Math.max(
-        entitySequence,
-        data.maxSeq || data.checkpoint?.seq || 0,
-      );
-      const updateTarget = (document) => {
-        const entity = JSON.parse(document.payload);
-        entity.value.status = phase === 0 ? "queued" : "running";
-        entity.value.overview = {
-          task: "Verify the exact response receipt.",
-          result:
-            "Verified the exact response receipt. " +
-            "Keep this explanation open while the worker starts. ".repeat(10),
-        };
-        document.payload = JSON.stringify(entity);
-        document.seq = ++sequence;
-        targetProjection = structuredClone(document);
-      };
-      data.documents = (data.documents || []).filter((document) => {
-        if (document._deleted) return true;
-        const entity = JSON.parse(document.payload);
-        if (entity.collection === "request") return false;
-        if (entity.collection !== "agent") return true;
-        const a = entity.value;
-        if (a.rootId === lead.id && !a.isLead) {
-          a.status = "running";
-          a.overview = {
-            task: "Independent worker task",
-            result: "Independent worker report",
-          };
-          if (a.name === "Worker 01") {
-            a.status = "queued";
-          }
-          entity.value = a;
-          document.payload = JSON.stringify(entity);
-          if (a.id === target.id) updateTarget(document);
-        }
-        return true;
-      });
-      if (
-        !data.documents.some((document) => document.id === targetProjection?.id)
-      ) {
-        const updatedTarget = structuredClone(targetProjection);
-        if (updatedTarget) {
-          updateTarget(updatedTarget);
-          data.documents.push(updatedTarget);
-        }
-      }
-      data.documents.sort((left, right) => left.seq - right.seq);
-      entitySequence = sequence;
-      data.maxSeq = sequence;
-      data.initialHigh = sequence;
-      data.checkpoint = { ...data.checkpoint, seq: sequence };
-      await route.fulfill({ response, json: data });
-    });
+    const syncContract = await readFixtureSyncContract(origin);
+    const entitySync = await stubEntityState(page, initial, syncContract);
     await page.route("**/api/terminals", async (route) => {
       const snapshot = [...shells];
       if (holdOldList) {
@@ -217,64 +148,21 @@ test("Team Motion Ui", async ({
         );
       });
     const publishResourceChange = async (resource) => {
-      await page.evaluate((resource) => {
-        const sources = window.__resourceEventSources || [];
-        const source = sources
-          .filter(
-            (candidate) =>
-              candidate.readyState !== 2 &&
-              candidate.__resourceEvents.some(
-                (event) =>
-                  event.reason === "initial" &&
-                  event.resources.some((resource) => resource.kind === "state"),
-              ),
-          )
-          .at(-1);
-        if (!source) throw new Error("No state resource stream baseline");
-        const initial = source.__resourceEvents.find(
-          (event) => event.reason === "initial",
-        );
-        if (
-          !initial?.resources.some(
-            (item) =>
-              item.kind === resource.kind &&
-              (resource.agentId === undefined ||
-                item.agentId === resource.agentId),
-          )
-        )
-          throw new Error(`No ${resource.kind} resource stream baseline`);
-        const baseline = source.__resourceEvents.at(-1);
-        const revision = Math.max(
-          ...source.__resourceEvents.map((event) => event.revision),
-        );
-        const change = {
-          ...baseline,
-          reason: "change",
-          revision: revision + 1,
-          resources: [resource],
-          resourceVersions: [],
-        };
-        source.dispatchEvent(
-          new MessageEvent("resources", { data: JSON.stringify(change) }),
-        );
-      }, resource);
+      await entitySync.update(initial, {
+        origin,
+        token: initial.token,
+        resources: [resource],
+      });
     };
-    const publishStateChange = async () => {
+    const publishStateChange = async (status) => {
       const nextPull = statePullRequest();
-      await publishResourceChange({ kind: "state" });
+      setWorkerStatus(status);
+      await entitySync.update(initial, { origin, token: initial.token });
       await nextPull;
     };
     await page.goto(origin);
     await page.locator("[data-chat]").first().waitFor();
-    await page.waitForFunction(() =>
-      (window.__resourceEventSources || []).some((source) =>
-        source.__resourceEvents.some(
-          (event) =>
-            event.reason === "initial" &&
-            event.resources.some((resource) => resource.kind === "state"),
-        ),
-      ),
-    );
+    await page.waitForFunction(() => document.querySelector("[data-chat]"));
     assert.ok(
       syncPullRequests.some(
         (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
@@ -302,8 +190,7 @@ test("Team Motion Ui", async ({
         .y,
       scroll: document.querySelector("#workers").scrollTop,
     }));
-    phase = 1;
-    await publishStateChange();
+    await publishStateChange("running");
     await page.waitForFunction(
       (id) =>
         document.querySelector(`[data-worker="${id}"] small`)?.textContent ===
@@ -341,8 +228,7 @@ test("Team Motion Ui", async ({
       false,
     );
     await details.locator("summary").click();
-    phase = 0;
-    await publishStateChange();
+    await publishStateChange("queued");
     await page.waitForFunction(
       (id) =>
         document.querySelector(`[data-worker="${id}"] small`)?.textContent ===
