@@ -1,4 +1,12 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  apiSchemaHeaders,
+  entityPullFixture,
+  readFixtureSyncContract,
+  readTestState,
+  stubEntityState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production HTTP policy and renderer. External image responses are isolated fixtures.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -28,7 +36,21 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
       "Use the production content policy",
     );
     const state = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
     const lead = state.threads.find((agent) => agent.name === "Other project");
+    const transcript = {
+      items: [
+        {
+          id: "image-message",
+          role: "assistant",
+          streaming: false,
+          text: '![Remote](https://external.invalid/pixel.png)\n\nText <svg><image href="https://external.invalid/unapproved-svg.png" /></svg>\n\n<table background="https://external.invalid/unapproved-background.png"><tr><td>Isolated HTML</td></tr></table>',
+        },
+      ],
+      order: ["image-message"],
+      replace: true,
+      agent: { ...lead, status: "completed", inFlight: false, turnId: null },
+    };
     const page = runnerPage;
     const requests = [];
     page.on("request", (request) => {
@@ -44,21 +66,28 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
         ),
       }),
     );
-    await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: {} }),
-    );
+    await stubEntityState(page, state, syncContract);
+    await page.route("**/api/sync/pull**", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixture(state, {
+            scope,
+            after: Number(url.searchParams.get("after") || 0),
+            transcript,
+          }),
+        },
+      });
+    });
     await page.route("**/api/transcript**", (route) =>
       route.fulfill({
+        headers: apiSchemaHeaders(),
         json: {
-          items: [
-            {
-              id: "image-message",
-              role: "assistant",
-              streaming: false,
-              text: '![Remote](https://external.invalid/pixel.png)\n\nText <svg><image href="https://external.invalid/unapproved-svg.png" /></svg>\n\n<table background="https://external.invalid/unapproved-background.png"><tr><td>Isolated HTML</td></tr></table>',
-            },
-          ],
-          agent: lead,
+          ...transcript,
         },
       }),
     );
