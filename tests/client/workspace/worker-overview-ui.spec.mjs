@@ -136,13 +136,20 @@ test("Worker Overview Ui", async ({
       }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
-      const response = await route.fetch();
+      // Read the fixture directly: Playwright's route.fetch APIResponse can be
+      // disposed while concurrent pulls are in flight under parallel load.
+      const response = await fetch(route.request().url());
       const data = await response.json();
+      const responseHeaders = Object.fromEntries(response.headers.entries());
       const pullUrl = new URL(route.request().url());
       const isEntityPull =
         pullUrl.searchParams.get("scope") === "state:entities:v1";
       if (isEntityPull && data.reset === true) {
-        await route.fulfill({ response, json: data });
+        await route.fulfill({
+          status: response.status,
+          headers: responseHeaders,
+          json: data,
+        });
         return;
       }
       for (const document of data.documents ?? []) {
@@ -280,7 +287,11 @@ test("Worker Overview Ui", async ({
         data.maxSeq = seq;
         fixtureEntitySeq = seq;
       }
-      await route.fulfill({ response, json: data });
+      await route.fulfill({
+        status: response.status,
+        headers: responseHeaders,
+        json: data,
+      });
     });
     await page.goto(origin);
     const selectLead = () =>

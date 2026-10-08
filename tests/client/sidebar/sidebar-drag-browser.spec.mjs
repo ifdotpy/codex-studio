@@ -469,6 +469,65 @@ async function startSidebarOverlapSetup(page) {
     const projectPath = initial.runtime.projects.find(
       (project) => project.name === "Project A",
     ).path;
+    const bodies = [];
+    const responseGate = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    let startupMigrationState = "pending";
+    let firstRequestState = "pending";
+    let firstRequestError;
+    firstResponse = new Promise((resolve, reject) => {
+      firstResponseFulfilled = resolve;
+      firstResponseFailed = reject;
+    });
+    firstResponse.catch(() => {});
+    // Intercept before navigation so an initial persisted-order write cannot
+    // remain in flight and consume the interaction's reorder under load.
+    await page.route("**/api/projects", async (route) => {
+      if (route.request().method() !== "POST") return route.continue();
+      const body = route.request().postDataJSON();
+      if (body.action !== "reorder") return route.continue();
+      if (body.migration) {
+        try {
+          const response = await route.fetch();
+          await route.fulfill({ response });
+          startupMigrationState = "settled";
+        } catch (error) {
+          startupMigrationState = "failed";
+          throw error;
+        }
+        return;
+      }
+      bodies.push(body);
+      const isFirstRequest = bodies.length === 1;
+      try {
+        const response = await route.fetch();
+        assert.equal(
+          response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
+          readApiSchemaHash(),
+          "The held project save response carries the current API schema hash",
+        );
+        if (isFirstRequest) {
+          firstRequestState = "held";
+          await responseGate;
+        }
+        await route.fulfill({
+          response,
+          headers: {
+            ...response.headers(),
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+          },
+        });
+        if (isFirstRequest) firstResponseFulfilled();
+      } catch (error) {
+        if (isFirstRequest) {
+          firstRequestState = "failed";
+          firstRequestError = error;
+          firstResponseFailed(error);
+        }
+        throw error;
+      }
+    });
     await page.setViewportSize({ width: 1440, height: 1100 });
     await page.goto(url);
     const project = page.locator(`[data-project-path="${projectPath}"]`);
@@ -477,6 +536,11 @@ async function startSidebarOverlapSetup(page) {
     await expect(
       page.getByRole("alertdialog", { name: "Studio update required" }),
     ).toBeHidden();
+    await expect
+      .poll(() => startupMigrationState, {
+        message: "The initial sidebar order save should finish before dragging",
+      })
+      .toBe("settled");
     const topItems = () =>
       project
         .locator(".project-chats > [data-sidebar-item]")
@@ -493,56 +557,16 @@ async function startSidebarOverlapSetup(page) {
     const teamIndex = before.indexOf("Team A");
     assert.notEqual(teamIndex, -1, "The fixture contains Team A");
     const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
-    const bodies = [];
-    const responseGate = new Promise((resolve) => {
-      releaseFirst = resolve;
-    });
-    let firstReachedServer;
-    let firstRequestFailed;
-    const firstRequest = new Promise((resolve, reject) => {
-      firstReachedServer = resolve;
-      firstRequestFailed = reject;
-    });
-    firstRequest.catch(() => {});
-    firstResponse = new Promise((resolve, reject) => {
-      firstResponseFulfilled = resolve;
-      firstResponseFailed = reject;
-    });
-    firstResponse.catch(() => {});
-    await page.route("**/api/projects", async (route) => {
-      const body = route.request().postDataJSON();
-      if (body.action !== "reorder" || body.migration) return route.continue();
-      bodies.push(body);
-      const isFirstRequest = bodies.length === 1;
-      try {
-        const response = await route.fetch();
-        assert.equal(
-          response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
-          readApiSchemaHash(),
-          "The held project save response carries the current API schema hash",
-        );
-        if (isFirstRequest) {
-          firstReachedServer();
-          await responseGate;
-        }
-        await route.fulfill({
-          response,
-          headers: {
-            ...response.headers(),
-            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
-          },
-        });
-        if (isFirstRequest) firstResponseFulfilled();
-      } catch (error) {
-        if (isFirstRequest) {
-          firstRequestFailed(error);
-          firstResponseFailed(error);
-        }
-        throw error;
-      }
-    });
     await team.press(`Alt+${direction}`);
-    await firstRequest;
+    await expect
+      .poll(
+        () => {
+          if (firstRequestState === "failed") throw firstRequestError;
+          return firstRequestState;
+        },
+        { message: "The first reorder request should be held by the fixture" },
+      )
+      .toBe("held");
     const firstOrder = await topItems();
     return {
       stop,
