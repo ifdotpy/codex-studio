@@ -7,6 +7,7 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+from typing import Any
 import unittest
 from unittest.mock import patch
 
@@ -139,10 +140,10 @@ class EntityChangesTests(unittest.IsolatedAsyncioTestCase):
 
         def concurrent_update(
             database: sqlite3.Connection, after: int, through: int,
-            lengths: list[tuple[int, int | None, int]],
+            identities: list[tuple[int, int]],
         ) -> EntityChangeBatch | None:
             self.write("a", "new")
-            return original(database, after, through, lengths)
+            return original(database, after, through, identities)
 
         with patch.object(hub_module, "_read_entity_changes", side_effect=concurrent_update):
             self.publish()
@@ -175,14 +176,14 @@ class EntityChangesTests(unittest.IsolatedAsyncioTestCase):
 
         def concurrent_prune(
             database: sqlite3.Connection, after: int, through: int,
-            lengths: list[tuple[int, int | None, int]],
+            identities: list[tuple[int, int]],
         ) -> EntityChangeBatch | None:
             with self.database:
                 self.database.execute("DELETE FROM sync_entities")
                 self.database.execute(
                     "INSERT INTO sync_entity_meta(key,value) VALUES('entity_tombstone_floor','1')",
                 )
-            return original(database, after, through, lengths)
+            return original(database, after, through, identities)
 
         with patch.object(hub_module, "_read_entity_changes", side_effect=concurrent_prune):
             self.publish()
@@ -222,6 +223,64 @@ class EntityChangesTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(version.entitySequenceReset)
         self.assertIsNone(version.entityChanges)
         self.assertFalse(any(statement.startswith("SELECT collection,id,seq,payload") for statement in statements))
+        self.assertFalse(any("LENGTH(CAST(payload AS BLOB))" in statement for statement in statements))
+
+    async def test_size_work_stops_at_byte_budget_and_requires_a_state_reader(self) -> None:
+        measured_sizes: list[int] = []
+        statements: list[str] = []
+        original_connect = sqlite3.connect
+
+        class ProbeConnection(sqlite3.Connection):
+            def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+                return super().execute(
+                    sql.replace("LENGTH(CAST(payload AS BLOB))", "probe_payload_bytes(payload)"),
+                    parameters,
+                )
+
+        def measure_size(payload: str) -> int:
+            size = len(payload.encode("utf-8"))
+            measured_sizes.append(size)
+            return size
+
+        def probe_connection(
+            database_uri: str, *, uri: bool, timeout: float,
+        ) -> sqlite3.Connection:
+            database = original_connect(database_uri, uri=uri, timeout=timeout, factory=ProbeConnection)
+            database.create_function("probe_payload_bytes", 1, measure_size)
+            database.set_trace_callback(statements.append)
+            return database
+
+        payload = "x" * (MAX_ENTITY_CHANGE_BYTES + 1)
+        with self.database:
+            self.database.executemany(
+                "INSERT INTO sync_entities(collection,id,seq,hash,payload) VALUES('project',?,?,?,?)",
+                [(str(index), index + 1, "hash", payload) for index in range(32)],
+            )
+        with patch("studio_api.sync.resources.hub.sqlite3.connect", side_effect=probe_connection):
+            self.publish()
+        self.assertEqual(measured_sizes, [MAX_ENTITY_CHANGE_BYTES + 1])
+        self.assertFalse(any(statement.startswith("SELECT collection,id,seq,payload") for statement in statements))
+        self.assertIsNone((await self.receive()).resourceVersions[0].entityChanges)
+
+        self.subscription.close()
+        measured_sizes.clear()
+        with self.database:
+            self.database.execute("UPDATE sync_entities SET seq=seq+32")
+        with patch("studio_api.sync.resources.hub.sqlite3.connect", side_effect=probe_connection):
+            self.publish()
+        self.assertEqual(measured_sizes, [])
+
+        self.subscription = self.hub.subscribe([self.state], loop=asyncio.get_running_loop())
+        # Each UTF-8 payload fits. The fourth crosses the cumulative byte budget.
+        with self.database:
+            self.database.execute("UPDATE sync_entities SET seq=seq+32,payload=?", ("ё" * 32_768,))
+        measured_sizes.clear()
+        statements.clear()
+        with patch("studio_api.sync.resources.hub.sqlite3.connect", side_effect=probe_connection):
+            self.publish()
+        self.assertEqual(measured_sizes, [65_536] * 4)
+        self.assertFalse(any(statement.startswith("SELECT collection,id,seq,payload") for statement in statements))
+        self.assertIsNone((await self.receive()).resourceVersions[0].entityChanges)
 
     async def test_unreadable_row_and_database_failure_preserve_invalidation(self) -> None:
         self.write("a")

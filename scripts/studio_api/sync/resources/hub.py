@@ -145,14 +145,27 @@ def _merge_entity_changes(
 
 def _read_entity_changes(
     database: sqlite3.Connection, after: int, through: int,
-    lengths: Sequence[tuple[int, int | None, int]],
+    identities: Sequence[tuple[int, int]],
 ) -> EntityChangeBatch | None:
     """Load bounded rows only after checking their stored byte lengths."""
-    if (len(lengths) > MAX_ENTITY_CHANGE_DOCUMENTS
-            or any(length is None for _, length, _ in lengths)
-            or sum((length or 0) + identity_bytes + 100
-                   for _, length, identity_bytes in lengths) > MAX_ENTITY_CHANGE_BYTES):
+    if len(identities) > MAX_ENTITY_CHANGE_DOCUMENTS:
         return None
+    byte_count = 0
+    for _sequence, row_id in identities:
+        # A one-row query cannot read the next large payload before the budget
+        # check. Close it before any payload selection or early return.
+        with closing(database.execute(
+            "SELECT LENGTH(CAST(payload AS BLOB)),"
+            "LENGTH(CAST(collection AS BLOB))+LENGTH(CAST(id AS BLOB)) "
+            "FROM sync_entities WHERE rowid=?",
+            (row_id,),
+        )) as cursor:
+            length_row = cursor.fetchone()
+        if length_row is None or length_row[0] is None:
+            return None
+        byte_count += int(length_row[0]) + int(length_row[1]) + 100
+        if byte_count > MAX_ENTITY_CHANGE_BYTES:
+            return None
     rows = database.execute(
         "SELECT collection,id,seq,payload,deleted FROM sync_entities "
         "WHERE collection NOT LIKE 'transcript:%' AND seq>? AND seq<=? ORDER BY seq",
@@ -823,7 +836,7 @@ class EntityPublicationScheduler:
                 ("state", None) in subscription._resources and not subscription._overflow
                 for subscription in hub._subscriptions
             )
-        lengths: list[tuple[int, int | None, int]] = []
+        identities: list[tuple[int, int]] = []
         sequence = explicit_sequence
         entity_changes: EntityChangeBatch | None = None
         floor = 0
@@ -842,27 +855,27 @@ class EntityPublicationScheduler:
                 floor = entity_tombstone_floor(database)
                 snapshot_sequence = max(int(row[0]) if row else 0, floor)
                 sequence = max(sequence, snapshot_sequence)
-                # Inspect lengths first: oversized rows never enter Python memory.
-                lengths = database.execute(
-                    "SELECT seq,LENGTH(CAST(payload AS BLOB)),"
-                    "LENGTH(CAST(collection AS BLOB))+LENGTH(CAST(id AS BLOB)) "
-                    "FROM sync_entities WHERE collection NOT LIKE 'transcript:%' "
+                # Invalidation reads only the small sequence index. Payload sizes
+                # are inspected lazily only when a live reader can use the data.
+                identities = database.execute(
+                    "SELECT seq,rowid FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%' "
                     "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
                     (watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
                 ).fetchall()
                 if (include_entity_changes and sequence > watermark and floor <= watermark
                         and sequence == snapshot_sequence and not explicit_reset):
                     entity_changes = _read_entity_changes(
-                        database, watermark, sequence, lengths,
+                        database, watermark, sequence, identities,
                     )
         except sqlite3.Error:
             entity_changes = None
             read_failed = True
             if sequence <= watermark and not explicit_reset:
                 raise
-        sequences = explicit_sequences | {int(item[0]) for item in lengths}
+        sequences = explicit_sequences | {int(item[0]) for item in identities}
         sequences = {value for value in sequences if value > watermark}
-        reset = explicit_reset or floor > watermark or len(lengths) > MAX_ENTITY_SEQUENCE_IDS
+        reset = explicit_reset or floor > watermark or len(identities) > MAX_ENTITY_SEQUENCE_IDS
         reset = reset or len(sequences) > MAX_ENTITY_SEQUENCE_IDS
         reset = reset or (read_failed and sequence > watermark and not sequences)
         if not sequences and not reset:
