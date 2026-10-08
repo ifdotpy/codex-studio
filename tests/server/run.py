@@ -62,6 +62,7 @@ DISK_IO_CPU_EQUIVALENT_MS = 5.5
 SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
 SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
+SCRATCH_OWNER_FILE = ".codex-server-test-owner"
 
 try:
     import resource
@@ -742,15 +743,51 @@ def _is_memory_backed_path(path):
     return any(resolved == mount or mount in resolved.parents for mount in _tmpfs_mounts())
 
 
+def _process_id_is_live(process_id):
+    if process_id < 1:
+        return False
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _cleanup_stale_scratch_roots(mounts=None):
+    """Remove only runner scratch directories with a recorded dead owner."""
+    for mount in _tmpfs_mounts() if mounts is None else mounts:
+        try:
+            candidates = mount.glob("csst-*")
+        except OSError:
+            continue
+        for directory in candidates:
+            if not directory.is_dir():
+                continue
+            try:
+                owner = int((directory / SCRATCH_OWNER_FILE).read_text(encoding="ascii").strip())
+            except (OSError, ValueError):
+                # Unmarked and malformed directories are not ours to delete.
+                continue
+            if not _process_id_is_live(owner):
+                shutil.rmtree(directory, ignore_errors=True)
+
+
 def _memory_scratch_root(required_bytes, measured_footprint_bytes):
     """Create a short tmpfs root that passes a quota-aware write probe."""
+    mounts = list(_tmpfs_mounts())
+    _cleanup_stale_scratch_roots(mounts)
     candidates = []
-    for mount in _tmpfs_mounts():
+    for mount in mounts:
         owned = None
         try:
             if shutil.disk_usage(mount).free < required_bytes:
                 continue
             owned = Path(tempfile.mkdtemp(prefix="csst-", dir=mount))
+            (owned / SCRATCH_OWNER_FILE).write_text(str(os.getpid()), encoding="ascii")
             if len(os.fsencode(owned)) > MAX_SHORT_TMP_ROOT_BYTES:
                 shutil.rmtree(owned)
                 continue

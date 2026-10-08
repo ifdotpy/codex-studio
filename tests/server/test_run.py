@@ -276,6 +276,22 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertTrue(roots[1].is_dir())
             RUNNER.shutil.rmtree(roots[1])
 
+    def test_stale_tmpfs_cleanup_removes_only_marked_dead_pid_roots(self):
+        with tempfile.TemporaryDirectory(prefix="server-stale-tmpfs-") as temp:
+            mount = Path(temp)
+            dead = mount / "csst-dead"
+            live = mount / "csst-live"
+            unmarked = mount / "csst-unmarked"
+            for directory in (dead, live, unmarked):
+                directory.mkdir()
+            (dead / RUNNER.SCRATCH_OWNER_FILE).write_text("222", encoding="ascii")
+            (live / RUNNER.SCRATCH_OWNER_FILE).write_text("111", encoding="ascii")
+            with mock.patch.object(RUNNER, "_process_id_is_live", side_effect=lambda pid: pid == 111):
+                RUNNER._cleanup_stale_scratch_roots([mount])
+            self.assertFalse(dead.exists())
+            self.assertTrue(live.is_dir())
+            self.assertTrue(unmarked.is_dir())
+
     def test_automatic_worker_count_tracks_cpu_affinity_and_measured_memory(self):
         profile = {
             "maxSuiteRssBytes": 1024**3,

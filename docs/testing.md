@@ -58,7 +58,8 @@ mount when its free capacity covers the measured per-suite footprint for the
 selected worker count, then falls back to the short cache root. It checks the
 deepest known fixture Unix-socket paths before launching each suite and reports
 an actionable error if an explicitly configured root leaves insufficient path
-space. Set
+space. Scratch roots record their owning runner PID; a later run removes only
+marked roots whose owner process has exited. Set
 `CODEX_SERVER_TEST_TMP_ROOT` to choose a scratch root explicitly. See the [runner](../tests/server/run.py)
 for the resource and scratch-root formulas. When the selected root is disk-backed,
 the runner measures the median of seven 4 KiB write+fsync probes and scales the
