@@ -793,25 +793,28 @@ def available_memory_bytes():
     return max(0, available or 0)
 
 
-def runnable_other_process_count():
-    """Return a conservative runnable-load estimate excluding this runner."""
-    instantaneous = 0
+def _instantaneous_runnable_process_count():
+    """Read the kernel's current runnable-task count when available."""
     try:
         for line in Path("/proc/stat").read_text(encoding="ascii").splitlines():
             if line.startswith("procs_running "):
-                instantaneous = max(0, int(line.split()[1]))
-                break
+                return max(0, int(line.split()[1]))
     except (OSError, ValueError, IndexError):
         pass
-    one_minute = 0.0
-    try:
-        one_minute = max(0.0, float(Path("/proc/loadavg").read_text(
-            encoding="ascii").split()[0]))
-    except (OSError, ValueError, IndexError):
-        pass
-    # procs_running is instantaneous; load average catches a busy interval
-    # that a quiet snapshot can miss. Both include this runner's main task.
-    return max(0, math.ceil(max(float(instantaneous), one_minute) - 1.0))
+    return 0
+
+
+def sample_runnable_other_process_count():
+    """Sample current runnable tasks for a short window, excluding this runner."""
+    if not Path("/proc/stat").is_file():
+        return 0
+    samples = []
+    for sample_index in range(10):
+        samples.append(_instantaneous_runnable_process_count())
+        if sample_index < 9:
+            time.sleep(0.2)
+    # Each sample includes this main thread, which is runnable while planning.
+    return max(0, max(samples, default=1) - 1)
 
 
 def _load_profile():
@@ -854,7 +857,7 @@ def automatic_worker_count(entries, profile=None):
 def worker_plan(entries, profile=None):
     profile = _load_profile() if profile is None else profile
     cpu_limit = available_cpu_count()
-    other_runnable = runnable_other_process_count()
+    other_runnable = sample_runnable_other_process_count()
     cpus = max(1, cpu_limit - other_runnable)
     memory = available_memory_bytes()
     peak_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
@@ -1060,8 +1063,8 @@ def main():
         runnable = [(path, kind) for path, kind in entries
                     if kind in {"safe", "component"} or kind in opted_in]
         plan = worker_plan(runnable)
-        print("Automatic worker formula: min(max(1, CPUs allowed - max(instantaneous runnable tasks, "
-              "1-minute load average) excluding this runner), "
+        print("Automatic worker formula: min(max(1, CPUs allowed - peak sampled instantaneous "
+              "runnable tasks excluding this runner), "
               "floor(available memory / measured peak suite RSS), runnable suite count)")
         print("Worker plan: " + json.dumps(plan, sort_keys=True))
         return 0
