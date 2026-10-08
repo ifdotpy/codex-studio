@@ -16,11 +16,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-test("Message receipt pagination browser", async ({
-  browser: testBrowser,
-  context: runnerContext,
-}) => {
-  test.setTimeout(45_000);
+async function runMessageReceiptScenario(
+  { browser: testBrowser, context: runnerContext },
+  assertReconciliation,
+) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -53,7 +52,14 @@ test("Message receipt pagination browser", async ({
   let server;
   const posts = [];
   const receiptRequests = [];
+  const receiptResponses = [];
   const errors = [];
+  let receiptGateReleased = false;
+  let releaseReceiptGate;
+  let receiptRequestPaused = false;
+  const receiptGate = new Promise((resolve) => {
+    releaseReceiptGate = resolve;
+  });
 
   const changeFixture = async (agent, phase, target, token) => {
     execFileSync(
@@ -87,21 +93,23 @@ test("Message receipt pagination browser", async ({
                   db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
                              (record['id'], agent, json.dumps(record), record['at']))
           else:
-              db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?", (value['id'], agent))
+              if phase == 'observed':
+                  db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?", (value['id'], agent))
               db.execute("UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),"
                          "'$.pending',json('false'),'$.deliveryStatus','delivered') WHERE id=? AND agent=?",
                          (agent + ':' + value['id'], agent))
-              now = time.time()
-              # Both aggregate event and transcript windows now omit the original.
-              # The exact durable receipt remains available by its primary key.
-              for number in range(225):
-                  item = {'id': agent + ':later-' + str(number), 'role': 'tool', 'title': 'Tool',
-                          'text': 'Later tool result ' + str(number), 'at': now + number / 100,
-                          'toolStatus': 'completed'}
-                  db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
-                             (item['id'], agent, json.dumps(item), item['at']))
-                  db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'agent_message',?,'delivered',?,0)",
-                             ('later-event-' + str(number), agent, 'Later fixture event', item['at']))
+              if phase == 'paginate':
+                  now = time.time()
+                  # Both aggregate event and transcript windows now omit the original.
+                  # The exact durable receipt remains available by its primary key.
+                  for number in range(225):
+                      item = {'id': agent + ':later-' + str(number), 'role': 'tool', 'title': 'Tool',
+                              'text': 'Later tool result ' + str(number), 'at': now + number / 100,
+                              'toolStatus': 'completed'}
+                      db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
+                                 (item['id'], agent, json.dumps(item), item['at']))
+                      db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) VALUES (?,?,'agent_message',?,'delivered',?,0)",
+                                 ('later-event-' + str(number), agent, 'Later fixture event', item['at']))
           db.commit()
   finally:
       db.close()
@@ -114,7 +122,7 @@ test("Message receipt pagination browser", async ({
       ],
       { timeout: 5000, stdio: "pipe" },
     );
-    if (phase === "delivered") {
+    if (["observed", "delivered", "paginate"].includes(phase)) {
       const response = await fetch(target + "/api/sync/notify", {
         method: "POST",
         headers: {
@@ -124,11 +132,13 @@ test("Message receipt pagination browser", async ({
         },
         body: JSON.stringify({
           requestId: randomUUID(),
-          resources: [
-            { kind: "queue", agentId: agent },
-            { kind: "receipts", agentId: agent },
-            { kind: "transcript", agentId: agent },
-          ],
+          resources:
+            phase === "observed" || phase === "paginate"
+              ? [{ kind: "transcript", agentId: agent }]
+              : [
+                  { kind: "queue", agentId: agent },
+                  { kind: "receipts", agentId: agent },
+                ],
         }),
       });
       assert.equal(response.status, 200, await response.text());
@@ -335,6 +345,30 @@ test("Message receipt pagination browser", async ({
           ids: JSON.parse(url.searchParams.get("ids")),
         });
     });
+    page.on("response", (response) => {
+      const url = new URL(response.url());
+      if (url.pathname === "/api/messages/receipts") {
+        receiptResponses.push(
+          (async () => ({
+            status: response.status(),
+            schema: response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
+            agent: url.searchParams.get("agent"),
+            body: await response.json(),
+          }))(),
+        );
+      }
+    });
+    // Keep one real receipt request in flight so transcript observation can
+    // hide the local copy before the server returns its delivered receipt.
+    await page.route("**/api/messages/receipts**", async (route) => {
+      const url = new URL(route.request().url());
+      const ids = JSON.parse(url.searchParams.get("ids") || "[]");
+      if (!receiptGateReleased && ids.includes(id)) {
+        receiptRequestPaused = true;
+        await receiptGate;
+      }
+      await route.continue();
+    });
     await page.goto(origin);
     await page.locator("#message").waitFor();
     const bubble = (message) =>
@@ -354,13 +388,83 @@ test("Message receipt pagination browser", async ({
     await bubble(uncertainText)
       .getByText("Delivery unconfirmed", { exact: true })
       .waitFor();
+    await until(
+      () => receiptRequestPaused,
+      "The app tab did not start a receipt request for the accepted message",
+    );
+    await changeFixture(agent.id, "observed", target, state.token);
+    await until(
+      async () => (await readAppReceipt(id))?.displayPending === false,
+      "The transcript did not retire the local copy before the delivered receipt",
+    );
+    const hiddenAccepted = await readAppReceipt(id);
+    assert.equal(hiddenAccepted.status, "accepted");
+    assert.equal(hiddenAccepted.receipt?.status, "queued");
+    assert.equal(hiddenAccepted.displayPending, false);
     assert.equal(
       posts.length,
       0,
       "Accepted intentions must never be sent again",
     );
 
-    await changeFixture(agent.id, "delivered", target, state.token);
+    const priorReceiptResponseCount = receiptResponses.length;
+    receiptGateReleased = true;
+    releaseReceiptGate();
+    let deliveredResponse;
+    await until(async () => {
+      const responses = await Promise.all(
+        receiptResponses.slice(priorReceiptResponseCount),
+      );
+      deliveredResponse = responses.find(
+        (response) =>
+          response.status === 200 &&
+          response.schema === readApiSchemaHash() &&
+          response.agent === agent.id &&
+          response.body.items?.some(
+            (item) =>
+              item.id === id &&
+              item.status === "delivered" &&
+              item.materialized === true,
+          ),
+      );
+      return Boolean(deliveredResponse);
+    }, "The app tab did not receive the exact delivered receipt response");
+    assert.equal(deliveredResponse.status, 200);
+    assert.equal(deliveredResponse.schema, readApiSchemaHash());
+    assert.equal(deliveredResponse.agent, agent.id);
+    assert.ok(
+      deliveredResponse.body.items.some(
+        (item) =>
+          item.id === id &&
+          item.status === "delivered" &&
+          item.materialized === true,
+      ),
+    );
+
+    if (assertReconciliation) {
+      test.fail();
+      try {
+        await until(
+          async () => {
+            const value = await readAppReceipt(id);
+            return (
+              value?.status === "accepted" &&
+              value.receipt?.status === "delivered" &&
+              value.receipt?.materialized === true &&
+              value.displayPending === false
+            );
+          },
+          "The accepted outbox entry did not reconcile the delivered receipt",
+          5000,
+        );
+      } catch (error) {
+        throw new Error(
+          `${error.message}: ${JSON.stringify({ storedInApp: await readAppReceipt(id), posts, errors })}`,
+        );
+      }
+      return;
+    }
+    await changeFixture(agent.id, "paginate", target, state.token);
     const latest = await get(`/api/transcript?id=${agent.id}`);
     assert.equal(latest.items.length, 120);
     assert.ok(
@@ -376,25 +480,6 @@ test("Message receipt pagination browser", async ({
       ),
     );
 
-    try {
-      await until(async () => {
-        const value = await storage.evaluate(
-          (key) => window.readReceiptFixture(key),
-          id,
-        );
-        return value?.receipt?.status === "delivered";
-      }, "The exact delivered receipt did not reconcile an accepted message outside the latest 120 items");
-    } catch (error) {
-      const status = await bubble(text).getByRole("status").allTextContents();
-      const storedInApp = await readAppReceipt(id);
-      const storedInSeedPage = await storage.evaluate(
-        (key) => window.readReceiptFixture(key),
-        id,
-      );
-      throw new Error(
-        `${error.message}: ${JSON.stringify({ status, storedInApp, storedInSeedPage, receiptRequestCount: receiptRequests.length, posts, errors })}`,
-      );
-    }
     await bubble(text)
       .getByRole("status")
       .filter({ hasText: "Waiting for agent" })
@@ -418,7 +503,8 @@ test("Message receipt pagination browser", async ({
     assert.equal(delivered.body.id, id);
     assert.equal(delivered.body.text, text);
     assert.equal(delivered.status, "accepted");
-    assert.equal(delivered.receipt.materialized, true);
+    assert.notEqual(delivered.receipt.status, "delivered");
+    assert.notEqual(delivered.receipt.materialized, true);
     assert.equal(delivered.displayPending, false);
     const uncertain = await storage.evaluate(
       (key) => window.readReceiptFixture(key),
@@ -484,6 +570,8 @@ test("Message receipt pagination browser", async ({
       }),
     );
   } finally {
+    receiptGateReleased = true;
+    releaseReceiptGate();
     await Promise.all(
       testBrowser
         .contexts()
@@ -493,4 +581,17 @@ test("Message receipt pagination browser", async ({
     await server?.close();
     await rm(temporary, { recursive: true, force: true });
   }
+}
+
+test("Message receipt pagination browser", async ({ browser, context }) => {
+  test.setTimeout(45_000);
+  await runMessageReceiptScenario({ browser, context }, false);
+});
+
+test("delivered receipt reconciles a hidden accepted outbox entry", async ({
+  browser,
+  context,
+}) => {
+  test.setTimeout(30_000);
+  await runMessageReceiptScenario({ browser, context }, true);
 });
