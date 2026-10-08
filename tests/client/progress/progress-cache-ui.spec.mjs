@@ -408,10 +408,23 @@ test("Progress Cache Ui", async ({
     assert.ok((await panel().boundingBox()).height <= 237);
     assert.ok((await page.locator("#messages").boundingBox()).height > 100);
     assert.ok((await page.locator("#composer").boundingBox()).height > 80);
+    if ((await panel().getAttribute("data-expanded")) === "yes")
+      await panel()
+        .getByRole("button", { name: "Collapse", exact: true })
+        .click();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await panel().getByRole("button", { name: "Hide", exact: true }).click();
+      await expect(panel()).toHaveAttribute("data-hidden", "yes");
+      if (width === 390) {
+        const compactHeight = (await panel().boundingBox()).height;
+        assert.ok(
+          compactHeight <= 45,
+          `Mobile compact panel height ${compactHeight} stays within 45px`,
+        );
+      }
       await panel().getByRole("button", { name: "Show", exact: true }).click();
+      await expect(panel()).toHaveAttribute("data-hidden", "no");
       const header = await panel()
         .locator(".agent-panel-heading")
         .boundingBox();
@@ -509,14 +522,7 @@ test("Progress Cache Ui", async ({
   }
 });
 
-test("compact progress panel matches its height budget", async ({
-  browser: testBrowser,
-}) => {
-  test.fail(
-    true,
-    "Agent progress compact controls exceed their desktop and mobile height budgets.",
-  );
-  test.setTimeout(30_000);
+async function measureCompactProgressPanel(testBrowser, width) {
   const root = await mkdtemp(join(tmpdir(), "studio-progress-height-"));
   const proc = spawn(
     process.env.PYTHON || "python3",
@@ -565,6 +571,7 @@ test("compact progress panel matches its height budget", async ({
     const page = await context.newPage();
     await page.addInitScript(
       ({ id, stateDir }) => {
+        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
         localStorage.setItem(
           `codex-desktop-opened:${stateDir}`,
           JSON.stringify(id),
@@ -579,25 +586,39 @@ test("compact progress panel matches its height budget", async ({
       exact: true,
     });
     await panel
-      .locator(".agent-panel-current")
+      .locator(".agent-panel-current, .agent-panel-saved")
       .getByText("Compact panel height fixture.", { exact: true })
       .waitFor();
-    const heights = [];
-    for (const width of [1440, 390]) {
-      await page.setViewportSize({ width, height: 900 });
-      await panel.getByRole("button", { name: "Hide", exact: true }).click();
-      await expect(panel).toHaveAttribute("data-hidden", "yes");
-      heights.push({ width, height: (await panel.boundingBox()).height });
-      await panel.getByRole("button", { name: "Show", exact: true }).click();
-      await expect(panel).toHaveAttribute("data-hidden", "no");
-    }
-    console.log("Compact progress panel measured heights:", heights);
-    expect(
-      heights.every(({ width, height }) => height <= (width === 390 ? 45 : 33)),
-      "The compact progress panel stays within its desktop and mobile height budgets",
-    ).toBe(true);
+    await page.setViewportSize({ width, height: 900 });
+    await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    await expect(panel).toHaveAttribute("data-hidden", "yes");
+    return (await panel.boundingBox()).height;
   } finally {
     await context?.close();
+    if (proc.exitCode === null && proc.signalCode === null) {
+      proc.kill("SIGTERM");
+      await new Promise((resolve) => proc.once("exit", resolve));
+    }
     await rm(root, { recursive: true, force: true });
   }
+}
+
+test("compact progress panel measurement setup reaches a hidden panel", async ({
+  browser,
+}) => {
+  expect(await measureCompactProgressPanel(browser, 1440)).toBeGreaterThan(0);
+});
+
+test("desktop compact progress panel matches its height budget", async ({
+  browser,
+}) => {
+  const height = await measureCompactProgressPanel(browser, 1440);
+  test.fail(
+    true,
+    "Desktop compact progress panel is 37px against a 33px budget.",
+  );
+  expect(
+    height,
+    "1440px compact panel must fit the 33px desktop budget",
+  ).toBeLessThanOrEqual(33);
 });
