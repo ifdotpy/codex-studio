@@ -586,6 +586,19 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("short-window maximum", output.getvalue())
         self.assertIn("0-second median", output.getvalue())
 
+    def test_filtered_show_jobs_skips_load_sampling_when_suites_fit_cpus(self):
+        output = io.StringIO()
+        with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs", "--filter", "only.py"]),
+              mock.patch.object(RUNNER, "inventory", return_value=[("only.py", "safe")]),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=16 * 1024**3),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0) as sample,
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(RUNNER.main(), 0)
+        sample.assert_called_once_with(window_seconds=0.0)
+        self.assertIn("0-second median", output.getvalue())
+
     def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:
             mount = Path(temp)

@@ -1516,13 +1516,21 @@ def main():
     if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
         parser.error("--load-sample-seconds must be a finite, non-negative number")
     entries = selected(inventory(), args.filter)
+    load_sample_seconds = args.load_sample_seconds
+    if args.filter:
+        selected_runnable = sum(
+            1 for _path, kind in entries
+            if kind in {"safe", "component"} or kind in args.include
+        )
+        if selected_runnable < available_cpu_count():
+            load_sample_seconds = 0.0
     if args.show_jobs:
         opted_in = set(args.include)
         runnable = [(path, kind) for path, kind in entries
                     if kind in {"safe", "component"} or kind in opted_in]
-        plan = worker_plan(runnable, override=args.jobs, sample_seconds=args.load_sample_seconds)
+        plan = worker_plan(runnable, override=args.jobs, sample_seconds=load_sample_seconds)
         print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
-              f"CPUs allowed - max(short-window maximum, {args.load_sample_seconds:g}-second median) "
+              f"CPUs allowed - max(short-window maximum, {load_sample_seconds:g}-second median) "
               "of sampled runnable tasks excluding this runner), "
               "floor(min(50% of available memory, available memory - 4 GiB reserve) / "
               "measured peak suite RSS), runnable suite count); explicit jobs override the CPU bound")
@@ -1550,12 +1558,12 @@ def main():
                          if kind in {"safe", "component"} or kind in opted_in]
     if args.jobs is not None:
         plan = worker_plan(runnable_for_plan, override=args.jobs,
-                           sample_seconds=args.load_sample_seconds)
+                           sample_seconds=load_sample_seconds)
         print("Selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
         args.jobs = plan["workers"]
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
-        workers=args.jobs, load_sample_seconds=args.load_sample_seconds,
+        workers=args.jobs, load_sample_seconds=load_sample_seconds,
         audit_home=args.audit_home)
     for path, kind in skipped:
         condition = ("an already provisioned, isolated Linux VM and --include vm"
