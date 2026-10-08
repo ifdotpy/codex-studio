@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Changed agent IDs reduce scheduler work without losing SQLite snapshot identity."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

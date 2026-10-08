@@ -51,7 +51,14 @@ class MessageIntentContract(unittest.TestCase):
         self.runtime.send(agent, 'Send first', 'send', delivery='after_tool')
         self.runtime.send(agent, 'Queued second', 'queue', delivery='queue')
         self.runtime.dispatch()
-        f.eventually(lambda: self.runtime.agent(agent).get('turnId'))
+        # A turn/started notification can publish turnId before the turn/start
+        # response binds and commits the submitted event batch. Wait for the
+        # durable delivery receipts so the full-database read-only assertion
+        # starts after this test's own dispatch transaction has completed.
+        f.eventually(lambda: all(
+            self.runtime.delivery_receipt(message_id)['status'] == 'delivered'
+            for message_id in ('send', 'queue')
+        ))
         active = self.runtime.agent(agent)
         before = self.database()
         receipts = self.receipts(agent)

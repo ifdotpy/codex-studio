@@ -635,7 +635,14 @@ async function testWatchBehavior() {
     startedAt: new Date().toISOString(),
     turnStatus: "running",
   };
+  const completedBeforeReplacement = {
+    ...replaceStatus,
+    name: "worker-already-completed",
+    threadId: "thread-replace-completed",
+    turnStatus: "completed",
+  };
   writeJson(join(STATE, "codex-swarm-status.watch-replace.json"), [
+    completedBeforeReplacement,
     replaceStatus,
   ]);
   writeJson(join(STATE, "codex-swarm-ready.watch-replace.json"), {
@@ -643,7 +650,7 @@ async function testWatchBehavior() {
     runId: "replace-run-a",
     launcherPid: process.pid,
     readyAt: new Date().toISOString(),
-    threadIds: ["thread-replace-a"],
+    threadIds: ["thread-replace-completed", "thread-replace-a"],
   });
   const watcher = spawn(
     join(SCRIPTS, "codex-watch"),
@@ -654,20 +661,31 @@ async function testWatchBehavior() {
     },
   );
   let watcherStderr = "";
+  let watcherStdout = "";
   watcher.stderr.on("data", (data) => {
     watcherStderr += data;
   });
-  await delay(150);
+  const firstRunObserved = new Promise((resolveObserved, rejectObserved) => {
+    watcher.stdout.on("data", (data) => {
+      watcherStdout += data;
+      if (watcherStdout.includes("CODEX COMPLETED worker-already-completed")) {
+        resolveObserved();
+      }
+    });
+    watcher.once("error", rejectObserved);
+  });
+  const watcherExit = new Promise((resolveStatus) =>
+    watcher.on("exit", resolveStatus),
+  );
+  await firstRunObserved;
   writeJson(join(STATE, "codex-swarm-ready.watch-replace.json"), {
     wave: "watch-replace",
     runId: "replace-run-b",
     launcherPid: process.pid,
     readyAt: new Date().toISOString(),
-    threadIds: ["thread-replace-b"],
+    threadIds: ["thread-replace-completed", "thread-replace-a"],
   });
-  const watcherStatus = await new Promise((resolveStatus) =>
-    watcher.on("exit", resolveStatus),
-  );
+  const watcherStatus = await watcherExit;
   assert.equal(watcherStatus, 1);
   assert.match(watcherStderr, /CODEX WAVE REPLACED/);
 

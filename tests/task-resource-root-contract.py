@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Task resources select live team members without decoding archived records."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import ast
 import inspect
 import json

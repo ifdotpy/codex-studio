@@ -44,6 +44,15 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
                     'id':'claude-fixture', 'provider':'claude', 'home':str(claude_home),
                     'label':'Claude fixture', 'status':'ready'}
             self.t.set_agent(self.aid, provider='claude', accountKey='claude-fixture')
+            # A fixture account has no real Claude login; model the authenticated
+            # account metadata that these recovery paths require.
+            auth_patch = patch('codex_claude.auth_metadata', return_value={
+                'status': 'ready', 'accountId': 'claude:fixture@example.test',
+                'email': 'fixture@example.test', 'plan': 'fixture',
+                '_credentialIdentity': 'claude:fixture@example.test',
+            })
+            auth_patch.start()
+            self.addCleanup(auth_patch.stop)
         self.op = self.t.start_transfer()
         errors = []
         worker = threading.Thread(target=self._start_transferred_thread, args=(errors,), daemon=True)

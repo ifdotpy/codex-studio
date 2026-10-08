@@ -128,9 +128,13 @@ class TransferContract(f.AccountContracts):
             self.assertEqual(self.runtime.tool_request(record['id'], db)['outcome'], 'unknown')
         self.assertEqual(self.pending, [])
 
-    def start_transfer(self):
+    def request_transfer(self):
         op = self.store.request(self.lead_agent['id'], self.other_key, str(uuid.uuid4()))
         self.current_transfer_id = op['id']
+        return op
+
+    def start_transfer(self):
+        op = self.request_transfer()
         with self.runtime.db() as db:
             entity = json.loads(db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",

@@ -2,6 +2,9 @@
 """Private SQLite fixtures for bounded terminal item links. No native requests."""
 from __future__ import annotations
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import hashlib
 import json
 from pathlib import Path
