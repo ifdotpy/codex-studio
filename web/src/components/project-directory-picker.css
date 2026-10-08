@@ -73,19 +73,6 @@
   flex: 1;
   min-width: 0;
 }
-.directory-suggestions {
-  display: grid;
-  gap: 8px;
-}
-.directory-suggestions small {
-  color: var(--muted);
-}
-.directory-suggestions .mantine-Button-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  display: block;
-  height: auto;
-}
 .workspace-header #project {
   max-width: 220px;
   flex-shrink: 1;

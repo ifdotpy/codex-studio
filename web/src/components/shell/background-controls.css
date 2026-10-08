@@ -1,36 +1,3 @@
-.monitor-create-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 12px 22px;
-  border-bottom: 1px solid var(--line);
-}
-.monitor-create-toolbar > span {
-  color: var(--muted);
-  font-size: 12px;
-}
-.monitor-create-toolbar button {
-  flex-shrink: 0;
-}
-.monitor-create-form {
-  padding: 16px 22px;
-  display: grid;
-  gap: 14px;
-  border-bottom: 1px solid var(--line);
-  max-height: 48vh;
-  overflow-y: auto;
-}
-.monitor-create-settings {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) 160px;
-  gap: 12px;
-}
-.monitor-create-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 8px;
-}
 .process-input {
   margin-top: 14px;
   padding: 12px;
@@ -80,28 +47,12 @@
   min-width: 0;
 }
 @media (max-width: 600px) {
-  .monitor-create-toolbar {
-    padding: 10px 14px;
-  }
-  .monitor-create-toolbar > span {
-    max-width: 175px;
-  }
-  .monitor-create-form {
-    padding: 12px 14px;
-  }
-  .monitor-create-settings {
-    grid-template-columns: minmax(0, 1fr) 125px;
-  }
   .process-input-line {
     flex-wrap: wrap;
   }
   .process-input-line > div {
     flex-basis: 100%;
   }
-}
-
-.monitor-create-toolbar {
-  flex-shrink: 0;
 }
 .tasks-drawer-body > .mantine-Collapse-root {
   flex-shrink: 0;
