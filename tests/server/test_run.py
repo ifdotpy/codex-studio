@@ -82,7 +82,7 @@ class ServerSuiteRunner(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             RUNNER.run_suites(
                 [("scripts/studio_api/agents/test_router.py", "component")],
-                set(), 1, 1, root=ROOT, execute=execute,
+                set(), 1, 1, root=ROOT, execute=execute, workers=1,
             )
 
         self.assertEqual(len(commands), 1)
@@ -102,14 +102,14 @@ class ServerSuiteRunner(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                 [("failure.py", "safe"), ("native.py", "native"), ("success.py", "safe")],
-                set(), 1, 1, root=ROOT, execute=execute)
+                set(), 1, 1, root=ROOT, execute=execute, workers=1)
         self.assertEqual(len(runnable), 2)
         self.assertEqual(skipped, [("native.py", "native")])
         self.assertEqual(failures, [("failure.py", "exit 1")])
         self.assertEqual(len(calls), 2)
 
         empty, skipped_only, failures, _elapsed = RUNNER.run_suites(
-            [("native.py", "native")], set(), 1, 1, root=ROOT, execute=execute)
+            [("native.py", "native")], set(), 1, 1, root=ROOT, execute=execute, workers=1)
         self.assertEqual(empty, [])
         self.assertEqual(skipped_only, [("native.py", "native")])
         self.assertEqual(failures, [])
@@ -181,26 +181,44 @@ class ServerSuiteRunner(unittest.TestCase):
 
     def test_automatic_worker_count_tracks_cpu_affinity_and_measured_memory(self):
         profile = {
-            "maxSuiteRssBytes": 100,
+            "maxSuiteRssBytes": 1024**3,
             "suiteSeconds": {"slow.py": 721},
         }
         entries = [("slow.py", "safe")] * 80
-        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=12 * 1024**3),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
             unconstrained = RUNNER.automatic_worker_count(entries, profile)
-        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=12 * 1024**3),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=2),
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
             restricted = RUNNER.automatic_worker_count(entries, profile)
         self.assertEqual(unconstrained, 6)
         self.assertEqual(restricted, 2)
 
-        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=12 * 1024**3),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
               mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
             suite_limited = RUNNER.automatic_worker_count(entries[:3], profile)
         self.assertEqual(suite_limited, 3)
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=12 * 1024**3),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
+            suite_plan = RUNNER.worker_plan(entries[:3], profile)
+            override_plan = RUNNER.worker_plan(entries, profile, override=4)
+        self.assertEqual(suite_plan["limitingBound"], "suites")
+        self.assertEqual(override_plan["workers"], 4)
+        self.assertEqual(override_plan["limitingBound"], "override")
+
+        # At 6 GiB available, half is 3 GiB but the 4 GiB reserve leaves only
+        # 2 GiB allocatable. This verifies the reserve, not just the half cap.
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=6 * 1024**3),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0)):
+            low_memory_plan = RUNNER.worker_plan(entries, profile)
+        self.assertEqual(low_memory_plan["memoryBudgetBytes"], 2 * 1024**3)
+        self.assertEqual(low_memory_plan["memoryWorkerSlots"], 2)
+        self.assertEqual(low_memory_plan["limitingBound"], "memory")
 
         with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=0),
               mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
@@ -211,13 +229,14 @@ class ServerSuiteRunner(unittest.TestCase):
     def test_show_jobs_subtracts_mocked_runnable_load(self):
         entries = [(f"suite-{index}.py", "safe") for index in range(40)]
         plans = []
-        for other_runnable in (0, 24):
+        for other_runnable in (0, 24, 30):
             output = io.StringIO()
-            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs"]),
+            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs",
+                                                            "--load-sample-seconds", "0"]),
                   mock.patch.object(RUNNER, "inventory", return_value=entries),
                   mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
                   mock.patch.object(RUNNER, "available_cpu_count", return_value=32),
-                  mock.patch.object(RUNNER, "available_memory_bytes", return_value=3200),
+                  mock.patch.object(RUNNER, "available_memory_bytes", return_value=64 * 1024**3),
                   mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=other_runnable),
                   contextlib.redirect_stdout(output)):
                 self.assertEqual(RUNNER.main(), 0)
@@ -226,17 +245,43 @@ class ServerSuiteRunner(unittest.TestCase):
             plans.append(json.loads(plan_line.removeprefix("Worker plan: ")))
         self.assertEqual(plans[0]["workers"], 32)
         self.assertEqual(plans[0]["otherRunnableProcesses"], 0)
+        self.assertEqual(plans[0]["limitingBound"], "cpu-median")
         self.assertEqual(plans[1]["workers"], 8)
         self.assertEqual(plans[1]["otherRunnableProcesses"], 24)
+        self.assertEqual(plans[1]["limitingBound"], "cpu-median")
+        self.assertEqual(plans[2]["workers"], 8)
+        self.assertEqual(plans[2]["limitingBound"], "cpu-floor")
 
-    def test_runnable_load_sampler_uses_peak_sample_and_excludes_runner(self):
-        samples = iter([1, 3, 5, 8, 4, 2, 7, 3, 1, 4])
-        with (mock.patch.object(RUNNER, "_instantaneous_runnable_process_count",
-                                side_effect=lambda: next(samples)),
-              mock.patch.object(RUNNER.time, "sleep") as pause):
-            self.assertEqual(RUNNER.sample_runnable_other_process_count(), 7)
-        self.assertEqual(pause.call_count, 9)
-        pause.assert_called_with(0.2)
+    def test_runnable_load_sampler_uses_five_second_median_and_excludes_runner(self):
+        samples = iter([1, 3, 5, 8, 4, 2, 7, 3, 1, 4, 6])
+        now = [0.0]
+
+        def sleep(seconds):
+            now[0] += seconds
+
+        with mock.patch.object(RUNNER.Path, "is_file", return_value=True):
+            self.assertEqual(RUNNER.sample_runnable_other_process_count(
+                window_seconds=5,
+                sample=lambda: next(samples),
+                clock=lambda: now[0],
+                sleep=sleep,
+            ), 3)
+        self.assertEqual(now[0], 5.0)
+
+    def test_show_jobs_load_sample_window_can_come_from_environment(self):
+        entries = [("only.py", "safe")]
+        output = io.StringIO()
+        with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs"]),
+              mock.patch.dict(os.environ, {"CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS": "0"}),
+              mock.patch.object(RUNNER, "inventory", return_value=entries),
+              mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=16 * 1024**3),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count", return_value=0) as sample,
+              contextlib.redirect_stdout(output)):
+            self.assertEqual(RUNNER.main(), 0)
+        sample.assert_called_once_with(window_seconds=0.0)
+        self.assertIn("median of 0-second sampled", output.getvalue())
 
     def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:

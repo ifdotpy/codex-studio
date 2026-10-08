@@ -13,6 +13,7 @@ from pathlib import Path
 import select
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
@@ -46,6 +47,7 @@ TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
 PROFILE_PATH = TEST_TMP_ROOT / "runner-profile.json"
+MEMORY_RESERVE_BYTES = 4 * 1024**3
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
 MAX_SHORT_TMP_ROOT_BYTES = 42
@@ -804,17 +806,24 @@ def _instantaneous_runnable_process_count():
     return 0
 
 
-def sample_runnable_other_process_count():
-    """Sample current runnable tasks for a short window, excluding this runner."""
+def sample_runnable_other_process_count(window_seconds=5.0, interval_seconds=0.5,
+                                       *, sample=None, clock=None, sleep=None):
+    """Use a median sample window of runnable tasks, excluding this runner."""
     if not Path("/proc/stat").is_file():
         return 0
+    sample = _instantaneous_runnable_process_count if sample is None else sample
+    clock = time.monotonic if clock is None else clock
+    sleep = time.sleep if sleep is None else sleep
     samples = []
-    for sample_index in range(10):
-        samples.append(_instantaneous_runnable_process_count())
-        if sample_index < 9:
-            time.sleep(0.2)
+    deadline = clock() + max(0.0, window_seconds)
+    while True:
+        samples.append(sample())
+        remaining = deadline - clock()
+        if remaining <= 0:
+            break
+        sleep(min(interval_seconds, remaining))
     # Each sample includes this main thread, which is runnable while planning.
-    return max(0, max(samples, default=1) - 1)
+    return max(0, math.ceil(statistics.median(samples)) - 1) if samples else 0
 
 
 def _load_profile():
@@ -849,30 +858,51 @@ def _measured_child_peak_rss_bytes():
     return peak * 1024
 
 
-def automatic_worker_count(entries, profile=None):
+def automatic_worker_count(entries, profile=None, override=None):
     """Size from CPUs, memory per measured peak suite RSS, and suite count."""
-    return worker_plan(entries, profile)["workers"]
+    return worker_plan(entries, profile, override=override)["workers"]
 
 
-def worker_plan(entries, profile=None):
+def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
     profile = _load_profile() if profile is None else profile
     cpu_limit = available_cpu_count()
-    other_runnable = sample_runnable_other_process_count()
-    cpus = max(1, cpu_limit - other_runnable)
+    other_runnable = (0 if override is not None else
+                      sample_runnable_other_process_count(window_seconds=sample_seconds))
+    cpu_floor = max(1, math.ceil(cpu_limit / 4))
+    cpu_unclamped = max(1, cpu_limit - other_runnable)
+    cpus = max(cpu_floor, cpu_unclamped)
+    cpu_bound = "cpu-floor" if cpu_unclamped < cpu_floor else "cpu-median"
     memory = available_memory_bytes()
     peak_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
-    memory_slots = max(1, memory // peak_rss) if peak_rss else cpus
+    memory_budget = min(memory // 2, max(0, memory - MEMORY_RESERVE_BYTES))
+    memory_slots = max(1, memory_budget // peak_rss) if peak_rss else cpus
     costs = profile.get("suiteSeconds", {})
     total = sum(float(costs.get(path, 0) or 0) for path, _kind in entries)
     if total <= 0:
         total = float(profile.get("observedWallSeconds", 0) or 0)
-    selected = max(1, min(cpus, memory_slots or 1, len(entries)))
+    suite_count = len(entries)
+    if override is not None:
+        selected = max(1, min(override, memory_slots or 1, suite_count))
+        if selected == min(override, memory_slots or 1, suite_count):
+            limiting_bound = ("memory" if memory_slots < override and memory_slots <= suite_count
+                              else "suites" if suite_count < override and suite_count < memory_slots
+                              else "override")
+    else:
+        selected = max(1, min(cpus, memory_slots or 1, suite_count))
+        limiting_bound = ("memory" if memory_slots <= cpus and memory_slots <= suite_count
+                          else "suites" if suite_count <= cpus and suite_count < memory_slots
+                          else cpu_bound)
     return {
         "workers": selected,
+        "limitingBound": limiting_bound,
         "availableCpus": cpus,
+        "cpuFloor": cpu_floor,
+        "unclampedCpuCount": cpu_unclamped,
         "cpuLimit": cpu_limit,
         "otherRunnableProcesses": other_runnable,
         "availableMemoryBytes": memory,
+        "memoryBudgetBytes": memory_budget,
+        "memoryReserveBytes": MEMORY_RESERVE_BYTES,
         "measuredPeakSuiteRssBytes": peak_rss,
         "memoryWorkerSlots": memory_slots,
         "estimatedSuiteSeconds": total,
@@ -881,13 +911,15 @@ def worker_plan(entries, profile=None):
 
 
 def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
-               execute=run_process, workers=None):
+               execute=run_process, workers=None, load_sample_seconds=5.0):
     runnable = [(path, kind) for path, kind in entries
                 if kind in {"safe", "component"} or kind in opted_in]
     skipped = [(path, kind) for path, kind in entries
                if kind not in {"safe", "component"} and kind not in opted_in]
     failures = []
     started = time.monotonic()
+    if not runnable:
+        return runnable, skipped, failures, time.monotonic() - started
 
     profile = _load_profile()
     suite_seconds = dict(profile.get("suiteSeconds", {}))
@@ -946,11 +978,11 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             if error:
                 failures.append((relative, error))
             indexed.remove(calibration)
-        plan = worker_plan(runnable, profile)
+        plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
     elif workers is None:
-        plan = worker_plan(runnable, profile)
+        plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
 
@@ -1053,19 +1085,25 @@ def main():
                         help="maximum concurrent test processes; set CODEX_SERVER_TEST_JOBS instead for an environment override (default: automatic)")
     parser.add_argument("--show-jobs", action="store_true",
                         help="show the automatic worker count without running suites")
+    parser.add_argument("--load-sample-seconds", type=float,
+                        default=float(os.environ.get("CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS", "5")),
+                        help="runnable-load sampling window in seconds (default: 5; also CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS)")
     args = parser.parse_args()
     validate_deadlines(parser, args)
     if args.jobs is not None and args.jobs < 1:
         parser.error("--jobs must be greater than zero")
+    if not math.isfinite(args.load_sample_seconds) or args.load_sample_seconds < 0:
+        parser.error("--load-sample-seconds must be a finite, non-negative number")
     entries = selected(inventory(), args.filter)
     if args.show_jobs:
         opted_in = set(args.include)
         runnable = [(path, kind) for path, kind in entries
                     if kind in {"safe", "component"} or kind in opted_in]
-        plan = worker_plan(runnable)
-        print("Automatic worker formula: min(max(1, CPUs allowed - peak sampled instantaneous "
-              "runnable tasks excluding this runner), "
-              "floor(available memory / measured peak suite RSS), runnable suite count)")
+        plan = worker_plan(runnable, override=args.jobs, sample_seconds=args.load_sample_seconds)
+        print("Automatic worker formula: min(max(ceil(CPUs allowed / 4), "
+              f"CPUs allowed - median of {args.load_sample_seconds:g}-second sampled runnable tasks excluding this runner), "
+              "floor(min(50% of available memory, available memory - 4 GiB reserve) / "
+              "measured peak suite RSS), runnable suite count); explicit jobs override the CPU bound")
         print("Worker plan: " + json.dumps(plan, sort_keys=True))
         return 0
     if args.list:
@@ -1086,9 +1124,16 @@ def main():
             print("No server tests matched the filter.", file=sys.stderr)
         return 2
     opted_in = set(args.include)
+    runnable_for_plan = [(path, kind) for path, kind in entries
+                         if kind in {"safe", "component"} or kind in opted_in]
+    if args.jobs is not None:
+        plan = worker_plan(runnable_for_plan, override=args.jobs,
+                           sample_seconds=args.load_sample_seconds)
+        print("Selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
+        args.jobs = plan["workers"]
     runnable, skipped, failures, elapsed = run_suites(
         entries, opted_in, args.timeout, args.expensive_timeout,
-        workers=args.jobs)
+        workers=args.jobs, load_sample_seconds=args.load_sample_seconds)
     for path, kind in skipped:
         condition = ("an already provisioned, isolated Linux VM and --include vm"
                      if kind == "vm" else f"--include {kind}")
