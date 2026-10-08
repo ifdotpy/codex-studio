@@ -64,7 +64,9 @@ for the resource and scratch-root formulas. When the selected root is disk-backe
 the runner measures the median of seven 4 KiB write+fsync probes and scales the
 CPU-derived worker count by `5.5 ms / (5.5 ms + measured fsync latency)`; the
 5.5 ms reference is calibrated from the measured disk-vs-tmpfs runtime-contract
-CPU and wall times. This disk-only I/O bound is reported as `limitingBound=io`.
+CPU and wall times. Probe results varied substantially across runs, so this is
+a coarse guard against slow disk-backed scratch, not a precise runtime estimate.
+This disk-only I/O bound is reported as `limitingBound=io`.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
