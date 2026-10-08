@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import platform
 import sys
 import tempfile
 import unittest
@@ -98,6 +99,41 @@ class NativeBinaryContract(unittest.TestCase):
             self.assertEqual([row['version'] for row in rows], ['0.155.1', '0.154.0'])
             self.assertEqual(rows[1]['identity'], {**native.file_identity(old),
                                                  'companions': native.companion_identities(old)})
+
+    def test_npm_launcher_resolves_platform_bundle_without_running_javascript(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / 'node_modules/@openai/codex'
+            launcher = package / 'bin/codex.js'
+            launcher.parent.mkdir(parents=True)
+            marker = root / 'launcher-ran'
+            launcher.write_text(f'#!/bin/sh\ntouch "{marker}"\n')
+            launcher.chmod(0o755)
+            (package / 'package.json').write_text(json.dumps({'name': '@openai/codex'}))
+            for layout in ('nested', 'hoisted', 'bundled'):
+                with self.subTest(layout=layout):
+                    vendor = (package / 'node_modules/@openai/codex-darwin-arm64/vendor' if layout == 'nested'
+                        else root / 'node_modules/@openai/codex-darwin-arm64/vendor' if layout == 'hoisted'
+                        else package / 'vendor')
+                    binary = fake_binary(vendor / 'aarch64-apple-darwin/bin', version='0.161.0')
+                    if layout != 'bundled':
+                        (vendor.parent / 'package.json').write_text('{}')
+                    alias = root / 'bin/codex'
+                    alias.parent.mkdir(exist_ok=True)
+                    alias.unlink(missing_ok=True)
+                    alias.symlink_to(launcher)
+                    with patch.object(native, 'CHATGPT_CODEX', root / 'missing'), \
+                            patch.object(platform, 'system', return_value='Darwin'), \
+                            patch.object(platform, 'machine', return_value='arm64'):
+                        rows = native.discover_candidates(env={'CODEX_BIN': str(alias), 'PATH': str(alias.parent)})
+                    self.assertEqual(len(rows), 1)
+                    self.assertEqual(rows[0].get('path'), str(binary.resolve()))
+                    self.assertEqual(rows[0].get('status'), 'discovered', rows)
+                    self.assertFalse(marker.exists())
+                    approved = native.approve_candidate(rows[0]['path'], root / ('state-' + layout))
+                    self.assertEqual(approved['version'], '0.161.0')
+                    import shutil
+                    shutil.rmtree(vendor if layout == 'bundled' else vendor.parent)
 
     def test_approve_snapshot_isolated_and_repeatable(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -68,6 +68,87 @@ class CrossServer(unittest.TestCase):
         with self.runtimes[server].read_db() as db:
             keys = [r[0] for r in db.execute("SELECT id FROM runtime_server_outbox WHERE state='queued' ORDER BY rowid")]
         return [self.network[server].deliver(key) for key in keys]
+    def test_unknown_spawn_is_terminal_after_bound_without_replay(self):
+        receiver, sender = self.network['remote'], self.network['home']
+        with patch.object(self.remote, 'catalog', side_effect=RuntimeError(
+                'No installed Codex version passed the protocol checks')) as catalog:
+            result = self.spawn()
+            worker, key = result['agents'][0]['id'], result['remoteRequestId']
+            self.assertEqual(result['outcome'], 'unknown')
+            for _ in range(8):
+                final = sender.deliver(key)
+            self.assertEqual(catalog.call_count, 1)
+        self.assertTrue(final.get('terminal'))
+        proxy = self.home.agent(worker)
+        self.assertEqual(proxy['status'], 'paused')
+        self.assertFalse(proxy['inFlight'])
+        self.assertFalse(proxy['remoteReservation'])
+        self.assertIn(key, proxy['error'])
+        self.assertIn('outcome unknown', proxy['error'])
+        with patch.object(receiver, '_receive', wraps=receiver._receive) as receive:
+            sender.deliver(key)
+            # Even a direct same-ID retry cannot reopen the remote effect.
+            with self.home.read_db() as db:
+                envelope = json.loads(db.execute('SELECT body FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()[0])
+            self.assertEqual(receiver.receive('home', envelope)['outcome'], 'unknown')
+            receive.assert_not_called()
+        with self.remote.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_agents WHERE json_type(record,'$.remoteOrigin')='object'").fetchone()[0], 0)
+        with self.home.read_db() as db:
+            notices = [json.loads(row[0]) for row in db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='agent_message'", (self.lead['id'],))]
+            receipt = db.execute('SELECT state,attempts,result FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+        self.assertEqual(receipt['state'], 'complete')
+        self.assertEqual(receipt['attempts'], 8)
+        self.assertEqual(len([n for n in notices if key in n['text']]), 1)
+
+    def test_terminal_unknown_spawn_keeps_task_claim_and_observed_worker_slot(self):
+        task = self.home.work_action(self.lead['id'], {'action': 'create', 'title': 'Inspect source', 'description': 'Inspect'}, 'unknown-spawn-task', actor=self.lead['id'])
+        self.transports['home'].offline = True
+        result = self.spawn(task_id=task['id'])
+        worker, key = result['agents'][0]['id'], result['remoteRequestId']
+        for _ in range(8):
+            self.network['home'].deliver(key)
+        with self.home.lock, self.home.db() as db:
+            self.home.release_failed_work(db, self.home.release_work_agents(db), force=True)
+            self.assertEqual(self.home.work_by_id(db, task['id'], self.lead['id'])['owner'], worker)
+        # A reverse-channel snapshot can arrive while the forward channel is offline.
+        observed = self.spawn(key='observed-spawn')
+        worker, key = observed['agents'][0]['id'], observed['remoteRequestId']
+        with self.home.lock, self.home.db() as db:
+            proxy = self.home.agent(worker, db)
+            proxy.update(remoteStateSequence=1, status='running', inFlight=True,
+                         remoteReservation=True)
+            self.home.put(db, 'agents', proxy)
+        for _ in range(8):
+            self.network['home'].deliver(key)
+        proxy = self.home.agent(worker)
+        self.assertEqual(proxy['status'], 'running')
+        self.assertTrue(proxy['inFlight'])
+        self.assertTrue(proxy['remoteReservation'])
+
+    def test_unknown_receive_logs_safe_message_and_traceback_once(self):
+        receiver = self.network['remote']
+        with patch.object(self.remote, 'catalog', side_effect=RuntimeError(
+                'No installed Codex version passed the protocol checks')):
+            result = self.spawn(prompt='Private prompt content')
+        path = self.remote.root / 'orchestration-errors.log'
+        self.assertTrue(path.exists())
+        diagnostic = json.loads(path.read_text())
+        self.assertEqual(diagnostic['requestId'], result['remoteRequestId'])
+        self.assertEqual(diagnostic['errorType'], 'RuntimeError')
+        self.assertEqual(diagnostic['message'], 'No installed Codex version passed the protocol checks')
+        self.assertTrue(any(frame['function'] == '_remote_spawn' for frame in diagnostic['traceback']))
+        self.network['home'].deliver(result['remoteRequestId'])
+        self.assertEqual(len(path.read_text().splitlines()), 1)
+        with patch.object(receiver, '_receive', side_effect=RuntimeError('Private prompt content token=secret-value')):
+            receipt = receiver.receive('home', {'requestId': 'redact-error', 'action': 'projects',
+                'payload': {'prompt': 'Private prompt content'}})
+        self.assertEqual(receipt['outcome'], 'unknown')
+        content = path.read_text()
+        self.assertNotIn('Private prompt', content)
+        self.assertNotIn('secret-value', content)
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+
     def test_local_and_partial_state_does_not_access_database(self):
         from unittest.mock import Mock
         db = Mock()
