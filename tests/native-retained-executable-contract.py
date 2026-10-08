@@ -308,12 +308,17 @@ class OperatorCloseContract(unittest.TestCase):
         ack_entered = threading.Event()
         release_ack = threading.Event()
         ack_finished = threading.Event()
+        replacement_opened = threading.Event()
+        release_replacement_constructor = threading.Event()
+        replacement_constructor_done = threading.Event()
+        replacement_constructor_errors = []
         self.addCleanup(release_ack.set)
+        self.addCleanup(release_replacement_constructor.set)
         original_ack = first.proc.ack
 
         def delayed_ack(sequence):
             ack_entered.set()
-            if not release_ack.wait(10):
+            if not release_ack.wait(90):
                 raise RuntimeError('fixture did not release the supervisor ACK')
             original_ack(sequence)
             ack_finished.set()
@@ -329,8 +334,50 @@ class OperatorCloseContract(unittest.TestCase):
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
         handle = 'test:operator-replace'
-        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
-                           executable=str(other), supervisor_handle=handle)
+
+        def open_replacement(stderr_sink):
+            proxy = supervisor.attach(self.case.root, handle,
+                [str(other), 'app-server', '--listen', 'stdio://'], dict(os.environ),
+                stderr_sink=stderr_sink)
+            replacement_opened.set()
+            if not release_replacement_constructor.wait(90):
+                raise RuntimeError('fixture did not release the replacement AppServer constructor')
+            return proxy
+
+        replacement = {}
+
+        def construct_replacement():
+            try:
+                replacement['server'] = AppServer(self.case.root, lambda _: None, lambda _: None,
+                    lambda _: None, executable=str(other), supervisor_handle=handle,
+                    process_factory=open_replacement)
+            except BaseException as error:
+                replacement_constructor_errors.append(error)
+            finally:
+                replacement_constructor_done.set()
+
+        constructor_thread = threading.Thread(target=construct_replacement, daemon=True)
+        constructor_thread.start()
+        self.addCleanup(constructor_thread.join, 10)
+        self.assertTrue(replacement_opened.wait(30),
+                        'replacement supervisor open did not capture its cursor')
+
+        # The replacement ProcessProxy has captured its cursor, but its AppServer
+        # reader has not started yet. Let the old, real ACK commit first.
+        release_ack.set()
+        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
+        release_replacement_constructor.set()
+        self.assertTrue(replacement_constructor_done.wait(30),
+                        'replacement AppServer constructor did not finish')
+        if replacement_constructor_errors:
+            error = replacement_constructor_errors[0]
+            expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
+                        'Supervisor replay cursor is stale or ahead of the journal')
+            if not isinstance(error, RuntimeError) or str(error) != expected:
+                raise error
+            self.replacement_transport_error = str(error)
+            return
+        second = replacement['server']
         self.case.servers.append(second)
         self.assertFalse(second.supervisor_resumed)
         self.assertEqual(second.proc.generation, first.proc.generation + 1)
@@ -338,10 +385,7 @@ class OperatorCloseContract(unittest.TestCase):
             candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
         self.assertNotEqual(new_pid, pid)
 
-        # The old proxy's normal ACK reaches the live supervisor after the new
-        # proxy has captured its open cursor. No journal rows are fabricated.
-        release_ack.set()
-        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
+        # Reading from the captured cursor now exposes the stale-cursor defect.
         try:
             self.replacement_model_list = second.call('model/list', {}, timeout=30)
         except RuntimeError as error:
