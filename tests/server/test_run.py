@@ -236,6 +236,33 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(saved["maxSuiteScratchBytes"], 200)
             self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
 
+    def test_concurrent_runner_claims_share_cpu_and_memory_budget(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-claims-") as temp:
+            plans = [
+                {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
+                 "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
+                for _ in range(2)
+            ]
+            gate = threading.Barrier(2)
+
+            def reserve(plan):
+                gate.wait(timeout=5)
+                return RUNNER._reserve_runner_workers(plan)
+
+            with mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    tokens = list(pool.map(reserve, plans))
+                try:
+                    workers = [plan["workers"] for plan in plans]
+                    self.assertLessEqual(sum(workers), 32)
+                    self.assertLessEqual(sum(workers) * 500_000_000, 12_600_000_000)
+                    self.assertTrue(all(plan["limitingBound"] == "runner-registry"
+                                        for plan in plans if plan["workers"] < 21))
+                finally:
+                    for token in tokens:
+                        RUNNER._release_runner_workers(token)
+            self.assertEqual(json.loads((Path(temp) / "runner-live.json").read_text()), [])
+
     def test_audit_home_blocks_real_user_state_access_in_child_python(self):
         with tempfile.TemporaryDirectory(prefix="server-audit-home-") as directory:
             suite_root = Path(directory)

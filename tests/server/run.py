@@ -20,6 +20,7 @@ import sys
 import tempfile
 import threading
 import time
+import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from test_isolation import isolate_supervisor_environment
@@ -63,6 +64,7 @@ SCRATCH_PROBE_MIN_BYTES = 64 * 1024 * 1024
 SCRATCH_PROBE_MAX_BYTES = 256 * 1024 * 1024
 SCRATCH_PROBE_CHUNK_BYTES = 8 * 1024 * 1024
 SCRATCH_OWNER_FILE = ".codex-server-test-owner"
+RUNNER_REGISTRY_LOCK = threading.Lock()
 
 try:
     import resource
@@ -776,6 +778,101 @@ def _cleanup_stale_scratch_roots(mounts=None):
                 shutil.rmtree(directory, ignore_errors=True)
 
 
+@contextmanager
+def _runner_registry_guard():
+    """Serialize cross-process runner claims in the shared test cache."""
+    directory = TEST_TMP_ROOT
+    directory.mkdir(parents=True, exist_ok=True)
+    lock_path = directory / "runner-live.lock"
+    with RUNNER_REGISTRY_LOCK, lock_path.open("a+b") as lock_file:
+        if os.name == "nt":  # pragma: no cover - Windows
+            import msvcrt
+
+            lock_file.seek(0)
+            if lock_file.read(1) == b"":
+                lock_file.seek(0)
+                lock_file.write(b"0")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield directory / "runner-live.json"
+        finally:
+            if os.name == "nt":  # pragma: no cover - Windows
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_live_runner_claims(path):
+    try:
+        claims = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    if not isinstance(claims, list):
+        return []
+    return [claim for claim in claims
+            if isinstance(claim, dict) and _process_id_is_live(int(claim.get("pid", 0) or 0))]
+
+
+def _write_live_runner_claims(path, claims):
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
+                                         prefix=f".{path.name}.", suffix=".tmp",
+                                         delete=False) as output:
+            temporary = Path(output.name)
+            json.dump(claims, output, sort_keys=True)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _reserve_runner_workers(plan):
+    """Atomically claim this run's CPU and memory worker budget."""
+    token = uuid.uuid4().hex
+    worker_memory = max(0, int(plan.get("measuredWorkerMemoryBytes", 0) or 0))
+    with _runner_registry_guard() as registry_path:
+        claims = _read_live_runner_claims(registry_path)
+        claimed_workers = sum(max(0, int(claim.get("workers", 0) or 0)) for claim in claims)
+        claimed_memory = sum(
+            max(0, int(claim.get("workers", 0) or 0))
+            * max(0, int(claim.get("workerMemoryBytes", 0) or 0))
+            for claim in claims
+        )
+        cpu_slots = max(1, int(plan["cpuLimit"]) - claimed_workers)
+        memory_remaining = max(0, int(plan.get("memoryBudgetBytes", 0) or 0) - claimed_memory)
+        memory_slots = (max(1, memory_remaining // worker_memory)
+                        if worker_memory else int(plan["workers"]))
+        selected = max(1, min(int(plan["workers"]), cpu_slots, memory_slots))
+        plan["runnerCpuSlots"] = cpu_slots
+        plan["runnerMemorySlots"] = memory_slots
+        if selected < int(plan["workers"]):
+            plan["workers"] = selected
+            plan["limitingBound"] = "runner-registry"
+        claims.append({
+            "pid": os.getpid(), "token": token, "workers": selected,
+            "workerMemoryBytes": worker_memory,
+        })
+        _write_live_runner_claims(registry_path, claims)
+    return token
+
+
+def _release_runner_workers(token):
+    with _runner_registry_guard() as registry_path:
+        claims = [claim for claim in _read_live_runner_claims(registry_path)
+                  if claim.get("token") != token]
+        _write_live_runner_claims(registry_path, claims)
+
+
 def _memory_scratch_root(required_bytes, measured_footprint_bytes):
     """Create a short tmpfs root that passes a quota-aware write probe."""
     mounts = list(_tmpfs_mounts())
@@ -1198,6 +1295,9 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     elif workers is None:
         plan = worker_plan(runnable, profile, sample_seconds=load_sample_seconds)
         workers = plan["workers"]
+    else:
+        plan = worker_plan(runnable, profile, override=workers, sample_seconds=0)
+        workers = plan["workers"]
 
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
@@ -1227,8 +1327,13 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 workers = io_workers
                 plan["workers"] = workers
                 plan["limitingBound"] = "io"
-    if plan is not None and automatic:
+    planned_workers = plan["workers"]
+    claim_token = _reserve_runner_workers(plan)
+    workers = plan["workers"]
+    if automatic:
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
+    elif plan["workers"] != planned_workers:
+        print("Adjusted selected worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
 
     indexed.sort(key=lambda item: suite_seconds.get(item[1], 0), reverse=True)
     first_pending_index = len(runnable) - len(indexed) + 1
@@ -1266,6 +1371,7 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     finally:
         if owned_tmp_root is not None:
             shutil.rmtree(owned_tmp_root)
+        _release_runner_workers(claim_token)
     order = {relative: index for index, (relative, _kind) in enumerate(runnable)}
     failures.sort(key=lambda failure: order[failure[0]])
     profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss})

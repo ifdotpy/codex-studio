@@ -68,6 +68,11 @@ CPU-derived worker count by `5.5 ms / (5.5 ms + measured fsync latency)`; the
 CPU and wall times. Probe results varied substantially across runs, so this is
 a coarse guard against slow disk-backed scratch, not a precise runtime estimate.
 This disk-only I/O bound is reported as `limitingBound=io`.
+Before starting suites, each runner atomically claims its selected CPU and
+measured memory slots in a shared live-runner registry under the short test
+cache root. Concurrent invocations reduce their plans against active claims;
+claims from exited processes are discarded. `--show-jobs` is an advisory plan
+and does not reserve slots.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
