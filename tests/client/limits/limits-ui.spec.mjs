@@ -3,9 +3,12 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
 } from "../playwright.mjs";
 // Production UI and local fixture. Account variants replace only read responses.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -89,7 +92,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   let failLimits = false;
-  await page.route("**/api/limits", (route) =>
+  await page.route("**/api/limits**", (route) =>
     failLimits
       ? route.fulfill({
           status: 503,
@@ -210,6 +213,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
     await page.locator(`[data-chat="${selectedChat.id}"]`).click();
     await toggle().waitFor();
   };
+  await page.clock.install();
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
   assert.match(await page.locator("#usage-footer").innerText(), /Context 40%/);
@@ -345,6 +349,13 @@ test("limits-ui", async ({ page: fixturePage }) => {
       accountKey: selectedAccount,
     }) + "\n",
   );
+  const defaultAccountTab = details().getByRole("tab", {
+    name: "Fixture account limits",
+    exact: true,
+  });
+  await defaultAccountTab.waitFor();
+  await defaultAccountTab.click();
+  await expect(defaultAccountTab).toHaveAttribute("aria-selected", "true");
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
@@ -359,10 +370,19 @@ test("limits-ui", async ({ page: fixturePage }) => {
       getComputedStyle(document.querySelector(".account-limits-popover"))
         .opacity === "1",
   );
-  await page.clock.install();
   failLimits = true;
   const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
+  const failedQuotaRefresh = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/limits" &&
+      url.searchParams.get("cached") !== "1" &&
+      url.searchParams.get("account_key") !== "claude-local" &&
+      response.status() === 503
+    );
+  });
   await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await failedQuotaRefresh;
   await details()
     .getByText(/^Saved limits/)
     .waitFor();
@@ -378,7 +398,62 @@ test("limits-ui", async ({ page: fixturePage }) => {
     "refresh error cannot add a footer row",
   );
   failLimits = false;
-  await page.clock.fastForward(30050);
+  const manualRecovery = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/limits" &&
+      url.searchParams.get("cached") !== "1" &&
+      url.searchParams.get("account_key") !== "claude-local" &&
+      response.status() === 200
+    );
+  });
+  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await manualRecovery;
+  await details()
+    .getByText(/^Saved limits/)
+    .waitFor({ state: "hidden" });
+
+  failLimits = true;
+  const eventPathFailure = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/limits" &&
+      url.searchParams.get("cached") !== "1" &&
+      url.searchParams.get("account_key") !== "claude-local" &&
+      response.status() === 503
+    );
+  });
+  await details().getByRole("button", { name: "Refresh", exact: true }).click();
+  await eventPathFailure;
+  await details()
+    .getByText(/^Saved limits/)
+    .waitFor();
+  failLimits = false;
+  const eventRecovery = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === "/api/limits" &&
+      url.searchParams.get("cached") !== "1" &&
+      url.searchParams.get("account_key") !== "claude-local" &&
+      response.status() === 200
+    );
+  });
+  const notification = await fetch(`${origin}/api/sync/notify`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "X-Canvas-Token": initial.token,
+      Origin: origin,
+      [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+    },
+    body: JSON.stringify({
+      requestId: randomUUID(),
+      resources: [{ kind: "limits", accountKey: "default" }],
+    }),
+  });
+  assert.equal(notification.status, 200, await notification.text());
+  const eventRecoveryResponse = await eventRecovery;
+  assert.equal(eventRecoveryResponse.status(), 200);
   await details()
     .getByText(/^Saved limits/)
     .waitFor({ state: "hidden" });
@@ -532,6 +607,10 @@ test("limits-ui", async ({ page: fixturePage }) => {
     .getByRole("button", { name: "Apply reset", exact: true })
     .first()
     .click();
+  await resetPanel()
+    .locator("strong[title='Restore Codex limits.']")
+    .nth(2)
+    .waitFor();
   assert.equal(
     await resetPanel().locator("strong[title='Restore Codex limits.']").count(),
     3,
