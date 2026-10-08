@@ -8,6 +8,24 @@ import {
 
 import { it } from "vitest";
 
+it("rejects receipt responses from another workspace", () => {
+  for (const workspaceId of ["foreign", undefined])
+    assert.throws(
+      () =>
+        checkedMessageReceipts(
+          {
+            agent: "chat",
+            workspaceId,
+            items: [{ id: "one", status: "delivered", materialized: true }],
+          },
+          "chat",
+          ["one"],
+          "workspace",
+        ),
+      { message: "The delivery receipts belong to another workspace." },
+    );
+});
+
 it("joins outgoing messages to accepted and delivered receipts by identity", () => {
   const delivered = { id: "sso", status: "delivered" };
   const accepted = {

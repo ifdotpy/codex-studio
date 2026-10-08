@@ -50,47 +50,10 @@
     font-size: var(--studio-text-meta);
     line-height: 1.5;
   }
-  .conversation-settings {
-    grid-area: 2 / 1 / 3 / -1;
-    display: flex;
-    align-items: center;
-    flex-wrap: nowrap;
-    min-width: 0;
-    gap: 2px 8px;
-    margin-left: -8px;
-  }
-  .conversation-settings > .mantine-Button-root {
-    height: 30px;
-    min-height: 30px;
-    min-width: 0;
-    flex: 0 1 auto;
-    font-size: 12px;
-  }
-  .conversation-settings .account-picker {
-    max-width: 220px;
-  }
-  .conversation-settings #project {
-    max-width: 200px;
-    padding-inline: 8px;
-  }
-  .conversation-settings .execution-menu {
-    padding-left: 8px;
-  }
-  .conversation-settings .mantine-Button-label {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
   .workspace-header #team-toggle {
     grid-area: 1 / 2;
     height: 30px;
     min-width: 0;
-  }
-  .workspace-header .conversation-quick-actions {
-    grid-area: 1 / 3;
-    flex-wrap: nowrap;
-    flex-basis: auto;
   }
   .workspace-shortcuts {
     flex-wrap: nowrap;
@@ -152,16 +115,6 @@
 }
 
 @container workspace (max-width: 660px) {
-  .conversation-settings {
-    gap: 2px;
-  }
-  .conversation-settings > .mantine-Button-root {
-    flex: 1 1 0;
-    max-width: none;
-  }
-  .conversation-settings .mantine-Button-inner {
-    justify-content: flex-start;
-  }
   .workspace-header #team-toggle {
     padding-inline: 8px;
   }
@@ -327,37 +280,12 @@
 }
 
 /* Routine activity changes within one toolbar slot, not the transcript. */
-.composer-activity {
-  flex: 1 1 100px;
-  min-width: 0;
-  height: 28px;
-  overflow: hidden;
-}
-#conversation .composer-activity .agent-phase {
-  min-height: 28px;
-  height: 28px;
-  padding: 0;
-  margin: 0;
-  font-size: var(--studio-text-meta);
-  white-space: nowrap;
-}
-.composer-activity .agent-phase > span,
-.composer-activity .agent-phase-copy {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
 .message-bottom .message-delivery-status {
   margin: 0;
 }
 @media (min-width: 761px) {
   #conversation-status {
     width: 120px;
-  }
-  .workspace-header .conversation-quick-actions {
-    min-width: 132px;
-    width: 132px;
-    justify-content: flex-end;
   }
 }
 @media (max-width: 760px) {
@@ -369,12 +297,6 @@
     min-height: 34px;
     height: 34px;
     padding-inline: 4px;
-  }
-  .composer-activity {
-    flex-basis: 0;
-  }
-  .composer-activity .phase-dots {
-    display: none;
   }
 }
 

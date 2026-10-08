@@ -369,7 +369,7 @@ The helper accepts connections from the same macOS user only.
 
 `scripts/codex_linux_vm.py` provides these functions:
 
-- `ensure_running(settings=None, timeout=1500)` creates the VM when needed and waits for guest health.
+- `ensure_running(settings=None, timeout=3600)` creates the VM when needed and waits for guest health.
 - `status()` returns the VM state, process ID, resource settings, allocated disk bytes, and free host bytes.
 - `get_settings()` returns the resource limits. `set_settings(values)` saves limits when the VM is stopped.
 - `stop(timeout=40)` requests guest shutdown. The helper forces VM shutdown after 20 seconds.
@@ -393,11 +393,35 @@ The host downloads the Ubuntu 24.04 arm64 raw disk archive from release `2026092
 It checks the pinned SHA-256 checksum before extraction. It does not require QEMU.
 The helper uses `VZLinuxBootLoader` with the matching checksum-verified Ubuntu kernel
 and initrd. It expands the kernel's gzip Image payload before boot.
-The kernel command line uses `root=/dev/vda rw console=hvc0`.
+The kernel command line uses `root=/dev/vda rw console=hvc0 ds=nocloud;i=<instance-id>`.
 Kernel updates use the pinned Studio image release. Apt does not select the boot kernel.
 The first boot uses cloud-init to install tools, pinned host CLI versions, and the guest service.
-Each npm download has bounded fetch retries. Each command timeout also forces termination.
-A systemd unit retries an incomplete provision on the next VM boot. It skips a complete provision.
+Codex uses the pinned GitHub release package and its SHA-256 manifest.
+The package includes the CLI and its companion executables.
+Each download has two attempts with a ten-second delay between attempts.
+Each Codex package attempt has a 600-second limit.
+
+An absent release asset uses the pinned npm package with the same attempts and limit.
+A checksum failure stops the provision. It does not select npm.
+The systemd service has a 2500-second limit. The host has a 3600-second total limit.
+Each command timeout also forces termination.
+
+Console records show each stage, download bytes, and transfer seconds.
+`status().provision` exposes the current stage and transfer records.
+
+A provision failure produces one error line with the stage, cause, retry instruction, and console path.
+The next Linux spawn checks guest health before recovery.
+A failed provision without guest health causes a reboot with the same disks and network address.
+
+The host replaces the cloud-init seed with the current script and the original provider versions.
+The helper passes the new instance identity to NoCloud through the kernel command line.
+The host saves the previous console in `console.previous.log` before the reboot.
+Recovery skips installed Node and providers. It also skips the Claude bridge when its package lock matches.
+A healthy guest continues without a reboot.
+
+If Linux setup fails before the first input, Studio starts a host image workspace when the host supports images.
+The host copy includes the user's uncommitted files.
+Otherwise, Studio uses a Git worktree or the original folder outside Git.
 The guest component supplies `vm/guest/install.sh`. The host copies that component into
 `/opt/codex-studio/vm/guest` in the cloud-init seed. No credentials enter the seed.
 
@@ -428,4 +452,6 @@ python3 -B desktop/native/linux-vm/test.py
 The proof creates isolated temporary disks. It checks boot, CLI versions, a btrfs
 workspace, a guest commit, host fetch, provider reconnect, and native Codex initialization.
 It removes the VM after the check. It uses no account credentials or model requests.
-Use `--provision-restart-check` to inject one provision failure and check recovery after a VM reboot.
+Use `--provision-restart-check` to check automatic recovery from a failed Codex install.
+The original script fails on every boot. Success requires a new seed and script.
+The check verifies that both disk file identities remain the same.

@@ -162,9 +162,14 @@ async function setup() {
   const api = await import("../api");
   const entitySequence = await import("./entitySequence");
   const failures: unknown[] = [];
-  const stop = client.subscribeStateProjection(vi.fn(), (error) =>
-    failures.push(error),
-  );
+  const failureWaiters = new Set<(error: unknown) => void>();
+  const stop = client.subscribeStateProjection(vi.fn(), (error) => {
+    failures.push(error);
+    if (error !== null) {
+      failureWaiters.forEach((resolve) => resolve(error));
+      failureWaiters.clear();
+    }
+  });
   await vi
     .waitFor(() => expect(mocks.invalidate).toBeTypeOf("function"))
     .catch(() => {
@@ -180,6 +185,8 @@ async function setup() {
     rows,
     storageInstance,
     stop,
+    waitForFailure: () =>
+      new Promise<unknown>((resolve) => failureWaiters.add(resolve)),
     workspaceId,
   };
 }
@@ -517,7 +524,7 @@ describe("entity pull dispatch gate", () => {
 
   it("makes a direct refresh pull after a failed refresh even when a retained sequence is covered", async () => {
     const pulls: number[] = [];
-    const { client, storageInstance, stop } = await setup();
+    const { client, storageInstance, stop, waitForFailure } = await setup();
     mocks.pulls = pulls;
     mocks.pullResponse = async (after) => {
       if (pulls.length === 1) throw new TypeError("simulated read failure");
@@ -539,14 +546,40 @@ describe("entity pull dispatch gate", () => {
         throw new TypeError("simulated persistence failure");
       return { error: [] };
     });
-    mocks.invalidate?.({ epoch: "epoch", entitySequence: 101 });
-    await vi.waitFor(() => expect(pulls).toHaveLength(1));
-    await vi.waitFor(() =>
-      expect(storageInstance.bulkWrite).toHaveBeenCalled(),
-    );
-    const beforeDirectRefresh = pulls.length;
-    await client.refreshProjection();
-    expect(pulls).toHaveLength(beforeDirectRefresh + 1);
-    stop();
+    vi.useFakeTimers();
+    try {
+      const readFailure = waitForFailure();
+      mocks.invalidate?.({ epoch: "epoch", entitySequence: 101 });
+      expect(await readFailure).toMatchObject({
+        message: "simulated read failure",
+      });
+      expect(pulls).toEqual([100]);
+
+      const persistenceFailure = waitForFailure();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(await persistenceFailure).toMatchObject({
+        message: "simulated persistence failure",
+      });
+      expect(pulls).toEqual([100, 100]);
+      expect(storageInstance.bulkWrite).toHaveBeenCalledWith(
+        expect.arrayContaining([
+          expect.objectContaining({
+            document: expect.objectContaining({
+              id: "state:entities:checkpoint",
+              seq: 101,
+            }),
+          }),
+        ]),
+        "studio-projection-pull",
+      );
+
+      const beforeDirectRefresh = pulls.length;
+      await client.refreshProjection();
+      expect(pulls).toHaveLength(beforeDirectRefresh + 1);
+      expect(pulls).toEqual([100, 100, 100]);
+    } finally {
+      stop();
+      vi.useRealTimers();
+    }
   });
 });

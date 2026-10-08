@@ -70,7 +70,19 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         configuration.memorySize = memory
         let bootloader = VZLinuxBootLoader(kernelURL: directory.appendingPathComponent("kernel"))
         bootloader.initialRamdiskURL = directory.appendingPathComponent("initrd")
-        bootloader.commandLine = "root=/dev/vda rw console=hvc0"
+        // NoCloud checks the kernel instance ID before it reads a changed seed disk.
+        // Keep the old identity until the host publishes a recovery seed.
+        let seedInfo = directory.appendingPathComponent("provision-seed.json")
+        var instanceId = "studio-linux-v1"
+        if FileManager.default.fileExists(atPath: seedInfo.path) {
+            let metadata = try JSONSerialization.jsonObject(with: Data(contentsOf: seedInfo)) as? [String: Any]
+            guard let value = metadata?["instanceId"] as? String,
+                  value.range(of: "^studio-linux-[a-f0-9]{64}$", options: .regularExpression) != nil else {
+                try fail("The VM provision seed identity is invalid.")
+            }
+            instanceId = value
+        }
+        bootloader.commandLine = "root=/dev/vda rw console=hvc0 ds=nocloud;i=" + instanceId
         configuration.bootLoader = bootloader
         configuration.platform = VZGenericPlatformConfiguration()
         configuration.entropyDevices = [VZVirtioEntropyDeviceConfiguration()]

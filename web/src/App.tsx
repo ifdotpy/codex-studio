@@ -154,6 +154,7 @@ import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyC
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
+import { limitsBaselineReader } from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -770,6 +771,10 @@ export default function App() {
   }, [navigationTarget, data, agents, notify]);
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
+  const limitsWatchers = useRef(new Map<string, () => void>());
+  const limitsCacheHydrations = useRef(
+    new Map<string, { token: object; promise: Promise<boolean> }>(),
+  );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -913,9 +918,18 @@ export default function App() {
     if (!data?.stateDir || !usageAccountKeys) return;
     for (const key of usageAccountKeys.split("\n")) {
       const account = accountsForLimits.current.find((item) => item.id === key);
-      if (account?.disconnected) continue;
-      void get("/api/limits", { query: { account_key: key, cached: "1" } })
+      if (account?.disconnected) {
+        limitsCacheHydrations.current.delete(key);
+        continue;
+      }
+      if (limitsCacheHydrations.current.has(key)) continue;
+      const token = {};
+      const hydration = get("/api/limits", {
+        query: { account_key: key, cached: "1" },
+      })
         .then((result) => {
+          if (limitsCacheHydrations.current.get(key)?.token !== token)
+            return false;
           const currentAccount = accountsForLimits.current.find(
             (item) => item.id === key,
           );
@@ -924,7 +938,7 @@ export default function App() {
             !accountLimits(result, key, currentAccount?.accountId) ||
             !result.data
           )
-            return;
+            return false;
           setLimitsByAccount((old) => {
             const previous = accountLimits(
               old[key],
@@ -934,8 +948,10 @@ export default function App() {
             if (previous && (previous.at || 0) >= (result.at || 0)) return old;
             return { ...old, [key]: result };
           });
+          return true;
         })
-        .catch(() => {});
+        .catch(() => false);
+      limitsCacheHydrations.current.set(key, { token, promise: hydration });
     }
     // Account metadata validates this key through the ref above; the request
     // identity depends only on workspace + usageAccountKeys. Replacing the
@@ -943,24 +959,53 @@ export default function App() {
   }, [data?.stateDir, usageAccountKeys, usageAccountConnectionKey]);
   useEffect(() => {
     if (!data?.stateDir) return;
+    return () => {
+      for (const stop of limitsWatchers.current.values()) stop();
+      limitsWatchers.current.clear();
+      limitsCacheHydrations.current.clear();
+    };
+  }, [data?.stateDir]);
+  useEffect(() => {
+    if (!data?.stateDir) return;
     const keys = new Set([
       accountKey,
       ...usageAccountKeys.split("\n").filter(Boolean),
     ]);
-    const stops = [...keys].map((key) =>
-      watchResourceReads(
+    for (const [key, stop] of limitsWatchers.current) {
+      if (keys.has(key)) continue;
+      stop();
+      limitsWatchers.current.delete(key);
+    }
+    for (const key of keys) {
+      if (limitsWatchers.current.has(key)) continue;
+      let active = true;
+      const stopWatching = watchResourceReads(
         { kind: "limits", accountKey: key },
-        async () => {
-          await reloadLimitsForRef.current(key, true);
-        },
+        limitsBaselineReader(
+          () =>
+            limitsCacheHydrations.current.get(key)?.promise ??
+            Promise.resolve(false),
+          // Later resource notifications must refresh even when the cached
+          // snapshot is under 60 seconds old. The helper suppresses this read
+          // only for a baseline covered by successful cache hydration.
+          () => reloadLimitsForRef.current(key, true),
+          () => {
+            const account = accountsForLimits.current.find(
+              (item) => item.id === key,
+            );
+            return active && !account?.disconnected;
+          },
+        ),
         () => {
           // reloadLimitsFor stores errors in visible account state.
         },
-      ),
-    );
-    return () => {
-      for (const stop of stops) stop();
-    };
+      );
+      const stop = () => {
+        active = false;
+        stopWatching();
+      };
+      limitsWatchers.current.set(key, stop);
+    }
   }, [data?.stateDir, accountKey, usageAccountKeys]);
   useEffect(() => {
     // Keep each account's latest snapshot for immediate return navigation.

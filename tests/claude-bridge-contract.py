@@ -115,8 +115,13 @@ export function query({prompt,options}){
    }
    if(text==='tool'){
     const tool=options.mcpServers.studio.tools[0];
-    const result=await tool.call({text:'hello'});
+    const result=await tool.call({text:'hello'},{signal:abort.signal});
     if(result.content[0].text!=='tool-ok')throw new Error('Tool result lost');
+   }
+   if(text==='tool-pre-aborted'){
+    const tool=options.mcpServers.studio.tools[0];
+    const cancelled=new AbortController();cancelled.abort();
+    await tool.call({text:'hello'},{signal:cancelled.signal});
    }
    if(text==='wait')await new Promise(resolve=>abort.signal.aborted?resolve():abort.signal.addEventListener('abort',resolve,{once:true}));
    if(text==='fail')throw new Error('Native failure');
@@ -599,6 +604,63 @@ class Bridge(unittest.TestCase):
         # Like Codex, an interrupt without an active turn changes nothing and says so.
         with self.assertRaisesRegex(ValueError,'^no active turn to interrupt$'):
             self.call('turn/interrupt',{'threadId':self.thread,'turnId':result['id']})
+
+    def test_interrupt_cancels_a_pending_studio_tool_request(self):
+        self.sequence += 1
+        start_id = self.sequence
+        self.write({'id': start_id, 'method': 'turn/start', 'params': {
+            'threadId': self.thread, 'clientUserMessageId': 'pending-tool',
+            'input': [{'type': 'text', 'text': 'tool'}]}})
+        turn_id = None
+        tool_request = None
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and tool_request is None:
+            row = self.rows.get(timeout=max(.01, deadline - time.monotonic()))
+            if row.get('id') == start_id:
+                turn_id = row['result']['turn']['id']
+            if row.get('method') == 'item/tool/call':
+                tool_request = row
+        self.assertIsNotNone(turn_id)
+        self.assertIsNotNone(tool_request)
+
+        self.sequence += 1
+        interrupt_id = self.sequence
+        self.write({'id': interrupt_id, 'method': 'turn/interrupt', 'params': {
+            'threadId': self.thread, 'turnId': turn_id}})
+        interrupt_reply = None
+        completed = None
+        repeated_tool_requests = []
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and (interrupt_reply is None or completed is None):
+            row = self.rows.get(timeout=max(.01, deadline - time.monotonic()))
+            if row.get('id') == interrupt_id:
+                interrupt_reply = row
+            if row.get('method') == 'item/tool/call':
+                repeated_tool_requests.append(row)
+            if row.get('method') == 'turn/completed' and row['params']['turn']['id'] == turn_id:
+                completed = row['params']['turn']
+
+        self.assertEqual(interrupt_reply.get('result'), {})
+        self.assertEqual(completed['status'], 'interrupted')
+        self.assertEqual(repeated_tool_requests, [])
+        self.assertTrue(tool_request['params']['callId'])
+        self.write({'id': tool_request['id'], 'result': {
+            'success': True, 'contentItems': [{'type': 'inputText', 'text': 'late result'}]}})
+        turns = self.call('thread/turns/list', {'threadId': self.thread})['data']
+        self.assertEqual(turns[-1]['startOutcome'], 'accepted')
+        self.assertEqual(turns[-1]['status'], 'interrupted')
+        call_ids = [tool_request['params']['callId']] + [
+            row['params']['callId'] for row in self.notifications
+            if row.get('method') == 'item/tool/call'
+        ]
+        self.assertEqual(call_ids, [tool_request['params']['callId']])
+
+    def test_pre_aborted_studio_tool_signal_does_not_send_a_request(self):
+        self.turn('tool-pre-aborted', 'pre-aborted-tool')
+        completed = self.completed()
+        self.assertEqual(completed['status'], 'failed')
+        self.assertIn('Claude request cancelled', completed['error']['message'])
+        self.assertFalse(any(row.get('method') == 'item/tool/call' for row in self.notifications))
 
     def test_claude_multi_choice_keeps_options_and_returns_comma_joined_labels(self):
         self.question_answers = ['A', 'B']

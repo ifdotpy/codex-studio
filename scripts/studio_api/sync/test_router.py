@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import asyncio
+import anyio
 from pathlib import Path
 from contextlib import contextmanager
 import sqlite3
@@ -542,6 +543,63 @@ class SyncRouterTests(unittest.TestCase):
         self.assertNotIn("work-private", response.text)
         self.assertNotIn("tombstone-private", response.text)
 
+    def test_entity_pull_tombstones_skip_dto_validation_and_strip_stale_values(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-tombstone-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        with connect() as db:
+            put(db, "agent", "deleted-agent", {}, deleted=True)
+            put(db, "task", "deleted-task", {}, deleted=True)
+            db.commit()
+        context.store = store
+
+        with self.assertNoLogs("studio_api.sync.router", level="WARNING"):
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        documents = {row["id"]: row for row in response.json()["documents"]}
+        for collection, key in (("agent", "deleted-agent"), ("task", "deleted-task")):
+            row = documents[f"entity:{collection}:{key}"]
+            self.assertTrue(row["_deleted"])
+            self.assertEqual(
+                json.loads(row["payload"]),
+                {"collection": collection, "id": key, "value": {}},
+            )
+
+    def test_entity_pull_tombstone_never_returns_stored_private_fields(self) -> None:
+        context = ContextStub()
+        payload = json.dumps({
+            "collection": "task", "id": "deleted-task",
+            "value": {"id": "deleted-task", "secret": "private-tombstone-data"},
+        })
+        projection = {"workspaceId": "workspace-a", "documents": [
+            {"id": "entity:task:deleted-task", "seq": 2, "_deleted": True, "payload": payload},
+        ], "checkpoint": {"seq": 2}, "maxSeq": 2}
+        with patch.object(context.store, "pull", return_value=projection), \
+                self.assertNoLogs("studio_api.sync.router", level="WARNING"):
+            response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["documents"][0]
+        self.assertTrue(row["_deleted"])
+        self.assertEqual(
+            json.loads(row["payload"]),
+            {"collection": "task", "id": "deleted-task", "value": {}},
+        )
+        self.assertNotIn("private-tombstone-data", response.text)
+
     def test_entity_pull_fails_open_and_logs_invalid_public_data(self) -> None:
         context = ContextStub()
         payload = json.dumps({"collection": "agent", "id": "a", "value": {
@@ -654,6 +712,58 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn("event: token-rates", body)
         self.assertIn('"turnId":"turn-a"', body)
         self.assertIn('"epoch":"', body)
+
+    def test_native_panel_subscribe_and_detach_stay_outside_http_event_loop(self) -> None:
+        context = ContextStub()
+        loop_thread = threading.get_ident()
+        calls: list[tuple[str, int]] = []
+
+        class NativeWatchdog:
+            def subscribe(self, _agent_id: str, _on_change: object):
+                calls.append(("subscribe", threading.get_ident()))
+
+                def detach() -> None:
+                    calls.append(("detach", threading.get_ident()))
+
+                return detach
+
+        context.hub = ResourceHub("workspace-a", progress_watchdog=NativeWatchdog())
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        self.read_stream(context, "/api/sync/stream?protocol=3&resources=" + resources)
+        self.assertEqual([name for name, _thread in calls], ["subscribe", "detach"])
+        for name, native_thread in calls:
+            with self.subTest(operation=name):
+                self.assertNotEqual(native_thread, loop_thread)
+
+    def test_cancelled_resource_stream_still_detaches_native_panel(self) -> None:
+        context = ContextStub()
+        context.runtime.closed = False
+        router = create_router(cast(ApiContext, context))
+        route = cast(APIRoute, next(
+            route for route in router.routes
+            if getattr(route, "path", None) == "/api/sync/stream"
+        ))
+        resources = json.dumps([{"kind": "panel", "agentId": "agent-a"}])
+        request = ConnectedRequest({
+            "type": "http", "method": "GET", "path": "/api/sync/stream",
+            "query_string": ("protocol=3&resources=" + resources).encode(),
+            "headers": [],
+        })
+
+        async def cancel_stream() -> None:
+            response = await route.endpoint(
+                request, SyncStreamQuery(protocol="3", resources=resources),
+            )
+            iterator = response.body_iterator
+            await anext(iterator)
+            await anext(iterator)
+            self.assertEqual(context.watchdog.agents, ["agent-a"])
+            with anyio.CancelScope() as cancellation:
+                cancellation.cancel()
+                await iterator.aclose()
+            self.assertEqual(context.watchdog.agents, [])
+
+        asyncio.run(cancel_stream())
 
     def test_mismatching_schema_stream_sends_only_handshake_without_subscribing(self) -> None:
         context = ContextStub()

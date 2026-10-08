@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import anyio
 import json
 import logging
 import sqlite3
@@ -216,6 +217,7 @@ def create_router(context: ApiContext) -> APIRouter:
             from codex_sync_entities import (
                 _report_bad_entity,
                 response_entity_payload_fail_open,
+                validate_stored_entity_payload,
             )
 
             valid_documents: list[dict[str, object]] = []
@@ -226,6 +228,30 @@ def create_router(context: ApiContext) -> APIRouter:
                     _report_bad_entity("response", row_id, TypeError("payload is not a string"))
                     continue
                 was_deleted = bool(document.get("_deleted"))
+                if was_deleted:
+                    try:
+                        envelope = json.loads(payload)
+                        if not isinstance(envelope, dict):
+                            raise ValueError("invalid entity envelope")
+                        collection = envelope.get("collection")
+                        entity_id = envelope.get("id")
+                        if not isinstance(collection, str) or not isinstance(entity_id, str):
+                            raise ValueError("invalid entity envelope")
+                        validate_stored_entity_payload(payload, collection, entity_id, True)
+                    except (ValueError, TypeError) as error:
+                        _report_bad_entity("response", row_id, error)
+                        continue
+                    # Tombstones carry no DTO value. Never validate or expose
+                    # any stale fields that may remain in a deleted row.
+                    document["payload"] = json.dumps(
+                        {"collection": collection, "id": entity_id, "value": {}},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    document["_deleted"] = True
+                    valid_documents.append(document)
+                    continue
                 try:
                     # SyncStore rejects unreadable envelopes. For readable rows,
                     # strip DTO extras but deliver other mismatches so one stale
@@ -357,12 +383,14 @@ def create_router(context: ApiContext) -> APIRouter:
                     await run_in_threadpool(_active_panel_agents, runtime, resources)
                     if runtime is not None and panel_agent_ids else None
                 )
-                subscription = context.resource_hub().subscribe(
-                    resources,
-                    loop=asyncio.get_running_loop(),
-                    reconnect=last_event_id is not None,
-                    progress_agent_ids=active_panel_agents,
-                )
+                with anyio.CancelScope(shield=True):
+                    subscription = await run_in_threadpool(
+                        context.resource_hub().subscribe,
+                        resources,
+                        loop=asyncio.get_running_loop(),
+                        reconnect=last_event_id is not None,
+                        progress_agent_ids=active_panel_agents,
+                    )
             except (OSError, RuntimeError, ValueError):
                 return cast(StreamingResponse, context.send(
                     request, {"error": "Resource stream is unavailable; reconnect to retry."}, status=503
@@ -403,7 +431,11 @@ def create_router(context: ApiContext) -> APIRouter:
                         elif event is None:
                             yield _resource_event("heartbeat", subscription.heartbeat())
                 finally:
-                    subscription.close()
+                    # Native file watches can wait for their OS worker to stop.
+                    # Keep that wait outside the HTTP event loop, including when
+                    # the stream is already cancelled by a disconnected client.
+                    with anyio.CancelScope(shield=True):
+                        await run_in_threadpool(subscription.close)
                     if shutdown_wait is not None:
                         shutdown_wait.cancel()
                         await asyncio.gather(shutdown_wait, return_exceptions=True)

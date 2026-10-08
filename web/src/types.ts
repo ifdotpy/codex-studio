@@ -85,16 +85,10 @@ export type Message = Omit<
   text: NonNullable<TranscriptWireItem["text"]>;
   accountKey?: string;
   author?: string;
-  details?: JsonValue;
   effort?: string;
   excerpt?: string;
   localDelivery?: boolean;
   model?: string;
-  nativeError?: JsonValue;
-  nativeHook?: boolean;
-  nativeHookQuiet?: boolean;
-  nativeNotice?: "error" | "warning";
-  nativeReview?: boolean;
   title?: string;
   pending?: boolean;
   senderName?: string;

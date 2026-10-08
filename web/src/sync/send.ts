@@ -12,13 +12,17 @@ import {
 import type { PostBody, PostResult } from "../api";
 import { syncDatabase } from "./client";
 import { onResume } from "./resume";
-import { receiptOutgoing, type MessageReceipt } from "./messageReceipts";
+import {
+  checkedMessageReceipts,
+  receiptOutgoing,
+  type MessageReceipt,
+} from "./messageReceipts";
 import type { Attachment } from "../components/ComposerAttachments";
 
 type MessageBody = PostBody<"/api/messages">;
 type MessageDelivery = PostResult<"/api/messages">;
 type StoredMessageReceipt = Pick<MessageDelivery, "id" | "status"> &
-  Partial<Pick<MessageDelivery, "deliveries" | "error">>;
+  Partial<Pick<MessageDelivery, "deliveries" | "error" | "materialized">>;
 const acknowledgedStatuses = {
   queued: true,
   pending: true,
@@ -318,10 +322,11 @@ export async function acknowledgeOutbox(ids: string[]) {
 export async function reconcileOutboxReceipts(
   room: string,
   receipts: MessageReceipt[],
-  workspaceId?: string,
+  workspaceId: string,
 ) {
   const current = await syncDatabase();
-  if (workspaceId && current.workspaceId !== workspaceId) return;
+  if (current.workspaceId !== workspaceId) return;
+  await current.verifyWorkspace();
   for (const receipt of receipts) {
     const doc = await current.db.outbox.findOne(receipt.id).exec();
     if (!doc) continue;
@@ -330,10 +335,61 @@ export async function reconcileOutboxReceipts(
       if (value.body.room !== room || value.displayPending === false)
         return record;
       const next = receiptOutgoing(value, receipt);
-      const payload = JSON.stringify(next);
+      const payload = JSON.stringify(
+        next.status === "accepted" &&
+          next.receipt?.status === "delivered" &&
+          next.receipt.materialized === true
+          ? { ...next, displayPending: false }
+          : next,
+      );
       return payload === record.payload ? record : { ...record, payload };
     });
   }
+}
+export async function recoverAcknowledgedOutbox() {
+  const { db, workspaceId, verifyWorkspace } = await syncDatabase();
+  await verifyWorkspace();
+  const rooms = new Map<string, string[]>();
+  for (const doc of await db.outbox.find().exec()) {
+    const value: Intention = JSON.parse(doc.getLatest().payload);
+    if (
+      value.displayPending === false ||
+      !["accepted", "uncertain"].includes(value.status)
+    )
+      continue;
+    const ids = rooms.get(value.body.room) || [];
+    ids.push(doc.id);
+    rooms.set(value.body.room, ids);
+  }
+  const batches = [...rooms].flatMap(([room, ids]) =>
+    Array.from({ length: Math.ceil(ids.length / 100) }, (_, index) => ({
+      room,
+      ids: ids.slice(index * 100, (index + 1) * 100),
+    })),
+  );
+  let next = 0;
+  let failure: unknown;
+  await Promise.all(
+    Array.from({ length: Math.min(4, batches.length) }, async () => {
+      while (next < batches.length) {
+        const { room, ids } = batches[next++];
+        try {
+          const response = await syncGet("/api/messages/receipts", {
+            query: { agent: room, ids: JSON.stringify(ids) },
+            workspaceId,
+          });
+          await reconcileOutboxReceipts(
+            room,
+            checkedMessageReceipts(response, room, ids, workspaceId),
+            workspaceId,
+          );
+        } catch (error) {
+          failure ??= error;
+        }
+      }
+    }),
+  );
+  if (failure) throw failure;
 }
 export async function editOutboxDisplay(id: string, text: string) {
   const { db } = await syncDatabase();
@@ -453,6 +509,16 @@ export function useOutbox() {
     };
     let subscribing = false,
       subscribed = false;
+    let recoveringReceipts = false;
+    const recoverReceipts = () => {
+      if (stop || recoveringReceipts || isApiSchemaMismatch()) return;
+      recoveringReceipts = true;
+      void recoverAcknowledgedOutbox()
+        .catch(() => {})
+        .finally(() => {
+          recoveringReceipts = false;
+        });
+    };
     const subscribe = async () => {
       if (stop || subscribing || subscribed) return;
       subscribing = true;
@@ -476,6 +542,7 @@ export function useOutbox() {
         unsubscribe = () => sub.unsubscribe();
         subscribed = true;
         void drain();
+        recoverReceipts();
       } catch (error) {
         if (!stop) setError(errorText(error));
       } finally {
@@ -491,7 +558,10 @@ export function useOutbox() {
     const stopForSchemaMismatch = onApiSchemaMismatch(() => {
       clearInterval(timer);
     });
-    const stopResume = onResume(resume);
+    const stopResume = onResume(() => {
+      resume();
+      recoverReceipts();
+    });
     return () => {
       stop = true;
       clearInterval(timer);

@@ -447,6 +447,7 @@ class MessageReceipt(ResponseModel):
     id: StrictStr
     status: Literal["queued", "pending", "reserved", "dispatching", "delivered", "accepted", "sent", "uncertain", "failed", "cancelled", "stored_only"]
     error: StrictStr | None = None
+    materialized: StrictBool | None = Field(default=None, description="The exact user input exists in the saved transcript.")
     room: StrictStr | None = None
     author: StrictStr | None = None
     text: StrictStr | None = None
@@ -459,6 +460,7 @@ class MessageReceipt(ResponseModel):
 
 class MessageReceipts(ResponseModel):
     agent: StrictStr
+    workspaceId: StrictStr | None = None
     items: list[MessageReceipt]
 
 

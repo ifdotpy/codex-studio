@@ -72,11 +72,7 @@ median of 0.017 ms and a maximum of 0.767 ms. SQLite used write ahead logging an
 FULL synchronization. The schema migration read no old table rows. This measures
 the new schema step, not total backend startup or a live provider request.
 
-Run the fixture again:
-
-```sh
-python3 -B tests/execution-migration-benchmark.py --payload-bytes 9780
-```
+The migration benchmark was removed and is available at commit `3507feea`.
 
 ## Extra SQL statements
 
@@ -98,9 +94,7 @@ A terminal run update adds one attempt status update. A worker status change
 adds one node read and, when its node exists, one node write. Child creation also
 links the parent run and creates a worker node. The record hook adds no commits. Each callback adds SAVEPOINT and RELEASE.
 
-```sh
-python3 -B tests/execution-write-cost.py
-```
+The write-cost benchmark was removed and is available at commit `3507feea`.
 
 ## Notification replay measurement
 
