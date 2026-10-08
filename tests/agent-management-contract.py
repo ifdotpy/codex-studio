@@ -287,8 +287,37 @@ class Contract(unittest.TestCase):
             self.assertEqual(self.call('archive')['status'],'archived')
         self.assertEqual(guest_calls,[('thread/read','worker')])
         self.assertEqual(self.rt.calls,[])
+    def test_finished_linux_worker_without_guest_connection_uses_durable_completion(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt=None, turnId=None, inFlight=False)
+        host_calls=[]
+        class Host:
+            def call(self, method, params, timeout):
+                host_calls.append((method, params['threadId']))
+                raise ValueError('Thread is not known to the host provider')
+        self.rt.servers['default']=Host()
+        with patch('codex_linux_workspaces.dispose', return_value={'freedBytes': 0}):
+            self.assertEqual(self.call('archive')['status'],'archived')
+        self.assertEqual(host_calls,[('thread/read','worker')])
+        self.assertNotIn('worker', self.rt.__dict__.get('linux_connection_ids', {}))
+        self.assertNotIn('worker', self.rt.__dict__.get('linux_servers', {}))
+    def test_active_linux_thread_still_blocks_archive(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt=None, turnId=None, inFlight=False)
+        self.rt.native_state='active'
+        self.rt.__dict__['linux_connection_ids']={'worker':'guest-connection'}
+        self.rt.__dict__['linux_servers']={'worker':self.rt.servers['default']}
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
+    def test_finished_linux_worker_without_terminal_turn_status_stays_blocked(self):
+        self.worker(status='completed', environment='linux', imageWorkspaceReady=True,
+                    lastCompletedTurn='done', startAttempt=None, turnId=None, inFlight=False)
+        self.rt.servers.clear()
+        self.assertEqual(self.call('archive')['blockers'][0]['kind'],'native_state_unconfirmed')
     def test_completed_native_turn_allows_archive_when_account_is_offline(self):
-        self.worker(lastCompletedTurn='done', startAttempt={'turnId':'done'}, turnId=None)
+        self.worker(lastCompletedTurn='done', lastCompletedTurnStatus='completed',
+                    startAttempt={'turnId':'done'}, turnId=None)
         self.rt.servers.clear()
         self.assertEqual(self.call('archive')['status'],'archived')
     def test_bulk_archives_finished_worker_without_worktree(self):
