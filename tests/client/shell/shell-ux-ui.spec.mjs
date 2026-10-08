@@ -1,7 +1,9 @@
 import {
+  expect,
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
+  stubSessionCost,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -16,7 +18,7 @@ test("Shell ux ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(60_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
@@ -42,6 +44,7 @@ test("Shell ux ui", async ({
     const syncContract = await readFixtureSyncContract(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
+    await stubSessionCost(page);
     page.setDefaultTimeout(12000);
     const errors = [],
       actions = [];
@@ -80,12 +83,7 @@ test("Shell ux ui", async ({
     });
     await searchDialog.waitFor();
     assert.equal(await searchDialog.getByRole("navigation").count(), 0);
-    assert.equal(
-      await page
-        .getByLabel("Search all conversations")
-        .evaluate((input) => input === document.activeElement),
-      true,
-    );
+    await expect(page.getByLabel("Search all conversations")).toBeFocused();
     await searchDialog
       .getByLabel("Search all conversations")
       .fill("Review the release");
@@ -109,12 +107,7 @@ test("Shell ux ui", async ({
     await searchDialog.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+k");
     await searchDialog.waitFor();
-    assert.equal(
-      await page
-        .getByLabel("Search all conversations")
-        .evaluate((input) => input === document.activeElement),
-      true,
-    );
+    await expect(page.getByLabel("Search all conversations")).toBeFocused();
     await page.keyboard.press("Escape");
     const other = snapshot.threads.find(
       (item) => item.name === "Other project",
@@ -167,9 +160,6 @@ test("Shell ux ui", async ({
             document.documentElement.dataset.mantineColorScheme === scheme,
           scheme,
         );
-        await page.screenshot({
-          path: join(evidence, `settings-${width}-${scheme}.png`),
-        });
         await page.keyboard.press("Escape");
         await page.getByRole("dialog").waitFor({ state: "hidden" });
         const geometry = await page.evaluate(() => ({
@@ -198,9 +188,6 @@ test("Shell ux ui", async ({
           ),
           JSON.stringify(geometry),
         );
-        await page.screenshot({
-          path: join(evidence, `chat-${width}-${scheme}.png`),
-        });
       }
       if (width < 761) {
         await page.locator("#sidebar-toggle").click();
@@ -257,6 +244,7 @@ test("Shell ux ui", async ({
         },
       }),
     );
+    await stubSessionCost(compactPage);
     await compactPage.goto(origin);
     if (
       (await compactPage
@@ -379,27 +367,13 @@ test("Shell ux ui", async ({
         .count(),
       1,
     );
-    await compactPage.waitForTimeout(250);
-    await compactPage.screenshot({
-      path: join(evidence, "warnings-desktop.png"),
-    });
     await compactPage.setViewportSize({ width: 390, height: 844 });
-    await compactPage.waitForTimeout(250);
-    await compactPage.screenshot({
-      path: join(evidence, "warnings-mobile.png"),
-    });
     await warningsDialog
       .getByRole("button", { name: "Close", exact: true })
       .click();
     await warningsDialog.waitFor({ state: "hidden" });
     await compactPage.locator(".native-error").waitFor({ state: "visible" });
-    await compactPage.screenshot({
-      path: join(evidence, "usage-footer-mobile.png"),
-    });
     await compactPage.setViewportSize({ width: 1440, height: 960 });
-    await compactPage.screenshot({
-      path: join(evidence, "usage-footer-desktop.png"),
-    });
     await compactPage.setViewportSize({ width: 860, height: 960 });
     await compactPage
       .getByRole("button", { name: "Chat actions", exact: true })
@@ -454,7 +428,9 @@ test("Shell ux ui", async ({
       "Account usage is restored beneath the composer",
     );
     const usage = compactPage.locator("#usage-footer");
-    await usage.locator(".session-cost-summary").waitFor({ state: "visible" });
+    await usage
+      .locator(".session-cost-summary")
+      .waitFor({ state: "visible", timeout: 5_000 });
     await usage.getByRole("button", { name: "Chat context" }).waitFor({
       state: "visible",
     });
@@ -483,9 +459,6 @@ test("Shell ux ui", async ({
         compactMenuBounds.y + compactMenuBounds.height <= 960,
       JSON.stringify(compactMenuBounds),
     );
-    await compactPage.screenshot({
-      path: join(evidence, "constrained-header-tools-menu.png"),
-    });
     await toolsSummary.click();
     await compactPage.waitForFunction(
       () =>
@@ -537,9 +510,6 @@ test("Shell ux ui", async ({
         limitsBounds.y + limitsBounds.height <= 960,
       JSON.stringify(limitsBounds),
     );
-    await compactPage.screenshot({
-      path: join(evidence, "quota-error-open-account-limits.png"),
-    });
     await compactPage.close();
     const firstUse = await testBrowser.newPage({
       viewport: { width: 320, height: 844 },
@@ -735,7 +705,6 @@ test("Shell ux ui", async ({
         document.querySelector("#message")?.value ===
         "Reviewed mobile branch draft",
     );
-    await branchPage.waitForTimeout(1800);
     assert.equal(
       await branchPage.locator("#message").inputValue(),
       "Reviewed mobile branch draft",

@@ -618,9 +618,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           () => document.documentElement.scrollWidth <= innerWidth + 1,
         ),
       );
-      await page.screenshot({
-        path: join(evidence, "codex-sign-in-mobile.png"),
-      });
       expect(errors).toEqual([]);
       console.log(
         "PASS Codex worker sign-in from Claude lead, exact retry, reload, native confirmation, no task replay, mobile",
@@ -669,10 +666,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .getByRole("region", { name: "Theme", exact: true })
         .waitFor();
       console.log(`PERF studio-settings-open-ms=${roundedOpenMs}`);
-      await studioSettings.screenshot({
-        path: join(evidence, "studio-settings-appearance-1440.png"),
-        animations: "disabled",
-      });
       await studioSettings
         .getByRole("button", { name: "Close", exact: true })
         .click();
@@ -695,15 +688,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
             .querySelector('[aria-label="Claude settings"]')
             ?.getAttribute("aria-busy") === "false",
       );
-      await page.screenshot({
-        path: join(evidence, "chat-settings-1440.png"),
-        animations: "disabled",
-      });
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.screenshot({
-        path: join(evidence, "chat-settings-390.png"),
-        animations: "disabled",
-      });
       await page.setViewportSize({ width: 320, height: 760 });
       assert.ok(
         await page.evaluate(
@@ -739,15 +724,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .at(-1);
       assert.equal(saveRequest.body.id, benchAgent.id);
       assert.match(saveRequest.body.request_id, /^[0-9a-f-]{36}$/);
-      await page.screenshot({
-        path: join(evidence, "chat-settings-saved-1440.png"),
-        animations: "disabled",
-      });
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.screenshot({
-        path: join(evidence, "chat-settings-saved-390.png"),
-        animations: "disabled",
-      });
       await page.setViewportSize({ width: 1440, height: 1000 });
       const settingsSavedResponse = () =>
         page.waitForResponse(
@@ -926,9 +903,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         labels.length === 3 &&
         labels.every((node) => node.textContent === "Weekly: 65% left")
       );
-    });
-    await page.screenshot({
-      path: join(evidence, "account-picker-weekly.png"),
     });
     await page.keyboard.press("Escape");
     await closeSettings();
@@ -1184,10 +1158,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       }),
       "All account manager content fits without scrolling at 900px",
     );
-    await page.screenshot({
-      path: join(evidence, "accounts-desktop.png"),
-      animations: "disabled",
-    });
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
     await closeSettings();
@@ -1258,10 +1228,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         getComputedStyle(document.querySelector(".account-row")).display ===
           "grid",
     );
-    await page.screenshot({
-      path: join(evidence, "accounts-mobile.png"),
-      animations: "disabled",
-    });
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= innerWidth,
@@ -1274,10 +1240,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       "Account manager fits narrow screen",
     );
     await page.setViewportSize({ width: 780, height: 720 });
-    await page.screenshot({
-      path: join(evidence, "accounts-780.png"),
-      animations: "disabled",
-    });
     assert.ok(
       await dialog.evaluate(
         (element) => element.scrollWidth <= element.clientWidth,
@@ -1286,10 +1248,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     );
     await page.keyboard.press("Escape");
     await dialog.waitFor({ state: "hidden" });
-    await page.screenshot({
-      path: join(evidence, "account-header-narrow.png"),
-      animations: "disabled",
-    });
     await openSettings();
     assert.ok(await picker.isVisible());
     await closeSettings();
@@ -1368,10 +1326,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       )[0],
       "Claude",
     );
-    await page.screenshot({
-      path: join(evidence, "claude-limits.png"),
-      animations: "disabled",
-    });
     await quota.click();
     await page
       .getByRole("button", { name: "Delete queued message 1", exact: true })
@@ -1623,10 +1577,6 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         .isEnabled(),
       false,
     );
-    await page.screenshot({
-      path: join(evidence, "claude-session-controls.png"),
-      animations: "disabled",
-    });
 
     await closeSettings();
     await page.locator('[data-chat="started"]').click();

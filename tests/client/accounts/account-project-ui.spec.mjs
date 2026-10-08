@@ -815,10 +815,6 @@ test("account project ui", async ({ browser: _browser }) => {
         (element) => getComputedStyle(element).opacity === "1",
         await dialog.elementHandle(),
       );
-      await page.screenshot({
-        path: join(evidence, `project-account-${width}.png`),
-        animations: "disabled",
-      });
       const bounds = await dialog.boundingBox();
       assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width);
       assert.ok(

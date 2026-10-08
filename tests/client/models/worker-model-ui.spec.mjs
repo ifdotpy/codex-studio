@@ -1,5 +1,6 @@
 import {
   readTestState,
+  installApiSchemaFixtureHeaders,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -12,7 +13,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { modelOptions, modelValue, selectModel } from "../../model-picker.mjs";
 test("Worker model", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production client with an isolated runtime. No model service or user state.
   const skill = testRepo;
@@ -61,6 +62,7 @@ test("Worker model", async () => {
       page = await browser.newPage({ viewport: { width: 1440, height: 960 } });
     }
     await page.exposeFunction("__readTestState", () => readTestState(url));
+    installApiSchemaFixtureHeaders(page);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     if (process.env.CODEX_TEST_DESKTOP) {
@@ -115,13 +117,26 @@ test("Worker model", async () => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      await settings.getByRole("button", { name, exact: true }).click();
-      await settings.getByRole("region", { name, exact: true }).waitFor();
-      assert.equal(
-        await page.getByRole("dialog").count(),
-        1,
-        "Model settings stay within the Chat settings dialog",
-      );
+      const role = name === "Subagent defaults" ? "Worker" : undefined;
+      const panelName = role ? "Main agent settings" : name;
+      await settings
+        .getByRole("button", { name: panelName, exact: true })
+        .click();
+      let panel = page.getByRole("dialog", {
+        name: panelName,
+        exact: true,
+      });
+      await panel.waitFor({ state: "visible" });
+      if (role) {
+        await panel
+          .getByRole("group", { name: "Agent role" })
+          .getByRole("button", { name: role, exact: true })
+          .click();
+        panel = page.getByRole("dialog", { name, exact: true });
+        await panel.waitFor({ state: "visible" });
+      }
+      assert.ok(await settings.isVisible(), "Chat settings remain open");
+      assert.ok(await panel.isVisible(), "Model settings dialog is visible");
     };
     const closeSettings = async () => {
       await page.keyboard.press("Escape");
@@ -145,11 +160,24 @@ test("Worker model", async () => {
     await openWorker(worker.id);
     await openSettings("Subagent settings");
     await page.getByRole("button", { name: "Retry model list" }).waitFor();
-    assert.ok(await page.locator("#model").isDisabled());
+    const selector = page
+      .getByRole("dialog", { name: "Subagent settings", exact: true })
+      .locator("#model");
+    assert.deepEqual(
+      await selector
+        .getByRole("option")
+        .evaluateAll((options) =>
+          options.map((option) => option.getAttribute("data-value")),
+        ),
+      [],
+      "A failed model catalog exposes no selectable choices",
+    );
     await page.getByRole("button", { name: "Retry model list" }).click();
-    const selector = page.locator("#model");
-    await page.waitForFunction(
-      () => !document.querySelector("#model").disabled,
+    await page
+      .getByRole("button", { name: "Retry model list" })
+      .waitFor({ state: "hidden" });
+    assert.ok(
+      await selector.getByRole("option", { name: /Test model/ }).isVisible(),
     );
     assert.equal(
       (await modelOptions(selector)).includes("hidden-model"),
@@ -166,13 +194,13 @@ test("Worker model", async () => {
       state.runtime.agents.find((agent) => agent.id === worker.id).model,
       "test-model",
     );
-    await selectModel(page.locator("#model"), "ui-only");
+    await selectModel(selector, "ui-only");
     await page
       .getByText("This model is not available for this account", {
         exact: true,
       })
       .waitFor();
-    assert.equal(await modelValue(page.locator("#model")), "test-model");
+    assert.equal(await modelValue(selector), "test-model");
     for (const width of [1440, 768, 420]) {
       await page.setViewportSize({ width, height: 960 });
       await page.waitForFunction(
@@ -210,18 +238,20 @@ test("Worker model", async () => {
         ),
         "layout fits " + width,
       );
-      await page.screenshot({ path: join(root, `worker-model-${width}.png`) });
     }
     await page.setViewportSize({ width: 1440, height: 960 });
     const busyWorker = state.runtime.agents.find((a) => a.name === "Worker 01");
     await closeSettings();
     await openWorker(busyWorker.id);
     await openSettings("Subagent settings");
-    assert.equal(await page.locator("#model").isDisabled(), false);
+    const busyWorkerModel = page
+      .getByRole("dialog", { name: "Subagent settings", exact: true })
+      .locator("#model");
+    assert.equal(await busyWorkerModel.getAttribute("aria-disabled"), null);
     await page
       .getByText("Model settings apply to the next turn.", { exact: false })
       .waitFor();
-    await selectModel(page.locator("#model"), "test-model");
+    await selectModel(busyWorkerModel, "test-model");
     await page.waitForFunction(async (id) => {
       const snapshot = await window.__readTestState();
       return (
@@ -239,14 +269,17 @@ test("Worker model", async () => {
     await closeSettings();
     await page.locator("#back-lead").click();
     await openSettings("Main agent settings");
-    await page.locator("#model").waitFor();
-    assert.deepEqual(await modelOptions(page.locator("#model")), [
+    const leadModel = page
+      .getByRole("dialog", { name: "Main agent settings", exact: true })
+      .locator("#model");
+    await leadModel.waitFor();
+    assert.deepEqual(await modelOptions(leadModel), [
       "test-model",
       "gpt-6-astra",
       "gpt-5.6-sol",
       "ui-only",
     ]);
-    await selectModel(page.locator("#model"), "test-model");
+    await selectModel(leadModel, "test-model");
     await page.waitForFunction(
       () =>
         !document.querySelector("#model").disabled &&
@@ -267,7 +300,7 @@ test("Worker model", async () => {
     );
     await page.keyboard.press("Escape");
     await openSettings("Subagent defaults");
-    const defaults = page.getByRole("region", {
+    const defaults = page.getByRole("dialog", {
       name: "Subagent defaults",
       exact: true,
     });
@@ -279,8 +312,11 @@ test("Worker model", async () => {
     );
     assert.equal(
       await defaults
-        .getByLabel("Default subagent reasoning", { exact: true })
-        .inputValue(),
+        .getByRole("radiogroup", {
+          name: "Default subagent reasoning",
+          exact: true,
+        })
+        .getAttribute("data-value"),
       "high",
     );
     assert.equal(

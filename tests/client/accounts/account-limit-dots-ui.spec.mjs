@@ -197,7 +197,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       "no-weekly": "green",
     };
     browser = runnerBrowser;
-    const screenshots = [];
     for (const [mobile, scheme] of [
       [false, "light"],
       [false, "dark"],
@@ -396,13 +395,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         row.footer - withoutDots <= 10,
         JSON.stringify({ withoutDots, ...row }),
       );
-      await page.locator("#usage-footer").screenshot({
-        path: join(root, `footer-${mobile ? 390 : 1440}-${scheme}.png`),
-      });
-      const prefix = `dots-${mobile ? 390 : 1440}-${scheme}`;
-      const calmPath = join(root, `${prefix}.png`);
-      await page.screenshot({ path: calmPath, animations: "disabled" });
-      screenshots.push(calmPath);
       const red = page.locator(
         '.account-limits-dot-target[data-account-key="red"]',
       );
@@ -432,11 +424,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       );
       assert.doesNotMatch(await tooltip.innerText(), /5h|\b0% left/);
       const before = await page.locator("#usage-footer").boundingBox();
-      await page.screenshot({
-        path: join(root, `${prefix}-tooltip.png`),
-        animations: "disabled",
-      });
-      screenshots.push(join(root, `${prefix}-tooltip.png`));
       await red.press("Enter");
       const tabs = page.getByRole("tab");
       await page
@@ -530,11 +517,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         false,
       );
       await page.mouse.move(1, 1);
-      await page.locator(".account-limits-dots").screenshot({
-        path: join(root, `${prefix}-row.png`),
-        animations: "disabled",
-      });
-      screenshots.push(join(root, `${prefix}-row.png`));
       snapshots.yellow = limits("yellow", 0);
       snapshots.yellow.at = now + 1;
       unknownAvailable = false;
@@ -559,7 +541,6 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
     console.log(
       "Account dots UI passed: weekly bands, stale reset, no gray connected dots, keyboard, tabs, cached reads, persisted limits, and four viewport themes.",
     );
-    console.log(JSON.stringify({ screenshots }));
   } finally {
     for (const context of contexts) {
       for (const page of context.pages())

@@ -198,10 +198,6 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
           () => document.documentElement.scrollWidth <= innerWidth,
         ),
       ).toBe(true);
-      await page.locator(".accounts-list").screenshot({
-        path: join(f.evidence, `accounts-${theme}-${width}.png`),
-        animations: "disabled",
-      });
       if (width === 390 && theme === "dark") {
         await claude
           .getByRole("button", { name: "Edit name for work@example.com" })
@@ -214,16 +210,11 @@ test("accounts names save, clear, keys, exact retry, and themes", async ({
             () => document.documentElement.scrollWidth <= innerWidth,
           ),
         ).toBe(true);
-        await page.locator(".accounts-list").screenshot({
-          path: join(f.evidence, "accounts-edit-dark-390.png"),
-          animations: "disabled",
-        });
         await claude
           .getByRole("button", { name: "Cancel", exact: true })
           .click();
       }
     }
-    console.log(`Account name screenshots: ${f.evidence}`);
   } finally {
     await f.close();
   }

@@ -442,10 +442,6 @@ test("Account Transfer Ui", async ({
       true,
     );
     await page.waitForTimeout(180);
-    await page.screenshot({
-      path: join(evidence, "transfer-pending.png"),
-      animations: "disabled",
-    });
     await page
       .getByRole("button", { name: "Cancel remaining", exact: true })
       .click();

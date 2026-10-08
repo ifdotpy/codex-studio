@@ -193,10 +193,6 @@ test("ux-navigation-ui", async ({ browser, page: fixturePage }) => {
       window.setTestViewport({ height: 390, offsetTop: 54 }),
     );
     await fits(".mantine-Modal-content", 390, 54);
-    await mobile.screenshot({
-      path: join(evidence, "settings-keyboard.png"),
-      clip: { x: 0, y: 54, width: 390, height: 390 },
-    });
     await mobile.keyboard.press("Escape");
     await mobile.setViewportSize({ width: 1440, height: 960 });
     await mobile.locator(".simple-workspace-header").waitFor();
@@ -208,7 +204,7 @@ test("ux-navigation-ui", async ({ browser, page: fixturePage }) => {
     );
     expect(errors).toEqual([]);
     console.log(
-      `PASS: desktop selection, commands retain files/text, keyboard overlays at 320/390/760px. Screenshot: ${join(evidence, "settings-keyboard.png")}`,
+      "PASS: desktop selection, commands retain files/text, keyboard overlays at 320/390/760px.",
     );
   } catch (error) {
     console.error(log);

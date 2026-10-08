@@ -74,6 +74,7 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     0,
   );
   await page.keyboard.press("Escape");
+  await page.locator(".message").first().waitFor();
   assert.ok(
     await page.locator(".message > .message-date").count(),
     "Main chat messages have dates",
@@ -170,12 +171,10 @@ test("messages-unified-browser", async ({ page: fixturePage }) => {
     .locator(".complaint-response")
     .getByText("Please continue with the confirmed scope.", { exact: true })
     .waitFor();
-  await page.screenshot({ path: join(evidence, "desktop.png") });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.ok(
     await chats.evaluate((node) => node.scrollWidth <= node.clientWidth),
   );
-  await page.screenshot({ path: join(evidence, "mobile.png") });
   await chats.getByRole("button", { name: "Back to chats" }).click();
   assert.ok(await chats.locator('[data-room="you"] time').isVisible());
   expect(errors).toEqual([]);

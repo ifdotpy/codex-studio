@@ -136,9 +136,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
           .evaluate((node) => node.scrollWidth <= node.clientWidth),
         true,
       );
-      await page.screenshot({
-        path: join(output, `${profile}-composer-trigger.png`),
-      });
       await page
         .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
@@ -146,9 +143,6 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         page.getByRole("listbox", { name: "Main agent model" }),
       ).toBeVisible();
       const capture = async (scene) => {
-        await page.screenshot({
-          path: join(output, `${profile}-${scene}.png`),
-        });
         if (process.env.PICKER_CLIP_DETECTOR) {
           const { detectTextClipping } = await import(
             process.env.PICKER_CLIP_DETECTOR
@@ -333,7 +327,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
       join(output, "clipping.json"),
       JSON.stringify(results, null, 2),
     );
-    console.log(`Screenshots: ${output}`);
+    console.log(`Clipping measurements: ${output}`);
     assert.deepEqual(
       results.filter((row) => !row.intentional),
       [],
