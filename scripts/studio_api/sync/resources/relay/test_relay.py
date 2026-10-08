@@ -433,17 +433,31 @@ class ExternalCliSseTests(unittest.TestCase):
                     # The external notification publishes the room and its
                     # unknown entity sequence separately; accept both frames.
                     posted_payloads = []
-                    for _ in range(2):
+                    expected_post_resources = {
+                        ("state", None),
+                        ("room", chat_id),
+                    }
+                    observed_post_resources: set[tuple[str, str | None]] = set()
+                    posted_revision = connected_payload["revision"]
+                    deadline = time.monotonic() + 5
+                    while (observed_post_resources != expected_post_resources
+                           or posted_revision <= connected_payload["revision"]):
+                        self.assertLess(time.monotonic(), deadline,
+                                        "SSE did not publish both post resources and a newer revision")
                         posted_event = self._read_frame(stream)
-                        posted_payloads.append(
-                            json.loads(
-                                next(
-                                    line[6:]
-                                    for line in posted_event
-                                    if line.startswith("data: ")
-                                )
-                            )
+                        if "event: resources" not in posted_event:
+                            continue
+                        payload = json.loads(next(
+                            line[6:] for line in posted_event if line.startswith("data: ")
+                        ))
+                        posted_payloads.append(payload)
+                        posted_revision = max(posted_revision, payload["revision"])
+                        observed_post_resources.update(
+                            (resource["kind"], resource.get("roomId"))
+                            for resource in payload["resources"]
                         )
+                    self.assertEqual(observed_post_resources, expected_post_resources)
+                    self.assertGreater(posted_revision, connected_payload["revision"])
                     posted_resources = [
                         resource
                         for payload in posted_payloads
