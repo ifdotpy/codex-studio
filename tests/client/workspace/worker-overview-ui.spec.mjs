@@ -160,6 +160,8 @@ test("Worker Overview Ui", async ({
           if (agent.id === worker(1).id)
             Object.assign(agent, {
               name: longName,
+              model: "gpt-6-astra",
+              effort: "high",
               overview: { task, result: "" },
             });
           if (agent.id === worker(25).id)
@@ -431,6 +433,13 @@ test("Worker Overview Ui", async ({
         1,
       );
     assert.match(await card(0).innerText(), /Needs your answer/);
+    assert.equal(
+      await card(1).locator(".worker-model-summary").innerText(),
+      "Astra 6 · High",
+    );
+    assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
+    assert.match(await card(7).locator(".worker-meta").innerText(), /Failed/);
+    assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     // The orchestrator sidebar does not repeat a worker's task text.
     assert.equal(await card(1).getByText(task).count(), 0);
     assert.doesNotMatch(await card(1).innerText(), /Task details unavailable/);
