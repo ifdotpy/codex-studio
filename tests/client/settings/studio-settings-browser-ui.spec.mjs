@@ -386,6 +386,16 @@ test("studio settings browser ui", async ({
     await page.waitForFunction(
       () => document.documentElement.dataset.mantineColorScheme === "dark",
     );
+    await page.emulateMedia({ colorScheme: "light" });
+    await theme.getByRole("radio", { name: "System", exact: true }).check();
+    await page.waitForFunction(
+      () => document.documentElement.dataset.mantineColorScheme === "light",
+    );
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.mantineColorScheme === "dark",
+    );
+    await theme.getByRole("radio", { name: "Dark", exact: true }).check();
     await settleLayout();
     await page.screenshot({
       path: join(evidence, "settings-max-font-1440x960.png"),

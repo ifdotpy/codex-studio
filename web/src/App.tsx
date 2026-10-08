@@ -349,6 +349,7 @@ export default function App() {
       if (next.theme !== colorScheme) setColorScheme(next.theme);
       try {
         localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
           window.parent.postMessage(
             { kind: "studio-server-preferences", preferences: next },
