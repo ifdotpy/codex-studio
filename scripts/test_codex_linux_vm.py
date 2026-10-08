@@ -1,8 +1,11 @@
 """Linux VM client contracts without a VM or account credentials."""
+import base64
 import fcntl
 import gzip
 import io
 import json
+import os
+import subprocess
 from pathlib import Path
 import socket
 import tarfile
@@ -10,7 +13,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 import codex_linux_vm as vm
 
@@ -215,6 +218,90 @@ class ClientTests(unittest.TestCase):
         guest.finish()
         self.assertEqual(len(applied), 1)
 
+    def test_later_spawn_reboots_failed_provision_and_preserves_disks(self):
+        (self.directory / 'config.json').write_text('{}')
+        (self.directory / 'image.json').write_text('{"codex":"0.160.1","claude":"2.1.291"}')
+        (self.directory / 'console.log').write_text('STUDIO_PROVISION_CODEX\nSTUDIO_PROVISION_ERROR: line 29 failed\n')
+        for name in ('system.raw', 'data.raw'):
+            (self.directory / name).write_bytes(b'preserved disk')
+        self.client.helper = self.directory / 'helper'
+        self.client.helper.touch(mode=0o700)
+        process = Mock()
+        process.poll.return_value = None
+        def launch(*args, **kwargs):
+            (self.directory / 'console.log').write_text('STUDIO_PROVISION_READY\n')
+            return process
+        with patch.object(vm.platform, 'system', return_value='Darwin'), \
+             patch.object(vm.platform, 'machine', return_value='arm64'), \
+             patch.object(self.client, 'status', side_effect=[{'state':'running'}, {'state':'stopped'},
+                                                            {'state':'stopped'}, {'state':'running'}]), \
+             patch.object(self.client, 'call', side_effect=[vm.LinuxVMError('No guest'), {'protocol':1}]), \
+             patch.object(self.client, '_host', return_value={}) as host, \
+             patch.object(self.client, '_refresh_provision_seed') as seed, \
+             patch.object(self.client, '_wait_guest_clock'), \
+             patch.object(vm, '_require_space'), \
+             patch.object(vm.subprocess, 'Popen', side_effect=launch), \
+             patch.object(self.client, 'create') as create:
+            result = self.client.ensure_running(timeout=10)
+        self.assertEqual(result['health'], {'protocol':1})
+        host.assert_any_call('host.stop', timeout=unittest.mock.ANY)
+        seed.assert_called_once()
+        create.assert_not_called()
+        for name in ('system.raw', 'data.raw'):
+            self.assertEqual((self.directory / name).read_bytes(), b'preserved disk')
+
+    def test_recovery_seed_keeps_provider_pins_and_changes_boot_identity(self):
+        (self.directory / 'image.json').write_text('{"codex":"0.160.1","claude":"2.1.291"}')
+        (self.directory / 'console.log').write_text('previous failure')
+        def make_iso(argv, **options):
+            seed = Path(argv[-1])
+            self.assertIn('instance-id: studio-linux-',(seed / 'meta-data').read_text())
+            config = json.loads((seed / 'user-data').read_text().split('\n',1)[1])
+            script = next(row['content'] for row in config['write_files'] if row['path'].endswith('/provision.sh'))
+            self.assertIn('codex-cli 0.160.1',script)
+            self.assertIn('@anthropic-ai/claude-code@2.1.291',script)
+            Path(argv[-2]).write_bytes(b'new seed')
+            return ''
+        with patch.object(vm,'_run',side_effect=make_iso):
+            self.client._refresh_provision_seed(time.monotonic()+10)
+        self.assertEqual((self.directory / 'seed.iso').read_bytes(),b'new seed')
+        identity = json.loads((self.directory / 'provision-seed.json').read_text())['instanceId']
+        self.assertRegex(identity,r'^studio-linux-[a-f0-9]{64}$')
+        self.assertEqual((self.directory / 'console.previous.log').read_text(),'previous failure')
+
+    def test_healthy_guest_is_not_rebooted_for_an_old_console_error(self):
+        (self.directory / 'config.json').write_text('{}')
+        (self.directory / 'console.log').write_text('STUDIO_PROVISION_ERROR: codex: failed\n')
+        with patch.object(vm.platform, 'system', return_value='Darwin'), \
+             patch.object(vm.platform, 'machine', return_value='arm64'), \
+             patch.object(self.client, 'status', return_value={'state':'running'}), \
+             patch.object(self.client, 'call', return_value={'protocol':1}), \
+             patch.object(self.client, '_wait_guest_clock'), \
+             patch.object(self.client, '_host') as host, \
+             patch.object(self.client, '_refresh_provision_seed') as seed:
+            self.client.ensure_running(timeout=10)
+        host.assert_not_called()
+        seed.assert_not_called()
+
+    def test_failure_is_one_line_with_stage_cause_action_and_log_path(self):
+        (self.directory / 'config.json').write_text('{}')
+        def health(*args, **kwargs):
+            (self.directory / 'console.log').write_text('raw console dump\nSTUDIO_PROVISION_STAGE: codex\n'
+                'STUDIO_PROVISION_ERROR: codex: deadline exceeded\nraw console tail\n')
+            raise vm.LinuxVMError('No guest')
+        with patch.object(vm.platform, 'system', return_value='Darwin'), \
+             patch.object(vm.platform, 'machine', return_value='arm64'), \
+             patch.object(self.client, 'status', return_value={'state':'running'}), \
+             patch.object(self.client, 'call', side_effect=health):
+            with self.assertRaises(vm.LinuxVMError) as failure:
+                self.client.ensure_running(timeout=10)
+        message = str(failure.exception)
+        self.assertIn('codex failed: deadline exceeded', message)
+        self.assertIn('Retry the Linux spawn', message)
+        self.assertIn(str(self.directory / 'console.log'), message)
+        self.assertNotIn('raw console', message)
+        self.assertNotIn('\n', message)
+
     def test_payload_excludes_cache_and_credentials(self):
         guest = self.directory / 'vm/guest'
         guest.mkdir(parents=True)
@@ -225,7 +312,7 @@ class ClientTests(unittest.TestCase):
         (cache / 'bad.pyc').write_text('cache')
         scripts = self.directory / 'scripts'
         scripts.mkdir()
-        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py']:
+        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py']:
             (scripts / name).write_text('# runtime')
         bridge = scripts / 'claude_bridge'
         bridge.mkdir()
@@ -233,9 +320,104 @@ class ClientTests(unittest.TestCase):
         config = vm._cloud_config(guest, '1.2.3', '4.5.6')
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 8)
+        self.assertEqual(len(paths), 9)
         self.assertNotIn('credentials', json.dumps(config))
 
+
+
+class ProvisionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='vm-provision-script-')
+        self.root = Path(self.temp.name)
+        self.addCleanup(self.temp.cleanup)
+        self.script = vm._provision_script('0.160.1', '2.1.291')
+
+    def helper(self, name, content):
+        target = self.root / name
+        target.write_text('#!/bin/bash\n' + content)
+        target.chmod(0o700)
+
+    def run_helpers(self, command):
+        # Execute the actual generated retry helpers without touching guest paths.
+        helpers = self.script[:self.script.index('mkdir -p /var/lib/codex-studio')]
+        helpers = helpers.replace('/var/lib/codex-studio', str(self.root))
+        return subprocess.run(['bash'], input=helpers + command, text=True,
+            capture_output=True, timeout=5,
+            env={**os.environ, 'PATH':str(self.root) + ':' + os.environ['PATH']})
+
+    def test_retry_uses_longer_bounded_npm_deadline_and_backoff(self):
+        self.helper('sleep', 'echo "$*" >> "'+str(self.root / 'backoff')+'"\n')
+        self.helper('timeout', 'echo "$*" >> "'+str(self.root / 'limits')+'"\n'
+                    'if [ ! -f "'+str(self.root / 'attempt')+'" ]; then touch "'+str(self.root / 'attempt')+'"; exit 124; fi\n'
+                    'test "$2" -gt 180\n')
+        self.helper('codex', 'exit 1\n')
+        section = self.script[self.script.index('stage codex\n'):self.script.index('stage claude\n')]
+        result = self.run_helpers('download() { return 44; }\n' + section)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        limits = (self.root / 'limits').read_text().splitlines()
+        self.assertEqual(len(limits), 2)
+        self.assertTrue(all(line.startswith('--kill-after=5 600 npm install') for line in limits))
+        self.assertEqual((self.root / 'backoff').read_text(), '10\n')
+        self.assertIn('attempt=2', result.stdout)
+
+    def test_download_retry_records_size_and_elapsed_time(self):
+        self.helper('sleep', 'true\n')
+        self.helper('curl', 'if [ ! -f "'+str(self.root / 'attempt')+'" ]; then touch "'+str(self.root / 'attempt')+'"; '
+                    'echo "STUDIO_DOWNLOAD: codex attempt=1 bytes=10 seconds=600.0 http=200"; exit 28; fi\n'
+                    'echo complete > "'+str(self.root / 'asset.part')+'"\n'
+                    'echo "STUDIO_DOWNLOAD: codex attempt=2 bytes=100 seconds=2.5 http=200"\n')
+        result = self.run_helpers('stage codex\ndownload https://example.test/asset "'+str(self.root / 'asset')+'" 600\n')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.root / 'asset').read_text(), 'complete\n')
+        (self.root / 'console.log').write_text(result.stdout)
+        metrics = vm._provision_info(self.root / 'console.log')['downloads']
+        self.assertEqual([(row['bytes'],row['seconds']) for row in metrics], [(10,600.0),(100,2.5)])
+
+    def test_missing_asset_and_forbidden_response_have_distinct_results(self):
+        for http, expected in ((404,44),(403,22)):
+            self.helper('curl', f'echo "STUDIO_DOWNLOAD: codex attempt=1 bytes=0 seconds=0.1 http={http}"\nexit 22\n')
+            self.helper('sleep', 'true\n')
+            result = self.run_helpers('stage codex\nif download https://example.test/asset "'+str(self.root / 'asset')+'" 600; then exit 0; else exit $?; fi\n')
+            self.assertEqual(result.returncode, expected)
+
+    def test_checksum_failure_cannot_install_or_use_npm_fallback(self):
+        section = self.script[self.script.index('stage codex\n'):self.script.index('stage claude\n')]
+        section = section.replace('/tmp/', str(self.root) + '/').replace('/opt/codex-studio',str(self.root / 'install'))
+        self.helper('codex', 'exit 1\n')
+        self.helper('sha256sum', 'exit 1\n')
+        # Fake successful downloads with a matching asset name and a corrupt archive.
+        command = ('download() { echo "' + '0'*64 + '  codex-package-aarch64-unknown-linux-musl.tar.gz" > "$2"; }\n'
+                   'retry_npm() { touch "'+str(self.root / 'npm-used')+'"; }\n' + section)
+        result = self.run_helpers(command)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse((self.root / 'npm-used').exists())
+        self.assertFalse((self.root / 'install').exists())
+        self.assertIn('STUDIO_PROVISION_ERROR: codex:',result.stderr)
+
+    def test_legacy_timeout_log_has_a_specific_cause(self):
+        console = self.root / 'console.log'
+        console.write_text('STUDIO_PROVISION_CODEX\nline 29: Killed timeout --kill-after=5 180 npm install\n'
+                           'STUDIO_PROVISION_ERROR: line 29 failed\n')
+        info = vm._provision_info(console)
+        self.assertEqual((info['stage'],info['cause']),('codex','deadline exceeded'))
+        console.write_text(console.read_text()+'STUDIO_PROVISION_READY\n')
+        self.assertEqual(vm._provision_info(console)['state'],'ready')
+
+    def test_runtime_payload_imports_without_host_source_modules(self):
+        config = vm._cloud_config(Path(__file__).resolve().parents[1] / 'vm/guest', '0.160.1', '2.1.291')
+        payload = self.root / 'scripts'
+        payload.mkdir()
+        for entry in config['write_files']:
+            if entry['path'].startswith('/opt/codex-studio/scripts/'):
+                (payload / Path(entry['path']).name).write_bytes(gzip.decompress(base64.b64decode(entry['content'])))
+        code = ('import sys;sys.path.insert(0,' + repr(str(payload)) + ');'
+                'import codex_workspace_images,codex_workspace_linux,codex_process_supervisor')
+        result = subprocess.run([__import__('sys').executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stderr)
+
+    def test_saved_versions_cannot_inject_shell_commands(self):
+        with self.assertRaises(vm.LinuxVMError):
+            vm._provision_script('1.2.3; false', '2.1.291')
 
 if __name__ == '__main__':
     unittest.main()

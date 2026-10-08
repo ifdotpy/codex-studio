@@ -10,6 +10,7 @@ Copy this folder to `/opt/codex-studio/vm/guest`. Copy these runtime files to
 - `codex_workspace_linux.py`
 - `codex_process_supervisor.py`
 - `codex_open_file_limit.py`
+- `codex_records.py`
 
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
 and lsof.

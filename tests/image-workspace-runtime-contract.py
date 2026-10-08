@@ -7,6 +7,7 @@ import copy
 import concurrent.futures
 import importlib.util
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -47,6 +48,69 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             'name': name, 'prompt': 'Edit one file', 'cwd': str(self.repo / 'project'),
             **options} ]},
             'image-spawn-' + name)['agents'][0]
+
+    def test_linux_base_failure_uses_host_image_with_uncommitted_files(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state':'building'})
+        (self.repo / 'project' / 'tracked.txt').write_text('user edit\n')
+        (self.repo / 'project' / 'untracked.txt').write_text('user file\n')
+        worker_id = self.spawn(environment='linux')['id']
+        self.rt._image_base_callback_agents.add(worker_id)
+        self.rt.image_base_completed(worker_id, {'state':'failed','error':'Linux VM stage codex failed: deadline exceeded. Log: /tmp/vm/console.log'})
+        fixture.f.eventually(lambda: any(call.kwargs.get('retry_failed') for call in self.rt.start_image_base.call_args_list))
+        worker = self.rt.agent(worker_id)
+        self.assertEqual(worker['environment'],'host')
+        self.assertTrue(worker['imageWorkspace'])
+        self.assertFalse(worker['worktree'])
+        self.assertEqual(worker['imageWorkspacePhase'],'read_only')
+        self.assertIsNone(worker['threadId'])
+        self.assertNotIn(worker_id,self.rt._image_base_callback_agents)
+        self.assertEqual(self.rt.turn_permissions(worker)['sandboxPolicy']['writableRoots'],
+                         [self.rt.image_workspace_temp(worker)])
+        mount = self.root / 'host-image'
+        copied = mount / 'repo'
+        shutil.copytree(self.repo,copied)
+        engine = types.ModuleType('codex_workspace_images')
+        engine.create_workspace = Mock(return_value={'mount':str(mount),'path':str(copied)})
+        engine.exec_prefix = Mock(return_value=[])
+        # Wait for the first notice to establish its identity before the ready notice.
+        fixture.f.eventually(lambda: self.rt.agent(worker_id).get('imageWorkspaceNoticeSent'))
+        with patch.dict(sys.modules,{'codex_workspace_images':engine}):
+            self.rt.image_base_completed(worker_id,{'state':'ready'})
+        ready = self.rt.agent(worker_id)
+        self.assertEqual(ready['cwd'],str(copied / 'project'))
+        self.assertTrue(ready['imageWorkspaceReady'])
+        self.assertFalse(ready['worktree'])
+        self.assertEqual((Path(ready['cwd']) / 'tracked.txt').read_text(),'user edit\n')
+        self.assertEqual((Path(ready['cwd']) / 'untracked.txt').read_text(),'user file\n')
+        self.assertIn(str(copied / 'project'),ready['imageWorkspaceNoticeText'])
+        self.assertNotIn('worktree',ready['imageWorkspaceNoticeText'])
+        engine.create_workspace.assert_called_once_with(str(self.repo),worker_id)
+
+    def test_linux_workspace_creation_failure_also_uses_host_image(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = Mock(return_value={'state':'building'})
+        worker_id = self.spawn(environment='linux')['id']
+        with patch('codex_linux_workspaces.create',side_effect=RuntimeError('Snapshot failed')), \
+             patch.object(self.rt,'remove_image_workspace'):
+            self.rt.image_base_completed(worker_id,{'state':'ready'})
+        worker = self.rt.agent(worker_id)
+        self.assertEqual(worker['environment'],'host')
+        self.assertTrue(worker['imageWorkspace'])
+        self.assertFalse(worker['worktree'])
+        self.assertEqual(worker['imageWorkspacePhase'],'read_only')
+        self.assertIn('Snapshot failed',worker['imageWorkspaceError'])
+
+    def test_linux_failure_uses_a_worktree_only_without_image_support(self):
+        self.rt.image_workspace_support = lambda _repo: (False, 'unsupported')
+        self.rt.start_image_base = Mock(return_value={'state':'building'})
+        worker_id = self.spawn(environment='linux')['id']
+        self.rt.image_base_completed(worker_id,{'state':'failed','error':'VM failed'})
+        worker = self.rt.agent(worker_id)
+        self.assertEqual(worker['environment'],'host')
+        self.assertFalse(worker['imageWorkspace'])
+        self.assertTrue(worker['worktree'])
+        self.assertEqual(worker['imageWorkspacePhase'],'fallback')
 
     def test_multi_switch_starts_the_supported_repository_base(self):
         self.rt.image_workspace_support = lambda _repo: (True, '')
