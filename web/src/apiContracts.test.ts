@@ -208,11 +208,19 @@ void localQueueStatus;
 void localQueueCreated;
 
 function generatedFacadeRequestAssertions() {
+  // @ts-expect-error GET-only generated paths are not accepted by the POST facade
+  post("/api/accounts", {});
   post("/api/accounts/discover", {});
   // @ts-expect-error the facade requires an explicit request body argument
   post("/api/accounts/discover");
+  // @ts-expect-error an absent request body is not accepted as a body value
+  post("/api/accounts/discover", undefined);
   // @ts-expect-error the generated request body has no declared fields
   post("/api/accounts/discover", { unexpected: true });
+  // @ts-expect-error the account default operation requires its request body
+  post("/api/accounts/default");
+  // @ts-expect-error queue actions are limited to the generated discriminator values
+  post("/api/queue", { action: "unknown" });
 }
 void generatedFacadeRequestAssertions;
 
