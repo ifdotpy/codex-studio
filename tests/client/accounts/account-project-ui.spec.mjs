@@ -2,6 +2,8 @@ import {
   handleEntitySyncFixtureRequest,
   legacySnapshotRoute,
   syncIdentityFixture,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   test,
   updateEntitySyncFixture,
 } from "../playwright.mjs";
@@ -185,6 +187,7 @@ test("account project ui", async ({ browser: _browser }) => {
     }
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
+      res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
       res.end(JSON.stringify(data));
     };
     if (
@@ -403,7 +406,10 @@ test("account project ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    const picker = page.getByRole("group", { name: "Account", exact: true });
+    const picker = page.getByRole("group", {
+      name: "Main agent account",
+      exact: true,
+    });
     const settings = page.getByRole("dialog", {
       name: "Chat settings",
       exact: true,
@@ -413,8 +419,24 @@ test("account project ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
+      const more = settings.locator(".chat-settings-more");
+      if ((await more.count()) && !(await more.getAttribute("open")))
+        await more.locator("summary").click();
+      const agentSettings = settings.getByRole("button", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await agentSettings.isVisible()) await agentSettings.click();
     };
     const closeSettings = async () => {
+      const agentSettings = page.getByRole("dialog", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await agentSettings.isVisible()) {
+        await agentSettings.getByRole("button", { name: "Close" }).click();
+        await agentSettings.waitFor({ state: "hidden" });
+      }
       if (await settings.isVisible()) {
         await settings.locator(".mantine-Modal-close").click();
         await settings.waitFor({ state: "hidden" });
@@ -432,8 +454,9 @@ test("account project ui", async ({ browser: _browser }) => {
     await picker.waitFor();
     await page.waitForFunction(
       () =>
-        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
-          .value === "default",
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "default",
     );
     const choose = async (email) => {
       await openSettings();
@@ -488,14 +511,19 @@ test("account project ui", async ({ browser: _browser }) => {
     await freshPage
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
+    await freshPage
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
     const freshAccountTile = freshPage.getByRole("group", {
-      name: "Account",
+      name: "Main agent account",
       exact: true,
     });
     await freshPage.waitForFunction(
       () =>
-        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
-          .value === "work",
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
     );
     console.log(
       "FRESH CHAT ENTITY AND ACCOUNT TILE",
@@ -527,8 +555,9 @@ test("account project ui", async ({ browser: _browser }) => {
     );
     await page.waitForFunction(
       () =>
-        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
-          .value === "work",
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
     );
     assert.equal(agents.find((a) => a.id === "empty").cwd, "/tmp/fixture");
     assert.equal(
@@ -599,7 +628,7 @@ test("account project ui", async ({ browser: _browser }) => {
         .click();
     };
     const dialog = page.getByRole("dialog", {
-      name: "Project account",
+      name: "Project settings",
       exact: true,
     });
     await closeSettings();
@@ -611,38 +640,25 @@ test("account project ui", async ({ browser: _browser }) => {
       name: "Default account for new chats",
       exact: true,
     });
-    const selectedAccount = () => selection.getAttribute("data-value");
-    const projectAccounts = dialog.getByRole("group", {
+    const memberships = dialog.getByRole("group", {
       name: "Accounts shown first for this project",
       exact: true,
     });
-    const projectAccountButton = (label) =>
-      projectAccounts.getByRole("button", {
-        name: `Select account ${label}`,
-        exact: true,
-      });
-    const ensureProjectAccount = async (label) => {
-      const button = projectAccountButton(label);
-      if ((await button.getAttribute("aria-pressed")) !== "true")
-        await button.click();
+    const addMembership = async (key) => {
+      const tile = memberships.locator(`[data-account-key="${key}"]`);
+      if ((await tile.getAttribute("aria-pressed")) !== "true")
+        await tile.click();
     };
-    const chooseProjectAccount = (key) =>
-      selection
-        .getByRole("button", {
-          name: `Select account ${key === "work" ? "Work" : key === "other" ? "Second workspace" : "Personal"}`,
-          exact: true,
-        })
-        .click();
-    assert.equal(await selectedAccount(), "work");
-    await ensureProjectAccount("Second workspace");
-    await chooseProjectAccount("other");
+    assert.equal(await selection.getAttribute("data-value"), "work");
+    await addMembership("other");
+    await selection.locator('[data-account-key="other"]').click();
     conflict = true;
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
     await dialog.getByRole("alert").waitFor();
     assert.equal(
-      await selectedAccount(),
+      await selection.getAttribute("data-value"),
       "other",
       "Conflict keeps selected account",
     );
@@ -684,8 +700,8 @@ test("account project ui", async ({ browser: _browser }) => {
       "Project worker base saves through project settings",
     );
     await openProject("arbitrary");
-    await ensureProjectAccount("Work");
-    await chooseProjectAccount("work");
+    await addMembership("work");
+    await selection.locator('[data-account-key="work"]').click();
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
@@ -712,8 +728,9 @@ test("account project ui", async ({ browser: _browser }) => {
     await openSettings();
     await page.waitForFunction(
       () =>
-        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
-          .value === "work",
+        document.querySelector(
+          '[role="group"][aria-label="Main agent account"]',
+        )?.dataset.value === "work",
     );
     assert.equal(
       agents.at(-1).accountKey,
@@ -947,7 +964,10 @@ test("account project ui", async ({ browser: _browser }) => {
         .getByRole("button", { name: "Toggle conversations", exact: true })
         .click();
       await openProject("fixture");
-      assert.equal(await selectedAccount(), width === 390 ? "other" : "work");
+      assert.equal(
+        await selection.getAttribute("data-value"),
+        width === 390 ? "other" : "work",
+      );
       await page.waitForFunction(
         (element) => getComputedStyle(element).opacity === "1",
         await dialog.elementHandle(),
@@ -959,8 +979,10 @@ test("account project ui", async ({ browser: _browser }) => {
           (element) => element.scrollWidth <= element.clientWidth,
         ),
       );
-      await ensureProjectAccount(width === 390 ? "Work" : "Second workspace");
-      await chooseProjectAccount(width === 390 ? "work" : "other");
+      await addMembership(width === 390 ? "work" : "other");
+      await selection
+        .locator(`[data-account-key="${width === 390 ? "work" : "other"}"]`)
+        .click();
       await dialog
         .getByRole("button", { name: "Save accounts", exact: true })
         .click();
@@ -996,14 +1018,10 @@ test("account project ui", async ({ browser: _browser }) => {
     await removalManager.waitFor({ state: "hidden" });
 
     await openProject("fixture");
-    const deletedMembership = projectAccountButton("Second workspace");
+    const deletedMembership = memberships.locator('[data-account-key="other"]');
+    assert.equal(await deletedMembership.getAttribute("aria-pressed"), "true");
     assert.equal(
-      await deletedMembership.getAttribute("aria-pressed"),
-      "true",
-      "the deleted account remains linked to the project",
-    );
-    assert.equal(
-      await selectedAccount(),
+      await selection.getAttribute("data-value"),
       "",
       "the deleted default requires an explicit replacement despite another linked account",
     );
@@ -1011,12 +1029,12 @@ test("account project ui", async ({ browser: _browser }) => {
       name: "Save accounts",
       exact: true,
     });
-    assert.equal(await saveAccounts.isDisabled(), true);
+    assert.equal(await saveAccounts.count(), 0);
     await deletedMembership.click();
     await deletedMembership.waitFor({ state: "detached" });
-    assert.equal(await selectedAccount(), "");
+    assert.equal(await selection.getAttribute("data-value"), "");
     assert.equal(await saveAccounts.isDisabled(), true);
-    await chooseProjectAccount("work");
+    await selection.locator('[data-account-key="work"]').click();
     assert.equal(await saveAccounts.isDisabled(), false);
     await saveAccounts.click();
     await dialog.waitFor({ state: "hidden" });

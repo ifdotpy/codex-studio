@@ -121,10 +121,11 @@ const answerKey = (scope: string, request: RequestDto) =>
     request.id,
     request.method,
     requestQuestions(request).map(
-      ({ id, question, isSecret, multiSelect, options }) => ({
+      ({ id, question, isSecret, isOther, multiSelect, options }) => ({
         id,
         question,
         isSecret,
+        isOther,
         multiSelect,
         options,
       }),
@@ -135,6 +136,7 @@ function AnswerForm({
   request,
   sending,
   post,
+  deferLater,
   close,
   notify,
   draftKey,
@@ -143,6 +145,7 @@ function AnswerForm({
   request: RequestDto;
   sending: boolean;
   post: (body: Json) => Promise<void>;
+  deferLater: () => Promise<void>;
   close: () => void;
   notify: Props["notify"];
 }) {
@@ -253,19 +256,20 @@ function AnswerForm({
           variant="subtle"
           disabled={sending}
           onClick={() => {
-            close();
+            void deferLater();
           }}
         >
-          Close reply
+          Answer later
         </Button>
         <Button
           type="submit"
+          aria-label="Send answer"
           variant="filled"
           color="indigo"
           disabled={sending || !ready}
           loading={sending}
         >
-          Send answer
+          Send
         </Button>
       </div>
     </form>
@@ -376,7 +380,7 @@ function RequestCard({
       if (mounted.current) setSending(false);
     }
   };
-  const defer = async (remove = false) => {
+  const defer = async (remove = false, deferred = !r.deferred) => {
     if (pending.current) return;
     pending.current = true;
     setSending(true);
@@ -386,7 +390,7 @@ function RequestCard({
       else
         await apiPost("/api/questions/defer", {
           id: r.id,
-          deferred: !r.deferred,
+          deferred,
         });
       if (mounted.current) setOpen(false);
       await refresh();
@@ -428,6 +432,7 @@ function RequestCard({
       className={`request request-card${asynchronous ? " request-async" : ""}`}
       ref={card}
       data-request={r.id}
+      data-deferred={r.deferred ? "true" : undefined}
     >
       <div className="request-summary">
         <Icon size={18} className="request-icon" />
@@ -436,7 +441,9 @@ function RequestCard({
             <strong>
               {agents.find((a) => a.id === r.agent)?.name || "Codex"}
             </strong>
-            <span className="request-status">
+            <span
+              className={`request-status${question ? " request-status-hidden" : ""}`}
+            >
               {r.deferred
                 ? asynchronous
                   ? "Deferred · Agent can continue"
@@ -519,14 +526,16 @@ function RequestCard({
             </p>
           ) : question ? (
             <>
-              <Button
-                variant="subtle"
-                disabled={sending}
-                aria-label={r.deferred ? "Restore" : "Defer"}
-                onClick={() => void defer()}
-              >
-                {r.deferred ? "Restore" : "Answer later"}
-              </Button>
+              {!open && (
+                <Button
+                  variant="subtle"
+                  disabled={sending}
+                  aria-label={r.deferred ? "Restore" : "Defer"}
+                  onClick={() => void defer()}
+                >
+                  {r.deferred ? "Restore" : "Answer later"}
+                </Button>
+              )}
               <Button
                 ref={trigger}
                 data-answer={r.id}
@@ -581,6 +590,7 @@ function RequestCard({
             draftKey={draftKey}
             sending={sending}
             post={post}
+            deferLater={() => defer(false, true)}
             close={close}
             notify={notify}
           />
@@ -622,9 +632,6 @@ export default function Requests({
             <summary>
               Later <span>{deferred.length}</span>
             </summary>
-            <p className="request-deferred-note">
-              These questions remain open.
-            </p>
             {deferred.map((r) => (
               <RequestCard
                 key={answerKey(props.scope, r)}

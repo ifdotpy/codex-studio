@@ -87,6 +87,7 @@ test("Original Typography Browser", async ({
       await dialog
         .getByRole("tab", { name: "Appearance", exact: true })
         .click();
+      await dialog.locator(".studio-appearance-more summary").click();
       return dialog;
     };
     let settings = await openSettings();
@@ -100,7 +101,7 @@ test("Original Typography Browser", async ({
       .getByLabel("Studio text style", { exact: true })
       .selectOption("original");
     const checkOriginal = async () => {
-      // Restore legacy sizes; the shared UI meta minimum is intentionally 12px.
+      // Original typography keeps the legacy sizes and current status text token.
       for (const [selector, expected] of [
         [".chat-row .row-copy strong", "13px"],
         ["#conversation-title", "15px"],

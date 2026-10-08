@@ -20,9 +20,16 @@ from codex_agent_management import _blockers
 
 
 class Fixture:
+    WORKSPACE_OPERATION_ACTIVE = WorkspaceMixin.WORKSPACE_OPERATION_ACTIVE
     disconnected = Runtime.disconnected
+    account_agents = staticmethod(Runtime.account_agents)
+    transport_agents = Runtime.transport_agents
     retire_legacy_steer = Runtime.retire_legacy_steer
     _assert_workspace_idle = WorkspaceMixin._assert_workspace_idle
+    _workspace_idle_snapshot = WorkspaceMixin._workspace_idle_snapshot
+    _resolve_workspace_idle = WorkspaceMixin._resolve_workspace_idle
+    refresh_workspace_volatile = lambda self: None
+    _publish_desktop_resource = lambda self: None
     reconcile_tool_requests = RequestMixin.reconcile_tool_requests
     records = staticmethod(Runtime.records)
 
@@ -32,9 +39,12 @@ class Fixture:
         self.lock = threading.RLock()
         self.connection_ids = {'one': 'connection-one'}
         self.offline_accounts = set()
+        self.offline = False
+        self.linux_connection_ids = {}
+        self.servers = {}
         self.loaded = {'first', 'second'}
         self.preparations = {}
-        for table in ('agents', 'tasks', 'monitors', 'requests', 'work', 'tool_requests'):
+        for table in ('agents', 'tasks', 'monitors', 'requests', 'work', 'tool_requests', 'workspace_operations'):
             self.connection.execute(f'CREATE TABLE runtime_{table}(id TEXT PRIMARY KEY, record TEXT NOT NULL)')
         self.connection.execute("CREATE INDEX runtime_task_status ON runtime_tasks(json_extract(record,'$.status'),json_extract(record,'$.created'))")
         self.connection.execute('CREATE TABLE runtime_events(id TEXT PRIMARY KEY, agent TEXT, epoch INTEGER, status TEXT, error TEXT)')

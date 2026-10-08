@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -23,7 +24,7 @@ spec.loader.exec_module(fixture)
 class ManualRuntime(Runtime):
     def schedule(self):
         while not self.closed:
-            self.changed.wait(.1)
+            self.changed.wait()
             self.changed.clear()
 
 
@@ -359,7 +360,7 @@ class UsageResumeContract(unittest.TestCase):
         self.assertGreater(before['dueAt'], before['updatedAt'])
         self.assertAlmostEqual(before['plannedAt'], reset, delta=1)
         self.runtime.close()
-        self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
+        self.runtime = ManualRuntime(Path(self.temp.name), fixture.FakeServer)
         after = self.runtime.agent(self.key)['usageResume']
         self.assertEqual(after['id'], before['id'])
         self.assertEqual(after['status'], 'scheduled')
@@ -439,6 +440,17 @@ class UsageResumeContract(unittest.TestCase):
 
     def test_same_account_team_resumes_lead_and_worker(self):
         worker, worker_server = self.failed_worker()
+        starts_changed = threading.Event()
+        original_call = worker_server.call
+
+        def signal_turn_start(method, params, timeout=60):
+            try:
+                return original_call(method, params, timeout)
+            finally:
+                if method == 'turn/start':
+                    starts_changed.set()
+
+        worker_server.call = signal_turn_start
         self.assertEqual(self.runtime.agent(self.key)['usageResume']['status'], 'scheduled')
         self.assertEqual(self.runtime.agent(worker['id'])['usageResume']['status'], 'scheduled')
         worker_server.limit_result = {'rateLimits': {'primary': {
@@ -456,7 +468,13 @@ class UsageResumeContract(unittest.TestCase):
         self.assertFalse(self.runtime.agent(self.key).get('nativeFailureHold'))
         self.assertFalse(self.runtime.agent(worker['id']).get('nativeFailureHold'))
         self.runtime.dispatch()
-        fixture.eventually(lambda: len([1 for method, _ in worker_server.calls if method == 'turn/start']) == 4)
+        turn_starts = lambda: len([1 for method, _ in worker_server.calls if method == 'turn/start'])
+        while turn_starts() < 4:
+            starts_changed.clear()
+            if turn_starts() >= 4:
+                break
+            self.assertTrue(starts_changed.wait(30), 'resumed team turns did not start')
+        self.assertEqual(turn_starts(), 4)
 
     def test_user_stopped_parent_holds_worker_resume(self):
         worker, worker_server = self.failed_worker()

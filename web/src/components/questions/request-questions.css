@@ -66,17 +66,20 @@
 }
 .request-question-label {
   overflow-wrap: anywhere;
-  font-size: 13px;
+  font-size: var(--studio-text-body);
+  margin: 0 0 10px;
 }
 .request-answer-options {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 7px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 .request-answer-option {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
+  width: 100%;
   max-width: 100%;
   border: 1px solid var(--line);
   border-radius: 8px;
@@ -214,4 +217,47 @@
   .request-actions {
     width: 100%;
   }
+}
+
+.request-option-copy {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.request-option-number {
+  flex: 0 0 auto;
+  display: inline-grid;
+  place-items: center;
+  min-width: 20px;
+  height: 20px;
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  font-variant-numeric: tabular-nums;
+}
+.request-answer-checkbox {
+  display: block;
+}
+.request-answer-checkbox .mantine-Checkbox-body {
+  align-items: center;
+}
+.request-answer-checkbox .mantine-Checkbox-label {
+  padding-inline-start: 8px;
+}
+.request-answer-checkbox .mantine-Checkbox-description {
+  margin-top: 4px;
+  color: var(--muted);
+}
+.answer-field > .mantine-Textarea-root,
+.answer-field > .mantine-TextInput-root {
+  margin-top: 10px;
+}
+.request-answer-actions > :first-child {
+  margin-right: auto;
+}
+
+.request-status-hidden {
+  display: none;
 }

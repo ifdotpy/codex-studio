@@ -1108,7 +1108,7 @@ class CoreResponseTests(unittest.TestCase):
         for domain in package_names:
             package_name = f"studio_api.{domain}"
             package = ModuleType(package_name)
-            package.__path__ = []
+            package.__path__ = [str(Path(__file__).resolve().parents[1] / domain)]
             router_module = ModuleType(f"{package_name}.router")
 
             def create_router(_context: object, selected: str = domain) -> APIRouter:
@@ -1163,7 +1163,7 @@ class CoreResponseTests(unittest.TestCase):
         for domain in package_names:
             package_name = f"studio_api.{domain}"
             package = ModuleType(package_name)
-            package.__path__ = []
+            package.__path__ = [str(Path(__file__).resolve().parents[1] / domain)]
             router_module = ModuleType(f"{package_name}.router")
 
             def create_router(_context: object, selected: str = domain) -> APIRouter:
@@ -1223,7 +1223,7 @@ class CoreResponseTests(unittest.TestCase):
         for domain in package_names:
             package_name = f"studio_api.{domain}"
             package = ModuleType(package_name)
-            package.__path__ = []
+            package.__path__ = [str(Path(__file__).resolve().parents[1] / domain)]
             router_module = ModuleType(f"{package_name}.router")
 
             def create_router(_context: object, selected: str = domain) -> APIRouter:

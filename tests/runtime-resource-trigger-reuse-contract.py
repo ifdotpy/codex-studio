@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Retained callback connections keep resource triggers and transaction isolation."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import json
 from pathlib import Path
 import sqlite3

@@ -381,14 +381,25 @@ test("Shell ux ui", async ({
           (await dialog.getByRole("tab").allTextContents()).map((label) =>
             label.trim(),
           ),
-          ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
+          [
+            "Accounts",
+            "Appearance",
+            "Federation",
+            "Servers",
+            "Linux VM",
+            "Hotkeys",
+          ],
         );
         await dialog
           .getByRole("tab", { name: "Appearance", exact: true })
           .click();
         await dialog
-          .getByLabel("Studio theme", { exact: true })
-          .selectOption(scheme);
+          .getByRole("radiogroup", { name: "Studio theme", exact: true })
+          .getByRole("radio", {
+            name: scheme === "dark" ? "Dark" : "Light",
+            exact: true,
+          })
+          .check();
         await page.waitForFunction(
           (scheme) =>
             document.documentElement.dataset.mantineColorScheme === scheme,
@@ -735,7 +746,14 @@ test("Shell ux ui", async ({
       (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
         label.trim(),
       ),
-      ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
+      [
+        "Accounts",
+        "Appearance",
+        "Federation",
+        "Servers",
+        "Linux VM",
+        "Hotkeys",
+      ],
     );
     await studioSettings
       .getByRole("tab", { name: "Appearance", exact: true })

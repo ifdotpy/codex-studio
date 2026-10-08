@@ -227,11 +227,20 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  const workAccount = accountTileButton(page, "Account", "Work");
+  const more = page.locator(".chat-settings-more");
+  if ((await more.count()) && !(await more.getAttribute("open")))
+    await more.locator("summary").click();
+  await page
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Main agent settings", exact: true })
+    .click();
+  const workAccount = accountTileButton(page, "Main agent account", "Work");
   assert.equal(
-    await accountTileButton(page, "Account", "Personal").getAttribute(
-      "aria-pressed",
-    ),
+    await accountTileButton(
+      page,
+      "Main agent account",
+      "Personal",
+    ).getAttribute("aria-pressed"),
     "true",
   );
   await workAccount.click();
@@ -372,7 +381,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
       label.trim(),
     ),
-    ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
+    ["Accounts", "Appearance", "Federation", "Servers", "Linux VM", "Hotkeys"],
     "Global Studio settings exposes each available settings tab",
   );
   await studioSettings
@@ -382,8 +391,9 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("tab", { name: "Appearance", exact: true })
     .click();
   await studioSettings
-    .getByLabel("Studio theme", { exact: true })
-    .selectOption("dark");
+    .getByRole("radiogroup", { name: "Studio theme", exact: true })
+    .getByRole("radio", { name: "Dark", exact: true })
+    .check();
   await page.waitForFunction(
     () => document.documentElement.dataset.mantineColorScheme === "dark",
   );

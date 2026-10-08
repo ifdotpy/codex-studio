@@ -192,11 +192,25 @@ class CapacityContract(unittest.TestCase):
             self.runtime.put(db, 'agents', a)
 
     def test_four_delays_then_manual_only_without_input_replay(self):
+        retry_started = threading.Event()
+        original_notify = self.server._notify
+
+        def notify_and_signal(message):
+            result = original_notify(message)
+            if message.get('method') == 'turn/started':
+                retry_started.set()
+            return result
+
+        notify_patch = patch.object(self.server, '_notify', side_effect=notify_and_signal)
+        notify_patch.start()
+        self.addCleanup(notify_patch.stop)
         for index, delay in enumerate((10, 30, 120, 300)):
             retry = self.fail()
             self.assertEqual(retry['attempt'], index + 1)
             self.assertAlmostEqual(retry['dueAt'] - time.time(), delay, delta=1)
+            retry_started.clear()
             self.expire()
+            self.assertTrue(retry_started.wait(5), 'capacity retry turn/started notification')
             self.assertEqual(self.starts()[-1]['input'], [])
             self.assertNotIn('clientUserMessageId', self.starts()[-1])
             self.assertEqual(self.agent()['capacityRetryCount'], index + 1)

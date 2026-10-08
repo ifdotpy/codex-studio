@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import concurrent.futures
 from contextlib import contextmanager
 import copy
+import io
 import json
 from pathlib import Path
 import queue
@@ -132,6 +133,7 @@ class StaleToolRequestAckContract(unittest.TestCase):
 
     def dispatcher(self, frames, connection):
         server = AppServer.__new__(AppServer)
+        server.log = io.BytesIO()
         server.lock = threading.RLock()
         server.callback_lock = threading.RLock()
         server.callbacks = queue.Queue()

@@ -1002,15 +1002,28 @@ class ContextWait(f.NativeActionRepair):
         self.assertEqual(len([m for m,p in self.server.calls if m=='turn/start']),1)
 
     def test_native_action_wait_keeps_receipt_and_resumes_once(self):
+        import codex_native_action_receipts
+        acknowledgement_recorded = threading.Event()
+        original_record = codex_native_action_receipts.record
+
+        def record_and_signal(runtime, attempt, status, error=None):
+            result = original_record(runtime, attempt, status, error)
+            if attempt.get('action') == 'review' and status == 'acknowledged':
+                acknowledgement_recorded.set()
+            return result
+
         self.monitor()
-        result=self.runtime.native_action(self.a['id'],'review','wait-review')
-        self.assertEqual(result['outcome']['status'],'pending')
-        current=self.runtime.agent(self.a['id'])
-        attempt=current['startAttempt']['id']
-        self.assertEqual(current['status'],'queued')
-        self.clear_monitor();self.due()
-        eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='review-turn')
-        replay=self.runtime.native_action(self.a['id'],'review','wait-review')
+        with patch.object(codex_native_action_receipts, 'record', side_effect=record_and_signal):
+            result=self.runtime.native_action(self.a['id'],'review','wait-review')
+            self.assertEqual(result['outcome']['status'],'pending')
+            current=self.runtime.agent(self.a['id'])
+            attempt=current['startAttempt']['id']
+            self.assertEqual(current['status'],'queued')
+            self.clear_monitor();self.due()
+            self.assertTrue(acknowledgement_recorded.wait(30),
+                            'review receipt ACK was not persisted')
+            eventually(lambda:self.runtime.agent(self.a['id']).get('turnId')=='review-turn')
+            replay=self.runtime.native_action(self.a['id'],'review','wait-review')
         self.assertEqual(replay['outcome']['status'],'acknowledged')
         self.assertEqual(self.runtime.agent(self.a['id'])['startAttempt']['id'],attempt)
         self.assertEqual(len([m for m,p in self.server.calls if m=='review/start']),1)

@@ -127,7 +127,15 @@ class TimeAwareness(unittest.TestCase):
         error = self.tool(agent, "does_not_exist", "clock-error")
         self.assertTrue(success["success"])
         self.assertFalse(error["success"])
-        self.assertEqual(len(success["contentItems"]), 2)
+        policy = [item for item in success["contentItems"]
+                  if item.get("type") == "inputText"
+                  and item.get("text", "").startswith("[Studio subagent concurrency, revision ")]
+        self.assertEqual(len(policy), 1)
+        for result in (success, error):
+            stamps = [item for item in result["contentItems"]
+                      if item.get("type") == "inputText"
+                      and item.get("text", "").startswith("[Time awareness] Tool result finalized at ")]
+            self.assertEqual(len(stamps), 1)
         json.loads(success["contentItems"][0]["text"])
         self.assertIn("finalized at", error["contentItems"][-1]["text"])
         self.runtime.close()

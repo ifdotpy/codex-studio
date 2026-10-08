@@ -35,6 +35,7 @@ export type AgentSetupPickerProps = {
   providers: string[];
   accounts: Account[];
   accountKey: string;
+  accountLabel?: string;
   onAccount: (key: string | null) => void;
   automaticAccount?: boolean;
   models: {
@@ -103,7 +104,8 @@ export function AgentSetupPicker(p: AgentSetupPickerProps) {
         <AccountTiles
           showLabel={false}
           label={
-            p.role === "worker" ? "Subagent account" : "Main agent account"
+            p.accountLabel ||
+            (p.role === "worker" ? "Subagent account" : "Main agent account")
           }
           accounts={p.accounts}
           value={p.accountKey}

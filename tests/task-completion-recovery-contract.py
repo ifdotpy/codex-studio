@@ -23,6 +23,7 @@ class TaskCompletionRecovery(unittest.TestCase):
     message = f.SpawnRequestRecovery.message
     response = f.SpawnRequestRecovery.response
     value = f.SpawnRequestRecovery.value
+    operation_result = staticmethod(f.SpawnRequestRecovery.operation_result)
 
     def review_task(self):
         task = self.runtime.work_action(self.actor['id'], {'action': 'create', 'title': 'Acceptance fixture'})
@@ -102,7 +103,8 @@ class TaskCompletionRecovery(unittest.TestCase):
         self.assertTrue(final['success'], final)
         receipt = self.runtime.request_action(self.actor['id'], {'action': 'get', 'request_id': 'accept-delayed'})
         self.assertEqual(receipt['outcome'], 'applied')
-        self.assertEqual(receipt['result'], final)
+        self.assertEqual(self.operation_result(receipt['result']),
+                         self.operation_result(final))
         tasks = original(self.actor['id'], {'action': 'list'})['items']
         self.assertEqual(len(next(t for t in tasks if t['id'] == task['id'])['decisions']), 1)
 

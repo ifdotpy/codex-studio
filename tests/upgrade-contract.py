@@ -30,6 +30,7 @@ from codex_runtime import AppServer, Runtime
 import codex_analytics_storage
 import codex_payload_migrate
 import codex_work
+import codex_sync_entities
 from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
 from studio_api.testing import read_test_state
@@ -122,6 +123,16 @@ class IdleServer:
 
 class UpgradeContract(unittest.TestCase):
     def test_old_state_upgrade_preserves_records_and_serves_http(self):
+        tombstone_limit_patch = patch.object(codex_sync_entities, "ENTITY_TOMBSTONE_LIMIT", 1)
+        tombstone_limit_patch.start()
+        self.addCleanup(tombstone_limit_patch.stop)
+        prune = codex_sync_entities.prune_entity_tombstones
+        prune_patch = patch.object(
+            codex_sync_entities, "prune_entity_tombstones",
+            side_effect=lambda db: prune(db, limit=1),
+        )
+        prune_patch.start()
+        self.addCleanup(prune_patch.stop)
         for revision in LEGACY_REVISIONS:
             with self.subTest(revision=revision), tempfile.TemporaryDirectory() as tmp:
                 state = Path(tmp) / "state"
@@ -182,6 +193,8 @@ class UpgradeContract(unittest.TestCase):
                         stack.enter_context(patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()))
                         runtime.search_migration_start()
                         codex_analytics_storage.start(runtime)
+                        # Exercise payload migration while the other old-state
+                        # migration workers are writing the shared database.
                         codex_payload_migrate.run(
                             state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
                             batch_bytes=128 * 1024, max_batches=None)
@@ -204,8 +217,8 @@ class UpgradeContract(unittest.TestCase):
                     def get(path):
                         with urllib.request.urlopen(origin + path, timeout=5) as response:
                             return json.load(response)
-                    state = read_test_state(get)
-                    self.assertIsNotNone(state.value("agent", agent_id))
+                    state_snapshot = read_test_state(get)
+                    self.assertIsNotNone(state_snapshot.value("agent", agent_id))
                     identity = get("/api/sync/identity")
                     self.assertTrue(identity["workspaceId"])
                     entity_pull = get("/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100")
@@ -215,6 +228,15 @@ class UpgradeContract(unittest.TestCase):
                         db.execute("INSERT INTO sync_entity_meta(key,value) VALUES "
                                    "('entity_tombstone_floor',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
                                    (str(floor),))
+                        next_sequence = db.execute(
+                            "SELECT COALESCE(MAX(seq),0)+1 FROM sync_entities"
+                        ).fetchone()[0]
+                        db.executemany(
+                            "INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted) "
+                            "VALUES ('pruning-fixture',?,?,?,NULL,1)",
+                            [(f"old-{index}", next_sequence + index, f"hash-{index}")
+                             for index in range(2)],
+                        )
                     reset = get("/api/sync/pull?" + urlencode(
                         {"scope": "state:entities:v1", "after": 1, "reset": 1}))
                     self.assertTrue(reset["reset"])
@@ -226,12 +248,18 @@ class UpgradeContract(unittest.TestCase):
                         {"id": agent_id, "message_id": agent_id + ":long-body"}))
                     self.assertEqual(full_item["text"], baseline_body)
                     diagnostics = get("/api/diagnostics")
+                    pruning = diagnostics["migrations"]["entityTombstones"]["pruning"]
+                    deadline = time.monotonic() + 5
+                    while pruning["status"] not in {"complete", "error"} and time.monotonic() < deadline:
+                        threading.Event().wait(0.01)
+                        diagnostics = get("/api/diagnostics")
+                        pruning = diagnostics["migrations"]["entityTombstones"]["pruning"]
                     self.assertEqual(diagnostics["migrations"]["search"]["phase"], "complete")
                     self.assertIsNone(diagnostics["searchMigrationError"])
                     self.assertEqual(diagnostics["migrations"]["analyticsFile"]["status"], "complete")
                     tombstones = diagnostics["migrations"]["entityTombstones"]
                     self.assertLessEqual(tombstones["count"], ENTITY_TOMBSTONE_LIMIT)
-                    self.assertEqual(tombstones["pruning"]["status"], "complete")
+                    self.assertEqual(pruning["status"], "complete", pruning)
                     self.assertTrue(all(value["status"] == "complete"
                                         for value in diagnostics["migrations"]["payloads"].values()))
                     runtime.search_migration_error = "fixture migration failure"
@@ -244,7 +272,8 @@ class UpgradeContract(unittest.TestCase):
                         [str(ROOT / "scripts/codex-upgrade-check"), "--repo", str(ROOT),
                          "--state-dir", str(state), "--diagnostics-url", origin + "/api/diagnostics"],
                         check=True, capture_output=True, text=True, cwd=ROOT).stdout)
-                    self.assertTrue(upgrade_check["prechecks"]["stateDatabase"]["readable"])
+                    self.assertTrue(upgrade_check["prechecks"]["stateDatabase"]["readable"],
+                                    json.dumps(upgrade_check, sort_keys=True))
                     self.assertEqual(upgrade_check["runningAgentCount"], 1)
                     self.assertEqual(upgrade_check["migrations"]["search"]["phase"], "complete")
                     with runtime.db() as db:
@@ -299,7 +328,7 @@ class SupervisorUpgradeContract(unittest.TestCase):
             filename = state / "background-recovery.json"
             filename.write_text(json.dumps(config))
             loaded = recover_backend.load_config(filename, state)
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ, {"HOME": str(state)}, clear=True):
                 env = recover_backend.launch_environment(loaded, state)
             self.assertNotIn("CODEX_AGENTS_SUPERVISOR_MODE", env)
             self.assertEqual(recover_backend.supervisor_tick(loaded, state)[1], "disabled")
@@ -308,7 +337,7 @@ class SupervisorUpgradeContract(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="studio-upgrade-contract-") as directory:
             state = Path(directory).resolve()
             (state / "background-recovery.json").write_text('{"supervisorEnabled":true}\n')
-            with patch.dict(os.environ, {}, clear=True):
+            with patch.dict(os.environ, {"HOME": str(state)}, clear=True):
                 with self.assertRaisesRegex(RuntimeError, "AppServers were not started"):
                     AppServer(state, lambda _: None, lambda _: None, lambda: None, executable="/usr/bin/true")
 

@@ -128,6 +128,10 @@ class SavedProcess:
             self.exited.set()
             self.stdout.lines.put(None)
 
+    def detach(self):
+        self.exited.set()
+        self.stdout.lines.put(None)
+
     def wait(self, timeout=None):
         if not self.exited.wait(timeout):
             raise AssertionError('Fixture transport did not close')

@@ -194,11 +194,21 @@ class WorkerConnectionStability(unittest.TestCase):
             other_server.native = {'id': 'other-thread', 'status': {'type': 'idle'},
                                    'turns': [{'id': 'other-turn', 'status': 'completed', 'items': []}]}
             self.server.read_gate = threading.Event()
+            other_completed = threading.Event()
+            original_put = self.runtime.put
+
+            def put_and_signal(db, table, record):
+                result = original_put(db, table, record)
+                if table == 'agents' and record.get('id') == other['id'] and record.get('status') == 'completed':
+                    other_completed.set()
+                return result
+
             try:
-                with patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('shared pool blocked')):
+                with patch.object(self.runtime, 'put', side_effect=put_and_signal), \
+                     patch.object(self.runtime.recovery_pool, 'submit', side_effect=AssertionError('shared pool blocked')):
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), other])
                     self.assertTrue(self.server.read_entered.wait(2))
-                    fixture.fixture.fixture.eventually(lambda: self.runtime.agent(other['id'])['status'] == 'completed', timeout=2)
+                    self.assertTrue(other_completed.wait(30), 'other account recovery did not complete')
                     calls = list(self.server.calls)
                     recovery.tick(self.runtime, [self.runtime.agent(self.key), self.runtime.agent(other['id'])])
                     self.assertEqual(self.server.calls, calls)
@@ -248,10 +258,20 @@ class WorkerConnectionStability(unittest.TestCase):
     def test_independent_service_recovers_without_global_dispatch(self):
         self.server.native['status']['type'] = 'idle'
         self.server.native['turns'][0]['status'] = 'completed'
-        with patch.object(self.runtime, 'dispatch', side_effect=AssertionError('scheduler must not run')):
+        completed = threading.Event()
+        original_put = self.runtime.put
+
+        def put_and_signal(db, table, record):
+            result = original_put(db, table, record)
+            if table == 'agents' and record.get('id') == self.key and record.get('status') == 'completed':
+                completed.set()
+            return result
+
+        with patch.object(self.runtime, 'put', side_effect=put_and_signal), \
+             patch.object(self.runtime, 'dispatch', side_effect=AssertionError('scheduler must not run')):
             manager = recovery.start(self.runtime, interval=.02)
             self.addCleanup(manager.close)
-            fixture.fixture.fixture.eventually(lambda: self.runtime.agent(self.key)['status'] == 'completed', timeout=2)
+            self.assertTrue(completed.wait(30), 'independent recovery did not complete')
             self.assertIs(recovery.start(self.runtime, interval=.02), manager)
             manager.close()
             self.assertFalse(manager.thread.is_alive())

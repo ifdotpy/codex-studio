@@ -1,0 +1,41 @@
+.project-settings {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.project-settings-path {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+  overflow-wrap: anywhere;
+}
+.project-settings .ui-settings-row {
+  align-items: flex-start;
+}
+.project-settings .ui-label {
+  flex: 0 0 140px;
+  padding-top: 12px;
+}
+.project-settings .ui-row-control {
+  flex: 1;
+  max-width: none;
+  min-width: 0;
+}
+.project-settings .account-tiles {
+  margin: 0;
+}
+.project-settings .setup-account .mantine-Button-label {
+  white-space: nowrap;
+}
+.project-settings-group {
+  display: contents;
+}
+.project-settings-group > .mantine-Button-root {
+  justify-self: end;
+}
+@media (max-width: 760px) {
+  .project-settings .ui-label {
+    flex: auto;
+    padding-top: 0;
+  }
+}

@@ -54,6 +54,15 @@ class ResponseSink:
 
 
 class ToolResponseBoundaryContract(unittest.TestCase):
+    @staticmethod
+    def operation_result(result):
+        """Compare the saved operation, excluding model-only policy context."""
+        return {**result, 'contentItems': [
+            item for item in result.get('contentItems', [])
+            if not (item.get('type') == 'inputText' and item.get('text', '').startswith((
+                '[Studio subagent concurrency, revision ',
+                '[Time awareness] Tool result finalized at ')))]}
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-tool-response-')
         self.addCleanup(self.temp.cleanup)
@@ -106,7 +115,14 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         self.assertEqual(len(self.sink.messages), 1)
         receipt = self.receipt()
         self.assertEqual(receipt['outcome'], outcome)
-        self.assertEqual(self.sink.messages[0], {'id': self.message['id'], 'result': receipt['result']})
+        delivered = self.sink.messages[0]
+        self.assertEqual(delivered['id'], self.message['id'])
+        self.assertEqual(self.operation_result(delivered['result']),
+                         self.operation_result(receipt['result']))
+        policy = [item for item in delivered['result']['contentItems']
+                  if item.get('type') == 'inputText' and item.get('text', '').startswith(
+                      '[Studio subagent concurrency, revision ')]
+        self.assertLessEqual(len(policy), 1)
         with self.runtime.read_db() as db:
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_work').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_operation_receipts WHERE id=?',
@@ -194,7 +210,8 @@ class ToolResponseBoundaryContract(unittest.TestCase):
                 return_value='fixture-response-operation') as identity:
             self.run_tool()
         self.assert_one_operation_and_saved_response()
-        identity.assert_called_once_with(self.runtime, 'default', self.message['id'])
+        identity.assert_called_once_with(self.runtime, 'default', self.message['id'],
+                                         'original-connection')
         self.assertEqual(self.sink.operation_ids, ['fixture-response-operation'])
 
     def test_reply_keeps_the_existing_write_call_without_an_operation_id(self):
@@ -209,7 +226,8 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         with patch('codex_tool_response_recovery.response_operation_id',
                 return_value='fixture-response-operation') as identity:
             self.runtime.reply(response, 'default', 'original-connection')
-        identity.assert_called_once_with(self.runtime, 'default', response['id'])
+        identity.assert_called_once_with(self.runtime, 'default', response['id'],
+                                         'original-connection')
         self.assertEqual(self.sink.operation_ids, ['fixture-response-operation'])
 
     def test_legacy_claude_response_without_a_supervisor_keeps_the_old_write_call(self):
@@ -265,7 +283,10 @@ class ToolResponseBoundaryContract(unittest.TestCase):
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_work').fetchone()[0], 1)
             self.assertEqual(db.execute('SELECT count(*) FROM runtime_operation_receipts WHERE id=?',
                 (self.key,)).fetchone()[0], 1)
-        self.assertEqual(self.sink.messages, [{'id': self.message['id'], 'result': saved}])
+        self.assertEqual(len(self.sink.messages), 1)
+        self.assertEqual(self.sink.messages[0]['id'], self.message['id'])
+        self.assertEqual(self.operation_result(self.sink.messages[0]['result']),
+                         self.operation_result(saved))
         self.assertEqual(self.errors()[0]['phase'], 'receipt')
         self.assertEqual(self.errors()[0]['errorType'], 'IntegrityError')
 
@@ -422,6 +443,7 @@ class ToolResponseBoundaryContract(unittest.TestCase):
         server.supervisor_mode = True
         server.write_lock = threading.Lock()
         server.proc = SimpleNamespace(poll=lambda: None, send_write=send)
+        server.transcript_capture = SimpleNamespace(record=lambda *_args: None)
         response = {'id': 'fixture-rpc', 'result': {'success': True}}
         self.assertIs(server.write(response, operation_id='fixture-response-operation'), receipt)
         self.assertEqual(calls, [(response, {'operation_id': 'fixture-response-operation'})])

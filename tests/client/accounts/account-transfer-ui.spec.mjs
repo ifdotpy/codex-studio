@@ -6,6 +6,8 @@ import {
   accountTileGroup,
   handleEntitySyncFixtureRequest,
   syncIdentityFixture,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
 } from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import { createServer } from "node:http";
@@ -180,6 +182,7 @@ test("Account Transfer Ui", async ({
     }
     const json = (data) => {
       res.setHeader("Content-Type", "application/json");
+      res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
       res.end(JSON.stringify(data));
     };
     if (
@@ -366,8 +369,15 @@ test("Account Transfer Ui", async ({
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    const accountGroup = accountTileGroup(page, "Account");
-    await accountTileButton(page, "Account", "Work").click();
+    const more = page.locator(".chat-settings-more");
+    if ((await more.count()) && !(await more.getAttribute("open")))
+      await more.locator("summary").click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const accountGroup = accountTileGroup(page, "Main agent account");
+    await accountTileButton(page, "Main agent account", "Work").click();
     const confirmation = page.getByRole("dialog", {
       name: "Transfer this chat",
       exact: true,
@@ -391,8 +401,12 @@ test("Account Transfer Ui", async ({
       .toBe(1);
     assert.ok(notifySync, "the real fixture resource stream is connected");
     notifySync([{ kind: "state" }]);
-    const transferStatus = page.locator(
-      "#composer .account-menu-note[role=status]",
+    const agentSettings = page.getByRole("dialog", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    const transferStatus = agentSettings.locator(
+      ".account-menu-note[role=status]",
     );
     await transferStatus.waitFor();
     assert.equal(
@@ -425,7 +439,7 @@ test("Account Transfer Ui", async ({
     const firstRequestId = bodies.find(
       (b) => b.path === "/api/agents/account-transfer",
     ).body.request_id;
-    await accountTileButton(page, "Account", "Work").click();
+    await accountTileButton(page, "Main agent account", "Work").click();
     const extension = page.getByRole("dialog", {
       name: "Add agents to this transfer",
       exact: true,
@@ -446,7 +460,11 @@ test("Account Transfer Ui", async ({
       "a transfer extension gets its own stable request id",
     );
     assert.equal(
-      await accountTileButton(page, "Account", "Second workspace").isDisabled(),
+      await accountTileButton(
+        page,
+        "Main agent account",
+        "Second workspace",
+      ).isDisabled(),
       true,
     );
     await page.keyboard.press("Escape");
@@ -492,6 +510,10 @@ test("Account Transfer Ui", async ({
       .click();
     await page
       .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Main agent settings", exact: true })
       .locator(".account-menu-note[role=status]")
       .filter({ hasText: "Source rollout is missing" })
       .first()
@@ -628,7 +650,11 @@ test("Account Transfer Ui", async ({
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    await accountTileButton(page, "Account", "Work").click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    await accountTileButton(page, "Main agent account", "Work").click();
     await expect(accountGroup).toHaveAttribute("data-value", "work");
     assert.ok(
       bodies.some(

@@ -357,23 +357,37 @@ class ExternalCliSseTests(unittest.TestCase):
                     self.assertEqual(len(proxy_requests), 2)
                     self.assertEqual(proxy_requests[0], proxy_requests[1])
                     self.assertEqual(proxy_requests[0]["requestId"], proxy_requests[1]["requestId"])
-                    first_event = self._read_frame(stream)
-                    second_event = self._read_frame(stream)
-                    self.assertIn("event: resources", first_event)
-                    self.assertIn("event: resources", second_event)
-                    payloads = [
-                        json.loads(next(line[6:] for line in event if line.startswith("data: ")))
-                        for event in (first_event, second_event)
-                    ]
-                    self.assertEqual(payloads[0]["revision"], before_revision + 1)
-                    self.assertEqual(payloads[1]["revision"], before_revision + 2)
-                    self.assertEqual(
-                        {tuple(sorted(resource.items())) for payload in payloads for resource in payload["resources"]},
-                        {
-                            (("kind", "state"),),
-                            (("agentId", "host-root"), ("kind", "workspace")),
-                        },
-                    )
+                    expected_resources = {
+                        (("kind", "state"),),
+                        (("agentId", "host-root"), ("kind", "workspace")),
+                    }
+                    observed_resources = set()
+                    observed_revisions = []
+                    frame_deadline = time.monotonic() + 5
+                    while (time.monotonic() < frame_deadline
+                           and (observed_resources != expected_resources
+                                or not observed_revisions
+                                or max(observed_revisions) < before_revision + 2)):
+                        event = self._read_frame(stream)
+                        if "event: resources" not in event:
+                            continue
+                        payload = json.loads(
+                            next(line[6:] for line in event if line.startswith("data: "))
+                        )
+                        observed_revisions.append(payload["revision"])
+                        observed_resources.update(
+                            tuple(sorted(resource.items()))
+                            for resource in payload["resources"]
+                        )
+                        if (observed_resources == expected_resources
+                                and max(observed_revisions) == before_revision + 2):
+                            break
+                    self.assertEqual(observed_resources, expected_resources)
+                    self.assertEqual(max(observed_revisions), before_revision + 2)
+                    self.assertTrue(all(
+                        before_revision < revision <= before_revision + 2
+                        for revision in observed_revisions
+                    ))
                     with canvas.connect() as db:
                         stored = db.execute("SELECT count(*) FROM graph_agents WHERE id='host-root'").fetchone()
                     self.assertEqual(stored[0], 1)
@@ -419,17 +433,31 @@ class ExternalCliSseTests(unittest.TestCase):
                     # The external notification publishes the room and its
                     # unknown entity sequence separately; accept both frames.
                     posted_payloads = []
-                    for _ in range(2):
+                    expected_post_resources = {
+                        ("state", None),
+                        ("room", chat_id),
+                    }
+                    observed_post_resources: set[tuple[str, str | None]] = set()
+                    posted_revision = connected_payload["revision"]
+                    deadline = time.monotonic() + 5
+                    while (observed_post_resources != expected_post_resources
+                           or posted_revision <= connected_payload["revision"]):
+                        self.assertLess(time.monotonic(), deadline,
+                                        "SSE did not publish both post resources and a newer revision")
                         posted_event = self._read_frame(stream)
-                        posted_payloads.append(
-                            json.loads(
-                                next(
-                                    line[6:]
-                                    for line in posted_event
-                                    if line.startswith("data: ")
-                                )
-                            )
+                        if "event: resources" not in posted_event:
+                            continue
+                        payload = json.loads(next(
+                            line[6:] for line in posted_event if line.startswith("data: ")
+                        ))
+                        posted_payloads.append(payload)
+                        posted_revision = max(posted_revision, payload["revision"])
+                        observed_post_resources.update(
+                            (resource["kind"], resource.get("roomId"))
+                            for resource in payload["resources"]
                         )
+                    self.assertEqual(observed_post_resources, expected_post_resources)
+                    self.assertGreater(posted_revision, connected_payload["revision"])
                     posted_resources = [
                         resource
                         for payload in posted_payloads

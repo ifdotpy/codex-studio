@@ -92,11 +92,15 @@ class ArchiveRejections(unittest.TestCase):
             self.assertEqual(self.rt.records(db, 'items')[0]['text'], 'Preserved result')
         self.assertEqual(self.rt.calls, [('thread/read', 'worker')])
 
-    def test_monitor_disk_failure_keeps_archive_blocked(self):
+    def test_finished_worker_can_archive_unknown_monitor_failure_without_losing_receipt(self):
         self.record('orchestration_monitor', 'database or disk is full')
-        self.assertFalse(self.call('inspect')['canArchive'])
-        self.assertEqual(self.call('archive')['status'], 'blocked')
-        self.assertEqual(self.rt.calls, [])
+        self.assertTrue(self.call('inspect')['canArchive'])
+        self.assertEqual(self.call('archive')['status'], 'archived')
+        with self.rt.db() as db:
+            row = self.rt.records(db, 'tool_requests')[0]
+            self.assertEqual(row['outcome'], 'unknown')
+            self.assertEqual(row['result']['contentItems'][0]['text'], 'database or disk is full')
+        self.assertEqual(self.rt.calls, [('thread/read', 'worker')])
 
 
 if __name__ == '__main__':

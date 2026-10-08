@@ -21,6 +21,12 @@ spec.loader.exec_module(fixture)
 class MissingThreadContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
+        # This fixture tests thread unload/rejection only. Prevent the
+        # independent session-name worker from writing nativeNameFailure while
+        # the tests compare the agent record around an unload notification.
+        self.session_names_tick = patch('codex_session_names.SessionNames.tick', autospec=True)
+        self.session_names_tick.start()
+        self.addCleanup(self.session_names_tick.stop)
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
         self.agent = self.runtime.create({'name': 'Worker', 'cwd': self.temp.name, 'prompt': 'Task'}, draft=True)

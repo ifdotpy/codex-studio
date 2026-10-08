@@ -112,6 +112,7 @@ class ArchiveFixture(codex_work.WorkMixin):
         self.release = threading.Event()
         self.release.set()
         self.calls = []
+        self.calls_changed = threading.Event()
         self.effects = 0
         self.callback = lambda *args: {'status': 'kept', 'retryable': True, 'reason': 'owner busy'}
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -169,6 +170,7 @@ class ArchiveFixture(codex_work.WorkMixin):
 
     def _archive_accepted_owner(self, actor, work, epoch):
         self.calls.append((actor, copy.deepcopy(work), epoch, time.time()))
+        self.calls_changed.set()
         return self.callback(actor, work, epoch)
 
     def tick(self):
@@ -505,10 +507,12 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
         fixture = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(fixture)
         calls = []
+        archive_called = threading.Event()
 
         class ControlledRuntime(fixture.Runtime):
             def _archive_accepted_owner(self, actor, work, epoch):
                 calls.append((work['id'], time.time()))
+                archive_called.set()
                 return {'status': 'kept', 'retryable': True, 'reason': 'fixture owner busy'}
 
         with tempfile.TemporaryDirectory(prefix='accepted-archive-real-restart-') as directory:
@@ -542,7 +546,8 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
                         work['archiveIntent']['nextAttemptAt'] = 0
                         runtime.put(db, 'work', work)
                     runtime.changed.set()
-                    fixture.eventually(lambda: len(calls) == 1, timeout=3)
+                    self.assertTrue(archive_called.wait(30), 'archive callback did not run')
+                    self.assertEqual(len(calls), 1)
                     self.assertEqual(calls[0][0], 'restart-task')
                     self.assertEqual(runtime.servers, {})
                 finally:

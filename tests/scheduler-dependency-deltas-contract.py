@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Work owners and transfer roots recheck only the agents they can select."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import importlib.util
 import json
 from pathlib import Path

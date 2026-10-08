@@ -6,6 +6,7 @@ import {
   syncIdentityFixture,
   accountTileButton,
   accountTileGroup,
+  installApiSchemaFixtureHeaders,
 } from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
@@ -16,6 +17,7 @@ import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 async function runAccountsUi(mode, { page: fixturePage }) {
+  installApiSchemaFixtureHeaders(fixturePage);
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -602,17 +604,29 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await page
         .getByRole("button", { name: "Chat settings", exact: true })
         .click();
-      await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .getByRole("group", { name: "Account", exact: true })
-        .waitFor();
-      await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .getByRole("button", { name: "Close", exact: true })
+      const chatSettings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      const more = chatSettings.locator(".chat-settings-more");
+      if ((await more.count()) && !(await more.getAttribute("open")))
+        await more.locator("summary").click();
+      await chatSettings
+        .getByRole("button", { name: "Main agent settings", exact: true })
         .click();
       await page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .waitFor({ state: "hidden" });
+        .getByRole("group", { name: "Main agent account", exact: true })
+        .waitFor();
+      const agentSettings = page.getByRole("dialog", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      await agentSettings.getByRole("button", { name: "Close" }).click();
+      await agentSettings.waitFor({ state: "hidden" });
+      await chatSettings
+        .getByRole("button", { name: "Close", exact: true })
+        .click();
+      await chatSettings.waitFor({ state: "hidden" });
       await page.getByRole("button", { name: "Studio settings" }).click();
       const studio = page.getByRole("dialog", {
         name: "Studio settings",
@@ -690,7 +704,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await appearanceTab.waitFor();
       await appearanceTab.click();
       await studioSettings
-        .getByRole("region", { name: "Theme", exact: true })
+        .getByRole("radiogroup", { name: "Studio theme", exact: true })
         .waitFor();
       console.log(`PERF studio-settings-open-ms=${roundedOpenMs}`);
       await studioSettings
@@ -861,7 +875,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       name: "Chat settings",
       exact: true,
     });
-    const picker = accountTileGroup(settings, "Account");
+    const picker = accountTileGroup(page, "Main agent account");
     const openSettings = async () => {
       if (!(await settings.isVisible())) {
         const direct = page.getByRole("button", {
@@ -876,14 +890,31 @@ async function runAccountsUi(mode, { page: fixturePage }) {
             .click();
         }
       }
+      const more = settings.locator(".chat-settings-more");
+      if ((await more.count()) && !(await more.getAttribute("open")))
+        await more.locator("summary").click();
+      const agentSettings = settings.getByRole("button", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await agentSettings.isVisible()) await agentSettings.click();
       await picker.waitFor();
     };
     const closeSettings = async () => {
-      if (!(await settings.isVisible())) return;
-      await settings
-        .getByRole("button", { name: "Close", exact: true })
-        .click();
-      await settings.waitFor({ state: "hidden" });
+      const agentSettings = page.getByRole("dialog", {
+        name: "Main agent settings",
+        exact: true,
+      });
+      if (await agentSettings.isVisible()) {
+        await agentSettings.getByRole("button", { name: "Close" }).click();
+        await agentSettings.waitFor({ state: "hidden" });
+      }
+      if (await settings.isVisible())
+        await settings
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
+      if (await settings.isVisible())
+        await settings.waitFor({ state: "hidden" });
     };
     const openStudioAccounts = async () => {
       await closeSettings();
@@ -898,7 +929,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return studio;
     };
     const accountTile = async (account) => {
-      const group = accountTileGroup(page, "Account");
+      const group = accountTileGroup(page, "Main agent account");
       const provider = account.provider || "codex";
       const providerControl = group.getByRole("radio", {
         name: provider === "claude" ? "Claude" : "Codex",
@@ -910,11 +941,11 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       ) {
         await providerControl.locator("xpath=following-sibling::label").click();
       }
-      return accountTileButton(page, "Account", account.label);
+      return accountTileButton(page, "Main agent account", account.label);
     };
     const expectAccountTileSelected = async (account) => {
       await expect(
-        accountTileButton(page, "Account", account.label),
+        accountTileButton(page, "Main agent account", account.label),
       ).toHaveAttribute("aria-pressed", "true");
     };
     const waitForAccountTiles = async () => {
@@ -1119,7 +1150,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     const mutationsBeforeTransfer = bodies.filter((r) =>
       ["/api/agents/account", "/api/agents/account-transfer"].includes(r.path),
     ).length;
-    await accountTileButton(page, "Account", "Work").click();
+    await accountTileButton(page, "Main agent account", "Work").click();
     const transferDialog = page.getByRole("dialog", {
       name: "Transfer this chat",
       exact: true,
@@ -1725,7 +1756,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
         accounts.find((account) => account.id === "claude-added"),
       )
     ).waitFor();
-    const accountGroup = accountTileGroup(page, "Account");
+    const accountGroup = accountTileGroup(page, "Main agent account");
     await expect(
       accountGroup.getByRole("button", {
         name: "Select account Claude",

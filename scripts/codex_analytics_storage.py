@@ -241,11 +241,14 @@ def start(runtime):
                 if status in {"complete", "unsupportedTables", "missingTargetTable"}:
                     return
                 if not advanced:
-                    time.sleep(30 if status in {"waitingForSpace", "insufficientSpace"} else .5)
+                    delay = 30 if status in {"waitingForSpace", "insufficientSpace"} else .5
+                    if runtime._close_event.wait(delay):
+                        return
             except Exception as error:
                 runtime.analytics_migration_status = {"status": "error", "updated": time.time(),
                                                       "error": f"{type(error).__name__}: {error}"[:1000]}
-                time.sleep(1)
+                if runtime._close_event.wait(1):
+                    return
 
     runtime.analytics_migration_thread = threading.Thread(target=run, daemon=True,
                                                           name="analytics-file-migration")

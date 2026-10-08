@@ -1,7 +1,14 @@
+import { createPortal } from "react-dom";
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import { SettingsSection } from "./ui/primitives";
+import { SettingsSection, SettingsRow } from "./ui/primitives";
 import { useEffect, useRef, useState } from "react";
-import { Button, NativeSelect, Switch, TextInput } from "@mantine/core";
+import {
+  Button,
+  NativeSelect,
+  Switch,
+  TextInput,
+  SegmentedControl,
+} from "@mantine/core";
 import { errorText, post, saved, type PostBody, type PostResult } from "../api";
 import { busy, type Agent } from "../types";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
@@ -72,11 +79,16 @@ export function ClaudeSettings({
   agent,
   account,
   onSignIn,
+  permissionsTargetId,
 }: {
+  permissionsTargetId?: string;
   agent: Agent;
   account?: Account;
   onSignIn?: (accountKey: string) => void;
 }) {
+  const permissionsTarget = permissionsTargetId
+    ? document.getElementById(permissionsTargetId)
+    : null;
   const catalog = useWorkerModels(
     agent.accountKey || "default",
     !account || account.status === "ready",
@@ -260,14 +272,39 @@ export function ClaudeSettings({
           : ""}
     </div>
   );
+  const Advanced = permissionsTarget ? "div" : "details";
   return (
     <section
       className="settings-group claude-settings"
       aria-label="Claude settings"
       aria-busy={stateLoading}
     >
-      <SettingsSection title="Permissions">
-        {stateLoading && <p role="status">Loading Claude settings…</p>}
+      {permissionsTarget &&
+        createPortal(
+          <SettingsRow label="Permissions">
+            <SegmentedControl
+              aria-label="Permission mode"
+              value={values.permissionMode}
+              disabled={locked}
+              data={[
+                { value: "default", label: "Ask" },
+                { value: "acceptEdits", label: "Edits" },
+                { value: "bypassPermissions", label: "Full" },
+              ]}
+              onChange={(value) => {
+                const selected = permissionMode(value);
+                if (selected)
+                  void saveSetting("Permission mode", {
+                    permissionMode: selected,
+                  });
+              }}
+            />
+            {fieldStatus("Permission mode")}
+            {error && <span role="alert">{error}</span>}
+          </SettingsRow>,
+          permissionsTarget,
+        )}
+      {permissionsTarget ? (
         <NativeSelect
           label="Permission mode"
           value={values.permissionMode}
@@ -278,16 +315,39 @@ export function ClaudeSettings({
               void saveSetting("Permission mode", { permissionMode: selected });
           }}
           data={[
-            { value: "default", label: "Ask for permission" },
-            { value: "acceptEdits", label: "Allow file edits" },
+            { value: "default", label: "Ask" },
+            { value: "acceptEdits", label: "Edits" },
             { value: "auto", label: "Automatic" },
             { value: "plan", label: "Plan only" },
-            { value: "bypassPermissions", label: "Full access" },
+            { value: "bypassPermissions", label: "Full" },
           ]}
         />
-        {fieldStatus("Permission mode")}
-      </SettingsSection>
-      <SettingsSection title="Optional modes">
+      ) : (
+        <SettingsSection title="Permissions">
+          {stateLoading && <p role="status">Loading Claude settings…</p>}
+          <NativeSelect
+            label="Permission mode"
+            value={values.permissionMode}
+            disabled={locked}
+            onChange={(event) => {
+              const selected = permissionMode(event.currentTarget.value);
+              if (selected)
+                void saveSetting("Permission mode", {
+                  permissionMode: selected,
+                });
+            }}
+            data={[
+              { value: "default", label: "Ask for permission" },
+              { value: "acceptEdits", label: "Allow file edits" },
+              { value: "auto", label: "Automatic" },
+              { value: "plan", label: "Plan only" },
+              { value: "bypassPermissions", label: "Full access" },
+            ]}
+          />
+          {fieldStatus("Permission mode")}
+        </SettingsSection>
+      )}
+      <div className="claude-optional-modes">
         {thinkingRequired ? (
           <p className="claude-setting-help">
             Thinking is always on for this model.
@@ -306,9 +366,9 @@ export function ClaudeSettings({
           />
         )}
         {fieldStatus("Extended thinking")}
-      </SettingsSection>
-      <details className="claude-advanced">
-        <summary>More settings and actions</summary>
+      </div>
+      <Advanced className="claude-advanced">
+        {!permissionsTarget && <summary>More settings and actions</summary>}
         <div className="claude-advanced-content">
           <TextInput
             label="Auto-compact token limit"
@@ -464,7 +524,7 @@ export function ClaudeSettings({
             </div>
           ))}
         </div>
-      </details>
+      </Advanced>
       {error && (
         <p role="alert" className="claude-setting-error">
           {error}

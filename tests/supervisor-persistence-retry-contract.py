@@ -41,9 +41,11 @@ def fragment(sequence, text, item='response'):
 
 
 class ReceiptProc:
-    def __init__(self, durable):
+    def __init__(self, durable, changed):
         self.handle = 'fixture:account'
         self.durable = durable
+        self.changed = changed
+        self.acknowledged = threading.Event()
         self.cursor = 0
         self.acks = []
         self.batches = {}
@@ -68,6 +70,8 @@ class ReceiptProc:
             raise AssertionError('Supervisor ACK preceded the durable SQLite cursor')
         self.acks.append(sequence)
         self.cursor = sequence
+        self.acknowledged.set()
+        self.changed.set()
 
 
 class DispatchFixture:
@@ -89,7 +93,17 @@ class DispatchFixture:
         server.request = request
         server.supervisor_event_applied = lookup
         server.supervisor_commit = commit
-        server.proc = ReceiptProc(durable)
+        self.changed = threading.Event()
+        server.proc = ReceiptProc(durable, self.changed)
+        fail_transport = server.fail_transport
+
+        def signal_transport_failure(error):
+            try:
+                fail_transport(error)
+            finally:
+                self.changed.set()
+
+        server.fail_transport = signal_transport_failure
         self.worker = threading.Thread(target=server.dispatch, daemon=True)
 
     def start(self, events, request=False):
@@ -101,9 +115,10 @@ class DispatchFixture:
     def wait(self, condition, timeout=3):
         deadline = time.monotonic() + timeout
         while not condition():
-            if time.monotonic() >= deadline:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not self.changed.wait(remaining):
                 raise AssertionError('The expected dispatch state did not arrive')
-            time.sleep(.005)
+            self.changed.clear()
 
     def close(self):
         self.server.reader_done.set()
@@ -116,7 +131,7 @@ class DispatchFixture:
 class QuietRuntime(Runtime):
     def schedule(self):
         while not self.closed:
-            self.changed.wait(.05)
+            self.changed.wait()
             self.changed.clear()
 
 
@@ -301,6 +316,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     row = db.execute('SELECT record FROM runtime_items WHERE id=?',
                                      (agent['id'] + ':response',)).fetchone()
                     self.assertEqual(json.loads(row[0])['text'], 'ab')
+                analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
+                self.assertIsNotNone(analytics_idle)
+                self.assertTrue(analytics_idle.wait(30),
+                                'The committed stream analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?',
@@ -326,17 +345,35 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 runtime.put(db, 'agents', stream_agent)
                 send_agent.update(status='paused', autoWake=False)
                 runtime.put(db, 'agents', send_agent)
-            analytics_started, release_analytics, sent = (
-                threading.Event(), threading.Event(), threading.Event())
+            analytics_started, release_analytics, analytics_finished, sent = (
+                threading.Event(), threading.Event(), threading.Event(), threading.Event())
+            analytics_committed = threading.Event()
             capture_calls, receipts, send_errors, delivered = [], [], [], []
+            captured_connection = None
             original_capture = runtime.analytics_event
+            original_analytics_db = runtime.analytics_db
+
+            @contextmanager
+            def observed_analytics_db(*, busy_timeout=None):
+                with original_analytics_db(busy_timeout=busy_timeout) as db:
+                    connection_id = id(db)
+                    yield db
+                if connection_id == captured_connection:
+                    analytics_committed.set()
+
+            runtime.analytics_db = observed_analytics_db
 
             def blocked_capture(db, agent, method, params, **options):
+                nonlocal captured_connection
+                captured_connection = id(db)
                 capture_calls.append(method)
                 analytics_started.set()
                 if not release_analytics.wait(5):
                     raise AssertionError('The test did not release the analytics capture')
-                return original_capture(db, agent, method, params, **options)
+                try:
+                    return original_capture(db, agent, method, params, **options)
+                finally:
+                    analytics_finished.set()
 
             runtime.analytics_event = blocked_capture
 
@@ -369,9 +406,13 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             try:
                 self.assertTrue(analytics_started.wait(3))
                 self.assertEqual(durable(), 2, 'The stream cursor commits before analytics begins')
-                self.assertEqual(fixture.server.proc.acks, [])
+                self.assertTrue(fixture.server.proc.acknowledged.wait(30),
+                                'The durable cursor must be acknowledged while analytics is blocked')
+                self.assertFalse(release_analytics.is_set())
+                self.assertEqual(fixture.server.proc.acks, [2],
+                                 'A durable stream cursor is acknowledged without waiting for analytics')
                 sender.start()
-                self.assertTrue(sent.wait(.5), 'User send must complete while stream analytics remains blocked')
+                self.assertTrue(sent.wait(30), 'User send must complete while stream analytics remains blocked')
                 self.assertEqual(send_errors, [])
                 self.assertEqual(receipts, [{'id': 'during-analytics', 'status': 'queued'}])
                 self.assertFalse(release_analytics.is_set())
@@ -384,7 +425,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 fixture.wait(lambda: fixture.server.proc.cursor == 2 or fixture.server.transport_error)
                 self.assert_connection_open(fixture)
                 self.assertEqual(delivered, [1, 2])
+                self.assertTrue(analytics_finished.wait(3), 'The released analytics capture must finish')
                 self.assertEqual(capture_calls, ['item/agentMessage/delta'])
+                self.assertTrue(analytics_committed.wait(3),
+                                'The analytics connection must close before committed rows are read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?',
@@ -446,6 +490,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     row = db.execute('SELECT record FROM runtime_agents WHERE id=?',
                                      (agent['id'],)).fetchone()
                     self.assertEqual(json.loads(row[0])['events'], 1)
+                analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
+                self.assertIsNotNone(analytics_idle)
+                self.assertTrue(analytics_idle.wait(30),
+                                'The committed lifecycle analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?', (agent['id'], 'item/started')).fetchone()[0]
@@ -497,16 +545,21 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             original_db = runtime.analytics_db
             original_capture = runtime.capture_stream_analytics
             contexts, captures = [], []
+            attempts_finished = threading.Event()
 
             @contextmanager
-            def fail_first_commit():
+            def fail_first_commit(**options):
                 contexts.append(1)
-                with original_db() as db:
-                    yield db
-                    if len(contexts) == 1:
-                        # Fail context completion before COMMIT. Its existing DB
-                        # scope rolls the capture back before the retry starts.
-                        raise busy_error()
+                try:
+                    with original_db(**options) as db:
+                        yield db
+                        if len(contexts) == 1:
+                            # Fail context completion before COMMIT. Its existing DB
+                            # scope rolls the capture back before the retry starts.
+                            raise busy_error()
+                finally:
+                    if len(contexts) == 2:
+                        attempts_finished.set()
 
             def remember_capture(operation):
                 def observed(db):
@@ -522,6 +575,7 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assert_connection_open(fixture)
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [2])
+                self.assertTrue(attempts_finished.wait(3), 'The same analytics capture must retry after SQLITE_BUSY')
                 self.assertEqual(len(contexts), 2)
                 self.assertEqual(len(captures), 2)
                 self.assertIs(captures[0], captures[1])
@@ -567,13 +621,19 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             runtime, agent, fixture, delivered = self.runtime_fixture(directory)
             original_db = runtime.analytics_db
             contexts = []
+            attempt_finished = threading.Event()
 
             @contextmanager
-            def fail_commit():
+            def fail_commit(**options):
                 contexts.append(1)
-                with original_db() as db:
-                    yield db
-                    raise io_error()
+                if len(contexts) == 1:
+                    with original_db(**options) as db:
+                        yield db
+                        raise io_error()
+                else:
+                    with original_db(**options) as db:
+                        yield db
+                    attempt_finished.set()
 
             runtime.analytics_db = fail_commit
             fixture.start([fragment(1, 'a'), fragment(2, 'b')])
@@ -583,11 +643,18 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertEqual(delivered, [1, 2])
                 self.assertEqual(fixture.server.proc.acks, [2])
                 self.assertEqual(fixture.server.proc.durable(), 2)
-                self.assertEqual(contexts, [1])
-                error = runtime._stream_analytics_error
-                self.assertEqual(error['handle'], 'fixture:account')
-                self.assertEqual(error['sequence'], 2)
-                self.assertIn('disk I/O error', error['error'])
+                self.assertTrue(attempt_finished.wait(3), 'The permanent analytics commit failure must be recorded')
+                self.assertEqual(contexts, [1, 1],
+                                 'The failed capture and its persisted diagnostic each use one transaction')
+                state = runtime.analytics_capture_status()
+                self.assertEqual(state['failed'], 1)
+                self.assertEqual(state['lastError']['code'], 'captureFailed')
+                self.assertEqual(state['lastError']['errorType'], 'OperationalError')
+                with runtime.analytics_db() as db:
+                    row = db.execute("SELECT value FROM analytics_meta WHERE key='captureErrors'").fetchone()
+                error = json.loads(row[0])
+                self.assertEqual(error['count'], 1)
+                self.assertEqual(error['last']['errorType'], 'OperationalError')
                 runtime.analytics_db = original_db
                 self.assertEqual(self.stream_count(runtime, agent['id']), 0)
                 with runtime.read_db() as db:

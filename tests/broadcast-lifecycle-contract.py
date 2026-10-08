@@ -8,7 +8,9 @@ import importlib.util
 import json
 from pathlib import Path
 import sys
+import threading
 import unittest
+from unittest.mock import patch
 
 sys.dont_write_bytecode = True
 spec = importlib.util.spec_from_file_location("runtime_fixture", Path(__file__).with_name("runtime-contract.py"))
@@ -37,22 +39,53 @@ class BroadcastLifecycle(unittest.TestCase):
     def test_broadcast_received_before_completion_cannot_start_another_turn(self):
         lead = self.lead()
         child = self.worker(lead)
-        with self.runtime.lock:
-            first = self.runtime.chat_message(lead["id"], "broadcast", "Policy update only", "before-finish")
-            self.assertEqual(first["deliveries"][child["id"]], "queued")
-            self.finish(child)
-            self.assertEqual(self.runtime.agent(child["id"])["status"], "completed")
-            event = self.event(child, "before-finish")
-            self.assertEqual(event["status"], "stored_only")
-            self.assertIn("Assignment completed", event["error"])
-            history = self.runtime.chat_read(first["room"], child["id"])
-            self.assertEqual(history["messages"][-1]["deliveries"][child["id"]], "stored_only")
-            # A duplicate completion or admission receipt cannot restore delivery.
-            self.finish(child)
-            self.assertEqual(self.runtime.chat_message(lead["id"], "broadcast", "Policy update only", "before-finish"), first)
-            self.assertEqual(self.event(child, "before-finish")["status"], "stored_only")
-        self.runtime.dispatch()
-        self.assertEqual(self.runtime.agent(child["id"])["status"], "completed")
+        import codex_agent_management
+
+        archive_started = threading.Event()
+        archive_release = threading.Event()
+        archive_finished = threading.Event()
+        archive = codex_agent_management._archive_reviewer
+
+        def gated_archive(*args):
+            archive_started.set()
+            if not archive_release.wait(5):
+                raise AssertionError("Test did not release reviewer archival")
+            try:
+                return archive(*args)
+            finally:
+                archive_finished.set()
+
+        with patch.object(codex_agent_management, "_archive_reviewer", gated_archive):
+            with self.runtime.lock:
+                first = self.runtime.chat_message(lead["id"], "broadcast", "Policy update only", "before-finish")
+                self.assertEqual(first["deliveries"][child["id"]], "queued")
+                self.finish(child)
+                before_parent_receipt = self.runtime.agent(child["id"])
+                self.assertEqual(before_parent_receipt["status"], "completed")
+                self.assertEqual(before_parent_receipt["lastCompletedTurnStatus"], "completed")
+                event = self.event(child, "before-finish")
+                self.assertEqual(event["status"], "stored_only")
+                self.assertIn("Assignment completed", event["error"])
+                history = self.runtime.chat_read(first["room"], child["id"])
+                self.assertEqual(history["messages"][-1]["deliveries"][child["id"]], "stored_only")
+                # A duplicate completion or admission receipt cannot restore delivery.
+                self.finish(child)
+                self.assertEqual(self.runtime.chat_message(lead["id"], "broadcast", "Policy update only", "before-finish"), first)
+                self.assertEqual(self.event(child, "before-finish")["status"], "stored_only")
+            self.runtime.dispatch()
+            self.assertTrue(archive_started.wait(5), "Parent receipt did not schedule reviewer archival")
+            before_archive = self.runtime.agent(child["id"])
+            self.assertEqual(before_archive["status"], "completed")
+            self.assertEqual(before_archive["lastCompletedTurnStatus"], "completed")
+            self.assertTrue(before_archive.get("reviewArchiveScheduled"))
+            archive_release.set()
+            self.assertTrue(archive_finished.wait(5), "Reviewer archive did not finish")
+
+        archived = self.runtime.agent(child["id"])
+        self.assertEqual(archived["status"], "paused")
+        self.assertFalse(archived["autoWake"])
+        self.assertEqual(archived["lastCompletedTurnStatus"], "completed")
+        self.assertTrue(archived.get("agentArchive"))
         self.assertFalse(any(method == "turn/start" and "Policy update only" in json.dumps(params)
                              for method, params in self.runtime.server.calls))
 

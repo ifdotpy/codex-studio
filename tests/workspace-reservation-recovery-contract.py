@@ -29,7 +29,9 @@ class ReservationRecovery(unittest.TestCase):
 
     def reserve(self, agent, kind='checkpoint'):
         with self.runtime.lock, self.runtime.db() as db:
-            return self.runtime._reserve_checkpoint(db, self.runtime.agent(agent['id'], db), kind, 'old-turn')
+            current = self.runtime.agent(agent['id'], db)
+            current['worktreeReady'] = True
+            return self.runtime._reserve_checkpoint(db, current, kind, 'old-turn')
 
     @contextmanager
     def checkpoint_jobs(self):
@@ -228,7 +230,7 @@ class ReservationRecovery(unittest.TestCase):
         self.assertTrue(current['autoWake'])
 
     def test_rejected_executor_submission_does_not_leave_directory_reserved(self):
-        a = self.agent_update(self.lead(), workspaceOperation=None)
+        a = self.agent_update(self.lead(), workspaceOperation=None, worktreeReady=True)
         with self.runtime.lock, self.runtime.db() as db:
             with patch.object(self.runtime.pool, 'submit', side_effect=RuntimeError('executor closed')):
                 self.runtime.queue_checkpoint_after_turn(db, a, 'completed-turn')

@@ -79,8 +79,12 @@ test("Browser access notice ui", async ({
               reason:
                 "The Chrome plugin is disabled in this account's Codex configuration",
             }
-          : { enabled: true, reason: null };
-      await route.fulfill({ json: { browser: browserStatus } });
+          : key === "unknown"
+            ? undefined
+            : { enabled: true, reason: null };
+      await route.fulfill({
+        json: browserStatus ? { browser: browserStatus } : {},
+      });
     });
     await page.goto(server.resolvedUrls.local[0]);
     await page.waitForFunction(
@@ -104,7 +108,17 @@ test("Browser access notice ui", async ({
     await page.waitForFunction(
       () => document.querySelector("[role=status]") === null,
     );
-    assert.deepEqual(requests, ["default", "disabled", "default"]);
+    const unknownResponse = page.waitForResponse((response) =>
+      response.url().includes("account_key=unknown"),
+    );
+    await set({ accountKey: "unknown", active: true, compact: true });
+    await unknownResponse;
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await page.getByText("Browser", { exact: true }).count(), 0);
+    await set({ accountKey: "disabled", active: false, compact: true });
+    await page.evaluate(() => new Promise(requestAnimationFrame));
+    assert.equal(await page.getByText("Browser", { exact: true }).count(), 0);
+    assert.deepEqual(requests, ["default", "disabled", "default", "unknown"]);
     assert.deepEqual(errors, []);
     console.log(JSON.stringify({ pass: true, cases: 3, requests }));
   } finally {

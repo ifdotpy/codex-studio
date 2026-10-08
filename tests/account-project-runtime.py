@@ -165,9 +165,21 @@ class ProjectRuntime(unittest.TestCase):
             subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
         lead = self.lead(cwd=str(project))
         child = self.runtime.create(
-            {"name": "Worker", "prompt": "Implement"}, parent=lead["id"], defer=True
+            {"name": "Worker", "prompt": "Implement", "environment": "host"},
+            parent=lead["id"], defer=True
         )
-        ready = self.runtime.prepare(child)
+        with self.runtime.lock, self.runtime.db() as db:
+            queued = self.runtime.agent(child["id"], db)
+            queued.update(autoWake=True, status="queued")
+            self.runtime.put(db, "agents", queued)
+        from codex_runtime import PreparationPending
+        try:
+            ready = self.runtime.prepare(child)
+        except PreparationPending as pending:
+            worktree_result = pending.future.result(timeout=30)
+            self.assertTrue(self.runtime.agent(child["id"])['worktreeReady'],
+                            (child, worktree_result, self.runtime.agent(child["id"])))
+            ready = self.runtime.prepare(child)
         worktree = repo / ".worktrees" / "codex-agents" / child["id"]
         self.assertEqual(Path(ready["cwd"]), (worktree / "packages" / "lumina").resolve())
         self.assertTrue(Path(ready["cwd"], "README.md").is_file())

@@ -11,6 +11,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 import uuid
@@ -612,11 +613,26 @@ class MonitorWakeIntegration(unittest.TestCase):
                     self.assertFalse(db.execute("SELECT 1 FROM runtime_events WHERE kind='child_result'").fetchone())
                 before = len([params for method, params in server.calls
                               if method == 'turn/start' and params['threadId'] == actor['threadId']])
+                next_turn_started = threading.Event()
+                original_notify = server._notify
+
+                def notify_after_next_turn(message):
+                    original_notify(message)
+                    params = message.get('params', {})
+                    turn = params.get('turn', {})
+                    if (message.get('method') == 'turn/started' and
+                            params.get('threadId') == actor['threadId'] and
+                            turn.get('id') != actor['turnId']):
+                        next_turn_started.set()
+
+                server._notify = notify_after_next_turn
                 runtime.retry_monitor_results()
                 self.assertEqual(runtime.agent(child['id'])['status'], 'queued')
                 runtime.dispatch()
-                native.eventually(lambda: runtime.agent(child['id'])['status'] == 'running'
-                                  and runtime.agent(child['id'])['turnId'] != actor['turnId'])
+                self.assertTrue(next_turn_started.wait(30),
+                                'recovered monitor receipt did not start the next turn')
+                self.assertEqual(runtime.agent(child['id'])['status'], 'running')
+                self.assertNotEqual(runtime.agent(child['id'])['turnId'], actor['turnId'])
                 continued = runtime.agent(child['id'])
                 runtime.dispatch()
                 starts = [params for method, params in server.calls

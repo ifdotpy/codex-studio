@@ -42,12 +42,17 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
     def open_runtime(self):
         rt = fixture.ControlledRuntime(self.state, fixture.f.FakeServer)
         base_get = rt.accounts.get
-        for key in ('parent-account', 'worker-explicit'):
+        for key in ('parent-account', 'default', 'worker-explicit'):
             rt.accounts.data['accounts'][key] = {
                 'id': key, 'provider': 'codex', 'status': 'ready', 'home': str(self.root)}
+        fake_accounts = {'default', 'parent-account', 'worker-explicit'}
         rt.accounts.get = lambda key: (
             copy.deepcopy(rt.accounts.data['accounts'][key])
-            if key in {'parent-account', 'worker-explicit'} else base_get(key))
+            if key in fake_accounts else base_get(key))
+        rt.accounts.list = lambda: [
+            copy.deepcopy(row) for row in rt.accounts.data['accounts'].values()
+            if row['id'] in fake_accounts or not row.get('deleted')
+        ]
 
         def catalog(account='default'):
             self.catalog_calls.append(account)
@@ -65,8 +70,8 @@ class WorkerLifecycleRestartContract(unittest.TestCase):
         ]}
 
     def spawn(self, request_id='spawn-restart-identity'):
-        return self.runtime.spawn_agents(self.runtime.agent(self.lead['id']),
-                                         self.batch(), request_id)
+        actor = self.runtime.agent(self.lead['id'])
+        return self.runtime.spawn_agents(actor, self.batch(), request_id)
 
     def agents(self):
         with self.runtime.db() as db:

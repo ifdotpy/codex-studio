@@ -18,9 +18,15 @@ spec.loader.exec_module(fixture)
 
 class ChatReadStateContract(fixture.RuntimeContract):
     def completed(self):
-        agent = self.runtime.new_lead({})
+        agent = self.runtime.create(
+            {'name': 'Completed chat', 'cwd': str(self.root), 'prompt': ''},
+            draft=True, defer=True,
+        )
         return self.change(agent, threadId='thread-1', lastCompletedTurn='turn-1',
-                           lastCompletedTurnStatus='completed', status='completed')
+                           lastCompletedTurnStatus='completed', status='completed',
+                           needsTitle=False,
+                           nativeNameSynced={'accountKey': 'default', 'threadId': 'thread-1',
+                                             'name': 'Completed chat'})
 
     def change(self, agent, **fields):
         with self.runtime.lock, self.runtime.db() as db:

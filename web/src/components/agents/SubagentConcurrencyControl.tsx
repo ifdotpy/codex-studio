@@ -1,3 +1,4 @@
+import { SegmentedControl } from "@mantine/core";
 import { serverLocalStorage as localStorage } from "../../servers/storage";
 import { useEffect, useRef, useState } from "react";
 import { post, ApiError, errorText, type PostBody } from "../../api";
@@ -21,6 +22,7 @@ type ConcurrencyAgent = Pick<
   "subagentConcurrencyVersion" | "concurrency" | "agentModeRevision"
 >;
 type Props = {
+  compact?: boolean;
   lead: Agent;
   stateDir: string;
   workspaceId: string;
@@ -98,6 +100,7 @@ export default function SubagentConcurrencyControl(props: Props) {
 
 function ScopedConcurrencyControl({
   lead,
+  compact = false,
   workspaceId,
   storageKey,
   refresh,
@@ -198,7 +201,7 @@ function ScopedConcurrencyControl({
     setDraft(confirmed.concurrency);
   }, [confirmed?.concurrency, confirmed?.revision, stored.pending]);
 
-  const submit = async () => {
+  const submit = async (target = draft) => {
     if (
       !supported ||
       !confirmed ||
@@ -207,8 +210,8 @@ function ScopedConcurrencyControl({
       !workspaceId
     )
       return;
-    const validDraft = validConcurrency(draft);
-    if (!stored.pending && (!validDraft || draft === confirmed.concurrency)) {
+    const validDraft = validConcurrency(target);
+    if (!stored.pending && (!validDraft || target === confirmed.concurrency)) {
       if (!validDraft) setError("Enter a whole number from 0 to 512.");
       else dirty.current = false;
       return;
@@ -219,7 +222,7 @@ function ScopedConcurrencyControl({
       stored.pending?.expected_mode_revision ?? confirmed.revision;
     const request: PendingRequest = stored.pending ?? {
       id: lead.id,
-      subagent_concurrency: validDraft ? draft : confirmed.concurrency,
+      subagent_concurrency: validDraft ? target : confirmed.concurrency,
       expected_mode_revision: expectedRevision,
       request_id: crypto.randomUUID(),
     };
@@ -321,7 +324,7 @@ function ScopedConcurrencyControl({
   const pending = stored.pending;
   return (
     <form
-      className="agent-mode-control"
+      className={`agent-mode-control${compact ? " agent-mode-compact" : ""}`}
       data-agent-mode={mode ?? "unknown"}
       {...(confirmed
         ? {
@@ -334,9 +337,27 @@ function ScopedConcurrencyControl({
         void submit();
       }}
     >
+      {compact && (
+        <SegmentedControl
+          aria-label="Parallel"
+          value={mode === "single" ? "off" : "on"}
+          data={[
+            { value: "off", label: "Off" },
+            { value: "on", label: "On" },
+          ]}
+          disabled={
+            !supported || !workspaceId || saving || !!pending || !!initial.error
+          }
+          onChange={(value) => {
+            const target = value === "off" ? 0 : DEFAULT_CONCURRENCY;
+            setDraft(target);
+            void submit(target);
+          }}
+        />
+      )}
       <label className="agent-mode-limit-label">
         <span className="agent-mode-visible-label">Subagent parallelism</span>
-        <span className="agent-mode-limit-mode">
+        <span className={`agent-mode-limit-mode${compact ? " sr-only" : ""}`}>
           {mode === "single"
             ? "Single agent"
             : mode === "multi"
@@ -360,6 +381,12 @@ function ScopedConcurrencyControl({
           disabled={
             !supported || !workspaceId || saving || !!pending || !!initial.error
           }
+          onBlur={(event) => {
+            const nextMode = (event.relatedTarget as HTMLInputElement | null)
+              ?.value;
+            if (compact && !(nextMode === (mode === "single" ? "on" : "off")))
+              void submit();
+          }}
           onChange={(event) => {
             const value = event.currentTarget.valueAsNumber;
             dirty.current = true;
@@ -380,15 +407,17 @@ function ScopedConcurrencyControl({
           ? ""
           : "Numeric subagent parallelism is unavailable because this backend does not provide the concurrency setting. Update the backend to enable it."}
       </span>
-      <button
-        type="submit"
-        className="agent-mode-apply"
-        disabled={
-          !supported || !workspaceId || saving || !!pending || !!initial.error
-        }
-      >
-        Apply
-      </button>
+      {!compact && (
+        <button
+          type="submit"
+          className="agent-mode-apply"
+          disabled={
+            !supported || !workspaceId || saving || !!pending || !!initial.error
+          }
+        >
+          Apply
+        </button>
+      )}
       {saving ? (
         <span role="status" className="agent-mode-note">
           Applying…
@@ -407,7 +436,7 @@ function ScopedConcurrencyControl({
         <span className="agent-mode-note" role="status">
           Saved change retained. Update the backend to retry it.
         </span>
-      ) : confirmed?.concurrency === 0 ? (
+      ) : !compact && confirmed?.concurrency === 0 ? (
         <span className="agent-mode-note">No new worker turns will start.</span>
       ) : null}
       {error && (

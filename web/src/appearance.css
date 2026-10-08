@@ -739,3 +739,98 @@
   .mantine-Button-section[data-position="right"] {
   margin-left: auto;
 }
+
+/* Chat settings keeps its six controls in compact rows at every width. */
+.chat-settings-rows {
+  gap: 0;
+}
+.chat-settings-rows > .ui-settings-row,
+.chat-settings-rows #chat-settings-permissions > .ui-settings-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  min-width: 0;
+}
+.chat-settings-rows .ui-row-control {
+  min-width: 0;
+  max-width: calc(100% - 86px);
+}
+.chat-settings-rows .execution-menu {
+  max-width: 100%;
+  min-height: 32px;
+  padding: 0 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-md);
+}
+.chat-settings-rows .execution-menu .mantine-Button-label {
+  min-width: 0;
+  gap: 6px;
+}
+.chat-settings-rows .execution-selected {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.chat-settings-rows .execution-selected[data-inherited] {
+  color: var(--mantine-color-dimmed);
+}
+.chat-settings-rows .agent-mode-compact {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+.chat-settings-rows .agent-mode-limit-label {
+  display: flex;
+  gap: 0;
+}
+.chat-settings-rows .agent-mode-limit-label input {
+  width: 64px;
+  min-height: 32px;
+}
+.chat-settings-rows .chat-settings-footer {
+  margin-top: 12px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.chat-settings-rows .chat-settings-more {
+  margin-top: 12px;
+}
+.chat-settings-rows .chat-settings-more > summary {
+  cursor: pointer;
+  color: var(--mantine-color-dimmed);
+  padding: 8px 0;
+}
+@media (max-width: 760px) {
+  .chat-settings-rows .execution-menu,
+  .chat-settings-rows .agent-mode-limit-label input {
+    min-height: 44px;
+  }
+}
+.chat-settings-rows > .ui-settings-row > .ui-label,
+.chat-settings-rows #chat-settings-permissions .ui-label {
+  flex: 0 0 86px;
+  white-space: nowrap;
+}
+.chat-settings-rows .ui-row-control {
+  width: auto;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 8px;
+}
+.chat-settings-rows .execution-selected {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+/* Keep the chevron apart from the role chip text. */
+.chat-settings-rows
+  .execution-menu
+  .mantine-Button-section[data-position="right"] {
+  margin-left: 8px;
+}

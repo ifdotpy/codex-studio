@@ -166,7 +166,6 @@ print(json.dumps(value))
             self.assertTrue(seen.wait(2))
             service.close()
             count_at_close = count
-            time.sleep(0.03)
             self.assertEqual(count, count_at_close)
             self.assertFalse(service.thread.is_alive())
 

@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import importlib.util
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -56,9 +57,19 @@ class IdleSendContract(unittest.TestCase):
     def test_fast_send_does_not_wait_for_global_maintenance(self):
         agent = self.lead(status='running', inFlight=False, turnId=None)
         self.runtime._fast_delivery_enabled = True
-        self.runtime.send(agent['id'], 'Immediate task', 'fast-idle', delivery='after_tool')
-        f.eventually(lambda: self.runtime.delivery_receipt('fast-idle')['status'] == 'delivered',
-                     timeout=3)
+        start_finished = threading.Event()
+        original_start = self.runtime.start
+
+        def start_and_signal(*args):
+            try:
+                return original_start(*args)
+            finally:
+                start_finished.set()
+
+        with patch.object(self.runtime, 'start', side_effect=start_and_signal):
+            self.runtime.send(agent['id'], 'Immediate task', 'fast-idle', delivery='after_tool')
+            self.assertTrue(start_finished.wait(30), 'fast delivery start did not finish')
+        self.assertEqual(self.runtime.delivery_receipt('fast-idle')['status'], 'delivered')
         calls = [params for method, params in self.runtime.server.calls if method == 'turn/start']
         self.assertEqual(len(calls), 1)
         self.runtime.send(agent['id'], 'Immediate task', 'fast-idle', delivery='after_tool')
@@ -89,9 +100,19 @@ class IdleSendContract(unittest.TestCase):
                 db.execute('INSERT INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
                            (event_id, agent['id'], 'user', event_id, status, 1, 0, None, None))
         self.runtime._fast_delivery_enabled = True
-        self.runtime.send(agent['id'], 'New task', 'fresh-input', delivery='after_tool')
-        f.eventually(lambda: self.runtime.delivery_receipt('fresh-input')['status'] == 'delivered',
-                     timeout=3)
+        start_finished = threading.Event()
+        original_start = self.runtime.start
+
+        def start_and_signal(*args):
+            try:
+                return original_start(*args)
+            finally:
+                start_finished.set()
+
+        with patch.object(self.runtime, 'start', side_effect=start_and_signal):
+            self.runtime.send(agent['id'], 'New task', 'fresh-input', delivery='after_tool')
+            self.assertTrue(start_finished.wait(30), 'fresh input start did not finish')
+        self.assertEqual(self.runtime.delivery_receipt('fresh-input')['status'], 'delivered')
         self.assertEqual(len([method for method, _ in self.runtime.server.calls
                               if method == 'turn/start']), 1)
         self.assertEqual(self.runtime.delivery_receipt('historical-input')['status'], 'uncertain')

@@ -432,7 +432,7 @@ class DaybreakTransfer(unittest.TestCase):
 
     def test_unsupported_destination_blocks_before_native_fork(self):
         self.programs = ['standard']
-        operation = self.t.start_transfer()
+        operation = self.t.request_transfer()
         self.t.tick()
         self.t.until(lambda: self.member(operation)['phase'] == 'blocked')
         self.assertEqual(self.t.pending, [])
@@ -444,7 +444,7 @@ class DaybreakTransfer(unittest.TestCase):
         self.runtime.conversation_settings(self.key, {'daybreak_enabled': False})
         self.runtime.conversation_settings(self.key, {'daybreak_enabled': True, 'next_turn': True, 'request_id': 'queued'})
         self.programs = ['standard']
-        operation = self.t.start_transfer()
+        operation = self.t.request_transfer()
         self.t.tick()
         self.t.until(lambda: self.member(operation)['phase'] == 'blocked')
         self.assertEqual(self.t.pending, [])

@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 
 import importlib.util
 from pathlib import Path
+import threading
 import unittest
 import uuid
 
@@ -24,6 +25,40 @@ class RadioRuntime(unittest.TestCase):
             self.runtime.dispatch()
             return self.runtime.chat_read(self.room['id'])['room']['radio']['status']==status
         f.eventually(ready)
+
+    def observe_turn_start_acks(self, expected):
+        """Signal after fake native-start ACKs have been bound to receipts."""
+        acknowledged = threading.Event()
+        count = 0
+        bind_start = self.runtime.bind_start
+
+        def observed(db, agent, attempt_id, turn, historical=None):
+            nonlocal count
+            result = bind_start(db, agent, attempt_id, turn, historical)
+            if agent['id'] in self.room['members']:
+                count += 1
+                if count >= expected:
+                    acknowledged.set()
+            return result
+
+        self.runtime.bind_start = observed
+        return acknowledged
+
+    def observe_radio_status_write(self, expected):
+        """Signal when dispatch persists the selected room status."""
+        written = threading.Event()
+        put = self.runtime.put
+        room_id = self.room['id']
+
+        def observed(db, table, record, **kwargs):
+            result = put(db, table, record, **kwargs)
+            if (table == 'rooms' and record['id'] == room_id
+                    and record.get('radio', {}).get('status') == expected):
+                written.set()
+            return result
+
+        self.runtime.put = observed
+        return written
 
     def setup_room(self):
         self.left = self.agent_update(self.lead('Left'), draft=False, status='idle', autoWake=True)
@@ -77,6 +112,7 @@ class RadioRuntime(unittest.TestCase):
 
     def test_two_replies_receive_shared_text_and_then_stop(self):
         self.setup_room()
+        start_acks = self.observe_turn_start_acks(2)
         self.command('send',text='Compare both approaches.',target='both',rounds=1)
         first = self.active(self.left)
         self.assertFalse(self.runtime.agent(self.right['id']).get('inFlight'))
@@ -89,8 +125,10 @@ class RadioRuntime(unittest.TestCase):
         for text in ('Compare both approaches.','First agent commentary.','First agent final answer.'):
             self.assertIn(text,prompt)
         self.finish(second,'Second agent answer.')
+        self.assertTrue(start_acks.wait(30), 'both native start acknowledgements must be persisted')
+        idle_written = self.observe_radio_status_write('idle')
         self.runtime.dispatch()
-        self.runtime.dispatch()
+        self.assertTrue(idle_written.wait(30), 'the completed second reply must settle the radio')
         self.assertEqual(len([1 for method,_ in self.runtime.server.calls if method=='turn/start']),2)
         page=self.runtime.chat_read(self.room['id'])
         self.assertEqual([m['text'] for m in page['messages']], ['Compare both approaches.',
@@ -130,6 +168,7 @@ class RadioRuntime(unittest.TestCase):
 
     def test_private_input_waits_while_shared_question_can_be_answered(self):
         self.setup_room()
+        start_acks = self.observe_turn_start_acks(2)
         self.command('send',text='Shared question.',target='both',rounds=1)
         first=self.active(self.left)
         private_id=str(uuid.uuid4())
@@ -143,7 +182,7 @@ class RadioRuntime(unittest.TestCase):
         key=first['id']+':question:question'
         self.assertEqual(self.runtime.answer(key,{'answers':{'0':{'answers':['One']}}})['status'],'answered')
         self.runtime.dispatch()
-        f.eventually(lambda: len([1 for method,_ in self.runtime.server.calls if method=='turn/start'])==2)
+        self.assertTrue(start_acks.wait(30), 'the answered shared question must receive its second start ACK')
         starts=[params for method,params in self.runtime.server.calls if method=='turn/start']
         self.assertIn('One',starts[-1]['input'][0]['text'])
         self.assertNotIn('Private unrelated task',starts[-1]['input'][0]['text'])

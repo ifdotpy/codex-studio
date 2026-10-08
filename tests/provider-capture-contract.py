@@ -17,9 +17,10 @@ from codex_provider_transcript import TranscriptCapture, redact
 
 class ProviderCaptureContract(unittest.TestCase):
     def test_capture_is_off_without_both_opt_in_values(self):
-        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {}, clear=True):
+        with tempfile.TemporaryDirectory() as temp, patch.dict(os.environ, {"HOME": temp}, clear=True):
             target = Path(temp) / "provider.jsonl"
-            with patch.dict(os.environ, {"CODEX_AGENTS_PROVIDER_CAPTURE_FILE": str(target)}, clear=True):
+            with patch.dict(os.environ, {"HOME": temp,
+                                         "CODEX_AGENTS_PROVIDER_CAPTURE_FILE": str(target)}, clear=True):
                 capture = TranscriptCapture("codex")
                 capture.record("out", {"method": "initialize"})
             capture.record("out", {"method": "initialize"})
@@ -31,7 +32,7 @@ class ProviderCaptureContract(unittest.TestCase):
             target = Path(temp) / "nested" / "provider.jsonl"
             env = {"CODEX_AGENTS_PROVIDER_CAPTURE": "1",
                    "CODEX_AGENTS_PROVIDER_CAPTURE_FILE": str(target)}
-            with patch.dict(os.environ, env, clear=True):
+            with patch.dict(os.environ, {"HOME": temp, **env}, clear=True):
                 capture = TranscriptCapture("claude")
                 capture.record("in", {"method": "thread/read", "params": {
                     "apiKey": "secret-value", "path": "/Users/igor/My Project/file.txt",

@@ -203,7 +203,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         old = self.records(a)[0]
         self.runtime.server.fail_start = True
         self.runtime.send(a['id'], 'Next input', 'unknown-next')
-        fixture.eventually(lambda: 'outcome unknown' in str(self.runtime.agent(a['id']).get('error')))
+        fixture.eventually(lambda: self.records(a)[0]['status'] == 'unknown')
         unknown = self.records(a)[0]
         self.assertNotEqual(unknown['id'], old['id'])
         self.runtime.close()
@@ -372,6 +372,7 @@ class ExecutionIdentityContract(unittest.TestCase):
         import time
         from codex_canvas import Canvas, make_server
         from codex_execution import _save_run, prune, RETENTION_SECONDS, PRUNE_LIMIT
+        from studio_api.server import _run_maintenance
         a = self.lead()
         active_run = self.records(a)[0]
         active = active_run['id']
@@ -396,12 +397,14 @@ class ExecutionIdentityContract(unittest.TestCase):
         canvas.runtime = self.runtime
         server = make_server(canvas)
         try:
-            with patch('codex_execution.prune', wraps=prune) as batches:
-                server.service_actions()
+            server._context._maintenance_last = time.monotonic() - 3601
+            with patch('codex_execution.prune', wraps=prune) as batches, \
+                    patch('codex_voice.prune_audio'):
+                _run_maintenance(server._context)
             self.assertEqual(batches.call_count, 2)
             with self.runtime.db() as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 0)
-            server.service_actions()  # The same hourly window does not prune again.
+            _run_maintenance(server._context)  # The same hourly window does not prune again.
             with self.runtime.db() as db:
                 self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_execution_runs WHERE id LIKE 'expired-%'").fetchone()[0], 0)
                 self.assertEqual(prune(db, now=now), 0)

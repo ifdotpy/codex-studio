@@ -6,6 +6,7 @@ import type { ComponentProps } from "react";
 export function UnifiedAgentSettings({
   state,
   notify,
+  onAccountModalOpenChange,
   ...settings
 }: Omit<
   ComponentProps<typeof ExecutionSettings>,
@@ -13,10 +14,12 @@ export function UnifiedAgentSettings({
 > & {
   state: ReturnType<typeof useAccounts>;
   notify: (message: string) => void;
+  onAccountModalOpenChange?: (opened: boolean) => void;
 }) {
   return (
     <Accounts
       state={state}
+      onModalOpenChange={onAccountModalOpenChange}
       agent={settings.agent}
       accountKey={settings.agent.accountKey || "default"}
       onError={notify}

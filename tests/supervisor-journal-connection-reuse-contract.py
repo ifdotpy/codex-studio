@@ -100,12 +100,15 @@ def workload(journal_type, directory, count):
         journal = server.journal = journal_type(directory)
         child = supervisor.Child.__new__(supervisor.Child)
         child.handle = "account:private-journal"
+        child.generation = 1
         child.lock = threading.RLock()
         child.append_lock = threading.Lock()
         child.output = threading.Condition(child.lock)
         child.stopping = threading.Event()
         child.paused = threading.Event()
         child.persistence_errors = {}
+        child.reader = SimpleNamespace(is_alive=lambda: False)
+        child.stderr = SimpleNamespace(is_alive=lambda: False)
         child.process = SimpleNamespace(supervisor=server, stdin=io.StringIO(), poll=lambda: None)
         server.children[child.handle] = child
         receipts = []

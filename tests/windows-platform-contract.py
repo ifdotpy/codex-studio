@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Windows-only contracts for Studio's server platform layer."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import os
 from pathlib import Path
 import shutil

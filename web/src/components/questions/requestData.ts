@@ -49,6 +49,8 @@ export function requestQuestions(request: RequestDto): AnswerQuestion[] {
           options: jsonOptions(entry.options),
           multiSelect: entry.multiSelect === true,
           isSecret: entry.isSecret === true,
+          isOther:
+            request.method === "agent/asyncQuestion" || entry.isOther === true,
         },
       ];
     });

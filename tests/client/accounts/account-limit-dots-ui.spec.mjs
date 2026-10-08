@@ -218,6 +218,9 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       const errors = [],
         reads = [];
       let unknownAvailable = true;
+      const orderedAccounts = accounts.filter(
+        (account) => account.id !== "outside" && !account.disconnected,
+      );
       page.on("pageerror", (error) => errors.push(error.message));
       await page.addInitScript(() => {
         const NativeEventSource = window.EventSource;
@@ -230,6 +233,24 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
             this.studioLastResourceEvent = null;
             this.addEventListener("resources", (message) => {
               this.studioLastResourceEvent = JSON.parse(message.data);
+              if (
+                this.studioLastResourceEvent.resources?.some(
+                  (resource) =>
+                    resource.kind === "limits" &&
+                    resource.accountKey === "default",
+                )
+              ) {
+                const baselineEvent = this.studioLastResourceEvent;
+                const resourceIndex = baselineEvent.resources.findIndex(
+                  (resource) =>
+                    resource.kind === "limits" &&
+                    resource.accountKey === "default",
+                );
+                const version =
+                  baselineEvent.resourceVersions?.[resourceIndex]?.revision;
+                if (version !== undefined)
+                  this.studioLastDefaultLimitsEvent = baselineEvent;
+              }
             });
           }
         };
@@ -317,9 +338,56 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         7,
         "only accounts of this chat team appear",
       );
-      const order = await dots.evaluateAll((elements) =>
-        elements.map((element) => element.dataset.accountKey),
-      );
+      const summarizeLimitReads = (entries) =>
+        Object.fromEntries(
+          accounts.map(({ id }) => [
+            id,
+            {
+              cached: entries.filter((read) => read.key === id && read.cached)
+                .length,
+              uncached: entries.filter(
+                (read) => read.key === id && !read.cached,
+              ).length,
+            },
+          ]),
+        );
+      // App first falls back to sorting account keys before metadata arrives,
+      // then sorts by loaded email/label. Wait for the rendered names and two
+      // consecutive identical orders before exercising the provider-order rule.
+      let previousOrder;
+      let settledOrder;
+      await expect
+        .poll(async () => {
+          const renderedDots = await dots.evaluateAll((elements) =>
+            elements.map((element) => ({
+              key: element.dataset.accountKey,
+              name: element.getAttribute("aria-label"),
+            })),
+          );
+          const metadataReady = orderedAccounts.every((account) =>
+            renderedDots.some(
+              (dot) =>
+                dot.key === account.id &&
+                dot.name?.includes(account.email || account.label),
+            ),
+          );
+          if (!metadataReady) {
+            previousOrder = undefined;
+            return false;
+          }
+          const currentOrder = renderedDots.map((dot) => dot.key);
+          if (
+            previousOrder &&
+            currentOrder.every((key, index) => key === previousOrder[index])
+          ) {
+            settledOrder = currentOrder;
+            return true;
+          }
+          previousOrder = currentOrder;
+          return false;
+        })
+        .toBe(true);
+      const order = settledOrder;
       for (const [key, color] of Object.entries(expected)) {
         const target = page.locator(
           `.account-limits-dot-target[data-account-key="${key}"]`,
@@ -394,6 +462,100 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         (read) => read.key === "default" && read.cached,
       );
       assert.ok(Date.now() / 1000 - defaultHydration.at < 60);
+      const dispatchLimitsVersion = async (reason, versionOffset) => {
+        await expect
+          .poll(() =>
+            page.evaluate(
+              ({ eventReason, offset }) => {
+                const source = [...window.studioTestSources]
+                  .reverse()
+                  .find(
+                    (item) =>
+                      new URL(item.url).pathname === "/api/sync/stream" &&
+                      item.readyState === EventSource.OPEN &&
+                      item.studioLastDefaultLimitsEvent,
+                  );
+                const currentEvent = source?.studioLastResourceEvent;
+                const baselineEvent = source?.studioLastDefaultLimitsEvent;
+                const resource = { kind: "limits", accountKey: "default" };
+                const resourceIndex = baselineEvent?.resources?.findIndex(
+                  (entry) =>
+                    entry.kind === "limits" && entry.accountKey === "default",
+                );
+                const version =
+                  resourceIndex === undefined || resourceIndex < 0
+                    ? undefined
+                    : baselineEvent?.resourceVersions?.[resourceIndex]
+                        ?.revision;
+                if (!source || !currentEvent || version === undefined)
+                  return false;
+                source.dispatchEvent(
+                  new MessageEvent("resources", {
+                    data: JSON.stringify({
+                      ...currentEvent,
+                      revision: currentEvent.revision + 1,
+                      reason: eventReason,
+                      resources: [resource],
+                      resourceVersions: [
+                        { resource, revision: version + offset },
+                      ],
+                    }),
+                  }),
+                );
+                window.studioLastInjectedLimitsVersion = version;
+                return true;
+              },
+              { eventReason: reason, offset: versionOffset },
+            ),
+          )
+          .toBe(true);
+        return page.evaluate(() => window.studioLastInjectedLimitsVersion);
+      };
+      const readsBeforeReconnect = reads.length;
+      const baselineVersion = await dispatchLimitsVersion("reconnect", 0);
+      await page.waitForTimeout(100);
+      const sameVersionReconnectReads = reads.slice(readsBeforeReconnect);
+      assert.equal(
+        sameVersionReconnectReads.filter((read) => !read.cached).length,
+        0,
+        "a fresh cache should suppress reads for a same-version reconnect",
+      );
+      const readsBeforeNewerVersion = reads.length;
+      await dispatchLimitsVersion("change", 1);
+      await expect
+        .poll(
+          () =>
+            reads
+              .slice(readsBeforeNewerVersion)
+              .filter((read) => read.key === "default" && !read.cached).length,
+        )
+        .toBe(1);
+      await page.waitForTimeout(100);
+      assert.equal(
+        reads
+          .slice(readsBeforeNewerVersion)
+          .filter((read) => read.key === "default" && !read.cached).length,
+        1,
+        "a newer limits version should cause exactly one uncached read",
+      );
+      console.log(
+        "LIMITS_RECONNECT_READ_COUNTS",
+        JSON.stringify({
+          viewport: `${mobile ? 390 : 1440}-${scheme}`,
+          case: "same-version-reconnect",
+          resourceVersion: baselineVersion,
+          readsByKey: summarizeLimitReads(sameVersionReconnectReads),
+        }),
+      );
+      console.log(
+        "LIMITS_RECONNECT_READ_COUNTS",
+        JSON.stringify({
+          viewport: `${mobile ? 390 : 1440}-${scheme}`,
+          case: "newer-version",
+          resourceVersion: baselineVersion + 1,
+          readsByKey: summarizeLimitReads(reads.slice(readsBeforeNewerVersion)),
+        }),
+      );
       await page.waitForFunction(() =>
         window.studioTestSources?.some(
           (source) =>
@@ -658,6 +820,7 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
       snapshots.yellow = limits("yellow", 0);
       snapshots.yellow.at = now + 1;
       unknownAvailable = false;
+      const readsBeforeReload = reads.length;
       await page.reload();
       if (mobile) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -668,9 +831,35 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         .waitFor();
       await page
         .locator(
-          '.account-limits-dot-target[data-account-key="unknown"] [data-color="green"]',
+          '.account-limits-dot-target[data-account-key="unknown"] [data-color="gray"]',
         )
         .waitFor();
+      assert.equal(
+        await page.locator(".account-limits-label").innerText(),
+        "Limits",
+      );
+      assert.equal(await page.getByRole("progressbar").count(), 0);
+      const nullReloadReads = summarizeLimitReads(
+        reads.slice(readsBeforeReload),
+      );
+      assert.equal(
+        nullReloadReads.unknown.cached,
+        1,
+        "null-data reload should perform one cached read for unknown",
+      );
+      assert.equal(
+        nullReloadReads.unknown.uncached,
+        1,
+        "null-data reload should perform one uncached read for unknown",
+      );
+      console.log(
+        "LIMITS_RECONNECT_READ_COUNTS",
+        JSON.stringify({
+          viewport: `${mobile ? 390 : 1440}-${scheme}`,
+          case: "reload-null-account",
+          readsByKey: nullReloadReads,
+        }),
+      );
       snapshots.yellow = limits("yellow", 15);
       expect(errors).toEqual([]);
       await context.close();

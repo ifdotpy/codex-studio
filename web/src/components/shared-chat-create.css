@@ -1,53 +1,76 @@
 .shared-chat-create {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-}
-.shared-chat-create > p {
-  margin: 0;
-  color: var(--muted);
-  font-size: 13px;
-}
-.shared-create-participant {
   display: grid;
-  gap: 10px;
-  margin: 0;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  min-width: 0;
-}
-.shared-create-participant legend {
-  padding: 0 6px;
-  font-weight: 600;
-  font-size: 13px;
-}
-.shared-create-participant .mantine-NativeSelect-input {
-  text-overflow: ellipsis;
-}
-
-.shared-create-participants {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 16px;
 }
-.shared-create-participant {
-  border: 0;
-  padding: 0;
+.shared-create-row {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr);
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.shared-create-row > span {
+  font-size: var(--studio-text-body);
+}
+.shared-create-participants {
+  display: grid;
+  gap: 16px;
+}
+.shared-create-chip {
+  justify-self: end;
+  max-width: 100%;
+  height: auto;
+  min-height: 36px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--hover);
+  color: var(--text);
+}
+.shared-create-chip .mantine-Button-label {
+  white-space: normal;
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.shared-create-chip .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.shared-create-chip .mantine-Button-section {
+  flex-shrink: 0;
+}
+.shared-create-picker {
+  max-width: calc(100vw - 40px);
+  max-height: min(560px, calc(100dvh - 160px));
+  padding: 12px;
+  gap: 10px;
+}
+.shared-create-picker .setup-roles:empty {
+  display: none;
+}
+.shared-create-picker .account-tiles {
+  margin: 0;
 }
 .shared-create-footer {
   display: flex;
   justify-content: flex-end;
-  padding-top: 12px;
-  border-top: 1px solid var(--line);
+  padding-top: 4px;
 }
-.shared-create-path {
+.shared-chat-create > p {
+  margin: 0;
   color: var(--muted);
-  overflow-wrap: anywhere;
-  font-size: 12px;
+  font-size: var(--studio-text-meta);
 }
 @media (max-width: 600px) {
-  .shared-create-participants {
-    grid-template-columns: 1fr;
+  .shared-create-row {
+    grid-template-columns: 54px minmax(0, 1fr);
+    gap: 8px;
+  }
+  .shared-create-chip {
+    min-height: 44px;
+  }
+  .shared-create-picker .setup-reasoning .mantine-SegmentedControl-label {
+    min-height: 44px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
   }
 }

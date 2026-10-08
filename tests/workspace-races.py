@@ -74,6 +74,12 @@ class WorkspaceRaces(unittest.TestCase):
                 json.loads(response["contentItems"][0]["text"])["id"])["status"] == "delivered")
         self.assertTrue(response["success"], response)
         self.assertEqual(json.loads(response["contentItems"][0]["text"])["status"], "queued")
+        fixture.eventually(
+            lambda: any(
+                "Progress before acknowledgement" in item["text"]
+                for item in t.runtime.transcript(worker["id"])["items"]
+            )
+        )
         self.assertTrue(
             any(
                 "Progress before acknowledgement" in item["text"]
