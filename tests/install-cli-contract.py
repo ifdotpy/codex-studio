@@ -31,6 +31,7 @@ class InstallContract(unittest.TestCase):
                 "codex-graph",
                 "codex-chat",
                 "codex-control",
+                "codex-supervisor",
                 "codex-daemon",
             ]:
                 result = subprocess.run(

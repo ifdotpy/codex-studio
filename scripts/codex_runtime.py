@@ -10,7 +10,7 @@ import copy
 import concurrent.futures
 from dataclasses import dataclass
 from contextlib import contextmanager
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 import json
 import math
 import os
@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from codex_accounts import AccountStore
+from codex_private_paths import ensure_private_dir
 from codex_account_transfer import transfer_store
 from codex_catalog import runtime_catalog
 from codex_daybreak import resolve_program, turn_program, turn_params
@@ -257,7 +258,9 @@ def voice_tools():
 
 from codex_agent_review import review_tools
 
-TOOLS += voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
+from codex_multi_server_orchestration import server_tools
+
+TOOLS += server_tools(tool, TEXT) + voice_tools() + work_tools(tool, TEXT) + rule_tools(tool, TEXT) + request_tools(tool, TEXT) + efficiency_tools(tool, TEXT) + review_tools(tool, TEXT)
 for definition in TOOLS:
     if definition["name"] == "orchestration_send":
         definition["inputSchema"]["properties"]["delivery"] = {
@@ -274,7 +277,10 @@ for definition in TOOLS:
         definition["inputSchema"]["properties"]["stall_timeout_seconds"] = {"type": "integer", "minimum": 0, "maximum": 31536000}
         definition["inputSchema"]["properties"]["liveness_command"] = {"type": "string", "maxLength": 12000}
     if definition["name"] == "orchestration_spawn":
+        definition["inputSchema"]["properties"]["server"] = TEXT
+        definition["inputSchema"]["properties"]["agents"]["items"]["properties"]["server"] = TEXT
         definition["inputSchema"]["properties"]["request_id"] = {"type": "string", "maxLength": 200}
+        definition["description"] += " server selects a paired remote server; omit it for local workers. Remote cwd must be absolute. Use one server per batch."
         definition["description"] += " Supply a stable request_id for recovery across turns. Reuse it only for the exact same batch; query orchestration_request before any retry."
         definition["inputSchema"]["properties"]["agents"]["items"]["properties"][
             "profile_id"
@@ -495,6 +501,10 @@ class AppServer:
                 if process_factory is not None:
                     self.proc = process_factory(self.log.write)
                 else:
+                    if provider == "claude" and supervisor_expected is None:
+                        from codex_claude import retained_transport
+                        command, supervisor_expected = retained_transport(
+                            supervisor_root or root, supervisor_handle, command, env)
                     self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
                                        stderr_sink=self.log.write, expected=supervisor_expected)
             except Exception:
@@ -617,9 +627,34 @@ class AppServer:
                 self.proc.stdin.flush()
                 self.transcript_capture.record("out", value)
                 return
-            os.set_blocking(fd, False)
             remaining = memoryview(text.encode("utf-8"))
             try:
+                if os.name == "nt":
+                    completed = threading.Event()
+                    failure = []
+
+                    def write_pipe():
+                        try:
+                            view = remaining
+                            while view:
+                                count = os.write(fd, view)
+                                if count <= 0:
+                                    raise BrokenPipeError("Native input pipe closed")
+                                view = view[count:]
+                        except OSError as error:
+                            failure.append(error)
+                        finally:
+                            completed.set()
+
+                    threading.Thread(target=write_pipe, daemon=True).start()
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not completed.wait(left):
+                        raise TimeoutError("Native input pipe did not drain")
+                    if failure:
+                        raise failure[0]
+                    self.transcript_capture.record("out", value)
+                    return
+                os.set_blocking(fd, False)
                 while remaining:
                     left = deadline - time.monotonic()
                     if left <= 0 or not select.select([], [fd], [], left)[1]:
@@ -1475,8 +1510,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = ensure_private_dir(root)
         self.db_path = self.root / "canvas.sqlite3"
         self.analytics_db_path = self.root / "analytics.sqlite3"
         self.lock = runtime_lock()
@@ -1517,7 +1551,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.recovery_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-recover")
         self.lease = (self.root / "runtime.lock").open("a+")
         try:
-            fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flock(self.lease, LOCK_EX | LOCK_NB)
         except OSError:
             self.lease.close()
             self.pool.shutdown(wait=False)
@@ -1528,7 +1562,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             self.accounts = AccountStore(self.root)
         except Exception:
-            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            flock(self.lease, LOCK_UN)
             self.lease.close()
             self.pool.shutdown(wait=False)
             self.tool_pool.shutdown(wait=False)
@@ -1536,6 +1570,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.recovery_pool.shutdown(wait=False)
             raise
         startup_memory_mark("runtime-init-accounts")
+        self.multi_server()
         with self.db() as db:
             db.execute("PRAGMA journal_mode=WAL")
             startup_memory_mark("migrations-indexes-start")
@@ -1637,6 +1672,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
             self.install_scheduler_change_tracking(db)
+            from codex_turn_item_links import ensure_tables as ensure_turn_item_links
+            ensure_turn_item_links(db)
             from codex_execution import ensure_tables as ensure_execution_tables
             db.execute("BEGIN")
             ensure_execution_tables(db)
@@ -1657,6 +1694,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             )
             held_restart_stops = []
             for a in self.records(db, "agents"):
+                if a.get("remoteWorker") or a.get("remoteAnchor"):
+                    continue
                 block = native_thread_block(a)
                 if block:
                     a["nativeThreadBlock"] = block
@@ -1795,9 +1834,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if federation_enabled:
                 self.federation().start()
             if server_factory is AppServer:
+                self.paired_access().start_discovery()
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
             self.resume_read_only_image_bases()
+            with self.read_db() as db:
+                commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()
+            if commands_saved:
+                self.multi_server().commands()
         except BaseException as error:
             self._cleanup_failed_initialization(error)
             raise
@@ -1864,7 +1908,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     errors.append(error)
         if not self.lease.closed:
             try:
-                fcntl.flock(self.lease, fcntl.LOCK_UN)
+                flock(self.lease, LOCK_UN)
             except BaseException as error:
                 errors.append(error)
             try:
@@ -1887,8 +1931,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             if self.lease.closed:
                 return
-            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            flock(self.lease, LOCK_UN)
             self.lease.close()
+
+    def multi_server(self):
+        service = self.__dict__.get('_cross_server_service')
+        if service is None:
+            from codex_multi_server_orchestration import MultiServerService
+            from codex_server_transport import PairedServerTransport
+            service = MultiServerService(self, PairedServerTransport(self))
+            self._cross_server_service = service
+        return service
 
     def federation(self):
         service = getattr(self, "_federation_service", None)
@@ -1905,6 +1958,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._voice_store = VoiceStore(self)
             return self._voice_store
 
+    def paired_access(self):
+        with self.lock:
+            service = getattr(self, "_paired_access_service", None)
+            if service is None:
+                from codex_multi_server import MultiServerService
+                service = MultiServerService(self)
+                self._paired_access_service = service
+            return service
+
     @contextmanager
     def db(self, *, busy_timeout=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())
@@ -1912,10 +1974,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         db = getattr(local, "connection", None) if reusable else None
         if db is None:
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
-            db.row_factory = sqlite3.Row
-            # Retain compatibility for internal callers that execute analytics
-            # SQL on the runtime connection; normal writers use analytics_db().
-            db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+            try:
+                db.row_factory = sqlite3.Row
+                # Retain compatibility for internal callers that execute analytics
+                # SQL on the runtime connection; normal writers use analytics_db().
+                db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+            except BaseException:
+                db.close()
+                raise
             if reusable:
                 local.connection = db
         sqlite_assert_clean(db, "Runtime.db reuse")
@@ -1926,11 +1992,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # and runtime_events triggers.
         from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers
         register_functions(db)
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
-            ensure_tables(db)
-        if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone()
-                and not db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
-            install_bypass_triggers(db)
+        schema_state = None
+        if getattr(local, "scheduler", False):
+            schema_version = db.execute("PRAGMA main.schema_version").fetchone()[0]
+            schema_state = getattr(db, "_studio_runtime_schema", None)
+            if schema_state is not None and schema_state[:3] != (
+                    schema_version, ensure_tables, install_bypass_triggers):
+                schema_state = None
+        if schema_state is None:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+                ensure_tables(db)
+            has_events = bool(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone())
+            has_items = bool(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_items'").fetchone())
+            if (has_events and not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
+                install_bypass_triggers(db)
+            if getattr(local, "scheduler", False):
+                db._studio_runtime_schema = (
+                    db.execute("PRAGMA main.schema_version").fetchone()[0],
+                    ensure_tables, install_bypass_triggers, has_events, has_items)
+                # Replacing a main table also removes its TEMP triggers.
+                db.__dict__.pop("_studio_resource_event_trigger_version", None)
+                db.__dict__.pop("_studio_resource_item_trigger_version", None)
+        else:
+            has_events, has_items = schema_state[3:]
         db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
         if reusable:
             local.depth = 1
@@ -1940,9 +2027,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         resource_changes[db] = {}
         resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
         resource_overflow[db] = False
-        if db.execute(
-            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
-        ).fetchone():
+        if has_events:
             def stage_event_resource(agent_id):
                 if isinstance(agent_id, str) and agent_id:
                     self._stage_event_resources(db, agent_id)
@@ -1991,9 +2076,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     END;
                 """)
                 db._studio_resource_event_trigger_version = 1
-        if db.execute(
-            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_items'"
-        ).fetchone():
+        if has_items:
             db.create_function(
                 "studio_stage_item_transcript",
                 1,
@@ -2847,12 +2930,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             records = cached.get("records") if isinstance(cached, dict) else None
             changes = None
             if key is not None and before is not None and isinstance(records, dict):
-                dependencies = frozenset(row for row in key[1] if row[0] != "agents")
-                previous_dependencies = frozenset(row for row in before[1] if row[0] != "agents")
+                membership = {"agents", "work", "transfers"}
+                dependencies = frozenset(row for row in key[1] if row[0] not in membership)
+                previous_dependencies = frozenset(row for row in before[1] if row[0] not in membership)
                 if dependencies == previous_dependencies:
                     generation = next(value for kind, value in key[1] if kind == "agents")
                     previous_generation = next(value for kind, value in before[1] if kind == "agents")
                     changes = self.scheduler_changed_ids(db, previous_generation, generation)
+                    if changes is not None:
+                        affected = set(changes)
+                        changed_dependencies = key[1] ^ before[1]
+                        affected.update(value for kind, value in changed_dependencies if kind == "work")
+                        roots = [value for kind, value in changed_dependencies if kind == "transfers"]
+                        # Root lookups use runtime_agent_root. Owner and transfer
+                        # membership share the same snapshot as agent changes.
+                        for offset in range(0, len(roots), 256):
+                            batch = roots[offset:offset + 256]
+                            affected.update(row[0] for row in db.execute(
+                                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId') IN (" +
+                                ",".join("?" * len(batch)) + ")", batch).fetchall())
+                        changes = list(affected)
             if changes is None:
                 rows = db.execute(query + " ORDER BY rowid").fetchall()
             else:
@@ -3277,6 +3374,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         elif (sync_rooms and table == "projects"
               and (previous or {}).get("peerTeams") != record.get("peerTeams")):
             self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))  # type: ignore[no-untyped-call]
+        service = self.__dict__.get('_cross_server_service')
+        if changed and table == 'agents' and service:
+            if previous and previous.get('autoWake') is False and record.get('autoWake'):
+                service.rebind_parent(db, record)
+            service.state(db, record, previous)
         if changed:
             self.sync_workspace_volatile(db)  # type: ignore[no-untyped-call]
         if table == "agents":
@@ -3286,9 +3388,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                              for key in ("deletedAt", "cwd", "isLead", "parentId", "rootId")):
                 from codex_peer_teams import sync_entities as sync_peer_team_entities
                 sync_peer_team_entities(self, db, {previous.get("cwd"), record.get("cwd")})
-        elif table == "work":
-            # Work ownership and status retain deleted owners in the scheduler roster.
-            self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
                 ResourceRef, RoomResource, TaskResource, WorkspaceResource,
@@ -4123,6 +4222,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def enqueue(self, db, a, kind, text, key=None):
         key = key or uid()
+        service = self.__dict__.get('_cross_server_service')
+        if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
+            service.event(db, a, kind, text, key)
+            db.execute('INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)',
+                (key, a['id'], kind, text, 'stored_only', time.time(), a['epoch'], None, None))
+            return key
         inserted = db.execute(
             "INSERT OR IGNORE INTO runtime_events VALUES (?,?,?,?,?,?,?,?,?)",
             (
@@ -4511,6 +4616,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "worktreeWarning": (None if not (p and role == "implementer")
                                     or data.get("_worktree", True) or data.get("_imageWorkspace")
                                     else no_worktree_warning(cwd)),
+                **({"remoteOrigin": data["_remoteOrigin"]} if data.get("_remoteOrigin") else {}),
                 "workerBaseRef": data.get("_workerBaseRef"),
                 "workerBaseCommit": data.get("_workerBaseCommit"),
                 "workerBaseBehindMain": data.get("_workerBaseBehindMain"),
@@ -4991,6 +5097,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         sender=None,
         sender_epoch=None,
         radio_question=None,
+        _expected_epoch=None,
     ):
         assets = assets or []
         if (
@@ -5006,6 +5113,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         message_id = message_id or uid()
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
+            if _expected_epoch is not None and a['epoch'] != _expected_epoch:
+                raise ValueError('The worker was stopped before input acceptance')
+            if a.get('remoteWorker') and assets:
+                raise ValueError('Remote worker input does not support attachments')
             if safety_retry_active(a):
                 raise ValueError('Wait for the model change before sending another message')
             if sender:
@@ -5131,7 +5242,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "orchestration_speak", "orchestration_review"
             }:
                 continue
-            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn"}:
+            if not lead and definition["name"] in {"orchestration_speak", "orchestration_spawn", "orchestration_servers"}:
                 continue
             if not lead and definition["name"] == "orchestration_agent_manage":
                 definition = {**definition, "description": "Park yourself or a descendant on a named event, list parked workers, or cancel a wait. Only the lead emits events.",
@@ -5444,8 +5555,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if agent.get("imageWorkspaceNoticeId") != message_id:
                     agent["imageWorkspaceNoticeId"] = message_id
                     agent["imageWorkspaceNoticeText"] = text
+                    agent.pop("imageWorkspaceHandoffText", None)
+                    if (message_id == "image-workspace-ready:" + agent_id
+                            and (agent.get("turnId")
+                                 or (agent.get("startAttempt") or {}).get("submitted"))):
+                        # Steer cannot replace an active provider's cwd or permissions.
+                        # Save both inputs before transport so retries keep their content.
+                        agent["imageWorkspaceHandoffText"] = (
+                            "[Studio image workspace ready] Your copy is ready at "
+                            + agent["cwd"] + ". End this turn now; "
+                            "the next turn runs in the copy with write access.")
                     self.put(db, "agents", agent)
                 text = agent["imageWorkspaceNoticeText"]
+                handoff = agent.get("imageWorkspaceHandoffText")
+            if handoff:
+                self.send(agent_id, handoff, "image-workspace-handoff:" + agent_id,
+                          manual=False, delivery="steer")
             self.send(agent_id, text, message_id, manual=False, delivery="after_turn")
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
@@ -5957,49 +6082,87 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def schedule(self):
         first_tick = True
-        last_dispatch = 0.0
-        while not self.closed:
-            woke = self.changed.wait(1)
-            self.changed.clear()
-            if self.closed:
-                break
-            try:
-                self._retry_dirty_workspace_refresh()
-                self._publish_committed_resource_changes()
-                self.monitors_tick()
-                self.rules_tick()
-                self.capacity_tick()
-                self.usage_resume_tick()
-                now = time.monotonic()
-                if woke or now - last_dispatch >= 5:
-                    self.dispatch()
-                    last_dispatch = now
-                else:
-                    # Check archive deadlines on each scheduler tick.
-                    self.accepted_archive_tick()
+        deadlines = dict.fromkeys(("dispatch", "cross_server", "monitors", "rules", "capacity",
+                                   "usage_resume", "archive", "monitor_results", "runtime", "turn_items"), 0.0)
+        phase_errors = {}
+        local = self.__dict__.setdefault("_callback_db", threading.local())
+        local.reuse = True
+        local.scheduler = True
+        try:
+            while not self.closed:
+                timeout = 1 if first_tick else min(1, max(0, min(deadlines.values()) - time.monotonic()))
+                woke = self.changed.wait(timeout)
+                self.changed.clear()
+                if self.closed:
+                    break
+                service = self.__dict__.get('_cross_server_service')
+                phases = (
+                    ("workspace", 0, self._retry_dirty_workspace_refresh),
+                    ("resources", 0, self._publish_committed_resource_changes),
+                    ("dispatch", 5, lambda: self.dispatch(maintenance=False)),
+                    ("cross_server", 1, lambda: service.tick() if service else None),
+                    ("monitors", 1, self.monitors_tick),
+                    ("rules", 1, self.rules_tick),
+                    ("capacity", 1, self.capacity_tick),
+                    ("usage_resume", 1, self.usage_resume_tick),
+                    ("archive", 1, self.accepted_archive_tick),
+                    ("monitor_results", 1, self.retry_monitor_results),
+                    ("runtime", 5, self.runtime_maintenance_tick),
+                    ("turn_items", .25, self.turn_item_links_tick),
+                )
+                for name, interval, run in phases:
+                    if self.closed:
+                        break
+                    if (interval and time.monotonic() < deadlines[name]
+                            and not (name == "dispatch" and woke)):
+                        continue
+                    try:
+                        run()
+                    except Exception as error:
+                        phase_errors[name] = {"at": time.time(), "error": str(error)}
+                        try:
+                            with (self.root / "runtime-errors.log").open("a") as log:
+                                log.write(f"{phase_errors[name]['at']}: {error}\n")
+                        except OSError:
+                            # A full diagnostic disk must not stop committed work.
+                            pass
+                    else:
+                        phase_errors.pop(name, None)
+                    finally:
+                        if interval:
+                            # Completion-based deadlines avoid catch-up loops after slow phases.
+                            deadlines[name] = time.monotonic() + interval
+                self.scheduler_error = next(iter(phase_errors.values()), None)
                 if first_tick:
                     startup_memory_mark("scheduler-first-tick")
                     first_tick = False
-            except Exception as error:
-                self.scheduler_error = {"at": time.time(), "error": str(error)}
-                try:
-                    with (self.root / "runtime-errors.log").open("a") as log:
-                        log.write(f"{self.scheduler_error['at']}: {error}\n")
-                except OSError:
-                    # Logging can fail with the same full disk as the operation.
-                    # Keep the scheduler alive so committed work can resume.
-                    pass
-            else:
-                self.scheduler_error = None
+        finally:
+            connection = getattr(local, "connection", None)
+            try:
+                if connection is not None:
+                    try:
+                        sqlite_assert_clean(connection, "Runtime.scheduler close")
+                    finally:
+                        connection.close()
+            finally:
+                local.connection = None
+                local.depth = 0
+                local.reuse = False
+                local.scheduler = False
 
-    def dispatch(self, agent_id=None):
+    def dispatch(self, agent_id=None, *, maintenance=True):
         if self.closed:
             return
         if agent_id is None:
-            return self.dispatch_all()
+            return self.dispatch_all(maintenance=maintenance)
         return self.dispatch_candidates(agent_id)
 
-    def dispatch_all(self):
+    def turn_item_links_tick(self):
+        from codex_turn_item_links import backfill_batch as backfill_turn_item_links
+        with self.db() as db:
+            backfill_turn_item_links(db)
+
+    def runtime_maintenance_tick(self):
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
@@ -6011,10 +6174,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_native_release import tick as native_release_tick
         native_release_tick(self)
         self.analytics_history_ensure_running()
-        self.accepted_archive_tick()
-        self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()
+
+    def dispatch_all(self, *, maintenance=True):
+        if maintenance:
+            self.runtime_maintenance_tick()
+            self.accepted_archive_tick()
+            self.retry_monitor_results()
         from codex_team_isolation import cancel_pending
         decoded = []
         pending_notices = []
@@ -6188,6 +6355,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     and (not a.get("inFlight") or
                          db.execute("SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' "
                                     "AND epoch=? LIMIT 1", (a["id"], a["epoch"])).fetchone())
+                    and not a.get("remoteWorker") and not a.get("remoteAnchor")
                     and a["autoWake"]
                     and (not a.get("nativeFailureHold") or (
                         (a.get("budgetActionWait") or {}).get("action") == "capacity"
@@ -6229,6 +6397,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 root = self.agent(a["rootId"], db)
                 a["concurrency"] = root["concurrency"]
                 busy = bool(a.get("inFlight"))
+                if a.get("remoteOrigin") and not busy and not self.multi_server().admission(db, a):
+                    continue
                 from codex_radio import holds_floor
                 if holds_floor(self, db, a):
                     continue
@@ -7020,9 +7190,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if (a.get("isLead") or not a.get("parentId") or a.get("deletedAt")
                 or a.get("agentArchive")):
             return None
+        released_task_ids = []
+        from codex_native_errors import is_policy_refusal, policy_refusal_reason
+        policy_reason = policy_refusal_reason(reason) if is_policy_refusal(reason) else None
         if status == "failed" and hasattr(self, "release_failed_work"):
             # Task release and the terminal lead event share this transaction.
-            self.release_failed_work(db, self.release_work_agents(db), force=True)
+            if policy_reason:
+                released_task_ids = self.release_failed_work(db, [a], force=True)
+            else:
+                self.release_failed_work(db, self.release_work_agents(db), force=True)
         task_rows = db.execute(
             "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
@@ -7053,15 +7229,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         activity = a.get("activity") or {}
         last_activity = (activity.get("at") or a.get("lastEvent") or a.get("lastUpdated")
                          or a.get("created"))
-        reason_text = reason if isinstance(reason, str) else json.dumps(reason, ensure_ascii=False)
+        reason_text = policy_reason['message'] if policy_reason else (
+            reason if isinstance(reason, str) else json.dumps(reason, ensure_ascii=False))
         payload = {
             "agent_id": a["id"], "name": a["name"], "status": status,
-            "reason": reason, "result": reason_text, "last_activity": last_activity,
+            "reason": policy_reason or reason, "result": reason_text, "last_activity": last_activity,
             "task_id": task_id, "tasks": assignments, "result_submitted": result_submitted,
-            "next_step": "send" if status == "paused" else "recover",
+            "next_step": ("reassign" if policy_reason else "send" if status == "paused" else "recover"),
             "requested_by_lead": bool(requested_by_lead),
             "cwd": a["cwd"], "branch": a.get("branch"),
         }
+        if policy_reason:
+            payload["released_task_ids"] = released_task_ids
         workspace = self.image_workspace_summary(a)
         if workspace:
             payload["workspace"] = workspace
@@ -7610,7 +7789,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
                 turn = p.get("turn", {})
-                from codex_native_errors import error_kind
+                from codex_native_errors import error_kind, is_policy_refusal
+                policy_error = turn.get("error")
+                previous_error = a.get("nativeTurnError") or {}
+                if not policy_error and previous_error.get("turnId") == turn.get("id"):
+                    policy_error = previous_error.get("error")
+                if is_policy_refusal(policy_error):
+                    turn["error"] = policy_error
+                    turn["status"] = "failed"
                 if turn.get("status") == "interrupted" and error_kind(turn.get("error")) == "tooManyDenials":
                     turn["status"] = "failed"
                 if a["turnId"] and a["turnId"] != turn.get("id"):
@@ -7624,11 +7810,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
                         refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                         notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
-                               "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
+                               "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
+                               cyberAccessProgram=a.get("cyberAccessProgram"))
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
-                    db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                               "WHERE agent=? AND json_extract(record,'$.turnId')=?",
-                               (turn.get("status") or "ended", a["id"], turn.get("id")))
+                    from codex_turn_item_links import update_turn_status
+                    update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended")
                     for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
                                           "AND json_extract(record,'$.status')='running' "
                                           "AND json_extract(record,'$.turnId')=?",
@@ -7666,7 +7852,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
                     refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                     notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
-                           "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
+                           "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
+                           cyberAccessProgram=a.get("cyberAccessProgram"))
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
@@ -7675,9 +7862,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 attempt = a.get("startAttempt") or {}
                 since = (attempt["created"] - 60 if attempt.get("created")
                          and attempt.get("turnId") == turn.get("id") else 0)
-                db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                           "WHERE agent=? AND json_extract(record,'$.turnId')=? AND created>=?",
-                           (turn.get("status") or "ended", a["id"], turn.get("id"), since))
+                from codex_turn_item_links import update_turn_status
+                update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended", since=since)
                 for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
                     task = json.loads(row[0])
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):
@@ -7947,6 +8133,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def spawn_agents(self, actor, args, key):
         """Commit the entire batch, initial events, and receipt together."""
+        if (args.get('server') or any(spec.get('server') for spec in (args.get('agents') or []) if isinstance(spec, dict))):
+            service = self.multi_server()
+            targets = {spec.get('server', args.get('server')) for spec in args.get('agents', []) if isinstance(spec, dict)}
+            if targets == {service.server_id}:
+                args = {**args, 'agents': [{k:v for k,v in spec.items() if k != 'server'} for spec in args['agents']]}
+                args.pop('server', None)
+            else:
+                return service.spawn(actor, args, key)
         specs = args.get("agents")
         if not isinstance(specs, list) or not 1 <= len(specs) <= 64:
             raise ValueError("Supply 1 to 64 agents")
@@ -8081,9 +8275,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         text += ("\n\n[Studio Linux VM workspace] Studio starts this task after the Linux base is ready."
                                  if child.get("environment") == "linux" else
                                  "\n\n[Studio image workspace] Studio is building the base. "
-                                 "This turn is read-only until Studio sends a workspace-ready notice. "
+                                 "This turn is read-only. Studio sends a workspace-ready notice when the copy is ready. "
                                  "Read the source folder at " + child["cwd"]
-                                 + " by its absolute path. Do not write to that folder.")
+                                 + " by its absolute path. Do not write to that folder. "
+                                 "You may read the source now. End this turn if no more read-only work remains. "
+                                 "Studio starts the next turn in the copy when it is ready. "
+                                 "When the workspace-ready notice arrives, follow its instruction to continue in the copy.")
                         image_base_jobs.append((child["imageWorkspaceRepo"], child["id"]))
                     elif child.get("imageWorkspaceError"):
                         fallback = ("Studio will use a Git worktree." if child.get("worktree")
@@ -8155,6 +8352,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         a = None
         claimed = False
         request_outcome = None
+        args = {}
         name = p.get("tool")
         key = str(p.get("threadId")) + ":" + str(p.get("callId", message["id"]))
         if account_key != "default":
@@ -8236,7 +8434,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         and args['target'] not in {'user', 'parent', 'lead', 'broadcast', 'all'}:
                     target = args['target']
                     remote_target = target.startswith('remote:') or target.startswith('federated:')
-                    if not remote_target:
+                    if not remote_target and not a.get('remoteOrigin'):
                         request_outcome = 'not_applied'
                         args = {**args, 'target': self.resolve_visible_agent_id(a['id'], target)}
                         request_outcome = None
@@ -8249,12 +8447,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = manage_agent(self, a["id"], args, a["epoch"])
                 elif name == "orchestration_read":
                     value = self.model_read(a["id"], args)
+                elif name == "orchestration_context" and a.get('remoteOrigin') and args.get('topic') in {'plan','complaints'}:
+                    value = self.multi_server().worker_call(a, 'context', args, key)
                 elif name == "orchestration_context":
                     value = self.model_context(a["id"], args)
                 elif name == "orchestration_request":
                     value = self.request_action(a["id"], args)
                 elif name == "orchestration_speak":
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
+                elif name == "orchestration_servers":
+                    value = self.multi_server().tools(a, args, key)
+                elif name == "orchestration_task" and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'task', args, key)
                 elif name == "orchestration_task":
                     value = self.model_work(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_search":
@@ -8267,6 +8471,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.monitor_input(
                         args.get("monitor_id"), args, a["id"], a["epoch"]
                     )
+                elif name == "orchestration_complaint" and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'complaint', args, key)
                 elif name == "orchestration_complaint":
                     value = self.complaint(a["id"], args, key, a["epoch"])
                 elif name == "orchestration_title":
@@ -8296,10 +8502,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = request_review(self, a, args, key)
                 elif name == "orchestration_spawn":
                     value = self.spawn_agents(a, args, key)
+                elif name in {"orchestration_status", "orchestration_peers"} and a.get('remoteOrigin'):
+                    value = self.multi_server().worker_call(a, 'directory', {'tool': name, 'arguments': args}, key)
                 elif name in {"orchestration_status", "orchestration_peers"}:
                     value = self.model_directory(a["id"], name, args)
                 elif name == "orchestration_message":
                     value = self.chat_message(a["id"], args["target"], args["text"], key, a["epoch"], importance=args.get("importance", "message"), progress_key=args.get("progress_key"), progress_version=args.get("progress_version"))
+                elif name == "orchestration_chat_read" and a.get('remoteOrigin') and not args.get('room_id', '').startswith(('remote:', 'federated:')):
+                    value = self.multi_server().worker_call(a, 'chat_read', args, key)
                 elif name == "orchestration_chat_read":
                     value = self.chat_read(args["room_id"], a["id"], args.get("before"), model=True)
                 elif name == "orchestration_send":
@@ -8343,6 +8553,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     request_outcome = "not_applied"
                     raise ValueError("Unknown orchestration tool")
                 result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                output_expires = None
+                if name in {"orchestration_servers", "orchestration_read"}:
+                    from codex_server_exec import output_expiry
+                    output_expires = output_expiry(value)
+                    if output_expires is not None:
+                        result["serverOutputExpiresAt"] = output_expires
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
                     from codex_payloads import externalize_result, resolve_result
@@ -8351,6 +8567,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
                         (key, json.dumps(stored_result)),
                     )
+                    if output_expires is not None:
+                        db.execute("INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?,?)", (key, output_expires))
                     result = resolve_result(self.root, db.execute(
                         "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
                     ).fetchone()[0])
@@ -8403,7 +8621,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         if claimed:
             try:
-                receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") else request_outcome))
+                receipt = self.finish_tool_request(key, result, outcome=("not_applied" if name == "orchestration_spawn" and not result.get("success") and not args.get("server") and not any(s.get("server") for s in args.get("agents", []) if isinstance(s, dict)) else request_outcome))
                 result = receipt.get("result") or result
             except Exception as error:
                 response_error("tool_response_preparation_failed", error, "receipt")
@@ -9044,6 +9262,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 12000:
             raise ValueError("Message must have 1 to 12000 characters")
         text = text.strip()
+        actor = self.agent(sender_id)
+        if actor.get('remoteOrigin') and not target.startswith(('federated:', 'remote:')) and target != 'user':
+            return self.multi_server().worker_call(actor, 'message', {
+                'target': target, 'text': text, 'importance': importance,
+                'progress_key': progress_key, 'progress_version': progress_version}, key)
         if target == "user":
             from codex_user_messages import send_to_user
             return send_to_user(self, sender_id, text, key, epoch)
@@ -9804,6 +10027,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return pending_recovery
 
     def enqueue_recovery_event(self, db, a, kind, text, key):
+        service = self.__dict__.get('_cross_server_service')
+        if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
+            return self.enqueue(db, a, kind, text, key)
         pending_recovery = self._recovery_event_pending(a)
         if not pending_recovery:
             return self.enqueue(db, a, kind, text, key)
@@ -10032,13 +10258,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         reason="Stopped by user",
         sender=None,
         sender_epoch=None,
+        _remote_request=None,
     ):
         with self.lock, self.db() as db:
             if sender:
                 caller = self.agent(sender, db)
                 if not caller["autoWake"] or caller["epoch"] != sender_epoch:
                     raise ValueError("Sender was stopped")
-            self.agent(key, db)
+            target = self.agent(key, db)
+            if _remote_request and target.get('remoteStopRequest') == _remote_request['id']:
+                return {'stopped': [key]}
+            if _remote_request and target.get('remoteControlEpoch', 0) > _remote_request['controlEpoch']:
+                raise ValueError('The remote stop was superseded')
             agents = self.descendant_agents(db, key) if descendants else [self.agent(key, db)]
             ids = {key}
             if descendants:
@@ -10065,6 +10296,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a.update(autoWake=False, epoch=a["epoch"] + 1, status="paused", error=reason)
                 if cancelled_park:
                     a["cancelledPark"] = {**cancelled_park, "cancelledAtEpoch": a["epoch"]}
+                if _remote_request and a['id'] == key:
+                    a['remoteStopRequest'] = _remote_request['id']
+                    a['remoteControlEpoch'] = _remote_request['controlEpoch']
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
                 if not descendants or a["id"] == key or sender:
@@ -10725,6 +10959,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         federation = getattr(self, "_federation_service", None)  # type: ignore[call-arg]  # typed-update
         if federation:
             federation.close()
+        commands = self.__dict__.get('_cross_server_service')
+        if commands:
+            commands.close()
+        access = getattr(self, "_paired_access_service", None)
+        if access:
+            access.close()
         with self.lock:
             if self.closed:
                 return
@@ -10791,5 +11031,5 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.close_analytics_captures()
         self._shutdown_writers_drained = True
         self._close_wal_keeper()
-        fcntl.flock(self.lease, fcntl.LOCK_UN)
+        flock(self.lease, LOCK_UN)
         self.lease.close()

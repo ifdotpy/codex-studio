@@ -186,6 +186,10 @@ account used by future workers while the lead stays on its current account.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
+When a team transfer is blocked, Chat settings shows the saved transfer status
+and an explicit **Retry** action when the receipt can be retried. Retry continues
+that transfer receipt; it does not resend the chat input.
+
 The command installer creates links in `~/.local/bin`. Add that directory to PATH
 if your shell does not include it. Use `--bin-dir` for another directory.
 It refuses to replace unrelated files or links. To update links from the old
@@ -251,6 +255,9 @@ See [live updates](docs/live-updates.md) for publication and verification.
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](docs/restart-recovery.md) for the exact behavior and limits.
+Use `codex-supervisor enable` to install supervisor mode without the desktop UI.
+For systemd user services and Windows Subsystem for Linux, see
+[Linux and WSL server setup](docs/linux-server-setup.md).
 
 ## iPhone access
 
@@ -272,7 +279,9 @@ If Tailscale requests HTTPS setup, complete that setup and run the command again
 Existing unrelated Serve configurations require manual setup.
 The server accepts the exact origin in `remote-access.json` in its state directory.
 Set `enabled` to `false` there to revoke remote access without a restart.
-Tailscale access rules control who can open Studio. Studio adds no separate login.
+Tailscale access rules control who can open Studio. The phone uses the existing
+Serve session and token flow. Cross-server clients use signed device pairing.
+See the [multi-server access contract](docs/multi-server.md).
 
 RxDB replicates SQLite projections to IndexedDB. It keeps message identities across
 reloads and retries. Different browser drafts remain separate and can be combined.

@@ -20,6 +20,7 @@ import urllib.request
 import uuid
 
 from codex_remote import RemoteAccess
+from codex_executables import tailscale as resolve_tailscale, command as executable_command
 from codex_records import (
     FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
     AgentRecord, FederationPeerRecord, JsonObject, JsonValue, RecordStore, RoomRecord,
@@ -102,11 +103,11 @@ def _message_bytes(envelope: JsonObject) -> bytes:
 
 
 def _whoami() -> JsonObject:
-    executable = shutil.which("tailscale")
+    executable = resolve_tailscale()
     if not executable:
         return {"status": "unavailable", "warning": "Tailscale identity could not be checked"}
     try:
-        result = subprocess.run([executable, "whoami", "--json"], capture_output=True,
+        result = subprocess.run(executable_command(executable, ["whoami", "--json"]), capture_output=True,
                                 text=True, timeout=5, check=True)
         data = json.loads(result.stdout)
         user_data = data.get("UserProfile") or data.get("User") or {}
@@ -132,11 +133,11 @@ def _observed_whois(headers: Mapping[str, str], remote_address: str) -> str | No
     if not (address in ipaddress.ip_network("100.64.0.0/10")
             or address in ipaddress.ip_network("fd7a:115c:a1e0::/48")):
         return None
-    executable = shutil.which("tailscale")
+    executable = resolve_tailscale()
     if not executable:
         return None
     try:
-        result = subprocess.run([executable, "whois", str(address)], capture_output=True,
+        result = subprocess.run(executable_command(executable, ["whois", str(address)]), capture_output=True,
                                 text=True, timeout=5, check=True)
         in_user = False
         for line in result.stdout.splitlines():

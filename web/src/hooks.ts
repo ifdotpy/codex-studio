@@ -6,6 +6,7 @@ import {
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -43,7 +44,44 @@ import {
 } from "./hooks/snapshotProjectionStatus";
 import type { GetResult } from "./api";
 import type { Agent, Json, Message, Snapshot } from "./types";
+import {
+  createChatSnapshotSelector,
+  retainArray,
+} from "./hooks/snapshotSelection";
 type TranscriptPageData = GetResult<"/api/transcript">;
+
+// Event callbacks see the latest committed selection without invalidating
+// consumers when another chat changes. Never call these during render.
+export function useCommittedCallback<Args extends unknown[], Result>(
+  callback: (...args: Args) => Result,
+): (...args: Args) => Result {
+  const current = useRef(callback);
+  useLayoutEffect(() => {
+    current.current = callback;
+  });
+  return useCallback((...args: Args) => current.current(...args), []);
+}
+
+export function useRetainedArray<T>(values: T[]): T[] {
+  const previous = useRef(values);
+  const selected = retainArray(previous.current, values);
+  useLayoutEffect(() => {
+    previous.current = selected;
+  }, [selected]);
+  return selected;
+}
+
+export function useChatSnapshot(
+  data: Snapshot | null,
+  rootId?: string,
+  includeUnassignedRequests = false,
+) {
+  const select = useMemo(
+    () => createChatSnapshotSelector(includeUnassignedRequests),
+    [includeUnassignedRequests],
+  );
+  return select(data, rootId);
+}
 
 export function useSnapshot() {
   const [data, setData] = useState<Snapshot | null>(null);

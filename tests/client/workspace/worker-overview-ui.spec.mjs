@@ -95,13 +95,13 @@ test("Worker Overview Ui", async ({
       "All observed cases and their evidence remain in the report. "
         .repeat(10)
         .trim();
+    const mobileReport =
+      "Independent worker output preserves the mobile progress disclosure. " +
+      "All observed cases and their evidence remain in the report. "
+        .repeat(10)
+        .trim();
     const longName =
       "Review the continuation receipt across concurrent requests and uncertain responses";
-    const longExcerpt =
-      "The exact response receipt stays readable on a narrow card. " +
-      "This report preserves the full response details for review. "
-        .repeat(12)
-        .trim();
     let workerFailure = {
       additionalDetails: "The account quota is exhausted.",
       codexErrorInfo: "usageLimitExceeded",
@@ -136,22 +136,11 @@ test("Worker Overview Ui", async ({
       }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
-      // Read the fixture directly: Playwright's route.fetch APIResponse can be
-      // disposed while concurrent pulls are in flight under parallel load.
-      const response = await fetch(route.request().url());
+      const response = await route.fetch();
       const data = await response.json();
-      const responseHeaders = Object.fromEntries(response.headers.entries());
       const pullUrl = new URL(route.request().url());
       const isEntityPull =
         pullUrl.searchParams.get("scope") === "state:entities:v1";
-      if (isEntityPull && data.reset === true) {
-        await route.fulfill({
-          status: response.status,
-          headers: responseHeaders,
-          json: data,
-        });
-        return;
-      }
       for (const document of data.documents ?? []) {
         if (document._deleted) continue;
         const entity = JSON.parse(document.payload);
@@ -180,7 +169,9 @@ test("Worker Overview Ui", async ({
           if (agent.id === worker(1).id)
             Object.assign(agent, {
               name: longName,
-              overview: { task, result: longExcerpt },
+              model: "gpt-6-astra",
+              effort: "high",
+              overview: { task, result: mobileReport },
             });
           if (agent.id === worker(25).id)
             Object.assign(agent, {
@@ -195,7 +186,7 @@ test("Worker Overview Ui", async ({
         }
         document.payload = JSON.stringify(entity);
       }
-      if (isEntityPull) {
+      if (isEntityPull && Array.isArray(data.documents)) {
         const requests = [];
         if (pending)
           requests.push({
@@ -219,7 +210,7 @@ test("Worker Overview Ui", async ({
             questions: [{ id: "done", question: "Already answered" }],
           },
         });
-        let seq = data.checkpoint.seq;
+        let seq = Math.max(data.checkpoint?.seq ?? 0, data.maxSeq ?? 0);
         data.documents.push(
           ...requests.map((value) => {
             seq += 1;
@@ -235,7 +226,7 @@ test("Worker Overview Ui", async ({
             };
           }),
         );
-        data.checkpoint.seq = seq;
+        if (data.checkpoint) data.checkpoint.seq = seq;
         data.maxSeq = seq;
         if (!pending) {
           const tombstoneSeq = data.maxSeq + 1;
@@ -245,11 +236,15 @@ test("Worker Overview Ui", async ({
             _deleted: true,
             payload: "{}",
           });
-          data.checkpoint.seq = tombstoneSeq;
+          if (data.checkpoint) data.checkpoint.seq = tombstoneSeq;
           data.maxSeq = tombstoneSeq;
         }
       }
-      if (isEntityPull && fixtureRefreshStage > appliedFixtureRefreshStage) {
+      if (
+        isEntityPull &&
+        Array.isArray(data.documents) &&
+        fixtureRefreshStage > appliedFixtureRefreshStage
+      ) {
         appliedFixtureRefreshStage = fixtureRefreshStage;
         const changedAgents = initial.runtime.agents.map((agent) => ({
           ...agent,
@@ -286,15 +281,11 @@ test("Worker Overview Ui", async ({
           seq++;
           data.documents.push({ ...source, seq });
         }
-        data.checkpoint.seq = seq;
+        if (data.checkpoint) data.checkpoint.seq = seq;
         data.maxSeq = seq;
         fixtureEntitySeq = seq;
       }
-      await route.fulfill({
-        status: response.status,
-        headers: responseHeaders,
-        json: data,
-      });
+      await route.fulfill({ response, json: data });
     });
     await page.goto(origin);
     const selectLead = () =>
@@ -317,6 +308,21 @@ test("Worker Overview Ui", async ({
       team
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
+    assert.equal(
+      await card(1).locator(".worker-model-summary").innerText(),
+      "Astra 6 · High",
+    );
+    assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("aria-label"),
+      "Failed",
+    );
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("title"),
+      "Failed",
+    );
+    assert.equal(await card(7).locator(".worker-state svg").count(), 1);
+    assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     const refreshFromEntityPull = async () => {
       fixtureRefreshStage++;
       const response = await fetch(origin + "/api/sync/notify", {
@@ -505,16 +511,11 @@ test("Worker Overview Ui", async ({
     assert.match(await card(0).innerText(), /Question deferred/);
     pending = false;
     deferred = false;
-    await refreshFromEntityPull();
     await page.reload();
     await selectLead();
-    await expect
-      .poll(async () => ({
-        answer: await count("answer"),
-        working: await count("working"),
-      }))
-      .toEqual({ answer: 0, working: 7 });
-    await expect(card(0)).toContainText("Working");
+    assert.equal(await count("answer"), 0, "answered requests stop counting");
+    assert.equal(await count("working"), 7);
+    await page.screenshot({ path: join(root, "worker-overview-desktop.png") });
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
@@ -539,6 +540,7 @@ test("Worker Overview Ui", async ({
       true,
     );
     assert.equal(await card(1).locator("strong").innerText(), longName);
+    await page.screenshot({ path: join(root, "worker-overview-mobile.png") });
     await card(1)
       .getByRole("button", {
         name: `Options for subagent ${longName}`,
@@ -580,5 +582,6 @@ test("Worker Overview Ui", async ({
     console.error("Failure evidence:", root);
     throw error;
   } finally {
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
   }
 });

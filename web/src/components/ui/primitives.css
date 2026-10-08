@@ -67,3 +67,12 @@
     width: 100%;
   }
 }
+.ui-settings-row-stacked {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 8px;
+}
+.ui-settings-row-stacked .ui-row-control {
+  max-width: none;
+  width: 100%;
+}

@@ -1,9 +1,23 @@
+import { createFrameBatch } from "./frameBatch";
+
 export type CachedTranscript = { payload: any | null; seq: number };
 const entries = new Map<
   string,
   { value: CachedTranscript; size: number; itemIndexes: Map<string, number> }
 >();
 const listeners = new Map<string, Set<(entry: CachedTranscript) => void>>();
+const pendingNotifications = new Map<string, CachedTranscript>();
+const publication = createFrameBatch(() => {
+  const pending = [...pendingNotifications];
+  pendingNotifications.clear();
+  for (const [key, value] of pending)
+    listeners.get(key)?.forEach((accept) => accept(value));
+});
+function notify(key: string, value: CachedTranscript) {
+  if (!listeners.has(key)) return;
+  pendingNotifications.set(key, value);
+  publication.schedule();
+}
 const maxEntries = 256;
 const maxSize = 64 * 1024 * 1024;
 let size = 0;
@@ -25,6 +39,7 @@ export function clearTranscript(workspaceId: string, id: string) {
   const previous = entries.get(key);
   if (previous) size -= previous.size;
   entries.delete(key);
+  pendingNotifications.delete(key);
 }
 
 export function subscribeTranscript(
@@ -40,7 +55,10 @@ export function subscribeTranscript(
   if (entry) accept(entry);
   return () => {
     set.delete(accept);
-    if (!set.size) listeners.delete(key);
+    if (!set.size) {
+      listeners.delete(key);
+      pendingNotifications.delete(key);
+    }
   };
 }
 
@@ -73,7 +91,7 @@ export function cacheTranscriptValue(
     entries.delete(oldest[0]);
     size -= oldest[1].size;
   }
-  listeners.get(key)?.forEach((accept) => accept(value));
+  notify(key, value);
 }
 
 /** Apply a sparse server delta to retained item objects in place. */
@@ -140,6 +158,6 @@ export function patchTranscriptValue(
     entries.delete(oldest[0]);
     size -= oldest[1].size;
   }
-  listeners.get(key)?.forEach((accept) => accept(entry.value));
+  notify(key, entry.value);
   return true;
 }

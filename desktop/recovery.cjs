@@ -380,16 +380,26 @@ async function configureRecovery({
   } catch {
     registered = false;
   }
-  // Save a policy-only change for the next registration. Preserve live children.
+  // Save automatic interpreter and policy changes for the next registration.
+  // The registered recovery process can keep its original interpreter.
+  const retainedPythonPlist =
+    !launchEnv.CODEX_AGENTS_PYTHON &&
+    typeof saved.python === "string" &&
+    path.isAbsolute(saved.python)
+      ? launchAgent({
+          ...files,
+          python: saved.python,
+          supervisor: path.resolve(supervisor),
+        })
+      : nextPlist;
+  const compatiblePlists = [nextPlist, retainedPythonPlist].flatMap((plist) => [
+    plist,
+    plist.replace("<key>ProcessType</key><string>Interactive</string>\n", ""),
+  ]);
   const restartRecovery =
     registered &&
     previousPlist !== undefined &&
-    previousPlist !== nextPlist &&
-    previousPlist !==
-      nextPlist.replace(
-        "<key>ProcessType</key><string>Interactive</string>\n",
-        "",
-      );
+    !compatiblePlists.includes(previousPlist);
   if (restartRecovery)
     await assertRecoveryBootoutSafe({
       serviceInfo,
@@ -408,8 +418,33 @@ async function configureRecovery({
     await run("/bin/launchctl", ["bootout", service]);
     registered = false;
   }
-  if (!registered)
-    await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
+  if (!registered) {
+    try {
+      await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
+    } catch (error) {
+      try {
+        // A failed response does not prove that registration failed.
+        await run("/bin/launchctl", ["print", service]);
+      } catch (statusError) {
+        if (!restartRecovery || statusError.code !== 113) throw error;
+        fs.writeFileSync(temporary, previousPlist, { mode: 0o600 });
+        fs.renameSync(temporary, files.plist);
+        try {
+          await run("/bin/launchctl", ["bootstrap", domain, files.plist]);
+          await run("/bin/launchctl", ["print", service]);
+        } catch (restoreError) {
+          throw new Error(
+            `Cannot update or restore background recovery: ${restoreError.message}`,
+            { cause: error },
+          );
+        }
+        throw new Error(
+          "Cannot update background recovery. The previous recovery service was restored.",
+          { cause: error },
+        );
+      }
+    }
+  }
   // Read back launchd registration. Writing a plist alone does not install a service.
   await run("/bin/launchctl", ["print", service]);
   return { enabled: true, ...files };

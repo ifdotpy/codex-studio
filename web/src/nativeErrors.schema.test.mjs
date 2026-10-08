@@ -22,11 +22,13 @@ function assertKnownVariants(codes) {
       });
       assert.equal(
         view.message,
-        code === "tooManyDenials"
-          ? "Codex stopped this turn after too many denied actions."
-          : code === "flexUnavailable"
-            ? "The selected model's flexible processing tier is unavailable right now."
-            : "Native message",
+        code === "cyberPolicy"
+          ? "Codex refused this turn under its cybersecurity policy."
+          : code === "tooManyDenials"
+            ? "Codex stopped this turn after too many denied actions."
+            : code === "flexUnavailable"
+              ? "The selected model's flexible processing tier is unavailable right now."
+              : "Native message",
       );
       assert.equal(view.kind, code);
       assert.ok(view.hint.length > 0);
@@ -149,6 +151,17 @@ test("native error rendering handles structured and plain errors", () => {
       nativeErrorView({ codexErrorInfo: "cyberPolicy" }, plan).links[0].href,
       link,
     );
+  const cyber = nativeErrorView(
+    { message: "Raw refusal detail", codexErrorInfo: "cyberPolicy" },
+    "pro",
+  );
+  assert.equal(
+    cyber.message,
+    "Codex refused this turn under its cybersecurity policy.",
+  );
+  assert.equal(cyber.title, "Cybersecurity policy refusal");
+  assert.match(cyber.hint, /narrower or rephrased task/);
+  assert.equal(cyber.details.includes("Raw refusal detail"), true);
   const nestedError = {
     error: { message: "Service unavailable", code: "unavailable" },
   };

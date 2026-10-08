@@ -600,7 +600,7 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
             runtime.rules_tick = lambda: None
             runtime.capacity_tick = lambda: None
             runtime.usage_resume_tick = lambda: None
-            runtime.dispatch = lambda: setattr(runtime, "closed", True)
+            runtime.dispatch = lambda **_options: setattr(runtime, "closed", True)
             try:
                 runtime._stage_event_resources(connection, "agent-a")
                 runtime._queue_staged_resource_changes(staged, overflowed, connection)

@@ -603,6 +603,47 @@ These requests fail visibly instead of receiving fabricated credentials or an au
 
 ### Native ownership
 
+The lead uses `orchestration_servers` with `action: "exec"` for commands on local or paired servers.
+It supplies an absolute `cwd`, command argv or shell text, and a stable `request_id`.
+Optional `env` values add to the server environment. The command runs as the Studio user without added privileges.
+The timeout defaults to 120 seconds and cannot exceed 1800 seconds.
+The output limit defaults to 256 KiB and cannot exceed 4 MiB across stdout and stderr.
+Output retains the head and tail of each stream and reports discarded bytes.
+
+A timeout above five seconds returns a handle. `exec_read` reads output with byte offsets and a fresh request ID.
+Each read returns at most 64 KiB. `exec_input` sends text or closes stdin. `exec_cancel` stops the command and its proven descendants.
+Each command accepts at most 32 input requests. Each input request permits at most 64 KiB of text.
+Only the lead that created the handle can read or control it. A final `monitor_exit` event reaches that lead.
+The process supervisor retains commands during planned backend restarts. The new backend attaches to the existing adapter.
+The backend never starts a command without the supervisor. Durable claims and adapter start markers prevent a second execution.
+If the start outcome remains unknown, inspect the target server before any replacement command.
+
+The target audit stores actor, source and target server IDs, cwd, argv hash, start, end, exit code, and signal.
+It stores no command text, environment values, or output.
+Private config, output, and start files expire seven days after command acceptance.
+Saved server pages, tool receipts, and Studio output references use the same expiry.
+Provider conversation history keeps its existing retention rules. Audit metadata expires after 90 days.
+After the first delivery attempt, the source envelope retains only the actor and payload digest.
+Further retries inspect the target receipt. They cannot send the command or environment again.
+An offline first attempt can therefore leave the outcome unknown. Inspect the target before a replacement command.
+Signed server transport preserves the existing owner identity and receipt checks.
+
+Commands cannot leave background daemons. Normal exit, cancel, and timeout stop proven descendants, including separate sessions.
+The result reports `stoppedDescendants`. Linux retains orphan children with `PR_SET_CHILD_SUBREAPER`.
+macOS combines child PID records, kernel fork events, and a private `STUDIO_EXEC_ID` environment marker.
+Each command gets a random 256-bit marker. Only its private config stores the marker.
+APIs, events, and diagnostics do not return it. Literal marker text is redacted from command output, including stream chunk boundaries.
+The marker scan requires an exact match, the same user, and a process start time after command acceptance.
+A descendant that copies or removes the marker is outside the cleanup guarantee.
+Each fork notification must match a proved child that stopped. Unresolved notifications increase `cleanupUnknownForks` and return status `unknown`.
+Kernel notifications can combine forks. This count is evidence of incomplete cleanup, not an exact escaped process count.
+Linux pins each process with `pidfd_open` before the birth check and uses `pidfd_send_signal`.
+macOS checks the birth immediately before the signal. A small check-to-signal PID reuse window remains on macOS.
+Timeout and cancel also apply while the command bootstrap waits for Python startup.
+Live output keeps incomplete UTF-8 sequences until more bytes arrive or the command ends.
+Completed adapters release their supervisor handles, pipes, and journal rows after the final status is saved.
+A backend that restores a completed command acknowledges redundant status frames before it retires the adapter.
+
 Prefer native Codex primitives when they remove a Studio mechanism and preserve its behavior.
 Experimental APIs are acceptable. Keep one execution path for each operation.
 Preserve account scope, workspace reservations, team limits, and delivery recovery before removing a Studio mechanism.

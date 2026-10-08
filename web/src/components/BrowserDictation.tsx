@@ -1,3 +1,5 @@
+import { useServerActivity } from "../servers/activity";
+import { serverLocalStorage as localStorage } from "../servers/storage";
 import { useEffect, useRef, useState } from "react";
 import { Popover } from "@mantine/core";
 import { Mic } from "lucide-react";
@@ -35,6 +37,8 @@ export function BrowserDictation({
 }) {
   const [open, setOpen] = useState(false);
   const [active, setActive] = useState(false);
+  const [storageFailed, setStorageFailed] = useState(false);
+  useServerActivity(active || storageFailed);
   const [status, setStatus] = useState("");
   const [error, setError] = useState("");
   const [text, setText] = useState("");
@@ -53,7 +57,9 @@ export function BrowserDictation({
     setText(value);
     try {
       localStorage.setItem(key, value);
+      setStorageFailed(false);
     } catch {
+      setStorageFailed(true);
       setError(
         "The text could not be saved on this device. Copy it before you leave.",
       );
@@ -63,6 +69,7 @@ export function BrowserDictation({
     try {
       setText(localStorage.getItem(key) || "");
     } catch {
+      setStorageFailed(true);
       setError("Saved text is unavailable on this device.");
     }
     return () => {

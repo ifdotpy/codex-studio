@@ -141,13 +141,33 @@ if (self.STUDIO_SHELL) {
       event.respondWith(
         (async () => {
           const cache = await caches.open(cacheName).catch(() => null);
-          const cached = await cachedShell().catch(() => undefined);
+          let cached = await cachedShell().catch(() => undefined);
+          const serverView = /^[a-zA-Z0-9_-]{1,128}$/.test(
+            url.searchParams.get("studio-server") || "",
+          );
+          if (cached && serverView) {
+            const headers = new Headers(cached.headers);
+            const policy = headers.get("Content-Security-Policy");
+            if (policy)
+              headers.set(
+                "Content-Security-Policy",
+                policy.replace(
+                  /frame-ancestors[^;]*/,
+                  "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*",
+                ),
+              );
+            cached = new Response(await cached.text(), {
+              status: cached.status,
+              headers,
+            });
+          }
           let timer;
           const network = fetch(request).then(async (response) => {
             if (!valid(response)) throw new Error("Studio page unavailable.");
-            if (await currentHTML(response))
-              await cache?.put("/", response.clone()).catch(() => {});
-            else void self.registration.update().catch(() => {});
+            if (await currentHTML(response)) {
+              if (!serverView)
+                await cache?.put("/", response.clone()).catch(() => {});
+            } else void self.registration.update().catch(() => {});
             return response;
           });
           // Keep a late same-build response, but do not hold a cached page behind

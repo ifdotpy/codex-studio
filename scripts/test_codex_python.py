@@ -40,6 +40,41 @@ class PythonResolutionTests(unittest.TestCase):
         )
         self.assertEqual(requirements_digest(self.scripts), digest)
 
+    def test_cache_root_preserves_xdg_precedence_on_posix(self) -> None:
+        from codex_python import cache_root
+
+        if os.name == "nt":
+            self.skipTest("POSIX cache precedence")
+        xdg = self.project / "xdg-cache"
+        override = self.project / "codex-cache"
+        self.assertEqual(
+            cache_root({"XDG_CACHE_HOME": str(xdg), "CODEX_AGENTS_CACHE_DIR": str(override)}),
+            xdg,
+        )
+
+    def test_bootstrap_help_runs_with_oldest_available_system_python(self) -> None:
+        candidates = [Path("/usr/bin/python3"), Path(shutil.which("python3") or sys.executable)]
+        runtimes = []
+        for candidate in candidates:
+            if not candidate.is_file():
+                continue
+            result = subprocess.run(
+                [str(candidate), "-c", "import sys; print('%s.%s' % sys.version_info[:2])"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0:
+                version = tuple(map(int, result.stdout.strip().split(".")))
+                runtimes.append((version, candidate))
+        if not runtimes:
+            self.skipTest("No system Python is available")
+        _, python = min(runtimes)
+        bootstrap = Path(__file__).with_name("codex_python.py")
+        result = subprocess.run(
+            [str(python), str(bootstrap), "--help"], capture_output=True,
+            text=True, timeout=10,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_explicit_interpreter_has_priority(self) -> None:
         selected = self.project / "selected-python"
         selected.touch()

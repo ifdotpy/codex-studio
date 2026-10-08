@@ -1201,6 +1201,16 @@ class AccountHistoryRecord(TypedDict):
     sourceHistoryMissing: NotRequired[JsonObject]
 
 
+class RemoteWorkerLinkRecord(TypedDict):
+    server: str
+    link: str
+
+
+class RemoteParentLinkRecord(TypedDict):
+    home: str
+    link: str
+
+
 class AgentRecord(TypedDict):
     """JSON object stored in ``runtime_agents.record`` after mode projection."""
 
@@ -1237,6 +1247,17 @@ class AgentRecord(TypedDict):
     error: NotRequired[str | JsonObject | None]
     tail: NotRequired[str]
     worktree: NotRequired[bool]
+    remoteWorker: NotRequired[RemoteWorkerLinkRecord]
+    remoteOrigin: NotRequired[RemoteParentLinkRecord]
+    remoteAnchor: NotRequired[RemoteParentLinkRecord]
+    remoteEpoch: NotRequired[int]
+    remoteControlEpoch: NotRequired[int]
+    remoteStateSequence: NotRequired[int]
+    remoteReservation: NotRequired[bool]
+    remoteAdmission: NotRequired[JsonObject]
+    remoteAdmissionRequest: NotRequired[str]
+    remoteLastAdmission: NotRequired[str]
+    remoteStopRequest: NotRequired[str]
     environment: NotRequired[Literal["host", "linux"] | None]
     worktreeReady: NotRequired[bool]
     worktreePreparation: NotRequired[WorktreePreparation | None]
@@ -1257,6 +1278,7 @@ class AgentRecord(TypedDict):
     imageWorkspaceNoticeSent: NotRequired[str | None]
     imageWorkspaceNoticeText: NotRequired[str | None]
     imageWorkspaceNoticeError: NotRequired[str | None]
+    imageWorkspaceHandoffText: NotRequired[str | None]
     imageWorkspaceCollect: NotRequired[ImageWorkspaceCollectResultRecord]
     concurrency: NotRequired[int]
     maxAgents: NotRequired[int]
@@ -1674,6 +1696,7 @@ class AccountTransferMemberRecord(TypedDict):
     targetConnection: NotRequired[str]
     nativeParams: NotRequired[JsonObject]
     sourceHistoryMissing: NotRequired[JsonValue]
+    sourceEmptyProof: NotRequired[JsonObject]
     emptyThreadRecovery: NotRequired[JsonObject]
     phaseAtReservation: NotRequired[str]
     reason: NotRequired[str]

@@ -1,4 +1,5 @@
 """Durable dynamic-tool receipts and cancellation before execution."""
+from __future__ import annotations
 
 import hashlib
 import json
@@ -227,12 +228,14 @@ class RequestMixin:
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
         name, identity_args = params.get("tool"), args
-        if name in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
+        if (name in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers"}
+                and not (name == "orchestration_servers" and identity_args.get("action") == "receipt")
+                and "request_id" in identity_args):
             request_id = identity_args["request_id"]
             if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200
                     or request_id != request_id.strip() or any(ord(c) < 32 for c in request_id)):
                 raise ValueError("Supply request_id with 1 to 200 characters and no surrounding whitespace")
-            call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:"}[name] + request_id
+            call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:", "orchestration_servers": "server:"}[name] + request_id
         return _prefix(account_key, params.get("threadId")) + call
 
     def tool_request(self: "RequestRuntime", key: str | None, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None":
@@ -250,7 +253,8 @@ class RequestMixin:
         if row is None:
             return None
         from codex_payloads import resolve_result, state_root
-        return resolve_result(state_root(self), row[0])
+        from codex_server_exec import expire_tool_output
+        return expire_tool_output(resolve_result(state_root(self), row[0]))
 
     def transcript_tool_result(self: "RequestRuntime", db: "sqlite3.Connection", actor: "AgentRecord", item: "JsonObject") -> None:
         """Recover a missing native completion from the exact durable receipt."""
@@ -347,7 +351,7 @@ class RequestMixin:
                     record["reservationDelayMs"] = max(0, now - dispatched) * 1000
                     if "wireReceivedAt" in record:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
-                if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review"} and "request_id" in identity_args:
+                if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
                 cached = self.tool_result(db, key)
@@ -559,6 +563,9 @@ class RequestMixin:
                     record["result"] = _cancel_result(record, "Cancelled before execution")
                 self.put(db, "tool_requests", record)
             result = {k: v for k, v in record.items() if k != "signature"}
+            if isinstance(result.get("result"), dict):
+                from codex_server_exec import expire_tool_output
+                result["result"] = expire_tool_output(result["result"])
             if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
             if action == "get" and record.get("agentIds"):

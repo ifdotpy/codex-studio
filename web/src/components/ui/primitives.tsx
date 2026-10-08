@@ -56,13 +56,18 @@ export function SettingsRow({
   label,
   help,
   children,
+  stacked,
 }: {
   label: ReactNode;
   help?: ReactNode;
   children: ReactNode;
+  /** Put the label above a wide control, such as account tiles. */
+  stacked?: boolean;
 }) {
   return (
-    <div className="ui-settings-row">
+    <div
+      className={`ui-settings-row${stacked ? " ui-settings-row-stacked" : ""}`}
+    >
       <div className="ui-label">
         <div className="ui-row-label">{label}</div>
         {help && <div className="ui-help">{help}</div>}

@@ -108,3 +108,23 @@ describe("schema-keyed entity cache storage", () => {
     ).not.toThrow();
   });
 });
+
+it("cleans only the selected server when workspace ids overlap", async () => {
+  const workspace = "a".repeat(32),
+    current = "1".repeat(64),
+    stale = "2".repeat(64);
+  const suffix = "server72656d6f7465";
+  const names = ["", suffix, "server6f74686572"].map(
+    (owner) =>
+      `rxdb-dexie-${entityProjectionDatabaseName(workspace, stale, owner)}--0--projections`,
+  );
+  const deleteDatabase = vi.fn(() => ({}));
+  vi.stubGlobal("indexedDB", {
+    databases: async () => names.map((name) => ({ name })),
+    deleteDatabase,
+  });
+  deleteOtherEntityProjectionDatabases(workspace, current, suffix);
+  await vi.waitFor(() =>
+    expect(deleteDatabase).toHaveBeenCalledExactlyOnceWith(names[1]),
+  );
+});

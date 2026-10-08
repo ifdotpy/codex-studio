@@ -1,3 +1,4 @@
+import { useServerActivity } from "../servers/activity";
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import { nativeStatusMessage } from "./conversation/nativeStatus";
@@ -22,7 +23,7 @@ import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
-  MoreHorizontal,
+  ListTree,
   Trash2,
   Square,
   Terminal,
@@ -40,7 +41,11 @@ import {
 import { get, post, errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
+import {
+  isCyberPolicyRefusal,
+  nativeErrorKind,
+  nativeThreadError,
+} from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -249,9 +254,6 @@ export default function Conversation(p: {
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
   const mobileClient = useMediaQuery("(max-width: 760px)");
-  const shortViewport = useMediaQuery(
-    "(max-width: 760px) and (max-height: 750px)",
-  );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -557,6 +559,7 @@ export default function Conversation(p: {
     (row) => row.agent === p.id,
   );
   const uploading = addingFiles || pendingFiles.length > 0;
+  useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);
@@ -1473,7 +1476,7 @@ export default function Conversation(p: {
               aria-label="Conversation tools"
               title="Conversation tools"
             >
-              <MoreHorizontal size={18} />
+              <ListTree size={18} />
               <span className="sr-only">Conversation tools</span>
             </summary>
             <div
@@ -1709,6 +1712,15 @@ export default function Conversation(p: {
               />
             </>
           )}
+          {agent && isCyberPolicyRefusal(agent.error) && (
+            <div className="native-policy-composer-warning" role="note">
+              <strong>Before you continue</strong>
+              <span>
+                Continuing this chat sends the same history and can be refused
+                again.
+              </span>
+            </div>
+          )}
           <PromptComposer
             session={p.id || "new"}
             getDraft={p.getDraft}
@@ -1749,7 +1761,6 @@ export default function Conversation(p: {
                     setDraft={p.setDraft}
                     input={input}
                     mobile={mobileClient}
-                    shortViewport={shortViewport}
                     managed={!!managed}
                     canSend={canSend}
                     blocked={!!threadBlock}

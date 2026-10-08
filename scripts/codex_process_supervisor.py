@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
+from codex_private_paths import ensure_private_dir
 import hashlib
 import json
 import os
@@ -28,6 +29,7 @@ from codex_open_file_limit import raise_open_file_limit
 
 PROTOCOL = 1
 MAX_STDERR_EVENT_BYTES = 256 * 1024
+MAX_FRAME_BYTES = 1024 * 1024
 HANDLE_LIMIT = 256 * 1024 * 1024
 SOCKET_TIMEOUT = 10
 
@@ -43,11 +45,24 @@ def _retryable_storage_error(error):
         "database or disk is full", "database is locked", "database table is locked", "disk i/o error"}
 
 
+def _close_stopped_job(job, result):
+    if result == "termination-failed":
+        raise RuntimeError("Verified Job Object still has live children; ownership remains active")
+    job.close()
+
+
 def _connect(path, timeout=SOCKET_TIMEOUT):
+    if os.name == "nt":
+        from codex_windows_supervisor import connect_pipe
+
+        return connect_pipe(path, timeout=timeout)
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(timeout)
     try:
-        client.connect(str(path))
+        endpoint = Path(path)
+        if endpoint.is_dir():
+            endpoint /= "supervisor.sock"
+        client.connect(str(endpoint))
     except Exception:
         client.close()
         raise
@@ -56,6 +71,8 @@ def _connect(path, timeout=SOCKET_TIMEOUT):
 
 def _send(sock, value, lock=None):
     data = (json.dumps(value, separators=(",", ":"), ensure_ascii=False) + "\n").encode()
+    if os.name == "nt" and len(data) > MAX_FRAME_BYTES:
+        raise ValueError("Supervisor frame exceeds the size limit")
     if lock is None:
         sock.sendall(data)
     else:
@@ -65,9 +82,11 @@ def _send(sock, value, lock=None):
 
 def _recv(sock, stream):
     while True:
-        line = stream.readline()
+        line = stream.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else stream.readline()
         if not line:
             raise ConnectionError("Supervisor connection closed")
+        if os.name == "nt" and len(line.encode("utf-8") if isinstance(line, str) else line) > MAX_FRAME_BYTES:
+            raise ValueError("Supervisor frame exceeds the size limit")
         try:
             return json.loads(line)
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
@@ -107,7 +126,8 @@ class Journal:
                     PRIMARY KEY(handle,sequence));
                 CREATE TABLE IF NOT EXISTS child_identities(
                     handle TEXT PRIMARY KEY, pid INTEGER NOT NULL, pgid INTEGER NOT NULL,
-                    start_time TEXT NOT NULL);
+                    start_time TEXT NOT NULL, job_name TEXT NOT NULL DEFAULT '',
+                    job_kill_on_close INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS recovery_events(
                     id INTEGER PRIMARY KEY AUTOINCREMENT, at REAL NOT NULL,
                     handle TEXT NOT NULL, pid INTEGER NOT NULL, start_time TEXT NOT NULL,
@@ -133,6 +153,11 @@ class Journal:
             if "generation" not in event_columns:
                 db.execute("ALTER TABLE events ADD COLUMN generation INTEGER NOT NULL DEFAULT 1")
             operation_columns = {row[1] for row in db.execute("PRAGMA table_info(operations)")}
+            identity_columns = {row[1] for row in db.execute("PRAGMA table_info(child_identities)")}
+            if "job_name" not in identity_columns:
+                db.execute("ALTER TABLE child_identities ADD COLUMN job_name TEXT NOT NULL DEFAULT ''")
+            if "job_kill_on_close" not in identity_columns:
+                db.execute("ALTER TABLE child_identities ADD COLUMN job_kill_on_close INTEGER NOT NULL DEFAULT 0")
             if "generation" not in operation_columns:
                 db.execute("ALTER TABLE operations ADD COLUMN generation INTEGER")
             if "response" not in operation_columns:
@@ -198,6 +223,38 @@ def process_start_time(pid):
     if type(pid) is not int or pid < 1:
         return None
     import sys
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        get_times = kernel32.GetProcessTimes
+        get_times.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileTime), ctypes.POINTER(FileTime), ctypes.POINTER(FileTime), ctypes.POINTER(FileTime)]
+        get_times.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        handle = open_process(0x1000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() in (87, 1168):
+                return None
+            raise RuntimeError(f"Cannot verify process identity for PID {pid}")
+        try:
+            created, exited, kernel, user = FileTime(), FileTime(), FileTime(), FileTime()
+            if not get_times(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+                if ctypes.get_last_error() in (87, 1168):
+                    return None
+                raise RuntimeError(f"Cannot verify process identity for PID {pid}")
+            ticks = (created.high << 32) | created.low
+            if exited.high or exited.low:
+                return None
+            return f"{ticks // 10_000_000}.{(ticks // 10) % 1_000_000:06d}"
+        finally:
+            close_handle(handle)
     if sys.platform == "darwin":
         import ctypes
 
@@ -260,6 +317,8 @@ def process_start_matches(pid, expected, *, allow_legacy=False):
         return True
     if not allow_legacy or actual is None:
         return False
+    if os.name == "nt":
+        return False
     try:
         legacy = subprocess.check_output(["/bin/ps", "-p", str(pid), "-o", "lstart="],
                                         text=True, stderr=subprocess.DEVNULL, timeout=2).strip()
@@ -284,6 +343,11 @@ def _valid_process_start(value):
 class Child:
     def __init__(self, handle, process, signature):
         self.handle, self.process, self.signature = handle, process, signature
+        with process.supervisor.journal.db() as db:
+            row = db.execute("SELECT generation FROM handles WHERE id=?", (handle,)).fetchone()
+            if not row:
+                raise RuntimeError("Cannot start a child reader without a journal generation")
+            self.generation = row[0]
         self.lock = threading.RLock()
         self.append_lock = threading.Lock()
         self.output = threading.Condition(self.lock)
@@ -316,6 +380,8 @@ class Child:
                     used = journal.outstanding_bytes(db, self.handle)
                     row = db.execute("SELECT sequence,generation FROM handles WHERE id=?", (self.handle,)).fetchone()
                     if not row:
+                        return
+                    if row[1] != self.generation:
                         return
                     if pending and row[1] != pending[1]:
                         raise RuntimeError("Supervisor output generation changed before its receipt")
@@ -432,11 +498,15 @@ class Child:
 
 class Supervisor:
     def __init__(self, root):
-        self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.root = ensure_private_dir(Path(root).resolve())
         self.socket_path = self.root / "supervisor.sock"
+        if os.name == "nt":
+            self.endpoint = None
+        else:
+            self.endpoint = self.socket_path
         self.journal = None
         self.children = {}
+        self.jobs = {}
         self.lock = threading.RLock()
         self.owner = None
         self.owner_connections = 0
@@ -461,7 +531,31 @@ class Supervisor:
                         "wait for it to exit or use the operator CLI to close a verified test/unknown handle."
                     )
                 if return_code is None:
+                    if os.name == "nt" and not self._verify_job(handle, child.process.pid):
+                        raise RuntimeError("Supervisor child job identity is unknown; native outcome remains unknown")
                     return child, True
+                if os.name == "nt":
+                    from codex_windows_supervisor import graceful_stop_pid, open_job
+
+                    with self.journal.db() as db:
+                        identity = db.execute(
+                            "SELECT pid,start_time,job_name FROM child_identities WHERE handle=?", (handle,)
+                        ).fetchone()
+                    job = self.jobs.get(handle)
+                    if job is None and identity and identity["job_name"]:
+                        job = open_job(identity["job_name"])
+                        if job:
+                            self.jobs[handle] = job
+                    if (job is None or identity is None or job.identity != identity["job_name"]):
+                        raise RuntimeError("Exited child Job Object ownership is unknown; replacement refused")
+                    outcome = graceful_stop_pid(
+                        job, identity["pid"], identity["start_time"], process_start_time,
+                        expected_job_identity=identity["job_name"],
+                    )
+                    if outcome == "termination-failed":
+                        raise RuntimeError("Exited child descendants remain in its Job Object; replacement refused")
+                    job.close()
+                    self.jobs.pop(handle, None)
                 child.stopping.set()
                 with child.output:
                     child.output.notify_all()
@@ -500,32 +594,73 @@ class Supervisor:
                     db.execute("INSERT INTO handles(id,signature,pid,created) VALUES (?,?,0,?)",
                                (handle, signature, time.time()))
                     db.commit()
-            proc = subprocess.Popen(command, env=env, cwd=cwd, stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-                encoding="utf-8", bufsize=1, start_new_session=True)
+            job = None
+            creationflags = 0
+            start_new_session = os.name != "nt"
+            if os.name == "nt":
+                from codex_windows_supervisor import (
+                    CREATE_NEW_PROCESS_GROUP, CREATE_SUSPENDED, assign_process,
+                    create_job, resume_process,
+                )
+
+                creationflags = CREATE_SUSPENDED | CREATE_NEW_PROCESS_GROUP
+                start_new_session = False
+                job = create_job()
             try:
+                proc = subprocess.Popen(command, env=env, cwd=cwd, stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                    encoding="utf-8", bufsize=1, start_new_session=start_new_session,
+                    creationflags=creationflags)
+                if job is not None:
+                    assign_process(proc, job)
                 started = process_start_time(proc.pid)
+                if started is None:
+                    raise RuntimeError("Cannot prove the native child process identity")
+                with self.journal.db() as db:
+                    db.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,"
+                               "generation=generation+1,init_result=NULL,"
+                               "closed_at=NULL,closed_reason=NULL WHERE id=?", (proc.pid, signature, handle))
+                    db.execute("INSERT INTO child_identities(handle,pid,pgid,start_time,job_name,job_kill_on_close) "
+                               "VALUES (?,?,?,?,?,?) ON CONFLICT(handle) DO UPDATE SET "
+                               "pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time,"
+                               "job_name=excluded.job_name,job_kill_on_close=excluded.job_kill_on_close",
+                               (handle, proc.pid, proc.pid, started, job.identity if job else "",
+                                int(job is not None)))
+                    if recovered:
+                        db.execute("DELETE FROM degraded_handles WHERE handle=?", (handle,))
+                if job is not None:
+                    resume_process(proc)
+                    self.jobs[handle] = job
             except Exception:
-                proc.kill()
-                proc.wait(timeout=2)
+                if job is not None:
+                    try:
+                        job.terminate()
+                    except Exception:
+                        pass
+                    job.close()
+                if "proc" in locals() and proc.poll() is None:
+                    proc.kill()
+                    proc.wait(timeout=2)
                 raise
-            if started is None:
-                proc.kill()
-                proc.wait(timeout=2)
-                raise RuntimeError("Cannot prove the native child process identity")
-            with self.journal.db() as db:
-                db.execute("UPDATE handles SET pid=?,signature=?,rpc_sequence=0,"
-                           "generation=generation+1,init_result=NULL,"
-                           "closed_at=NULL,closed_reason=NULL WHERE id=?", (proc.pid, signature, handle))
-                db.execute("INSERT INTO child_identities VALUES (?,?,?,?) ON CONFLICT(handle) DO UPDATE SET "
-                           "pid=excluded.pid,pgid=excluded.pgid,start_time=excluded.start_time",
-                           (handle, proc.pid, proc.pid, started))
-                if recovered:
-                    db.execute("DELETE FROM degraded_handles WHERE handle=?", (handle,))
             proc.supervisor = self
             child = Child(handle, proc, signature)
             self.children[handle] = child
             return child, False
+
+    def _verify_job(self, handle, pid):
+        if os.name != "nt":
+            return True
+        from codex_windows_supervisor import membership_for_pid
+
+        job = self.jobs.get(handle)
+        if job is None:
+            return False
+        with self.journal.db() as db:
+            identity = db.execute("SELECT pid,start_time,job_name FROM child_identities WHERE handle=?",
+                                  (handle,)).fetchone()
+        return bool(identity and identity["pid"] == pid and identity["job_name"] == job.identity
+                    and process_start_time(pid) == identity["start_time"]
+                    and membership_for_pid(job, pid) is True)
 
     def handle(self, request):
         if request.get("action") == "health":
@@ -533,12 +668,13 @@ class Supervisor:
                 handles = []
                 for row in db.execute("SELECT id,sequence,acknowledged,pid FROM handles WHERE closed_at IS NULL"):
                     child = self.children.get(row["id"])
-                    identity = db.execute("SELECT start_time FROM child_identities WHERE handle=?",
+                    identity = db.execute("SELECT start_time,job_name FROM child_identities WHERE handle=?",
                                           (row["id"],)).fetchone()
                     signature = db.execute("SELECT signature FROM handles WHERE id=?",
                                            (row["id"],)).fetchone()[0]
                     handles.append({"id": row["id"], "pid": row["pid"],
                         "signature": signature, "startTime": identity[0] if identity else None,
+                        "jobIdentity": identity[1] if identity and identity[1] else None,
                         "sequence": row["sequence"], "acknowledged": row["acknowledged"],
                         "bufferedBytes": self.journal.outstanding_bytes(db, row["id"]),
                         "backpressure": bool(child and child.paused.is_set()),
@@ -567,7 +703,7 @@ class Supervisor:
             with self.lock, self.journal.db() as db:
                 row = db.execute("SELECT signature,pid,closed_at FROM handles WHERE id=?", (handle,)).fetchone()
                 child_identity = db.execute(
-                    "SELECT pid,pgid,start_time FROM child_identities WHERE handle=?", (handle,)
+                    "SELECT pid,pgid,start_time,job_name FROM child_identities WHERE handle=?", (handle,)
                 ).fetchone()
                 if not row or not child_identity or row["closed_at"] is not None:
                     raise RuntimeError("Operator close refused: handle is missing or already closed")
@@ -580,18 +716,34 @@ class Supervisor:
                 child = self.children.get(handle)
                 if child is None:
                     raise RuntimeError("Operator close refused: no in-memory child owner exists")
-                child.stopping.set()
-                try:
-                    os.killpg(child_identity["pgid"], signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
-                try:
-                    child.process.wait(timeout=3)
-                except subprocess.TimeoutExpired:
-                    if process_start_time(request["expectedPid"]) != request["expectedStartTime"]:
-                        raise RuntimeError("Operator close refused escalation: child identity changed")
-                    os.killpg(child_identity["pgid"], signal.SIGKILL)
-                    child.process.wait(timeout=2)
+                if os.name == "nt":
+                    from codex_windows_supervisor import graceful_stop
+
+                    job = self.jobs.get(handle)
+                    if (job is None or job.identity != child_identity["job_name"]
+                            or not self._verify_job(handle, request["expectedPid"])):
+                        raise RuntimeError("Operator close refused: saved Job Object identity is unknown")
+                    stop_result = graceful_stop(
+                        job, child.process, request["expectedPid"],
+                        request["expectedStartTime"], process_start_time,
+                        expected_job_identity=child_identity["job_name"],
+                    )
+                    _close_stopped_job(job, stop_result)
+                    child.stopping.set()
+                    self.jobs.pop(handle, None)
+                else:
+                    child.stopping.set()
+                    try:
+                        os.killpg(child_identity["pgid"], signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        child.process.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        if process_start_time(request["expectedPid"]) != request["expectedStartTime"]:
+                            raise RuntimeError("Operator close refused escalation: child identity changed")
+                        os.killpg(child_identity["pgid"], signal.SIGKILL)
+                        child.process.wait(timeout=2)
                 self.children.pop(handle, None)
                 now = time.time()
                 db.execute("UPDATE handles SET closed_at=?,closed_reason=? WHERE id=?",
@@ -614,6 +766,24 @@ class Supervisor:
         if child is None:
             raise RuntimeError("Unknown supervisor handle")
         action = request.get("action")
+        if action == "retireCommand":
+            if not handle.startswith('server-command:'):
+                raise ValueError('Only completed server command handles can be retired')
+            with self.lock, child.lock, self.journal.lock, self.journal.db() as db:
+                row = db.execute('SELECT generation,sequence,acknowledged FROM handles WHERE id=?', (handle,)).fetchone()
+                if (not row or row['generation'] != request.get('generation')
+                        or child.process.poll() is None or child.reader.is_alive() or child.stderr.is_alive()
+                        or row['sequence'] != row['acknowledged']):
+                    raise RuntimeError('The command adapter is not ready for retirement')
+                for stream in (child.process.stdin, child.process.stdout, child.process.stderr):
+                    if stream is not None:
+                        stream.close()
+                for table in ('events', 'operations', 'child_identities', 'degraded_handles'):
+                    db.execute('DELETE FROM ' + table + ' WHERE handle=?', (handle,))
+                db.execute('DELETE FROM handles WHERE id=?', (handle,))
+                db.commit()
+                self.children.pop(handle, None)
+            return {'retired': True}
         if action == "write":
             return child.write(request["operationId"], request.get("nativeId"), request["message"])
         if action == "operationStatus":
@@ -691,7 +861,7 @@ class Supervisor:
         announced_wait = False
         while True:
             try:
-                fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(self.lease, LOCK_EX | LOCK_NB)
             except OSError as error:
                 if not wait_for_lease:
                     raise RuntimeError("Another supervisor owns this state directory") from error
@@ -724,7 +894,7 @@ class Supervisor:
                     if not announced_wait:
                         print(f"supervisor waiting for owner {old_pid}", file=sys.stderr, flush=True)
                         announced_wait = True
-                    fcntl.flock(self.lease, fcntl.LOCK_UN)
+                    flock(self.lease, LOCK_UN)
                     time.sleep(.1)
                     continue
             self.journal = Journal(self.root)
@@ -739,12 +909,27 @@ class Supervisor:
         self.lease.write(json.dumps({"pid": os.getpid(), "startTime": own_start}))
         self.lease.flush()
         os.fsync(self.lease.fileno())
-        self.socket_path.unlink(missing_ok=True)
-        server = socketserver.ThreadingUnixStreamServer(str(self.socket_path), Handler)
-        server.daemon_threads = True
-        server.supervisor = self
-        os.chmod(self.socket_path, 0o600)
-        server.serve_forever(poll_interval=.2)
+        if os.name == "nt":
+            from codex_windows_supervisor import create_pipe_server, pipe_endpoint, pipe_identity
+
+            self.endpoint = pipe_endpoint(self.root, pipe_identity(self.root, create=True))
+            create_pipe_server(self.endpoint, self._handle_pipe)
+        else:
+            self.socket_path.unlink(missing_ok=True)
+            server = socketserver.ThreadingUnixStreamServer(str(self.socket_path), Handler)
+            server.daemon_threads = True
+            server.supervisor = self
+            os.chmod(self.socket_path, 0o600)
+            server.serve_forever(poll_interval=.2)
+
+    def _handle_pipe(self, connection, reader, first_line):
+        writer = _PipeWriter(connection)
+        server = type("PipeSessionServer", (), {"supervisor": self})()
+        try:
+            _serve_connection(server, reader, writer, first_line=first_line)
+        finally:
+            reader.close()
+            connection.close()
 
     def recover_orphaned_children(self):
         with self.journal.db() as db:
@@ -771,7 +956,35 @@ class Supervisor:
             pid, pgid, expected = identity["pid"], identity["pgid"], identity["start_time"]
             actual = process_start_time(pid)
             if actual is None:
-                outcome, detail = "already-exited", "Native child was no longer running when the supervisor recovered"
+                if os.name == "nt":
+                    from codex_windows_supervisor import graceful_stop_pid, open_job
+
+                    job = open_job(identity.get("job_name", "")) if identity.get("job_name") else None
+                    if job is None:
+                        if identity.get("job_kill_on_close") and process_start_time(pid) is None:
+                            outcome, detail = "already-exited", "Supervisor exit closed the kill-on-close Job Object"
+                        else:
+                            outcome, detail = "unknown-job", "Saved Job Object identity could not be verified"
+                            self.recovery["blocked"] = f"Child PID {pid} has unknown Job Object ownership"
+                    else:
+                        self.jobs[handle] = job
+                        stop_result = graceful_stop_pid(
+                            job, pid, expected, process_start_time,
+                            expected_job_identity=identity["job_name"],
+                        )
+                        if stop_result == "termination-failed":
+                            outcome, detail = "termination-failed", "Verified Job Object descendants survived termination"
+                            self.recovery["blocked"] = f"Could not terminate verified child PID {pid}"
+                            self.jobs[handle] = job
+                        elif stop_result == "terminated":
+                            outcome, detail = "already-exited", "No live Job Object members remained"
+                        else:
+                            outcome, detail = "killed", "Verified Job Object descendants were terminated after the root exited"
+                        if stop_result != "termination-failed":
+                            job.close()
+                            self.jobs.pop(handle, None)
+                else:
+                    outcome, detail = "already-exited", "Native child was no longer running when the supervisor recovered"
             elif actual != expected:
                 outcome, detail = "identity-mismatch", "PID belongs to a different process start time"
             else:
@@ -780,27 +993,67 @@ class Supervisor:
                     notice="The process supervisor restarted; native work is using recovery.",
                 )
                 try:
-                    os.killpg(pgid, signal.SIGTERM)
-                    deadline = time.monotonic() + 1.5
-                    while time.monotonic() < deadline and process_start_time(pid) == expected:
-                        time.sleep(.05)
-                    if process_start_time(pid) == expected:
-                        # Verify ownership again immediately before escalation.
-                        if process_start_time(pid) != expected:
-                            outcome, detail = "identity-mismatch", "PID changed before KILL; no signal was sent"
-                            self.recovery["blocked"] = f"Child PID {pid} changed identity during cleanup"
-                        else:
-                            os.killpg(pgid, signal.SIGKILL)
-                            deadline = time.monotonic() + 1
+                    if os.name == "nt":
+                        from codex_windows_supervisor import (
+                            graceful_stop_pid, membership_for_pid, open_job,
+                        )
+
+                        job = open_job(identity.get("job_name", "")) if identity.get("job_name") else None
+                        if job is None and identity.get("job_kill_on_close"):
+                            deadline = time.monotonic() + 2
                             while time.monotonic() < deadline and process_start_time(pid) == expected:
                                 time.sleep(.05)
-                            if process_start_time(pid) == expected:
-                                outcome, detail = "termination-failed", "Process group survived TERM and KILL"
-                                self.recovery["blocked"] = f"Could not terminate verified child PID {pid}"
+                            if process_start_time(pid) is None:
+                                outcome, detail = "killed", "Supervisor exit closed the kill-on-close Job Object"
                             else:
-                                outcome, detail = "killed", "verified process group terminated"
+                                self.recovery["blocked"] = f"Child PID {pid} has unknown Job Object ownership"
+                                outcome, detail = "unknown-job", "Saved Job Object is missing while its child remains live"
+                        elif job is None or membership_for_pid(job, pid) is not True:
+                            self.recovery["blocked"] = f"Child PID {pid} has unknown Job Object ownership"
+                            outcome, detail = "unknown-job", "Saved job identity or membership could not be verified"
+                            if job:
+                                job.close()
+                        else:
+                            stop_result = "identity-mismatch"
+                            if process_start_time(pid) != expected or membership_for_pid(job, pid) is not True:
+                                self.recovery["blocked"] = f"Child PID {pid} changed identity during recovery"
+                                outcome, detail = "identity-mismatch", "Saved process or job identity changed"
+                            else:
+                                stop_result = graceful_stop_pid(
+                                    job, pid, expected, process_start_time,
+                                    expected_job_identity=identity["job_name"],
+                                )
+                                if stop_result == "termination-failed":
+                                    outcome, detail = "termination-failed", "Verified Job Object survived termination"
+                                    self.recovery["blocked"] = f"Could not terminate verified child PID {pid}"
+                                    self.jobs[handle] = job
+                                else:
+                                    outcome, detail = stop_result, "verified Job Object stopped"
+                            if stop_result != "termination-failed":
+                                job.close()
+                                self.jobs.pop(handle, None)
                     else:
-                        outcome, detail = "terminated", "verified process group exited after TERM"
+                        os.killpg(pgid, signal.SIGTERM)
+                        deadline = time.monotonic() + 1.5
+                        while time.monotonic() < deadline and process_start_time(pid) == expected:
+                            time.sleep(.05)
+                        if process_start_time(pid) == expected:
+                            # Verify ownership again immediately before escalation.
+                            if process_start_time(pid) != expected:
+                                outcome, detail = "identity-mismatch", "PID changed before KILL; no signal was sent"
+                                self.recovery["blocked"] = f"Child PID {pid} changed identity during cleanup"
+                            else:
+                                os.killpg(pgid, signal.SIGKILL)
+                                deadline = time.monotonic() + 1
+                                while time.monotonic() < deadline and process_start_time(pid) == expected:
+                                    time.sleep(.05)
+                                if process_start_time(pid) == expected:
+                                    outcome, detail = "termination-failed", "Process group survived TERM and KILL"
+                                    self.recovery["blocked"] = f"Could not terminate verified child PID {pid}"
+                                else:
+                                    outcome, detail = "killed", "verified process group terminated"
+                        else:
+                            outcome, detail = "terminated", "verified process group exited after TERM"
                 except ProcessLookupError:
                     outcome, detail = "already-exited", None
                 except OSError as error:
@@ -823,50 +1076,79 @@ class Supervisor:
                        (json.dumps(self.recovery),))
 
 
+def _serve_connection(server, reader, writer, first_line=None):
+    owner = None
+    try:
+        if first_line is None:
+            first_line = reader.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else reader.readline()
+        if not first_line or (os.name == "nt" and len(first_line) > MAX_FRAME_BYTES):
+            raise ValueError("Supervisor frame exceeds the size limit")
+        first = json.loads(first_line)
+        if first.get("protocol") != PROTOCOL or first.get("stateDir") != str(server.supervisor.root):
+            raise RuntimeError("Supervisor protocol or state directory mismatch")
+        owner = None if first.get("probe") is True else first.get("backendId")
+        operator = first.get("operator") is True
+        supervisor = server.supervisor
+        if owner is not None:
+            with supervisor.lock:
+                if supervisor.owner and supervisor.owner != owner and supervisor.owner_connections:
+                    raise RuntimeError("Another backend is attached to this supervisor")
+                supervisor.owner = owner
+                supervisor.owner_connections += 1
+        writer.write(b'{"ok":true}\n')
+        writer.flush()
+        while True:
+            line = reader.readline(MAX_FRAME_BYTES + 1) if os.name == "nt" else reader.readline()
+            if not line:
+                return
+            if os.name == "nt" and len(line.encode("utf-8") if isinstance(line, str) else line) > MAX_FRAME_BYTES:
+                raise ValueError("Supervisor frame exceeds the size limit")
+            try:
+                request = json.loads(line)
+                if request.get("action") == "adminCloseHandle" and not operator:
+                    raise RuntimeError("adminCloseHandle is available only through the operator CLI")
+                result = supervisor.handle(request)
+                response = {"requestId": request.get("requestId"), "result": result}
+            except Exception as error:
+                response = {"requestId": request.get("requestId"),
+                            "error": str(error)[:500]}
+            _write_frame(writer, response)
+    except Exception as error:
+        try:
+            _write_frame(writer, {"error": str(error)[:500]})
+        except OSError:
+            pass
+    finally:
+        if owner is not None:
+            with server.supervisor.lock:
+                server.supervisor.owner_connections = max(0, server.supervisor.owner_connections - 1)
+                if not server.supervisor.owner_connections:
+                    server.supervisor.owner = None
+
+
+def _write_frame(writer, value):
+    data = (json.dumps(value, separators=(",", ":")) + "\n").encode()
+    if os.name == "nt" and len(data) > MAX_FRAME_BYTES:
+        data = (json.dumps({"requestId": value.get("requestId"),
+                            "error": "Supervisor response exceeds the size limit"}) + "\n").encode()
+    writer.write(data)
+    writer.flush()
+
+
+class _PipeWriter:
+    def __init__(self, connection):
+        self.connection = connection
+
+    def write(self, value):
+        self.connection.sendall(value)
+
+    def flush(self):
+        pass
+
+
 class Handler(socketserver.StreamRequestHandler):
     def handle(self):
-        owner = None
-        try:
-            first = json.loads(self.rfile.readline())
-            if first.get("protocol") != PROTOCOL or first.get("stateDir") != str(self.server.supervisor.root):
-                raise RuntimeError("Supervisor protocol or state directory mismatch")
-            owner = None if first.get("probe") is True else first.get("backendId")
-            operator = first.get("operator") is True
-            supervisor = self.server.supervisor
-            if owner is not None:
-                with supervisor.lock:
-                    if supervisor.owner and supervisor.owner != owner and supervisor.owner_connections:
-                        raise RuntimeError("Another backend is attached to this supervisor")
-                    supervisor.owner = owner
-                    supervisor.owner_connections += 1
-            self.wfile.write(b'{"ok":true}\n')
-            while True:
-                line = self.rfile.readline()
-                if not line:
-                    return
-                try:
-                    request = json.loads(line)
-                    if request.get("action") == "adminCloseHandle" and not operator:
-                        raise RuntimeError("adminCloseHandle is available only through the operator CLI")
-                    result = supervisor.handle(request)
-                    response = {"requestId": request.get("requestId"), "result": result}
-                except Exception as error:
-                    response = {"requestId": request.get("requestId"),
-                                "error": str(error)[:500]}
-                self.wfile.write((json.dumps(response, separators=(",", ":")) + "\n").encode())
-                self.wfile.flush()
-        except Exception as error:
-            try:
-                self.wfile.write((json.dumps({"error": str(error)[:500]}) + "\n").encode())
-                self.wfile.flush()
-            except OSError:
-                pass
-        finally:
-            if owner is not None:
-                with self.server.supervisor.lock:
-                    self.server.supervisor.owner_connections = max(0, self.server.supervisor.owner_connections - 1)
-                    if not self.server.supervisor.owner_connections:
-                        self.server.supervisor.owner = None
+        _serve_connection(self.server, self.rfile, self.wfile)
 
 
 class _QueueStream:
@@ -977,6 +1259,8 @@ def retained_native_launch(root, handle, command, env, cwd=None):
     saved = supervisor_launch_snapshot(root, handle)
     if not saved or saved['closed_at'] is not None:
         return None
+    if os.name == 'nt':
+        raise RuntimeError('Windows retained native launch verification is unavailable; refusing to reattach')
     pid, started = saved['pid'], saved['start_time']
     if started and pid == saved['identity_pid'] and process_start_time(pid) is None:
         return None
@@ -998,6 +1282,8 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
     """Use the existing status action, which cannot create a native process."""
     if expected.get('handle') != proxy.handle:
         raise RuntimeError('Cannot verify the retained supervisor handle')
+    if os.name == 'nt':
+        raise RuntimeError('Windows retained native launch verification is unavailable; refusing to reattach')
     status = proxy.call('status')
     saved = supervisor_launch_snapshot(proxy.root, proxy.handle)
     keys = ('signature', 'pid', 'identity_pid', 'start_time', 'generation', 'closed_at')
@@ -1093,6 +1379,8 @@ def native_launch_environment(root, handle, command, env, cwd):
         # A closed generation has no environment to inspect. The supervisor
         # validates its durable recovery proof before accepting a new launch.
         return clean
+    if os.name == 'nt':
+        raise RuntimeError('Windows retained native launch verification is unavailable; refusing to reuse the existing child')
     # Older supervisors hash the backend ID into the launch. Keep their exact
     # accepted signature, but only for the same verified native configuration.
     _, pid, identity_pid, started, _ = saved
@@ -1130,7 +1418,7 @@ class ProcessProxy:
         self.root = Path(root).resolve()
         self.handle = handle
         self.backend_id = os.environ.setdefault("CODEX_AGENTS_BACKEND_ID", str(uuid.uuid4()))
-        self.socket = _connect(self.root / "supervisor.sock")
+        self.socket = _connect(self.root)
         self.reader = self.socket.makefile("r", encoding="utf-8")
         self.write_lock = threading.Lock()
         self.event_lock = threading.RLock()
@@ -1393,7 +1681,7 @@ def attach(root, handle, command, env, cwd=None, *, stderr_sink=None, expected=N
 
 def status(root):
     root = Path(root).resolve()
-    client = _connect(root / "supervisor.sock", timeout=2)
+    client = _connect(root, timeout=2)
     reader = client.makefile("r", encoding="utf-8")
     try:
         _send(client, {"protocol": PROTOCOL, "stateDir": str(root), "backendId": "preflight", "probe": True})
@@ -1411,10 +1699,42 @@ def status(root):
     return result
 
 
+def retire_command(root, handle, *, persisted=False):
+    """Retire one completed command without opening or killing a process."""
+    saved = supervisor_launch_snapshot(root, handle)
+    if saved is None:
+        return
+    client = _connect(Path(root) / 'supervisor.sock', timeout=3)
+    reader = client.makefile('r', encoding='utf-8')
+    try:
+        _send(client, {'protocol': PROTOCOL, 'stateDir': str(Path(root).resolve()),
+                      'backendId': os.environ.setdefault('CODEX_AGENTS_BACKEND_ID', str(uuid.uuid4()))})
+        hello = _recv(client, reader)
+        if hello.get('error'):
+            raise RuntimeError('Supervisor retirement connection was refused')
+        if persisted:
+            # A detached adapter can complete before reattachment. The backend
+            # has saved its final snapshot, so older metadata frames need no
+            # replay. Use the existing ACK fence before releasing this handle.
+            _send(client, {'requestId': 0, 'action': 'ack', 'handle': handle,
+                          'sequence': saved['sequence']})
+            acknowledged = _recv(client, reader)
+            if acknowledged.get('error'):
+                raise RuntimeError('Supervisor final command acknowledgement was refused')
+        _send(client, {'requestId': 1, 'action': 'retireCommand', 'handle': handle,
+                      'generation': saved['generation']})
+        result = _recv(client, reader)
+        if result.get('error'):
+            raise RuntimeError('Supervisor command retirement was refused')
+    finally:
+        reader.close()
+        client.close()
+
+
 def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature):
     root = Path(root).expanduser().resolve()
     # The owner can wait three seconds for TERM and two seconds for KILL.
-    client = _connect(root / "supervisor.sock", timeout=10)
+    client = _connect(root, timeout=10)
     reader = client.makefile("r", encoding="utf-8")
     try:
         _send(client, {"protocol": PROTOCOL, "stateDir": str(root), "operator": True, "probe": True})
@@ -1436,7 +1756,7 @@ def admin_close_handle(root, handle, expected_pid, expected_start_time, expected
 
 def finish_fallback(root):
     root = Path(root).resolve()
-    client = _connect(root / "supervisor.sock", timeout=2)
+    client = _connect(root, timeout=2)
     reader = client.makefile("r", encoding="utf-8")
     try:
         _send(client, {"protocol": PROTOCOL, "stateDir": str(root), "backendId": "recovery", "probe": True})

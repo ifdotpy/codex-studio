@@ -13,6 +13,7 @@ import time
 from typing import TYPE_CHECKING
 
 from codex_state import codex_home
+from codex_private_paths import ensure_private_dir, protect_temp_file
 from studio_api.accounts.events import publish_account_change
 
 if TYPE_CHECKING:
@@ -114,15 +115,19 @@ class AccountStore:
             self._save()
 
     def _save(self):
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        ensure_private_dir(self.root)
         fd, name = tempfile.mkstemp(prefix="registry-", dir=self.root)
         try:
+            protect_temp_file(name)
             with os.fdopen(fd, "w") as handle:
+                fd = -1
                 json.dump(self.data, handle)
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(name, self.path)
         finally:
+            if fd >= 0:
+                os.close(fd)
             if os.path.exists(name):
                 os.unlink(name)
 

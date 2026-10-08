@@ -105,6 +105,34 @@ another process. Inspect worker results and diffs before acceptance or integrati
 
 ## Monitors and messages
 
+The lead can use `orchestration_servers` to run commands on the local server or a paired server.
+Set `action: "exec"`, an absolute `cwd`, `command` (argv or shell text), and a stable `request_id`.
+The `server` defaults to local. Optional fields are `env`, `timeout` (120 seconds, maximum 1800),
+and `output_limit` (256 KiB, maximum 4 MiB across stdout and stderr).
+The command runs as the Studio user on that server.
+Shell text uses that server's default shell. Argv bypasses the shell.
+There is no added sandbox or privilege change.
+
+A timeout above five seconds returns a command `handle`. A `monitor_exit` event reports the final state.
+Use `action: "exec_read"` with the same `server` and `handle` to read output.
+Use fresh request IDs for each read. Advance `stdout_offset` and `stderr_offset` to the returned
+`stdoutNextOffset` and `stderrNextOffset`. Each read returns at most 64 KiB across both streams.
+Output retains its head and tail. `GapBytes` fields report discarded bytes.
+Use `action: "exec_input"` with `input` and optional `close_stdin`, or `action: "exec_cancel"`.
+Input and cancel require stable request IDs. Exact retries cannot repeat effects.
+Each command accepts at most 32 input requests, each with at most 64 KiB of text.
+Planned backend restarts preserve commands through the process supervisor.
+An unknown outcome requires inspection. Do not start the same command with a new ID.
+Command output, private config and start files, saved pages, receipts, and Studio output references expire seven days after acceptance.
+Provider conversation history keeps its existing retention rules. Audit metadata expires after 90 days.
+After the first delivery attempt, retries inspect the target receipt without sending command text or environment values again.
+Commands cannot leave background daemons. Exit, cancel, and timeout stop proven descendants, including separate sessions.
+The result reports `stoppedDescendants`. On macOS, a descendant that copies or removes its private marker is outside the cleanup guarantee.
+Unresolved fork notifications return `unknown` with `cleanupUnknownForks`. This count is not an exact escaped process count.
+Linux uses a PID descriptor for signals. On macOS, a small PID reuse window remains between the birth check and signal.
+Timeout and cancel include the bootstrap phase. Live reads keep incomplete UTF-8 characters until more bytes arrive or the command ends.
+Inspect the server before a replacement command with an unknown outcome.
+
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
 signal, or a lost process. `wake_on` cannot suppress an exit event. Read the exit

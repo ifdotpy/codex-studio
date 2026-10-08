@@ -16,6 +16,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
+from codex_native_errors import error_kind, error_message, is_policy_refusal
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
@@ -38,6 +39,7 @@ class NativeErrorContract(unittest.TestCase):
         self.a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Work'})
         self.key = self.a['id']
         fixture.eventually(lambda: bool(self.runtime.agent(self.key).get('turnId')))
+        fixture.eventually(lambda: bool(self.runtime.agent(self.key).get('lastEvent')))
         self.a = self.runtime.agent(self.key)
         self.turn = self.a['turnId']
         self.connection = self.runtime.connection_ids['default']
@@ -64,6 +66,37 @@ class NativeErrorContract(unittest.TestCase):
                 self.assertTrue(self.runtime.agent(self.key)['inFlight'])
                 self.assertTrue(any(m.get('nativeError') == error for m in self.messages()))
         self.assertEqual([call for call in self.server.calls if call[0] != 'account/rateLimits/read'], calls)
+
+    def test_policy_refusal_is_terminal_held_and_keeps_native_diagnostics(self):
+        error = {'message': 'Raw cyber policy details', 'codexErrorInfo': 'cyberPolicy'}
+        self.assertEqual(error_kind(error), 'cyberPolicy')
+        self.assertTrue(is_policy_refusal(error))
+        self.assertEqual(error_message(error),
+                         'Codex refused this turn under its cybersecurity policy.')
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['cyberAccessProgram'] = 'standard'
+            self.runtime.put(db, 'agents', agent)
+        calls = [call for call in self.server.calls if call[0] == 'turn/start']
+        self.send('error', error=error, willRetry=True)
+        agent = self.runtime.agent(self.key)
+        self.assertTrue(agent['inFlight'])
+        self.assertTrue(agent['nativeFailureHold'])
+        self.assertNotEqual((agent.get('nativeStatus') or {}).get('phase'), 'retrying')
+        self.send('turn/completed', turn={'id': self.turn, 'status': 'interrupted', 'error': None})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['status'], 'failed')
+        self.assertFalse(agent['inFlight'])
+        self.assertTrue(agent['nativeFailureHold'])
+        self.assertEqual(agent['lastCompletedTurnError'], error)
+        self.assertEqual(agent['error'], error)
+        refusal_notice = next(row for row in self.messages()
+                              if row.get('nativeError') == error)
+        self.assertEqual(refusal_notice['text'],
+                         'Codex refused this turn under its cybersecurity policy.')
+        self.assertEqual(refusal_notice['cyberAccessProgram'], 'standard')
+        self.runtime.dispatch()
+        self.assertEqual([call for call in self.server.calls if call[0] == 'turn/start'], calls)
 
     def test_retry_is_transient_and_progress_clears_it(self):
         error = {'message': 'Reconnecting 1/5', 'codexErrorInfo': 'other'}
@@ -375,10 +408,15 @@ class NativeErrorContract(unittest.TestCase):
             self.send('error', error=error, willRetry=False, **params)
         self.assertNotIn('nativeThreadBlock', self.runtime.agent(self.key))
         self.send('error', error=error, willRetry=True)
-        self.assertNotIn('nativeThreadBlock', self.runtime.agent(self.key))
+        agent = self.runtime.agent(self.key)
+        self.assertTrue(agent['nativeFailureHold'])
+        self.assertEqual(agent['nativeThreadBlock']['threadId'], self.a['threadId'])
         with self.runtime.lock, self.runtime.db() as db:
             a = self.runtime.agent(self.key, db)
             a['nativeThreadBlock'] = {'threadId': 'another-thread', 'error': error}
+            a.pop('nativeFailureHold', None)
+            a.pop('nativeTurnError', None)
+            a.pop('error', None)
             self.runtime.put(db, 'agents', a)
         self.runtime.send(self.key, 'Current thread still accepts input')
         self.assertTrue(next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] == self.key)['canSend'])

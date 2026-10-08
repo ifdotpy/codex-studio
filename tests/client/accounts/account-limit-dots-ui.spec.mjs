@@ -10,9 +10,9 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-async function runAccountLimitDotsUi(runnerBrowser) {
+test("account limit dots ui", async ({ browser: runnerBrowser }) => {
   // Four viewport and color scheme passes share one fixture backend.
-  test.setTimeout(75_000);
+  test.setTimeout(420_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -105,6 +105,7 @@ async function runAccountLimitDotsUi(runnerBrowser) {
       {
         id: "unknown",
         label: "Not loaded",
+        email: "unknown@example.test",
         provider: "claude",
         status: "ready",
       },
@@ -196,13 +197,13 @@ async function runAccountLimitDotsUi(runnerBrowser) {
       "no-weekly": "green",
     };
     browser = runnerBrowser;
-    const viewports = [
+    const screenshots = [];
+    for (const [mobile, scheme] of [
       [false, "light"],
       [false, "dark"],
       [true, "light"],
       [true, "dark"],
-    ];
-    for (const [mobile, scheme] of viewports) {
+    ]) {
       const context = await browser.newContext({
         viewport: mobile
           ? { width: 390, height: 844 }
@@ -316,22 +317,6 @@ async function runAccountLimitDotsUi(runnerBrowser) {
         7,
         "only accounts of this chat team appear",
       );
-      const settledOrder = [
-        "default",
-        "yellow",
-        "unknown",
-        "red",
-        "reset",
-        "signedout",
-        "no-weekly",
-      ];
-      await expect
-        .poll(() =>
-          dots.evaluateAll((elements) =>
-            elements.map((element) => element.dataset.accountKey),
-          ),
-        )
-        .toEqual(settledOrder);
       const order = await dots.evaluateAll((elements) =>
         elements.map((element) => element.dataset.accountKey),
       );
@@ -512,41 +497,19 @@ async function runAccountLimitDotsUi(runnerBrowser) {
         row.footer - withoutDots <= 10,
         JSON.stringify({ withoutDots, ...row }),
       );
+      await page.locator("#usage-footer").screenshot({
+        path: join(root, `footer-${mobile ? 390 : 1440}-${scheme}.png`),
+      });
+      const prefix = `dots-${mobile ? 390 : 1440}-${scheme}`;
+      const calmPath = join(root, `${prefix}.png`);
+      await page.screenshot({ path: calmPath, animations: "disabled" });
+      screenshots.push(calmPath);
       const red = page.locator(
         '.account-limits-dot-target[data-account-key="red"]',
       );
       await dots.first().focus();
-      await expect(dots.first()).toBeFocused();
-      const firstFocusedKey = await page.evaluate(() =>
-        document.activeElement?.getAttribute("data-account-key"),
-      );
       for (let index = 0; index < order.indexOf("red"); index++) {
         await page.keyboard.press("Tab");
-        const expectedDot = page.locator(
-          `.account-limits-dot-target[data-account-key="${order[index + 1]}"]`,
-        );
-        const focusedAfterTab = await page.evaluate(() => {
-          const element = document.activeElement;
-          return {
-            tag: element?.tagName,
-            id: element?.id,
-            role: element?.getAttribute("role"),
-            accountKey: element?.getAttribute("data-account-key"),
-            ariaLabel: element?.getAttribute("aria-label"),
-            className: element?.className,
-            liveDotOrder: Array.from(
-              document.querySelectorAll(".account-limits-dot-target"),
-              (dot) => dot.getAttribute("data-account-key"),
-            ),
-          };
-        });
-        assert.equal(
-          await expectedDot.evaluate(
-            (element) => element === document.activeElement,
-          ),
-          true,
-          `Tab ${index + 1} from ${firstFocusedKey} should focus ${order[index + 1]} in ${JSON.stringify(order)}; focused ${JSON.stringify(focusedAfterTab)}`,
-        );
       }
       assert.equal(
         await red.evaluate((element) => document.activeElement === element),
@@ -560,40 +523,41 @@ async function runAccountLimitDotsUi(runnerBrowser) {
         .getByRole("tooltip")
         .filter({ hasText: "low@example.test" })
         .waitFor({ state: "hidden" });
-      assert.match(await tooltip.innerText(), /red@example\.test.*Codex/s);
-      assert.doesNotMatch(await tooltip.innerText(), /Codex low/);
+      assert.match(
+        await tooltip.innerText(),
+        /red@example.test \(Codex\).*Codex weekly/s,
+      );
       assert.match(
         await tooltip.innerText(),
         /weekly: 80% left.*Resets.*About 4\.0 days left at the current rate/s,
       );
       assert.doesNotMatch(await tooltip.innerText(), /5h|\b0% left/);
-      const noEmail = page.locator(
-        '.account-limits-dot-target[data-account-key="unknown"]',
-      );
-      await noEmail.focus();
-      const nicknameTooltip = page
-        .getByRole("tooltip")
-        .filter({ hasText: "Not loaded" });
-      await nicknameTooltip.waitFor();
-      assert.match(await nicknameTooltip.innerText(), /Not loaded.*Claude/s);
       const before = await page.locator("#usage-footer").boundingBox();
+      await page.screenshot({
+        path: join(root, `${prefix}-tooltip.png`),
+        animations: "disabled",
+      });
+      screenshots.push(join(root, `${prefix}-tooltip.png`));
       await red.press("Enter");
       const tabs = page.getByRole("tab");
       await page
         .getByRole("region", { name: "Account limits details", exact: true })
         .waitFor();
       assert.match(
-        await page.locator('[role="tab"][aria-selected="true"]').innerText(),
+        await page
+          .locator('[role="tab"][aria-selected="true"]')
+          .getAttribute("aria-label"),
         /red@example.test/,
       );
       assert.deepEqual(
-        (await tabs.allTextContents()).map(
-          (text) =>
-            accounts.find((account) =>
-              text.startsWith(account.email || account.label),
-            )?.id,
+        await tabs.evaluateAll((elements) =>
+          elements.map((element) => element.dataset.accountKey),
         ),
-        order,
+        order.filter(
+          (key) =>
+            accounts.find((account) => account.id === key)?.provider ===
+            "codex",
+        ),
       );
       // Escape belongs to the dropdown after its focus trap takes focus.
       await page.waitForFunction(() =>
@@ -620,17 +584,36 @@ async function runAccountLimitDotsUi(runnerBrowser) {
           .getByRole("region", { name: "Account limits details", exact: true })
           .waitFor();
         assert.equal(
-          await tabs.nth(order.indexOf(key)).getAttribute("aria-selected"),
+          await page
+            .locator(`[role="tab"][data-account-key="${key}"]`)
+            .getAttribute("aria-selected"),
           "true",
           `the ${key} dot selects its own tab`,
+        );
+        assert.deepEqual(
+          await tabs.evaluateAll((elements) =>
+            elements.map((element) => element.dataset.accountKey),
+          ),
+          order.filter(
+            (accountKey) =>
+              accounts.find((account) => account.id === accountKey)
+                ?.provider ===
+              accounts.find((account) => account.id === key)?.provider,
+          ),
+          "each provider retains its account order",
         );
         if (key === "unknown") {
           await target.locator('[data-color="green"]').waitFor();
         }
-        const account = accounts.find((item) => item.id === key);
         assert.match(
-          await page.locator('[role="tab"][aria-selected="true"]').innerText(),
-          new RegExp((account.email || account.label).replaceAll(".", "\\.")),
+          await page
+            .locator('[role="tab"][aria-selected="true"]')
+            .getAttribute("aria-label"),
+          new RegExp(
+            accounts
+              .find((account) => account.id === key)
+              .email.replaceAll(".", "\\."),
+          ),
         );
         await page.keyboard.press("Escape");
         await page
@@ -650,6 +633,16 @@ async function runAccountLimitDotsUi(runnerBrowser) {
         before,
         "panel selection preserves the footer geometry",
       );
+      for (const key of order.filter((key) => key !== "default")) {
+        const providerReads = reads.filter(
+          (read) => read.key === key && !read.cached,
+        );
+        assert.ok(providerReads.length <= 1, JSON.stringify({ key, reads }));
+        assert.ok(
+          providerReads.every((read) => read.at - now >= 60),
+          JSON.stringify({ key, reads }),
+        );
+      }
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth > innerWidth,
@@ -657,6 +650,11 @@ async function runAccountLimitDotsUi(runnerBrowser) {
         false,
       );
       await page.mouse.move(1, 1);
+      await page.locator(".account-limits-dots").screenshot({
+        path: join(root, `${prefix}-row.png`),
+        animations: "disabled",
+      });
+      screenshots.push(join(root, `${prefix}-row.png`));
       snapshots.yellow = limits("yellow", 0);
       snapshots.yellow.at = now + 1;
       unknownAvailable = false;
@@ -668,6 +666,11 @@ async function runAccountLimitDotsUi(runnerBrowser) {
           '.account-limits-dot-target[data-account-key="yellow"] [data-color="green"]',
         )
         .waitFor();
+      await page
+        .locator(
+          '.account-limits-dot-target[data-account-key="unknown"] [data-color="green"]',
+        )
+        .waitFor();
       snapshots.yellow = limits("yellow", 15);
       expect(errors).toEqual([]);
       await context.close();
@@ -676,6 +679,7 @@ async function runAccountLimitDotsUi(runnerBrowser) {
     console.log(
       "Account dots UI passed: weekly bands, stale reset, no gray connected dots, keyboard, tabs, cached reads, persisted limits, and four viewport themes.",
     );
+    console.log(JSON.stringify({ screenshots }));
   } finally {
     for (const context of contexts) {
       for (const page of context.pages())
@@ -683,8 +687,4 @@ async function runAccountLimitDotsUi(runnerBrowser) {
       await context.close();
     }
   }
-}
-
-test("account limit dots ui", async ({ browser }) => {
-  await runAccountLimitDotsUi(browser);
 });

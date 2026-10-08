@@ -41,7 +41,7 @@ AGENT_FIELD_GROUPS = {
         subagentConcurrencyVersion tail threadId tokensUsed turnId updated workerDefaults worktree
         worktreePreparation yoloMode
         accountTransferId capacityRetry contextRepairWait epoch lastCompletedTurnStatus lastEvent
-        usageResume workspaceOperation
+        usageResume workspaceOperation remoteWorker remoteOrigin remoteAnchor
     """.split()),
     "private": frozenset("""
         accountHistory accountId accountTransferState activeTools activityPhase
@@ -52,7 +52,8 @@ AGENT_FIELD_GROUPS = {
         connectionRecovery contextRepair contextRepairHistory cyberAccessProgram
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
-        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
+        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceHandoffText
+        imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck
         lastContextRepairWait lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
         liveSteerRejectedTurnId maxAgents maxAgentsExplicit nativeEffort nativeFailureHold nativeName
@@ -67,6 +68,8 @@ AGENT_FIELD_GROUPS = {
         worktreeWarning authResumeAttempt cleanedImageWorkspace imageWorkspaceCleanupResult
         imageWorkspaceBaseError nativeToolRefreshId nativeToolUpdate portableHistory
         queueMutationRevision workspaceReservationId forkedFrom sourceMessage draft
+        remoteEpoch remoteControlEpoch remoteStateSequence remoteReservation remoteAdmission
+        remoteAdmissionRequest remoteLastAdmission remoteStopRequest
     """.split()),
     "derived": frozenset("""
         canSend empty hasApproval hasQuestion hasUnread kind lastReadAt launcherAlive nativeError

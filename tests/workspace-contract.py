@@ -162,6 +162,7 @@ class WorkspaceContract(unittest.TestCase):
             current = self.runtime.agent(agent["id"])
             return current.get("turnId") and self.runtime.delivery_receipt(sent["id"])["status"] == "delivered"
         eventually(accepted)
+        eventually(lambda: bool(self.runtime.agent(agent["id"]).get("lastEvent")))
         return self.runtime.agent(agent["id"])
 
     def events(self, agent, kind=None):

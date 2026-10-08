@@ -28,6 +28,7 @@ class Credentials(unittest.TestCase):
             get=lambda key: self.account, home=lambda key: self.home),
             connect=lambda key: self.host, reply=Mock())
         self.client = Mock()
+        self.enterContext(patch('codex_linux_vm_git.read_git_identity', return_value=None))
 
     def auth(self, expires=None, label='old'):
         value = {'tokens': {'access_token': token(expires or time.time()+3600, label),

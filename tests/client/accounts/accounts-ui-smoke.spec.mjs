@@ -621,7 +621,13 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       await studio.getByRole("tab", { name: "Accounts", exact: true }).click();
       await studio
         .locator("[data-account=default]")
-        .getByRole("button", { name: "Sign in again", exact: true })
+        .getByRole("button", {
+          name: "Actions for personal@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Sign in again", exact: true })
         .click();
       await page
         .getByRole("dialog", {
@@ -1134,6 +1140,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     let dialog = await openStudioAccounts();
     await dialog.locator("[data-account]").first().waitFor();
     assert.equal(await dialog.locator("[data-account]").count(), 3);
+    for (const summary of await dialog
+      .locator(".account-limit-details > summary")
+      .all())
+      await summary.click();
     await dialog
       .locator('[data-account="work"]')
       .getByText("5h 78% left", { exact: true })
@@ -1160,7 +1170,14 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       "Three accounts with both quota windows fit a 900px viewport",
     );
     await dialog
+      .locator('[data-account="work"]')
       .getByRole("button", {
+        name: "Actions for work@example.com",
+        exact: true,
+      })
+      .click();
+    await page
+      .getByRole("menuitem", {
         name: "Use work@example.com by default",
         exact: true,
       })

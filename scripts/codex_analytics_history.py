@@ -21,6 +21,9 @@ from codex_startup_memory import mark as startup_memory_mark
 
 
 MAX_LINE_BYTES = 64 * 1024 * 1024
+ARCHIVED_RECONCILE_SECONDS = 60
+ACTIVE_RECONCILE_SECONDS = 5
+ACTIVE_IMPORT_QUOTA = 8
 
 
 def inherited_usage_threads(agent):
@@ -182,6 +185,29 @@ def _history_worker_state(runtime):
         runtime._analytics_history_cursor = 0
     if not hasattr(runtime, '_analytics_history_paths'):
         runtime._analytics_history_paths = {}
+    if not hasattr(runtime, '_analytics_history_polls'):
+        runtime._analytics_history_polls = {}
+
+
+def _history_actor_scope(agent):
+    return tuple(agent.get(field) for field in (
+        'accountKey', 'threadId', 'provider', 'deletedAt', 'status', 'inFlight'))
+
+
+def _history_actor_active(agent):
+    return agent.get('inFlight') or agent.get('status') in {'queued', 'starting', 'running', 'approval'}
+
+
+def _history_file_changed(poll):
+    """Prioritize changed archive files without trusting stat as checkpoint proof."""
+    if not poll.get('path') or not poll.get('identity'):
+        return False
+    try:
+        info = Path(poll['path']).stat()
+        return ([info.st_dev, info.st_ino] != poll['identity']
+                or info.st_size != poll['fileBytes'])
+    except OSError:
+        return True
 
 
 def _history_directory_signature(directory, *, follow_symlinks=False):
@@ -421,13 +447,14 @@ class AnalyticsHistoryMixin:
         try:
             if not acquired:
                 return False
+            _history_worker_state(self)
             with _history_step_connections(self):
-                # Idle actors share setup, but every actor retains fresh reads.
+                # Due actors share setup, but every import retains fresh reads.
                 # Progress and round boundaries preserve the worker's idle delay.
-                for _ in range(32 if background else 1):
+                for index in range(32 if background else 1):
                     if background and self.closed:
                         return False
-                    advanced = self._analytics_history_one(max_bytes, max_records)
+                    advanced = self._analytics_history_one(max_bytes, max_records, refresh=background and index == 0)
                     if advanced:
                         return True
                     if self._analytics_history_cursor == 0 or not self._analytics_history_ids:
@@ -445,18 +472,84 @@ class AnalyticsHistoryMixin:
                         break
                     time.sleep(min(.1, remaining))
 
-    def _analytics_history_one(self, max_bytes, max_records):
+    def _analytics_history_roster(self, db):
+        """Read only the fields that affect import priority and account scope."""
+        from sqlite3 import sqlite_version_info
+        if sqlite_version_info < (3, 38, 0):
+            actors = [a for a in self.records(db, 'agents') if a.get('threadId')]
+        else:
+            fields = ('id', 'threadId', 'accountKey', 'provider', 'deletedAt', 'status', 'inFlight')
+            actors = []
+            query = 'SELECT ' + ','.join("record -> '$." + field + "'" for field in fields)
+            for row in db.execute(query + ' FROM runtime_agents ORDER BY rowid'):
+                if row[1] is not None and json.loads(row[1]):
+                    if row[0] is None:
+                        raise KeyError('id')
+                    actors.append({field: json.loads(value) for field, value in zip(fields, row)
+                                   if value is not None})
+        return actors
+
+    def _analytics_history_schedule(self, actors, *, revisit_active=False):
+        """Select due actors outside SQL transactions; reconcile active actors first."""
+        now = time.monotonic()
+        ids = getattr(self, '_analytics_history_ids', ())
+        prefix = list(ids[:self._analytics_history_cursor])
+        processed = set(prefix)
+        previous_scopes = getattr(self, '_analytics_history_scopes', {})
+        scopes, due, active_ids = {}, [], set()
+        for actor in actors:
+            identity = actor['id']
+            scope = _history_actor_scope(actor)
+            scopes[identity] = scope
+            poll = self._analytics_history_polls.get(identity)
+            changed = poll is None or poll['scope'] != scope
+            active = _history_actor_active(actor)
+            if active:
+                active_ids.add(identity)
+            previous_scope = previous_scopes.get(identity, poll['scope'] if poll is not None else scope)
+            if identity in processed and previous_scope == scope and not (revisit_active and active):
+                continue
+            if not changed and now < poll['due']:
+                continue
+            catching_up = poll is not None and poll['status'] == 'catchingUp'
+            archive = actor.get('deletedAt') and poll is not None and poll['status'] == 'current'
+            file_changed = archive and _history_file_changed(poll)
+            priority = 0 if active else 1 if changed or catching_up or file_changed else 2
+            due.append(((priority, poll.get('checked', 0) if active and poll is not None else 0), identity))
+        # Check the oldest active actor first; retain roster order for ties.
+        due.sort(key=lambda item: item[0])
+        selected = {identity for _, identity in due}
+        prefix = [identity for identity in prefix if identity in scopes and identity not in selected]
+        self._analytics_history_cursor = len(prefix)
+        self._analytics_history_ids = prefix + [identity for _, identity in due]
+        self._analytics_history_scopes = scopes
+        self._analytics_history_active_ids = active_ids
+        self._analytics_history_polls = {identity: poll for identity, poll in self._analytics_history_polls.items()
+                                         if identity in scopes}
+        self._analytics_history_schedule_deadline = now + ACTIVE_RECONCILE_SECONDS
+        if not due:
+            self._analytics_history_cursor = 0
+            self._analytics_history_ids = []
+
+    def _analytics_history_one(self, max_bytes, max_records, *, refresh=False):
         """Import one actor through the batch owner's separate SQL scopes."""
         if not getattr(self, "_analytics_history_schema_ready", False):
             with self.analytics_history_db() as db:
                 self.analytics_history_init(db)
         prepare_budget_migration(self)
+        schedule = None
         with self.analytics_history_db() as db:
             repair_terminal_errors(db)
             # Runtime.put stores object records with unique JSON keys.
             # Project roster fields once per round; read each actor fresh.
             ids = getattr(self, "_analytics_history_ids", None)
-            if not ids or self._analytics_history_cursor % len(ids) == 0:
+            background = getattr(self, 'analytics_history_thread', None) is threading.current_thread()
+            if background:
+                reconcile = refresh and time.monotonic() >= getattr(self, '_analytics_history_schedule_deadline', float('inf'))
+                if (not ids or self._analytics_history_cursor == 0
+                        or reconcile):
+                    schedule = (self._analytics_history_roster(db), reconcile)
+            elif not ids or self._analytics_history_cursor % len(ids) == 0:
                 from sqlite3 import sqlite_version_info
                 if sqlite_version_info < (3, 38, 0):
                     ids = [a["id"] for a in self.records(db, "agents") if a.get("threadId")]
@@ -470,8 +563,19 @@ class AnalyticsHistoryMixin:
                                 raise KeyError("id")
                             ids.append(json.loads(raw_id))
                 self._analytics_history_ids = ids
-            if not ids:
-                return False
+        if schedule is not None:
+            self._analytics_history_schedule(schedule[0], revisit_active=schedule[1])
+            ids = self._analytics_history_ids
+        if not ids:
+            return False
+        if background and refresh and getattr(self, '_analytics_history_active_streak', 0) >= ACTIVE_IMPORT_QUOTA:
+            # A continuous active backlog must not starve archive reconciliation.
+            active_ids = getattr(self, '_analytics_history_active_ids', set())
+            for index in range(self._analytics_history_cursor, len(ids)):
+                if ids[index] not in active_ids:
+                    ids.insert(self._analytics_history_cursor, ids.pop(index))
+                    break
+        with self.analytics_history_db() as db:
             self._analytics_history_cursor %= len(ids)
             agent_id = ids[self._analytics_history_cursor]
             self._analytics_history_cursor = (self._analytics_history_cursor + 1) % len(ids)
@@ -493,6 +597,21 @@ class AnalyticsHistoryMixin:
             "threadId": a["threadId"], "deletedAt": a.get("deletedAt"), "offset": 0, "importedRecords": 0, "malformedLines": 0,
             "context": {"threadId": a["threadId"]},
         }
+        advanced = self._analytics_history_import(a, key, state, budget_advanced, max_bytes, max_records)
+        self._analytics_history_polls[a['id']] = {
+            'scope': _history_actor_scope(a), 'status': state.get('status'), 'checked': time.monotonic(),
+            'due': time.monotonic() + ARCHIVED_RECONCILE_SECONDS
+                if a.get('deletedAt') and state.get('status') == 'current'
+                and not advanced and not _history_actor_active(a) else 0,
+            'path': state.get('path'), 'identity': state.get('filesystemIdentity', state.get('identity')),
+            'fileBytes': state.get('fileBytes'),
+        }
+        if background:
+            self._analytics_history_active_streak = (
+                getattr(self, '_analytics_history_active_streak', 0) + 1 if _history_actor_active(a) else 0)
+        return advanced
+
+    def _analytics_history_import(self, a, key, state, budget_advanced, max_bytes, max_records):
         state["deletedAt"] = a.get("deletedAt")
         if a.get("provider") == "claude":
             # Claude sends live analytics and has no Codex rollout format.

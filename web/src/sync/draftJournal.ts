@@ -1,3 +1,4 @@
+import { serverLocalStorage as localStorage } from "../servers/storage";
 import { encodeDraftPayload } from "./draftPayload";
 import type { DraftVersion } from "./drafts";
 

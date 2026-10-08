@@ -1,3 +1,8 @@
+import {
+  openServerEvents,
+  type ServerEventSource,
+} from "../servers/eventSource";
+import { serverStorageName } from "../servers/environment";
 import type { components } from "../generated/api";
 import {
   API_SCHEMA_HASH,
@@ -12,7 +17,8 @@ import {
   markApiSchemaMismatch,
   onApiSchemaMismatch,
 } from "../api";
-import { syncDatabase } from "./client";
+import { persistResourceEntityChanges, syncDatabase } from "./client";
+import { ResourceEntityDelivery } from "./resourceEntityDelivery";
 import { onResume } from "./resume";
 import { retryableReadError } from "./readRetry";
 import {
@@ -135,7 +141,7 @@ const peerSubscriptions = new Map<
 let workspaceId: string | undefined;
 let tabId = "";
 let channel: BroadcastChannel | undefined;
-let source: EventSource | undefined;
+let source: ServerEventSource | undefined;
 let coordinatorActive = false;
 let coordinatorReady = false;
 let initializing = false;
@@ -480,6 +486,15 @@ function scheduleFlush() {
   }, RESOURCE_FLUSH_MS);
 }
 
+const entityDelivery = new ResourceEntityDelivery(
+  (event, isCurrent) =>
+    persistResourceEntityChanges(
+      event,
+      () => isCurrent() && event.workspaceId === workspaceId,
+    ),
+  dispatchEvent,
+);
+
 function receiveResourceEvent(value: unknown, fromPeer = false) {
   if (!hasRevisionFrame(value) || !Array.isArray(value.resources))
     throw new TypeError("Invalid resource frame");
@@ -490,8 +505,7 @@ function receiveResourceEvent(value: unknown, fromPeer = false) {
     if (!fromPeer) reconnectNow();
     return;
   }
-  dispatchEvent(event);
-  scheduleFlush();
+  entityDelivery.receive(event);
 }
 
 function acceptHeartbeat(value: unknown, fromPeer = false) {
@@ -772,7 +786,7 @@ function openSource() {
       resources: JSON.stringify(resources),
       [API_SCHEMA_HASH_PARAM]: API_SCHEMA_HASH,
     });
-    const connected = new EventSource(`/api/sync/stream?${query}`);
+    const connected = openServerEvents(`/api/sync/stream?${query}`);
     source = connected;
     let schemaHandshakeReceived = false;
     let connectionOpened = false;
@@ -969,7 +983,9 @@ function startAsOwner() {
   ownerRequestPending = true;
   void locks
     .request(
-      `codex-sync-stream:${location.origin}:${requestedWorkspaceId}`,
+      serverStorageName(
+        `codex-sync-stream:${location.origin}:${requestedWorkspaceId}`,
+      ),
       { mode: "exclusive", signal: requestController.signal },
       async (lock) => {
         if (ownerRequestController === requestController) {
@@ -1051,7 +1067,7 @@ async function initialize() {
     try {
       if (typeof BroadcastChannel !== "undefined") {
         channel = new BroadcastChannel(
-          `codex-sync-${location.origin}-${workspaceId}`,
+          serverStorageName(`codex-sync-${location.origin}-${workspaceId}`),
         );
         channel.onmessage = (event: MessageEvent<unknown>) => {
           try {

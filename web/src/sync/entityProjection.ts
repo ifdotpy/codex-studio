@@ -56,6 +56,8 @@ type EntityRowState = {
 export type EntityProjection = {
   rows: Map<string, EntityRowState>;
   invalidReportedSeq: Map<string, number>;
+  tombstones: Set<string>;
+  changed: Set<EntityCollection>;
   values: EntityValues;
   snapshot: Snapshot | null;
 };
@@ -201,27 +203,46 @@ export function emptyEntityProjection(): EntityProjection {
   return {
     rows: new Map(),
     invalidReportedSeq: new Map(),
+    tombstones: new Set(),
+    changed: new Set(),
     values: emptyEntityValues(),
     snapshot: null,
   };
 }
 
-/** Apply only rows whose server sequence changed. Unchanged entity values and
- * collection arrays keep their references for memoized React consumers. */
-export function applyEntityRows(
+function retainTombstone(
   state: EntityProjection,
-  rows: EntityRow[],
+  rowId: string,
+  row: EntityRowState,
+) {
+  state.rows.delete(rowId);
+  state.rows.set(rowId, row);
+  state.tombstones.delete(rowId);
+  state.tombstones.add(rowId);
+  // Match full-query retention without scanning the live rows after each delete.
+  if (state.tombstones.size > 4096) {
+    state.tombstones.delete(rowId);
+    state.rows.delete(rowId);
+  }
+}
+
+/** Apply explicit changes by ID. Absent rows remain present until a tombstone
+ * arrives. Passing ready=false retains changes for one later publication. */
+export function applyEntityChanges(
+  state: EntityProjection,
+  rows: Iterable<EntityRow>,
   ready: boolean,
 ): Snapshot | null {
-  const changed = new Set<EntityCollection>();
-  const seen = new Set<string>();
-  // Stryker disable next-line BooleanLiteral: when no tombstone is added, prior applies preserve the 4096-tombstone cap, so a cleanup scan cannot prune a row.
-  let addedTombstone = false;
+  const changed = state.changed;
   for (const row of rows) {
     if (!row.id.startsWith("entity:")) continue;
-    seen.add(row.id);
     const previous = state.rows.get(row.id);
-    if (previous && previous.seq >= row.seq) continue;
+    if (
+      previous &&
+      (previous.seq > row.seq ||
+        (previous.seq === row.seq && (!row._deleted || previous.deleted)))
+    )
+      continue;
     const oldCollection = previous?.collection;
     const oldEntityId = previous?.entityId;
     if (row._deleted) {
@@ -230,14 +251,12 @@ export function applyEntityRows(
         state.values[oldCollection].delete(oldEntityId);
         changed.add(oldCollection);
       }
-      state.rows.delete(row.id);
-      state.rows.set(row.id, {
+      retainTombstone(state, row.id, {
         seq: row.seq,
         ...(oldCollection ? { collection: oldCollection } : {}),
         ...(oldEntityId === undefined ? {} : { entityId: oldEntityId }),
         deleted: true,
       });
-      addedTombstone = true;
       continue;
     }
     const payload = parseEntityPayload(row.payload);
@@ -314,8 +333,26 @@ export function applyEntityRows(
       collection: payload.collection,
       entityId: payload.id,
     });
+    state.tombstones.delete(row.id);
     changed.add(payload.collection);
   }
+  if (!ready) return null;
+  const prior = state.snapshot;
+  if (prior && !changed.size) return prior;
+  const next = projectSnapshotCollections(prior, changed, state.values);
+  changed.clear();
+  state.snapshot = next;
+  return next;
+}
+
+/** Reconcile a complete RxDB query, including rows omitted after a delete. */
+export function applyEntityRows(
+  state: EntityProjection,
+  rows: EntityRow[],
+  ready: boolean,
+): Snapshot | null {
+  applyEntityChanges(state, rows, false);
+  const seen = new Set(rows.map((row) => row.id));
   for (const rowId of state.invalidReportedSeq.keys()) {
     if (!seen.has(rowId)) state.invalidReportedSeq.delete(rowId);
   }
@@ -330,25 +367,9 @@ export function applyEntityRows(
     state.invalidReportedSeq.delete(rowId);
     if (previous.collection && previous.entityId !== undefined) {
       state.values[previous.collection].delete(previous.entityId);
-      changed.add(previous.collection);
+      state.changed.add(previous.collection);
     }
-    state.rows.delete(rowId);
-    state.rows.set(rowId, { ...previous, deleted: true });
-    addedTombstone = true;
+    retainTombstone(state, rowId, { ...previous, deleted: true });
   }
-  // Stryker disable next-line ConditionalExpression: without a new tombstone, the API invariant makes this cleanup scan a no-op.
-  if (addedTombstone) {
-    let tombstones = 0;
-    for (const [rowId, row] of state.rows) {
-      if (!row.deleted) continue;
-      tombstones++;
-      if (tombstones > 4096) state.rows.delete(rowId);
-    }
-  }
-  if (!ready) return null;
-  const prior = state.snapshot;
-  if (prior && !changed.size) return prior;
-  const next = projectSnapshotCollections(prior, changed, state.values);
-  state.snapshot = next;
-  return next;
+  return applyEntityChanges(state, [], ready);
 }

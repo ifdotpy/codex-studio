@@ -1,3 +1,5 @@
+import { serverStorageName } from "../servers/environment";
+import { serverLocalStorage as localStorage } from "../servers/storage";
 import { syncGet, syncPost, refreshSession } from "../api";
 import { writeLocalDraft } from "./localDraft";
 import { syncDatabase } from "./client";
@@ -19,7 +21,10 @@ export const uploadsChanged = () =>
   window.dispatchEvent(new Event("studio-uploads-changed"));
 const database = () =>
   new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("codex-studio-uploads", 2);
+    const request = indexedDB.open(
+      serverStorageName("codex-studio-uploads"),
+      2,
+    );
     request.onupgradeneeded = () => {
       const db = request.result;
       const uploads = db.objectStoreNames.contains("uploads")

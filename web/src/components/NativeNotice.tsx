@@ -17,10 +17,20 @@ import { failureMessage } from "./turnFailureReason";
 import { nativeErrorView, nativeThreadError } from "../nativeErrors";
 import "./native-notice.css";
 
-function Guidance({ error }: { error: ReturnType<typeof nativeErrorView> }) {
+function Guidance({
+  error,
+  cyberAccessProgram,
+}: {
+  error: ReturnType<typeof nativeErrorView>;
+  cyberAccessProgram?: string | null;
+}) {
   return (
     <>
+      {error.kind === "cyberPolicy" && <small>{error.message}</small>}
       {error.hint && <small>{error.hint}</small>}
+      {error.kind === "cyberPolicy" && cyberAccessProgram && (
+        <small>Cyber access program: {cyberAccessProgram}</small>
+      )}
       {!!error.links.length && (
         <div className="native-error-links">
           {error.links.map((link) => (
@@ -120,7 +130,7 @@ export function NativeError({
             : "Codex answered the connection check. The previous outcome is unconfirmed. Review the history before continuing."}
         </small>
       ) : !recovery && !authResume && !retry ? (
-        <Guidance error={error} />
+        <Guidance error={error} cyberAccessProgram={agent.cyberAccessProgram} />
       ) : null}
       {(recovery || authResume) && (
         <LimitRecoveryNotice
@@ -206,6 +216,10 @@ export function NativeNotice({
     : null;
   const details =
     error?.details || ("details" in item ? item.details : undefined);
+  const cyberAccessProgram =
+    "cyberAccessProgram" in item && typeof item.cyberAccessProgram === "string"
+      ? item.cyberAccessProgram
+      : undefined;
   if (
     error &&
     ["usageLimitExceeded", "rateLimitExceeded"].includes(error.kind)
@@ -246,7 +260,9 @@ export function NativeNotice({
         </summary>
         {Boolean(details) && <pre>{errorDetails(details)}</pre>}
       </details>
-      {error && <Guidance error={error} />}
+      {error && (
+        <Guidance error={error} cyberAccessProgram={cyberAccessProgram} />
+      )}
     </div>
   );
 }

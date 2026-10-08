@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import anyio
 import json
-import logging
 import sqlite3
 from collections.abc import AsyncIterator, Sequence
 from typing import TYPE_CHECKING, Any, ContextManager, NotRequired, Protocol, TypedDict, cast
@@ -214,67 +213,13 @@ def create_router(context: ApiContext) -> APIRouter:
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
         if scope == "state:entities:v1":
-            from codex_sync_entities import (
-                _report_bad_entity,
-                response_entity_payload_fail_open,
-                validate_stored_entity_payload,
-            )
+            from studio_api.sync.entity_response import response_entity_document
 
-            valid_documents: list[dict[str, object]] = []
-            for document in projection.get("documents", []):
-                payload = document.get("payload")
-                row_id = str(document.get("id", ""))
-                if not isinstance(payload, str):
-                    _report_bad_entity("response", row_id, TypeError("payload is not a string"))
-                    continue
-                was_deleted = bool(document.get("_deleted"))
-                if was_deleted:
-                    try:
-                        envelope = json.loads(payload)
-                        if not isinstance(envelope, dict):
-                            raise ValueError("invalid entity envelope")
-                        collection = envelope.get("collection")
-                        entity_id = envelope.get("id")
-                        if not isinstance(collection, str) or not isinstance(entity_id, str):
-                            raise ValueError("invalid entity envelope")
-                        validate_stored_entity_payload(payload, collection, entity_id, True)
-                    except (ValueError, TypeError) as error:
-                        _report_bad_entity("response", row_id, error)
-                        continue
-                    # Tombstones carry no DTO value. Never validate or expose
-                    # any stale fields that may remain in a deleted row.
-                    document["payload"] = json.dumps(
-                        {"collection": collection, "id": entity_id, "value": {}},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                        ensure_ascii=False,
-                    )
-                    document["_deleted"] = True
-                    valid_documents.append(document)
-                    continue
-                try:
-                    # SyncStore rejects unreadable envelopes. For readable rows,
-                    # strip DTO extras but deliver other mismatches so one stale
-                    # row cannot block the checkpoint or later entity updates.
-                    (document["payload"], alias_deleted, dropped_paths,
-                     remaining_mismatch) = response_entity_payload_fail_open(payload)
-                except (ValueError, TypeError) as error:
-                    # SyncStore skips unreadable envelopes before they reach this
-                    # route; retain the guard for alternate stores and test doubles.
-                    _report_bad_entity("response", row_id, error)
-                    continue
-                document["_deleted"] = was_deleted or alias_deleted
-                if dropped_paths:
-                    logging.getLogger(__name__).warning(
-                        "Sync entity contract extras removed for %s: %s",
-                        row_id, ", ".join(dropped_paths),
-                    )
-                if remaining_mismatch:
-                    logging.getLogger(__name__).error(
-                        "Sync entity contract mismatch for %s: %s",
-                        row_id, remaining_mismatch,
-                    )
-                valid_documents.append(document)
+            valid_documents = [
+                sanitized
+                for document in projection.get("documents", [])
+                if (sanitized := response_entity_document(document)) is not None
+            ]
             if "documents" in projection:
                 projection["documents"] = valid_documents
         return context.send(request, {**projection, "generation": store.generation()})

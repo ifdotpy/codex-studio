@@ -78,7 +78,6 @@ function PromptInputStory(p: PromptInputStoryProps) {
             setDraft={setDraft}
             input={input}
             mobile={!!p.mobile}
-            shortViewport={false}
             managed={!!p.managed}
             canSend={p.canSend !== false}
             blocked={false}

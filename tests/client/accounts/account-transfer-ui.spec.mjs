@@ -4,7 +4,6 @@ import {
   expect,
   accountTileButton,
   accountTileGroup,
-  entityMutationFixtureResponse,
   handleEntitySyncFixtureRequest,
   syncIdentityFixture,
 } from "../playwright.mjs";
@@ -14,7 +13,11 @@ import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-async function runAccountTransferUi(testPage, statusOnly = false) {
+test("Account Transfer Ui", async ({
+  browser: _testBrowser,
+  context: _testContext,
+  page: testPage,
+}) => {
   const assert = {
     equal: (actual, expected, message) =>
       expect(actual, message).toBe(expected),
@@ -89,7 +92,6 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
     makeLead("empty", "New conversation", "default", true),
   ];
   const bodies = [];
-  let transferMutationResponse;
   let _delayed = null;
   let delayWork = false;
   let wrongLimitsAccount = false;
@@ -98,6 +100,7 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
   let delayCostWork = false;
   let _delayedCosts;
   let snapshotLimits = {};
+  let notifySync;
   const limits = (key) => {
     const codex = {
       limitId: "codex",
@@ -183,6 +186,9 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
       handleEntitySyncFixtureRequest(req, res, {
         snapshot: stateForEntities,
         workspaceId: syncWorkspaceId,
+        onStreamReady: (notify) => {
+          notifySync = notify;
+        },
       })
     )
       return;
@@ -225,7 +231,6 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
           moved: 1,
           waitingCount: 5,
           total: 8,
-          canRetry: true,
           requestIds: [body.request_id],
           waiting: "Waiting for the current turn",
           interrupted: [
@@ -251,16 +256,13 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
             },
           ],
         };
-      transferMutationResponse = entityMutationFixtureResponse(
-        stateForEntities,
-        a.accountTransfer,
-      );
-      return json(transferMutationResponse);
+      return json(a.accountTransfer);
     }
     if (url.pathname === "/api/agents/account") {
       const agent = agents.find((a) => a.id === body.id);
       agent.accountKey = body.account_key;
-      return json(entityMutationFixtureResponse(stateForEntities, agent));
+      notifySync?.([{ kind: "state" }]);
+      return json(agent);
     }
     if (url.pathname === "/api/limits") {
       _limitReads++;
@@ -365,8 +367,7 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     const accountGroup = accountTileGroup(page, "Account");
-    const workTile = accountTileButton(page, "Account", "Work");
-    await workTile.click();
+    await accountTileButton(page, "Account", "Work").click();
     const confirmation = page.getByRole("dialog", {
       name: "Transfer this chat",
       exact: true,
@@ -381,11 +382,19 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
       .getByRole("button", { name: "Transfer chat", exact: true })
       .click();
     await confirmation.waitFor({ state: "hidden" });
-    await page.waitForFunction(
-      () =>
-        document.querySelector('[aria-label="Account"]')?.dataset.value ===
-        "default",
+    await expect
+      .poll(
+        () =>
+          bodies.filter((b) => b.path === "/api/agents/account-transfer")
+            .length,
+      )
+      .toBe(1);
+    assert.ok(notifySync, "the real fixture resource stream is connected");
+    notifySync([{ kind: "state" }]);
+    const transferStatus = page.locator(
+      "#composer .account-menu-note[role=status]",
     );
+    await transferStatus.waitFor();
     assert.equal(
       bodies.filter((b) => b.path === "/api/agents/account-transfer").length,
       1,
@@ -395,187 +404,28 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
       "started",
     );
     assert.equal(await accountGroup.getAttribute("data-value"), "default");
-    const transferEntity = transferMutationResponse._syncEntities
-      .map((document) => JSON.parse(document.payload))
-      .find(
-        (entity) => entity.collection === "agent" && entity.id === "started",
-      );
-    assert.equal(transferEntity.value.accountTransfer.status, "pending");
-    assert.equal(transferEntity.value.accountTransfer.targetAccountKey, "work");
-    if (statusOnly) {
-      const transferStatus = {
-        waiting: await page
-          .getByText("Waiting for the current turn", { exact: true })
-          .isVisible(),
-        progress: await page
-          .getByText("1 moved to work@example.com · 5 waiting", { exact: true })
-          .isVisible(),
-        running: await page
-          .getByText("Running worker: Moved to account Work", { exact: true })
-          .isVisible(),
-        blocked: await page
-          .getByText("Blocked worker blocked: Native receipt unavailable", {
-            exact: true,
-          })
-          .isVisible(),
-        leftOnSource: await page
-          .getByText(/Claude worker left on source \(claude\)/)
-          .isVisible(),
-        retry: await page
-          .getByRole("button", { name: "Retry", exact: true })
-          .isVisible(),
-        cancel: await page
-          .getByRole("button", { name: "Cancel remaining", exact: true })
-          .isVisible(),
-      };
-      expect(transferStatus).toEqual({
-        waiting: true,
-        progress: true,
-        running: true,
-        blocked: true,
-        leftOnSource: true,
-        retry: true,
-        cancel: true,
-      });
-      const firstRequestId = bodies.find(
-        (b) => b.path === "/api/agents/account-transfer",
-      ).body.request_id;
-      await workTile.click();
-      const extension = page.getByRole("dialog", {
-        name: "Add agents to this transfer",
+    await transferStatus
+      .getByText("Waiting for the current turn", { exact: true })
+      .waitFor();
+    await transferStatus
+      .getByText("Moved 1 subagents to work@example.com.", { exact: true })
+      .waitFor();
+    await transferStatus.getByText("5 waiting", { exact: true }).waitFor();
+    await transferStatus
+      .getByText("Running worker: Moved to account Work", { exact: true })
+      .waitFor();
+    await transferStatus
+      .getByText("Blocked worker blocked: Native receipt unavailable", {
         exact: true,
-      });
-      await extension.waitFor();
-      await extension
-        .getByRole("button", { name: "Add agents", exact: true })
-        .click();
-      await extension.waitFor({ state: "hidden" });
-      const requestIds = bodies
-        .filter((b) => b.path === "/api/agents/account-transfer")
-        .map((b) => b.body.request_id);
-      assert.equal(requestIds.length, 2);
-      assert.equal(requestIds[0], firstRequestId);
-      assert.notEqual(
-        requestIds[0],
-        requestIds[1],
-        "a transfer extension gets its own stable request id",
-      );
-      const cancelRequest = page.waitForResponse(
-        (response) =>
-          response.url().endsWith("/api/agents/account-transfer") &&
-          response.request().method() === "POST",
-      );
-      await page
-        .getByRole("button", { name: "Cancel remaining", exact: true })
-        .click();
-      await cancelRequest;
-      assert.equal(
-        bodies.some(
-          (b) =>
-            b.path === "/api/agents/account-transfer" &&
-            b.body.action === "cancel",
-        ),
-        true,
-      );
-      assert.equal(agents[0].accountKey, "default");
-      assert.equal(agents[0].accountTransfer.status, "cancelled");
-
-      agents[0].accountTransfer = {
-        id: "saved-request",
-        status: "pending",
-        targetAccountKey: "work",
-        completed: 3,
-        total: 8,
-        needsAttention: true,
-        canRetry: true,
-        waiting: "The source account is offline",
-      };
-      await page.reload();
-      await page.locator('[data-chat="started"]').click();
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      await page.getByRole("button", { name: "Retry", exact: true }).click();
-      assert.ok(
-        bodies.some(
-          (b) =>
-            b.body.action === "retry" && b.body.request_id === "saved-request",
-        ),
-      );
-      agents[0].accountKey = "work";
-      agents[0].accountTransfer = {
-        id: "lazy-history-request",
-        status: "pending",
-        targetAccountKey: "work",
-        completed: 0,
-        moved: 1,
-        total: 1,
-        nativeHistoryPending: 1,
-        canFinishHistory: true,
-      };
-      await page.reload();
-      await page.locator('[data-chat="started"]').click();
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      await page
-        .getByText("History transfer in progress: 1 remaining.", {
-          exact: true,
-        })
-        .waitFor();
-      assert.equal(
-        await page.getByRole("button", { name: "Move history now" }).count(),
-        0,
-      );
-      agents[0].accountTransfer = {
-        ...agents[0].accountTransfer,
-        status: "completed",
-        completed: 1,
-        nativeHistoryPending: 0,
-      };
-      await page.reload();
-      await page.locator('[data-chat="started"]').click();
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      assert.equal(
-        bodies.filter((b) => b.body.action === "finish_history").length,
-        0,
-        "history needs no extra action",
-      );
-      assert.equal(agents[0].accountTransfer.status, "completed");
-      agents[0].accountTransfer = {
-        ...agents[0].accountTransfer,
-        status: "completed",
-        completed: 8,
-        moved: 7,
-        waitingCount: 0,
-        leftOnSource: [
-          {
-            id: "worker-claude",
-            name: "Claude worker",
-            provider: "claude",
-            reason: "Uses claude; the destination account uses codex",
-          },
-        ],
-      };
-      await page.reload();
-      await page.locator('[data-chat="started"]').click();
-      await page
-        .getByRole("button", { name: "Chat settings", exact: true })
-        .click();
-      await page.waitForFunction(
-        () =>
-          document.querySelector('[aria-label="Account"]')?.dataset.value ===
-          "work",
-      );
-      await page.getByText(/Claude worker left on source \(claude\)/).waitFor();
-      return;
-    }
+      })
+      .waitFor();
+    await transferStatus
+      .getByText(/Claude worker left on source \(claude\)/)
+      .waitFor();
     const firstRequestId = bodies.find(
       (b) => b.path === "/api/agents/account-transfer",
     ).body.request_id;
-    await workTile.click();
+    await accountTileButton(page, "Account", "Work").click();
     const extension = page.getByRole("dialog", {
       name: "Add agents to this transfer",
       exact: true,
@@ -595,24 +445,191 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
       requestIds[1],
       "a transfer extension gets its own stable request id",
     );
-    await accountTileButton(page, "Account", "Second workspace").click();
-    assert.equal(await accountGroup.getAttribute("data-value"), "default");
     assert.equal(
-      bodies.filter((b) => b.path === "/api/agents/account").length,
-      0,
-      "another account cannot replace the pending transfer target",
+      await accountTileButton(page, "Account", "Second workspace").isDisabled(),
+      true,
     );
+    await page.keyboard.press("Escape");
+    await page.waitForTimeout(180);
+    await page.screenshot({
+      path: join(evidence, "transfer-pending.png"),
+      animations: "disabled",
+    });
+    const cancelResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/agents/account-transfer") &&
+        response.request().method() === "POST" &&
+        response.request().postDataJSON()?.action === "cancel",
+    );
+    await transferStatus
+      .getByRole("button", { name: "Cancel remaining", exact: true })
+      .click();
+    await cancelResponse;
+    notifySync([{ kind: "state" }]);
+    await transferStatus
+      .getByRole("button", { name: "Cancel remaining", exact: true })
+      .waitFor({ state: "hidden" });
+    assert.equal(agents[0].accountTransfer.status, "cancelled");
+    assert.equal(agents[0].accountKey, "default");
+    agents[0].accountTransfer = {
+      id: "blocked-lead-transfer",
+      scope: "team",
+      status: "pending",
+      targetAccountKey: "work",
+      canRetry: true,
+      blocked: [
+        {
+          id: "started",
+          name: "Started conversation",
+          reason: "Source rollout is missing",
+        },
+      ],
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-menu-note[role=status]")
+      .filter({ hasText: "Source rollout is missing" })
+      .first()
+      .waitFor();
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/agents/account-transfer") &&
+        response.request().method() === "POST" &&
+        response.request().postDataJSON()?.action === "retry" &&
+        response.request().postDataJSON()?.request_id ===
+          "blocked-lead-transfer",
+    );
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-menu-note[role=status]")
+      .filter({ hasText: "Source rollout is missing" })
+      .getByRole("button", { name: "Retry", exact: true })
+      .first()
+      .click();
+    await retryResponse;
+    assert.ok(
+      bodies.some(
+        (b) =>
+          b.path === "/api/agents/account-transfer" &&
+          b.body.action === "retry" &&
+          b.body.request_id === "blocked-lead-transfer",
+      ),
+      "chat settings explicitly retries the saved team transfer receipt",
+    );
+    await page.keyboard.press("Escape");
+    agents[0].accountTransfer = {
+      id: "saved-request",
+      status: "pending",
+      targetAccountKey: "work",
+      completed: 3,
+      total: 8,
+      needsAttention: true,
+      canRetry: true,
+      waiting: "The source account is offline",
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-menu-note[role=status]")
+      .filter({ hasText: "The source account is offline" })
+      .getByRole("button", { name: "Retry", exact: true })
+      .first()
+      .click();
+    assert.ok(
+      bodies.some(
+        (b) =>
+          b.body.action === "retry" && b.body.request_id === "saved-request",
+      ),
+    );
+    agents[0].accountKey = "work";
+    agents[0].accountTransfer = {
+      id: "lazy-history-request",
+      status: "pending",
+      targetAccountKey: "work",
+      completed: 0,
+      moved: 1,
+      total: 1,
+      nativeHistoryPending: 1,
+      canFinishHistory: true,
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const historyProgress = page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-menu-note[role=status]")
+      .getByText("History transfer in progress: 1 remaining.", { exact: true })
+      .first();
+    await historyProgress.waitFor();
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Move history now", exact: true })
+        .count(),
+      0,
+    );
+    agents[0].accountTransfer = {
+      ...agents[0].accountTransfer,
+      status: "completed",
+      completed: 1,
+      nativeHistoryPending: 0,
+    };
+    notifySync([{ kind: "state" }]);
+    await historyProgress.waitFor({ state: "hidden" });
+    assert.equal(
+      bodies.filter((b) => b.body.action === "finish_history").length,
+      0,
+      "history needs no extra action",
+    );
+    assert.equal(agents[0].accountTransfer.status, "completed");
+    agents[0].accountKey = "work";
+    agents[0].accountTransfer = {
+      ...agents[0].accountTransfer,
+      status: "completed",
+      completed: 8,
+      moved: 7,
+      waitingCount: 0,
+      leftOnSource: [
+        {
+          id: "worker-claude",
+          name: "Claude worker",
+          provider: "claude",
+          reason: "Uses claude; the destination account uses codex",
+        },
+      ],
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const completedTransferStatus = page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
+      .locator(".account-menu-note[role=status]")
+      .filter({ hasText: "Claude worker left on source" })
+      .first();
+    await completedTransferStatus.waitFor();
+    await completedTransferStatus
+      .getByText(/Claude worker left on source \(claude\)/)
+      .waitFor();
+    await page.keyboard.press("Escape");
     await page.keyboard.press("Escape");
     await page.locator('[data-chat="empty"]').click();
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await accountTileButton(page, "Account", "Work").click();
-    await page.waitForFunction(
-      () =>
-        document.querySelector('[aria-label="Account"]')?.dataset.value ===
-        "work",
-    );
+    await expect(accountGroup).toHaveAttribute("data-value", "work");
     assert.ok(
       bodies.some(
         (b) => b.path === "/api/agents/account" && b.body.id === "empty",
@@ -626,21 +643,8 @@ async function runAccountTransferUi(testPage, statusOnly = false) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.reload();
     assert.deepEqual(errors, []);
-    return;
   } finally {
     server.closeAllConnections();
     server.close();
   }
-}
-
-test("Account Transfer Ui", async ({ page }) => {
-  await runAccountTransferUi(page);
-});
-
-test("lead transfer progress and controls remain visible", async ({ page }) => {
-  test.fail(
-    true,
-    "Unified agent settings omit lead account transfer progress and retry/cancel controls.",
-  );
-  await runAccountTransferUi(page, true);
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, get, errorText } from "../../api";
 import { claudeModelLabel } from "../../claude-model-label";
 import { watchResourceReads } from "../watchResourceReads";
@@ -231,8 +231,8 @@ export function useWorkerModels(
     };
   }, [accountKey, catalogKey, workers, enabled, attempt]);
   const current = result?.key === catalogKey ? result : null;
-  return {
-    models:
+  const models = useMemo(
+    () =>
       current?.models
         .filter((model) => model.model && !model.hidden)
         .map((model): WorkerModelInfo => ({
@@ -247,6 +247,10 @@ export function useWorkerModels(
                 )
               : model.displayName,
         })) || [],
+    [current?.models],
+  );
+  return {
+    models,
     loading: !current || Boolean(current.pending && !current.models.length),
     error: current?.error || "",
     retry: () => {

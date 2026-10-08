@@ -1,5 +1,5 @@
 """Apply reviewed local updates without replacing the running backend."""
-import fcntl
+from codex_file_lock import flock, LOCK_NB, LOCK_SH
 import hashlib
 import json
 import os
@@ -124,7 +124,7 @@ class LiveUpdates:
             # and publish the manifest last. Never wait behind a publisher here.
             with (self.scripts / ".studio-update.lock").open("a+b") as lock:
                 try:
-                    fcntl.flock(lock, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                    flock(lock, LOCK_SH | LOCK_NB)
                 except BlockingIOError:
                     # A publisher can retire an applied patch. An unavailable
                     # lease cannot invalidate the confirmed application receipt.

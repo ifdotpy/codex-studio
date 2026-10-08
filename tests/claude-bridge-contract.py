@@ -61,7 +61,7 @@ export function query({prompt,options}){
  let abort=new AbortController();
  let outputTotal=0;
  if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
- if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null})+'\n');
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
   supportedModels:async()=>[
@@ -798,6 +798,36 @@ class Bridge(unittest.TestCase):
         turns = self.call('thread/read', {'threadId': self.thread, 'includeTurns': True})['thread']['turns']
         self.assertEqual([i['id'] for i in turns[0]['items'] if i['type'] == 'userMessage'],
                          ['start-initial', 'start-followup'])
+
+    def test_image_handoff_keeps_active_settings_until_next_turn_resume(self):
+        temp_dir = self.root / 'image-temp'
+        copy_dir = self.root / 'image-copy'
+        temp_dir.mkdir()
+        copy_dir.mkdir()
+        self.thread = self.call('thread/start', {
+            'cwd': str(self.root), 'claude': {'permissionMode': 'plan'},
+            'studioImageWorkspaceTempDir': str(temp_dir),
+        })['thread']['id']
+        first = self.turn('steer', 'read-only-start')['turn']['id']
+        params = {'threadId': self.thread, 'cwd': str(copy_dir),
+                  'approvalPolicy': 'on-request', 'sandboxPolicy': {'type': 'workspaceWrite'},
+                  'clientUserMessageId': 'image-workspace-handoff:worker',
+                  'input': [{'type': 'text', 'text': 'replacement'}]}
+        answer = self.call('turn/start', params)
+        self.assertTrue(answer['steered'])
+        self.assertEqual(answer['turn']['id'], first)
+        self.assertEqual(json.loads((self.root / '.probe-options').read_text())['permissionMode'], 'plan')
+        self.assertFalse((copy_dir / '.queries').exists())
+        (self.root / '.release-steer').touch()
+        self.assertEqual(self.completed()['id'], first)
+        self.call('thread/resume', {
+            'threadId': self.thread, 'cwd': str(copy_dir), 'approvalPolicy': 'on-request',
+            'studioImageWorkspaceTempDir': None, 'claude': {},
+        })
+        self.turn('hello', 'image-workspace-ready:worker')
+        self.assertEqual(self.completed()['status'], 'completed')
+        query = json.loads((copy_dir / '.queries').read_text().splitlines()[-1])
+        self.assertEqual(query['permissionMode'], 'default')
 
     def test_non_uuid_studio_ids_map_to_stable_sdk_uuids_for_start_and_steer(self):
         studio_id = 'child:worker:turn-123'

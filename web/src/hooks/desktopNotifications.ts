@@ -1,3 +1,4 @@
+import { isServerView } from "../servers/environment";
 import { useEffect, useRef } from "react";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import type { Snapshot } from "../types";
@@ -13,7 +14,7 @@ export function useDesktopNotifications(
     seen: new Set<string>(),
   });
   useEffect(() => {
-    if (!data) return;
+    if (!data || isServerView) return;
     const scope = data.stateDir;
     if (state.current.scope !== scope)
       state.current = {

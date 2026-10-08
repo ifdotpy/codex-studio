@@ -13,8 +13,16 @@ import time
 from typing import Callable, Literal, Protocol
 from uuid import uuid4
 
+from pydantic import ValidationError
+
+from studio_api.models import SyncEntity
+from studio_api.sync.entity_response import response_entity_document
+
 from studio_api.sync.resources.models import (
     MAX_SAFE_REVISION,
+    MAX_ENTITY_CHANGE_BYTES,
+    MAX_ENTITY_CHANGE_DOCUMENTS,
+    EntityChangeBatch,
     AccountsResource,
     CostsResource,
     DesktopResource,
@@ -116,6 +124,75 @@ def _panel_agent(key: ResourceKey) -> str | None:
     return identity if kind == "panel" else None
 
 
+def _merge_entity_changes(
+    previous: EntityChangeBatch | None, current: EntityChangeBatch | None,
+) -> EntityChangeBatch | None:
+    if previous is None or current is None or previous.through != current.after:
+        return None
+    documents = {document.id: document for document in previous.documents}
+    documents.update((document.id, document) for document in current.documents)
+    if len(documents) > MAX_ENTITY_CHANGE_DOCUMENTS:
+        return None
+    try:
+        return EntityChangeBatch(
+            after=previous.after,
+            through=current.through,
+            documents=sorted(documents.values(), key=lambda document: document.seq),
+        )
+    except ValidationError:
+        return None
+
+
+def _read_entity_changes(
+    database: sqlite3.Connection, after: int, through: int,
+    identities: Sequence[tuple[int, int]],
+) -> EntityChangeBatch | None:
+    """Load bounded rows only after checking their stored byte lengths."""
+    if len(identities) > MAX_ENTITY_CHANGE_DOCUMENTS:
+        return None
+    byte_count = 0
+    for _sequence, row_id in identities:
+        # A one-row query cannot read the next large payload before the budget
+        # check. Close it before any payload selection or early return.
+        with closing(database.execute(
+            "SELECT LENGTH(CAST(payload AS BLOB)),"
+            "LENGTH(CAST(collection AS BLOB))+LENGTH(CAST(id AS BLOB)) "
+            "FROM sync_entities WHERE rowid=?",
+            (row_id,),
+        )) as cursor:
+            length_row = cursor.fetchone()
+        if length_row is None or length_row[0] is None:
+            return None
+        byte_count += int(length_row[0]) + int(length_row[1]) + 100
+        if byte_count > MAX_ENTITY_CHANGE_BYTES:
+            return None
+    rows = database.execute(
+        "SELECT collection,id,seq,payload,deleted FROM sync_entities "
+        "WHERE collection NOT LIKE 'transcript:%' AND seq>? AND seq<=? ORDER BY seq",
+        (after, through),
+    ).fetchall()
+    from codex_sync_entities import _report_bad_entity, validate_stored_entity_payload
+
+    documents: list[SyncEntity] = []
+    for collection, identity, sequence, payload, deleted in rows:
+        try:
+            validate_stored_entity_payload(payload, collection, identity, bool(deleted))
+        except (TypeError, ValueError) as error:
+            _report_bad_entity(collection, identity, error)
+            return None
+        document = response_entity_document({
+            "id": f"entity:{collection}:{identity}", "payload": payload,
+            "seq": sequence, "_deleted": bool(deleted),
+        })
+        if document is None:
+            return None
+        documents.append(SyncEntity.model_validate(document))
+    try:
+        return EntityChangeBatch(after=after, through=through, documents=documents)
+    except ValidationError:
+        return None
+
+
 class ResourceSubscription:
     """One bounded stream subscription with coalesced pending invalidations."""
 
@@ -131,6 +208,7 @@ class ResourceSubscription:
         self._pending: dict[ResourceKey, ResourceRef] = {}
         self._pending_entity_sequences: set[int] = set()
         self._pending_entity_sequence_reset = False
+        self._pending_entity_changes: EntityChangeBatch | None = None
         self._overflow = False
         self._pending_token_rates: TokenRateSnapshot | None = None
         self._wake = asyncio.Event()
@@ -161,6 +239,7 @@ class ResourceSubscription:
                 self._pending.clear()
                 self._pending_entity_sequences.clear()
                 self._pending_entity_sequence_reset = False
+                self._pending_entity_changes = None
                 event: ResourceChangeEvent | ResourceTokenRatesEvent = self._hub._event(reason, changed)
             elif self._pending_token_rates is not None:
                 snapshot = self._pending_token_rates
@@ -171,13 +250,16 @@ class ResourceSubscription:
                 self._pending.clear()
                 entity_sequences = sorted(self._pending_entity_sequences)
                 entity_sequence_reset = self._pending_entity_sequence_reset
+                entity_changes = self._pending_entity_changes
                 self._pending_entity_sequences.clear()
                 self._pending_entity_sequence_reset = False
+                self._pending_entity_changes = None
                 event = self._hub._event(
                     "change",
                     changed,
                     entity_sequences=entity_sequences,
                     entity_sequence_reset=entity_sequence_reset,
+                    entity_changes=entity_changes,
                 )
             else:
                 self._wake.clear()
@@ -308,6 +390,7 @@ class ResourceHub:
                 subscription._pending.clear()
                 subscription._pending_entity_sequences.clear()
                 subscription._pending_entity_sequence_reset = False
+                subscription._pending_entity_changes = None
                 subscription._overflow = False
                 subscription._wake.clear()
         if subscription._closed:
@@ -332,8 +415,9 @@ class ResourceHub:
         entity_sequences: Sequence[int] = (),
         *,
         reset: bool = False,
+        entity_changes: EntityChangeBatch | None = None,
     ) -> int:
-        """Publish a bounded state invalidation for committed entity changes."""
+        """Publish one committed state interval, optionally with its complete rows."""
         if sequence <= 0 and not reset:
             return self._revision
         with self._lock:
@@ -346,6 +430,11 @@ class ResourceHub:
                 return self._revision
             if not unpublished and not reset:
                 return self._revision
+            previous_sequence = self._published_entity_sequence
+            if (entity_changes is not None and (
+                entity_changes.after != previous_sequence or entity_changes.through != sequence
+            )):
+                entity_changes = None
             self._entity_sequence = max(self._entity_sequence, sequence)
             self._published_entity_sequence = max(
                 self._published_entity_sequence, sequence
@@ -360,24 +449,37 @@ class ResourceHub:
             resource = ResourceRef(StateResource(kind="state"))
             key = _key(resource)
             self._advance_revision()
+            merged_batches: dict[int, EntityChangeBatch | None] = {}
             for subscription in self._subscriptions:
                 if key not in subscription._resources:
                     continue
                 if subscription._overflow:
                     continue
+                state_was_pending = key in subscription._pending
                 subscription._pending[key] = resource
                 if reset:
                     subscription._pending_entity_sequences.clear()
                     subscription._pending_entity_sequence_reset = True
+                    subscription._pending_entity_changes = None
                 elif not subscription._pending_entity_sequence_reset:
                     subscription._pending_entity_sequences.update(committed_sequences)
                     if len(subscription._pending_entity_sequences) > MAX_ENTITY_SEQUENCE_IDS:
                         subscription._pending_entity_sequences.clear()
                         subscription._pending_entity_sequence_reset = True
+                    if state_was_pending:
+                        previous = subscription._pending_entity_changes
+                        if id(previous) not in merged_batches:
+                            merged_batches[id(previous)] = _merge_entity_changes(previous, entity_changes)
+                        subscription._pending_entity_changes = merged_batches[id(previous)]
+                    else:
+                        subscription._pending_entity_changes = entity_changes
+                    if subscription._pending_entity_sequence_reset:
+                        subscription._pending_entity_changes = None
                 if len(subscription._pending) > MAX_PENDING_RESOURCES:
                     subscription._pending.clear()
                     subscription._pending_entity_sequences.clear()
                     subscription._pending_entity_sequence_reset = False
+                    subscription._pending_entity_changes = None
                     subscription._overflow = True
                 self._schedule_wake(subscription)
             revision = self._revision
@@ -449,6 +551,7 @@ class ResourceHub:
                         subscription._pending.clear()
                         subscription._pending_entity_sequences.clear()
                         subscription._pending_entity_sequence_reset = False
+                        subscription._pending_entity_changes = None
                         subscription._overflow = True
                         break
                 if subscription._pending or subscription._overflow:
@@ -471,6 +574,7 @@ class ResourceHub:
                 subscription._pending.clear()
                 subscription._pending_entity_sequences.clear()
                 subscription._pending_entity_sequence_reset = False
+                subscription._pending_entity_changes = None
                 subscription._overflow = True
                 self._schedule_wake(subscription)
             revision = self._revision
@@ -494,6 +598,7 @@ class ResourceHub:
         *,
         entity_sequences: Sequence[int] = (),
         entity_sequence_reset: bool = False,
+        entity_changes: EntityChangeBatch | None = None,
     ) -> ResourceChangeEvent:
         return ResourceChangeEvent(
             protocol=3,
@@ -509,6 +614,9 @@ class ResourceHub:
                         list(entity_sequences)
                         if _key(resource)[0] == "state" and entity_sequences
                         else None
+                    ),
+                    entityChanges=(
+                        entity_changes if _key(resource)[0] == "state" else None
                     ),
                     entitySequenceReset=(
                         entity_sequence_reset
@@ -722,41 +830,63 @@ class EntityPublicationScheduler:
             hub = _hub_registry.get(root)
         if hub is None:
             return
-        watermark = hub._published_entity_sequence
-        rows: list[tuple[int]] = []
+        with hub._lock:
+            watermark = hub._published_entity_sequence
+            include_entity_changes = any(
+                ("state", None) in subscription._resources and not subscription._overflow
+                for subscription in hub._subscriptions
+            )
+        identities: list[tuple[int, int]] = []
         sequence = explicit_sequence
+        entity_changes: EntityChangeBatch | None = None
+        floor = 0
+        read_failed = False
         try:
             database_uri = database_path.resolve().as_uri() + "?mode=ro"
             with closing(sqlite3.connect(database_uri, uri=True, timeout=0.2)) as database:
-                # This predicate matches the renderer pull contract and uses a
-                # partial seq index so arbitrarily many transcript rows remain
-                # outside the scan without maintaining a collection allowlist.
+                # One read snapshot proves both the interval and its complete rows.
+                database.execute("BEGIN")
                 row = database.execute(
                     "SELECT COALESCE(MAX(seq),0) FROM sync_entities "
                     "WHERE collection NOT LIKE 'transcript:%'",
                 ).fetchone()
-                sequence = max(sequence, int(row[0]) if row else 0)
-                rows = database.execute(
-                    "SELECT seq FROM sync_entities "
+                from codex_sync_entities import entity_tombstone_floor
+
+                floor = entity_tombstone_floor(database)
+                snapshot_sequence = max(int(row[0]) if row else 0, floor)
+                sequence = max(sequence, snapshot_sequence)
+                # Invalidation reads only the small sequence index. Payload sizes
+                # are inspected lazily only when a live reader can use the data.
+                identities = database.execute(
+                    "SELECT seq,rowid FROM sync_entities "
                     "WHERE collection NOT LIKE 'transcript:%' "
                     "AND seq>? AND seq<=? ORDER BY seq LIMIT ?",
                     (watermark, sequence, MAX_ENTITY_SEQUENCE_IDS + 1),
                 ).fetchall()
+                if (include_entity_changes and sequence > watermark and floor <= watermark
+                        and sequence == snapshot_sequence and not explicit_reset):
+                    entity_changes = _read_entity_changes(
+                        database, watermark, sequence, identities,
+                    )
         except sqlite3.Error:
+            entity_changes = None
+            read_failed = True
             if sequence <= watermark and not explicit_reset:
                 raise
-        sequences = explicit_sequences | {int(item[0]) for item in rows}
+        sequences = explicit_sequences | {int(item[0]) for item in identities}
         sequences = {value for value in sequences if value > watermark}
-        if not sequences and not explicit_reset:
-            return
-        reset = explicit_reset or len(rows) > MAX_ENTITY_SEQUENCE_IDS
+        reset = explicit_reset or floor > watermark or len(identities) > MAX_ENTITY_SEQUENCE_IDS
         reset = reset or len(sequences) > MAX_ENTITY_SEQUENCE_IDS
+        reset = reset or (read_failed and sequence > watermark and not sequences)
+        if not sequences and not reset:
+            return
         if sequence <= watermark and not reset:
             return
         hub.publish_entity_sequence(
             sequence,
             () if reset else sorted(sequences),
             reset=reset,
+            entity_changes=None if reset else entity_changes,
         )
 
 

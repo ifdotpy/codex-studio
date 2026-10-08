@@ -4,7 +4,10 @@ import json
 import time
 
 from codex_agent_modes import mode_fields
-from codex_native_errors import error_kind, error_message, preserve_thread_block, refresh_native_limits
+from codex_native_errors import (
+    error_kind, error_message, is_policy_refusal, preserve_thread_block,
+    refresh_native_limits,
+)
 
 NOTICE_METHODS = frozenset({
     'warning', 'guardianWarning', 'configWarning', 'deprecationNotice',
@@ -211,12 +214,14 @@ def consume_native_notification(runtime, message, account_key, connection_id):
                 if not tid or not turn:
                     continue
                 error = p.get('error') or {'message': 'Codex reported an error.'}
-                if p.get('willRetry') is True:
+                if p.get('willRetry') is True and not is_policy_refusal(error):
                     a['nativeStatus'] = {'phase': 'retrying', 'error': error, 'turnId': turn, 'at': now}
                     a['activity'] = {'phase': 'retrying', 'at': now}
                 elif error_kind(error) == 'activeTurnNotSteerable':
                     notice(runtime, db, a, 'steer:' + turn, error_message(error), 'warning', turnId=turn, nativeError=error)
                 else:
+                    if is_policy_refusal(error):
+                        a['nativeFailureHold'] = True
                     a.pop('nativeStatus', None)
                     a.pop('nativeSafetyBuffering', None)
                     preserve_thread_block(a, error)
@@ -225,7 +230,8 @@ def consume_native_notification(runtime, message, account_key, connection_id):
                     a['error'] = error
                     a['activity'] = {'phase': 'error', 'at': now}
                     notice(runtime, db, a, 'error:' + turn, error_message(error), 'error',
-                           turnId=turn, nativeError=error)
+                           turnId=turn, nativeError=error,
+                           cyberAccessProgram=a.get('cyberAccessProgram'))
                 # turn/completed remains the authority to release the turn.
             elif method.startswith('modelProvider/authRecovery'):
                 started = method.endswith('Started')

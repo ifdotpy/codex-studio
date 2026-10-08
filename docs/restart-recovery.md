@@ -140,6 +140,36 @@ replay; an unavailable, new, or mismatched child leaves it in place.
 
 ### First cutover and restart
 
+Use `codex-supervisor enable` for a terminal-only installation. Run
+`python3 scripts/install-cli.py` first to install the command link. The command
+uses the existing state directory. It does not start a second backend.
+
+```sh
+codex-supervisor enable --state ~/.local/state/codex-agents --port 4620
+```
+
+On macOS, the command preserves the saved recovery paths and environment. It
+sets `supervisorEnabled=true`, installs the independent supervisor LaunchAgent,
+and waits for protocol 1. It then signals only the idle backend. The recovery
+LaunchAgent starts its replacement with supervisor mode enabled. A registered
+supervisor or recovery job stays loaded. No desktop window is required.
+The LaunchAgents require a logged-in macOS user session.
+
+The first cutover refuses active turns, queued or uncertain input, monitors,
+terminals, server commands, and supervisor handles. Stop admission of new work
+before this command. The command checks activity again before the cutover.
+It preserves the state identity and checks the backend process identity.
+Do not send new work until the command completes. A repeat with an existing
+supervisor-mode backend does not restart it, including when handles are live.
+
+On Linux, the command installs two systemd user units. See
+[Linux and WSL server setup](linux-server-setup.md). The supervisor uses
+`Restart=always` and `KillMode=process`. The backend waits for supervisor health
+before startup. A planned `systemctl --user restart codex-studio` leaves the
+supervisor and its children alive. Do not restart the supervisor to update the
+backend. `codex-supervisor status --state <path>` reads supervisor health.
+`codex-supervisor wait --state <path>` waits up to 60 seconds for protocol 1.
+
 1. Install the desktop build containing `scripts/codex_process_supervisor.py`.
    Existing launchd recovery configuration remains off for supervisor mode by
    default. When enabled, the desktop installs a dedicated

@@ -40,6 +40,11 @@ TURN_NOTICE_METHODS = frozenset({
     'model/safetyBuffering/updated', 'model/verification',
     'item/autoApprovalReview/started', 'item/autoApprovalReview/completed',
 })
+POLICY_REFUSAL_KINDS = frozenset({'cyberPolicy', 'misalignmentPolicyViolation'})
+CYBER_POLICY_MESSAGE = 'Codex refused this turn under its cybersecurity policy.'
+POLICY_REFUSAL_NEXT_STEPS = (
+    'Start a new chat with a narrower or rephrased task, or use another provider or model.'
+)
 
 
 def error_kind(error: "Any") -> str:
@@ -49,10 +54,28 @@ def error_kind(error: "Any") -> str:
     return info if isinstance(info, str) else next(iter(info), '') if isinstance(info, dict) else ''
 
 
+def is_policy_refusal(error: "Any") -> bool:
+    return error_kind(error) in POLICY_REFUSAL_KINDS
+
+
+def policy_refusal_reason(error: "Any") -> dict[str, "Any"]:
+    kind = error_kind(error)
+    return {
+        'kind': 'policy_refusal',
+        'message': (CYBER_POLICY_MESSAGE if kind == 'cyberPolicy'
+                    else 'Codex refused this turn under its safety policy.'),
+        'next_steps': [POLICY_REFUSAL_NEXT_STEPS],
+    }
+
+
 
 def error_message(error: "Any") -> str:
     if isinstance(error, dict):
         kind = error_kind(error)
+        if kind == 'cyberPolicy':
+            return CYBER_POLICY_MESSAGE
+        if kind == 'misalignmentPolicyViolation':
+            return 'Codex refused this turn under its safety policy.'
         if kind == 'tooManyDenials':
             return ('Codex stopped this turn after too many denied actions. '
                     'Review the request and approval settings before trying again.')
@@ -301,12 +324,14 @@ def consume_native_notification(runtime: "Runtime", message: "JsonObject", accou
                 if not tid or not turn:
                     continue
                 error = p.get('error') or {'message': 'Codex reported an error.'}
-                if p.get('willRetry') is True:
+                if p.get('willRetry') is True and not is_policy_refusal(error):
                     a['nativeStatus'] = {'phase': 'retrying', 'error': error, 'turnId': turn, 'at': now}
                     a['activity'] = {'phase': 'retrying', 'at': now}
                 elif error_kind(error) == 'activeTurnNotSteerable':
                     notice(runtime, db, a, 'steer:' + turn, error_message(error), 'warning', turnId=turn, nativeError=error)
                 else:
+                    if is_policy_refusal(error):
+                        a['nativeFailureHold'] = True
                     a.pop('nativeStatus', None)
                     a.pop('nativeSafetyBuffering', None)
                     preserve_thread_block(a, error)
@@ -315,7 +340,8 @@ def consume_native_notification(runtime: "Runtime", message: "JsonObject", accou
                     a['error'] = error
                     a['activity'] = {'phase': 'error', 'at': now}
                     notice(runtime, db, a, 'error:' + turn, error_message(error), 'error',
-                           turnId=turn, nativeError=error)
+                           turnId=turn, nativeError=error,
+                           cyberAccessProgram=a.get('cyberAccessProgram'))
                 # turn/completed remains the authority to release the turn.
             elif method.startswith('modelProvider/authRecovery'):
                 started = method.endswith('Started')

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
 from studio_api.models import ErrorResponse, JsonValue
+from .ui_summary import UiSummaryResponse, read_summary
 from .models import (
     DesktopQuery,
     DesktopResponse,
@@ -33,6 +34,21 @@ DiagnosticsSnapshot = Callable[[object], dict[str, JsonValue]]
 
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/api/ui-summary", response_model=UiSummaryResponse)
+    def ui_summary(request: Request) -> Response:
+        from contextlib import contextmanager
+        from collections.abc import Iterator
+        import sqlite3
+
+        @contextmanager
+        def connect() -> Iterator[sqlite3.Connection]:
+            db = sqlite3.connect(Path(context.canvas.db).absolute().as_uri() + "?mode=ro", uri=True, timeout=1)
+            try:
+                yield db
+            finally:
+                db.close()
+        return context.send(request, read_summary(connect).model_dump(mode="json"))
 
     def linux_vm_configuration(values: LinuxVMSettings | None = None) -> dict[str, JsonValue]:
         try:

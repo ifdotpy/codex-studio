@@ -70,6 +70,10 @@ test("desktop and recovery lifecycle changes preserve an active supervisor owner
     path.join(resources, "scripts/codex_process_supervisor.py"),
     readFileSync(supervisorScript),
   );
+  writeFileSync(
+    path.join(resources, "scripts/codex_open_file_limit.py"),
+    readFileSync(path.join(root, "scripts/codex_open_file_limit.py")),
+  );
   writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
 
   let owner;

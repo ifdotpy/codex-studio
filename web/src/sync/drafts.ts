@@ -636,5 +636,6 @@ export function useSyncedDrafts() {
     conflicts,
     dismissDraft,
     error: localError || syncNotice,
+    localPersistenceFailed: !!localError,
   };
 }
