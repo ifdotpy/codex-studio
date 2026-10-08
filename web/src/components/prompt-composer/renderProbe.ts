@@ -1,5 +1,13 @@
 export type PromptComposerRenderProbe = (
-  component: "app" | "sidebar" | "conversation",
+  component:
+    | "app"
+    | "sidebar"
+    | "conversation"
+    | "sidebar-row"
+    | "team-row"
+    | "prompt-composer"
+    | "turn-history",
+  id?: string,
 ) => void;
 
 declare global {
@@ -11,7 +19,8 @@ declare global {
 
 export function reportPromptComposerRender(
   component: Parameters<PromptComposerRenderProbe>[0],
+  id?: string,
 ) {
   if (typeof window !== "undefined")
-    window.__studioPromptComposerRenderProbe?.(component);
+    window.__studioPromptComposerRenderProbe?.(component, id);
 }

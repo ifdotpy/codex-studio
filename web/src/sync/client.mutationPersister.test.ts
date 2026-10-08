@@ -94,6 +94,7 @@ describe("registered mutation entity persister", () => {
       ),
     };
     const projections = {
+      database: { name: `studio-entity-projection-${workspaceId}` },
       storageInstance,
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
       find: vi.fn(() => ({

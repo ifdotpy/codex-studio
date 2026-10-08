@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  test,
+  apiSchemaHandshakeSse,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -74,7 +79,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   function Fixture(){
    const [multi,setMulti]=useState(location.search.includes('multi'));
    const [teamReady,setTeamReady]=useState(false);
-   const accounts=[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}}]:[])];
+   const accounts=[{key:'own',label:'Own account',email:'own@example.test',accountId:'own-account',limits:ownLimits,loading:false,reload:(force=false)=>{window.reloadCalls.push(['own',force]);}},...(multi?[{key:'team',label:'Team account',email:'team@example.test',provider:'openai',accountId:'team-account',limits:teamReady?teamLimits:null,loading:false,reload:(force=false)=>{window.reloadCalls.push(['team',force]);if(!teamReady)setTeamReady(true);}},{key:'claude',label:'Claude work',email:'claude@example.test',provider:'claude',limits:{accountKey:'claude',at:${now},data:{rateLimits:{limitId:'claude',primary:{usedPercent:50,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['claude',force])},{key:'unnamed',label:'unnamed',provider:'codex',limits:{accountKey:'unnamed',at:${now},data:{rateLimits:{limitId:'codex',primary:{usedPercent:85,resetsAt:${now + 3600}}}}},loading:false,reload:(force=false)=>window.reloadCalls.push(['unnamed',force])}]:[])];
    return <MantineProvider><Usage agent={own} stateDir='/fixture' limits={ownLimits} accountLabel='own@example.test' reload={()=>window.reloadCalls.push(['fallback',true])} opened={true} onChange={()=>{}} limitsLoading={false} accounts={accounts}/></MantineProvider>;
   }
   createRoot(document.getElementById('root')).render(<Fixture/>);`;
@@ -94,6 +99,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         },
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
+            if (req.url?.startsWith("/api/"))
+              res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
             if (req.url?.startsWith("/api/sync/identity")) {
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ workspaceId }));
@@ -235,8 +242,8 @@ test("usage accounts ui", async ({ browser: _browser }) => {
       .waitFor();
     assert.equal(
       await page.getByRole("tab").count(),
-      0,
-      "one account has no tabs",
+      1,
+      "one account has one detail tile",
     );
     const ownLimitsPanel = page.locator(".account-limits-panel");
     await ownLimitsPanel.waitFor();
@@ -267,7 +274,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.equal(
       await teamTab.getAttribute("aria-selected"),
       "true",
-      "ArrowRight selects the next account tab",
+      "ArrowRight selects the next account tile",
     );
     await page.waitForFunction(() =>
       window.reloadCalls.some(([key, force]) => key === "team" && !force),
@@ -306,6 +313,98 @@ test("usage accounts ui", async ({ browser: _browser }) => {
     assert.ok(reset, "reset request reached the fixture server");
     assert.equal(reset.account_id, "team-account");
     assert.equal(reset.credit_id, "team-credit");
+    const ownTile = page.getByRole("tab", {
+      name: "own@example.test account limits",
+      exact: true,
+    });
+    assert.equal(
+      await ownTile.getAttribute("aria-current"),
+      "true",
+      "detail selection keeps the current chat marker",
+    );
+    assert.equal(
+      await ownTile.locator(".account-limits-tile-name").innerText(),
+      "Own account",
+    );
+    const teamMeter = teamTab.getByRole("meter");
+    assert.equal(await teamMeter.getAttribute("aria-valuenow"), "8");
+    assert.equal(
+      await teamMeter
+        .locator("span")
+        .evaluate((element) => element.style.background),
+      "var(--mantine-color-red-6)",
+    );
+    await page
+      .getByRole("radio", { name: "Claude", exact: true })
+      .locator("..")
+      .locator("label")
+      .click();
+    const claudeTile = page.getByRole("tab", {
+      name: "claude@example.test, claude account limits",
+      exact: true,
+    });
+    await claudeTile.waitFor();
+    assert.equal(
+      await page.getByRole("tab").count(),
+      1,
+      "the provider shows only its own accounts",
+    );
+    assert.equal(await claudeTile.getAttribute("aria-selected"), "true");
+    assert.equal(await claudeTile.getAttribute("aria-current"), null);
+    const claudeMeter = claudeTile.getByRole("meter");
+    assert.equal(await claudeMeter.getAttribute("aria-valuenow"), "50");
+    assert.equal(
+      await claudeMeter
+        .locator("span")
+        .evaluate((element) => element.style.background),
+      "var(--mantine-color-yellow-6)",
+    );
+    await page.getByRole("button", { name: "Refresh", exact: true }).click();
+    await page.waitForFunction(() =>
+      window.reloadCalls.some(([key, force]) => key === "claude" && force),
+    );
+    await page
+      .getByRole("radio", { name: "Codex", exact: true })
+      .locator("..")
+      .locator("label")
+      .click();
+    await ownTile.waitFor();
+    assert.equal(await ownTile.getAttribute("aria-current"), "true");
+    assert.equal(await ownTile.getAttribute("aria-selected"), "true");
+    assert.equal(
+      await ownTile
+        .getByRole("meter")
+        .locator("span")
+        .evaluate((element) => element.style.background),
+      "var(--mantine-color-green-6)",
+    );
+    const unnamedTile = page.getByRole("tab", {
+      name: "Account name unavailable, codex account limits",
+      exact: true,
+    });
+    assert.equal(
+      await unnamedTile.locator(".account-limits-tile-name").innerText(),
+      "Account name unavailable",
+    );
+    assert.equal(
+      await unnamedTile.getByRole("meter").getAttribute("aria-valuenow"),
+      "15",
+    );
+    assert.equal(
+      await unnamedTile
+        .getByRole("meter")
+        .locator("span")
+        .evaluate((element) => element.style.background),
+      "var(--mantine-color-yellow-6)",
+    );
+    await unnamedTile.click();
+    assert.equal(await unnamedTile.getAttribute("aria-selected"), "true");
+    assert.equal(await ownTile.getAttribute("aria-current"), "true");
+    assert.equal(
+      await page.locator(".account-limits-selected-name strong").innerText(),
+      "Account name unavailable",
+    );
+
     assert.deepEqual(errors, []);
     console.log(
       "Usage account UI: single account, tabs, lazy load, refresh, low allowance, and account-bound reset passed.",

@@ -56,6 +56,17 @@ export function bindShellTransport(frames: Map<string, HTMLIFrameElement>) {
         !["GET", "POST", "HEAD"].includes(value.method!)
       )
         throw new Error("The request does not belong to this server.");
+      const path = decodeURIComponent(new URL(value.url!).pathname).replace(
+        /\/+$/,
+        "",
+      );
+      if (
+        (value.method === "POST" &&
+          (path === "/api/multi-server" ||
+            path.startsWith("/api/multi-server/"))) ||
+        path.startsWith("/api/multi-server/v1/")
+      )
+        throw new Error("Use the workspace shell for server management.");
       const controller = new AbortController();
       active.set(key, { controller, frame });
       ownedKey = key;

@@ -41,7 +41,11 @@ import {
 import { get, post, errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
+import {
+  isCyberPolicyRefusal,
+  nativeErrorKind,
+  nativeThreadError,
+} from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -250,9 +254,6 @@ export default function Conversation(p: {
   const planType =
     typeof rateLimits?.planType === "string" ? rateLimits.planType : undefined;
   const mobileClient = useMediaQuery("(max-width: 760px)");
-  const shortViewport = useMediaQuery(
-    "(max-width: 760px) and (max-height: 750px)",
-  );
   const kind = p.room ? "room" : p.legacy ? "legacy" : "agent";
   const compactHeaderTools = useCompactHeaderTools();
   const [headerTools, setHeaderTools] = useState<HTMLElement | null>(null);
@@ -1711,6 +1712,15 @@ export default function Conversation(p: {
               />
             </>
           )}
+          {agent && isCyberPolicyRefusal(agent.error) && (
+            <div className="native-policy-composer-warning" role="note">
+              <strong>Before you continue</strong>
+              <span>
+                Continuing this chat sends the same history and can be refused
+                again.
+              </span>
+            </div>
+          )}
           <PromptComposer
             session={p.id || "new"}
             getDraft={p.getDraft}
@@ -1751,7 +1761,6 @@ export default function Conversation(p: {
                     setDraft={p.setDraft}
                     input={input}
                     mobile={mobileClient}
-                    shortViewport={shortViewport}
                     managed={!!managed}
                     canSend={canSend}
                     blocked={!!threadBlock}

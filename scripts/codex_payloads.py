@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_SH, LOCK_UN
 import hashlib
 import json
 import os
@@ -44,7 +44,7 @@ def _lock_db_writer(state_dir: str | os.PathLike, db) -> None:
         root = _blob_root(state_dir)
         _mkdir_durable(root)
         handle = (root / ".gc.lock").open("a+b")
-        fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+        flock(handle.fileno(), LOCK_SH)
         _db_locks[key] = (db, handle)
 
 
@@ -53,7 +53,7 @@ def release_db_writer_lock(db) -> None:
         entry = _db_locks.pop(id(db), None)
     if entry:
         handle = entry[1]
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        flock(handle.fileno(), LOCK_UN)
         handle.close()
 
 
@@ -243,7 +243,7 @@ def collect_unreferenced(state_dir, db, *, now: float, grace_seconds: int = GC_G
         return {"deleted": 0, "bytes": 0}
     handle = (root / ".gc.lock").open("a+b")
     try:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        flock(handle.fileno(), LOCK_EX)
         ensure_payload_schema(db)
         referenced = {row[0] for row in db.execute("SELECT DISTINCT sha256 FROM runtime_payload_refs")}
         cutoff = now - grace_seconds
@@ -260,7 +260,7 @@ def collect_unreferenced(state_dir, db, *, now: float, grace_seconds: int = GC_G
                 pass
         return {"deleted": deleted, "bytes": size}
     finally:
-        fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        flock(handle.fileno(), LOCK_UN)
         handle.close()
 
 

@@ -1,14 +1,15 @@
-import type { ServerCredentialAdapter } from "./transport";
+import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
 import type { StudioServer } from "./registry";
 import { parseInvitation, requestIdentity } from "./pairing";
 import { serverViewId } from "./environment";
 import type { DesktopBridge } from "../desktop";
 export type CredentialRequest = {
-  action: "pair" | "request" | "summary" | "cancel" | "forget";
+  action: "pair" | "request" | "summary" | "cancel" | "forget" | "pairAttempt";
   serverId?: string;
   credentialId?: string;
   origin?: string;
   invitation?: unknown;
+  inviteId?: string;
   requestId?: string;
   url?: string;
   method?: string;
@@ -33,6 +34,15 @@ export type StreamChunk = {
 };
 export class DesktopServerCredentials implements ServerCredentialAdapter {
   constructor(private bridge: DesktopBridge) {}
+  async hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean> {
+    const result = await this.bridge.serverCredentialAction!({
+      action: "pairAttempt",
+      ...attempt,
+    });
+    if (typeof result !== "boolean")
+      throw new Error("The credential state response is invalid.");
+    return result;
+  }
   async pair(
     origin: string,
     code: string,

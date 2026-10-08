@@ -2,7 +2,6 @@
 
 import json
 import os
-import resource
 import subprocess
 import sys
 import threading
@@ -44,11 +43,12 @@ def mark(stage, *, once=True, interval_seconds=0):
             return
         _seen.add(stage)
         _last_at[stage] = now
-    maximum = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    if sys.platform == "darwin":
-        peak = int(maximum)
-    else:
-        peak = int(maximum * 1024)
+    try:
+        import resource
+        maximum = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+        peak = int(maximum if sys.platform == "darwin" else maximum * 1024)
+    except (ImportError, OSError):
+        peak = None
     event = {
         "kind": "startupMemory",
         "stage": stage,

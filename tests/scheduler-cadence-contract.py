@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import patch
@@ -25,10 +26,12 @@ class SchedulerCadence(unittest.TestCase):
 
         class Changed:
             calls = 0
+            pending = False
 
             def wait(self, _timeout):
                 self.calls += 1
-                if self.calls == 1:
+                if self.pending:
+                    self.pending = False
                     return True
                 if self.calls == 2:
                     clock[0] += 2.1
@@ -41,25 +44,34 @@ class SchedulerCadence(unittest.TestCase):
                 return False
 
             def clear(self):
-                pass
+                self.pending = False
 
             def set(self):
-                pass
+                self.pending = True
 
         runtime.changed = Changed()
-        runtime._retry_dirty_workspace_refresh = lambda: None
-        runtime._publish_committed_resource_changes = lambda: None
         ticks = []
         runtime.monitors_tick = lambda: ticks.append(clock[0])
         runtime.rules_tick = lambda: None
         runtime.capacity_tick = lambda: None
         runtime.usage_resume_tick = lambda: None
         runtime.accepted_archive_tick = lambda: None
+        runtime.retry_monitor_results = lambda: None
+        runtime.runtime_maintenance_tick = lambda: None
+        runtime.turn_item_links_tick = lambda: None
+        runtime._retry_dirty_workspace_refresh = lambda: None
+        runtime._publish_committed_resource_changes = lambda: None
         dispatched = []
-        runtime.dispatch = lambda: (dispatched.append(clock[0]), dispatched_twice.set()
-                                    if len(dispatched) == 2 else None)
-        with patch('codex_runtime.startup_memory_mark'), \
+        runtime.dispatch = lambda **_options: (
+            dispatched.append(clock[0]),
+            dispatched_twice.set() if len(dispatched) == 2 else None,
+        )
+        runtime.changed.set()
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch('codex_runtime.startup_memory_mark'), \
                 patch('codex_runtime.time.monotonic', side_effect=lambda: clock[0]):
+            runtime.root = Path(directory)
             worker = threading.Thread(target=runtime.schedule)
             worker.start()
             try:
@@ -75,6 +87,7 @@ class SchedulerCadence(unittest.TestCase):
             finally:
                 runtime.closed = True
                 release_changed.set()
+                runtime.changed.set()
                 worker.join(2)
                 self.assertFalse(worker.is_alive())
 

@@ -13,7 +13,8 @@ export const nativeErrorHints: Record<string, string> = {
   tooManyDenials:
     "Review the denied actions and approval settings before continuing.",
   serverOverloaded: "Try later or select another model.",
-  cyberPolicy: "Eligible security professionals can apply for Trusted Access.",
+  cyberPolicy:
+    "Start a new chat with a narrower or rephrased task, or use another provider or model.",
   misalignmentPolicyViolation:
     "Codex could not confirm that the agent followed your instructions safely. Start a new chat or open another chat.",
   httpConnectionFailed: "Check the connection before continuing.",
@@ -57,6 +58,10 @@ export function nativeErrorKind(value: unknown): string {
         ? Object.keys(info)[0]
         : "") || ""
   );
+}
+
+export function isCyberPolicyRefusal(value: unknown): boolean {
+  return nativeErrorKind(value) === "cyberPolicy";
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | null {
@@ -160,17 +165,19 @@ export function nativeErrorView(value: unknown, planType?: string) {
     readable?.message ??
     (typeof value === "string" && structured && !kind ? value : undefined);
   const message =
-    kind === "tooManyDenials"
-      ? "Codex stopped this turn after too many denied actions."
-      : kind === "flexUnavailable"
-        ? "The selected model's flexible processing tier is unavailable right now."
-        : typeof rawMessage === "string" && rawMessage.trim()
-          ? rawMessage
-          : kind === "serverOverloaded"
-            ? "Codex is currently experiencing high load."
-            : structured
-              ? "Codex reported an error."
-              : "";
+    kind === "cyberPolicy"
+      ? "Codex refused this turn under its cybersecurity policy."
+      : kind === "tooManyDenials"
+        ? "Codex stopped this turn after too many denied actions."
+        : kind === "flexUnavailable"
+          ? "The selected model's flexible processing tier is unavailable right now."
+          : typeof rawMessage === "string" && rawMessage.trim()
+            ? rawMessage
+            : kind === "serverOverloaded"
+              ? "Codex is currently experiencing high load."
+              : structured
+                ? "Codex reported an error."
+                : "";
   const policy = kind === "cyberPolicy" || Boolean(readable?.biological);
   const links: { label: string; href: string }[] = [];
   if (policy) {
@@ -197,19 +204,21 @@ export function nativeErrorView(value: unknown, planType?: string) {
     kind,
     message,
     title:
-      kind === "misalignmentPolicyViolation"
-        ? "Chat stopped as a precaution"
-        : kind === "tooManyDenials"
-          ? "Too many actions denied"
-          : kind === "flexUnavailable"
-            ? "Flexible processing unavailable"
-            : kind === "usageLimitExceeded"
-              ? "Usage limit reached"
-              : kind === "rateLimitExceeded"
-                ? "Rate limit reached"
-                : policy
-                  ? "This content can't be shown"
-                  : "",
+      kind === "cyberPolicy"
+        ? "Cybersecurity policy refusal"
+        : kind === "misalignmentPolicyViolation"
+          ? "Chat stopped as a precaution"
+          : kind === "tooManyDenials"
+            ? "Too many actions denied"
+            : kind === "flexUnavailable"
+              ? "Flexible processing unavailable"
+              : kind === "usageLimitExceeded"
+                ? "Usage limit reached"
+                : kind === "rateLimitExceeded"
+                  ? "Rate limit reached"
+                  : policy
+                    ? "This content can't be shown"
+                    : "",
     hint:
       policy && kind !== "cyberPolicy"
         ? "Codex restricts biological research requests that could pose safety risks. Eligible researchers can apply for Trusted Access."

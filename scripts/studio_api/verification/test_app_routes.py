@@ -19,6 +19,7 @@ GET_PATHS = frozenset(
     {
         "/api/multi-server",
         "/api/multi-server/audit",
+        "/api/multi-server/v1/identity",
         "/api/session",
         "/api/sync/identity",
         "/api/sync/protocol",
@@ -73,6 +74,7 @@ POST_PATHS = frozenset(
     {
         "/api/multi-server",
         "/api/multi-server/v1/pair",
+        "/api/multi-server/v1/auto-pair",
         "/api/servers/orchestration",
         "/api/federation/v1/pair",
         "/api/federation/v1/status",

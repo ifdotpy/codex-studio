@@ -1,6 +1,6 @@
 """Native Claude subscription login. Studio never owns OAuth credentials."""
 import copy
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB
 import hashlib
 import json
 import os
@@ -154,7 +154,7 @@ class LoginManager:
             digest = hashlib.sha256(config.encode()).hexdigest()
             lease = open(self.directory / (digest + '.lock'), 'a')
             try:
-                fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(lease, LOCK_EX | LOCK_NB)
             except BlockingIOError:
                 lease.close()
                 raise ValueError('Claude sign-in is already active for this configuration') from None

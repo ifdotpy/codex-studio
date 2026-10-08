@@ -1,4 +1,4 @@
-import type { ServerCredentialAdapter } from "./transport";
+import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
 import {
   parseInvitation,
   pairedServer,
@@ -57,6 +57,21 @@ async function record<T>(
   });
 }
 export class BrowserServerCredentials implements ServerCredentialAdapter {
+  async hasPairAttempt(attempt: PairAttemptIdentity) {
+    const draft = await record<Credential | undefined>("readonly", (store) =>
+      store.get(`pair:${attempt.requestId}`),
+    );
+    if (!draft) return false;
+    if (
+      draft.serverId !== attempt.serverId ||
+      draft.origin !== attempt.origin ||
+      (attempt.inviteId && draft.inviteId !== attempt.inviteId)
+    )
+      throw new Error(
+        "The saved credential belongs to another pairing attempt.",
+      );
+    return !!(draft.body || draft.receipt);
+  }
   async pair(origin: string, code: string, requestId: string) {
     const invitation = parseInvitation(code, origin);
     const pendingId = `pair:${requestId}`;

@@ -199,3 +199,21 @@ def transport(root, profile=None):
     env['PATH'] = str(Path(node).parent) + os.pathsep + env.get('PATH', '')
     env['STUDIO_CLAUDE_BIN'] = executable
     return [node, str(bridge), str(root)], env
+
+
+def retained_transport(root, handle, command, env):
+    """Keep a verified live bridge when automatic Node discovery changes."""
+    from codex_process_supervisor import native_launch_environment, retained_native_launch
+    try:
+        native_launch_environment(root, handle, command, env, None)
+    except RuntimeError as error:
+        if (str(error) != 'Supervisor native launch settings changed; existing work was preserved'
+                or env.get('STUDIO_NODE_BIN')):
+            raise
+        retained = retained_native_launch(root, handle, command, env)
+        if retained is None:
+            raise error
+        # The expected proof permits only attachment to this live generation.
+        # It never executes the retained Node path or creates another process.
+        return retained['command'], retained
+    return command, None

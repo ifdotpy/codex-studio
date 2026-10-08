@@ -1,7 +1,13 @@
+import StudioSettingsTabs, {
+  isStudioSettingsTab,
+  type StudioSettingsTab,
+} from "./components/StudioSettingsTabs";
+import { useServerSettings } from "./servers/ServerSettingsContext";
 import { useServerActivity } from "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import {
+  serverViewId,
   isServerView,
   isRemoteServerView,
   serverParentOrigin,
@@ -20,7 +26,7 @@ import { accountLimits } from "./usage/accountUsage";
 import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
-import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
+import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
 import {
   pendingChatCreations,
@@ -69,6 +75,7 @@ import {
   lazy,
   useRef,
   useState,
+  memo,
   Suspense,
   type ReactNode,
 } from "react";
@@ -85,7 +92,12 @@ import {
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
 } from "./api";
-import { useSnapshot } from "./hooks";
+import {
+  useSnapshot,
+  useChatSnapshot,
+  useCommittedCallback,
+  useRetainedArray,
+} from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
@@ -163,6 +175,7 @@ import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
 import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
 import Conversation from "./components/Conversation";
+const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
 import { limitsBaselineReader } from "./usage/limitsBaseline";
@@ -180,6 +193,7 @@ import {
   TeamSummary,
   workerState,
   TEAM_PANEL_STATES,
+  TeamModels,
 } from "./components/agents/WorkerOverview";
 import { activeTask, backgroundTasks } from "./components/backgroundTaskModel";
 import { watchResourceChanges } from "./sync/resourceEvents";
@@ -259,6 +273,27 @@ export default function App() {
   const mobileClient = useMediaQuery("(max-width: 760px)");
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [studioSettingsOpen, setStudioSettingsOpen] = useState(false);
+  const [studioSettingsTab, setStudioSettingsTab] =
+    useState<StudioSettingsTab>("accounts");
+  const serverSettings = useServerSettings();
+  useEffect(() => {
+    if (studioSettingsOpen && studioSettingsTab === "servers")
+      serverSettings?.activate();
+  }, [studioSettingsOpen, studioSettingsTab]);
+  const activateSettingsTab = (value: string | null) => {
+    if (!isStudioSettingsTab(value)) return;
+    setStudioSettingsTab(value);
+    if (value === "servers") {
+      if (serverSettings) serverSettings.activate();
+      else if (serverViewId && window.parent !== window) {
+        setStudioSettingsOpen(false);
+        window.parent.postMessage(
+          { kind: "studio-server-open-settings", serverId: serverViewId },
+          serverParentOrigin,
+        );
+      }
+    }
+  };
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
@@ -529,6 +564,9 @@ export default function App() {
         }),
     [outgoingMessages, receipts],
   );
+  const conversationOutgoing = useRetainedArray(
+    visibleOutgoing.filter((entry) => entry.body.room === opened),
+  );
   const {
     setDrafts,
     getDraft,
@@ -538,6 +576,9 @@ export default function App() {
     error: draftError,
     localPersistenceFailed,
   } = useSyncedDrafts();
+  const conversationDraftConflicts = useRetainedArray(
+    draftConflicts.filter((version) => version.session === (opened || "new")),
+  );
   useServerActivity(localPersistenceFailed || sending);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
@@ -618,8 +659,12 @@ export default function App() {
                 ? roomContext
                 : roomRoots[0])),
         ),
-    team = lead ? agents.filter((a) => a.rootId === lead.id) : [],
-    workers = team.filter((a) => !a.isLead);
+    team = useRetainedArray(
+      lead
+        ? agents.filter((a) => a.id === lead.id || a.rootId === lead.id)
+        : [],
+    ),
+    workers = useRetainedArray(team.filter((a) => !a.isLead));
   useTeamTokenRateStream(
     lead?.id,
     Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
@@ -679,10 +724,8 @@ export default function App() {
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
       ? matchingSnapshot
       : cachedLimits || null;
-  const chatData = useMemo(
-    () => chatSnapshot(data, lead?.id),
-    [data, lead?.id],
-  );
+  const chatData = useChatSnapshot(data, lead?.id);
+  const scopedConversationData = useChatSnapshot(data, lead?.id, true);
   const attentionCount = messageAttentionCount(chatData);
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
   const setDraft = useCallback(
@@ -696,7 +739,7 @@ export default function App() {
       }),
     [opened, setDrafts],
   );
-  const open = (id: string, messageId?: string) => {
+  const open = useCommittedCallback((id: string, messageId?: string) => {
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -708,7 +751,7 @@ export default function App() {
     setOpened(id);
     setSidebar(false);
     setTeamOpen(false);
-  };
+  });
   useEffect(() => {
     if (!data) return;
     if (
@@ -869,12 +912,15 @@ export default function App() {
   );
   const reloadLimitsForRef = useRef(reloadLimitsFor);
   reloadLimitsForRef.current = reloadLimitsFor;
+  const usageTeamIndicators = team
+    .map((item) => indicators.get(item.id)?.kind || "")
+    .join(",");
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
     // The lead's current account and the accounts of working subagents take
     // part in this chat. Finished workers keep an account the chat left.
-    const teamAgents = agents.filter(
+    const teamAgents = team.filter(
       (item) =>
         !item.deletedAt &&
         (item.id === rootId ||
@@ -934,8 +980,8 @@ export default function App() {
       });
   }, [
     agent,
-    agents,
-    indicators,
+    team,
+    usageTeamIndicators,
     accounts.data.accounts,
     limitsByAccount,
     data?.runtime?.rateLimitsByAccount,
@@ -1447,6 +1493,29 @@ export default function App() {
       release();
     }
   };
+  const sendToConversation = useCommittedCallback(send);
+  const branchCreated = useCommittedCallback((id: string) => {
+    navigationIntent.current++;
+    createdSelection.current = id;
+    setOpened(id);
+    setSidebar(false);
+    setTeamOpen(false);
+  });
+  const newConversation = useCommittedCallback(
+    () => void newChat(agent?.cwd || lead?.cwd || undefined),
+  );
+  const chooseConversation = useCallback(() => {
+    setSidebar(true);
+    setSidebarCollapsed(false);
+    save("codex-sidebar-collapsed", false);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLInputElement>(
+          '#sidebar [aria-label="Filter projects and chats"]',
+        )
+        ?.focus(),
+    );
+  }, []);
   const rename = async (id: string, name: string) => {
     try {
       await post("/api/rename", { id, name, request_id: crypto.randomUUID() });
@@ -1587,8 +1656,10 @@ export default function App() {
         open(command.id, command.messageId);
         document.documentElement.removeAttribute("data-server-projects");
       } else if (command.action === "new-chat") void newChat(command.path);
-      else if (command.action === "settings") setStudioSettingsOpen(true);
-      else if (command.action === "focus") {
+      else if (command.action === "settings") {
+        setStudioSettingsTab(command.tab || "accounts");
+        setStudioSettingsOpen(true);
+      } else if (command.action === "focus") {
         window.focus();
         document.getElementById("message")?.focus();
         window.dispatchEvent(new Event("focus"));
@@ -1637,6 +1708,7 @@ export default function App() {
     <UIErrorBoundary key={a.id} label="this subagent" resetKey={a.id}>
       <WorkerCard
         agent={a}
+        accounts={accounts.data.accounts}
         selected={opened === a.id}
         awaitingAnswer={workerState(a, answerIds, deferredIds) === "answer"}
         deferred={deferredIds.has(a.id)}
@@ -1687,116 +1759,118 @@ export default function App() {
   const smallTeam = workers.length <= 3;
   const showTeamFilters = !smallTeam || !!workerQuery || workerFilter !== "all";
   const teamPanel = (
-    <aside
-      id="team"
-      aria-label="Team"
-      className={smallTeam ? "team-compact" : undefined}
-    >
-      <div className="team-heading">
-        <h2>Team</h2>
-        <ActionIcon
-          aria-label="Close team"
-          id="team-close"
-          onClick={() => {
-            setTeamOpen(false);
-            setWideTeamOpen(false);
-            save("codex-team-open", false);
-          }}
-        >
-          <X size={16} />
-        </ActionIcon>
-      </div>
-      <TeamSummary
-        workers={workers}
-        answers={answerIds}
-        deferred={deferredIds}
-      />
-      {/* The lead link is only useful from a worker chat. */}
-      {lead && opened !== lead.id && (
-        <Button
-          id="lead-row"
-          variant="subtle"
-          size="compact-sm"
-          title={lead.name || "Main agent"}
-          leftSection={<ArrowLeft size={13} />}
-          onClick={() => open(lead.id)}
-        >
-          Back to main agent
-        </Button>
-      )}
-      {showTeamFilters && (
-        <>
-          <TextInput
-            leftSection={<Search size={14} />}
-            id="worker-search"
-            type="search"
-            aria-label="Find a subagent"
-            placeholder="Find a worker"
-            value={workerQuery}
-            onChange={(e) => setWorkerQuery(e.target.value)}
-          />
-          {query ? (
-            <p className="team-search-count" role="status">
-              {shown.length} {shown.length === 1 ? "match" : "matches"} in this
-              team
-            </p>
-          ) : (
-            <div
-              className="team-filters"
-              role="group"
-              aria-label="Filter subagents"
-            >
-              {[
-                ["all", "All"],
-                ["active", "Active"],
-                ["attention", "Failed"],
-              ].map(([value, label]) => (
-                <UnstyledButton
-                  key={value}
-                  aria-pressed={workerFilter === value}
-                  onClick={() => setWorkerFilter(String(value))}
-                >
-                  {label}
-                </UnstyledButton>
-              ))}
-            </div>
-          )}
-        </>
-      )}
-      <div id="workers">
-        {groups.map((group) =>
-          group.workers.length ? (
-            <section
-              className="team-status-group"
-              aria-label={group.name}
-              key={group.name}
-            >
-              {!smallTeam && <h3>{group.name}</h3>}
-              {group.workers.map(worker)}
-            </section>
-          ) : null,
-        )}
-        {!!completed.length && (
-          <details
-            className="worker-group"
-            open={!!query || completedOpen}
-            onToggle={(event) => {
-              if (!query) setCompletedOpen(event.currentTarget.open);
+    <TeamModels accountKey={lead?.accountKey || "default"}>
+      <aside
+        id="team"
+        aria-label="Team"
+        className={smallTeam ? "team-compact" : undefined}
+      >
+        <div className="team-heading">
+          <h2>Team</h2>
+          <ActionIcon
+            aria-label="Close team"
+            id="team-close"
+            onClick={() => {
+              setTeamOpen(false);
+              setWideTeamOpen(false);
+              save("codex-team-open", false);
             }}
           >
-            <summary>Finished</summary>
-            {completed.map(worker)}
-          </details>
+            <X size={16} />
+          </ActionIcon>
+        </div>
+        <TeamSummary
+          workers={workers}
+          answers={answerIds}
+          deferred={deferredIds}
+        />
+        {/* The lead link is only useful from a worker chat. */}
+        {lead && opened !== lead.id && (
+          <Button
+            id="lead-row"
+            variant="subtle"
+            size="compact-sm"
+            title={lead.name || "Main agent"}
+            leftSection={<ArrowLeft size={13} />}
+            onClick={() => open(lead.id)}
+          >
+            Back to main agent
+          </Button>
         )}
-        {!shown.length && (
-          <p className="team-empty" role="status">
-            {query
-              ? "No workers match your search."
-              : "No workers in this group."}
-          </p>
+        {showTeamFilters && (
+          <>
+            <TextInput
+              leftSection={<Search size={14} />}
+              id="worker-search"
+              type="search"
+              aria-label="Find a subagent"
+              placeholder="Find a worker"
+              value={workerQuery}
+              onChange={(e) => setWorkerQuery(e.target.value)}
+            />
+            {query ? (
+              <p className="team-search-count" role="status">
+                {shown.length} {shown.length === 1 ? "match" : "matches"} in
+                this team
+              </p>
+            ) : (
+              <div
+                className="team-filters"
+                role="group"
+                aria-label="Filter subagents"
+              >
+                {[
+                  ["all", "All"],
+                  ["active", "Active"],
+                  ["attention", "Failed"],
+                ].map(([value, label]) => (
+                  <UnstyledButton
+                    key={value}
+                    aria-pressed={workerFilter === value}
+                    onClick={() => setWorkerFilter(String(value))}
+                  >
+                    {label}
+                  </UnstyledButton>
+                ))}
+              </div>
+            )}
+          </>
         )}
-      </div>
-    </aside>
+        <div id="workers">
+          {groups.map((group) =>
+            group.workers.length ? (
+              <section
+                className="team-status-group"
+                aria-label={group.name}
+                key={group.name}
+              >
+                {!smallTeam && <h3>{group.name}</h3>}
+                {group.workers.map(worker)}
+              </section>
+            ) : null,
+          )}
+          {!!completed.length && (
+            <details
+              className="worker-group"
+              open={!!query || completedOpen}
+              onToggle={(event) => {
+                if (!query) setCompletedOpen(event.currentTarget.open);
+              }}
+            >
+              <summary>Finished</summary>
+              {completed.map(worker)}
+            </details>
+          )}
+          {!shown.length && (
+            <p className="team-empty" role="status">
+              {query
+                ? "No workers match your search."
+                : "No workers in this group."}
+            </p>
+          )}
+        </div>
+      </aside>
+    </TeamModels>
   );
   const toggleTeam = () => {
     if (narrowTeam) setTeamOpen(!teamOpen);
@@ -2359,25 +2433,27 @@ export default function App() {
               notify={notify}
             />
           ) : (
-            <Conversation
+            <SelectedConversation
               accountsState={accounts}
               syncWorkspaceId={workspaceId}
               id={opened}
               agent={agent}
               room={room}
               legacy={legacy}
-              data={data}
+              data={
+                agent?.source === "managed" && !room
+                  ? scopedConversationData!
+                  : data
+              }
               getDraft={getDraft}
               subscribeDraft={subscribeDraft}
               setDraft={setDraft}
-              draftConflicts={draftConflicts.filter(
-                (version) => version.session === (opened || "new"),
-              )}
+              draftConflicts={conversationDraftConflicts}
               dismissDraft={dismissDraft}
-              send={send}
+              send={sendToConversation}
               sending={sending}
               schemaMismatch={schemaMismatch}
-              outgoing={visibleOutgoing}
+              outgoing={conversationOutgoing}
               onObserved={observeSends}
               onReadResult={readState.observeRead}
               onOutgoingEdit={editSend}
@@ -2395,28 +2471,9 @@ export default function App() {
               reloadLimits={forceReloadLimits}
               onPhase={onPhase}
               onSelect={open}
-              onBranchCreated={(id) => {
-                navigationIntent.current++;
-                createdSelection.current = id;
-                setOpened(id);
-                setSidebar(false);
-                setTeamOpen(false);
-              }}
-              onNewChat={() =>
-                void newChat(agent?.cwd || lead?.cwd || undefined)
-              }
-              onChooseChat={() => {
-                setSidebar(true);
-                setSidebarCollapsed(false);
-                save("codex-sidebar-collapsed", false);
-                requestAnimationFrame(() =>
-                  document
-                    .querySelector<HTMLInputElement>(
-                      '#sidebar [aria-label="Filter projects and chats"]',
-                    )
-                    ?.focus(),
-                );
-              }}
+              onBranchCreated={branchCreated}
+              onNewChat={newConversation}
+              onChooseChat={chooseConversation}
             />
           )}
         </UIErrorBoundary>
@@ -2503,21 +2560,21 @@ export default function App() {
         transitionProps={{ duration: 0 }}
         closeOnEscape={!accountModalOpen}
         closeOnClickOutside={!accountModalOpen}
-        onClose={() => setStudioSettingsOpen(false)}
+        onClose={() => {
+          setStudioSettingsOpen(false);
+          serverSettings?.close();
+        }}
         size={modalSizes.settings}
         title="Studio settings"
         classNames={{ body: "studio-settings-body" }}
       >
         <div className="studio-settings-panel" data-testid="studio-settings">
-          <Tabs defaultValue="accounts" className="studio-settings-tabs">
-            <Tabs.List aria-label="Studio settings">
-              <Tabs.Tab value="accounts">Accounts</Tabs.Tab>
-              <Tabs.Tab value="appearance">Appearance</Tabs.Tab>
-              <Tabs.Tab value="federation">Federation</Tabs.Tab>
-              <Tabs.Tab value="server-access">Server access</Tabs.Tab>
-              <Tabs.Tab value="linux-vm">Linux VM</Tabs.Tab>
-              <Tabs.Tab value="hotkeys">Hotkeys</Tabs.Tab>
-            </Tabs.List>
+          <Tabs
+            value={studioSettingsTab}
+            onChange={activateSettingsTab}
+            className="studio-settings-tabs"
+          >
+            <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
                 <Accounts
@@ -2528,8 +2585,10 @@ export default function App() {
                 />
               </section>
             </Tabs.Panel>
-            <Tabs.Panel value="server-access" pt="md" keepMounted={false}>
-              <ServerAccessSettings active={studioSettingsOpen} />
+            <Tabs.Panel value="servers" pt="md" keepMounted={false}>
+              {serverSettings?.panel || (
+                <ServerAccessSettings active={studioSettingsOpen} />
+              )}
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">
@@ -2860,7 +2919,7 @@ export default function App() {
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}
             />
-            <SettingsRow label="Account">
+            <SettingsRow label="Account" stacked>
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
