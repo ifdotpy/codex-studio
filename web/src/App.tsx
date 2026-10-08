@@ -154,6 +154,7 @@ import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyC
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
+import { limitsBaselineReader } from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -771,6 +772,7 @@ export default function App() {
   const limitsCache = useRef(limitsByAccount);
   limitsCache.current = limitsByAccount;
   const limitsWatchers = useRef(new Map<string, () => void>());
+  const limitsCacheHydratedAccounts = useRef(new Set<string>());
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
   const reloadLimitsFor = useCallback(
@@ -914,8 +916,14 @@ export default function App() {
     if (!data?.stateDir || !usageAccountKeys) return;
     for (const key of usageAccountKeys.split("\n")) {
       const account = accountsForLimits.current.find((item) => item.id === key);
-      if (account?.disconnected) continue;
-      void get("/api/limits", { query: { account_key: key, cached: "1" } })
+      if (account?.disconnected) {
+        limitsCacheHydratedAccounts.current.delete(key);
+        continue;
+      }
+      limitsCacheHydratedAccounts.current.delete(key);
+      const hydration = get("/api/limits", {
+        query: { account_key: key, cached: "1" },
+      })
         .then((result) => {
           const currentAccount = accountsForLimits.current.find(
             (item) => item.id === key,
@@ -925,7 +933,8 @@ export default function App() {
             !accountLimits(result, key, currentAccount?.accountId) ||
             !result.data
           )
-            return;
+            return false;
+          limitsCacheHydratedAccounts.current.add(key);
           setLimitsByAccount((old) => {
             const previous = accountLimits(
               old[key],
@@ -935,8 +944,10 @@ export default function App() {
             if (previous && (previous.at || 0) >= (result.at || 0)) return old;
             return { ...old, [key]: result };
           });
+          return true;
         })
-        .catch(() => {});
+        .catch(() => false);
+      void hydration;
     }
     // Account metadata validates this key through the ref above; the request
     // identity depends only on workspace + usageAccountKeys. Replacing the
@@ -947,6 +958,7 @@ export default function App() {
     return () => {
       for (const stop of limitsWatchers.current.values()) stop();
       limitsWatchers.current.clear();
+      limitsCacheHydratedAccounts.current.clear();
     };
   }, [data?.stateDir]);
   useEffect(() => {
@@ -962,16 +974,12 @@ export default function App() {
     }
     for (const key of keys) {
       if (limitsWatchers.current.has(key)) continue;
-      let baseline = true;
       const stop = watchResourceReads(
         { kind: "limits", accountKey: key },
-        async () => {
-          if (baseline) {
-            baseline = false;
-            return;
-          }
-          await reloadLimitsForRef.current(key);
-        },
+        limitsBaselineReader(
+          () => limitsCacheHydratedAccounts.current.has(key),
+          () => reloadLimitsForRef.current(key),
+        ),
         () => {
           // reloadLimitsFor stores errors in visible account state.
         },
