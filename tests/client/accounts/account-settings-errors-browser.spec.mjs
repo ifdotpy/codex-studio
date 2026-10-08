@@ -166,7 +166,14 @@ test("Account settings errors", async () => {
         json:
           pathname === "/api/accounts"
             ? {
-                accounts: [],
+                accounts: [
+                  {
+                    id: "default",
+                    label: "Fixture account",
+                    provider: "codex",
+                    status: "ready",
+                  },
+                ],
                 archivedAccounts: [],
                 defaultAccountKey: "default",
                 logins: [],
