@@ -493,8 +493,13 @@ test("Worker Overview Ui", async ({
     deferred = false;
     await page.reload();
     await selectLead();
-    assert.equal(await count("answer"), 0, "answered requests stop counting");
-    assert.equal(await count("working"), 7);
+    await expect
+      .poll(async () => ({
+        answer: await count("answer"),
+        working: await count("working"),
+      }))
+      .toEqual({ answer: 0, working: 7 });
+    await expect(card(0)).toContainText("Working");
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
