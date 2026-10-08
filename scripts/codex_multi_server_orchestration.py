@@ -7,6 +7,7 @@ proxy and an explicit remote-parent link. SQLite owns queues and receipts.
 from __future__ import annotations
 
 import base64
+from dataclasses import dataclass
 import hashlib
 import json
 import os
@@ -25,6 +26,7 @@ MAX_BUNDLE = 256 * 1024 * 1024
 CHUNK = 128 * 1024
 RECEIPT_AGE = 7 * 86400
 EXPORT_AGE = 86400
+INPUT_ATTEMPTS = 8
 PATH = '/api/servers/orchestration'
 
 
@@ -58,49 +60,134 @@ def retry_delay(attempts: int) -> int:
     return min(300, 5 << min(max(attempts, 0), 6))
 
 
-def git_environment() -> dict[str, str]:
+# Only these repository values can affect the Git commands below. All other
+# keys require a known neutral override or fail before a content command starts.
+GIT_DATA_KEYS = frozenset({
+    'core.repositoryformatversion', 'core.bare', 'core.filemode', 'core.ignorecase',
+    'core.precomposeunicode', 'core.logallrefupdates', 'core.symlinks', 'core.worktree',
+    'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.ignorestat', 'core.trustctime',
+    'core.checkstat', 'core.bigfilethreshold', 'core.compression', 'core.abbrev',
+    'core.untrackedcache', 'core.sparsecheckout', 'core.sparsecheckoutcone',
+    'core.protecthfs', 'core.protectntfs', 'core.warnambiguousrefs',
+    'extensions.objectformat', 'extensions.compatobjectformat', 'extensions.refstorage',
+    'extensions.worktreeconfig', 'extensions.preciousobjects', 'extensions.relativeworktrees',
+    'user.name', 'user.email', 'user.signingkey', 'init.defaultbranch',
+    'gpg.format', 'gpg.ssh.allowedsignersfile', 'gpg.ssh.revocationfile',
+    'gc.autopacklimit', 'gc.autodetach', 'gc.pruneexpire', 'gc.worktreepruneexpire',
+    'gc.reflogexpire', 'gc.reflogexpireunreachable', 'gc.aggressivewindow',
+    'gc.aggressivedepth', 'gc.bigpackthreshold', 'gc.writecommitgraph',
+    'pack.window', 'pack.depth', 'pack.threads',
+    'pack.windowmemory', 'pack.deltacachesize', 'pack.deltacachelimit',
+    'pack.packsizelimit', 'pack.compression', 'pack.reuseobjects', 'pack.reusedeltas',
+    'pack.usebitmaps', 'pack.writebitmaps', 'pack.writebitmaphashcache',
+    'pack.usebitmapindex', 'pack.writebitmaplookuptable', 'pack.indexversion',
+    'pack.island', 'pack.islandcore', 'pack.allowpackreuse',
+    'index.version', 'index.threads', 'index.recordendofindexentries', 'index.sparse',
+    'feature.manyfiles', 'feature.experimental',
+    'fetch.prune', 'fetch.prunetags', 'fetch.fsckobjects', 'fetch.writecommitgraph',
+    'fetch.parallel', 'fetch.unpacklimit', 'fetch.negotiationalgorithm',
+    'fetch.showforcedupdates', 'fetch.bundlecreationtoken',
+    'transfer.fsckobjects', 'transfer.unpacklimit',
+    'status.showuntrackedfiles', 'status.relativepaths', 'status.short', 'status.branch',
+    'status.aheadbehind', 'status.renames', 'status.renamelimit',
+    'log.decorate', 'log.abbrevcommit', 'log.date', 'log.follow', 'log.allrefupdates',
+    'diff.algorithm', 'diff.renamelimit', 'diff.ignoresubmodules', 'diff.mnemonicprefix',
+    'diff.noprefix', 'diff.context', 'diff.interhunkcontext',
+    'lfs.repositoryformatversion', 'lfs.url', 'lfs.pushurl', 'lfs.storage',
+    'lfs.fetchinclude', 'lfs.fetchexclude', 'lfs.locksverify', 'lfs.basictransfersonly',
+    'lfs.concurrenttransfers', 'lfs.pruneoffsetdays', 'lfs.pruneverifyremotealways',
+})
+GIT_OVERRIDES = {
+    'core.fsmonitor': 'false', 'core.hookspath': '/dev/null', 'core.pager': 'cat',
+    'core.attributesfile': '/dev/null', 'core.excludesfile': '/dev/null',
+    'core.alternaterefscommand': '', 'core.alternaterefsprefixes': '',
+    'core.askpass': 'false', 'core.sshcommand': 'false', 'core.gitproxy': 'false',
+    'credential.helper': '', 'uploadpack.packobjectshook': '',
+    'fetch.recursesubmodules': 'false', 'submodule.recurse': 'false',
+    'status.submodulesummary': 'false', 'maintenance.auto': 'false', 'gc.auto': '0',
+    'diff.renames': 'false', 'diff.external': '', 'log.showsignature': 'false',
+    'commit.gpgsign': 'false', 'gpg.program': 'false', 'gpg.ssh.program': 'false',
+    'gpg.x509.program': 'false', 'protocol.allow': 'never',
+    'protocol.ext.allow': 'never', 'protocol.ssh.allow': 'never',
+    'protocol.http.allow': 'never', 'protocol.https.allow': 'never',
+    'protocol.file.allow': 'never',
+}
+
+
+@dataclass(frozen=True)
+class GitCommand:
+    argv: list[str]
+    environment: dict[str, str]
+
+
+def git_environment(settings: list[tuple[str, str]] | None = None) -> dict[str, str]:
     environment = {k: v for k, v in os.environ.items() if not k.startswith('GIT_')}
     environment.update(GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL='/dev/null',
                        GIT_TERMINAL_PROMPT='0', GIT_NO_LAZY_FETCH='1')
+    if settings is not None:
+        environment['GIT_CONFIG_COUNT'] = str(len(settings))
+        for i, (key, value) in enumerate(settings):
+            environment['GIT_CONFIG_KEY_' + str(i)] = key
+            environment['GIT_CONFIG_VALUE_' + str(i)] = value
     return environment
 
 
-def git_command(directory: Path | str, *arguments: str, file_transport: bool = False) -> list[str]:
-    config = ['core.fsmonitor=false', 'core.hooksPath=/dev/null', 'core.pager=cat',
-              'core.attributesFile=/dev/null', 'core.alternateRefsCommand=',
-              'core.alternateRefsPrefixes=', 'core.sshCommand=false', 'core.gitProxy=false',
-              'credential.helper=', 'uploadpack.packObjectsHook=',
-              'fetch.recurseSubmodules=false', 'submodule.recurse=false',
-              'status.submoduleSummary=false', 'maintenance.auto=false', 'gc.auto=0', 'diff.renames=false',
-              'log.showSignature=false', 'gpg.program=false', 'gpg.ssh.program=false',
-              'gpg.x509.program=false', 'diff.external=', 'protocol.allow=never',
-              'protocol.ext.allow=never', 'protocol.ssh.allow=never',
-              'protocol.http.allow=never', 'protocol.https.allow=never',
-              'protocol.file.allow=' + ('always' if file_transport else 'never')]
-    command = ['git', '--no-pager', '--no-optional-locks']
-    for setting in config:
-        command.extend(['-c', setting])
-    # Config inspection does not convert repository content or run drivers.
-    # Includes can define drivers outside .git/config, so inspect effective keys.
-    names, code, truncated = bounded_command([*command, '-C', str(directory), 'config',
-        '--includes', '-z', '--name-only', '--get-regexp', r'^(filter|diff)\..*\.'])
-    if truncated or code not in {0, 1}:
-        raise ValueError('Git could not read the effective content driver configuration')
-    drivers = set()
-    for name in names.split(b'\0'):
-        if not name:
-            continue
-        key = os.fsdecode(name)
-        group, separator, suffix = key.partition('.')
-        driver, last_separator, _field = suffix.rpartition('.')
-        if group not in {'filter', 'diff'} or not separator or not last_separator or not driver:
-            raise ValueError('Invalid Git content driver configuration')
-        drivers.add((group, driver))
-    for group, driver in sorted(drivers):
-        settings = ('clean=', 'smudge=', 'process=', 'required=false') if group == 'filter' else ('command=', 'textconv=')
-        for setting in settings:
-            command.extend(['-c', group + '.' + driver + '.' + setting])
-    return [*command, '-C', str(directory), *arguments]
+def git_data_key(key: str) -> bool:
+    if key in GIT_DATA_KEYS:
+        return True
+    group, _, rest = key.partition('.')
+    name, separator, field = rest.rpartition('.')
+    return bool(name and separator and (
+        group == 'remote' and field in {'url', 'fetch', 'pushurl'}
+        or group == 'branch' and field in {'remote', 'merge', 'rebase'}
+        or group == 'submodule' and field in {'url', 'active', 'path'}))
+
+
+def git_neutral_value(key: str) -> str | None:
+    if key in GIT_OVERRIDES:
+        return GIT_OVERRIDES[key]
+    group, _, rest = key.partition('.')
+    name, separator, field = rest.rpartition('.')
+    if name and separator:
+        if group == 'filter' and field in {'clean', 'smudge', 'process'}:
+            return ''
+        if group == 'filter' and field == 'required':
+            return 'false'
+        if group == 'diff' and field in {'command', 'textconv'}:
+            return ''
+        if group == 'credential' and field == 'helper':
+            return ''
+        if group == 'protocol' and field == 'allow':
+            return 'never'
+    return None
+
+
+def git_command(directory: Path | str, *arguments: str, file_transport: bool = False) -> GitCommand:
+    settings = list(GIT_OVERRIDES.items())
+    argv = ['git', '--no-pager', '--no-optional-locks', '-C', str(directory)]
+    # Config inspection itself does not process content or execute helpers.
+    raw, code, truncated = bounded_command(GitCommand(
+        [*argv, 'config', '--list', '--includes', '--show-scope', '--name-only', '-z'], git_environment(settings)))
+    if truncated or code:
+        raise ValueError('Git could not read the effective repository configuration')
+    entries = raw.split(b'\0')[:-1] if raw.endswith(b'\0') else []
+    if raw and (not raw.endswith(b'\0') or len(entries) % 2):
+        raise ValueError('Invalid Git repository configuration')
+    for i in range(0, len(entries), 2):
+        scope, entry = entries[i:i + 2]
+        if scope == b'command':
+            continue  # These are the structured overrides above.
+        key = os.fsdecode(entry)
+        if scope not in {b'local', b'worktree'}:
+            raise ValueError('Unsupported Git configuration scope for key: ' + repr(key))
+        neutral = git_neutral_value(key)
+        if neutral is not None:
+            settings.append((key, neutral))
+        elif not git_data_key(key):
+            raise ValueError('Unsupported Git repository configuration key: ' + repr(key))
+    if file_transport:
+        settings.append(('protocol.file.allow', 'always'))
+    return GitCommand([*argv, *arguments], git_environment(settings))
 
 
 def git_read(directory: Path | str, *arguments: str) -> tuple[bytes, int]:
@@ -108,21 +195,6 @@ def git_read(directory: Path | str, *arguments: str) -> tuple[bytes, int]:
     if truncated:
         raise ValueError('The Git metadata exceeds 64 KiB')
     return output, code
-
-
-def reject_url_rewrite(directory: str, source: str) -> None:
-    output, code = git_read(directory, 'config', '-z', '--get-regexp', r'^url\..*\.insteadof$')
-    if code not in {0, 1}:
-        raise ValueError('Git could not check the local transport configuration')
-    for entry in output.split(b'\0'):
-        if not entry:
-            continue
-        _name, separator, prefix = entry.partition(b'\n')
-        if not separator:
-            raise ValueError('Invalid Git URL rewrite configuration')
-        value = os.fsdecode(prefix)
-        if source.startswith(value) or ('file://' + source).startswith(value):
-            raise ValueError('A Git URL rewrite matches the local bundle path')
 
 
 class MultiServerService:
@@ -220,13 +292,16 @@ class MultiServerService:
             if result.get('requestId') != key or result.get('outcome') not in {'applied', 'not_applied', 'unknown'}:
                 raise RuntimeError('The paired server returned an invalid receipt')
         except Exception as error:
-            with self.runtime.db() as db:
-                db.execute("UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=?,"
-                           "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END "
-                           "WHERE id=? AND (state!='complete' OR json_extract(body,'$.action')='chunk')",
-                           (time.time() + retry_delay(row['attempts']), type(error).__name__, key))
+            with self.runtime.lock, self.runtime.db() as db:
+                final = self._retry(db, envelope, type(error).__name__)
+                if final is not None:
+                    return final
             return {'requestId': key, 'outcome': 'unknown', 'status': 'offline', 'queued': True}
         with self.runtime.lock, self.runtime.db() as db:
+            current = db.execute('SELECT state,result FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+            if current['state'] == 'complete' and envelope['action'] != 'chunk':
+                # A concurrent response cannot reopen a terminal unknown input.
+                return json.loads(current['result'])  # type: ignore[no-any-return]
             if result['outcome'] != 'unknown':
                 db.execute("UPDATE runtime_server_outbox SET state='complete',result=?,error=NULL,completed_at=? WHERE id=?",
                            (encoded(compact_receipt(envelope['action'], result)), time.time(), key))
@@ -249,10 +324,33 @@ class MultiServerService:
                         self.runtime.put(db, 'agents', worker)
                         self.runtime.changed.set()
             else:
-                db.execute("UPDATE runtime_server_outbox SET attempts=attempts+1,next_at=?,error=NULL,"
-                           "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END WHERE id=?",
-                           (time.time() + retry_delay(row['attempts']), key))
+                final = self._retry(db, envelope, None)
+                if final is not None:
+                    return final
         return result
+
+    def _retry(self, db: Any, envelope: dict[str, Any], error: str | None) -> dict[str, Any] | None:
+        key = envelope['requestId']
+        row = db.execute('SELECT * FROM runtime_server_outbox WHERE id=?', (key,)).fetchone()
+        if row['state'] == 'complete' and envelope['action'] != 'chunk':
+            return json.loads(row['result'])  # type: ignore[no-any-return]
+        attempts = row['attempts'] + 1
+        if envelope['action'] == 'input' and attempts >= INPUT_ATTEMPTS:
+            result = {'requestId': key, 'outcome': 'unknown', 'terminal': True,
+                      'detail': 'outcome unknown, inspect the worker'}
+            db.execute("UPDATE runtime_server_outbox SET state='complete',attempts=?,result=?,completed_at=?,error=? WHERE id=?",
+                (attempts, encoded(result), time.time(), error, key))
+            worker = self.runtime.agent(envelope['payload']['worker'], db)
+            lead = self.runtime.agent(worker['rootId'], db)
+            text = 'Remote input ' + key + ': outcome unknown, inspect the worker ' + worker['id'] + '.'
+            self.runtime.enqueue_recovery_event(db, lead, 'agent_message', encoded({
+                'sender': worker['id'], 'sender_name': worker['name'], 'text': text,
+                'request_id': key}), identity('input-unknown-notice', key))
+            return result
+        db.execute("UPDATE runtime_server_outbox SET attempts=?,next_at=?,error=?,"
+                   "state=CASE WHEN json_extract(body,'$.action')='chunk' THEN 'queued' ELSE state END WHERE id=?",
+                   (attempts, time.time() + retry_delay(row['attempts']), error, key))
+        return None
 
     def tick(self) -> None:
         with self._tick_lock:
@@ -974,19 +1072,18 @@ class MultiServerService:
             if not already and digest.hexdigest() != metadata['sha256']:
                 raise ValueError('The remote bundle checksum differs')
             if not already:
-                subprocess.run(git_command(destination, 'bundle', 'verify', str(path)),
-                    env=git_environment(), check=True, capture_output=True, timeout=30)
+                command = git_command(destination, 'bundle', 'verify', str(path))
+                subprocess.run(command.argv, env=command.environment, check=True, capture_output=True, timeout=30)
             source = destination if already else str(path.resolve())
-            reject_url_rewrite(destination, source)
             # FETCH_HEAD is the only ref changed; branch integration belongs to
             # the orchestrator's separate review and merge action.
             with self.runtime.db() as db:
                 claimed = db.execute("UPDATE runtime_server_fetch SET state='fetching' WHERE id=? AND state='preparing'", (key,)).rowcount
             if not claimed:
                 return {'requestId': key, 'outcome': 'unknown', 'detail': 'The original local Git fetch is already reserved.'}
-            subprocess.run(git_command(destination, 'fetch', '--no-tags', source,
-                already or 'refs/heads/' + branch, file_transport=True),
-                env=git_environment(), check=True, capture_output=True, timeout=60)
+            command = git_command(destination, 'fetch', '--no-tags', source,
+                already or 'refs/heads/' + branch, file_transport=True)
+            subprocess.run(command.argv, env=command.environment, check=True, capture_output=True, timeout=60)
             output, code = git_read(destination, 'rev-parse', 'FETCH_HEAD')
             commit = output.decode().strip()
             if code or not commit_hash(commit):
@@ -1010,7 +1107,7 @@ def commit_hash(value: Any) -> bool:
 
 def export_bundle(directory: Path, branch: str, path: Path, exclusions: list[str]) -> None:
     command = git_command(directory, 'bundle', 'create', '-', 'refs/heads/' + branch, *('^' + c for c in exclusions))
-    process = subprocess.Popen(command, env=git_environment(), stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    process = subprocess.Popen(command.argv, env=command.environment, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     assert process.stdout is not None
     size = 0
     deadline = time.monotonic() + 60
@@ -1020,7 +1117,7 @@ def export_bundle(directory: Path, branch: str, path: Path, exclusions: list[str
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, 60)
+                    raise subprocess.TimeoutExpired(command.argv, 60)
                 if not selector.select(remaining):
                     continue
                 chunk = os.read(process.stdout.fileno(), 128 * 1024)
@@ -1042,8 +1139,8 @@ def export_bundle(directory: Path, branch: str, path: Path, exclusions: list[str
         process.stdout.close()
 
 
-def bounded_command(command: list[str]) -> tuple[bytes, int, bool]:
-    process = subprocess.Popen(command, env=git_environment(), stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+def bounded_command(command: GitCommand) -> tuple[bytes, int, bool]:
+    process = subprocess.Popen(command.argv, env=command.environment, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     assert process.stdout is not None
     data = bytearray()
     deadline = time.monotonic() + 10
@@ -1054,7 +1151,7 @@ def bounded_command(command: list[str]) -> tuple[bytes, int, bool]:
             while True:
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
-                    raise subprocess.TimeoutExpired(command, 10)
+                    raise subprocess.TimeoutExpired(command.argv, 10)
                 if not selector.select(remaining):
                     continue
                 chunk = os.read(process.stdout.fileno(), 8192)

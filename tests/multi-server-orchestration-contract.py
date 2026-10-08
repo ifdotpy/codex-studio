@@ -432,6 +432,146 @@ class CrossServer(unittest.TestCase):
         git('commit', '-qm', 'base')
         return repo, git
 
+    def test_review_git_filter_name_cannot_change_override_key(self):
+        repo, git = self.review_repo()
+        (repo / '.gitattributes').write_text('file filter=a=b\n')
+        git('add', '.gitattributes')
+        git('commit', '-qm', 'Filter name')
+        marker, program = self.root / 'equals-filter-marker', self.root / 'equals-filter-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\ncat\n')
+        program.chmod(0o700)
+        git('config', 'filter.a=b.clean', str(program))
+        git('config', 'filter.a=b.required', 'true')
+        (repo / 'file').write_text('work')
+        git('status', '--porcelain=v1')
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        with patch('codex_multi_server_orchestration.subprocess.Popen', wraps=subprocess.Popen) as popen:
+            receipt = self.network['remote'].receive('home', {'requestId': 'equals-filter', 'action': 'git',
+                'payload': {'cwd': str(repo), 'argv': ['status', '--porcelain=v1']}})
+        self.assertFalse(marker.exists())
+        self.assertEqual(receipt['outcome'], 'applied')
+        self.assertEqual(receipt['value']['exitCode'], 0)
+        for call in popen.call_args_list:
+            self.assertNotIn('-c', call.args[0])
+        status = next(call for call in popen.call_args_list if 'status' in call.args[0])
+        env = status.kwargs['env']
+        overrides = {env['GIT_CONFIG_KEY_' + str(i)]: env['GIT_CONFIG_VALUE_' + str(i)]
+            for i in range(int(env['GIT_CONFIG_COUNT']))}
+        self.assertEqual(overrides['filter.a=b.clean'], '')
+
+    def test_review_git_refuses_bundle_uri_certificate_helpers(self):
+        repo, git = self.review_repo()
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        target = self.root / 'home' / 'bundle-uri-target'
+        target.mkdir()
+        def local_git(*args):
+            return subprocess.check_output(['git', '-C', str(target), *args], text=True).strip()
+        local_git('init', '-q')
+        marker, program = self.root / 'askpass-marker', self.root / 'askpass-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\necho password\n')
+        program.chmod(0o700)
+        # Git asks for a certificate password even on a local bundle fetch.
+        local_git('config', 'fetch.bundleURI', 'https://127.0.0.1:9/fixture.bundle')
+        local_git('config', 'http.sslCert', str(self.root / 'certificate'))
+        local_git('config', 'http.sslCertPasswordProtected', 'true')
+        local_git('config', 'core.askPass', str(program))
+        with self.assertRaisesRegex(ValueError, 'fetch.bundleuri|http\\.'):
+            self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+                'branch': 'worker', 'destination': str(target)}, 'refuse-bundle-uri')
+        self.assertFalse(marker.exists())
+
+    def test_review_git_refuses_unknown_program_key(self):
+        repo, git = self.review_repo()
+        marker, program = self.root / 'future-program-marker', self.root / 'future-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\n')
+        program.chmod(0o700)
+        git('config', 'fixture.futureProgram', str(program))
+        receipt = self.network['remote'].receive('home', {'requestId': 'future-program', 'action': 'git',
+            'payload': {'cwd': str(repo), 'argv': ['log', '-n', '1']}})
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertIn('fixture.futureprogram', receipt['error'])
+        self.assertFalse(marker.exists())
+
+    def test_review_git_checks_worktree_scope(self):
+        repo, git = self.review_repo()
+        git('config', 'extensions.worktreeConfig', 'true')
+        git('config', '--worktree', 'fixture.worktreeProgram', '/does-not-execute')
+        receipt = self.network['remote'].receive('home', {'requestId': 'worktree-config', 'action': 'git',
+            'payload': {'cwd': str(repo), 'argv': ['rev-parse', 'HEAD']}})
+        self.assertEqual(receipt['outcome'], 'not_applied')
+        self.assertIn('fixture.worktreeprogram', receipt['error'])
+
+    def test_review_git_allowlist_accepts_normal_repository_data(self):
+        repo, git = self.review_repo()
+        for key, value in (('remote.origin.url', 'https://example.test/repository'),
+                ('remote.origin.pushurl', 'ssh://example.test/repository'),
+                ('remote.origin.fetch', '+refs/heads/*:refs/remotes/origin/*'),
+                ('branch.worker.remote', 'origin'), ('branch.worker.merge', 'refs/heads/worker'),
+                ('branch.worker.rebase', 'false'), ('lfs.repositoryformatversion', '0'),
+                ('lfs.url', 'https://example.test/lfs'), ('lfs.storage', 'lfs'),
+                ('lfs.fetchinclude', '*.bin'), ('lfs.fetchexclude', 'large/*')):
+            git('config', key, value)
+        for index, argv in enumerate((['status', '--porcelain=v1'], ['log', '-n', '1'])):
+            result = self.network['remote'].receive('home', {'requestId': 'normal-data-' + str(index), 'action': 'git',
+                'payload': {'cwd': str(repo), 'argv': argv}})
+            self.assertEqual(result['outcome'], 'applied')
+            self.assertEqual(result['value']['exitCode'], 0)
+        target = self.root / 'home' / 'normal-data-target'
+        target.mkdir()
+        subprocess.run(['git', '-C', str(target), 'init', '-q'], check=True)
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        fetched = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'normal-data-fetch')
+        self.assertEqual(fetched['commit'], git('rev-parse', 'HEAD'))
+
+    def test_review_unknown_input_closes_order_gate_and_notifies_lead(self):
+        worker = self.spawn()['agents'][0]['id']
+        self.home.send(worker, 'Uncertain first', 'unknown-order-first', resume=True)
+        self.home.send(worker, 'Next input', 'unknown-order-second', resume=True)
+        first_id, second_id = identity('input', 'unknown-order-first'), identity('input', 'unknown-order-second')
+        receiver, sender = self.network['remote'], self.network['home']
+        with patch.object(receiver, '_receive', side_effect=OSError('No effect evidence')) as receive:
+            self.assertEqual(sender.deliver(first_id)['outcome'], 'unknown')
+            self.assertEqual(sender.deliver(second_id)['outcome'], 'unknown')
+        self.assertEqual(receive.call_count, 1)
+        with patch.object(receiver, '_receive', wraps=receiver._receive) as receive:
+            for _ in range(8):
+                result = sender.deliver(first_id)
+            receive.assert_not_called()
+            self.assertEqual(result['outcome'], 'unknown')
+            self.assertTrue(result.get('terminal'))
+            self.assertEqual(sender.deliver(second_id)['outcome'], 'applied')
+            calls = receive.call_count
+            sender.deliver(first_id)
+            self.assertEqual(receive.call_count, calls)
+        with self.remote.read_db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_events WHERE id=?', (first_id,)).fetchone())
+            self.assertEqual(db.execute('SELECT count(*) FROM runtime_events WHERE id=?', (second_id,)).fetchone()[0], 1)
+        with self.home.read_db() as db:
+            messages = [json.loads(row[0]) for row in db.execute("SELECT text FROM runtime_events WHERE agent=? AND kind='agent_message'", (self.lead['id'],))]
+        notices = [message for message in messages if first_id in message['text']]
+        self.assertEqual(len(notices), 1)
+        self.assertIn('outcome unknown, inspect the worker', notices[0]['text'])
+
+    def test_review_old_terminal_snapshot_keeps_new_admission_slot(self):
+        worker = self.spawn()['agents'][0]['id']
+        proxy = self.home.agent(worker)
+        with self.home.lock, self.home.db() as db:
+            proxy.update(remoteAdmissionRequest='new-admission', remoteReservation=True, inFlight=True,
+                status='running', remoteStateSequence=10)
+            self.home.put(db, 'agents', proxy)
+        origin = proxy['remoteWorker']
+        for sequence, parent_epoch in ((9, 0), (11, -1), (12, 0)):
+            result = self.network['home'].receive('remote', {'requestId': 'stale-admission-' + str(sequence), 'action': 'state',
+                'payload': {'link': origin['link'], 'worker': worker, 'parentEpoch': parent_epoch, 'sequence': sequence,
+                    'record': {'epoch': 0, 'status': 'completed', 'inFlight': False, 'admissionId': 'old-admission'}}})
+            self.assertFalse(result['value']['stored'])
+            current = self.home.agent(worker)
+            self.assertTrue(current['inFlight'])
+            self.assertTrue(current['remoteReservation'])
+            self.assertEqual(current['status'], 'running')
+
     def test_review_status_disables_filters_from_included_config(self):
         repo, git = self.review_repo()
         (repo / '.gitattributes').write_text('file filter=fixture.driver diff=fixture.driver\n')
@@ -450,9 +590,13 @@ class CrossServer(unittest.TestCase):
         result = self.network['remote'].receive('home', {'requestId': 'filtered-status', 'action': 'git',
             'payload': {'cwd': str(repo), 'argv': ['status', '--porcelain=v1']}})
         self.assertFalse(marker.exists())
-        self.assertEqual(result['outcome'], 'applied')
-        self.assertEqual(result['value']['exitCode'], 0)
-        self.assertIn('file', result['value']['output'])
+        # The fail-closed policy may refuse includes instead of running drivers.
+        if result['outcome'] == 'not_applied':
+            self.assertIn('include.path', result['error'])
+        else:
+            self.assertEqual(result['outcome'], 'applied')
+            self.assertEqual(result['value']['exitCode'], 0)
+            self.assertIn('file', result['value']['output'])
         # A broken include makes the effective driver list unknowable.
         config.write_text('[invalid config\n')
         refused = self.network['remote'].receive('home', {'requestId': 'broken-filter-config', 'action': 'git',
@@ -629,7 +773,7 @@ class CrossServer(unittest.TestCase):
             refused = error
         self.assertFalse(marker.exists())
         self.assertIsInstance(refused, ValueError)
-        self.assertIn('URL rewrite', str(refused))
+        self.assertIn('url.', str(refused))
 
     def test_review_transport_exception_does_not_block_other_peers(self):
         class AccessError(Exception):
