@@ -426,3 +426,95 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     throw error;
   }
 });
+
+test("sidebar queues a second reorder while the first save is pending", async ({
+  page: runnerPage,
+}) => {
+  test.fail(
+    true,
+    "A second reorder during an in-flight save is currently silently dropped",
+  );
+  test.setTimeout(10_000);
+  const root = resolve(import.meta.dirname, "../../..");
+  const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-overlap-"));
+  const proc = spawn(
+    process.env.PYTHON || "python3",
+    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  proc.stderr.on("data", (d) => (log += d));
+  try {
+    const port = await new Promise((resolve, reject) => {
+      proc.stdout.once("data", (d) => resolve(Number(String(d).trim())));
+      proc.once("exit", () => reject(Error(log)));
+    });
+    const url = `http://127.0.0.1:${port}`;
+    const initial = await readTestState(url);
+    const projectPath = initial.runtime.projects.find(
+      (project) => project.name === "Project A",
+    ).path;
+    const page = runnerPage;
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.goto(url);
+    const project = page.locator(`[data-project-path="${projectPath}"]`);
+    const team = project.locator(".peer-team-toggle");
+    await team.waitFor();
+    const topItems = () =>
+      project
+        .locator(".project-chats > [data-sidebar-item]")
+        .evaluateAll((nodes) =>
+          nodes
+            .filter((node) => !node.querySelector(".chat-pin"))
+            .map(
+              (node) =>
+                node.querySelector(".project-tree-toggle span,.row-copy strong")
+                  ?.textContent,
+            ),
+        );
+    const before = await topItems();
+    const teamIndex = before.indexOf("Team A");
+    assert.notEqual(teamIndex, -1);
+    const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
+    const bodies = [];
+    let releaseFirst;
+    const responseGate = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstReachedServer;
+    const firstRequest = new Promise((resolve) => {
+      firstReachedServer = resolve;
+    });
+    await page.route("**/api/projects", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.action !== "reorder" || body.migration) return route.continue();
+      bodies.push(body);
+      const response = await route.fetch();
+      if (bodies.length === 1) {
+        firstReachedServer();
+        await responseGate;
+      }
+      await route.fulfill({ response });
+    });
+    await team.press(`Alt+${direction}`);
+    await firstRequest;
+    const firstOrder = await topItems();
+    assert.notDeepEqual(firstOrder, before);
+    await expect(team).not.toBeDisabled();
+    assert.notEqual(await team.getAttribute("aria-busy"), "true");
+    await team.press(`Alt+${direction}`);
+    releaseFirst();
+    await expect
+      .poll(() => bodies.length, {
+        timeout: 750,
+        message: "The second rapid reorder should be sent after the first save",
+      })
+      .toBe(2);
+    assert.notDeepEqual(await topItems(), firstOrder);
+  } catch (error) {
+    console.error("Fixture errors:", log);
+    throw error;
+  } finally {
+    proc.kill();
+  }
+});
