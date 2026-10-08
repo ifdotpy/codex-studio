@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -66,8 +69,12 @@ test("state stream persists records across tabs without pulls and repairs missin
     for (const response of streams)
       response.write(protocol3SseEvent("resources", event));
   };
+  const cacheDir = await mkdtemp(
+    join(tmpdir(), "studio-entity-delivery-vite-"),
+  );
   const server = await createServer({
     configFile: false,
+    cacheDir,
     root: fileURLToPath(new URL("../..", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
@@ -287,8 +294,12 @@ test("state stream persists records across tabs without pulls and repairs missin
     for (const tab of pages)
       assert.deepEqual(await tab.evaluate(() => window.syncErrors), []);
   } finally {
-    await context.close();
-    for (const response of streams) response.end();
-    await server.close();
+    try {
+      await context.close();
+      for (const response of streams) response.end();
+      await server.close();
+    } finally {
+      await rm(cacheDir, { recursive: true, force: true });
+    }
   }
 });

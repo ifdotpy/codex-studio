@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -60,8 +63,12 @@ for (const writerTab of [0, 1]) {
       for (const response of streams)
         response.write(protocol3SseEvent("resources", event));
     };
+    const cacheDir = await mkdtemp(
+      join(tmpdir(), "studio-entity-writes-vite-"),
+    );
     const server = await createServer({
       configFile: false,
+      cacheDir,
       root: fileURLToPath(new URL("../..", import.meta.url)),
       server: { host: "127.0.0.1", port: 0 },
       plugins: [
@@ -263,9 +270,13 @@ for (const writerTab of [0, 1]) {
       }
       assert.deepEqual(errors, []);
     } finally {
-      await context.close();
-      for (const response of streams) response.end();
-      await server.close();
+      try {
+        await context.close();
+        for (const response of streams) response.end();
+        await server.close();
+      } finally {
+        await rm(cacheDir, { recursive: true, force: true });
+      }
     }
   });
 }
