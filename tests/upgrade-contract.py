@@ -193,9 +193,6 @@ class UpgradeContract(unittest.TestCase):
                         stack.enter_context(patch.object(codex_payload_migrate.shutil, "disk_usage", return_value=Usage()))
                         runtime.search_migration_start()
                         codex_analytics_storage.start(runtime)
-                        codex_payload_migrate.run(
-                            state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
-                            batch_bytes=128 * 1024, max_batches=None)
                         deadline = time.monotonic() + 30
                         while time.monotonic() < deadline:
                             with runtime.db() as db:
@@ -206,6 +203,12 @@ class UpgradeContract(unittest.TestCase):
                             time.sleep(.02)
                         self.assertEqual(phase, "complete")
                         self.assertEqual(analytics_status, "complete")
+                        # The old-state migrations share canvas.sqlite3. Wait
+                        # for the background search and analytics writers to
+                        # finish before running the payload migration.
+                        codex_payload_migrate.run(
+                            state, tables=list(codex_payload_migrate.TARGETS), batch_rows=8,
+                            batch_bytes=128 * 1024, max_batches=None)
                     with sqlite3.connect(state / "canvas.sqlite3") as db:
                         payload_states = dict(db.execute(
                             "SELECT name,complete FROM runtime_payload_migrations"))

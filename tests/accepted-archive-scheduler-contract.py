@@ -547,6 +547,7 @@ class AcceptedArchiveRuntimeRestart(unittest.TestCase):
                         runtime.put(db, 'work', work)
                     runtime.changed.set()
                     self.assertTrue(archive_called.wait(30), 'archive callback did not run')
+                    self.assertEqual(len(calls), 1)
                     self.assertEqual(calls[0][0], 'restart-task')
                     self.assertEqual(runtime.servers, {})
                 finally:

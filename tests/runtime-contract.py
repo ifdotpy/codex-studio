@@ -1216,20 +1216,20 @@ class RuntimeContract(unittest.TestCase):
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
         eventually(lambda: bool(read_runtime_state(self.runtime)['monitors'][0]['tail']))
-        monitor_output_seen = threading.Event()
-        monitor_output_seen.set()
         scheduler_tick_finished = threading.Event()
         original_dispatch = self.runtime.dispatch
 
         def dispatch_after_output(*args, **kwargs):
             result = original_dispatch(*args, **kwargs)
-            if monitor_output_seen.is_set():
-                scheduler_tick_finished.set()
+            scheduler_tick_finished.set()
             return result
 
         with patch.object(self.runtime, 'dispatch', side_effect=dispatch_after_output):
             self.runtime.changed.set()
             self.assertTrue(scheduler_tick_finished.wait(3), 'scheduler tick after monitor output')
+        delivery_drained = threading.Event()
+        self.runtime.delivery_executor().submit(delivery_drained.set)
+        self.assertTrue(delivery_drained.wait(30), 'delivery executor did not drain after scheduler tick')
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
@@ -1586,6 +1586,9 @@ class RuntimeContract(unittest.TestCase):
         with dispatch_changed:
             self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_send, timeout=30),
                             'scheduler did not finish a tick after queued input')
+        delivery_drained = threading.Event()
+        self.runtime.delivery_executor().submit(delivery_drained.set)
+        self.assertTrue(delivery_drained.wait(30), 'delivery executor did not drain after queued-input tick')
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)
         self.assertEqual(sum(e['status'] == 'uncertain' for e in self.snapshot()['events']), 1)
 

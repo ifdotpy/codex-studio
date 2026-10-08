@@ -280,6 +280,10 @@ class OperatorCloseContract(unittest.TestCase):
                                        side_effect=lambda command: command)
         provider_command_patch.start()
         self.addCleanup(provider_command_patch.stop)
+        self.replacement_model_list = None
+        self.replacement_transport_error = None
+        if self._testMethodName == 'test_verified_operator_close_allows_a_new_launch_signature':
+            self._prepare_verified_operator_close_replacement()
 
     def close(self, handle):
         row = next(row for row in supervisor.status(self.case.root)['handles'] if row['id'] == handle)
@@ -296,65 +300,61 @@ class OperatorCloseContract(unittest.TestCase):
         self.assertEqual(result, {'closed': True, 'handle': 'test:slow-operator-close', 'pid': pid})
         self.assertIsNone(supervisor.process_start_time(pid))
 
-    @unittest.expectedFailure  # Product defect: stale ACK cursor after operator close.
-    def test_verified_operator_close_allows_a_new_launch_signature(self):
+    def _prepare_verified_operator_close_replacement(self):
         first = self.case.server(handle='test:operator-replace')
         pid = int(self.case.pid_file.read_text())
-        self.close('test:operator-replace')
+        self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
+
+        ack_entered = threading.Event()
+        release_ack = threading.Event()
+        ack_finished = threading.Event()
+        self.addCleanup(release_ack.set)
+        original_ack = first.proc.ack
+
+        def delayed_ack(sequence):
+            ack_entered.set()
+            if not release_ack.wait(10):
+                raise RuntimeError('fixture did not release the supervisor ACK')
+            original_ack(sequence)
+            ack_finished.set()
+
+        first.proc.ack = delayed_ack
+        pending = first.submit('model/list', {})
+        self.assertEqual(first.wait(pending, timeout=3)['data'][0]['model'], 'fake')
+        self.assertTrue(ack_entered.wait(3), 'native model/list response was not read for ACK')
+
+        closed = self.close('test:operator-replace')
+        self.assertEqual(closed['handle'], 'test:operator-replace')
         other = self.case.root / 'new-native'
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
         handle = 'test:operator-replace'
-        command = [str(other)]
-        snapshot = {}
-        original_call = supervisor.ProcessProxy.call
+        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
+                           executable=str(other), supervisor_handle=handle)
+        self.case.servers.append(second)
+        self.assertFalse(second.supervisor_resumed)
+        self.assertEqual(second.proc.generation, first.proc.generation + 1)
+        new_pid = fixture.wait_for(lambda: (
+            candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None))
+        self.assertNotEqual(new_pid, pid)
 
-        def acknowledge_after_open(proxy, action, **values):
-            result = original_call(proxy, action, **values)
-            if action == 'open':
-                snapshot.update(result)
-                # Control the production race: a previously delivered event is
-                # ACKed after this proxy received its open cursor. Use the real
-                # journal row and ACK action so `next` observes the same stale
-                # read_cursor as the old proxy interleaving.
-                with sqlite3.connect(self.case.root / 'supervisor.sqlite3') as db:
-                    sequence, acknowledged, generation = db.execute(
-                        'SELECT sequence,acknowledged,generation FROM handles WHERE id=?',
-                        (handle,)).fetchone()
-                    acknowledged_sequence = sequence + 1
-                    payload = json.dumps({'method': 'fixture/already-delivered', 'params': {}},
-                                         separators=(',', ':'))
-                    db.execute('UPDATE handles SET sequence=? WHERE id=?',
-                               (acknowledged_sequence, handle))
-                    db.execute('INSERT INTO events(handle,sequence,kind,payload,size,generation) '
-                               'VALUES (?,?,?,?,?,?)',
-                               (handle, acknowledged_sequence, 'stdout', payload,
-                                len(payload.encode()), generation))
-                    db.commit()
-                original_call(proxy, 'ack', sequence=acknowledged_sequence)
-            return result
-
-        proxy = None
+        # The old proxy's normal ACK reaches the live supervisor after the new
+        # proxy has captured its open cursor. No journal rows are fabricated.
+        release_ack.set()
+        self.assertTrue(ack_finished.wait(3), 'real supervisor ACK action did not finish')
         try:
-            with patch.object(supervisor.ProcessProxy, 'call', acknowledge_after_open):
-                proxy = supervisor.ProcessProxy(self.case.root, handle, command, dict(os.environ),
-                                                 None, lambda _: None)
-            self.assertFalse(proxy.resumed)
-            self.assertEqual(proxy.generation, first.proc.generation + 1)
-            new_pid = fixture.wait_for(lambda: (
-                candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None))
-            self.assertNotEqual(new_pid, pid)
-            self.assertEqual(proxy.read_cursor, snapshot['acknowledged'])
-            self.assertGreater(supervisor.status(self.case.root)['handles'][0]['acknowledged'],
-                               proxy.read_cursor)
-            try:
-                proxy.next_event()
-            except RuntimeError as error:
-                self.fail('new launch could not read after the post-open ACK: ' + str(error))
-            self.fail('expected the controlled journal event to be returned')
-        finally:
-            if proxy is not None:
-                proxy.detach()
+            self.replacement_model_list = second.call('model/list', {}, timeout=3)
+        except RuntimeError as error:
+            expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
+                        'Supervisor replay cursor is stale or ahead of the journal')
+            if str(error) != expected:
+                raise
+            self.replacement_transport_error = str(error)
+
+    @unittest.expectedFailure  # Product defect: stale ACK cursor after operator close.
+    def test_verified_operator_close_allows_a_new_launch_signature(self):
+        self.assertEqual(self.replacement_model_list, {'data': [{'model': 'fake'}]},
+                         self.replacement_transport_error)
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')

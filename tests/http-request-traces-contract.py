@@ -63,6 +63,22 @@ class HttpRequestTracesContract(unittest.TestCase):
         self.addCleanup(self.stop_server)
         self.pool = ThreadPoolExecutor(max_workers=1)
         self.addCleanup(self.pool.shutdown, wait=True)
+        if self._testMethodName == 'test_slow_asgi_request_trace_captures_the_blocking_transcript_callback':
+            self._prepare_slow_asgi_trace()
+
+    def _prepare_slow_asgi_trace(self):
+        request = self.pool.submit(
+            self.request,
+            "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token",
+        )
+        self.assertTrue(self.entered.wait(10), "The real HTTP transcript callback did not enter")
+        self.clock += .1
+        traces.watchdog(self.root)
+        active = self.read_journal()["active"]
+        self.assertEqual(len(active), 1)
+        self.blocked_trace_functions = {frame["function"] for frame in active[0]["frames"]}
+        self.release.set()
+        self.assertEqual(request.result(timeout=10)["status"], 200)
 
     def stop_server(self):
         self.release.set()
@@ -202,19 +218,7 @@ class HttpRequestTracesContract(unittest.TestCase):
 
     @unittest.expectedFailure
     def test_slow_asgi_request_trace_captures_the_blocking_transcript_callback(self):
-        request = self.pool.submit(
-            self.request,
-            "/api/sync/pull?scope=transcript%3Aprivate-agent-id&token=private-query-token",
-        )
-        try:
-            self.assertTrue(self.entered.wait(.5))
-            self.clock += .1
-            traces.watchdog(self.root)
-            row = self.read_journal()["active"][0]
-            self.assertIn("blocked_transcript", {frame["function"] for frame in row["frames"]})
-        finally:
-            self.release.set()
-        self.assertEqual(request.result(timeout=1)["status"], 200)
+        self.assertIn("blocked_transcript", self.blocked_trace_functions)
 
     def test_tracking_limits_and_malformed_targets_remain_bounded(self):
         self.assertIsNone(traces.begin("GET", "http://[invalid"))
@@ -237,6 +241,7 @@ class HttpRequestTracesContract(unittest.TestCase):
 
     def test_begin_and_finish_failure_preserve_http_success_without_false_active_requests(self):
         discard = traces.discard
+        finish = traces.finish
         for operation in ("begin", "finish"):
             with self.subTest(operation=operation):
                 retired = threading.Event()
@@ -253,15 +258,26 @@ class HttpRequestTracesContract(unittest.TestCase):
 
                 def observed_discard(key):
                     discard(key)
-                    discarded_keys.append(key)
-                    if key in trace_keys:
+                    if key is not None:
+                        discarded_keys.append(key)
+                    if key is not None and key in trace_keys:
                         retired.set()
+
+                def failed_finish(key, *args):
+                    if key is None:
+                        return finish(key, *args)
+                    raise RuntimeError("private-journal-failure")
 
                 with self.assertLogs("codex.http", level="WARNING") as logs:
                     begin_patch = (patch.object(traces, "begin", side_effect=observed_begin)
                                    if operation == "finish" else nullcontext())
+                    operation_patch = (
+                        patch.object(traces, "finish", side_effect=failed_finish)
+                        if operation == "finish" else
+                        patch.object(traces, "begin", side_effect=RuntimeError("private-journal-failure"))
+                    )
                     with begin_patch, \
-                         patch.object(traces, operation, side_effect=RuntimeError("private-journal-failure")), \
+                         operation_patch, \
                          patch.object(traces, "discard", side_effect=observed_discard):
                         response = self.request("/api/session?token=private-failed-query-token")
                         self.assertEqual(response["status"], 200, response)

@@ -1,0 +1,6 @@
+# unittest expected failures are pinned here; the runner enforces exact identity.
+tests/busy-input-capacity-contract.py::BusyInputCapacityContract.test_team_only_limit_keeps_the_reserved_slot
+tests/http-request-traces-contract.py::HttpRequestTracesContract.test_slow_asgi_request_trace_captures_the_blocking_transcript_callback
+tests/native-retained-executable-contract.py::OperatorCloseContract.test_verified_operator_close_allows_a_new_launch_signature
+tests/token-efficiency-contract.py::EfficiencyContract.test_large_dynamic_result_is_readable_without_reexecution
+tests/token-efficiency-contract.py::EfficiencyContract.test_projection_retains_images_clocks_failure_and_spawn_ids
