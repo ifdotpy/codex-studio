@@ -1,7 +1,6 @@
 // Isolated component fixture. All API requests use local test responses.
 import { createServer } from "node:http";
 import { mkdtemp, writeFile, rm } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
@@ -43,12 +42,11 @@ test("Ux Chat Ui", async ({
   const { createServer: createViteServer } = await import(
     require.resolve("vite")
   );
-  const temporary = await mkdtemp(join(tmpdir(), "studio-chat-ux-"));
-  const entry = join(temporary, "index.html");
-  await writeFile(
-    entry,
-    `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-chat.tsx")}"></script></html>`,
-  );
+  const webRoot = join(repo, "web");
+  const temporary = await mkdtemp(join(webRoot, ".studio-chat-ux-"));
+  const temporaryName = temporary.slice(webRoot.length + 1);
+  const entry = join(temporary, "entry.tsx");
+  await writeFile(entry, `import "../../tests/fixtures/ux-chat.tsx";`);
   let server;
   let vite;
   const syncStreams = new Set();
@@ -73,31 +71,18 @@ test("Ux Chat Ui", async ({
   try {
     vite = await createViteServer({
       configFile: false,
-      root: temporary,
+      root: webRoot,
       logLevel: "error",
       server: { middlewareMode: true, hmr: false },
-      optimizeDeps: { include: ["react/jsx-dev-runtime"] },
       resolve: {
+        dedupe: ["react", "react-dom"],
         alias: [
-          { find: /^react$/, replacement: require.resolve("react") },
-          {
-            find: /^react\/jsx-runtime$/,
-            replacement: require.resolve("react/jsx-runtime"),
-          },
-          {
-            find: /^react\/jsx-dev-runtime$/,
-            replacement: require.resolve("react/jsx-dev-runtime"),
-          },
-          {
-            find: /^react-dom\/client$/,
-            replacement: require.resolve("react-dom/client"),
-          },
           {
             find: /^@mantine\/core$/,
             replacement: require.resolve("@mantine/core"),
           },
           {
-            find: /^@mantine\/core\/styles.css$/,
+            find: /^@mantine\/core\/styles\.css$/,
             replacement: require.resolve("@mantine/core/styles.css"),
           },
         ],
@@ -192,6 +177,13 @@ test("Ux Chat Ui", async ({
               maxSeq: transcriptSeq,
               initialHigh: transcriptSeq,
             }),
+          );
+          return;
+        }
+        if (path === "/") {
+          response.setHeader("Content-Type", "text/html");
+          response.end(
+            `<html><div id="conversation-header-tools"></div><div id="root"></div><script type="module" src="/${temporaryName}/entry.tsx"></script></html>`,
           );
           return;
         }
