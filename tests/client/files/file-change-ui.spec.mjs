@@ -1,5 +1,9 @@
 import {
+  apiSchemaHeaders,
+  entityPullFixture,
+  readFixtureSyncContract,
   readTestState,
+  stubEntityState,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -131,6 +135,7 @@ test("File change", async () => {
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
     const lead = state.threads.find((agent) => agent.name === "Other project");
     const transcript = {
       items,
@@ -162,18 +167,29 @@ test("File change", async () => {
           `codex-desktop-opened:${stateDir}`,
           JSON.stringify(id),
         );
-        window.EventSource = class extends EventTarget {
-          close() {}
-        };
       },
       { id: lead.id, stateDir: state.stateDir },
     );
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
-    );
+    await stubEntityState(page, state, syncContract);
+    await page.route("**/api/sync/pull**", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixture(state, {
+            scope,
+            after: Number(url.searchParams.get("after") || 0),
+            transcript,
+          }),
+        },
+      });
+    });
     await page.route("**/api/transcript?*", (route) =>
       new URL(route.request().url()).searchParams.get("id") === lead.id
-        ? route.fulfill({ json: transcript })
+        ? route.fulfill({ headers: apiSchemaHeaders(), json: transcript })
         : route.fallback(),
     );
     await page.goto(origin);
