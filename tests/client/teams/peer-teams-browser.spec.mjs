@@ -108,7 +108,7 @@ test("Peer teams browser", async ({
     state = await page.evaluate(() => window.fixture);
     const project = page.locator('[data-project-path="/p"]');
     const menu = async () => {
-      await project.hover();
+      await project.locator(":scope > .project-tree-heading").hover();
       await page
         .getByRole("button", {
           name: "Options for project Project",
@@ -143,6 +143,7 @@ test("Peer teams browser", async ({
     assert.equal(await team.locator('[data-chat="a"]').count(), 1);
     await page.getByLabel("Filter projects and chats").fill("");
     const teamMenu = async () => {
+      await team.locator(".project-tree-heading").hover();
       await team
         .getByRole("button", {
           name: "Options for team Equal team",
