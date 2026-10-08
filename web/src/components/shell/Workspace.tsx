@@ -847,9 +847,7 @@ function Tools(c: Context) {
       query: c.selected ? { agent: c.selected.id } : {},
     }),
     [query, setQuery] = useState("");
-  const managedTools = (state.data?.managed ?? []).filter(
-    (value): value is Record<string, JsonValue> => isJsonObject(value),
-  );
+  const managedTools = (state.data?.managed ?? []).filter(isRecord);
   const observedNative = (state.data?.observedNative ?? []).filter(
     (name): name is string => typeof name === "string",
   );
@@ -978,13 +976,7 @@ function Inventory({ value, query }: { value: unknown; query: string }) {
   );
 }
 
-function isJsonObject(
-  value: JsonValue | null | undefined,
-): value is Record<string, JsonValue> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
+function isRecord(value: unknown): value is Record<string, JsonValue> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
