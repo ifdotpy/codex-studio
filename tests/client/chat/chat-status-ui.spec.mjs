@@ -5,6 +5,8 @@ import {
   entityMutationFixtureResponse,
   updateEntitySyncFixture,
   installApiSchemaFixtureHeaders,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
   legacySnapshotRoute,
   test,
   expect,
@@ -213,6 +215,35 @@ test("chat-status-ui", async ({ browser }) => {
     await page.route("**/api/sync/identity", (route) =>
       route.fulfill({ json: identityResponse }),
     );
+    await page.route("**/api/sync/stream?*", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      const epoch = "chat-status-ui-fixture";
+      const stream = apiSchemaHandshakeSse(
+        `retry: 30000\n\n${protocol3SseEvent("resources", {
+          epoch,
+          protocol: 3,
+          reason: "initial",
+          resources,
+          resourceVersions: [],
+          revision: 1,
+          workspaceId,
+        })}${protocol3SseEvent("token-rates", {
+          epoch,
+          protocol: 3,
+          rates: {},
+          revision: 1,
+          teams: {},
+          workspaceId,
+        })}`,
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: { "Cache-Control": "no-cache" },
+        body: stream,
+      });
+    });
     await page.route("**/api/sync/pull?*", (route) => {
       const url = new URL(route.request().url());
       const scope = url.searchParams.get("scope") || "";
