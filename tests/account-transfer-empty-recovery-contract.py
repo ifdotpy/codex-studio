@@ -31,6 +31,7 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         self.t.set_agent(self.aid, threadId=None, error=None)
         if self._testMethodName in {
                 'test_reverse_provider_transfer_of_proven_empty_start_uses_one_new_start',
+                'test_reverse_provider_transfer_when_native_reads_the_empty_thread_metadata',
                 'test_imported_empty_start_proof_requires_its_exact_valid_archive',
                 'test_saved_result_rechecks_ordinary_portable_archive_source',
                 'test_retry_reconciles_stale_empty_proof_before_archive_publication',
@@ -291,6 +292,40 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
     def test_reverse_provider_transfer_of_proven_empty_start_uses_one_new_start(self):
         # First hop imported an archive onto a new native thread. The reverse
         # transfer must preserve that ancestry when the rollout is still absent.
+        def unreadable(method):
+            if method == 'thread/read':
+                raise RuntimeError(f'invalid paginated history lineage for {self.old_thread}: missing source rollout')
+            return {'data': []}
+        self._reverse_transfer_of_empty_start(unreadable)
+
+    def test_reverse_provider_transfer_when_native_reads_the_empty_thread_metadata(self):
+        # Observed with native 0.161.0 on an unloaded thread that has a state
+        # row and no rollout: the metadata read succeeds, the paginated history
+        # read fails, and the background command list reports no such thread.
+        def metadata_only(method):
+            if method == 'thread/read':
+                return {'thread':{'id':self.old_thread, 'status':{'type':'notLoaded'},
+                                  'historyMode':'paginated', 'updatedAt':1}}
+            if method == 'thread/backgroundTerminals/list':
+                raise RuntimeError(json.dumps({'code':-32600, 'message':'thread not found: ' + self.old_thread}))
+            return {'data': []}
+        calls = self._reverse_transfer_of_empty_start(
+            metadata_only, stale_member={'archiveSourceThread':{'id':self.old_thread, 'updatedAt':1}})
+        self.assertNotIn('thread/turns/list', [method for method, _ in calls])
+        self.assertGreaterEqual([method for method, _ in calls].count('thread/backgroundTerminals/list'), 1)
+
+    def test_empty_source_background_jobs_accepts_only_the_unloaded_thread_answer(self):
+        class Source:
+            def __init__(self, error): self.error = error
+            def call(self, method, params, timeout=60): raise RuntimeError(self.error)
+        jobs = AccountTransfers.empty_source_background_jobs(
+            Source('thread not found: ' + self.old_thread), self.old_thread)
+        self.assertEqual(jobs, {'data':[], 'nextCursor':None})
+        for error in ('thread not found: another-thread', 'Codex app-server is offline'):
+            with self.assertRaisesRegex(RuntimeError, error):
+                AccountTransfers.empty_source_background_jobs(Source(error), self.old_thread)
+
+    def _reverse_transfer_of_empty_start(self, native_answer, stale_member=None):
         prior_archive = self._install_imported_archive_receipt()
         self._write_empty_source_native_state()
         self.t.pending.clear()
@@ -299,10 +334,8 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         calls = []
         def source_call(method, params, timeout=60):
             calls.append((method, params))
-            if method == 'thread/read':
-                raise RuntimeError(f'invalid paginated history lineage for {self.old_thread}: missing source rollout')
-            if method in {'thread/queue/list', 'thread/backgroundTerminals/list'}:
-                return {'data': []}
+            if method in {'thread/read', 'thread/queue/list', 'thread/backgroundTerminals/list'}:
+                return native_answer(method)
             raise AssertionError('Unexpected native method: ' + method)
         source.call = source_call
         target = self.rt.connect('claude-fixture')
@@ -331,7 +364,8 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             with self.rt.lock, self.rt.db() as db:
                 blocked = self.t.store.get(db, op['id'])
                 member = blocked['members'][self.aid]
-                member.update(phase='blocked', error='invalid paginated history lineage: missing source rollout')
+                member.update(phase='blocked', error='invalid paginated history lineage: missing source rollout',
+                              **(stale_member or {}))
                 member.pop('nativeMethod', None)
                 self.t.store.save(db, blocked)
             self.t.store.action(op['id'], 'retry')
@@ -355,6 +389,7 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             self.assertEqual(marker['threadId'], self.old_thread)
             self.assertEqual(marker['emptyProof']['nativeHistory']['nativeTurns'], 0)
             self.assertFalse(any(method == 'turn/start' for method, _ in calls + target_calls))
+            return calls
         finally:
             self.rt.catalog = original_catalog
             self.t.store.destination_settings = original_settings
