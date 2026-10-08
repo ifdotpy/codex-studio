@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 
 from pathlib import Path
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -25,10 +26,15 @@ class SchedulerCadence(unittest.TestCase):
         runtime.capacity_tick = lambda: None
         runtime.usage_resume_tick = lambda: None
         runtime.accepted_archive_tick = lambda: None
+        runtime.retry_monitor_results = lambda: None
+        runtime.runtime_maintenance_tick = lambda: None
+        runtime._retry_dirty_workspace_refresh = lambda: None
+        runtime._publish_committed_resource_changes = lambda: None
         dispatched = []
-        runtime.dispatch = lambda: dispatched.append(time.monotonic())
+        runtime.dispatch = lambda **_options: dispatched.append(time.monotonic())
         runtime.changed.set()
-        with patch('codex_runtime.startup_memory_mark'):
+        with tempfile.TemporaryDirectory() as directory, patch('codex_runtime.startup_memory_mark'):
+            runtime.root = Path(directory)
             worker = threading.Thread(target=runtime.schedule)
             worker.start()
             try:
