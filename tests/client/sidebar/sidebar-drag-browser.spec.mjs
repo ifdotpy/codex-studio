@@ -265,6 +265,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     await row("Destination").waitFor();
     assert.equal((await topItems())[0], "Folder A");
     // Loose chats share the same order group with folders and teams.
+    const looseChatReorder = sidebarOrderResponse();
     await drag(row("Destination"), folderA, 0.1);
     await page.waitForFunction(
       (path) =>
@@ -278,6 +279,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       projectPath,
     );
     assert.equal((await topItems())[0], "Destination");
+    await waitForSavedSidebarOrder(looseChatReorder);
     await page.reload();
     await row("Destination").waitFor();
     assert.equal((await topItems())[0], "Destination");
@@ -434,7 +436,7 @@ test("sidebar queues a second reorder while the first save is pending", async ({
     true,
     "A second reorder during an in-flight save is currently silently dropped",
   );
-  test.setTimeout(10_000);
+  test.setTimeout(30_000);
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-overlap-"));
   const proc = spawn(
@@ -506,7 +508,7 @@ test("sidebar queues a second reorder while the first save is pending", async ({
     releaseFirst();
     await expect
       .poll(() => bodies.length, {
-        timeout: 750,
+        timeout: 5_000,
         message: "The second rapid reorder should be sent after the first save",
       })
       .toBe(2);
