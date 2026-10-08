@@ -17,11 +17,13 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     import TokenRate from '/src/components/TokenRate.tsx';
     import ReasoningDuration from '/src/components/conversation/transcript/ReasoningDuration.tsx';
     import ChatStatus from '/src/components/agents/ChatStatus.tsx';
-    import {receiveTokenRate} from '/src/usage/tokenRate.ts';
+    import {receiveTokenRate,workerRateKey} from '/src/usage/tokenRate.ts';
     import '/src/visual-activity.css';
+    import '/src/components/team-navigation.css';
     const e=React.createElement;
     window.commits={};
     window.rate=(id,value)=>receiveTokenRate(id,{data:JSON.stringify({turnId:'turn',active:true,rate:value,outputTokens:100})});
+    window.workerRate=value=>window.rate(workerRateKey('team','worker'),value);
     for(const id of ['near','far','closed'])window.rate(id,20);
     const card=(id,reason=true)=>e(React.Profiler,{id,onRender:()=>window.commits[id]=(window.commits[id]||0)+1},
       e('div',{id,className:'card'},
@@ -30,6 +32,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
         reason&&e(ReasoningDuration,{item:{id:'reason:'+id,reasoningMs:3000,reasoningSince:100,reasoningObservedAt:100}})));
     const root=createRoot(document.querySelector('#root'));
     root.render(e(React.StrictMode,null,card('near'),card('empty',false),
+      e('div',{id:'team'},e('span',{className:'worker-meta'},'Worker ',e(TokenRate,{agent:{id:'worker',rootId:'team'},variant:'worker'}))),
       e('details',{id:'fold'},e('summary',null,'Show work'),card('closed')),card('far')));
     window.unmount=()=>root.unmount();
   `;
@@ -147,6 +150,13 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await expect(page.locator("#empty .token-rate")).toHaveText("42 tok/s");
     expect(await page.evaluate(() => window.commits.far || 0)).toBe(0);
     expect(await page.evaluate(() => window.commits.closed || 0)).toBe(0);
+    expect(await page.locator("#team .token-rate").boundingBox()).toBeNull();
+    await page.evaluate(() => window.workerRate(43));
+    await expect(page.locator("#team .token-rate")).toHaveText("43 tok/s");
+    await expect(page.locator("#team .token-rate")).toHaveAttribute(
+      "data-visual-active",
+      "true",
+    );
     await page.locator("#fold summary").click();
     await expect(page.locator("#closed .token-rate")).toHaveText("129 tok/s");
     await expect

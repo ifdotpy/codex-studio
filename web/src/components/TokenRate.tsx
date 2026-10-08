@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Agent } from "../types";
 import {
   formatTokenRate,
@@ -20,7 +20,19 @@ export default function TokenRate({
   agent: Agent;
   variant?: "footer" | "worker";
 }) {
-  const [visualRef, visualActive] = useVisualActivity<HTMLSpanElement>();
+  const [visualRef, visualActive] = useVisualActivity<HTMLElement>();
+  const observeRate = useCallback(
+    (element: HTMLSpanElement | null) => {
+      // Empty worker meters are display:none. Their visible metadata row must
+      // keep the subscription active until the first rate arrives.
+      visualRef(
+        element && variant === "worker"
+          ? element.parentElement || element
+          : element,
+      );
+    },
+    [visualRef, variant],
+  );
   const scope =
     variant === "worker"
       ? workerRateKey(agent.rootId || "", agent.id)
@@ -96,7 +108,8 @@ export default function TokenRate({
   }, [target, turn, motionReduced, visible, visualActive]);
   return (
     <span
-      ref={visualRef}
+      ref={observeRate}
+      data-visual-active={visualActive}
       className="token-rate"
       data-testid="token-rate"
       data-variant={variant}
