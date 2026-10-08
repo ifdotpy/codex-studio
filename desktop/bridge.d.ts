@@ -1,4 +1,17 @@
 export interface CodexDesktop {
+  serverNativeAction?(
+    serverId: string,
+    method: string,
+    value?: unknown,
+  ): Promise<unknown>;
+  serverCredentialAction?(
+    request: import("../web/src/servers/desktopCredentials").CredentialRequest,
+  ): Promise<unknown>;
+  onServerStream?(
+    callback: (
+      chunk: import("../web/src/servers/desktopCredentials").StreamChunk,
+    ) => void,
+  ): () => void;
   readonly platform: string;
   requestMicrophone(): Promise<boolean>;
   prepareTranscription(): Promise<string>;
@@ -20,6 +33,7 @@ export interface CodexDesktop {
   openExternal(url: string): Promise<void>;
   onNavigate(
     callback: (target: {
+      serverId?: string;
       agentId: string;
       section: "messages";
       itemId?: string;
@@ -28,7 +42,12 @@ export interface CodexDesktop {
   notify(value: {
     title: string;
     body: string;
-    target: { agentId: string; section: "messages"; itemId?: string };
+    target: {
+      serverId?: string;
+      agentId: string;
+      section: "messages";
+      itemId?: string;
+    };
   }): Promise<boolean>;
 }
 declare global {

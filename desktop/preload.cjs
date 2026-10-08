@@ -2,11 +2,44 @@ const { contextBridge, ipcRenderer } = require("electron");
 
 if (process.isMainFrame) {
   let gesture = 0;
+  let gestureOwner;
   const capture = (event) => {
-    if (event.isTrusted) gesture = performance.now() + 1200;
+    if (event.isTrusted) {
+      gesture = performance.now() + 1200;
+      gestureOwner = undefined;
+    }
   };
   window.addEventListener("click", capture, true);
   window.addEventListener("keydown", capture, true);
+  const attachedFrames = new WeakSet();
+  const attachFrames = () => {
+    for (const frame of document.querySelectorAll("iframe")) {
+      if (attachedFrames.has(frame)) continue;
+      attachedFrames.add(frame);
+      frame.addEventListener("load", () => {
+        try {
+          const url = new URL(frame.src);
+          const owner = url.searchParams.get("studio-server");
+          if (url.origin !== location.origin || !owner) return;
+          const captureFrame = (event) => {
+            if (event.isTrusted) {
+              gesture = performance.now() + 1200;
+              gestureOwner = owner;
+            }
+          };
+          frame.contentDocument.addEventListener("click", captureFrame, true);
+          frame.contentDocument.addEventListener("keydown", captureFrame, true);
+        } catch {}
+      });
+    }
+  };
+  window.addEventListener("DOMContentLoaded", () => {
+    attachFrames();
+    new MutationObserver(attachFrames).observe(document.body, {
+      childList: true,
+      subtree: true,
+    });
+  });
   const invoke = (method, value, needsGesture = true) => {
     if (needsGesture) {
       if (gesture < performance.now())
@@ -27,6 +60,26 @@ if (process.isMainFrame) {
     "codexDesktop",
     Object.freeze({
       platform: process.platform,
+      serverNativeAction: (serverId, method, value) => {
+        const needsGesture = !["transcribeAudio", "getBackendUpdate"].includes(
+          method,
+        );
+        if (needsGesture && gestureOwner !== serverId)
+          return Promise.reject(new Error("Use a button in this server view."));
+        return invoke(
+          "serverNativeAction",
+          { serverId, method, value },
+          needsGesture,
+        );
+      },
+      serverCredentialAction: (value) =>
+        invoke(
+          "serverCredentialAction",
+          value,
+          value.action === "pair" || value.action === "forget",
+        ),
+      onServerStream: (callback) =>
+        subscribe("codex-desktop-server-stream", callback),
       requestMicrophone: () => invoke("requestMicrophone"),
       prepareTranscription: () => invoke("prepareTranscription"),
       transcribeAudio: (value) => invoke("transcribeAudio", value, false),

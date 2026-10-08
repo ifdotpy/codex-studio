@@ -1,3 +1,4 @@
+import { serverLocalStorage as localStorage } from "../../servers/storage";
 import { get, NetworkTimeoutError } from "../../api";
 import { onResume } from "../../sync/resume";
 
@@ -105,8 +106,10 @@ function storeProgress(value: CachedProgress) {
     // Free only disposable progress copies if browser storage is full. Drafts
     // and attachments keep their storage; this read remains available in memory.
     try {
-      for (const key of Object.keys(localStorage))
+      for (let index = localStorage.length - 1; index >= 0; index--) {
+        const key = localStorage.key(index)!;
         if (key.startsWith(prefix)) localStorage.removeItem(key);
+      }
     } catch {
       /* Storage can also be unavailable. */
     }

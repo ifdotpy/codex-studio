@@ -1,3 +1,4 @@
+import { serverLocalStorage as localStorage } from "../servers/storage";
 export type LocalDraftRecord = {
   version: 1;
   workspace: string;

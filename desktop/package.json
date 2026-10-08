@@ -9,6 +9,8 @@
     "dev": "npm --prefix ../web run build && electron .",
     "start:hidden": "electron . --hidden",
     "package": "node package.mjs",
+    "package:ui": "node package.mjs --ui-only",
+    "start:ui": "electron . --ui-only",
     "test": "node ../web/node_modules/vitest/vitest.mjs run --config vitest.config.mjs && python3 -B recovery-test.py",
     "test:native": "node test.mjs",
     "test:package": "node package-test.mjs"

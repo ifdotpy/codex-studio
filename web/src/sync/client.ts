@@ -1,3 +1,4 @@
+import { serverDatabaseSuffix } from "../servers/environment";
 import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
@@ -143,7 +144,11 @@ async function open() {
     if (cleanupScheduled || isApiSchemaMismatch()) return;
     cleanupScheduled = true;
     stopSchemaMatchCleanup();
-    deleteOtherEntityProjectionDatabases(workspaceId, API_SCHEMA_HASH);
+    deleteOtherEntityProjectionDatabases(
+      workspaceId,
+      API_SCHEMA_HASH,
+      serverDatabaseSuffix,
+    );
   };
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
@@ -169,7 +174,7 @@ async function open() {
   };
   setWorkspace(workspaceId);
   const db = await createRxDatabase({
-    name: `studio${workspaceId}`,
+    name: `studio${workspaceId}${serverDatabaseSuffix}`,
     storage: getRxStorageDexie(),
     multiInstance: true,
   });
@@ -180,6 +185,7 @@ async function open() {
   const currentProjectionDatabase = entityProjectionDatabaseName(
     workspaceId,
     API_SCHEMA_HASH,
+    serverDatabaseSuffix,
   );
   const projectionDb = await createRxDatabase({
     name: currentProjectionDatabase,
