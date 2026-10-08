@@ -31,7 +31,7 @@ $requestAction = switch ($Action) {
     'StopAll' { 'stop-all' }
 }
 $arguments = @('-B', $entrypoint, '--state', $config.stateDir,
-    '--request-action', $requestAction)
+    '--source-root', $config.sourceRoot, '--request-action', $requestAction)
 if ($Action -eq 'RestartBackend') {
     $arguments += @('--request-source-root', $SourceRoot)
 }
