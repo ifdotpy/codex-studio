@@ -595,6 +595,20 @@ test("account project ui", async ({ browser: _browser }) => {
       exact: true,
     });
     const selectedAccount = () => selection.getAttribute("data-value");
+    const projectAccounts = dialog.getByRole("group", {
+      name: "Accounts shown first for this project",
+      exact: true,
+    });
+    const projectAccountButton = (label) =>
+      projectAccounts.getByRole("button", {
+        name: `Select account ${label}`,
+        exact: true,
+      });
+    const ensureProjectAccount = async (label) => {
+      const button = projectAccountButton(label);
+      if ((await button.getAttribute("aria-pressed")) !== "true")
+        await button.click();
+    };
     const chooseProjectAccount = (key) =>
       selection
         .getByRole("button", {
@@ -603,12 +617,7 @@ test("account project ui", async ({ browser: _browser }) => {
         })
         .click();
     assert.equal(await selectedAccount(), "work");
-    await dialog
-      .getByRole("checkbox", {
-        name: "another.long.account@example.com",
-        exact: true,
-      })
-      .check();
+    await ensureProjectAccount("Second workspace");
     await chooseProjectAccount("other");
     conflict = true;
     await dialog
@@ -658,9 +667,7 @@ test("account project ui", async ({ browser: _browser }) => {
       "Project worker base saves through project settings",
     );
     await openProject("arbitrary");
-    await dialog
-      .getByRole("checkbox", { name: "work@example.com", exact: true })
-      .check();
+    await ensureProjectAccount("Work");
     await chooseProjectAccount("work");
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
@@ -930,15 +937,7 @@ test("account project ui", async ({ browser: _browser }) => {
           (element) => element.scrollWidth <= element.clientWidth,
         ),
       );
-      await dialog
-        .getByRole("checkbox", {
-          name:
-            width === 390
-              ? "work@example.com"
-              : "another.long.account@example.com",
-          exact: true,
-        })
-        .check();
+      await ensureProjectAccount(width === 390 ? "Work" : "Second workspace");
       await chooseProjectAccount(width === 390 ? "work" : "other");
       await dialog
         .getByRole("button", { name: "Save accounts", exact: true })
@@ -963,11 +962,12 @@ test("account project ui", async ({ browser: _browser }) => {
     await removalManager.waitFor({ state: "hidden" });
 
     await openProject("fixture");
-    const deletedMembership = dialog.getByRole("checkbox", {
-      name: "another.long.account@example.com (deleted, remove from project)",
-      exact: true,
-    });
-    assert.equal(await deletedMembership.isChecked(), true);
+    const deletedMembership = projectAccountButton("Second workspace");
+    assert.equal(
+      await deletedMembership.getAttribute("aria-pressed"),
+      "true",
+      "the deleted account remains linked to the project",
+    );
     assert.equal(
       await selectedAccount(),
       "",
@@ -979,7 +979,14 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     assert.equal(await saveAccounts.isDisabled(), true);
     await deletedMembership.click();
-    await deletedMembership.waitFor({ state: "detached" });
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector(
+            '[role="group"][aria-label="Accounts shown first for this project"] button[data-account-key="other"]',
+          )
+          ?.getAttribute("aria-pressed") === "false",
+    );
     assert.equal(await selectedAccount(), "");
     assert.equal(await saveAccounts.isDisabled(), true);
     await chooseProjectAccount("work");
