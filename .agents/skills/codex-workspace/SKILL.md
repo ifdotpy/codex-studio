@@ -127,8 +127,11 @@ Command output, private config and start files, saved pages, receipts, and Studi
 Provider conversation history keeps its existing retention rules. Audit metadata expires after 90 days.
 After the first delivery attempt, retries inspect the target receipt without sending command text or environment values again.
 Commands cannot leave background daemons. Exit, cancel, and timeout stop proven descendants, including separate sessions.
-The result reports `stoppedDescendants`. On macOS, a daemon can remove its marker before Studio observes its ancestry.
-Unproved cleanup returns `unknown` with `cleanupUnknownForks`. Inspect the server before a replacement command.
+The result reports `stoppedDescendants`. On macOS, a descendant that copies or removes its private marker is outside the cleanup guarantee.
+Unresolved fork notifications return `unknown` with `cleanupUnknownForks`. This count is not an exact escaped process count.
+Linux uses a PID descriptor for signals. On macOS, a small PID reuse window remains between the birth check and signal.
+Timeout and cancel include the bootstrap phase. Live reads keep incomplete UTF-8 characters until more bytes arrive or the command ends.
+Inspect the server before a replacement command with an unknown outcome.
 
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,

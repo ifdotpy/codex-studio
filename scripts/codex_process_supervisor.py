@@ -1429,7 +1429,7 @@ def status(root):
     return result
 
 
-def retire_command(root, handle):
+def retire_command(root, handle, *, persisted=False):
     """Retire one completed command without opening or killing a process."""
     saved = supervisor_launch_snapshot(root, handle)
     if saved is None:
@@ -1442,6 +1442,15 @@ def retire_command(root, handle):
         hello = _recv(client, reader)
         if hello.get('error'):
             raise RuntimeError('Supervisor retirement connection was refused')
+        if persisted:
+            # A detached adapter can complete before reattachment. The backend
+            # has saved its final snapshot, so older metadata frames need no
+            # replay. Use the existing ACK fence before releasing this handle.
+            _send(client, {'requestId': 0, 'action': 'ack', 'handle': handle,
+                          'sequence': saved['sequence']})
+            acknowledged = _recv(client, reader)
+            if acknowledged.get('error'):
+                raise RuntimeError('Supervisor final command acknowledgement was refused')
         _send(client, {'requestId': 1, 'action': 'retireCommand', 'handle': handle,
                       'generation': saved['generation']})
         result = _recv(client, reader)

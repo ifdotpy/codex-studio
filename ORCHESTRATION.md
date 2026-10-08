@@ -630,11 +630,19 @@ Signed server transport preserves the existing owner identity and receipt checks
 
 Commands cannot leave background daemons. Normal exit, cancel, and timeout stop proven descendants, including separate sessions.
 The result reports `stoppedDescendants`. Linux retains orphan children with `PR_SET_CHILD_SUBREAPER`.
-macOS combines child PID records, kernel fork events, and a unique `STUDIO_EXEC_ID` environment marker.
-The marker scan requires the same user and a process start time after command acceptance.
-A daemon that removes the marker before its ancestry is observed can escape proof on macOS.
-Lost fork proof returns cleanup status `unknown` and `cleanupUnknownForks`. Studio never kills a process without identity proof.
-Completed command adapters release their supervisor handles, pipes, and journal rows after the final status is saved.
+macOS combines child PID records, kernel fork events, and a private `STUDIO_EXEC_ID` environment marker.
+Each command gets a random 256-bit marker. Only its private config stores the marker.
+APIs, events, and diagnostics do not return it. Literal marker text is redacted from command output, including stream chunk boundaries.
+The marker scan requires an exact match, the same user, and a process start time after command acceptance.
+A descendant that copies or removes the marker is outside the cleanup guarantee.
+Each fork notification must match a proved child that stopped. Unresolved notifications increase `cleanupUnknownForks` and return status `unknown`.
+Kernel notifications can combine forks. This count is evidence of incomplete cleanup, not an exact escaped process count.
+Linux pins each process with `pidfd_open` before the birth check and uses `pidfd_send_signal`.
+macOS checks the birth immediately before the signal. A small check-to-signal PID reuse window remains on macOS.
+Timeout and cancel also apply while the command bootstrap waits for Python startup.
+Live output keeps incomplete UTF-8 sequences until more bytes arrive or the command ends.
+Completed adapters release their supervisor handles, pipes, and journal rows after the final status is saved.
+A backend that restores a completed command acknowledges redundant status frames before it retires the adapter.
 
 Prefer native Codex primitives when they remove a Studio mechanism and preserve its behavior.
 Experimental APIs are acceptable. Keep one execution path for each operation.
