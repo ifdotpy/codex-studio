@@ -5,10 +5,11 @@ to it. Existing history is copied in bounded read pages on the first request.
 """
 import json
 import os
-import fcntl
 import sqlite3
 from pathlib import Path
 from typing import Any, Callable, Iterable, Iterator, Sequence, cast
+
+from codex_file_lock import flock, LOCK_EX, LOCK_NB
 
 
 PAGE_ROWS = 256
@@ -147,7 +148,7 @@ class UsageIndex:
         self.guard = open(str(path) + ".lock", "a")
         os.chmod(self.guard.name, 0o600)
         try:
-            fcntl.flock(self.guard, fcntl.LOCK_EX)
+            flock(self.guard, LOCK_EX)
             descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
             os.close(descriptor)
             os.chmod(path, 0o600)
@@ -210,7 +211,7 @@ class UsageIndex:
             for path in (paths[:-limit] if limit else paths):
                 with open(str(path) + ".lock", "a") as guard:
                     try:
-                        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        flock(guard, LOCK_EX | LOCK_NB)
                     except BlockingIOError:
                         continue
                     path.unlink(missing_ok=True)
