@@ -190,6 +190,8 @@ test("limits-ui", async ({ page: fixturePage }) => {
     return route.fulfill({ json: sessionCostResult(agentId) });
   });
   await page.route("**/api/sync/pull?*", async (route) => {
+    const scope = new URL(route.request().url()).searchParams.get("scope");
+    if (scope !== "state:entities:v1") return route.continue();
     const response = await route.fetch();
     const projection = await response.json();
     for (const document of projection.documents ?? []) {
@@ -1058,6 +1060,9 @@ test("limits-ui", async ({ page: fixturePage }) => {
     );
   }
   expect(errors).toEqual([]);
+  // A transcript pull may still be in flight after the assertions; don't let
+  // that background fetch block the test teardown.
+  await page.unrouteAll({ behavior: "ignoreErrors" });
   console.log(
     JSON.stringify({
       ok: true,
