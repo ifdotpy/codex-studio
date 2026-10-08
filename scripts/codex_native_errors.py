@@ -103,7 +103,7 @@ def refresh_native_limits(runtime: "Runtime", db: "sqlite3.Connection", agent: "
             ('usageLimitExceeded', 'rateLimitExceeded') or not turn_id or not agent.get('threadId')
             or runtime.closed):
         return
-    connection_id = connection_id or runtime.connection_ids.get(account_key)
+    connection_id = connection_id or runtime.agent_connection(agent)
     if not connection_id or not runtime.connection_current(account_key, connection_id):
         return
     identity = [account_key, agent['threadId'], turn_id]
@@ -170,7 +170,7 @@ def account_notices(runtime: "Runtime", db: "sqlite3.Connection") -> list["Nativ
     if not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_native_notices'").fetchone():
         return []
     return [r for r in runtime.records(db, 'native_notices')
-            if runtime.connection_ids.get(r['accountKey']) == r.get('connectionId')]
+            if runtime.connection_current(r['accountKey'], r.get('connectionId'))]
 
 
 def hook_notice(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord",

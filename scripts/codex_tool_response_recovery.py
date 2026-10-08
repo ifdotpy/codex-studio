@@ -31,8 +31,8 @@ def eligible(agent: "AgentRecord") -> bool:
                         for tool in agent.get('activeTools', [])))
 
 
-def response_operation_id(runtime: "Runtime", account: str, rpc_id: Any) -> str | None:
-    identity = supervisor_identity(runtime.servers.get(account))
+def response_operation_id(runtime: "Runtime", account: str, rpc_id: Any, connection: str | None = None) -> str | None:
+    identity = supervisor_identity(runtime.server_for(account, connection))
     if identity is None:
         return None
     body = json.dumps([identity, rpc_id], sort_keys=True, separators=(',', ':'))
@@ -51,6 +51,16 @@ def _rpc_id(value: object) -> bool:
 def _native_proof(runtime: "Runtime", server: Any, record: Any) -> Any:
     """An absent acceptance receipt permits a response, never operation replay."""
     identity = supervisor_identity(server)
+    if identity is not None and identity['handle'].startswith('linux-worker:'):
+        if record.get('supervisor') != identity or identity['handle'] != 'linux-worker:' + record.get('agent', ''):
+            return None
+        proxy = server.proc
+        status = proxy.call('info')
+        if status.get('generation') != identity['generation'] or status.get('state') != 'running':
+            return None
+        proof = proxy.call('responseStatus', nativeId=record['rpcId'], generation=identity['generation'])
+        return identity if (proof.get('accepted') is False and proof.get('state') == 'running'
+                            and proof.get('generation') == identity['generation']) else None
     if (identity is None or identity['stateDir'] != str(runtime.root.resolve())
             or identity['handle'] != 'account:' + record.get('accountKey', 'default')):
         return None
@@ -92,8 +102,8 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
             return {'status': 'superseded'}
         expected = {field: agent.get(field) for field in FIELDS}
         account = agent.get('accountKey', 'default')
-        server = runtime.servers.get(account)
-        connection = runtime.connection_ids.get(account)
+        connection = runtime.agent_connection(agent)
+        server = runtime.server_for(account, connection)
         if (server is None or not runtime.connection_current(account, connection)
                 or supervisor_identity(server) is None):
             return {'status': 'superseded'}
@@ -125,7 +135,7 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
         # exact actor snapshot authorizes this response before native I/O.
         # A later Stop still revokes new operations and interrupts the turn.
         with runtime.start_lock:
-            if not server.write_lock.acquire(blocking=False):  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
+            if not server.write_lock.acquire(blocking=False):
                 continue
             try:
                 # A legacy reply can use a random write identity. Recheck its
@@ -138,16 +148,16 @@ def recover(runtime: "Runtime", key: str) -> dict[str, Any]:
                         receipt = db.execute('SELECT record FROM runtime_tool_requests WHERE id=?',
                                              (record['id'],)).fetchone()
                     if (runtime.closed or any(current.get(field) != expected[field] for field in FIELDS)
-                            or runtime.servers.get(account) is not server
+                            or runtime.server_for(account, connection) is not server
                             or not runtime.connection_current(account, connection)
                             or supervisor_identity(server) != proof or not receipt or receipt[0] != raw):
                         continue
-                    operation_id = response_operation_id(runtime, account, record['rpcId'])
+                    operation_id = response_operation_id(runtime, account, record['rpcId'], connection)
                 # Do not retain Runtime.lock across a pipe or supervisor socket wait.
                 written = runtime.reply({'id': record['rpcId'], 'result': result}, account, connection,
                                         operation_id=operation_id)
             finally:
-                server.write_lock.release()  # type: ignore[union-attr]  # typed-narrowing: Earlier guard proves server nonoptional
+                server.write_lock.release()
         if (not isinstance(written, dict) or written.get('accepted') is not True
                 or written.get('duplicate') is not False):
             # A duplicate proves only prior acceptance. Its stdin outcome can

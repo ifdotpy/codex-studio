@@ -23,6 +23,12 @@ from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids, rem
 from codex_tool_requests import RequestMixin
 
 class Store(EfficiencyMixin, RequestMixin):
+    from codex_runtime import Runtime
+    agent_connection = Runtime.agent_connection
+    server_for = Runtime.server_for
+    ensure_image_workspace = Runtime.ensure_image_workspace
+    workspace_exec_prefix = Runtime.workspace_exec_prefix
+
     def __init__(self, path):
         self.path=path; self.lock=threading.RLock(); self.preparations={}; self.claims={}; self.calls=[]
         self.closed=False

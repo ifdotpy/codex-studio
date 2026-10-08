@@ -62,7 +62,7 @@ def _local_blocker(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord"
 
 def _same(rt: "Runtime", agent: "AgentRecord", identity: tuple[Any, ...]) -> bool:
     return (agent["epoch"], agent.get("threadId"), agent.get("accountKey", "default"),
-            rt.connection_ids.get(agent.get("accountKey", "default"))) == identity
+            rt.agent_connection(agent)) == identity
 
 
 def _mark(rt: "Runtime", agent_id: str, identity: tuple[Any, ...], phase: str,
@@ -90,7 +90,7 @@ def _actor_scope(rt: "Runtime", actor: "AgentRecord") -> dict[str, Any]:
     account = actor.get("accountKey", "default")
     return {"id": actor["id"], "epoch": actor["epoch"], "rootId": actor["rootId"],
             "threadId": actor.get("threadId"), "accountKey": account,
-            "connectionId": rt.connection_ids.get(account)}
+            "connectionId": rt.agent_connection(actor)}
 
 
 def _retire_unsubmitted_inspection(rt: "Runtime", agent: "AgentRecord", phase: str,
@@ -98,12 +98,12 @@ def _retire_unsubmitted_inspection(rt: "Runtime", agent: "AgentRecord", phase: s
     """Retire a failed read inspection without claiming native closure."""
     saved = agent.get("nativeRelease") or {}
     account = agent.get("accountKey", "default")
-    identity = (agent["epoch"], agent.get("threadId"), account, rt.connection_ids.get(account))
+    identity = (agent["epoch"], agent.get("threadId"), account, rt.agent_connection(agent))
     began = saved.get("at")
     superseded = saved.get("phase") is None and saved.get("inspectionPhase") == "superseded"
     if (phase not in {"superseded", "resumed"} or rt.closed or agent.get("deletedAt")
             or agent.get("provider", "codex") != "codex" or not agent.get("autoWake")
-            or rt.servers.get(account) is None
+            or rt.server_for(account, rt.agent_connection(agent)) is None
             or (saved.get("phase") != "blocked" and not (phase == "resumed" and superseded))
             or saved.get("resetPending") is not False
             or "submittedAt" in saved or "closedAt" in saved
@@ -246,7 +246,7 @@ def release_agent(rt: "Runtime", agent_id: str, *, reason: str | None = None,
                 return {"status": "unknown", "reason": previous.get("error") or "native release acknowledgement pending"}
             account = agent.get("accountKey", "default")
             identity = (agent["epoch"], agent.get("threadId"), account,
-                        rt.connection_ids.get(account))
+                        rt.agent_connection(agent))
             already_released = (reason is not None and agent_id not in rt.loaded
                                 and (agent.get("nativeRelease") or {}).get("phase") == "released"
                                 and (agent.get("nativeRelease") or {}).get("threadId") == identity[1]
@@ -284,7 +284,7 @@ def release_agent(rt: "Runtime", agent_id: str, *, reason: str | None = None,
                 return {"status": "blocked", "reason": blocker}
             if reason is None and now - _idle_since(agent) < IDLE_SECONDS:
                 return {"status": "not_due"}
-            server = rt.servers.get(account)
+            server = rt.server_for(account, rt.agent_connection(agent))
             if server is None:
                 return {"status": "blocked", "reason": "owning account is offline"}
             release: "NativeReleaseRecord" = {"id": uuid.uuid4().hex, "phase": "checking",
@@ -334,10 +334,10 @@ def reconcile_unknown(rt: "Runtime", agent: "AgentRecord") -> None:
     if release.get("phase") == "checking" and release.get("inspectionPhase"):
         return
     account = agent.get("accountKey", "default")
-    identity = (agent["epoch"], agent.get("threadId"), account, rt.connection_ids.get(account))
+    identity = (agent["epoch"], agent.get("threadId"), account, rt.agent_connection(agent))
     if (release.get("threadId"), release.get("connectionId")) != (identity[1], identity[3]):
         return
-    server = rt.servers[account]
+    server = rt.server_for(account, rt.agent_connection(agent))
     result = server.call("thread/unsubscribe", {"threadId": identity[1]}, timeout=10)
     if result.get("status") not in {"unsubscribed", "notSubscribed", "notLoaded"}:
         raise ValueError("Native release outcome remains unknown")
@@ -351,8 +351,8 @@ def _probe_reset(rt: "Runtime", agent_id: str) -> None:
         release = agent.get("nativeRelease") or {}
         account = agent.get("accountKey", "default")
         identity = (agent["epoch"], agent.get("threadId"), account,
-                    rt.connection_ids.get(account))
-        server = rt.servers.get(account)
+                    rt.agent_connection(agent))
+        server = rt.server_for(account, rt.agent_connection(agent))
         if (not release.get("resetPending") or release.get("phase") != "released"
                 or release.get("threadId") != identity[1] or server is None):
             return
@@ -394,7 +394,7 @@ def _retry_reset(rt: "Runtime", agent_id: str) -> None:
                     blocker = _local_blocker(rt, db, agent)
                     if blocker:
                         raise ValueError(blocker)
-                    server = rt.servers.get(identity[2])
+                    server = rt.server_for(identity[2], identity[3])
                     if server is None or agent_id not in rt.loaded or agent.get("deletedAt"):
                         raise ValueError("owning native session is no longer available")
                 except ValueError as error:

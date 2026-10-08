@@ -37,6 +37,7 @@ class SessionNamesHost(RecordStore, Protocol):
 
     def db(self) -> ContextManager[sqlite3.Connection]: ...
     def connect(self, account_key: str) -> NativeNameServer: ...
+    def connect_agent(self, agent: AgentRecord) -> NativeNameServer: ...
 
 
 def identity(agent: AgentRecord) -> NameIdentity:
@@ -91,7 +92,7 @@ class SessionNames:
     def submit(self, key: str, wanted: NameIdentity) -> None:
         rt = self.runtime
         try:
-            server = rt.connect(wanted["accountKey"])
+            server = rt.connect_agent(rt.agent(key))
             with rt.lock:
                 if rt.closed or identity(rt.agent(key)) != wanted:
                     self.pending.pop(key, None)

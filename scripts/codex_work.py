@@ -49,6 +49,7 @@ class _WorkHost(RecordStore, Protocol):
     def _stage_event_resources(self: "_WorkHost", db: "sqlite3.Connection", agent_id: str,
                                *, queue: bool = True, receipts: bool = True) -> None: ...
     def workspace_path(self: "_WorkHost", agent_id: str, path: str) -> Path: ...
+    def workspace_exec_prefix(self: "_WorkHost", agent: "AgentRecord") -> list[str]: ...
     def asset_record(self: "_WorkHost", key: str, db: "sqlite3.Connection | None" = None) -> "JsonObject": ...
     def asset_view(self: "_WorkHost", asset: "JsonObject") -> "JsonObject": ...
     def _work_action(self: "_WorkHost", agent_id: str, data: "dict[str, Any]", key: str | None = None,
@@ -489,10 +490,10 @@ class WorkMixin:
             prefix = []
             if owner.get('imageWorkspaceReady'):
                 from codex_workspace_images import exec_prefix
-                prefix = exec_prefix()
+                prefix = self.workspace_exec_prefix(owner)
             cwd = Path(owner['cwd']).resolve()
             repo_path = cwd
-            if not cwd.exists():
+            if owner.get('environment') != 'linux' and not cwd.exists():
                 worktree_root = _worker_worktree_root(owner_id, cwd)
                 if worktree_root is None:
                     raise ValueError('The saved worker path is outside its Studio worktree')

@@ -133,7 +133,7 @@ def _saved_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "AgentReco
                     != {k: v for k, v in source.items() if k != 'compactions'}):
             return None
     same_transport = (runtime.connection_current(cast(str, marker.get('accountKey')), marker.get('connectionId'))
-                      and _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
+                      and _supervisor_matches(runtime.server_for(marker.get('accountKey'), runtime.agent_connection(agent)),
                                               marker.get('supervisorIdentity')))
     return saved if same_transport or later_user else None
 
@@ -204,8 +204,8 @@ def retire_stopped_retry(runtime: "Runtime", db: "sqlite3.Connection", agent: "A
                 or agent.get('workspaceOperation') or native_thread_block(agent)
                 or marker.get('accountKey') != agent.get('accountKey', 'default')
                 or marker.get('threadId') != agent.get('threadId')
-                or not runtime.connection_current(marker.get('accountKey'), marker.get('connectionId'))  # type: ignore[arg-type]  # typed-narrowing: Guard confirms stored account key
-                or not _supervisor_matches(runtime.servers.get(marker.get('accountKey')),
+                or not runtime.connection_current(cast(str, marker.get('accountKey')), marker.get('connectionId'))
+                or not _supervisor_matches(runtime.server_for(marker.get('accountKey'), runtime.agent_connection(agent)),
                                            marker.get('supervisorIdentity'))
                 or saved.get('claudeInputRequest', {}).get('source') != _source(agent)
                 or attempt.get('claudeRetryOf') != marker.get('id')
@@ -309,7 +309,7 @@ def recover_rejected_start(
     expected_operation = 'turn:' + agent['id'] + ':' + events[0] + ':attempt:' + attempt['id']
     if attempt.get('nativeOperationId') != expected_operation:
         return None
-    if not _supervisor_matches(runtime.servers.get(account), attempt.get('supervisorIdentity')):
+    if not _supervisor_matches(runtime.server_for(account, runtime.agent_connection(agent)), attempt.get('supervisorIdentity')):
         return None
     if turn is not None:
         if (not isinstance(turn, dict) or turn.get('status') != 'failed'

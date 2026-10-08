@@ -82,6 +82,29 @@ class ImageIndexContract(unittest.TestCase):
         state = images._read_json(images._base_state_path(images._repo_key(self.folder)), {})
         return state
 
+    def test_image_delta_preserves_a_link_that_replaces_a_dirty_tracked_parent(self):
+        directory = self.folder / 'dir'
+        directory.mkdir()
+        (directory / 'file').write_text('tracked source')
+        git(self.folder, 'add', 'dir/file')
+        git(self.folder, 'commit', '-qm', 'Track directory')
+        self.build_base()
+        outside = self.root / 'outside'
+        outside.mkdir()
+        (outside / 'file').write_text('private outside content')
+        shutil.rmtree(directory)
+        directory.symlink_to(outside)
+        with (self.folder / '.git/info/exclude').open('a') as output:
+            output.write('\ndir\n')
+        self.assertIn(b' D dir/file', git(self.folder, 'status', '--porcelain'))
+        workspace = images.create_workspace(self.folder, self.agent_id)
+        copied = Path(workspace['path'])
+        self.assertTrue((copied / 'dir').is_symlink())
+        self.assertEqual(os.readlink(copied / 'dir'), str(outside))
+        self.assertEqual((outside / 'file').read_text(), 'private outside content')
+        self.assertEqual(git(copied, 'status', '--porcelain=v2'),
+                         git(self.folder, 'status', '--porcelain=v2'))
+
     def test_base_refresh_and_index_delta_preserve_user_git_and_staging(self):
         (self.folder / 'tracked.txt').write_text('root staged before base\n')
         git(self.folder, 'add', 'tracked.txt')

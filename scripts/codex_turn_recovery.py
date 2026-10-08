@@ -298,12 +298,12 @@ class TurnRecoveryMixin:
         with self.lock, self.db() as db:
             a = self.agent(key, db)
             account = a.get('accountKey', 'default')
-            connection = self.connection_ids.get(account)
+            connection = self.agent_connection(a)
             if (not (a.get('inFlight') or unconfirmed_start(a))
                     or not (a.get('turnId') or orphan_busy(a) or unconfirmed_start(a)) or a.get('deletedAt')
                     or not self.connection_current(account, connection)):
                 return {'status': 'skipped'}
-            server = self.servers.get(account)
+            server = self.server_for(account, connection)
             if server is None:
                 return {'status': 'skipped'}
             expected = {k: a.get(k) for k in ('id', 'epoch', 'accountKey', 'threadId', 'turnId', 'startAttempt')}

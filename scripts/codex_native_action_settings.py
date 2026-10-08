@@ -24,7 +24,7 @@ def ensure(runtime, agent, attempt, server):
                 "id": attempt["id"], "epoch": current["epoch"],
                 "accountKey": current.get("accountKey", "default"),
                 "threadId": current["threadId"],
-                "connectionId": runtime.connection_ids[current.get("accountKey", "default")],
+                "connectionId": runtime.agent_connection(current),
                 "settings": runtime.preparation_settings(current), "status": "submitted",
             }
             _check(runtime, current, operation, server)
@@ -72,5 +72,5 @@ def _check(runtime, agent, operation, server):
             or not agent.get("autoWake") or agent.get("threadId") != operation["threadId"]
             or (agent.get("startAttempt") or {}).get("id") != operation["id"]
             or runtime.preparation_settings(agent) != operation["settings"]
-            or runtime.servers.get(operation["accountKey"]) is not server):
+            or runtime.server_for(operation["accountKey"], operation["connectionId"]) is not server):
         raise ValueError("Native action settings belong to an earlier agent state")

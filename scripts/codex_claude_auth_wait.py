@@ -63,6 +63,18 @@ def _inputs(db, agent):
 def require_auth(runtime, agent):
     """Probe outside both shared locks and classify only this exact local result."""
     account = agent.get('accountKey', 'default')
+    if agent.get('environment') == 'linux' and agent.get('imageWorkspaceReady'):
+        from codex_linux_vm_credentials import sync_credentials
+        from codex_linux_workspaces import client
+        try:
+            sync_credentials(runtime, client(runtime), account)
+            # The sync verified the host identity and expiry. The guest bridge
+            # verifies its own account before it sends any provider input.
+            return
+        except Exception as cause:
+            error = ValueError('The Linux access token is unavailable. Check the host sign-in and resume after token sync.')
+            error.studioPreparation = True
+            raise error from cause
     with runtime.lock, runtime.read_db() as db:
         current = runtime.agent(agent['id'], db)
         attempt = copy.deepcopy(current.get('startAttempt'))

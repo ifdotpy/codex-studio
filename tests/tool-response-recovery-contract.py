@@ -23,6 +23,10 @@ from codex_tool_response_recovery import recover, response_operation_id, tick
 
 
 class SavedResponseRecovery(unittest.TestCase):
+    from codex_runtime import Runtime
+    agent_connection = Runtime.agent_connection
+    server_for = Runtime.server_for
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-tool-response-')
         self.addCleanup(self.temp.cleanup)
