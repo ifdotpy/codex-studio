@@ -20,6 +20,7 @@ from .models import (
     AccountNameRequest,
     RequiredAccountKeyRequest,
     ClaudeCancelRequest,
+    ClaudeAddStartRequest,
     ClaudeCodeRequest,
     ClaudeLoginResponse,
     ClaudeLoginQuery,
@@ -97,6 +98,8 @@ class ClaudeLoginService(Protocol):
 
     def start(self, account_key: str, request_id: str) -> JsonValue: ...
 
+    def start_add(self, email: str | None, label: str | None, request_id: str) -> JsonValue: ...
+
     def code(self, request_id: str, code: str) -> JsonValue: ...
 
     def cancel(self, request_id: str) -> JsonValue: ...
@@ -139,6 +142,17 @@ def _publish_login_if_changed(
 ) -> None:
     if before != after:
         publish_account_change(runtime.accounts.root.parent)
+
+
+def _codex_login_response(value: JsonValue) -> JsonValue:
+    """Expose the account login receipt fields, not internal identity guards."""
+    if not isinstance(value, dict):
+        return value
+    allowed = {
+        "requestId", "accountKey", "status", "loginId", "verificationUrl", "userCode",
+        "error", "resolvedAccountKey", "email", "createdAt",
+    }
+    return {key: item for key, item in value.items() if key in allowed}
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -225,6 +239,18 @@ def create_router(context: ApiContext) -> APIRouter:
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
+    @router.post("/api/accounts/claude/add", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
+    def claude_add_start(request: Request, body: Annotated[ClaudeAddStartRequest, Body()]) -> Response:
+        runtime = _runtime(context)
+        service = _claude_login(runtime)
+        try:
+            before = service.status(body.request_id)
+        except ValueError:
+            before = None
+        result = service.start_add(body.email, body.label, body.request_id)
+        _publish_login_if_changed(runtime, before, result)
+        return context.send(request, result)
+
     @router.post("/api/accounts/claude/login/code", response_model=ClaudeLoginResponse, responses=_ERROR_RESPONSES)
     def claude_login_code(request: Request, body: Annotated[ClaudeCodeRequest, Body()]) -> Response:
         runtime = _runtime(context)
@@ -277,7 +303,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def account_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
-        result = runtime.accounts.cancel_login(runtime, body.request_id)
+        result = _codex_login_response(runtime.accounts.cancel_login(runtime, body.request_id))
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
@@ -318,7 +344,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def account_login(request: Request, body: Annotated[LoginRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
-        result = runtime.accounts.start_login(runtime, body.request_id, body.account_key)
+        result = _codex_login_response(runtime.accounts.start_login(runtime, body.request_id, body.account_key))
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 

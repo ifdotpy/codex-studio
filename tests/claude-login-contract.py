@@ -29,6 +29,7 @@ class Accounts:
     def __init__(self, profile):
         self.lock = threading.RLock()
         self.profile = profile
+        self.registered = []
 
     def _row(self, key):
         if key != 'claude-test':
@@ -38,6 +39,14 @@ class Accounts:
     def refresh(self, key):
         metadata = codex_claude.auth_metadata(self.profile, force=True)
         return {**metadata, 'status': metadata['status'] if metadata['accountId'] == self.profile['accountId'] else 'changed'}
+
+    def register_claude(self, options, label):
+        profile = {'provider':'claude', 'claudeOptions':options}
+        metadata = codex_claude.auth_metadata(profile, force=True)
+        if metadata['status'] != 'ready':
+            raise ValueError('not signed in')
+        self.registered.append({'options':dict(options), 'label':label, **metadata})
+        return 'claude-added-' + str(len(self.registered))
 
 
 class LoginTests(unittest.TestCase):
@@ -56,7 +65,13 @@ if sys.argv[1:3] == ['auth','status']:
     sys.exit(0)
 if (root / 'ignore-term').exists(): signal.signal(signal.SIGTERM, signal.SIG_IGN)
 (root / 'native-pid').write_text(str(os.getpid()))
-assert sys.argv[1:] == ['auth','login','--claudeai','--email','expected@example.com']
+assert sys.argv[1:3] == ['auth','login'] and sys.argv[3] == '--claudeai'
+if '--email' in sys.argv:
+    assert sys.argv[sys.argv.index('--email') + 1] == 'expected@example.com'
+    assert sys.argv[4:] == ['--email','expected@example.com']
+else:
+    assert sys.argv[4:] == []
+(root / 'login-args').write_text(json.dumps(sys.argv[1:]))
 assert os.environ['BROWSER'] == '/usr/bin/false'
 assert 'ANTHROPIC_API_KEY' not in os.environ
 with (root / 'launches').open('a') as f: f.write('start\\n')
@@ -65,16 +80,26 @@ print('Paste code here if prompted >', flush=True)
 code = input()
 with (root / 'deliveries').open('a') as f: f.write('received\\n')
 time.sleep(.15)
+if code == 'invalid':
+    print('Invalid code', flush=True)
+    sys.exit(1)
+if code == 'expired':
+    print('Authorization code expired', flush=True)
+    sys.exit(1)
 email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
-(root / 'status.json').write_text(json.dumps({'loggedIn':True,'authMethod':'claude.ai','email':email}))
+(root / 'status.json').write_text(json.dumps({'loggedIn':True,'authMethod':'claude.ai','email':email,'subscriptionType':'max'}))
 ''')
         self.binary.chmod(0o700)
+        self.installed = patch('codex_claude.installed', return_value=str(self.binary))
+        self.installed.start()
         self.profile = {'provider':'claude', 'email':'expected@example.com', 'accountId':'claude:expected@example.com',
                         'claudeOptions':{'configDir':str(self.config), 'binaryPath':str(self.binary)}}
         self.rt = SimpleNamespace(root=self.root, accounts=Accounts(self.profile), lock=threading.RLock())
+        self.rt.accounts.root = self.root / 'accounts'
         self.agents = []
         self.rt.db = lambda: nullcontext(None)
         self.rt.records = lambda db, table: copy.deepcopy(self.agents)
+        self.rt.account_agents = lambda db, key: copy.deepcopy([row for row in self.agents if row.get('accountKey') == key])
         self.rt.put = lambda db, table, record: self.agents.__setitem__(
             next(i for i, row in enumerate(self.agents) if row['id'] == record['id']), record)
         self.login = LoginManager(self.rt, deadline=3)
@@ -88,6 +113,7 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
             time.sleep(.02)
         time.sleep(.05)
         self.temp.cleanup()
+        self.installed.stop()
 
     def start(self):
         rid = str(uuid.uuid4())
@@ -163,6 +189,129 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.assertIn('different Claude account', result['error'])
         self.assertEqual(self.profile['accountId'], 'claude:expected@example.com')
         self.assertEqual(self.rt.accounts.refresh('claude-test')['status'], 'changed')
+
+    def test_add_account_uses_private_config_and_registers_verified_identity_once(self):
+        rid = str(uuid.uuid4())
+        started = self.login.start_add('expected@example.com', 'Work', rid)
+        config = self.root / 'claude-logins' / ('config-' + rid)
+        self.assertEqual(started['status'], 'starting')
+        self.assertEqual(config.stat().st_mode & 0o777, 0o700)
+        pending = self.await_status(rid, {'pending'})
+        self.assertTrue(verification_url(pending['verificationUrl']))
+        self.assertEqual(self.login.start_add('expected@example.com', 'Work', rid), pending)
+        self.assertEqual(self.login.code(rid, 'one-time-code#state-value')['codeSubmitted'], True)
+        self.login.code(rid, 'one-time-code#state-value')
+        result = self.await_status(rid, {'ready', 'error'})
+        self.assertEqual(result['status'], 'ready', result)
+        self.assertEqual(result['accountKey'], 'claude-added-1')
+        self.assertEqual(result['email'], 'expected@example.com')
+        self.assertEqual(result['plan'], 'max')
+        self.assertEqual(self.rt.accounts.registered[0]['label'], 'Work')
+        self.assertEqual(self.rt.accounts.registered[0]['options']['configDir'], str(config.resolve()))
+        self.assertEqual(json.loads((config / 'login-args').read_text()),
+                         ['auth', 'login', '--claudeai', '--email', 'expected@example.com'])
+        self.assertEqual((config / 'deliveries').read_text(), 'received\n')
+        persisted = (self.root / 'claude-logins' / (rid + '.json')).read_text()
+        self.assertNotIn('one-time-code', persisted)
+        self.assertNotIn('state-value', persisted)
+        self.assertNotIn('secret-state', persisted)
+
+    def test_add_accounts_have_isolated_configs_for_concurrent_logins(self):
+        first, second = str(uuid.uuid4()), str(uuid.uuid4())
+        self.login.start_add('expected@example.com', 'First', first)
+        self.login.start_add(None, 'Second', second)
+        self.assertEqual(self.await_status(first, {'pending'})['status'], 'pending')
+        self.assertEqual(self.await_status(second, {'pending'})['status'], 'pending')
+        first_config = self.root / 'claude-logins' / ('config-' + first)
+        second_config = self.root / 'claude-logins' / ('config-' + second)
+        self.assertNotEqual(first_config, second_config)
+        self.assertEqual(json.loads((first_config / 'login-args').read_text()),
+                         ['auth', 'login', '--claudeai', '--email', 'expected@example.com'])
+        self.assertEqual(json.loads((second_config / 'login-args').read_text()),
+                         ['auth', 'login', '--claudeai'])
+        self.login.code(first, 'first-code#state')
+        self.login.code(second, 'second-code#state')
+        self.assertEqual(self.await_status(first, {'ready', 'error'})['status'], 'ready')
+        self.assertEqual(self.await_status(second, {'ready', 'error'})['status'], 'ready')
+        self.assertEqual({row['options']['configDir'] for row in self.rt.accounts.registered},
+                         {str(first_config.resolve()), str(second_config.resolve())})
+
+    def test_add_wrong_email_hint_and_invalid_code_are_clear_and_do_not_register(self):
+        wrong = str(uuid.uuid4())
+        self.login.start_add('expected@example.com', 'Wrong', wrong)
+        self.await_status(wrong, {'pending'})
+        self.login.code(wrong, 'wrong')
+        wrong_result = self.await_status(wrong, {'ready', 'error'})
+        self.assertEqual(wrong_result['status'], 'error')
+        self.assertIn('different Claude account', wrong_result['error'])
+        self.assertIn('expected@example.com', wrong_result['error'])
+        self.assertEqual(self.rt.accounts.registered, [])
+
+        invalid = str(uuid.uuid4())
+        self.login.start_add(None, 'Invalid', invalid)
+        self.await_status(invalid, {'pending'})
+        self.login.code(invalid, 'invalid')
+        invalid_result = self.await_status(invalid, {'ready', 'error'})
+        self.assertEqual(invalid_result['status'], 'error')
+        self.assertIn('rejected', invalid_result['error'])
+        self.assertEqual(self.rt.accounts.registered, [])
+
+        expired = str(uuid.uuid4())
+        self.login.start_add(None, 'Expired', expired)
+        self.await_status(expired, {'pending'})
+        self.login.code(expired, 'expired')
+        expired_result = self.await_status(expired, {'ready', 'error'})
+        self.assertEqual(expired_result['status'], 'error')
+        self.assertIn('expired', expired_result['error'])
+        self.assertEqual(self.rt.accounts.registered, [])
+
+    def test_add_cancel_is_durable_and_cleans_unregistered_config(self):
+        rid = str(uuid.uuid4())
+        self.login.start_add(None, 'Cancelled', rid)
+        self.await_status(rid, {'pending'})
+        config = self.root / 'claude-logins' / ('config-' + rid)
+        self.assertEqual(self.login.cancel(rid)['status'], 'cancelled')
+        end = time.monotonic() + 3
+        while config.exists() and time.monotonic() < end:
+            time.sleep(.02)
+        self.assertFalse(config.exists())
+        self.assertEqual(LoginManager(self.rt).start_add(None, 'Cancelled', rid)['status'], 'cancelled')
+
+    def test_add_restart_marks_active_request_without_relaunch(self):
+        rid = str(uuid.uuid4())
+        script = """
+import os, time
+from pathlib import Path
+from types import SimpleNamespace
+from codex_claude_login import LoginManager
+runtime = SimpleNamespace(root=Path(os.environ['FIXTURE_ROOT']), accounts=SimpleNamespace())
+manager = LoginManager(runtime, deadline=10)
+rid = os.environ['FIXTURE_REQUEST']
+manager.start_add('expected@example.com', 'Restart', rid)
+while manager.status(rid)['status'] == 'starting':
+    time.sleep(.02)
+os._exit(0)
+"""
+        env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
+               'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
+        subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=5)
+        config = self.root / 'claude-logins' / ('config-' + rid)
+        pid = int((config / 'native-pid').read_text())
+        end = time.monotonic() + 3
+        while time.monotonic() < end:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(.03)
+        else:
+            self.fail('Native add login survived backend exit')
+        restarted = LoginManager(self.rt)
+        result = restarted.status(rid)
+        self.assertEqual(result['status'], 'error')
+        self.assertIn('restarted', result['error'])
+        self.assertFalse(config.exists())
+        self.assertTrue((self.root / 'claude-logins' / (rid + '.json')).exists())
 
     def test_cancel_only_owned_process_and_no_restart_of_receipt(self):
         rid = self.start()

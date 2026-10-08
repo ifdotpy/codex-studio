@@ -103,6 +103,7 @@ POST_PATHS = frozenset(
         "/api/peer-teams",
         "/api/projects",
         "/api/accounts/claude/login",
+        "/api/accounts/claude/add",
         "/api/accounts/claude/login/code",
         "/api/accounts/claude/login/cancel",
         "/api/accounts/discover",

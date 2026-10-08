@@ -647,6 +647,61 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(response.json()["defaultAccountKey"], "default")
         self.assertNotIn("_syncEntities", response.json())
 
+    def test_codex_login_route_returns_the_typed_receipt_and_hides_internal_guards(self) -> None:
+        result = {
+            "requestId": str(uuid4()), "accountKey": "default", "status": "pending",
+            "loginId": "native-login", "verificationUrl": "https://auth.openai.com/device",
+            "userCode": "TEST-CODE", "createdAt": 12.5, "email": "person@example.invalid",
+            "reauthAccountKey": "default", "expectedAccountId": "private-account-id",
+        }
+        context = ApiContext.for_schema()
+        setattr(context.canvas, "runtime", self.runtime)
+        app = FastAPI()
+        app.include_router(create_router(context))
+        with patch.object(self.store, "start_login", return_value=result):
+            response = TestClient(app).post("/api/accounts/login", json={"request_id": result["requestId"]})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["requestId"], result["requestId"])
+        self.assertEqual(response.json()["userCode"], "TEST-CODE")
+        self.assertEqual(response.json()["email"], "person@example.invalid")
+        self.assertNotIn("expectedAccountId", response.json())
+        self.assertNotIn("reauthAccountKey", response.json())
+
+    def test_claude_add_login_route_accepts_email_and_label(self) -> None:
+        class LoginService:
+            def status(self, request_id: str | None) -> JsonValue:
+                raise ValueError("Unknown Claude sign-in request")
+
+            def start(self, account_key: str, request_id: str) -> JsonValue:
+                raise AssertionError("Existing account sign-in must not start")
+
+            def start_add(self, email: str | None, label: str | None, request_id: str) -> JsonValue:
+                self.started = (email, label, request_id)
+                return {
+                    "requestId": request_id, "accountKey": "pending-" + request_id,
+                    "status": "starting", "email": email, "plan": None, "codeSubmitted": False,
+                }
+
+            def code(self, request_id: str, code: str) -> JsonValue:
+                raise AssertionError("Code submission must not start")
+
+            def cancel(self, request_id: str) -> JsonValue:
+                raise AssertionError("Cancellation must not start")
+
+        service = LoginService()
+        request_id = str(uuid4())
+        with patch("codex_claude_login.manager", return_value=service):
+            response = self.client.post("/api/accounts/claude/add", json={
+                "request_id": request_id, "email": " person@example.invalid ", "label": " Work ",
+            })
+            invalid = self.client.post("/api/accounts/claude/add", json={
+                "request_id": str(uuid4()), "unexpected": True,
+            })
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(service.started, ("person@example.invalid", "Work", request_id))
+        self.assertEqual(response.json()["status"], "starting")
+        self.assertEqual(invalid.status_code, 400)
+
     def test_discover_keeps_optional_empty_body_in_openapi_and_runtime(self) -> None:
         operation = self.app.openapi()["paths"]["/api/accounts/discover"]["post"]
         self.assertIn("requestBody", operation)
