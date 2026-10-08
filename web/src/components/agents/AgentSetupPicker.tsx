@@ -9,9 +9,22 @@ import { shortModel } from "./ExecutionSettings";
 
 export type SetupRole = "orchestrator" | "worker" | "review";
 export function setupModelName(info?: WorkerModelInfo, model = "") {
+  // The provider logo already names the vendor, so drop "Claude" and "GPT".
+  const id = info?.model || model;
+  // gpt-6-astra -> "Astra 6", gpt-6.1-sol -> "Sol 6.1": name first, version last.
+  const versioned = /^gpt-(\d[\d.]*)-([a-z][a-z-]*)$/i.exec(id);
+  if (versioned)
+    return `${versioned[2]
+      .split("-")
+      .map((word) => word[0].toUpperCase() + word.slice(1))
+      .join(" ")} ${versioned[1]}`;
+  const known = shortModel(id);
+  if (known !== id) return known;
   return shortModel(info?.displayName || model)
     .replace(/^Claude\s*[·: ]\s*/i, "")
-    .replace(/^Default \(recommended\)\s*[:·]?\s*/i, "");
+    .replace(/^Default \(recommended\)\s*[:·]?\s*/i, "")
+    .replace(/^GPT[-\s]+/i, "")
+    .replace(/^(\d[\d.]*)-(.+)$/, "$2 $1");
 }
 export type AgentSetupPickerProps = {
   role: SetupRole;

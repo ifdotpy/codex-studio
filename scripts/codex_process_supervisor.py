@@ -662,6 +662,11 @@ class Supervisor:
                         "pid": child.process.pid, "returnCode": child.process.poll()}
         if action == "next":
             cursor = request.get("cursor")
+            # Reader completion is monotonic. Sample it before the journal
+            # query so a just-finished reader cannot hide an event committed
+            # after an empty SELECT.
+            stdout_reader_alive = child.reader.is_alive()
+            stderr_reader_alive = child.stderr.is_alive()
             with self.journal.db() as db:
                 row = db.execute("SELECT sequence,acknowledged FROM handles WHERE id=?", (handle,)).fetchone()
                 if type(cursor) is not int or cursor < row[1] or cursor > row[0]:
@@ -670,9 +675,13 @@ class Supervisor:
                                    (handle, cursor)).fetchone()
             if event:
                 return {"event": dict(event), "returnCode": child.process.poll(),
-                        "backpressure": child.paused.is_set()}
+                        "backpressure": child.paused.is_set(),
+                        "stdoutReaderAlive": stdout_reader_alive,
+                        "stderrReaderAlive": stderr_reader_alive}
             return {"event": None, "returnCode": child.process.poll(),
-                    "backpressure": child.paused.is_set()}
+                    "backpressure": child.paused.is_set(),
+                    "stdoutReaderAlive": stdout_reader_alive,
+                    "stderrReaderAlive": stderr_reader_alive}
         if action == "detach":
             return {"detached": True}
         raise ValueError("Unknown supervisor action")
@@ -1053,10 +1062,18 @@ def process_launch_environment(pid):
     return environment
 
 
-# Backend diagnostics and ownership. A native child neither reads nor needs
-# them, so they must not change its launch identity.
+# Backend diagnostics, ownership, and the desktop Node runtime for federation.
+# A native child does not need these values in its launch identity.
 BACKEND_ONLY_ENVIRONMENT = ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS',
-                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE')
+                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE',
+                            'CODEX_NODE')
+
+# Shell and desktop launchers can supply different ambient values after an
+# update. Retained children keep their original values and exact signature.
+RETAINED_LAUNCHER_ENVIRONMENT = frozenset({
+    'PATH', 'LANG', 'LC_CTYPE', 'LC_ALL', '__PYVENV_LAUNCHER__', 'COMMAND_MODE',
+    'MallocNanoZone', 'XPC_SERVICE_NAME', '__CFBundleIdentifier',
+})
 
 
 def native_launch_environment(root, handle, command, env, cwd):
@@ -1093,14 +1110,14 @@ def native_launch_environment(root, handle, command, env, cwd):
     comparable = dict(original)
     for key in BACKEND_ONLY_ENVIRONMENT:
         comparable.pop(key, None)
-    # Reattachment keeps the child's accepted launch, including its PATH and
-    # locale. A backend launcher can supply different ambient values. These
+    # Reattachment keeps the child's accepted launch, including its desktop
+    # and locale settings. A launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,
     # credentials, provider options and process identity still match exactly.
-    for key in ('PATH', 'LANG', '__PYVENV_LAUNCHER__'):
+    for key in RETAINED_LAUNCHER_ENVIRONMENT:
         comparable.pop(key, None)
     requested = {key: value for key, value in clean.items()
-                 if key not in {'PATH', 'LANG', '__PYVENV_LAUNCHER__'}}
+                 if key not in RETAINED_LAUNCHER_ENVIRONMENT}
     if (comparable != requested or Supervisor.signature(command, original, cwd) != saved[0]
             or not process_start_matches(pid, started, allow_legacy=True)):
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
@@ -1167,6 +1184,10 @@ class ProcessProxy:
         while not self.detached:
             result = self.call("next", cursor=self.read_cursor)
             event = result["event"]
+            readers_known = (type(result.get("stdoutReaderAlive")) is bool
+                             and type(result.get("stderrReaderAlive")) is bool)
+            readers_alive = (result.get("stdoutReaderAlive") is True
+                             or result.get("stderrReaderAlive") is True)
             if event:
                 with self.event_lock:
                     if self.detached:
@@ -1192,7 +1213,9 @@ class ProcessProxy:
                     if event["kind"] == "exit":
                         self._returncode = payload.get("returnCode")
                         self.ack(event["sequence"])
-                        return None
+                        if not readers_known:
+                            return None
+                        continue
                     if event["kind"] == "stderr":
                         data = payload.get("data")
                         if not isinstance(data, str) or len(data.encode("utf-8")) > MAX_STDERR_EVENT_BYTES:
@@ -1203,7 +1226,10 @@ class ProcessProxy:
                         # the bounded RotatingLog accepts the complete payload.
                         self.stderr_sink(data)
                     self.ack(event["sequence"])
-            if result["returnCode"] is not None and event is None:
+            if (result["returnCode"] is not None and event is None
+                    and (not readers_known or not readers_alive)):
+                # The child readers append synchronously before they exit. This
+                # is the terminal fence if a reader could not journal its exit.
                 self._returncode = result["returnCode"]
                 return None
             time.sleep(.05)

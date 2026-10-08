@@ -4,14 +4,13 @@ import { post } from "./api";
 import type { LocalQueueItem, QueueItem } from "./components/MessageQueue";
 import type { components } from "./generated/api";
 import type { JsonValue, Message } from "./types";
-import type {
-  ApiSuccessBodyFor,
-  ApiGetContract,
-  ApiPostContract,
-  ApiRequestBodyFor,
-  ApiSyncGetContract,
-} from "./apiContracts";
+import type { OperationRequestBodyContent } from "openapi-typescript-helpers";
+import type { ApiGetContract, ApiSuccessBodyFor } from "./apiContracts";
 import type { paths } from "./generated/api";
+
+type ApiRequestBodyFor<Operation> = NonNullable<
+  OperationRequestBodyContent<Operation>
+>;
 
 type Equal<Actual, Expected> =
   (<Value>() => Value extends Actual ? 1 : 2) extends <
@@ -127,12 +126,6 @@ declare const fixtureGet: ApiGetContract<
   FixtureOptions,
   FixtureMetadata
 >;
-declare const fixturePost: ApiPostContract<FixturePaths, FixtureOptions>;
-declare const fixtureSyncGet: ApiSyncGetContract<
-  FixturePaths,
-  FixtureOptions,
-  FixtureMetadata
->;
 
 function compileTimeContractAssertions() {
   fixtureGet("/items", { query: { cursor: "next" } });
@@ -145,40 +138,17 @@ function compileTimeContractAssertions() {
     etag: "tag",
     readMetadata: {},
   });
-  fixturePost("/items", { id: "1", state: "open" });
-  fixturePost("/mutation", { name: "sample" });
-  fixturePost("/discover", {});
-  fixtureSyncGet("/items", { query: { cursor: "same-query" } });
   const readResult: Promise<{ healthy: boolean }> = fixtureGet("/health");
-  const writeResult: Promise<{ id: string }> = fixturePost("/items", {
-    id: "1",
-    state: "open",
-  });
-  const emptyWriteResult: Promise<undefined> = fixturePost("/mutation", {
-    name: "empty response",
-  });
   void readResult;
-  void writeResult;
-  void emptyWriteResult;
 
   // @ts-expect-error a required query object must be supplied
   fixtureGet("/items");
   // @ts-expect-error the required cursor query member cannot be omitted
   fixtureGet("/items", { query: { limit: 20 } });
-  // @ts-expect-error a GET-only path cannot be called with the POST helper
-  fixturePost("/health", {});
   // @ts-expect-error an unknown path is not part of the generated contract
   fixtureGet("/missing");
-  // @ts-expect-error the body is required for this operation
-  fixturePost("/items", undefined);
-  // @ts-expect-error this operation does not accept a request body
-  fixturePost("/no-body", {});
-  // @ts-expect-error enum values are closed to the declared wire strings
-  fixturePost("/items", { id: "1", state: "pending" });
   // @ts-expect-error ETag caching must retain the 304 metadata destination
   fixtureGet("/health", { etag: "tag" });
-  // @ts-expect-error a fixed-deadline read cannot omit its required query
-  fixtureSyncGet("/items");
 }
 void compileTimeContractAssertions;
 
@@ -238,9 +208,19 @@ void localQueueStatus;
 void localQueueCreated;
 
 function generatedFacadeRequestAssertions() {
+  // @ts-expect-error GET-only generated paths are not accepted by the POST facade
+  post("/api/accounts", {});
   post("/api/accounts/discover", {});
   // @ts-expect-error the facade requires an explicit request body argument
   post("/api/accounts/discover");
+  // @ts-expect-error an absent request body is not accepted as a body value
+  post("/api/accounts/discover", undefined);
+  // @ts-expect-error the generated request body has no declared fields
+  post("/api/accounts/discover", { unexpected: true });
+  // @ts-expect-error the account default operation requires its request body
+  post("/api/accounts/default");
+  // @ts-expect-error queue actions are limited to the generated discriminator values
+  post("/api/queue", { action: "unknown" });
 }
 void generatedFacadeRequestAssertions;
 

@@ -141,13 +141,11 @@ def main():
                     config = factory(*values)
                     if args.provision_restart_check:
                         entry = next(row for row in config['write_files'] if row['path'] == '/opt/codex-studio/provision.sh')
-                        entry['content'] = entry['content'].replace('set -euo pipefail', '''set -euo pipefail
-if [ ! -f /opt/codex-studio/restart-proof ]; then
-  cat /etc/netplan/50-cloud-init.yaml
-  touch /opt/codex-studio/restart-proof
-  echo STUDIO_PROVISION_ERROR: injected-restart-check >&2
-  exit 1
-fi''', 1)
+                        # Fail on every boot of the old seed. Recovery must replace it.
+                        entry['content'] = entry['content'].replace('stage codex', '\n'.join([
+                            'stage codex',
+                            'echo "STUDIO_PROVISION_ERROR: codex: injected-restart-check" >&2',
+                            'exit 1']), 1)
                     return config
                 with patch.object(codex_linux_vm, '_cloud_config', side_effect=fault_config):
                     client.create(Settings(cpus=2, memoryBytes=4*_GIB, systemDiskBytes=16*_GIB, dataDiskBytes=64*_GIB))
@@ -160,13 +158,16 @@ fi''', 1)
                     assert 'injected-restart-check' in str(error), str(error)
                 else:
                     raise AssertionError('The injected first provision did not fail')
-                client.stop()
-            ready = client.ensure_running(timeout=1500)
+                disks = {name: (client.state_dir / name).stat().st_ino for name in ('system.raw', 'data.raw')}
+            ready = client.ensure_running(timeout=3600)
             boot_seconds = time.monotonic() - start
             metrics = prove(client, temporary)
             metrics.update(createSeconds=round(create_seconds,3), bootSeconds=round(boot_seconds,3), health=ready['health'])
             if args.provision_restart_check:
                 metrics['provisionRestart'] = True
+                assert disks == {name: (client.state_dir / name).stat().st_ino for name in disks}
+                metrics['disksPreserved'] = True
+                metrics['downloads'] = ready.get('provision', {}).get('downloads', [])
                 mac = command(client, ['cat', '/sys/class/net/enp0s1/address']).strip()
                 assert mac == (client.state_dir / 'network-mac').read_text().strip()
                 metrics['networkMacPreserved'] = True

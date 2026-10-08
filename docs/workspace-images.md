@@ -107,12 +107,7 @@ holders so it can safely delete the image.
 
 ## Measurements
 
-Use `tests/workspace-images-scale-macos.py` on a real Mac with 50,000 and 200,000 paths. Record
-agent-start time, which includes read-only Git status in the source, and the first default-config
-`git status` time with no staged source changes and after a source edit and `git add`. Run the
-immediate-write test for Git and plain folders. The change detector does not depend on FSEvents.
-For Linux, use a temporary OrbStack btrfs virtual machine and record inode/ctime behavior and
-the same first-status cases. Delete the virtual machine after the measurements.
+The scale benchmark was removed and is available at commit `3507feea`.
 
 macOS runs on 2026-10-06, default Git settings:
 

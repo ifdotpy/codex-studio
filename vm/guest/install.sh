@@ -15,13 +15,13 @@ rsync --fsync --version >/dev/null 2>&1 || {
 }
 script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 repo_dir=$(CDPATH= cd -- "$script_dir/../.." && pwd)
-for script in codex_workspace_images.py codex_workspace_linux.py codex_process_supervisor.py codex_open_file_limit.py; do
+for script in codex_workspace_images.py codex_workspace_linux.py codex_process_supervisor.py codex_open_file_limit.py codex_records.py; do
     [ -f "$repo_dir/scripts/$script" ] || { echo "The runtime script is missing: $script" >&2; exit 1; }
 done
 [ "$repo_dir" = /opt/codex-studio ] || { echo 'Copy the runtime into /opt/codex-studio before installation.' >&2; exit 1; }
 chown root:root "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
 chmod 0755 "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
-for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_workspace_images.py" "$repo_dir/scripts/codex_workspace_linux.py" "$repo_dir/scripts/codex_process_supervisor.py" "$repo_dir/scripts/codex_open_file_limit.py"; do
+for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_workspace_images.py" "$repo_dir/scripts/codex_workspace_linux.py" "$repo_dir/scripts/codex_process_supervisor.py" "$repo_dir/scripts/codex_open_file_limit.py" "$repo_dir/scripts/codex_records.py"; do
     chown root:root "$file"
     chmod 0644 "$file"
 done

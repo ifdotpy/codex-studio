@@ -63,6 +63,8 @@ class RecoveryTest(unittest.TestCase):
             try:
                 os.kill(self.recovered_pid, signal.SIGTERM)
                 wait_for(lambda: recovery.identity(self.config["port"], self.state) is None)
+                # The listener can close before this owned process finishes cleanup.
+                wait_for(lambda: recovery.process_start_time(self.recovered_pid) is None)
             except ProcessLookupError:
                 pass
         self.temp.cleanup()
@@ -94,6 +96,62 @@ class RecoveryTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "not the packaged Codex Canvas"):
                 recovery.tick(self.config, self.state, supervisor_fallback=True)
             self.assertNotIn(call(foreign_pid, signal.SIGTERM), kill.call_args_list)
+
+    def test_packaged_backend_path_with_spaces_uses_exact_arguments(self):
+        resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        config = {**self.config, "resources": str(resources)}
+        script = str((resources / "scripts/codex-canvas").resolve())
+        pid = 12345
+        arguments = [sys.executable, "-B", script, "--port", str(config["port"])]
+        with patch.object(recovery, "backend_process_arguments", return_value=arguments) as read, \
+                patch.object(recovery.subprocess, "check_output", return_value=str(pid)) as output:
+            recovery.verify_backend_process({"pid": pid}, config)
+        read.assert_called_once_with(pid, str(resources))
+        self.assertEqual(output.call_count, 1)
+        self.assertEqual(output.call_args.args[0][0], "/usr/sbin/lsof")
+
+    def test_split_display_path_cannot_claim_the_packaged_backend(self):
+        resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        config = {**self.config, "resources": str(resources)}
+        script = str((resources / "scripts/codex-canvas").resolve())
+        with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, *script.split()]), \
+                patch.object(recovery.subprocess, "check_output") as output:
+            with self.assertRaisesRegex(RuntimeError, "not the packaged Codex Canvas"):
+                recovery.verify_backend_process({"pid": 12345}, config)
+        output.assert_not_called()
+
+    def test_matching_arguments_do_not_replace_the_listener_pid_guard(self):
+        script = str((Path(self.config["resources"]) / "scripts/codex-canvas").resolve())
+        with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, script]), \
+                patch.object(recovery.subprocess, "check_output", return_value="54321"):
+            with self.assertRaisesRegex(RuntimeError, "does not own the configured listener"):
+                recovery.verify_backend_process({"pid": 12345}, self.config)
+
+    def test_process_argument_read_failure_never_signals_the_reported_pid(self):
+        reported = {"pid": 12345, "supervisorMode": True}
+        for error in (OSError("unavailable"), ValueError("invalid native data"),
+                      ImportError("missing reader"), RuntimeError("unsupported platform")):
+            with self.subTest(error=type(error).__name__), \
+                    patch.object(recovery, "identity", return_value=reported), \
+                    patch.object(recovery, "backend_process_arguments", side_effect=error), \
+                    patch.object(recovery.subprocess, "check_output") as output, \
+                    patch.object(recovery.os, "kill") as kill:
+                with self.assertRaisesRegex(RuntimeError, "Cannot verify fallback backend PID"):
+                    recovery.tick(self.config, self.state, supervisor_fallback=True)
+                output.assert_not_called()
+                kill.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == "darwin" or sys.platform.startswith("linux"), "native process reader")
+    def test_native_argument_reader_preserves_spaces(self):
+        argument = str(self.state / "Codex Studio.app" / "scripts" / "codex-canvas")
+        process = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)", argument])
+        try:
+            arguments = recovery.backend_process_arguments(process.pid, self.config["resources"])
+            self.assertEqual(arguments[-1], argument)
+            self.assertIn("import time; time.sleep(30)", arguments)
+        finally:
+            process.terminate()
+            process.wait(timeout=5)
 
     def test_supervisor_probe_failure_never_starts_a_replacement(self):
         config = {

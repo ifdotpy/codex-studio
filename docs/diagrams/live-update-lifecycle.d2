@@ -1,0 +1,22 @@
+direction: down
+
+prepare: "Prepare temporary patch\noutside repository" {
+  style.fill: "#EAF2F8"
+  style.stroke: "#356A8A"
+}
+publish: "Copy exact sources and\npublish manifest under lock" {
+  style.fill: "#FFF3D6"
+  style.stroke: "#8A651E"
+}
+apply: "Backend validates and applies;\nreceipt records result and scope" {
+  style.fill: "#E6F4EA"
+  style.stroke: "#3C7651"
+}
+retire: "Verify scope, retire both files\nCurrent source remains authoritative" {
+  style.fill: "#FCE9E7"
+  style.stroke: "#98564F"
+}
+
+prepare -> publish: install release sources
+publish -> apply: updater checks every two seconds
+apply -> retire: verify receipt and behavior

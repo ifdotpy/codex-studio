@@ -1,35 +1,40 @@
 # Live updates
 
-Studio checks the installed live update manifest every two seconds. A separate
-worker applies the reviewed patch. HTTP requests and agent connections continue.
-Chats do not show a permanent server update notice.
+The backend can apply a reviewed Python patch to its running process without
+restarting active agent connections. The live-update mechanism remains in
+`scripts/codex_live_updates.py`; the publisher is `scripts/codex-publish-update`.
+No patch or `studio-live-update.json` manifest is stored in this repository.
+Patches are temporary release artifacts and must be retired after verification.
 
-The manifest identifies one patch and the exact production source files it
-requires. It covers top-level backend Python files and Python files in package
-directories under `scripts/`, using stable relative paths. Package tests,
-benchmarks, bytecode caches, and vendor or virtual-environment directories are
-excluded. A nested package edit or an incomplete manifest prevents
-application.
+## Lifecycle
 
-Before introducing nested backend packages, upgrade or restart the backend at
-an idle boundary so its live-update manager uses this complete inventory. An
-older manager only checks top-level sources and cannot validate nested package
-coverage. Do not publish live patches through that older manager after nested
-packages are installed.
-The patch must validate the supported live methods before any change. It must
-preserve existing objects and callbacks, reject unknown implementations, and
-accept a repeated call without repeating work. A patch cannot send messages,
-restart agents, or repeat external operations as part of an update.
+Diagram contract
+Purpose: How a temporary patch moves from preparation through verification and retirement.
+Nodes: Temporary patch, release sources and manifest, running backend and receipt, verification, retired patch and manifest.
+Relations: Prepare and copy the patch with current sources, publish the manifest, validate and apply it, verify behavior against the receipt scope, then retire both files.
+Invariant: The patch and manifest are temporary; the current source tree remains authoritative after retirement.
+Source: [docs/diagrams/live-update-lifecycle.d2](diagrams/live-update-lifecycle.d2)
 
-## Publish
+![Temporary live patch lifecycle: prepare and publish a patch, apply it to the running backend, verify the receipt, then retire both patch and manifest.](diagrams/live-update-lifecycle.svg)
 
-Create one temporary patch for the current release outside the repository.
-Review and test it against the exact running backend. Do not ship previous
-release patches or chains of historical implementations.
+The updater checks the manifest every two seconds. It holds a shared publication
+lock while validating and applying. The publisher holds the same lock
+exclusively while installing source files and publishing or retiring the
+manifest. A partial installation, unknown source, or unsupported Python
+version is rejected. Failed attempts retry with a bounded delay; a changed
+manifest begins a new attempt immediately.
 
-Copy the patch and current source into the release scripts directory under an
-exclusive flock on `scripts/.studio-update.lock`. Release that lock, then
-publish the manifest with the Python version used by the backend:
+## Add a temporary patch
+
+Prepare one patch for the current release outside the repository. Review and
+test it against the exact running backend. Preserve existing objects and
+callbacks, reject unknown implementations, and make a repeated call safe.
+The patch must not send messages, restart agents, or repeat external work.
+
+Copy the patch and the exact current production sources into the release
+scripts directory under an exclusive lock on `scripts/.studio-update.lock`.
+Release that lock, then publish the manifest with the Python 3.14 environment
+used by the backend:
 
 ```sh
 python3 scripts/codex-publish-update \
@@ -39,46 +44,42 @@ python3 scripts/codex-publish-update \
   --scope 'Exact methods and behavior changed by this release'
 ```
 
-The command acquires the publication lock, hashes the complete production
-source inventory, and atomically replaces `studio-live-update.json`. Sign the
+The publisher takes the exclusive lock, hashes the complete production source
+inventory, and atomically replaces `studio-live-update.json`. Sign the
 application after publication, then install the complete artifact.
 
-The updater holds a shared publication lock during validation and application.
-An incomplete installation, unknown source, or unsupported Python version does
-not apply a patch. Failed attempts retry with a bounded delay. A changed
-manifest starts a new attempt without waiting for the previous retry delay.
+## Verify and retire
 
-## Verify
+Read `live-update.json` in the existing state directory. The receipt records the
+patch result or its error. New backend instances also expose it in
+`/api/desktop` under `liveUpdate`. Check the process identity, release
+identifier, status, and scope, then verify the changed behavior.
 
-Read `live-update.json` in the existing state directory. The receipt records
-the patch result or its error. New backend instances also expose this data in
-`/api/desktop` under `liveUpdate`. A successful receipt belongs to its process.
-Check the receipt's process identity, release identifier, status, and scope.
-Verify the changed behavior before removing the temporary deployment files.
-
-After verification, remove the manifest and temporary patch together under the
-exclusive publication lock. Sign the application again after that change.
-Keep the receipt in the state directory. New backend processes use the current
-source directly and do not need an old deployment patch.
+After verification, remove the manifest and temporary patch together while
+holding the exclusive publication lock. Sign the application again after that
+change. Keep the receipt in the state directory. New backend processes use the
+current source directly and do not need the old patch.
 
 `backendBuild` remains the source identity from process startup. A successful
-patch receipt proves only the named patch scope. It does not claim that every
-loaded module matches every installed file.
+patch receipt proves only its named scope. It does not claim that every loaded
+module matches every installed file.
 
 The backend starts the updater automatically. A successful update does not
-restart the backend, close native connections, or change accepted message identities.
+restart the backend, close native connections, or change accepted message
+identities.
 
 ## Limits
 
-This mechanism applies reviewed live patches. It does not reload arbitrary
+This mechanism applies reviewed live patches; it does not reload arbitrary
 Python modules. A changed constructor, object layout, transport, or database
-schema needs its own validated transition. Without that transition, the
-updater records an error and preserves the running work.
+schema needs a separately validated transition. Without one, the updater
+records an error and preserves running work.
 
 Long-running frames can finish their previous implementation. A patch must
-account for that behavior before it can be published. A failure after an
-external operation cannot be repaired by an automatic replay.
+account for that behavior before publication. A failure after an external
+operation cannot be repaired by automatically replaying it.
 
-Run `python3 -B tests/live-updates-contract.py` and `node desktop/test.mjs`
-after changes to this mechanism. The desktop check uses an isolated state
-directory and a hidden window.
+Run `python3 -B tests/live-updates-contract.py`,
+`python3 -B tests/live-update-retirement-race-contract.py`, and
+`node desktop/test.mjs` after changes to the mechanism. The desktop check uses
+an isolated state directory and a hidden window.

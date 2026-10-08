@@ -30,7 +30,7 @@ AGENT_FIELD_GROUPS = {
     "shared": frozenset("""
         accountKey accountTransfer activity agentMode agentModeRevision agentModeSupported
         archived autoWake compactions concurrency connectionCheck contextUsage convertedFromLead
-        created cwd daybreakEnabled deletedAt effort error fastMode id imageWorkspace
+        created cwd daybreakEnabled deletedAt effort environment error fastMode id imageWorkspace
         imageWorkspaceBaseRef imageWorkspaceBaseRepo imageWorkspaceCreatedAt imageWorkspaceError
         imageWorkspaceHasGit imageWorkspacePhase imageWorkspaceReady imageWorkspaceRepo
         imageWorkspaceSubpath inFlight isLead
@@ -52,7 +52,7 @@ AGENT_FIELD_GROUPS = {
         connectionRecovery contextRepair contextRepairHistory cyberAccessProgram
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
-        imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
+        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck
         lastContextRepairWait lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
         liveSteerRejectedTurnId maxAgents maxAgentsExplicit nativeEffort nativeFailureHold nativeName

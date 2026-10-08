@@ -147,7 +147,11 @@ describe("resource read callers", () => {
     const receipt = { id: "message-one", status: "delivered" };
     get
       .mockRejectedValueOnce(new TypeError("Failed to fetch"))
-      .mockResolvedValue({ agent: "lead", items: [receipt] });
+      .mockResolvedValue({
+        agent: "lead",
+        workspaceId: "workspace",
+        items: [receipt],
+      });
     mount(() =>
       useMessageReceipts("lead", "scope", "workspace", ["message-one"]),
     );
@@ -167,6 +171,16 @@ describe("resource read callers", () => {
     expect(value.receipts.get("message-one")).toEqual(receipt);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("waits for the workspace identity before it reads message receipts", async () => {
+    mount(() =>
+      useMessageReceipts("lead", "scope", undefined, ["message-one"]),
+    );
+    expect(watchers.size).toBe(0);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(get).not.toHaveBeenCalled();
+    expect(reconcile).not.toHaveBeenCalled();
   });
 
   it("refreshes the accounts list after an accounts resource event", async () => {

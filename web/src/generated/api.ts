@@ -6375,6 +6375,8 @@ export interface components {
       agent: string;
       /** Items */
       items: components["schemas"]["studio_api__work__models__MessageReceipt"][];
+      /** Workspaceid */
+      workspaceId?: string | null;
     };
     /** MessageRecord */
     MessageRecord: {
@@ -9411,6 +9413,8 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
+      /** Accountwide */
+      accountWide?: boolean | null;
       /** Agent */
       agent: string;
       /** Assets */
@@ -9455,6 +9459,7 @@ export interface components {
       dependencies?: string[] | null;
       /** Description */
       description?: string | null;
+      details?: components["schemas"]["JsonValue"] | null;
       /** Displaystatus */
       displayStatus?: string | null;
       /** Id */
@@ -9482,6 +9487,19 @@ export interface components {
       name?: string | null;
       /** @description Provider-native plan update fields retained for plan display. */
       native?: components["schemas"]["JsonValue"];
+      nativeError?: components["schemas"]["JsonValue"] | null;
+      /** Nativehook */
+      nativeHook?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Nativehookquiet */
+      nativeHookQuiet?: boolean | null;
+      /** Nativenotice */
+      nativeNotice?: ("info" | "warning" | "error") | null;
+      /** Nativereview */
+      nativeReview?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Needsresponse */
       needsResponse?: boolean | null;
       /** Observedwait */
@@ -9492,6 +9510,7 @@ export interface components {
       pending?: boolean | null;
       /** Phase */
       phase?: string | null;
+      previousError?: components["schemas"]["JsonValue"] | null;
       /** Projectpath */
       projectPath?: string | null;
       /** @description Extensible room radio configuration from the room producer. */
@@ -10174,6 +10193,11 @@ export interface components {
       error?: string | null;
       /** Id */
       id: string;
+      /**
+       * Materialized
+       * @description The exact user input exists in the saved transcript.
+       */
+      materialized?: boolean | null;
       /** Message */
       message?: string | null;
       /** Room */
@@ -11060,6 +11084,8 @@ export interface components {
       _syncEntities?: components["schemas"]["SyncEntity"][] | null;
       /** Syncentitiesafter */
       _syncEntitiesAfter?: number | null;
+      /** Accountwide */
+      accountWide?: boolean | null;
       /** Agent */
       agent?: string | null;
       /** Assets */
@@ -11086,6 +11112,7 @@ export interface components {
             | "sent"
           )
         | null;
+      details?: components["schemas"]["JsonValue"] | null;
       /** Id */
       id: string;
       /** Inputs */
@@ -11094,6 +11121,19 @@ export interface components {
       kind?: string | null;
       /** Materialized */
       materialized?: boolean | null;
+      nativeError?: components["schemas"]["JsonValue"] | null;
+      /** Nativehook */
+      nativeHook?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Nativehookquiet */
+      nativeHookQuiet?: boolean | null;
+      /** Nativenotice */
+      nativeNotice?: ("info" | "warning" | "error") | null;
+      /** Nativereview */
+      nativeReview?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Observedwait */
       observedWait?: boolean | null;
       /**
@@ -11103,6 +11143,7 @@ export interface components {
       pending?: boolean;
       /** Phase */
       phase?: string | null;
+      previousError?: components["schemas"]["JsonValue"] | null;
       /** Reasoningms */
       reasoningMs?: number | null;
       /** Reasoningobservedat */
@@ -11144,6 +11185,8 @@ export interface components {
      * @description Transcript rows always carry their runtime role and display text.
      */
     TranscriptMessageRecord: {
+      /** Accountwide */
+      accountWide?: boolean | null;
       /** Agent */
       agent?: string | null;
       /** Assets */
@@ -11170,6 +11213,7 @@ export interface components {
             | "sent"
           )
         | null;
+      details?: components["schemas"]["JsonValue"] | null;
       /** Id */
       id: string;
       /** Inputs */
@@ -11178,6 +11222,19 @@ export interface components {
       kind?: string | null;
       /** Materialized */
       materialized?: boolean | null;
+      nativeError?: components["schemas"]["JsonValue"] | null;
+      /** Nativehook */
+      nativeHook?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
+      /** Nativehookquiet */
+      nativeHookQuiet?: boolean | null;
+      /** Nativenotice */
+      nativeNotice?: ("info" | "warning" | "error") | null;
+      /** Nativereview */
+      nativeReview?: {
+        [key: string]: components["schemas"]["JsonValue"];
+      } | null;
       /** Observedwait */
       observedWait?: boolean | null;
       /**
@@ -11187,6 +11244,7 @@ export interface components {
       pending?: boolean;
       /** Phase */
       phase?: string | null;
+      previousError?: components["schemas"]["JsonValue"] | null;
       /** Reasoningms */
       reasoningMs?: number | null;
       /** Reasoningobservedat */

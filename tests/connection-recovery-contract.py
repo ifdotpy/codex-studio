@@ -599,6 +599,9 @@ class ConnectionRecoveryContract(unittest.TestCase):
                 'source': {'id': self.key, 'threadId': 'native-thread'},
                 'supersededReason': 'No native fork was submitted.',
             })
+            internal = self.runtime.agent(self.key)
+            self.assertEqual(internal['lastContextRepairWait']['status'], 'superseded')
+            self.assertEqual(internal['lastContextRepairCheck']['status'], 'superseded')
             # Full and chat snapshots used to expose these private recovery
             # receipts. The entity DTO deliberately carries renderer fields only.
             from studio_api.testing import read_runtime_state

@@ -234,11 +234,6 @@
   font-size: 12px;
   margin: 0;
 }
-.account-limits-error {
-  margin: 12px 0 0;
-  color: light-dark(#8a4700, #ffbd78);
-  overflow-wrap: anywhere;
-}
 @media (max-width: 600px) {
   .usage-footer .account-limits-toggle {
     margin-left: 0;
@@ -324,10 +319,6 @@
 .account-limits-updated {
   margin-top: 8px;
 }
-.account-cost-summary {
-  color: var(--muted);
-  font-variant-numeric: tabular-nums;
-}
 .account-costs {
   margin-top: 12px;
   padding-top: 10px;
@@ -381,10 +372,6 @@
   .account-limits-panel {
     padding: 12px;
   }
-}
-
-.account-reset-summary {
-  color: var(--muted);
 }
 .account-reset-credits {
   margin-top: 10px;

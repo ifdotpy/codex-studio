@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from functools import partial
 import logging
 import os
 from pathlib import Path
@@ -29,10 +30,12 @@ def _observer_class():
 
         return InotifyObserver
     if sys.platform == "darwin":
-        from watchdog.observers.fsevents import FSEventsObserver
+        from watchdog.observers.kqueue import KqueueObserver
 
-        return FSEventsObserver
-    raise RuntimeError("Progress file watching requires native Linux inotify or macOS FSEvents")
+        # FSEvents can enter its run loop after stop() and never leave join().
+        # kqueue initializes before start and checks stop before each native wait.
+        return partial(KqueueObserver, timeout=0.2)
+    raise RuntimeError("Progress file watching requires native Linux inotify or macOS kqueue")
 
 
 class _NativeObserver(Protocol):
@@ -66,10 +69,13 @@ class _ProgressEventHandler(FileSystemEventHandler):
         self._directory = directory
 
     def dispatch(self, event: FileSystemEvent) -> None:
-        if event.is_directory or event.event_type not in _FILE_EVENTS:
+        if event.event_type not in _FILE_EVENTS:
             return
         paths = (event.src_path, event.dest_path)
-        expected = os.path.abspath(self._directory / "PROGRESS.md")
+        # kqueue can report an atomic file replacement as a parent change.
+        # The dispatcher checks the exact file revision before notifying users.
+        expected = os.path.abspath(self._directory if event.is_directory
+                                   else self._directory / "PROGRESS.md")
         if any(path and os.path.abspath(os.fsdecode(path)) == expected for path in paths):
             # watchdog dispatches handlers while holding its own observer lock.
             # Enqueue only; file reads, watcher locks, and consumer callbacks run

@@ -25,9 +25,6 @@
 .conversation-results-toggle svg.expanded {
   transform: rotate(90deg);
 }
-.conversation-results-count {
-  font-variant-numeric: tabular-nums;
-}
 .conversation-results-list {
   display: flex;
   flex-wrap: wrap;
@@ -73,19 +70,6 @@
 }
 .conversation-results-note {
   color: var(--muted);
-  font-size: 12px;
-}
-.conversation-results-paths {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  font-size: 12px;
-}
-.conversation-results-patch {
-  max-height: 60vh;
-  overflow: auto;
-  padding: 12px;
-  border: 1px solid var(--line);
-  border-radius: 8px;
   font-size: 12px;
 }
 .conversation-result-modal .mantine-Modal-title {

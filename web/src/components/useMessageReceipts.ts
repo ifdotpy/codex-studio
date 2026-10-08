@@ -22,7 +22,7 @@ export function useMessageReceipts(
     receipts: new Map<string, MessageReceipt>(),
   });
   useEffect(() => {
-    if (!room) return;
+    if (!room || !workspaceId) return;
     let active = true;
     const stop = watchResourceReads(
       { kind: "receipts", agentId: room },
@@ -36,7 +36,12 @@ export function useMessageReceipts(
             workspaceId,
           });
           if (!active) return;
-          const receipts = checkedMessageReceipts(result, room, batch);
+          const receipts = checkedMessageReceipts(
+            result,
+            room,
+            batch,
+            workspaceId,
+          );
           setState((previous) => {
             const next = new Map(
               previous.scope === scope ? previous.receipts : [],
