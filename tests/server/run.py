@@ -28,11 +28,16 @@ COMPONENT_ROOTS = (
     "scripts/native_notifications/tests",
     "scripts/transcript_storage/tests",
 )
+SCENARIO_BENCHMARK_ROOTS = (
+    "scripts/sync/benchmarks/message_delivery",
+    "scripts/studio_api/benchmarks/runtime_load",
+)
 STUDIO_API_COMPONENT_ROOT = ROOT / "scripts" / "studio_api"
 LEGACY_SERVER_JS = {
     "tests/portable-smoke.mjs": "safe",
     "tests/state-contract-smoke.mjs": "safe",
     "tests/swarm-retry-contract.mjs": "expensive",
+    "scripts/studio_api/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
 OPT_IN = {"native", "live", "expensive", "browser"}
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -77,6 +82,8 @@ EXPENSIVE_SUITES = frozenset({
     "tests/sync-read-latency-contract.py",
     "tests/transcript-latency-contract.py", "tests/transcript-streaming-write-volume-contract.py",
     "tests/swarm-retry-contract.mjs",
+    "scripts/sync/benchmarks/message_delivery/test_benchmark.py",
+    "scripts/studio_api/benchmarks/runtime_load/test_runtime_load.py",
 })
 NON_TESTS = {
     "tests/test_isolation.py": "shared fixture helper",
@@ -92,6 +99,11 @@ NON_TESTS = {
         "fixture harness requiring an injected legacy HTTP server and runtime",
     "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
+    "scripts/sync/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
+    "scripts/studio_api/benchmarks/runtime_load/server.py": "load-test fixture server",
+    "scripts/studio_api/benchmarks/runtime_load/run.mjs": "manual load-test entrypoint",
+    "scripts/studio_api/benchmarks/runtime_load/http_outcomes.mjs": "load-test helper module",
+    "scripts/studio_api/benchmarks/runtime_load/identity.mjs": "load-test helper module",
 }
 
 
@@ -172,13 +184,19 @@ def inventory():
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"
+    for directory in SCENARIO_BENCHMARK_ROOTS:
+        for path in (ROOT / directory).glob("test_*.py"):
+            entries[path.relative_to(ROOT).as_posix()] = category(path)
     # FastAPI domain tests live beside their router/model component. Discover
     # recursively so nested domains and the application verification package
     # cannot silently fall out of the default component suite.
     if STUDIO_API_COMPONENT_ROOT.is_dir():
         for path in STUDIO_API_COMPONENT_ROOT.rglob("test_*.py"):
             if path.is_file() and not path.is_symlink():
-                entries[path.relative_to(ROOT).as_posix()] = "component"
+                relative = path.relative_to(ROOT).as_posix()
+                entries[relative] = (
+                    category(path) if relative in EXPENSIVE_SUITES else "component"
+                )
     return sorted(entries.items())
 
 
