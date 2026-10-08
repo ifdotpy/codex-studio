@@ -603,6 +603,25 @@ These requests fail visibly instead of receiving fabricated credentials or an au
 
 ### Native ownership
 
+The lead uses `orchestration_servers` with `action: "exec"` for commands on local or paired servers.
+It supplies an absolute `cwd`, command argv or shell text, and a stable `request_id`.
+Optional `env` values add to the server environment. The command runs as the Studio user without added privileges.
+The timeout defaults to 120 seconds and cannot exceed 1800 seconds.
+The output limit defaults to 256 KiB and cannot exceed 4 MiB across stdout and stderr.
+Output retains the head and tail of each stream and reports discarded bytes.
+
+A timeout above five seconds returns a handle. `exec_read` reads output with byte offsets and a fresh request ID.
+Each read returns at most 64 KiB. `exec_input` sends text or closes stdin. `exec_cancel` stops the process group.
+Each command accepts at most 32 input requests. Each input request permits at most 64 KiB of text.
+Only the lead that created the handle can read or control it. A final `monitor_exit` event reaches that lead.
+The process supervisor retains commands during planned backend restarts. The new backend attaches to the existing adapter.
+The backend never starts a command without the supervisor. Durable claims and adapter start markers prevent a second execution.
+If the start outcome remains unknown, inspect the target server before any replacement command.
+
+The target audit stores actor, source and target server IDs, cwd, argv hash, start, end, exit code, and signal.
+It stores no command text, environment values, or output. Private output and start files expire after seven days.
+Audit metadata expires after 90 days. Signed server transport preserves the existing owner identity and receipt checks.
+
 Prefer native Codex primitives when they remove a Studio mechanism and preserve its behavior.
 Experimental APIs are acceptable. Keep one execution path for each operation.
 Preserve account scope, workspace reservations, team limits, and delivery recovery before removing a Studio mechanism.

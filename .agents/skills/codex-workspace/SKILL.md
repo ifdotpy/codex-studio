@@ -105,6 +105,26 @@ another process. Inspect worker results and diffs before acceptance or integrati
 
 ## Monitors and messages
 
+The lead can use `orchestration_servers` to run commands on the local server or a paired server.
+Set `action: "exec"`, an absolute `cwd`, `command` (argv or shell text), and a stable `request_id`.
+The `server` defaults to local. Optional fields are `env`, `timeout` (120 seconds, maximum 1800),
+and `output_limit` (256 KiB, maximum 4 MiB across stdout and stderr).
+The command runs as the Studio user on that server.
+Shell text uses that server's default shell. Argv bypasses the shell.
+There is no added sandbox or privilege change.
+
+A timeout above five seconds returns a command `handle`. A `monitor_exit` event reports the final state.
+Use `action: "exec_read"` with the same `server` and `handle` to read output.
+Use fresh request IDs for each read. Advance `stdout_offset` and `stderr_offset` to the returned
+`stdoutNextOffset` and `stderrNextOffset`. Each read returns at most 64 KiB across both streams.
+Output retains its head and tail. `GapBytes` fields report discarded bytes.
+Use `action: "exec_input"` with `input` and optional `close_stdin`, or `action: "exec_cancel"`.
+Input and cancel require stable request IDs. Exact retries cannot repeat effects.
+Each command accepts at most 32 input requests, each with at most 64 KiB of text.
+Planned backend restarts preserve commands through the process supervisor.
+An unknown outcome requires inspection. Do not start the same command with a new ID.
+Command output and private start files expire after seven days. Audit metadata expires after 90 days.
+
 Use `orchestration_monitor` for long commands. The server waits without model
 calls and delivers an event for every command exit, including success, failure,
 signal, or a lost process. `wake_on` cannot suppress an exit event. Read the exit
