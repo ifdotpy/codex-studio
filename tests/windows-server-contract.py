@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import signal
-import socket
 import subprocess
 import sys
 import tempfile
@@ -57,6 +56,17 @@ def _port_owner(port):
         return int(result.stdout.strip())
     except ValueError:
         return None
+
+
+def _process_commandline(pid):
+    result = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+         f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {pid}').CommandLine"],
+        capture_output=True, text=True, timeout=15,
+    )
+    if result.returncode:
+        raise AssertionError(result.stderr)
+    return result.stdout.strip()
 
 
 @skip_posix
@@ -119,9 +129,9 @@ class WindowsServerContract(unittest.TestCase):
             state = root / "state with spaces Ω"
             profile = root / "Codex profile Ω"
             profile.mkdir()
-            with socket.socket() as listener:
-                listener.bind(("127.0.0.1", 0))
-                port = listener.getsockname()[1]
+            port = 4631
+            if _port_owner(port):
+                self.skipTest("TCP port 4631 is already in use")
             log = (root / "entrypoint.log").open("ab")
             executable, environment = _base_python()
             environment.update({"CODEX_HOME": str(profile), "CODEX_AGENTS_STATE_DIR": str(state),
@@ -135,6 +145,7 @@ class WindowsServerContract(unittest.TestCase):
             self.addCleanup(log.close)
             try:
                 first_pid = _wait_until(lambda: _port_owner(port))
+                self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
                 lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 os.kill(first_pid, signal.SIGTERM)
                 second_pid = _wait_until(lambda: (pid := _port_owner(port)) if pid and pid != first_pid else None)
