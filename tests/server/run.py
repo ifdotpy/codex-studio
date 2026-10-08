@@ -33,7 +33,6 @@ LEGACY_SERVER_JS = {
     "tests/portable-smoke.mjs": "safe",
     "tests/state-contract-smoke.mjs": "safe",
     "tests/swarm-retry-contract.mjs": "expensive",
-    "scripts/benchmarks/runtime_load/test_http_outcomes.mjs": "expensive",
 }
 OPT_IN = {"native", "live", "expensive", "browser"}
 DEFAULT_TIMEOUT_SECONDS = 120
@@ -66,27 +65,21 @@ LIVE_SUITES = frozenset({"tests/runtime-live.py"})
 EXPENSIVE_SUITES = frozenset({
     "tests/account-costs-contract.py", "tests/analytics-memory-contract.py",
     "tests/analytics-usage-memory-contract.py", "tests/cost-scanner-contract.py",
-    "tests/costs-contract.py", "tests/execution-migration-benchmark.py",
-    "tests/execution-write-cost.py", "tests/limit-payloads-contract.py",
-    "tests/notification-load-contract.py", "tests/payload-storage-benchmark.py",
+    "tests/costs-contract.py", "tests/limit-payloads-contract.py",
+    "tests/notification-load-contract.py",
     "tests/payload-storage-contract.py", "tests/peer-conversion-scale-contract.py",
-    "tests/perf-renderer-sync.py", "tests/preparation-unload-contract.py",
+    "tests/preparation-unload-contract.py",
     "tests/pricing-session-cost-contract.py", "tests/provider-replay-runner.py",
-    "tests/scheduler-disk-full-contract.py", "tests/search-index-latency.py",
+    "tests/scheduler-disk-full-contract.py",
     "tests/session-cost-memory-contract.py", "tests/session-cost-refresh-contract.py",
-    "tests/session-cost-scan-contract.py", "tests/streaming-write-volume.py",
-    "tests/supervisor-stream-phase-load-contract.py", "tests/sync-entity-measure.py",
-    "tests/sync-read-latency-contract.py", "tests/sync-write-volume.py",
+    "tests/session-cost-scan-contract.py",
+    "tests/supervisor-stream-phase-load-contract.py",
+    "tests/sync-read-latency-contract.py",
     "tests/transcript-latency-contract.py", "tests/transcript-streaming-write-volume-contract.py",
     "tests/swarm-retry-contract.mjs",
-    "scripts/benchmarks/message_delivery/test_benchmark.py",
-    "scripts/benchmarks/parallel_agents/test_benchmark.py",
-    "scripts/benchmarks/runtime_load/test_runtime_load.py",
 })
 NON_TESTS = {
     "tests/test_isolation.py": "shared fixture helper",
-    "tests/delivery-latency-fixture.py": "listener fixture; invoked by its benchmark harness",
-    "tests/remaining-delivery-latency-fixture.py": "listener fixture; invoked by its benchmark harness",
     "tests/mobile-startup-fixture.py": "browser fixture helper",
     "tests/mobile-usability-fixture.py": "browser fixture helper",
     "tests/runtime-read-lock-fixture.py": "runtime fixture helper",
@@ -101,14 +94,6 @@ NON_TESTS = {
         "fixture harness requiring an injected legacy HTTP server and runtime",
     "tests/fixtures/current_cleanup_receipts.py": "test fixture data",
     "tests/fixtures/current_cleanup_state.py": "test fixture data",
-    "scripts/benchmarks/message_delivery/benchmark.py": "manual benchmark entrypoint",
-    "scripts/benchmarks/parallel_agents/benchmark.py": "manual benchmark entrypoint",
-    "scripts/benchmarks/runtime_load/server.py": "load-test fixture server",
-    "scripts/benchmarks/runtime_load/run.mjs": "manual load-test entrypoint",
-    "scripts/benchmarks/runtime_load/http_outcomes.mjs": "load-test helper module",
-    "scripts/benchmarks/runtime-read-scopes.py": "manual benchmark entrypoint",
-    "scripts/benchmarks/scheduler-full-pass-lock.py": "manual benchmark entrypoint",
-    "scripts/benchmarks/scheduler-record-lock.py": "manual benchmark entrypoint",
 }
 
 
@@ -180,23 +165,12 @@ def inventory():
             entries[path.relative_to(ROOT).as_posix()] = category(path)
     for path in (TESTS / "server").glob("test_*.py"):
         entries[path.relative_to(ROOT).as_posix()] = "component"
-    for path in (ROOT / "scripts/benchmarks").rglob("test_*.py"):
-        entries[path.relative_to(ROOT).as_posix()] = category(path)
     for path in (ROOT / "scripts").glob("test_codex_*.py"):
         if is_unittest_suite(path):
             entries[path.relative_to(ROOT).as_posix()] = "component"
     for path, kind in LEGACY_SERVER_JS.items():
         if (ROOT / path).is_file():
             entries[path] = kind
-    # These are deliberately opt-in even though their names do not contain a
-    # native/live marker: they exercise measured or broad resource behavior.
-    for name in ("execution-migration-benchmark.py", "execution-write-cost.py",
-                 "search-index-latency.py", "streaming-write-volume.py",
-                 "sync-entity-measure.py", "sync-write-volume.py",
-                 "payload-storage-benchmark.py", "perf-renderer-sync.py"):
-        path = TESTS / name
-        if path.is_file():
-            entries[path.relative_to(ROOT).as_posix()] = "expensive"
     for directory in COMPONENT_ROOTS:
         for path in (ROOT / directory).glob("test_*.py"):
             entries[path.relative_to(ROOT).as_posix()] = "component"

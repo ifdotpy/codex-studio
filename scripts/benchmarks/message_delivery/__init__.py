@@ -1,1 +1,0 @@
-"""Runtime notification delivery benchmark."""
