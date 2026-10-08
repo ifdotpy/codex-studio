@@ -6,13 +6,16 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
+import threading
 import unittest
+from contextlib import contextmanager
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from codex_native_input_projection import _open_rollout, accepted_turns
 from codex_progress import provision_progress, read_progress
+import codex_progress_layout as layout
 
 tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
 Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
@@ -20,6 +23,18 @@ Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
 
 @unittest.skipUnless(os.name == "nt", "Windows contract")
 class WindowsRuntimePathsContract(unittest.TestCase):
+    class Runtime:
+        def __init__(self, root):
+            self.root = root
+            self.lock = threading.RLock()
+
+        @contextmanager
+        def db(self):
+            yield object()
+
+        def checked_actor(self, _db, agent_id):
+            return {"id": agent_id}
+
     def test_native_rollout_path_opens_without_posix_directory_flags(self):
         with tempfile.TemporaryDirectory() as temporary:
             home = Path(temporary) / "Codex Profile Ω"
@@ -96,6 +111,26 @@ class WindowsRuntimePathsContract(unittest.TestCase):
             except OSError as error:
                 self.skipTest("Windows does not allow this account to create a symlink: " + str(error))
             self.assertIsNotNone(read_progress(state, "worker_1")["error"])
+
+    def test_progress_layout_measurement_round_trip(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            progress = provision_progress(state, "worker_1")
+            progress.write_text("Ready. Проверено.\n", encoding="utf-8")
+            current = read_progress(state, "worker_1")
+            body = {
+                "agent": "worker_1", "revision": current["revision"], "client": "win-test",
+                "sequence": 1, "renderer": layout.RENDERER, "width": 320, "height": 150,
+                "contentWidth": 100, "contentHeight": 40, "fits": True, "reason": None,
+                "overflowX": 0, "overflowY": 0, "totalLines": 1, "visibleLines": 1,
+                "lastVisibleLine": "Ready.", "lastVisibleHeading": None,
+            }
+            saved = layout.record_layout(self.Runtime(state), body)
+            self.assertEqual(saved["status"], "fits")
+            self.assertEqual(layout.layout_status(state, "worker_1")["status"], "fits")
+            feedback = layout.layout_path(state, "worker_1")
+            self.assertEqual(feedback.stat().st_mode & 0o222, 0)
+            self.assertEqual(read_progress(state, "worker_1")["revision"], current["revision"])
 
 
 if __name__ == "__main__":
