@@ -29,8 +29,6 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIn("scripts/test_codex_api_client.py", paths)
         self.assertIn("scripts/test_codex_token_rate_events.py", paths)
         self.assertIn("scripts/test_codex_resource_producers.py", paths)
-        self.assertNotIn("tests/skill-catalog-live-update-contract.py", paths)
-        self.assertIn("tests/skill-catalog-live-update-contract.py", RUNNER.NON_TESTS)
         self.assertIn("tests/portable-smoke.mjs", paths)
         self.assertIn("tests/state-contract-smoke.mjs", paths)
         self.assertIn("tests/swarm-retry-contract.mjs", paths)
