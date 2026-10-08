@@ -1,4 +1,13 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  entityPullFixture,
+  readFixtureSyncContract,
+  readTestState,
+  spawnFixture as spawn,
+  stubEntityState,
+  test,
+} from "../playwright.mjs";
 // Render recorded worker and native failures in the production UI. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -175,6 +184,9 @@ test("tool limit history ui", async ({ browser: _browser }) => {
     const errorsReady = new Promise((resolve) => {
       releaseErrors = resolve;
     });
+    const syncContract = await readFixtureSyncContract(origin);
+    await stubEntityState(page, state, syncContract);
+    let transcriptSeq = 1;
     await page.route("**/api/analytics?**", async (route) => {
       const params = new URL(route.request().url()).searchParams;
       assert.equal(params.get("view"), "turn-errors");
@@ -186,7 +198,6 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       errorRequests++;
       await errorsReady;
       if (failNextRead) {
-        failNextRead = false;
         return route.fulfill({
           status: 503,
           json: { error: "Temporary read failure" },
@@ -228,16 +239,63 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       });
     });
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
+    await page.route("**/api/sync/stream?*", (route) => {
+      const url = new URL(route.request().url());
+      const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: apiSchemaHeaders(),
+        body: apiSchemaHandshakeSse(
+          "event: resources\ndata: " +
+            JSON.stringify({
+              epoch: "tool-limit-fixture",
+              protocol: 3,
+              reason: "initial",
+              resources,
+              resourceVersions: [],
+              revision: 1,
+              workspaceId: syncContract.identity.workspaceId,
+            }) +
+            "\n\n",
+        ),
+      });
+    });
+    await page.route("**/api/sync/pull?*", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const pull = entityPullFixture(state, {
+        scope,
+        after: 0,
+        limit: Number(url.searchParams.get("limit") || 100),
+        transcript,
+      });
+      return route.fulfill({
+        headers: apiSchemaHeaders(),
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...pull,
+          documents:
+            Number(url.searchParams.get("after") || 0) < transcriptSeq
+              ? pull.documents.map((document) => ({
+                  ...document,
+                  seq: transcriptSeq,
+                }))
+              : [],
+          checkpoint: { seq: transcriptSeq },
+        },
+      });
+    });
     await page.route("**/api/transcript**", (r) =>
       new URL(r.request().url()).searchParams.get("id") !== lead.id
         ? r.continue()
         : r.request().url().includes("/stream?")
           ? r.fulfill({
               contentType: "text/event-stream",
-              body: "data: " + JSON.stringify(transcript) + "\n\n",
+              headers: apiSchemaHeaders(),
+              body: apiSchemaHandshakeSse(
+                "data: " + JSON.stringify(transcript) + "\n\n",
+              ),
             })
           : r.fulfill({ json: transcript }),
     );
@@ -377,6 +435,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       },
     ];
     transcript.order = ["retry-limit"];
+    transcriptSeq++;
     transcript.agent.error = null;
     transcript.agent.lastCompletedTurn = null;
     await page.reload();
@@ -392,6 +451,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
         .count(),
       0,
     );
+    failNextRead = false;
     await retryTurn.getByRole("button", { name: "Retry", exact: true }).click();
     await retryTurn.getByText("Usage limit reached", { exact: true }).waitFor();
     assert.deepEqual(errors, []);
