@@ -19,7 +19,7 @@ test("Desktop Notifications Ui", async ({
 }) => {
   // Keep the formerly unbounded standalone check bounded. Snapshot refresh
   // falls back to a five-second poll, exercised at repeated checkpoints here.
-  test.setTimeout(90000);
+  test.setTimeout(45_000);
 
   const assert = {
     equal: (actual, expected, message) =>

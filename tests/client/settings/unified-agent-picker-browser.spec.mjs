@@ -15,7 +15,7 @@ import { chooseSetupValue } from "../../setup-controls.mjs";
 test("unified agent picker roles, accounts and project/shared flows", async ({
   browser,
 }) => {
-  test.setTimeout(180000);
+  test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));

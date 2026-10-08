@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 
 test("Draft recovery", async ({ context: testContext }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   // Real IndexedDB. Fail local writes, reload, and recover without losing text.
   const { createServer } = await import(
     new URL(

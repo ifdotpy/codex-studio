@@ -14,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("chat-navigation-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

@@ -9,7 +9,7 @@ import {
 } from "../playwright.mjs";
 
 test("sync-read-retry-browser", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const { createServer } = await import(
     new URL(
       "../../../web/node_modules/vite/dist/node/index.js",

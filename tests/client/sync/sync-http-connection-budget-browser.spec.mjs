@@ -17,7 +17,7 @@ test("Sync http connection budget browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));

@@ -4,16 +4,15 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, browserExecutablePath } from "../playwright.mjs";
+import { test } from "../playwright.mjs";
 
-test("Progress cache", async () => {
-  test.setTimeout(180_000);
+test("Progress cache", async ({ browser }) => {
+  test.setTimeout(45_000);
   // Cache boundaries use the actual module and isolated browser storage.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));
-  const { chromium, webkit } = require("playwright-core");
   const { createServer } = await import(require.resolve("vite"));
-  const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
+  const browserName = browser.browserType().name();
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-cache-"));
   const entry = join(root, "progress-cache-fixture.ts");
   const server = await createServer({
@@ -43,18 +42,10 @@ test("Progress cache", async () => {
       },
     ],
   });
-  let browser;
+  let page;
   try {
     await server.listen();
-    browser = await browserType.launch({
-      headless: true,
-      ...(browserType === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
-    const page = await browser.newPage();
+    page = await browser.newPage();
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     await page.addInitScript(() => {
@@ -238,10 +229,10 @@ test("Progress cache", async () => {
     );
     assert.deepEqual(errors, []);
     console.log(
-      `PASS ${browserType.name()}: empty file clears earlier cached content; six cache boundaries`,
+      `PASS ${browserName}: empty file clears earlier cached content; six cache boundaries`,
     );
   } finally {
-    await browser?.close();
+    await page?.close();
     await server.close();
     await rm(cacheDir, { recursive: true, force: true });
   }

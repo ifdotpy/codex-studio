@@ -23,7 +23,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("mobile loading ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const useWebKit = test.info().project.use.browserName === "webkit";
   const dir = await mkdtemp(join(tmpdir(), "studio-mobile-loading-"));

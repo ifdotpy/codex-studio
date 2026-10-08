@@ -15,7 +15,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("mobile-send-reliability-ui", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

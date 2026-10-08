@@ -12,7 +12,7 @@ import {
 } from "../playwright.mjs";
 
 test("Native runtime status", async ({ context }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));

@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
 
 test("file-viewers-browser", async ({ browser, page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web"),
     require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));

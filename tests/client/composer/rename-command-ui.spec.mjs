@@ -7,7 +7,7 @@ import { join } from "node:path";
 test("/rename updates the sidebar without sending a message", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-rename-ui-"));
   const fixture = spawn(

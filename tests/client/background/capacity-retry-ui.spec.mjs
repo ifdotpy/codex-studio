@@ -23,7 +23,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("capacity retry ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const rootDir = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

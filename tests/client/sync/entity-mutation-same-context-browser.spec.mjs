@@ -8,7 +8,7 @@ import { spawnFixture, test } from "../playwright.mjs";
 test("mutation projections propagate between pages sharing one browser context @sync", async ({
   browser,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

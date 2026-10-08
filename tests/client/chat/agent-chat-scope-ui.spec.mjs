@@ -10,7 +10,7 @@ test("Agent chat scope ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const project = fileURLToPath(new URL("../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-agent-chat-scope-"));
   const fixture = spawn(

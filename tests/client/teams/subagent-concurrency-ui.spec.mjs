@@ -19,7 +19,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("subagent concurrency ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(75_000);
   const repo = join(import.meta.dirname, "../../..");
   const root = await mkdtemp(join(tmpdir(), "studio-subagent-limit-"));
   const server = spawn(

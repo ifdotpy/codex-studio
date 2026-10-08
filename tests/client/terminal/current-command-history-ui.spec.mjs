@@ -24,7 +24,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("current command history ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

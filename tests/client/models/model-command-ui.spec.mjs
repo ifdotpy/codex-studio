@@ -17,7 +17,7 @@ import { join } from "node:path";
 import { modelValue, selectModel } from "../../model-picker.mjs";
 
 test("model-command-ui", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = join(import.meta.dirname, "../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-model-command-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(

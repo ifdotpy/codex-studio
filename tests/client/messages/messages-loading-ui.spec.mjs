@@ -6,7 +6,6 @@ import {
   installApiSchemaFixtureHeaders,
   apiSchemaHeaders,
   test,
-  browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
@@ -15,16 +14,11 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-test("Messages loading", async () => {
-  test.setTimeout(180_000);
+test("Messages loading", async ({ browser }) => {
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production UI with isolated HTTP reads. No model or user task writes.
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
-  const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
   const root = await mkdtemp(join(tmpdir(), "studio-messages-loading-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
@@ -38,8 +32,7 @@ test("Messages loading", async () => {
       },
     },
   );
-  let browser,
-    page,
+  let page,
     log = "";
   fixture.stderr.on("data", (value) => {
     log += value;
@@ -157,14 +150,6 @@ test("Messages loading", async () => {
       roomFails = true,
       holdNextComplaintDetail = false,
       releaseComplaintDetail;
-    browser = await engine.launch({
-      headless: true,
-      ...(engine === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
     const prepare = async (width) => {
       const next = await browser.newPage({
         viewport: { width, height: 900 },
@@ -480,7 +465,7 @@ test("Messages loading", async () => {
       JSON.stringify({
         ok: true,
         evidence: root,
-        engine: process.env.BROWSER || "chromium",
+        engine: browser.browserType().name(),
         stateReads,
         detailReads,
         roomReads,
@@ -501,6 +486,7 @@ test("Messages loading", async () => {
     console.error("Evidence:", root, error);
     throw error;
   } finally {
-    await browser?.close();
+    for (const page of browser.contexts().flatMap((context) => context.pages()))
+      await page.close();
   }
 });

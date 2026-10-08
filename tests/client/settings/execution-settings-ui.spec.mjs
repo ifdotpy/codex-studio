@@ -27,7 +27,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("execution settings ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

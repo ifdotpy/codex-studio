@@ -20,7 +20,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("chat read client browser", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const root = join(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));

@@ -8,7 +8,7 @@ import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
 test("Usage resume notice", async ({ context: testContext }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Render the production limit notice and verify its schedule and opt-out action.
 

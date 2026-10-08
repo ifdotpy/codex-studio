@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
 test("dialog-drafts-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

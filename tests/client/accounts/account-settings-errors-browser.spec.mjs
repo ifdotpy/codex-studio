@@ -8,21 +8,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   test,
-  browserExecutablePath,
   apiSchemaHandshakeSse,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   syncProtocolFixture,
 } from "../playwright.mjs";
 
-test("Account settings errors", async () => {
+test("Account settings errors", async ({ browser }) => {
   test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));
-  const { chromium, webkit } = require("playwright-core");
   const { createServer } = await import(require.resolve("vite"));
   const negative = process.env.NEGATIVE === "1";
-  const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
+  const browserType = browser.browserType();
   const entry = join(root, "account-error-fixture.tsx");
   const failure = {
     message: "Provider request failed",
@@ -120,17 +118,8 @@ test("Account settings errors", async () => {
       },
     ],
   });
-  let browser;
   try {
     await server.listen();
-    browser = await browserType.launch({
-      headless: true,
-      ...(browserType === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
     const page = await browser.newPage({
       viewport: { width: 1100, height: 850 },
     });
@@ -391,11 +380,10 @@ test("Account settings errors", async () => {
         "Rendering error details never submits a form or repeats an operation",
       );
       console.log(
-        `PASS ${browserType === chromium ? "Chromium" : "WebKit"}: sign-in, account, limits, rules, changes and tool diagnostics retain full structured fields without losing the shell`,
+        `PASS ${browserType.name() === "chromium" ? "Chromium" : "WebKit"}: sign-in, account, limits, rules, changes and tool diagnostics retain full structured fields without losing the shell`,
       );
     }
   } finally {
-    await browser?.close();
     await server.close();
     await rm(cacheDir, { recursive: true, force: true });
   }

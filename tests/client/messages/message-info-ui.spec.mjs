@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Message info", async ({ browser: testBrowser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production renderer and metadata HTTP reads, temp state, headless Chrome only.
   const repo = testRepo;

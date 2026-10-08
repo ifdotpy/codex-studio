@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(75_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production composer against an isolated runtime and delayed skill endpoint.
 

@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { test } from "../playwright.mjs";
 
 test("Complaint ownership", async ({ browser: testBrowser }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Current message recipient, history, and response delivery through the real component.
   const repo = testRepo;

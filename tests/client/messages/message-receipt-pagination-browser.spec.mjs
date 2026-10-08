@@ -20,7 +20,7 @@ test("Message receipt pagination browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));

@@ -11,7 +11,7 @@ test("Token rate ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(90_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-token-rate-"));
   const proc = spawn(

@@ -14,7 +14,7 @@ test("Chat prefetch browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
   const { createServer } = await import(
     new URL(
       "../../../web/node_modules/vite/dist/node/index.js",

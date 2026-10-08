@@ -8,7 +8,7 @@ import { expect, spawnFixture, test } from "../playwright.mjs";
 test("mutation response persistence completes before its UI update", async ({
   browser,
 }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

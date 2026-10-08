@@ -28,7 +28,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("usage accounts ui", async ({ browser: _browser }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

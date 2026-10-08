@@ -15,7 +15,7 @@ import {
 } from "../playwright.mjs";
 
 test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

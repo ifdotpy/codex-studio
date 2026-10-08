@@ -12,7 +12,7 @@ test("Structured operational errors ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));

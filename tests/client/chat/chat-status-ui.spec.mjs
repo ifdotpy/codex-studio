@@ -19,7 +19,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 test("chat-status-ui", async ({ browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = join(import.meta.dirname, "../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-chat-status-ui-"));
   const proc = spawn(

@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Chat scope", async ({ context }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Real fixture, HTTP API, and headless browser. No model calls or user state.
 

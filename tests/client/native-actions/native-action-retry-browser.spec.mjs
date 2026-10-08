@@ -12,7 +12,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 test("Native action retry browser", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
     "playwright-core",

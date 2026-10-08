@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Scroll restart", async () => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Exercise the real scroll hook across a browser reload and delayed history load.
   const repo = testRepo;

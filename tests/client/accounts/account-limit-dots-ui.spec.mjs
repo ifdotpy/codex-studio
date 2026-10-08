@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 async function runAccountLimitDotsUi(runnerBrowser) {
   // Four viewport and color scheme passes share one fixture backend.
-  test.setTimeout(420_000);
+  test.setTimeout(75_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

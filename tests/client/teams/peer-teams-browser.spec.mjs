@@ -10,7 +10,7 @@ test("Peer teams browser", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(60_000);
+  test.setTimeout(45_000);
   const root = resolve(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));

@@ -30,7 +30,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("tool limit history ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "studio-tool-limit-"));
   const proc = spawn(

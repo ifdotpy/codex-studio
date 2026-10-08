@@ -5,7 +5,6 @@ import {
   readTestState,
   stubEntityState,
   test,
-  browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
@@ -13,18 +12,14 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-test("File change", async () => {
-  test.setTimeout(180_000);
+test("File change", async ({ browser }) => {
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   // Production transcript and result renderers with isolated saved messages. No inference.
 
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
-  const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
-  const mobile = engine === webkit || process.env.MOBILE === "1";
+  const engine = browser.browserType();
+  const mobile = engine.name() === "webkit" || process.env.MOBILE === "1";
   const directory = await mkdtemp(join(tmpdir(), "studio-file-change-ui-"));
   const fixture = spawn(
     "python3",
@@ -33,8 +28,7 @@ test("File change", async () => {
       stdio: ["ignore", "pipe", "pipe"],
     },
   );
-  let browser,
-    page,
+  let page,
     log = "";
   fixture.stderr.on("data", (data) => {
     log += data;
@@ -143,14 +137,6 @@ test("File change", async () => {
       replace: true,
       agent: { ...lead, status: "completed", inFlight: false, turnId: null },
     };
-    browser = await engine.launch({
-      headless: true,
-      ...(engine === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
     page = await browser.newPage({
       viewport: mobile
         ? { width: 390, height: 844 }
@@ -398,6 +384,6 @@ test("File change", async () => {
     console.error("Evidence:", directory);
     throw error;
   } finally {
-    await browser?.close();
+    await page?.close();
   }
 });

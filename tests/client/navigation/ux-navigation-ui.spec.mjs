@@ -12,7 +12,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("ux-navigation-ui", async ({ browser, page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

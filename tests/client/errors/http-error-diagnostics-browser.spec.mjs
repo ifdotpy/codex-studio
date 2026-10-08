@@ -11,7 +11,7 @@ test("Http error diagnostics browser", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(45_000);
   const require = createRequire(
     new URL("../../../web/package.json", import.meta.url),
   );

@@ -13,7 +13,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 test("project tree ui", async ({ page: runnerPage }) => {
-  test.setTimeout(240_000);
+  test.setTimeout(75_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );

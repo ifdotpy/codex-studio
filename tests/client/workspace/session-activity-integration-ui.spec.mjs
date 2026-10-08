@@ -5,7 +5,6 @@ import {
   installApiSchemaFixtureHeaders,
   apiSchemaHeaders,
   test,
-  browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
@@ -14,15 +13,11 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createRequire } from "node:module";
-test("Session activity integration", async () => {
-  test.setTimeout(180_000);
+test("Session activity integration", async ({ browser }) => {
+  test.setTimeout(45_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
-  const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
+  const engine = browser.browserType();
   const root = await mkdtemp(
     join(tmpdir(), "studio-session-activity-integration-"),
   );
@@ -34,8 +29,7 @@ test("Session activity integration", async () => {
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
     },
   );
-  let browser,
-    log = "";
+  let log = "";
   proc.stderr.on("data", (v) => (log += v));
   try {
     const port = await new Promise((resolve, reject) => {
@@ -88,14 +82,6 @@ test("Session activity integration", async () => {
         requests: [],
       },
     };
-    browser = await engine.launch({
-      headless: true,
-      ...(engine === chromium
-        ? {
-            executablePath: browserExecutablePath,
-          }
-        : {}),
-    });
     const page = await browser.newPage({
       viewport: { width: 1280, height: 900 },
       serviceWorkers: "block",
@@ -264,7 +250,8 @@ test("Session activity integration", async () => {
       "PASS completed chat explains live child command, exact task opens on desktop/mobile, other chats stay scoped",
     );
   } finally {
-    await browser?.close();
+    for (const page of browser.contexts().flatMap((context) => context.pages()))
+      await page.close();
     // spawnFixture owns bounded child cleanup, including test timeouts.
   }
 });
