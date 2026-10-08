@@ -116,12 +116,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
           ),
         };
       });
-    const settle = async (
-      height,
-      top,
-      expectedScrollY = 0,
-      knownLayoutDefect = false,
-    ) => {
+    const settle = async (height, top, expectedScrollY = 0) => {
       await page.waitForFunction(
         ({ height, top }) => {
           const box = document.querySelector("#root").getBoundingClientRect();
@@ -135,22 +130,20 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
       assert.equal(box.scrollY, expectedScrollY);
       assert.equal(box.scrollTop, 0);
       assert.equal(box.bodyOverflow, "hidden");
-      if (!knownLayoutDefect)
-        assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
+      assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
       assert.ok(
         box.composerBottom <= box.footerTop + 1,
         `Composer overlaps usage: ${JSON.stringify(box)}`,
       );
-      if (!knownLayoutDefect) {
-        assert.ok(
-          box.footerBottom <= box.bottom + 1,
-          `Usage leaves the viewport: ${JSON.stringify(box)}`,
-        );
+      assert.ok(
+        box.footerBottom <= box.bottom + 1,
+        `Usage leaves the viewport: ${JSON.stringify(box)}`,
+      );
+      if (height !== 330)
         assert.ok(
           Math.abs(box.bottom - box.footerBottom - box.footerBottomSpace) <= 1,
           `No blank area below usage: ${JSON.stringify(box)}`,
         );
-      }
       return box;
     };
     await settle(844, 0);
@@ -190,7 +183,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
     await page.evaluate(() =>
       window.setTestViewport({ height: 390, offsetTop: 54 }),
     );
-    assert.equal((await settle(390, 54, 0, true)).bottomInset, "0px");
+    assert.equal((await settle(390, 54)).bottomInset, "0px");
     await page.evaluate(() => {
       window.retainTestScroll(150);
       const messages = document.querySelector("#messages");
@@ -206,11 +199,11 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
       };
       window.setTestViewport({ height: 330, offsetTop: 64 }, "scroll");
     });
-    await settle(330, 64, 150, true);
+    await settle(330, 64, 150);
     await page.evaluate(() =>
       window.setTestViewport({ height: 390, offsetTop: 54 }),
     );
-    await settle(390, 54, 150, true);
+    await settle(390, 54, 150);
     const composerState = await page.evaluate(() => {
       const element = document.querySelector("#message");
       const messages = document.querySelector("#messages");
@@ -271,7 +264,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
       window.setTestViewport({ width: 640, height: 390, offsetTop: 0 });
       window.dispatchEvent(new Event("orientationchange"));
     });
-    await settle(390, 0, 0, true);
+    await settle(390, 0, 0);
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() =>
       window.setTestViewport({ width: 390, height: 844, offsetTop: 0 }),
@@ -307,13 +300,7 @@ test("mobile keyboard ui", async ({ browser: runnerBrowser }) => {
   }
 });
 
-test("mobile keyboard viewport keeps usage flush with its bottom inset", async ({
-  browser: runnerBrowser,
-}) => {
-  test.fail(
-    true,
-    "Known mobile composer/viewport layout defect; see misc-known-failures.md.",
-  );
+async function measureCompactKeyboardFooter(runnerBrowser) {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -359,58 +346,69 @@ test("mobile keyboard viewport keeps usage flush with its bottom inset", async (
     });
     await page.goto(`http://127.0.0.1:${port}`);
     await page.locator("#composer").waitFor();
-    const measure = async (height, offsetTop, width = 390) => {
-      if (width !== 390) await page.setViewportSize({ width, height });
-      await page.evaluate(
-        ({ height, offsetTop, width }) => {
-          window.setTestViewport({ height, offsetTop, width });
-          if (width !== 390)
-            window.dispatchEvent(new Event("orientationchange"));
-        },
-        { height, offsetTop, width },
-      );
-      return page.evaluate(async () => {
-        await new Promise((resolve) =>
-          requestAnimationFrame(() => requestAnimationFrame(resolve)),
-        );
-        const root = document.querySelector("#root").getBoundingClientRect();
-        const composer = document
-          .querySelector("#composer")
-          .getBoundingClientRect();
-        const footerNode = document.querySelector(".usage-footer");
-        const footer = footerNode.getBoundingClientRect();
-        const bottomSpace =
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setSafeAreaInsetsOverride", {
+      insets: { top: 59, bottom: 0, left: 0, right: 0 },
+    });
+    await page.evaluate(() =>
+      window.setTestViewport({ height: 790, offsetTop: 12 }),
+    );
+    await page.waitForFunction(() => {
+      const box = document.querySelector("#root").getBoundingClientRect();
+      return Math.abs(box.height - 790) < 1 && Math.abs(box.top - 12) < 1;
+    });
+    await page.locator("#message").fill("Keyboard geometry fixture");
+    await page.evaluate(() =>
+      window.setTestViewport({ height: 330, offsetTop: 64 }),
+    );
+    await page.waitForFunction(() => {
+      const box = document.querySelector("#root").getBoundingClientRect();
+      return Math.abs(box.height - 330) < 1 && Math.abs(box.top - 64) < 1;
+    });
+    return await page.evaluate(() => {
+      const root = document.querySelector("#root").getBoundingClientRect();
+      const footerNode = document.querySelector(".usage-footer");
+      const footer = footerNode.getBoundingClientRect();
+      return {
+        viewportBottom: root.bottom,
+        footerBottom: footer.bottom,
+        bottomSpace:
           parseFloat(getComputedStyle(footerNode).marginBottom) +
           parseFloat(
             getComputedStyle(document.querySelector("#conversation"))
               .paddingBottom,
-          );
-        return {
-          viewportBottom: root.bottom,
-          composerBottom: composer.bottom,
-          footerBottom: footer.bottom,
-          bottomSpace,
-        };
-      });
-    };
-    const geometries = [
-      await measure(390, 54),
-      await measure(330, 64),
-      await measure(390, 0, 640),
-    ];
-    assert.ok(
-      geometries.every(
-        ({ viewportBottom, composerBottom, footerBottom, bottomSpace }) =>
-          composerBottom <= viewportBottom + 1 &&
-          footerBottom <= viewportBottom + 1 &&
-          Math.abs(viewportBottom - footerBottom - bottomSpace) <= 1,
-      ),
-      `Keyboard usage geometry fits both keyboard viewports: ${JSON.stringify(geometries)}`,
-    );
+          ),
+        composerText: document.querySelector("#message").value,
+      };
+    });
   } catch (error) {
     console.error(log);
     throw error;
   } finally {
     await context?.close();
   }
+}
+
+test("compact keyboard footer setup reaches the 330px viewport", async ({
+  browser,
+}) => {
+  const measured = await measureCompactKeyboardFooter(browser);
+  assert.equal(measured.composerText, "Keyboard geometry fixture");
+  assert.ok(measured.viewportBottom > 0);
+});
+
+test("mobile keyboard footer leaves no blank area below usage", async ({
+  browser,
+}) => {
+  const measured = await measureCompactKeyboardFooter(browser);
+  test.fail(
+    true,
+    "At 390×330 the footer leaves 12.0px instead of the required 16px gap; see misc-known-failures.md.",
+  );
+  assert.ok(
+    Math.abs(
+      measured.viewportBottom - measured.footerBottom - measured.bottomSpace,
+    ) <= 1,
+    `330px keyboard viewport preserves the 16px footer gap: ${JSON.stringify(measured)}`,
+  );
 });
