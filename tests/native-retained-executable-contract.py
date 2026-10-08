@@ -304,13 +304,57 @@ class OperatorCloseContract(unittest.TestCase):
         other = self.case.root / 'new-native'
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
-        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
-                           executable=str(other), supervisor_handle='test:operator-replace')
-        self.case.servers.append(second)
-        self.assertFalse(second.supervisor_resumed)
-        self.assertEqual(second.proc.generation, first.proc.generation + 1)
-        self.assertNotEqual(int(self.case.pid_file.read_text()), pid)
-        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        handle = 'test:operator-replace'
+        command = [str(other)]
+        snapshot = {}
+        original_call = supervisor.ProcessProxy.call
+
+        def acknowledge_after_open(proxy, action, **values):
+            result = original_call(proxy, action, **values)
+            if action == 'open':
+                snapshot.update(result)
+                # Control the production race: a previously delivered event is
+                # ACKed after this proxy received its open cursor. Use the real
+                # journal row and ACK action so `next` observes the same stale
+                # read_cursor as the old proxy interleaving.
+                with sqlite3.connect(self.case.root / 'supervisor.sqlite3') as db:
+                    sequence, acknowledged, generation = db.execute(
+                        'SELECT sequence,acknowledged,generation FROM handles WHERE id=?',
+                        (handle,)).fetchone()
+                    acknowledged_sequence = sequence + 1
+                    payload = json.dumps({'method': 'fixture/already-delivered', 'params': {}},
+                                         separators=(',', ':'))
+                    db.execute('UPDATE handles SET sequence=? WHERE id=?',
+                               (acknowledged_sequence, handle))
+                    db.execute('INSERT INTO events(handle,sequence,kind,payload,size,generation) '
+                               'VALUES (?,?,?,?,?,?)',
+                               (handle, acknowledged_sequence, 'stdout', payload,
+                                len(payload.encode()), generation))
+                    db.commit()
+                original_call(proxy, 'ack', sequence=acknowledged_sequence)
+            return result
+
+        proxy = None
+        try:
+            with patch.object(supervisor.ProcessProxy, 'call', acknowledge_after_open):
+                proxy = supervisor.ProcessProxy(self.case.root, handle, command, dict(os.environ),
+                                                 None, lambda _: None)
+            self.assertFalse(proxy.resumed)
+            self.assertEqual(proxy.generation, first.proc.generation + 1)
+            new_pid = fixture.wait_for(lambda: (
+                candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None))
+            self.assertNotEqual(new_pid, pid)
+            self.assertEqual(proxy.read_cursor, snapshot['acknowledged'])
+            self.assertGreater(supervisor.status(self.case.root)['handles'][0]['acknowledged'],
+                               proxy.read_cursor)
+            try:
+                proxy.next_event()
+            except RuntimeError as error:
+                self.fail('new launch could not read after the post-open ACK: ' + str(error))
+            self.fail('expected the controlled journal event to be returned')
+        finally:
+            if proxy is not None:
+                proxy.detach()
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')
