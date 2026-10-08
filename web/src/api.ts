@@ -621,6 +621,7 @@ export async function post<Path extends PathsFor<"post">>(
     } finally {
       if (coverage) coverage.checkpoint.settleInFlightCoverage(coverage.token);
     }
+    mutation?.finish();
     return data;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();

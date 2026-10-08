@@ -107,7 +107,17 @@ try {
   );
 } finally {
   if (desktop) {
-    const watchdog = setTimeout(() => desktop.process().kill("SIGKILL"), 5000);
+    const child = desktop.process();
+    // Playwright starts Electron in its own process group on Unix. Close its
+    // helpers too, because they can retain the test's transport after shutdown.
+    const watchdog = setTimeout(() => {
+      try {
+        if (process.platform === "win32") child.kill("SIGKILL");
+        else process.kill(-child.pid, "SIGKILL");
+      } catch (error) {
+        if (error.code !== "ESRCH") throw error;
+      }
+    }, 5000);
     watchdog.unref();
     try {
       await desktop.close();
