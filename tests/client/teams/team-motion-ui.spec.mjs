@@ -130,10 +130,10 @@ test("Team Motion Ui", async ({
     );
     await page.route("**/api/sync/pull?*", async (route) => {
       const url = new URL(route.request().url());
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.continue();
       const response = await route.fetch();
       const data = await response.json();
-      if (url.searchParams.get("scope") !== "state:entities:v1")
-        return route.fulfill({ response, json: data });
       if (data.reset) return route.fulfill({ response, json: data });
       let sequence = Math.max(
         entitySequence,
