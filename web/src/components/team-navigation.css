@@ -377,3 +377,11 @@
   flex: 1;
   margin-top: 0;
 }
+
+#team .token-rate:empty {
+  display: none;
+}
+#team .token-rate {
+  flex: 0 0 auto;
+  width: auto;
+}
