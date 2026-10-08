@@ -14,6 +14,12 @@ import { watchResourceReads } from "./watchResourceReads";
 export { limitRecovery } from "../usage/limitRecovery";
 import "./Usage.css";
 import TokenRate from "./TokenRate";
+import {
+  AccountTilesLayout,
+  AccountRemainingBar,
+  remainingLimit,
+} from "./AccountTiles";
+import { accountDisplayName } from "../accountName";
 const Analytics = lazy(() => import("./Analytics"));
 
 export type UsageAccount = {
@@ -32,6 +38,16 @@ const humanAccountLabel = (account?: UsageAccount) =>
   account?.email ||
   (account?.label && account.label !== account.key ? account.label : "") ||
   "Account name unavailable";
+
+const displayAccountName = (account?: UsageAccount) =>
+  humanAccountLabel(account) === "Account name unavailable"
+    ? "Account name unavailable"
+    : accountDisplayName({
+        label: account?.label === account?.key ? "" : account?.label || "",
+        email: account?.email,
+      });
+const accountProvider = (account?: UsageAccount) =>
+  account?.provider === "claude" ? "claude" : "codex";
 
 type LimitWindow = {
   label: string;
@@ -487,6 +503,9 @@ export default function Usage({
         aria-label="Current team session API cost estimate"
         aria-busy={sessionCostUpdating}
         title={[
+          sessionCost
+            ? `Session estimate: ${dollars(sessionCost.totalUSD)}`
+            : "",
           ...Object.entries(sessionCost?.breakdown?.providers || {}).map(
             ([provider, value]) => `${provider}: ${dollars(value)}`,
           ),
@@ -693,14 +712,6 @@ export default function Usage({
               <header className="account-limits-heading">
                 <div>
                   <h3>Account limits</h3>
-                  <p>{humanAccountLabel(activeAccount)}</p>
-                  {!activeAccount?.email &&
-                    (!activeAccount?.label ||
-                      activeAccount.label === activeAccount.key) && (
-                      <small>
-                        {activeAccount?.key || agent.accountKey || "default"}
-                      </small>
-                    )}
                 </div>
                 <Button
                   size="compact-xs"
@@ -714,35 +725,85 @@ export default function Usage({
                   Refresh
                 </Button>
               </header>
-              {usageAccounts.length > 1 && (
+              <AccountTilesLayout
+                label="Accounts with limits"
+                provider={accountProvider(activeAccount)}
+                providers={[...new Set(usageAccounts.map(accountProvider))]}
+                onProvider={(provider) => {
+                  const account = usageAccounts.find(
+                    (item) => accountProvider(item) === provider,
+                  );
+                  if (account) setActiveAccountKey(account.key);
+                }}
+              >
                 <Tabs
                   value={selectedAccountKey}
                   onChange={(value) => {
                     if (value) setActiveAccountKey(value);
                   }}
                   keepMounted={false}
-                  className="account-limits-tabs"
+                  variant="pills"
+                  className="account-limits-tiles"
                 >
                   <Tabs.List aria-label="Accounts with limits">
-                    {usageAccounts.map((item, index) => (
-                      <Tabs.Tab
-                        key={item.key}
-                        value={item.key}
-                        id={`usage-account-tab-${index}`}
-                        aria-controls="usage-account-panel"
-                        aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
-                      >
-                        <span>{humanAccountLabel(item)}</span>
-                        {!item.email &&
-                          (!item.label || item.label === item.key) && (
-                            <small>{item.key}</small>
+                    {usageAccounts.map((item, index) => {
+                      if (
+                        accountProvider(item) !== accountProvider(activeAccount)
+                      )
+                        return null;
+                      const snapshot = accountLimits(
+                        item.limits,
+                        item.key,
+                        item.accountId,
+                      );
+                      const remaining = remainingLimit(
+                        readBuckets(snapshot, now).flatMap(
+                          (bucket) => bucket.windows,
+                        ),
+                      );
+                      return (
+                        <Tabs.Tab
+                          key={item.key}
+                          value={item.key}
+                          className="setup-account"
+                          data-account-key={item.key}
+                          data-selected={
+                            item.key === selectedAccountKey || undefined
+                          }
+                          aria-current={
+                            item.key === fallbackKey ? "true" : undefined
+                          }
+                          id={`usage-account-tab-${index}`}
+                          aria-controls="usage-account-panel"
+                          title={humanAccountLabel(item)}
+                          aria-label={`${humanAccountLabel(item)}${item.provider ? `, ${item.provider}` : ""} account limits`}
+                        >
+                          <span className="account-limits-tile-name">
+                            {displayAccountName(item)}
+                          </span>
+                          {item.key === fallbackKey && (
+                            <small className="account-limits-current">
+                              Current chat
+                            </small>
                           )}
-                        {item.provider && <small>{item.provider}</small>}
-                      </Tabs.Tab>
-                    ))}
+                          <AccountRemainingBar
+                            remaining={remaining}
+                            label={`${humanAccountLabel(item)} remaining limit`}
+                          />
+                        </Tabs.Tab>
+                      );
+                    })}
                   </Tabs.List>
                 </Tabs>
-              )}
+              </AccountTilesLayout>
+              <div className="account-limits-selected-name">
+                <strong>{displayAccountName(activeAccount)}</strong>
+                {!activeAccount?.email &&
+                  (!activeAccount?.label ||
+                    activeAccount.label === activeAccount.key) && (
+                    <small>{activeAccount?.key || fallbackKey}</small>
+                  )}
+              </div>
               {recovery && (
                 <LimitRecoveryNotice
                   key={JSON.stringify(recovery)}
@@ -751,14 +812,10 @@ export default function Usage({
               )}
               <div
                 className="account-limits-groups"
-                {...(usageAccounts.length > 1
-                  ? {
-                      role: "tabpanel" as const,
-                      id: "usage-account-panel",
-                      "aria-labelledby": `usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`,
-                      "aria-label": `${humanAccountLabel(activeAccount)} limits`,
-                    }
-                  : {})}
+                role="tabpanel"
+                id="usage-account-panel"
+                aria-labelledby={`usage-account-tab-${usageAccounts.findIndex((item) => item.key === selectedAccountKey)}`}
+                aria-label={`${humanAccountLabel(activeAccount)} limits`}
               >
                 {buckets.map((bucket) => (
                   <section
@@ -804,9 +861,15 @@ export default function Usage({
                           {window.remaining !== null && !window.expired && (
                             <Progress
                               value={window.remaining}
-                              size={5}
+                              size={3}
                               radius="xl"
-                              color={window.remaining <= 15 ? "orange" : "teal"}
+                              color={
+                                window.remaining > 50
+                                  ? "green"
+                                  : window.remaining >= 15
+                                    ? "yellow"
+                                    : "red"
+                              }
                               aria-label={`${bucket.name} ${window.label} remaining`}
                             />
                           )}
