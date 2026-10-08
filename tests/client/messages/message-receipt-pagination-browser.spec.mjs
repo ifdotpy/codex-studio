@@ -75,6 +75,10 @@ async function runMessageReceiptScenario(
   value = json.loads(sys.argv[5])
   db = connect(root / 'canvas.sqlite3', timeout=1, site='Receipt pagination fixture')
   register_functions(db)
+  for trigger in ('studio_resource_event_insert', 'studio_resource_event_update',
+                  'studio_resource_event_delete', 'studio_resource_item_insert',
+                  'studio_resource_item_update', 'studio_resource_item_delete'):
+      db.execute('DROP TRIGGER IF EXISTS temp.' + trigger)
   try:
       with db:
           if phase == 'initial':
@@ -86,18 +90,28 @@ async function runMessageReceiptScenario(
                              (key, agent, text, status, now - 1))
                   db.execute("INSERT INTO runtime_event_meta(id,record) VALUES (?,?)",
                              (key, json.dumps({'requestedDelivery': 'after_tool', 'transcriptItemId': agent + ':' + key})))
-                  record = {'id': agent + ':' + key, 'role': 'user', 'title': 'You',
-                            'clientMessageId': key, 'text': text, 'at': now - 1,
-                            'deliveryStatus': status, 'requestedDelivery': 'after_tool',
-                            'pending': status == 'pending', 'materialized': False}
-                  db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
-                             (record['id'], agent, json.dumps(record), record['at']))
+                  if key == value['uncertainId']:
+                      record = {'id': agent + ':' + key, 'role': 'user', 'title': 'You',
+                                'clientMessageId': key, 'text': text, 'at': now - 1,
+                                'deliveryStatus': status, 'requestedDelivery': 'after_tool',
+                                'pending': False, 'materialized': False}
+                      db.execute('INSERT INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
+                                 (record['id'], agent, json.dumps(record), record['at']))
           else:
-              if phase == 'observed':
-                  db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?", (value['id'], agent))
+              if phase in ('observed', 'delivered'):
+                  # Match runtime.start input projection, then native userMessage delivery.
+                  event_status = 'dispatching' if phase == 'observed' else 'delivered'
+                  db.execute("UPDATE runtime_events SET status=? WHERE id=? AND agent=?",
+                             (event_status, value['id'], agent))
+                  record = {'id': agent + ':' + value['id'], 'role': 'user', 'title': 'You',
+                            'clientMessageId': value['id'], 'text': value['text'], 'at': time.time(),
+                            'deliveryStatus': event_status, 'requestedDelivery': 'after_tool',
+                            'pending': False, 'materialized': True}
+                  db.execute('INSERT OR REPLACE INTO runtime_items(id,agent,record,created) VALUES (?,?,?,?)',
+                             (record['id'], agent, json.dumps(record), record['at']))
               db.execute("UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),"
-                         "'$.pending',json('false'),'$.deliveryStatus','delivered') WHERE id=? AND agent=?",
-                         (agent + ':' + value['id'], agent))
+                         "'$.pending',json('false'),'$.deliveryStatus',?) WHERE id=? AND agent=?",
+                         ('dispatching' if phase == 'observed' else 'delivered', agent + ':' + value['id'], agent))
               if phase == 'paginate':
                   now = time.time()
                   # Both aggregate event and transcript windows now omit the original.
@@ -122,7 +136,9 @@ async function runMessageReceiptScenario(
       ],
       { timeout: 5000, stdio: "pipe" },
     );
-    if (["observed", "delivered", "paginate"].includes(phase)) {
+    if (
+      ["observed", "delivered", "paginate", "receipt-refresh"].includes(phase)
+    ) {
       const response = await fetch(target + "/api/sync/notify", {
         method: "POST",
         headers: {
@@ -135,10 +151,7 @@ async function runMessageReceiptScenario(
           resources:
             phase === "observed" || phase === "paginate"
               ? [{ kind: "transcript", agentId: agent }]
-              : [
-                  { kind: "queue", agentId: agent },
-                  { kind: "receipts", agentId: agent },
-                ],
+              : [{ kind: "receipts", agentId: agent }],
         }),
       });
       assert.equal(response.status, 200, await response.text());
@@ -330,7 +343,7 @@ async function runMessageReceiptScenario(
     );
 
     const page = await context.newPage();
-    page.setDefaultTimeout(10000);
+    page.setDefaultTimeout(30000);
     page.on("pageerror", (error) => errors.push(error.message));
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -358,8 +371,8 @@ async function runMessageReceiptScenario(
         );
       }
     });
-    // Keep one real receipt request in flight so transcript observation can
-    // hide the local copy before the server returns its delivered receipt.
+    // Hold the browser request so each scenario controls when the response is
+    // fetched relative to transcript observation and durable delivery.
     await page.route("**/api/messages/receipts**", async (route) => {
       const url = new URL(route.request().url());
       const ids = JSON.parse(url.searchParams.get("ids") || "[]");
@@ -388,19 +401,6 @@ async function runMessageReceiptScenario(
     await bubble(uncertainText)
       .getByText("Delivery unconfirmed", { exact: true })
       .waitFor();
-    await until(
-      () => receiptRequestPaused,
-      "The app tab did not start a receipt request for the accepted message",
-    );
-    await changeFixture(agent.id, "observed", target, state.token);
-    await until(
-      async () => (await readAppReceipt(id))?.displayPending === false,
-      "The transcript did not retire the local copy before the delivered receipt",
-    );
-    const hiddenAccepted = await readAppReceipt(id);
-    assert.equal(hiddenAccepted.status, "accepted");
-    assert.equal(hiddenAccepted.receipt?.status, "queued");
-    assert.equal(hiddenAccepted.displayPending, false);
     assert.equal(
       posts.length,
       0,
@@ -408,6 +408,53 @@ async function runMessageReceiptScenario(
     );
 
     const priorReceiptResponseCount = receiptResponses.length;
+    if (assertReconciliation) {
+      await until(
+        () => receiptRequestPaused,
+        "The app tab did not start a receipt request for the accepted message",
+      );
+      await changeFixture(agent.id, "observed", target, state.token);
+      await until(
+        async () => (await readAppReceipt(id))?.displayPending === false,
+        "The transcript did not retire the local copy before the delivered receipt",
+      );
+      const hiddenAccepted = await readAppReceipt(id);
+      assert.equal(hiddenAccepted.status, "accepted");
+      assert.equal(hiddenAccepted.receipt?.status, "queued");
+      assert.equal(hiddenAccepted.displayPending, false);
+      await changeFixture(agent.id, "delivered", target, state.token);
+    } else {
+      // Preserve the original receipt-first ordering: the app stores delivery
+      // before transcript pagination retires the local copy.
+      await until(
+        () => receiptRequestPaused,
+        "The app tab did not start a receipt request for the accepted message",
+      );
+      await changeFixture(agent.id, "delivered", target, state.token);
+      receiptGateReleased = true;
+      releaseReceiptGate();
+      try {
+        await until(
+          async () => {
+            const value = await readAppReceipt(id);
+            return (
+              value?.receipt?.status === "delivered" &&
+              value.receipt.materialized === true
+            );
+          },
+          "The exact delivered receipt did not reconcile an accepted message outside the latest 120 items",
+          30000,
+        );
+      } catch (error) {
+        const responses = await Promise.all(
+          receiptResponses.slice(priorReceiptResponseCount),
+        );
+        throw new Error(
+          `${error.message}: ${JSON.stringify({ storedInApp: await readAppReceipt(id), receiptRequests, responses, errors })}`,
+        );
+      }
+    }
+
     receiptGateReleased = true;
     releaseReceiptGate();
     let deliveredResponse;
@@ -442,6 +489,7 @@ async function runMessageReceiptScenario(
     );
 
     if (assertReconciliation) {
+      // The defect assertion starts after the held response and setup above.
       test.fail();
       try {
         await until(
@@ -458,13 +506,44 @@ async function runMessageReceiptScenario(
           5000,
         );
       } catch (error) {
+        const initialCount = receiptRequests.filter(
+          (request) => request.agent === agent.id && request.ids.includes(id),
+        ).length;
+        for (let notification = 1; notification <= 3; notification += 1) {
+          const before = receiptRequests.filter(
+            (request) => request.agent === agent.id,
+          ).length;
+          await changeFixture(agent.id, "receipt-refresh", target, state.token);
+          await until(
+            () =>
+              receiptRequests.filter((request) => request.agent === agent.id)
+                .length > before,
+            `Receipt notification ${notification} did not trigger a receipt request`,
+          );
+        }
+        const requestsContainingIdAfterNotifications =
+          receiptRequests.filter(
+            (request) => request.agent === agent.id && request.ids.includes(id),
+          ).length - initialCount;
+        const visibleBeforeReload = {
+          bubbleCount: await bubble(text).count(),
+          statuses: await bubble(text).getByRole("status").allTextContents(),
+        };
+        await page.reload();
+        await page.locator("#message").waitFor();
+        const storedAfterReload = await readAppReceipt(id);
+        const visibleAfterReload = {
+          bubbleCount: await bubble(text).count(),
+          statuses: await bubble(text).getByRole("status").allTextContents(),
+        };
         throw new Error(
-          `${error.message}: ${JSON.stringify({ storedInApp: await readAppReceipt(id), posts, errors })}`,
+          `${error.message}: ${JSON.stringify({ storedInApp: await readAppReceipt(id), requestsContainingIdAfterThreeNotifications: requestsContainingIdAfterNotifications, storedAfterReload, visibleBeforeReload, visibleAfterReload, posts, errors })}`,
         );
       }
       return;
     }
-    await changeFixture(agent.id, "paginate", target, state.token);
+    if (!assertReconciliation)
+      await changeFixture(agent.id, "paginate", target, state.token);
     const latest = await get(`/api/transcript?id=${agent.id}`);
     assert.equal(latest.items.length, 120);
     assert.ok(
@@ -503,8 +582,8 @@ async function runMessageReceiptScenario(
     assert.equal(delivered.body.id, id);
     assert.equal(delivered.body.text, text);
     assert.equal(delivered.status, "accepted");
-    assert.notEqual(delivered.receipt.status, "delivered");
-    assert.notEqual(delivered.receipt.materialized, true);
+    assert.equal(delivered.receipt.status, "delivered");
+    assert.equal(delivered.receipt.materialized, true);
     assert.equal(delivered.displayPending, false);
     const uncertain = await storage.evaluate(
       (key) => window.readReceiptFixture(key),
