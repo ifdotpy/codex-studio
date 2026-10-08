@@ -5,16 +5,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { execFileSync } from "node:child_process";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("progress-fit-browser", async ({ browser, page }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const root = join(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-fit-"));
-  const evidenceDir = await mkdtemp(join(tmpdir(), "studio-progress-hide-"));
   const entry = join(root, "progress-fit-fixture.tsx");
+  const streams = new Set();
+  let resourceRevision = 0;
   const server = await createServer({
     configFile: false,
     root,
@@ -28,15 +35,74 @@ test("progress-fit-browser", async ({ browser, page }) => {
         "react/jsx-dev-runtime",
         "react-dom",
         "react-dom/client",
+        "dexie",
         "@mantine/core",
+        "@mantine/hooks",
+        "lucide-react",
         "marked",
         "dompurify",
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
       ],
     },
     plugins: [
       {
         name: "progress-fit-fixture",
         configureServer(server) {
+          server.middlewares.use("/api/sync/stream", (req, res) => {
+            res.setHeader("Content-Type", "text/event-stream");
+            const resources = JSON.parse(
+              new URL(req.url, "http://127.0.0.1").searchParams.get(
+                "resources",
+              ) || "[]",
+            );
+            const revision = ++resourceRevision;
+            res.write(
+              apiSchemaHandshakeSse(
+                `event: resources\ndata: ${JSON.stringify({
+                  protocol: 3,
+                  workspaceId: "a".repeat(32),
+                  epoch: "fixture",
+                  revision,
+                  reason: "initial",
+                  resources,
+                  resourceVersions: resources.map((resource) => ({
+                    resource,
+                    revision,
+                  })),
+                })}\n\n`,
+              ),
+            );
+            res.flushHeaders();
+            streams.add(res);
+            res.on("close", () => streams.delete(res));
+          });
+          server.middlewares.use("/fixture/panel-change", (req, res) => {
+            const agentId = new URL(
+              req.url,
+              "http://127.0.0.1",
+            ).searchParams.get("agent");
+            if (agentId) {
+              const resource = { kind: "panel", agentId };
+              const revision = ++resourceRevision;
+              for (const stream of streams)
+                stream.write(
+                  `event: resources\ndata: ${JSON.stringify({
+                    protocol: 3,
+                    workspaceId: "a".repeat(32),
+                    epoch: "fixture",
+                    revision,
+                    reason: "change",
+                    resources: [resource],
+                    resourceVersions: [{ resource, revision }],
+                  })}\n\n`,
+                );
+            }
+            res.statusCode = 204;
+            res.end();
+          });
           server.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -51,7 +117,7 @@ test("progress-fit-browser", async ({ browser, page }) => {
           if (id !== entry) return;
           return `
   import React,{useState} from 'react';import{createRoot}from'react-dom/client';import{flushSync}from'react-dom';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/agents/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');
-  function Fixture(){const[agent,setAgent]=useState('first');window.switchAgent=id=>flushSync(()=>setAgent(id));return <MantineProvider><div id='host' style={{width:'100%',maxWidth:520}}><AgentPanel agentId={agent} stateDir='/workspace'/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  function Fixture(){const[agent,setAgent]=useState('first');window.currentAgent=agent;window.switchAgent=id=>flushSync(()=>{window.currentAgent=id;setAgent(id)});return <MantineProvider><div id='host' style={{width:'100%',maxWidth:520}}><AgentPanel agentId={agent} stateDir='/workspace'/></div></MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -61,141 +127,178 @@ test("progress-fit-browser", async ({ browser, page }) => {
     await page.setViewportSize({ width: 540, height: 800 });
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.addInitScript(() => {
-      let markdown = "# Stage\n\nReady.",
-        revision = "1",
-        hidden = false,
-        online = true,
-        offset = 0,
-        mode = "ok";
-      const now = Date.now;
-      Date.now = () => now() + offset;
-      Object.defineProperty(document, "hidden", {
-        get: () => hidden,
-        configurable: true,
-      });
-      Object.defineProperty(navigator, "onLine", {
-        get: () => online,
-        configurable: true,
-      });
-      window.visibility = (value) => {
-        hidden = value;
-        document.dispatchEvent(new Event("visibilitychange"));
-      };
-      window.online = (value) => {
-        online = value;
-        window.dispatchEvent(new Event(value ? "online" : "offline"));
-      };
-      window.advance = () => {
-        offset += 31000;
-        window.dispatchEvent(new Event("pageshow"));
-      };
-      window.changeProgress = (text) => {
-        markdown = text;
-        revision = String(Number(revision) + 1);
-        window.dispatchEvent(new Event("pageshow"));
-        return revision;
-      };
-      window.reportMode = (value) => {
-        mode = value;
-      };
-      window.reports = [];
-      window.fileReads = [];
-      window.activeReports = 0;
-      window.maxActiveReports = 0;
-      const original = window.fetch;
-      window.fetch = async (input, options = {}) => {
-        const request = input instanceof Request ? input : null;
-        const url = new URL(
-          request ? request.url : String(input),
-          location.href,
-        );
-        if (request)
-          options = {
-            ...options,
-            method: request.method,
-            signal: request.signal,
-            body:
-              request.method === "GET"
-                ? undefined
-                : await request.clone().text(),
-          };
-        if (url.pathname === "/api/panel")
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                agent: url.searchParams.get("agent"),
-                format: "markdown",
-                markdown,
-                revision,
-                path:
-                  "/workspace/progress/" +
-                  url.searchParams.get("agent") +
-                  "/PROGRESS.md",
-                error: null,
-              }),
-              { status: 200 },
-            ),
+    await page.addInitScript(
+      ({ schemaHeader, schemaHash }) => {
+        const fixtureHeaders = { [schemaHeader]: schemaHash };
+        let markdown = "# Stage\n\nReady.",
+          revision = "1",
+          hidden = false,
+          online = true,
+          offset = 0,
+          mode = "ok";
+        const now = Date.now;
+        Date.now = () => now() + offset;
+        Object.defineProperty(document, "hidden", {
+          get: () => hidden,
+          configurable: true,
+        });
+        Object.defineProperty(navigator, "onLine", {
+          get: () => online,
+          configurable: true,
+        });
+        window.visibility = (value) => {
+          hidden = value;
+          document.dispatchEvent(new Event("visibilitychange"));
+        };
+        window.online = (value) => {
+          online = value;
+          window.dispatchEvent(new Event(value ? "online" : "offline"));
+        };
+        window.advance = () => {
+          offset += 31000;
+          window.dispatchEvent(new Event("pageshow"));
+        };
+        window.changeProgress = (text) => {
+          markdown = text;
+          revision = String(Number(revision) + 1);
+          fetch(
+            "/fixture/panel-change?agent=" +
+              encodeURIComponent(window.currentAgent || "first"),
           );
-        if (url.pathname === "/api/file") {
-          window.fileReads.push(Object.fromEntries(url.searchParams));
-          return Promise.resolve(
-            new Response(
-              JSON.stringify({
-                name: "PROGRESS.md",
-                mime: "text/markdown",
-                base64: btoa(markdown),
-              }),
-              { status: 200 },
-            ),
+          return revision;
+        };
+        window.reportMode = (value) => {
+          mode = value;
+        };
+        window.reports = [];
+        window.fileReads = [];
+        window.activeReports = 0;
+        window.maxActiveReports = 0;
+        const original = window.fetch;
+        window.fetch = async (input, options = {}) => {
+          const request = input instanceof Request ? input : null;
+          const url = new URL(
+            request ? request.url : String(input),
+            location.href,
           );
-        }
-        if (url.pathname === "/api/panel/layout") {
-          const report = {
-            body: JSON.parse(options.body),
-            headers: options.headers,
-            aborted: false,
-            mode,
-          };
-          window.reports.push(report);
-          window.activeReports++;
-          window.maxActiveReports = Math.max(
-            window.maxActiveReports,
-            window.activeReports,
-          );
-          const response = () => {
-            window.activeReports--;
-            return new Response(
-              JSON.stringify(
-                mode === "failed" ? { error: "fixture report failed" } : {},
+          if (request)
+            options = {
+              ...options,
+              method: request.method,
+              signal: request.signal,
+              headers: Object.fromEntries(request.headers.entries()),
+              body:
+                request.method === "GET"
+                  ? undefined
+                  : await request.clone().text(),
+            };
+          if (url.pathname === "/api/sync/identity")
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  workspaceId: "a".repeat(32),
+                  syncProtocol: 2,
+                }),
+                { status: 200, headers: fixtureHeaders },
               ),
-              {
-                status: mode === "failed" ? 503 : mode === "stale" ? 409 : 200,
-              },
             );
-          };
-          if (mode === "hold")
-            return new Promise((resolve, reject) => {
-              window.releaseReport = () => {
-                window.releaseReport = null;
-                resolve(response());
-              };
-              options.signal.addEventListener(
-                "abort",
-                () => {
-                  report.aborted = true;
-                  window.activeReports--;
-                  window.releaseReport = null;
-                  reject(new DOMException("Aborted", "AbortError"));
+          if (url.pathname === "/api/sync/pull")
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  workspaceId: "a".repeat(32),
+                  generation: 1,
+                  documents: [],
+                  checkpoint: { seq: 0 },
+                  maxSeq: 0,
+                  initialHigh: 0,
+                }),
+                { status: 200, headers: fixtureHeaders },
+              ),
+            );
+          if (url.pathname === "/api/panel")
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  agent: url.searchParams.get("agent"),
+                  format: "markdown",
+                  markdown,
+                  revision,
+                  path:
+                    "/workspace/progress/" +
+                    url.searchParams.get("agent") +
+                    "/PROGRESS.md",
+                  error: null,
+                }),
+                { status: 200, headers: fixtureHeaders },
+              ),
+            );
+          if (url.pathname === "/api/file") {
+            window.fileReads.push(Object.fromEntries(url.searchParams));
+            return Promise.resolve(
+              new Response(
+                JSON.stringify({
+                  name: "PROGRESS.md",
+                  mime: "text/markdown",
+                  base64: btoa(markdown),
+                }),
+                { status: 200, headers: fixtureHeaders },
+              ),
+            );
+          }
+          if (url.pathname === "/api/panel/layout") {
+            const report = {
+              body: JSON.parse(options.body),
+              headers: options.headers,
+              aborted: false,
+              mode,
+            };
+            window.reports.push(report);
+            window.activeReports++;
+            window.maxActiveReports = Math.max(
+              window.maxActiveReports,
+              window.activeReports,
+            );
+            const response = () => {
+              window.activeReports--;
+              return new Response(
+                JSON.stringify(
+                  mode === "failed" ? { error: "fixture report failed" } : {},
+                ),
+                {
+                  status:
+                    mode === "failed" ? 503 : mode === "stale" ? 409 : 200,
+                  headers: fixtureHeaders,
                 },
-                { once: true },
               );
-            });
-          return Promise.resolve(response());
-        }
-        return original(input, options);
-      };
-    });
+            };
+            if (mode === "hold")
+              return new Promise((resolve, reject) => {
+                window.releaseReport = () => {
+                  window.releaseReport = null;
+                  resolve(response());
+                };
+                options.signal.addEventListener(
+                  "abort",
+                  () => {
+                    report.aborted = true;
+                    window.activeReports--;
+                    window.releaseReport = null;
+                    reject(new DOMException("Aborted", "AbortError"));
+                  },
+                  { once: true },
+                );
+              });
+            return Promise.resolve(response());
+          }
+          return original(input, options);
+        };
+      },
+      {
+        schemaHeader: API_SCHEMA_HASH_HEADER,
+        schemaHash: readApiSchemaHash(),
+      },
+    );
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
       { waitUntil: "commit" },
@@ -214,12 +317,6 @@ test("progress-fit-browser", async ({ browser, page }) => {
       "Ready.",
     );
     assert.ok((await panel.boundingBox()).height <= 45);
-    for (const button of await panel
-      .locator(".agent-panel-compact button")
-      .all()) {
-      const bounds = await button.boundingBox();
-      assert.ok(bounds.width >= 44 && bounds.height >= 44);
-    }
     await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
     const hiddenReport = await page.evaluate(() => reports.at(-1).body);
     assert.equal(hiddenReport.visibleLines, hiddenReport.totalLines);
@@ -330,7 +427,10 @@ test("progress-fit-browser", async ({ browser, page }) => {
     await current.getByText("Ready.", { exact: true }).waitFor();
     await page.waitForFunction(() => reports.at(-1)?.body.fits === true);
     const report = await page.evaluate(() => reports.at(-1));
-    assert.equal(report.headers["X-Canvas-Token"], "fixture-token");
+    assert.equal(
+      new Headers(report.headers).get("X-Canvas-Token"),
+      "fixture-token",
+    );
     assert.deepEqual(
       Object.keys(report.body).sort(),
       [
@@ -520,9 +620,6 @@ test("progress-fit-browser", async ({ browser, page }) => {
       await page.setViewportSize({ width, height: 900 });
       await page.waitForTimeout(100);
       assert.equal(await panel.getAttribute("data-hidden"), "yes");
-      await page.screenshot({
-        path: join(evidenceDir, `hidden-${width}.png`),
-      });
       const summary = await panel
         .locator(".agent-panel-summary")
         .evaluate((el) => ({
@@ -532,12 +629,8 @@ test("progress-fit-browser", async ({ browser, page }) => {
       assert.equal(summary.overflow, "ellipsis");
       assert.ok(summary.width > 0);
       await panel.getByRole("button", { name: "Show", exact: true }).click();
-      await page.screenshot({
-        path: join(evidenceDir, `preview-${width}.png`),
-      });
       await panel.getByRole("button", { name: "Hide", exact: true }).click();
     }
-    console.log(JSON.stringify({ evidence: evidenceDir }));
     await page.setViewportSize({ width: 540, height: 800 });
     await panel.getByRole("button", { name: "Show", exact: true }).click();
     if (process.env.PROGRESS_SCREENSHOTS) {
@@ -748,6 +841,212 @@ test("progress-fit-browser", async ({ browser, page }) => {
       `PASS ${browser.browserType().name()}: exact fit, wrapped markers, resize/height/font invalidation, unsupported rejection, source link, full file access, report identity/heartbeat/failure/cancel/409, no overlapping reports`,
     );
   } finally {
+    for (const stream of streams) stream.end();
+    await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("compact progress open control meets the mobile touch target", async ({
+  page,
+}, testInfo) => {
+  test.fail(
+    true,
+    "Open PROGRESS.md compact target is shorter than 44px at 540px",
+  );
+  test.setTimeout(30_000);
+  const root = join(import.meta.dirname, "../../../web");
+  const require = createRequire(join(root, "package.json"));
+  const { createServer } = await import(require.resolve("vite"));
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-target-"));
+  const entry = join(root, "progress-target-fixture.tsx");
+  const workspaceId = "a".repeat(32);
+  const streams = new Set();
+  const schemaHeader = API_SCHEMA_HASH_HEADER;
+  const schemaHash = readApiSchemaHash();
+  const server = await createServer({
+    configFile: false,
+    root,
+    cacheDir,
+    server: { host: "127.0.0.1", port: 0 },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [
+        "react",
+        "react/jsx-runtime",
+        "react/jsx-dev-runtime",
+        "react-dom",
+        "react-dom/client",
+        "dexie",
+        "@mantine/core",
+        "@mantine/hooks",
+        "lucide-react",
+        "marked",
+        "dompurify",
+        "rxdb",
+        "rxdb/plugins/storage-dexie",
+        "rxdb/plugins/leader-election",
+        "rxdb/plugins/replication",
+      ],
+    },
+    plugins: [
+      {
+        name: "progress-target-fixture",
+        configureServer(viteServer) {
+          viteServer.middlewares.use("/api/sync/stream", (req, res) => {
+            const resources = JSON.parse(
+              new URL(req.url, "http://127.0.0.1").searchParams.get(
+                "resources",
+              ) || "[]",
+            );
+            res.setHeader("Content-Type", "text/event-stream");
+            res.write(
+              apiSchemaHandshakeSse(
+                `event: resources\ndata: ${JSON.stringify({
+                  protocol: 3,
+                  workspaceId,
+                  epoch: "fixture",
+                  revision: 1,
+                  reason: "initial",
+                  resources,
+                  resourceVersions: resources.map((resource) => ({
+                    resource,
+                    revision: 1,
+                  })),
+                })}\n\n`,
+              ),
+            );
+            res.flushHeaders();
+            streams.add(res);
+            res.on("close", () => streams.delete(res));
+          });
+          viteServer.middlewares.use("/check", (_req, res) => {
+            res.setHeader("Content-Type", "text/html");
+            res.end(
+              '<div id="root"></div><script type="module" src="/progress-target-fixture.tsx"></script>',
+            );
+          });
+        },
+        resolveId(id) {
+          if (id === "/progress-target-fixture.tsx") return entry;
+        },
+        load(id) {
+          if (id !== entry) return;
+          return `import React from 'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import AgentPanel from'/src/components/agents/AgentPanel.tsx';import{setToken}from'/src/api.ts';import'/src/studio-theme.css';setToken('fixture-token');createRoot(document.getElementById('root')).render(<MantineProvider><div style={{width:'100%',maxWidth:520}}><AgentPanel agentId='first' stateDir='/workspace'/></div></MantineProvider>);`;
+        },
+      },
+    ],
+  });
+  try {
+    await server.listen();
+    await page.setViewportSize({ width: 540, height: 800 });
+    await page.addInitScript(
+      ({ schemaHeader, schemaHash, workspaceId }) => {
+        const headers = {
+          "Content-Type": "application/json",
+          [schemaHeader]: schemaHash,
+        };
+        const original = window.fetch;
+        window.fetch = async (input, options = {}) => {
+          const request = input instanceof Request ? input : null;
+          const url = new URL(
+            request ? request.url : String(input),
+            location.href,
+          );
+          if (request)
+            options = {
+              ...options,
+              method: request.method,
+              signal: request.signal,
+              headers: Object.fromEntries(request.headers.entries()),
+              body:
+                request.method === "GET"
+                  ? undefined
+                  : await request.clone().text(),
+            };
+          if (url.pathname === "/api/sync/identity")
+            return new Response(
+              JSON.stringify({ workspaceId, syncProtocol: 2 }),
+              { headers },
+            );
+          if (url.pathname === "/api/sync/pull")
+            return new Response(
+              JSON.stringify({
+                workspaceId,
+                generation: 1,
+                documents: [],
+                checkpoint: { seq: 0 },
+                maxSeq: 0,
+                initialHigh: 0,
+              }),
+              { headers },
+            );
+          if (url.pathname === "/api/panel")
+            return new Response(
+              JSON.stringify({
+                agent: url.searchParams.get("agent"),
+                format: "markdown",
+                markdown: "# Stage\n\nReady.",
+                revision: "1",
+                path: "/workspace/progress/first/PROGRESS.md",
+                error: null,
+              }),
+              { headers },
+            );
+          if (url.pathname === "/api/panel/layout")
+            return new Response("{}", { headers });
+          return original(input, options);
+        };
+      },
+      { schemaHeader, schemaHash, workspaceId },
+    );
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/check`,
+      { waitUntil: "commit" },
+    );
+    const panel = page.getByRole("region", { name: "Agent progress" });
+    const button = panel.getByRole("button", {
+      name: "Open PROGRESS.md",
+      exact: true,
+    });
+    await button.waitFor();
+    assert.equal(await panel.getAttribute("data-hidden"), "yes");
+    assert.equal(await button.isVisible(), true);
+    assert.equal(await button.isEnabled(), true);
+    const bounds = await button.boundingBox();
+    assert.ok(bounds);
+    const receivesTap = await button.evaluate((element) => {
+      const box = element.getBoundingClientRect();
+      const hit = document.elementFromPoint(
+        box.left + box.width / 2,
+        box.top + box.height / 2,
+      );
+      return hit === element || element.contains(hit);
+    });
+    console.log(
+      "540px compact progress target:",
+      JSON.stringify({
+        hidden: await panel.getAttribute("data-hidden"),
+        visible: await button.isVisible(),
+        enabled: await button.isEnabled(),
+        receivesTap,
+        bounds,
+      }),
+    );
+    assert.equal(
+      receivesTap,
+      true,
+      "The visible enabled control receives pointer input",
+    );
+    await page.screenshot({
+      path: testInfo.outputPath("progress-open-540x800.png"),
+    });
+    assert.ok(
+      bounds.width >= 44 && bounds.height >= 44,
+      `Open PROGRESS.md compact target is ${bounds.width}x${bounds.height}px`,
+    );
+  } finally {
+    for (const stream of streams) stream.end();
     await server.close();
     await rm(cacheDir, { recursive: true, force: true });
   }

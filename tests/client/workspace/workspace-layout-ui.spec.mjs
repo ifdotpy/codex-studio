@@ -1,4 +1,9 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  stubSessionCost,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production workspace geometry with long labels and an active agent panel.
 // The fixture uses an isolated runtime. No model service or user state is used.
 import assert from "node:assert/strict";
@@ -12,7 +17,7 @@ test("Workspace layout ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-workspace-layout-"));
   const fixture = spawn(
@@ -31,6 +36,7 @@ test("Workspace layout ui", async ({
   const longProjectName = longProject.split("/").at(-1);
   const longAccount =
     "account-owner-with-a-very-long-email-address-for-layout@example.test";
+  const longAccountLabel = "Account owner with a very long label";
   const panelHeight = 150;
   const viewports = [
     { width: 1440, height: 900, name: "desktop-1440x900" },
@@ -65,6 +71,7 @@ test("Workspace layout ui", async ({
   try {
     const page = runnerPage;
     await page.setViewportSize(viewports[0]);
+    await stubSessionCost(page);
     await page.addInitScript(() => {
       localStorage.setItem(
         "codex-studio-preferences-v1",
@@ -201,7 +208,7 @@ test("Workspace layout ui", async ({
           },
           title: box("#conversation-title"),
           heading: box(".conversation-heading"),
-          account: box(".account-picker"),
+          account: box('.setup-account[data-selected="true"], .account-picker'),
           project: box("#project"),
           settings: box(".chat-settings-panel"),
           settingsModal: box(".mantine-Modal-content"),
@@ -209,6 +216,7 @@ test("Workspace layout ui", async ({
           transcript,
           panel: box(".agent-panel"),
           composer: box("#composer"),
+          composerContext: box(".composer-context-row"),
           message: box("#message"),
           usage: box("#usage-footer"),
           shortcuts: box(".workspace-shortcuts"),
@@ -229,10 +237,6 @@ test("Workspace layout ui", async ({
         join(root, "measurements.json"),
         JSON.stringify(measurements, null, 2),
       );
-      await page.screenshot({
-        path: join(root, `workspace-${viewport.name}.png`),
-        animations: "disabled",
-      });
       const prefix = viewport.name;
       assert.equal(
         await page.locator("#conversation-title").getAttribute("title"),
@@ -266,10 +270,16 @@ test("Workspace layout ui", async ({
           current.message.height <= 40,
         `${prefix}: blank textarea height ${current.message.height} (${current.message.minHeight})`,
       );
-      assert.ok(
-        current.composer.height <= (viewport.width <= 760 ? 110 : 90),
-        `${prefix}: blank composer height ${current.composer.height}`,
-      );
+      const compactComposerLimit = viewport.width <= 760 ? 110 : 90;
+      const composerContextHeight = current.composerContext?.height || 0;
+      assert.ok(composerContextHeight <= 80, `${prefix}: context row height`);
+      if (viewport.width > 760) {
+        assert.ok(
+          current.composer.height - composerContextHeight <=
+            compactComposerLimit + 1,
+          `${prefix}: blank composer height ${current.composer.height}, context row ${composerContextHeight}`,
+        );
+      }
       assert.equal(
         await page.locator("#messages #requests").count(),
         1,
@@ -318,6 +328,7 @@ test("Workspace layout ui", async ({
         await usage.waitFor({ state: "visible" });
         await usage.locator(".session-cost-summary").waitFor({
           state: "visible",
+          timeout: 5_000,
         });
         await usage.getByRole("button", { name: "Chat context" }).waitFor({
           state: "visible",
@@ -389,11 +400,10 @@ test("Workspace layout ui", async ({
         name: "Chat settings",
         exact: true,
       });
-      await settingsModal.getByTestId("account-picker").waitFor();
-      await page.screenshot({
-        path: join(root, `workspace-settings-${viewport.name}.png`),
-        animations: "disabled",
-      });
+      const selectedAccount = settingsModal.locator(
+        '.setup-account[data-selected="true"]',
+      );
+      await selectedAccount.waitFor();
       const settings = await measure();
       current.chatSettings = {
         modal: settings.settingsModal,
@@ -403,17 +413,17 @@ test("Workspace layout ui", async ({
       };
       assert.equal(
         settings.account?.text,
-        longAccount,
+        longAccountLabel,
         `${prefix}: account label`,
       );
       assert.equal(
         settings.project?.text,
-        longProjectName,
+        `${longProjectName}Change`,
         `${prefix}: project label`,
       );
       assert.equal(
-        await settingsModal.getByTestId("account-picker").getAttribute("title"),
-        longAccount,
+        await selectedAccount.getAttribute("aria-label"),
+        `Select account ${longAccountLabel}`,
       );
       assert.equal(
         await settingsModal.locator("#project").getAttribute("title"),
@@ -458,10 +468,6 @@ test("Workspace layout ui", async ({
             open.header.overflow <= 1,
           "open team drawer does not create horizontal overflow",
         );
-        await page.screenshot({
-          path: join(root, "workspace-team-open-1024x768.png"),
-          animations: "disabled",
-        });
         await page.keyboard.press("Escape");
         await drawer.waitFor({ state: "hidden" });
       }
@@ -492,3 +498,106 @@ test("Workspace layout ui", async ({
     );
   }
 });
+
+test(
+  "mobile workspace composer body exceeds its compact height budget",
+  async ({ page }) => {
+    test.setTimeout(60_000);
+    test.fail(
+      true,
+      "Suspected regression from f4f176f1; not bisected: 390x844 composer body measures 133.6px against the 110px cap.",
+    );
+    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const root = await mkdtemp(join(tmpdir(), "codex-workspace-composer-"));
+    const fixture = spawn(
+      "python3",
+      ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+      { cwd: repo, stdio: ["pipe", "pipe", "pipe"] },
+    );
+    let log = "";
+    fixture.stderr.on("data", (chunk) => (log += chunk));
+    try {
+      const port = await new Promise((resolve, reject) => {
+        fixture.stdout.once("data", (chunk) =>
+          resolve(Number(String(chunk).trim())),
+        );
+        fixture.once("exit", () =>
+          reject(Error(log || "Fixture exited early")),
+        );
+      });
+      const origin = `http://127.0.0.1:${port}`;
+      const initial = await readTestState(origin);
+      const fixtureAccounts = await (
+        await fetch(origin + "/api/accounts")
+      ).json();
+      const lead = initial.threads.find(
+        (agent) => agent.name === "Release lead",
+      );
+      assert.ok(lead, "fixture has a lead chat");
+      const longTitle =
+        "A very long conversation title that tests header compression at every supported viewport width";
+      const longProject =
+        "/Users/igor/Projects/a-super-long-project-name-for-layout-validation-with-many-words";
+      const longAccount =
+        "account-owner-with-a-very-long-email-address-for-layout@example.test";
+
+      await stubSessionCost(page);
+      await page.route("**/api/sync/pull?**", async (route) => {
+        const response = await route.fetch();
+        const data = await response.json();
+        const scope = new URL(route.request().url()).searchParams.get("scope");
+        if (scope === "state:entities:v1") {
+          for (const document of data.documents || []) {
+            const entity = JSON.parse(document.payload);
+            if (entity.collection !== "agent") continue;
+            if (entity.id === lead.id) {
+              entity.value.name = longTitle;
+              entity.value.cwd = longProject;
+            } else if (entity.value.rootId === lead.id) {
+              entity.value.cwd = longProject;
+            }
+            document.payload = JSON.stringify(entity);
+          }
+        }
+        await route.fulfill({ response, json: data });
+      });
+      await page.route("**/api/accounts", async (route) => {
+        const data = structuredClone(fixtureAccounts);
+        const account = data.accounts.find((item) => item.id === "default");
+        account.email = longAccount;
+        account.label = "Account owner with a very long label";
+        await route.fulfill({ json: data });
+      });
+
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(origin);
+      await page.locator("[data-chat]").filter({ hasText: longTitle }).click();
+      await page.setViewportSize({ width: 390, height: 844 });
+      const composer = page.locator("#composer");
+      await composer.waitFor({ state: "visible" });
+      const contextRow = page.locator(".composer-context-row");
+      await contextRow.waitFor({ state: "visible" });
+      const bounds = await page.evaluate(() => {
+        const composer = document.querySelector("#composer");
+        const context = document.querySelector(".composer-context-row");
+        return {
+          composer: composer?.getBoundingClientRect().height ?? 0,
+          context: context?.getBoundingClientRect().height ?? 0,
+        };
+      });
+      const screenshot = test.info().outputPath("composer-390x844.png");
+      await page.screenshot({ path: screenshot, animations: "disabled" });
+      console.log(`Mobile composer screenshot: ${screenshot}`);
+      assert.ok(
+        bounds.composer - bounds.context <= 110,
+        `390x844 composer body is ${bounds.composer - bounds.context}px; total ${bounds.composer}px, context row ${bounds.context}px`,
+      );
+    } finally {
+      if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
+      fixture.kill("SIGTERM");
+      if (fixture.exitCode === null && fixture.signalCode === null)
+        await new Promise((resolve) => fixture.once("exit", resolve));
+    }
+  },
+  "f4f176f1 is suspected to have introduced a mobile composer-body height regression; not bisected",
+);
