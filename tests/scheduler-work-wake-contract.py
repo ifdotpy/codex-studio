@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 from contextlib import contextmanager
+import base64
 import hashlib
 import importlib.util
 import json
@@ -242,6 +243,47 @@ class WorkWakeContract(unittest.TestCase):
             self.assertTrue(rt.changed.consume_dispatch())
         with rt.read_db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id='native-result'").fetchone()[0], 1)
+
+    def test_real_monitor_output_keeps_work_clear_and_exit_wakes_once(self):
+        rt = QuietRuntime(Path(self.directory.name), server_factory=object)
+        self.addCleanup(rt.close)
+        lead = rt.create({'name': 'Fixture', 'cwd': self.directory.name, 'prompt': 'Work'}, defer=True)
+        with rt.lock, rt.db() as db:
+            actor = rt.agent(lead['id'], db)
+            actor.update(autoWake=True, status='waiting')
+            rt.put(db, 'agents', actor)
+        monitor = rt.monitor(lead['id'], {'command': 'fixture command'}, key='output-fixture')
+        with rt.lock, rt.db() as db:
+            monitor.update(status='running')
+            rt.put(db, 'monitors', monitor)
+        rt.connection_ids['default'] = 'fixture-connection'
+        rt.changed.consume_dispatch()
+        self.assertFalse(rt.changed.is_set())
+        chunks = [b'first line\n', 'готово\n'.encode()]
+        for chunk in chunks:
+            rt.output({'processId': monitor['id'], 'deltaBase64': base64.b64encode(chunk).decode()},
+                      'default', 'fixture-connection')
+            self.assertFalse(rt.changed.consume_dispatch())
+            self.assertFalse(rt.changed.is_set())
+        expected = b''.join(chunks)
+        self.assertEqual(Path(monitor['log']).read_bytes(), expected)
+        with rt.read_db() as db:
+            saved = json.loads(db.execute('SELECT record FROM runtime_monitors WHERE id=?',
+                                          (monitor['id'],)).fetchone()[0])
+            payload = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='monitor' AND id=?",
+                                            (monitor['id'],)).fetchone()[0])
+        self.assertEqual(saved['bytes'], len(expected))
+        self.assertEqual(saved['tail'], expected.decode())
+        self.assertEqual(saved['activityGeneration'], len(chunks))
+        self.assertEqual(payload['value']['bytes'], len(expected))
+        self.assertEqual(payload['value']['tail'], expected.decode())
+        rt.finish_monitor(monitor['id'], 0, None)
+        self.assertTrue(rt.changed.consume_dispatch())
+        self.assertFalse(rt.changed.is_set())
+        rt.finish_monitor(monitor['id'], 0, None)
+        with rt.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE id=?",
+                                        ('monitor:' + monitor['id'],)).fetchone()[0], 1)
 
     def test_output_storm_large_roster_cpu_and_correctness(self):
         # The existing roster fixture owns a real private journal and deep-copy cache.

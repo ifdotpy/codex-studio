@@ -45,7 +45,7 @@ def record_needs_dispatch(
             ignored = frozenset(("tail", "outputTruncated"))
         elif table == "monitors":
             # The monitor phase checks the current activity deadline independently.
-            ignored = frozenset(("tail", "activityAt", "activityGeneration"))
+            ignored = frozenset(("bytes", "tail", "activityAt", "activityGeneration"))
     return previous is None or any(
         previous.get(field) != current.get(field) for field in (previous.keys() | current.keys()) - ignored
     )
