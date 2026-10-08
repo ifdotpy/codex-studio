@@ -342,6 +342,36 @@ test("Message receipt pagination browser", async ({
     await bubble(uncertainText)
       .getByText("Delivery unconfirmed", { exact: true })
       .waitFor();
+    // The delivery status and the message actions must not overlap.
+    await bubble(uncertainText).hover();
+    const boxes = await bubble(uncertainText).evaluate((node) => {
+      const status = node.querySelector(".message-delivery-heading");
+      const actions = node.querySelector(".message-bottom");
+      return [status, actions].map((element) => {
+        const rect = element?.getBoundingClientRect();
+        return rect
+          ? {
+              left: rect.left,
+              right: rect.right,
+              top: rect.top,
+              bottom: rect.bottom,
+            }
+          : null;
+      });
+    });
+    const [statusBox, actionsBox] = boxes;
+    if (statusBox && actionsBox)
+      assert.ok(
+        statusBox.bottom <= actionsBox.top ||
+          actionsBox.bottom <= statusBox.top ||
+          statusBox.right <= actionsBox.left ||
+          actionsBox.right <= statusBox.left,
+        `Delivery status overlaps message actions: ${JSON.stringify(boxes)}`,
+      );
+    if (process.env.DELIVERY_SCREENSHOT)
+      await bubble(uncertainText).screenshot({
+        path: process.env.DELIVERY_SCREENSHOT,
+      });
     assert.equal(
       posts.length,
       0,

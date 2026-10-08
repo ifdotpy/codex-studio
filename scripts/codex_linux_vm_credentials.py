@@ -57,6 +57,8 @@ def sync_credentials(runtime, client, account_key, *, previous_hash=None):
     if account_snapshot(runtime, account_key).get('provider', 'codex') == 'codex':
         identity = [file, codex_access(runtime, account_key, proactive=False)]
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
+    from codex_linux_vm_git import sync_git_identity
+    sync_git_identity(runtime, client, force=previous_hash is None)
     if digest != previous_hash:
         identity = 'credentials:' + hashlib.sha256(account_key.encode()).hexdigest()[:24] + ':' + digest
         client.request('credentials.put', {'files': [file]}, request_id=identity, timeout=15)

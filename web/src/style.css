@@ -2186,3 +2186,17 @@ html body #root {
   opacity: 1;
   pointer-events: auto;
 }
+
+/* Delivery status and message actions both sit under a user bubble. Stack
+   them so the status never covers the action buttons. */
+@media (min-width: 761px) and (hover: hover) and (pointer: fine) {
+  .ai-conversation
+    .message.user:has(.message-delivery-heading, .message-delivery-inline)
+    .message-bottom {
+    top: calc(100% + 24px);
+  }
+  .ai-conversation
+    .message.user:has(.message-delivery-heading, .message-delivery-inline) {
+    margin-bottom: 52px;
+  }
+}

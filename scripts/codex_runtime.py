@@ -5487,8 +5487,22 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if agent.get("imageWorkspaceNoticeId") != message_id:
                     agent["imageWorkspaceNoticeId"] = message_id
                     agent["imageWorkspaceNoticeText"] = text
+                    agent.pop("imageWorkspaceHandoffText", None)
+                    if (message_id == "image-workspace-ready:" + agent_id
+                            and (agent.get("turnId")
+                                 or (agent.get("startAttempt") or {}).get("submitted"))):
+                        # Steer cannot replace an active provider's cwd or permissions.
+                        # Save both inputs before transport so retries keep their content.
+                        agent["imageWorkspaceHandoffText"] = (
+                            "[Studio image workspace ready] Your copy is ready at "
+                            + agent["cwd"] + ". End this turn now; "
+                            "the next turn runs in the copy with write access.")
                     self.put(db, "agents", agent)
                 text = agent["imageWorkspaceNoticeText"]
+                handoff = agent.get("imageWorkspaceHandoffText")
+            if handoff:
+                self.send(agent_id, handoff, "image-workspace-handoff:" + agent_id,
+                          manual=False, delivery="steer")
             self.send(agent_id, text, message_id, manual=False, delivery="after_turn")
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
@@ -8138,9 +8152,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         text += ("\n\n[Studio Linux VM workspace] Studio starts this task after the Linux base is ready."
                                  if child.get("environment") == "linux" else
                                  "\n\n[Studio image workspace] Studio is building the base. "
-                                 "This turn is read-only until Studio sends a workspace-ready notice. "
+                                 "This turn is read-only. Studio sends a workspace-ready notice when the copy is ready. "
                                  "Read the source folder at " + child["cwd"]
-                                 + " by its absolute path. Do not write to that folder.")
+                                 + " by its absolute path. Do not write to that folder. "
+                                 "You may read the source now. End this turn if no more read-only work remains. "
+                                 "Studio starts the next turn in the copy when it is ready. "
+                                 "When the workspace-ready notice arrives, follow its instruction to continue in the copy.")
                         image_base_jobs.append((child["imageWorkspaceRepo"], child["id"]))
                     elif child.get("imageWorkspaceError"):
                         fallback = ("Studio will use a Git worktree." if child.get("worktree")

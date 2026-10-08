@@ -2860,7 +2860,7 @@ export default function App() {
               accountKey={accountKey}
               active={settingsOpen && (agent || lead)?.provider !== "claude"}
             />
-            <SettingsRow label="Account">
+            <SettingsRow label="Account" stacked>
               <Accounts
                 onModalOpenChange={setAccountModalOpen}
                 projectAccountKeys={
