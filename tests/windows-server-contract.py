@@ -145,6 +145,7 @@ class WindowsServerContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory(prefix="studio identity Ω ") as temporary:
             state = Path(temporary) / "state with spaces Ω"
+            state.mkdir()
             service = object.__new__(MultiServerService)
             service.lock = threading.RLock()
             service._identity = None
