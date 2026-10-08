@@ -18,6 +18,7 @@ from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN
 from codex_private_paths import ensure_private_dir, protect, protect_temp_file
 from codex_process_supervisor import process_start_time
 from codex_state import cache_dir, codex_home, state_dir
+from codex_native_binary import native_candidate
 
 
 WINDOWS = os.name == "nt"
@@ -58,11 +59,62 @@ class WindowsPlatformContract(unittest.TestCase):
                                       capture_output=True, text=True, check=True).stdout
             account_name = identity.split(",", 1)[0].strip().strip('"').casefold()
             for target in (root, final_file):
+                subprocess.run(["icacls.exe", str(target), "/grant", "*S-1-1-0:F"],
+                               capture_output=True, text=True, check=True, timeout=10)
+                protect(target, directory=target.is_dir())
                 output = subprocess.run(["icacls.exe", str(target)], capture_output=True,
                                         text=True, check=True, timeout=10).stdout.casefold()
                 self.assertNotIn("everyone", output)
                 self.assertNotIn("\\builtin\\users", output)
                 self.assertIn(account_name, output)
+                principals = [line.strip().casefold() for line in output.splitlines()
+                               if ":(" in line]
+                self.assertEqual(len(principals), 1, output)
+                self.assertIn(account_name, principals[0], output)
+
+    def test_supervisor_metadata_read_while_lock_is_held(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "supervisor.lock"
+            path.write_text('{"pid":123,"owner":"metadata"}', encoding="utf-8")
+            worker = """
+import sys, time
+sys.path.insert(0, sys.argv[2])
+from codex_file_lock import flock, LOCK_EX
+with open(sys.argv[1], 'r+') as handle:
+    flock(handle, LOCK_EX)
+    print('locked', flush=True)
+    time.sleep(60)
+"""
+            process = subprocess.Popen([sys.executable, "-c", worker, str(path), str(ROOT / "scripts")],
+                                       stdout=subprocess.PIPE, text=True)
+            try:
+                self.assertEqual(process.stdout.readline().strip(), "locked")
+                self.assertIn(b'"owner":"metadata"', path.read_bytes())
+            finally:
+                process.kill()
+                process.wait(timeout=10)
+                process.stdout.close()
+
+    def test_windows_npm_shim_layouts_resolve_native_bundle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            package = base / "node_modules" / "@openai" / "codex"
+            binary_dir = package / "vendor" / "x86_64-pc-windows-msvc" / "bin"
+            binary_dir.mkdir(parents=True)
+            (package / "package.json").write_text('{"name":"@openai/codex"}', encoding="utf-8")
+            (package / "bin").mkdir()
+            (package / "bin" / "codex.js").write_text("// shim target", encoding="utf-8")
+            binary = binary_dir / "codex.exe"
+            binary.write_bytes(b"binary")
+            root_shim = base / "npm" / "codex.cmd"
+            root_shim.parent.mkdir()
+            root_shim.write_text('@echo off\r\nnode "%~dp0\\node_modules\\@openai\\codex\\bin\\codex.js" %*\r\n', encoding="utf-8")
+            local_bin = base / "project" / "node_modules" / ".bin"
+            local_bin.mkdir(parents=True)
+            local_shim = local_bin / "codex.cmd"
+            local_shim.write_text('@echo off\r\nnode "%~dp0\\..\\@openai\\codex\\bin\\codex.js" %*\r\n', encoding="utf-8")
+            for shim in (root_shim, local_shim):
+                self.assertEqual(native_candidate(shim), binary)
 
     def test_lock_contention_and_process_crash_release(self):
         with tempfile.TemporaryDirectory() as temporary:

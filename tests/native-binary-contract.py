@@ -135,6 +135,14 @@ class NativeBinaryContract(unittest.TestCase):
                     import shutil
                     shutil.rmtree(vendor if layout == 'bundled' else vendor.parent)
 
+    @unittest.skipIf(os.name == 'nt', 'POSIX configured command path')
+    def test_posix_codex_cmd_path_is_not_unwrapped(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            shim = Path(temporary) / 'bin/codex.cmd'
+            shim.parent.mkdir()
+            shim.write_text('#!/bin/sh\n')
+            self.assertEqual(native.native_candidate(shim), shim.resolve())
+
     def test_approve_snapshot_isolated_and_repeatable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
