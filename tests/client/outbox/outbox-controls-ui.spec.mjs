@@ -26,6 +26,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
     {
       stdio: ["ignore", "pipe", "pipe"],
+      // Selects SettingsRuntime, which publishes changes without starting the waiting turn.
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
     },
   );
