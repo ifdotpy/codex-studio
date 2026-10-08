@@ -239,8 +239,8 @@ class ServerSuiteRunner(unittest.TestCase):
     def test_concurrent_runner_claims_share_cpu_and_memory_budget(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-claims-") as temp:
             plans = [
-                {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
-                 "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
+                {"workers": 16, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
+                 "measuredWorkerMemoryBytes": 100_000_000, "limitingBound": "memory"}
                 for _ in range(2)
             ]
             gate = threading.Barrier(2)
@@ -255,13 +255,83 @@ class ServerSuiteRunner(unittest.TestCase):
                 try:
                     workers = [plan["workers"] for plan in plans]
                     self.assertLessEqual(sum(workers), 32)
-                    self.assertLessEqual(sum(workers) * 500_000_000, 12_600_000_000)
-                    self.assertTrue(all(plan["limitingBound"] == "runner-registry"
-                                        for plan in plans if plan["workers"] < 21))
+                    self.assertLessEqual(sum(workers) * 100_000_000, 12_600_000_000)
                 finally:
                     for token in tokens:
                         RUNNER._release_runner_workers(token)
             self.assertEqual(json.loads((Path(temp) / "runner-live.json").read_text()), [])
+
+    def test_runner_waits_for_competing_claim_then_replans(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-wait-") as temp:
+            plan = {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
+                    "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
+            now = [0.0]
+            replanned = []
+            with mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)):
+                holder = RUNNER._reserve_runner_workers(dict(plan))
+
+                def release_on_wait(_duration):
+                    now[0] += _duration
+                    RUNNER._release_runner_workers(holder)
+
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    token = RUNNER._reserve_runner_workers(
+                        dict(plan),
+                        replan=lambda: (replanned.append(True) or dict(plan)),
+                        wait_seconds=2, poll_interval=0.25,
+                        clock=lambda: now[0], sleep=release_on_wait,
+                    )
+                try:
+                    self.assertEqual(now[0], 0.25)
+                    self.assertTrue(replanned)
+                    self.assertEqual(plan["workers"], 21)
+                    self.assertIn("waiting for another test run to finish: 21 jobs claimed by pid", output.getvalue())
+                finally:
+                    RUNNER._release_runner_workers(token)
+
+    def test_dead_runner_claim_is_removed_before_planning(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-dead-claim-") as temp:
+            root = Path(temp)
+            registry = root / "runner-live.json"
+            registry.write_text(json.dumps([{"pid": 999999999, "token": "dead",
+                                             "workers": 21, "workerMemoryBytes": 500}]))
+            plan = {"workers": 16, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
+                    "measuredWorkerMemoryBytes": 100_000_000, "limitingBound": "memory"}
+            with mock.patch.object(RUNNER, "TEST_TMP_ROOT", root):
+                token = RUNNER._reserve_runner_workers(plan)
+                try:
+                    claims = json.loads(registry.read_text())
+                    self.assertEqual(len(claims), 1)
+                    self.assertEqual(claims[0]["token"], token)
+                    self.assertEqual(plan["workers"], 16)
+                finally:
+                    RUNNER._release_runner_workers(token)
+
+    def test_runner_claim_wait_expires_and_uses_available_fallback(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-wait-expiry-") as temp:
+            plan = {"workers": 21, "cpuLimit": 32, "memoryBudgetBytes": 12_600_000_000,
+                    "measuredWorkerMemoryBytes": 500_000_000, "limitingBound": "memory"}
+            now = [0.0]
+            with mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(temp)):
+                holder = RUNNER._reserve_runner_workers(dict(plan))
+
+                def advance_clock(duration):
+                    now[0] += duration
+
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output):
+                    token = RUNNER._reserve_runner_workers(
+                        dict(plan), wait_seconds=1, poll_interval=0.5,
+                        clock=lambda: now[0], sleep=advance_clock,
+                    )
+                try:
+                    self.assertEqual(now[0], 1.0)
+                    self.assertIn("runner claim wait expired after 1s", output.getvalue())
+                    self.assertTrue(json.loads((Path(temp) / "runner-live.json").read_text()))
+                finally:
+                    RUNNER._release_runner_workers(token)
+                    RUNNER._release_runner_workers(holder)
 
     def test_audit_home_blocks_real_user_state_access_in_child_python(self):
         with tempfile.TemporaryDirectory(prefix="server-audit-home-") as directory:

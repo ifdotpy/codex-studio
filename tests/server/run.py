@@ -836,34 +836,67 @@ def _write_live_runner_claims(path, claims):
             temporary.unlink(missing_ok=True)
 
 
-def _reserve_runner_workers(plan):
-    """Atomically claim this run's CPU and memory worker budget."""
+def _reserve_runner_workers(plan, *, replan=None, wait_seconds=180.0,
+                            poll_interval=0.5, clock=None, sleep=None):
+    """Atomically claim a fair share, waiting rather than running far below plan."""
+    clock = time.monotonic if clock is None else clock
+    sleep = time.sleep if sleep is None else sleep
     token = uuid.uuid4().hex
-    worker_memory = max(0, int(plan.get("measuredWorkerMemoryBytes", 0) or 0))
-    with _runner_registry_guard() as registry_path:
-        claims = _read_live_runner_claims(registry_path)
-        claimed_workers = sum(max(0, int(claim.get("workers", 0) or 0)) for claim in claims)
-        claimed_memory = sum(
-            max(0, int(claim.get("workers", 0) or 0))
-            * max(0, int(claim.get("workerMemoryBytes", 0) or 0))
-            for claim in claims
-        )
-        cpu_slots = max(1, int(plan["cpuLimit"]) - claimed_workers)
-        memory_remaining = max(0, int(plan.get("memoryBudgetBytes", 0) or 0) - claimed_memory)
-        memory_slots = (max(1, memory_remaining // worker_memory)
-                        if worker_memory else int(plan["workers"]))
-        selected = max(1, min(int(plan["workers"]), cpu_slots, memory_slots))
-        plan["runnerCpuSlots"] = cpu_slots
-        plan["runnerMemorySlots"] = memory_slots
-        if selected < int(plan["workers"]):
-            plan["workers"] = selected
-            plan["limitingBound"] = "runner-registry"
-        claims.append({
-            "pid": os.getpid(), "token": token, "workers": selected,
-            "workerMemoryBytes": worker_memory,
-        })
-        _write_live_runner_claims(registry_path, claims)
-    return token
+    deadline = clock() + max(0.0, wait_seconds)
+    waited = False
+    wait_line = None
+    while True:
+        worker_memory = max(0, int(plan.get("measuredWorkerMemoryBytes", 0) or 0))
+        with _runner_registry_guard() as registry_path:
+            claims = _read_live_runner_claims(registry_path)
+            claimed_workers = sum(max(0, int(claim.get("workers", 0) or 0)) for claim in claims)
+            claimed_memory = sum(
+                max(0, int(claim.get("workers", 0) or 0))
+                * max(0, int(claim.get("workerMemoryBytes", 0) or 0))
+                for claim in claims
+            )
+            cpu_slots = max(1, int(plan["cpuLimit"]) - claimed_workers)
+            memory_remaining = max(0, int(plan.get("memoryBudgetBytes", 0) or 0) - claimed_memory)
+            memory_slots = (max(1, memory_remaining // worker_memory)
+                            if worker_memory else int(plan["workers"]))
+            desired = int(plan["workers"])
+            selected = max(1, min(desired, cpu_slots, memory_slots))
+            minimum_fair_share = max(1, math.ceil(desired / 2))
+            if claims and selected < minimum_fair_share and clock() < deadline:
+                competing = max(claims, key=lambda claim: int(claim.get("workers", 0) or 0))
+                current_wait_line = (
+                    f"waiting for another test run to finish: {claimed_workers} jobs claimed by "
+                    f"pid {competing.get('pid')}"
+                )
+                if current_wait_line != wait_line:
+                    print(current_wait_line, flush=True)
+                    wait_line = current_wait_line
+                must_wait = True
+            else:
+                must_wait = False
+                plan["runnerCpuSlots"] = cpu_slots
+                plan["runnerMemorySlots"] = memory_slots
+                if waited and claims and clock() >= deadline:
+                    plan["runnerWaitExpired"] = True
+                    print(f"runner claim wait expired after {wait_seconds:g}s; continuing with "
+                          f"{selected} workers", flush=True)
+                if selected < desired:
+                    plan["workers"] = selected
+                    plan["limitingBound"] = "runner-registry"
+                claims.append({
+                    "pid": os.getpid(), "token": token, "workers": selected,
+                    "workerMemoryBytes": worker_memory,
+                })
+                _write_live_runner_claims(registry_path, claims)
+        if not must_wait:
+            return token
+        waited = True
+        sleep(min(poll_interval, max(0.0, deadline - clock())))
+        with _runner_registry_guard() as registry_path:
+            claims_remain = bool(_read_live_runner_claims(registry_path))
+        if not claims_remain and replan is not None:
+            plan.clear()
+            plan.update(replan())
 
 
 def _release_runner_workers(token):
@@ -1328,7 +1361,25 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                 plan["workers"] = workers
                 plan["limitingBound"] = "io"
     planned_workers = plan["workers"]
-    claim_token = _reserve_runner_workers(plan)
+    requested_workers = plan["workers"]
+
+    def replan_after_registry_wait():
+        refreshed = worker_plan(
+            runnable, profile,
+            override=None if automatic else requested_workers,
+            sample_seconds=load_sample_seconds if automatic else 0,
+        )
+        if save_measurements and not memory_backed:
+            fsync_median_ms = _probe_fsync_latency_ms(suite_tmp_root)
+            io_workers = io_limited_worker_count(fsync_median_ms, refreshed["cpuWorkerSlots"])
+            refreshed["ioFsyncMedianMs"] = fsync_median_ms
+            refreshed["ioWorkerSlots"] = io_workers
+            if io_workers < refreshed["workers"]:
+                refreshed["workers"] = io_workers
+                refreshed["limitingBound"] = "io"
+        return refreshed
+
+    claim_token = _reserve_runner_workers(plan, replan=replan_after_registry_wait)
     workers = plan["workers"]
     if automatic:
         print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)

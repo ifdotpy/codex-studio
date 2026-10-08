@@ -71,8 +71,10 @@ This disk-only I/O bound is reported as `limitingBound=io`.
 Before starting suites, each runner atomically claims its selected CPU and
 measured memory slots in a shared live-runner registry under the short test
 cache root. Concurrent invocations reduce their plans against active claims;
-claims from exited processes are discarded. `--show-jobs` is an advisory plan
-and does not reserve slots.
+claims from exited processes are discarded. If an active claim would leave a
+runner with less than half its planned workers, it waits up to three minutes,
+then replans; after the bound it continues with available slots. `--show-jobs`
+is an advisory plan and does not reserve slots.
 Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
 `CODEX_SERVER_TEST_JOBS` to override it manually.
 Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
