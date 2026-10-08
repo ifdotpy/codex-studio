@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import errno
 import os
+from typing import Any, IO, cast
 
 LOCK_SH = 1
 LOCK_EX = 2
@@ -11,7 +12,7 @@ LOCK_UN = 8
 _WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
-def flock(file_or_fd, operation: int) -> None:
+def flock(file_or_fd: int | IO[Any], operation: int) -> None:
     """Lock one byte range, and release it when asked.
 
     POSIX delegates to the native ``flock`` implementation. Windows uses a
@@ -29,6 +30,10 @@ def flock(file_or_fd, operation: int) -> None:
     import msvcrt
     from ctypes import wintypes
 
+    # POSIX typeshed omits Windows-only module attributes.
+    win_ctypes = cast(Any, ctypes)
+    win_msvcrt = cast(Any, msvcrt)
+
     class Overlapped(ctypes.Structure):
         _fields_ = [
             ("Internal", ctypes.c_size_t),
@@ -38,7 +43,7 @@ def flock(file_or_fd, operation: int) -> None:
             ("hEvent", wintypes.HANDLE),
         ]
 
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32 = win_ctypes.WinDLL("kernel32", use_last_error=True)
     lock_file = kernel32.LockFileEx
     lock_file.argtypes = [
         wintypes.HANDLE, wintypes.DWORD, wintypes.DWORD,
@@ -52,13 +57,13 @@ def flock(file_or_fd, operation: int) -> None:
     ]
     unlock_file.restype = wintypes.BOOL
 
-    handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
+    handle = wintypes.HANDLE(win_msvcrt.get_osfhandle(fd))
     overlapped = Overlapped()
     overlapped.Offset = _WINDOWS_LOCK_OFFSET & 0xFFFFFFFF
     overlapped.OffsetHigh = _WINDOWS_LOCK_OFFSET >> 32
     if operation & LOCK_UN:
         if not unlock_file(handle, 0, 1, 0, ctypes.byref(overlapped)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise win_ctypes.WinError(win_ctypes.get_last_error())
         return
 
     flags = 0
@@ -68,7 +73,7 @@ def flock(file_or_fd, operation: int) -> None:
         flags |= 0x00000001  # LOCKFILE_FAIL_IMMEDIATELY
     if lock_file(handle, flags, 0, 1, 0, ctypes.byref(overlapped)):
         return
-    error = ctypes.get_last_error()
+    error = win_ctypes.get_last_error()
     if operation & LOCK_NB and error in {33, 158}:
         raise BlockingIOError(errno.EAGAIN, "The file lock is already held")
-    raise ctypes.WinError(error)
+    raise win_ctypes.WinError(error)

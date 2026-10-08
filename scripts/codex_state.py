@@ -30,9 +30,9 @@ def state_dir() -> Path:
     if configured:
         return outside_claude(Path(configured))
     if os.name == "nt":
-        base = os.environ.get("LOCALAPPDATA")
-        if base:
-            return outside_claude(Path(base) / "CodexStudio" / "state")
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            return outside_claude(Path(local_app_data) / "CodexStudio" / "state")
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return outside_claude(base / "codex-agents")
 
