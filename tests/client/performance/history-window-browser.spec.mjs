@@ -58,6 +58,7 @@ import PromptComposer from "/src/components/prompt-composer/PromptComposer.tsx";
 import { useConversationScroll } from "/src/components/useConversationScroll.ts";
 import { revealHistoryMessage } from "/src/components/conversation/transcript/historyWindowModel.ts";
 import "/src/components/conversation/transcript/turn-history.css";
+import "/src/visual-activity.css";
 const make = (start, count) => Array.from({length: count}, (_, n) => { const i = start + n; return [
 {id: "u"+i, role: "user", text: "Question " + i, turnId: "t"+i, turnStatus: "completed"},
 ...[0,1,2].map(j => ({id: "tool"+i+"-"+j, sourceId: (i === 500 || i === 0) && j === 1 ? "original-tool"+i+"-1" : undefined, role: "tool", text: JSON.stringify({type: j === 1 ? "commandExecution" : "mcpToolCall", command: j === 1 ? "echo saved" : undefined, status: "completed", tool: "read", arguments: {path:"file-"+i}, result: "Saved output " + i}), turnId: "t"+i, turnStatus: "completed"})),
