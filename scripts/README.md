@@ -15,7 +15,8 @@ and the affected integration contracts before delivery.
   limiting repeated search-index work.
 - [UI synchronization](sync/README.md): refresh the data that changed and preserve
   reconnect and offline behavior.
-- [Benchmark scenarios](benchmarks/README.md): measurements spanning backend components.
+- Cross-component benchmark scenarios were removed and are available at commit
+  `3507feea`.
 - `codex_canvas.py`: HTTP entry point and request handling.
 - `codex_runtime.py`: agent lifecycle and provider coordination.
 - [Root README](../README.md#checks): backend and application checks.
@@ -26,9 +27,10 @@ stage checkpoints. Add `CODEX_CANVAS_STARTUP_TRACEMALLOC=1` to log the top Pytho
 allocation sites at those checkpoints.
 
 New component folders should have an explicit import path, a short README, and
-focused `tests/`. Add `benchmarks/` when there is a repeatable workload worth
-measuring. Import production functions directly; do not copy them into tests or
-benchmarks. Package `__init__.py` files should not assemble a second public API.
+focused `tests/`. Add component-local benchmarks only when there is a repeatable
+workload worth measuring. Import production functions directly; do not copy them
+into tests or benchmarks. Package `__init__.py` files should not assemble a
+second public API.
 
 Move a bounded responsibility together with its callers and checks. Do not create
 empty layers or reorganize unrelated modules. Keep cross-component contracts in
