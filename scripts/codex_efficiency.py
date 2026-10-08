@@ -1,4 +1,6 @@
 """Small model views over durable Studio records. UI storage remains complete."""
+from __future__ import annotations
+
 import base64
 import difflib
 import hashlib

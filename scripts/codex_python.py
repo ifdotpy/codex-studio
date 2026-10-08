@@ -13,6 +13,8 @@ import sys
 import tempfile
 from typing import Mapping, Sequence
 
+from codex_state import cache_dir
+
 
 API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn, watchdog"
 MINIMUM_PYTHON = (3, 11)
@@ -20,13 +22,7 @@ MINIMUM_PYTHON = (3, 11)
 
 def cache_root(environment: Mapping[str, str] | None = None) -> Path:
     """Return the platform user cache root without using application state."""
-    values = os.environ if environment is None else environment
-    configured = values.get("XDG_CACHE_HOME")
-    if configured:
-        return Path(configured).expanduser()
-    if platform.system() == "Darwin":
-        return Path.home() / "Library" / "Caches"
-    return Path.home() / ".cache"
+    return cache_dir(environment, platform.system())
 
 
 def requirements_file(scripts: Path, development: bool = False) -> Path:
@@ -49,13 +45,13 @@ def managed_python(
     development: bool = False,
 ) -> Path:
     """Resolve the prepared venv path for this API lock."""
+    env_python = "Scripts/python.exe" if os.name == "nt" else "bin/python"
     return (
         cache_root(environment)
         / "codex-agents"
         / ("python-dev" if development else "python")
         / requirements_digest(scripts, development)
-        / "bin"
-        / "python"
+        / env_python
     )
 
 
@@ -185,7 +181,7 @@ def prepare_environment(
             check=True,
             timeout=120,
         )
-        environment_python = staging / "bin" / "python"
+        environment_python = staging / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
         subprocess.run(
             [
                 str(environment_python),

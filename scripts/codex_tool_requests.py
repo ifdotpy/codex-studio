@@ -1,4 +1,5 @@
 """Durable dynamic-tool receipts and cancellation before execution."""
+from __future__ import annotations
 
 import hashlib
 import json
