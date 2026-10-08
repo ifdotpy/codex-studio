@@ -1,3 +1,4 @@
+import { isolatedServerView, serverParentOrigin } from "./environment";
 export type StudioServer = {
   id: string;
   label: string;
@@ -69,6 +70,20 @@ export function localServer(): StudioServer {
   return { id: "local", label: "This computer", origin: location.origin };
 }
 export function viewServer(id: string): StudioServer {
+  if (isolatedServerView) {
+    const params = new URLSearchParams(location.search);
+    if (params.get("studio-server") !== id)
+      throw new Error("The server view has another owner.");
+    const origin = params.get("studio-origin") || "";
+    return {
+      id,
+      label: id,
+      origin: id === "local" ? serverParentOrigin : serveOrigin(origin),
+      ...(params.get("studio-credential")
+        ? { credentialId: params.get("studio-credential")! }
+        : {}),
+    };
+  }
   if (id === "local") return localServer();
   const server = readServers().find((row) => row.id === id);
   if (!server)

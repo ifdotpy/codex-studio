@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import frameOwners from "./frame-owner.cjs";
 import { _electron as electron } from "playwright-core";
 import { mkdtemp, access, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -41,31 +42,86 @@ try {
   );
   assert.deepEqual(apiRequests, []);
   await assert.rejects(access(path.join(folder, "state")), /ENOENT/);
-  await page.evaluate(() => {
-    localStorage.setItem(
-      "studio-paired-servers-v1",
-      JSON.stringify([
-        {
-          id: "unpaired",
-          label: "Unpaired",
-          origin: "https://unpaired.tailnet.ts.net",
-          credentialId: "missing",
-        },
-      ]),
-    );
-    const frame = document.createElement("iframe");
-    frame.src = "/?studio-server=unpaired";
-    frame.title = "unpaired";
-    document.body.append(frame);
-  });
-  await page.waitForFunction(
-    () =>
-      document.querySelector('iframe[title="unpaired"]')?.contentWindow
-        ?.location.search === "?studio-server=unpaired",
+  await page.evaluate(
+    ({ serverHost }) => {
+      localStorage.setItem(
+        "studio-paired-servers-v1",
+        JSON.stringify([
+          {
+            id: "unpaired",
+            label: "Unpaired",
+            origin: "https://unpaired.tailnet.ts.net",
+            credentialId: "missing",
+          },
+        ]),
+      );
+      const frame = document.createElement("iframe");
+      const base = new URL(
+        window.codexDesktop.serverViewOrigin || location.origin,
+      );
+      if (window.codexDesktop.serverViewOrigin) base.hostname = serverHost;
+      base.search = new URLSearchParams({
+        "studio-server": "unpaired",
+        ...(window.codexDesktop.serverViewOrigin
+          ? {
+              "studio-parent": location.origin,
+              "studio-origin": "https://unpaired.tailnet.ts.net",
+              "studio-credential": "missing",
+            }
+          : {}),
+      }).toString();
+      frame.src = base.href;
+      frame.title = "unpaired";
+      document.body.append(frame);
+    },
+    { serverHost: frameOwners.serverFrameHost("unpaired") },
   );
-  const denied = await page.evaluate(async () => {
+  const serverFrame = await page
+    .locator('iframe[title="unpaired"]')
+    .contentFrame();
+  await serverFrame.locator("html").waitFor();
+  const attacker = page
+    .frames()
+    .find((frame) => frame.url().includes("studio-server=unpaired"));
+  const parentDenied = await attacker.evaluate(async () => {
+    try {
+      await parent.codexDesktop.getBackendUpdate();
+      return false;
+    } catch (error) {
+      return error.name === "SecurityError";
+    }
+  });
+  assert.equal(
+    parentDenied,
+    true,
+    "A server frame cannot reach the parent native bridge",
+  );
+  assert.equal(
+    await attacker.evaluate(
+      () => typeof require === "undefined" && typeof process === "undefined",
+    ),
+    true,
+  );
+  const denied = await attacker.evaluate(async () => {
     const errors = [];
     for (const request of [
+      {
+        action: "request",
+        serverId: "other",
+        streamId: "omitted-owner",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
+      {
+        action: "request",
+        serverId: "other",
+        frameOwner: "other",
+        streamId: "spoofed-owner",
+        credentialId: "missing",
+        url: "https://unpaired.tailnet.ts.net/api/session",
+        requestId: "once",
+      },
       {
         action: "request",
         serverId: "other",
@@ -94,7 +150,18 @@ try {
     return errors;
   });
   assert.match(denied[0], /Invalid server frame owner/);
-  assert.match(denied[1], /server key|Secure key storage/);
+  assert.match(denied[1], /Invalid server frame owner/);
+  assert.match(denied[2], /Invalid server frame owner/);
+  assert.match(denied[3], /server key|Secure key storage/);
+  const spoofedNative = await attacker.evaluate(async () => {
+    try {
+      await window.codexDesktop.serverNativeAction("local", "getBackendUpdate");
+      return false;
+    } catch {
+      return true;
+    }
+  });
+  assert.equal(spoofedNative, true);
   console.log(
     JSON.stringify({
       uiOnly: true,
@@ -102,6 +169,8 @@ try {
       stateCreated: false,
       localApi: false,
       frameOwnerDenied: true,
+      parentBridgeDenied: true,
+      spoofedNativeDenied: true,
       executable: process.env.CODEX_UI_EXECUTABLE ? "packaged" : "development",
     }),
   );

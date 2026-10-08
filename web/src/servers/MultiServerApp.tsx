@@ -1,6 +1,8 @@
 import { Button, TextInput, Modal, useMantineColorScheme } from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import App from "../App";
+import { frameURL } from "./frameOrigin";
+import { bindShellTransport } from "./shellTransport";
 import {
   localServer,
   readServers,
@@ -22,8 +24,7 @@ import {
 import type { GetResult } from "../api";
 import "./servers.css";
 const uiOnly =
-  new URLSearchParams(location.search).get("studio-ui-only") === "1" ||
-  (location.protocol === "https:" && location.hostname.endsWith(".ts.net"));
+  new URLSearchParams(location.search).get("studio-ui-only") === "1";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
   const load = () => {
@@ -74,10 +75,22 @@ export default function MultiServerApp() {
       return defaultStudioPreferences;
     }
   });
+  const preferencesRef = useRef(preferences);
+  preferencesRef.current = preferences;
   const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const pending = useRef(new Map<string, ServerCommand>());
+  const targetOrigin = (id: string) =>
+    new URL(frames.current.get(id)?.src || location.href).origin;
+  useEffect(() => bindShellTransport(frames.current), []);
+  const publishPreferences = (value: unknown) => {
+    for (const [id, frame] of frames.current)
+      frame.contentWindow?.postMessage(
+        { kind: "studio-server-preferences", serverId: id, preferences: value },
+        new URL(frame.src).origin,
+      );
+  };
   const select = useCallback((id: string) => {
     setSelected(id);
     localStorage.setItem("studio-selected-server", id);
@@ -91,7 +104,7 @@ export default function MultiServerApp() {
           serverId: id,
           command: { action: "focus" },
         },
-        location.origin,
+        targetOrigin(id),
       );
     });
   }, []);
@@ -102,7 +115,7 @@ export default function MultiServerApp() {
     else
       frame.contentWindow?.postMessage(
         { kind: "studio-server-command", serverId: id, command },
-        location.origin,
+        targetOrigin(id),
       );
   };
   useEffect(() => {
@@ -121,11 +134,11 @@ export default function MultiServerApp() {
   useEffect(() => {
     const apply = () => {
       try {
-        setPreferences(
-          parseStudioPreferences(
-            localStorage.getItem(studioPreferencesStorageKey) || "null",
-          ),
+        const next = parseStudioPreferences(
+          localStorage.getItem(studioPreferencesStorageKey) || "null",
         );
+        setPreferences(next);
+        publishPreferences(next);
       } catch {}
     };
     const key = (event: KeyboardEvent) => {
@@ -175,13 +188,25 @@ export default function MultiServerApp() {
           ([, frame]) => frame.contentWindow === event.source,
         )?.[0];
       if (
-        event.origin !== location.origin ||
+        event.origin !== targetOrigin(id) ||
         typeof id !== "string" ||
         !frames.current.get(id)?.contentWindow ||
         event.source !== frames.current.get(id)?.contentWindow
       )
         return;
-      if (event.data.kind === "studio-server-toggle-sidebar") {
+      if (event.data.kind === "studio-server-preferences") {
+        try {
+          const value = parseStudioPreferences(
+            JSON.stringify(event.data.preferences),
+          );
+          localStorage.setItem(
+            studioPreferencesStorageKey,
+            JSON.stringify(value),
+          );
+          setPreferences(value);
+          publishPreferences(value);
+        } catch {}
+      } else if (event.data.kind === "studio-server-toggle-sidebar") {
         toggleSidebar();
       } else if (event.data.kind === "studio-server-search")
         setSearchOpen(true);
@@ -195,6 +220,7 @@ export default function MultiServerApp() {
         }));
       } else if (event.data.kind === "studio-server-navigation") {
         const value = event.data.navigation as ServerNavigation;
+        publishPreferences(preferencesRef.current);
         if (
           !value ||
           !Array.isArray(value.projects) ||
@@ -241,7 +267,7 @@ export default function MultiServerApp() {
                     serverId: id,
                     command: { action: "notifications", ...alert.target },
                   },
-                  location.origin,
+                  targetOrigin(id),
                 );
               };
             }
@@ -254,7 +280,7 @@ export default function MultiServerApp() {
             .get(id)
             ?.contentWindow?.postMessage(
               { kind: "studio-server-command", serverId: id, command },
-              location.origin,
+              targetOrigin(id),
             );
         }
       } else if (
@@ -283,7 +309,7 @@ export default function MultiServerApp() {
             serverId: target.serverId,
             command: { action: "notifications", ...target },
           },
-          location.origin,
+          targetOrigin(target.serverId),
         );
       }),
     [select],
@@ -488,7 +514,7 @@ export default function MultiServerApp() {
               if (frame) frames.current.set(server.id, frame);
               else frames.current.delete(server.id);
             }}
-            src={`/?studio-server=${encodeURIComponent(server.id)}`}
+            src={frameURL(server)}
             hidden={current !== server.id}
             allow="microphone; clipboard-read; clipboard-write"
           />
@@ -520,7 +546,7 @@ export default function MultiServerApp() {
                     query: searchQuery.trim(),
                   },
                 },
-                location.origin,
+                targetOrigin(server.id),
               );
           }}
         >

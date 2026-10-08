@@ -42,12 +42,12 @@ async function startUiHost({ resources, port = 4621 }) {
       const bytes = await fs.readFile(target);
       response.setHeader(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors " +
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors " +
           (name === "index.html" &&
           /^[a-zA-Z0-9_-]{1,128}$/.test(
             url.searchParams.get("studio-server") || "",
           )
-            ? "'self'"
+            ? "'self' http://127.0.0.1:* http://localhost:*"
             : "'none'") +
           "; base-uri 'none'",
       );

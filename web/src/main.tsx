@@ -4,12 +4,12 @@ import {
 } from "./servers/desktopCredentials";
 import { BrowserServerCredentials } from "./servers/browserCredentials";
 import { setServerCredentialAdapter } from "./servers/transport";
-import { installFrameDesktopBridge } from "./servers/desktopBridge";
 import { createRoot } from "react-dom/client";
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import App from "./App";
 import MultiServerApp from "./servers/MultiServerApp";
+import { shellCredentialBridge } from "./servers/shellTransport";
 import { isServerView } from "./servers/environment";
 import "./servers/servers.css";
 import UIErrorBoundary from "./components/UIErrorBoundary";
@@ -23,9 +23,10 @@ const nativeCredentials = nativeCredentialBridge();
 setServerCredentialAdapter(
   nativeCredentials
     ? new DesktopServerCredentials(nativeCredentials)
-    : new BrowserServerCredentials(),
+    : isServerView && window.parent !== window
+      ? new DesktopServerCredentials(shellCredentialBridge())
+      : new BrowserServerCredentials(),
 );
-installFrameDesktopBridge();
 if (isServerView) document.documentElement.dataset.serverView = "true";
 
 const container = document.getElementById("root")!;

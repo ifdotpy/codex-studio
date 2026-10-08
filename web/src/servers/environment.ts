@@ -18,3 +18,13 @@ export const serverDatabaseSuffix =
         byte.toString(16).padStart(2, "0"),
       ).join("")
     : "";
+
+export const serverParentOrigin =
+  typeof location === "undefined"
+    ? "http://localhost"
+    : new URLSearchParams(location.search).get("studio-parent") ||
+      location.origin;
+export const isolatedServerView =
+  !!serverViewId &&
+  typeof location !== "undefined" &&
+  location.origin !== serverParentOrigin;

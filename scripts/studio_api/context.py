@@ -62,7 +62,7 @@ CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
     "connect-src 'self' https://api.openai.com https://*.ts.net; "
     "img-src 'self' data: blob: https: http:; "
-    "media-src 'self' blob: data:; frame-src 'self' blob:; "
+    "media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; "
     "frame-ancestors 'none'; base-uri 'none'"
 )
 API_SCHEMA_CACHE_DIRECTORY = "codex-studio-api-schema"
@@ -571,7 +571,7 @@ class ApiContext:
         policy = CONTENT_SECURITY_POLICY
         if (content_type.startswith("text/html") and request.url.path == "/"
                 and re.fullmatch(r"[a-zA-Z0-9_-]{1,128}", request.query_params.get("studio-server", ""))):
-            policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+            policy = policy.replace("frame-ancestors 'none'", "frame-ancestors 'self' http://127.0.0.1:* http://localhost:*")
         headers["Content-Security-Policy"] = policy
         return Response(data, status_code=status, headers=headers, media_type=None)
 

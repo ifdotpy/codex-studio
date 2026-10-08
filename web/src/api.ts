@@ -580,8 +580,9 @@ export async function post<Path extends PathsFor<"post">>(
 ): Promise<PostResult<Path>> {
   if (schemaMismatch) throw new ApiSchemaMismatchError();
   const mutation = await beginServerMutation(path, body);
-  const timeoutMs = options.timeoutMs;
+  const timeoutMs = options.timeoutMs ?? (mutation ? 15000 : undefined);
   const controller = requestController(options, timeoutMs);
+  let responseRejected = false;
   try {
     const fetchOptions = {
       parseAs: "json" as const,
@@ -597,6 +598,10 @@ export async function post<Path extends PathsFor<"post">>(
       },
     };
     const result = await requestPost(path, fetchOptions as JsonPostInit<Path>);
+    if (!result.response.ok) {
+      responseRejected = true;
+      mutation?.reject(result.response.status, result.error);
+    }
     if (
       !result.response.ok &&
       result.response.headers.get(API_SCHEMA_MISMATCH_HEADER) === "1"
@@ -624,6 +629,7 @@ export async function post<Path extends PathsFor<"post">>(
     mutation?.finish();
     return data;
   } catch (error) {
+    if (!responseRejected) mutation?.unknown();
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;
   } finally {

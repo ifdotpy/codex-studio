@@ -29,7 +29,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
         super();
         window = this;
         this.webContents = Object.assign(new EventEmitter(), {
-          mainFrame: { url: "http://localhost:1234/" },
+          mainFrame: {
+            url: "http://localhost:1234/",
+            send: (...args) => window.webContents.send(...args),
+          },
           session: {
             setPermissionRequestHandler() {},
             setPermissionCheckHandler() {},
@@ -82,6 +85,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       whenReady: () => Promise.resolve(),
       setActivationPolicy() {},
       on() {},
+      once() {},
       exit() {
         throw Error("startup failed");
       },
@@ -126,13 +130,20 @@ test("desktop native settings, notification and speech boundaries work with fixt
                   availableBackendBuild: "installed",
                 }),
               }
-            : name === "./speech.cjs"
-              ? require("./speech.cjs")
-              : name === "./recovery.cjs"
-                ? require("./recovery.cjs")
-                : name.startsWith("./")
-                  ? require(join(desktop, name.slice(2)))
-                  : require(name),
+            : name === "./ui-host.cjs"
+              ? {
+                  startUiHost: async () => ({
+                    origin: "http://127.0.0.1:1235",
+                    close: async () => {},
+                  }),
+                }
+              : name === "./speech.cjs"
+                ? require("./speech.cjs")
+                : name === "./recovery.cjs"
+                  ? require("./recovery.cjs")
+                  : name.startsWith("./")
+                    ? require(join(desktop, name.slice(2)))
+                    : require(name),
       process: { argv: ["--hidden"], env: {}, platform: "darwin" },
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
@@ -160,42 +171,61 @@ test("desktop native settings, notification and speech boundaries work with fixt
   try {
     let f = await fixture();
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
-    const serverFrame = { url: "http://localhost:1234/?studio-server=local" };
+    const serverFrame = {
+      url: `http://${require("./frame-owner.cjs").serverFrameHost("local")}:1235/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+      parent: f.event.senderFrame,
+    };
     f.event.senderFrame.frames = [serverFrame];
+    const serverEvent = { sender: f.event.sender, senderFrame: serverFrame };
     assert.equal(
       (
-        await f.invoke("serverNativeAction", {
-          serverId: "local",
-          method: "getBackendUpdate",
+        await f.handler(serverEvent, {
+          method: "serverNativeAction",
+          value: { serverId: "local", method: "getBackendUpdate" },
         })
       ).updateRequired,
       false,
     );
     await assert.rejects(
-      f.invoke("serverNativeAction", {
-        serverId: "missing",
-        method: "getBackendUpdate",
+      f.handler(serverEvent, {
+        method: "serverNativeAction",
+        value: { serverId: "other", method: "getBackendUpdate" },
       }),
-      /server view/,
+      /Invalid server frame owner/,
     );
     await assert.rejects(
-      f.invoke("serverNativeAction", { serverId: "local", method: "notify" }),
+      f.invoke("serverNativeAction", {
+        serverId: "local",
+        method: "getBackendUpdate",
+      }),
+      /Invalid server frame owner/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverNativeAction",
+        value: { serverId: "local", method: "notify" },
+      }),
       /Unknown server native action/,
     );
     await assert.rejects(
-      f.invoke("serverCredentialAction", {
-        action: "request",
-        frameOwner: "local",
-        serverId: "other",
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: { action: "request", serverId: "other" },
       }),
       /Invalid server frame owner/,
     );
     await assert.rejects(
       f.handler(
-        { sender: f.event.sender, senderFrame: serverFrame },
+        {
+          sender: f.event.sender,
+          senderFrame: {
+            url: "http://localhost:1234/?studio-server=local",
+            parent: f.event.senderFrame,
+          },
+        },
         { method: "getBackendUpdate" },
       ),
-      /main frame/,
+      /Invalid server frame owner/,
     );
 
     f.setBackendBuild("old");
@@ -250,7 +280,9 @@ test("desktop native settings, notification and speech boundaries work with fixt
     });
     const listeners = {};
     vm.runInNewContext(preload, {
-      process: { isMainFrame: true, platform: "darwin" },
+      process: { isMainFrame: true, platform: "darwin", argv: [] },
+      URLSearchParams,
+      location: { search: "" },
       window: {
         addEventListener: (name, cb) => {
           listeners[name] = cb;

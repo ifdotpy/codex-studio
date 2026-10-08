@@ -1,45 +1,13 @@
 const { contextBridge, ipcRenderer } = require("electron");
 
-if (process.isMainFrame) {
+{
   let gesture = 0;
-  let gestureOwner;
+  const owner = new URLSearchParams(location.search).get("studio-server");
   const capture = (event) => {
-    if (event.isTrusted) {
-      gesture = performance.now() + 1200;
-      gestureOwner = undefined;
-    }
+    if (event.isTrusted) gesture = performance.now() + 1200;
   };
   window.addEventListener("click", capture, true);
   window.addEventListener("keydown", capture, true);
-  const attachedFrames = new WeakSet();
-  const attachFrames = () => {
-    for (const frame of document.querySelectorAll("iframe")) {
-      if (attachedFrames.has(frame)) continue;
-      attachedFrames.add(frame);
-      frame.addEventListener("load", () => {
-        try {
-          const url = new URL(frame.src);
-          const owner = url.searchParams.get("studio-server");
-          if (url.origin !== location.origin || !owner) return;
-          const captureFrame = (event) => {
-            if (event.isTrusted) {
-              gesture = performance.now() + 1200;
-              gestureOwner = owner;
-            }
-          };
-          frame.contentDocument.addEventListener("click", captureFrame, true);
-          frame.contentDocument.addEventListener("keydown", captureFrame, true);
-        } catch {}
-      });
-    }
-  };
-  window.addEventListener("DOMContentLoaded", () => {
-    attachFrames();
-    new MutationObserver(attachFrames).observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  });
   const invoke = (method, value, needsGesture = true) => {
     if (needsGesture) {
       if (gesture < performance.now())
@@ -50,21 +18,62 @@ if (process.isMainFrame) {
     }
     return ipcRenderer.invoke("codex-desktop", { method, value });
   };
+  if (process.isMainFrame)
+    window.addEventListener("DOMContentLoaded", () => {
+      new MutationObserver((records) => {
+        for (const record of records)
+          for (const node of record.removedNodes) {
+            const removed = [
+              ...(node.querySelectorAll?.("iframe") || []),
+              ...(node.tagName === "IFRAME" ? [node] : []),
+            ];
+            for (const frame of removed) {
+              const serverId = new URL(frame.src).searchParams.get(
+                "studio-server",
+              );
+              if (serverId)
+                void ipcRenderer
+                  .invoke("codex-desktop", {
+                    method: "releaseServerView",
+                    value: serverId,
+                  })
+                  .catch(() => {});
+            }
+          }
+      }).observe(document.body, { childList: true, subtree: true });
+    });
+  const subscriptions = new Set();
+  window.addEventListener(
+    "pagehide",
+    () => {
+      for (const stop of subscriptions) stop();
+      subscriptions.clear();
+    },
+    { once: true },
+  );
   const subscribe = (channel, callback) => {
     if (typeof callback !== "function") throw new Error("Expected a callback.");
     const listener = (_event, value) => callback(value);
     ipcRenderer.on(channel, listener);
-    return () => ipcRenderer.removeListener(channel, listener);
+    const stop = () => {
+      ipcRenderer.removeListener(channel, listener);
+      subscriptions.delete(stop);
+    };
+    subscriptions.add(stop);
+    return stop;
   };
   contextBridge.exposeInMainWorld(
     "codexDesktop",
     Object.freeze({
       platform: process.platform,
+      serverViewOrigin: process.argv
+        .find((value) => value.startsWith("--studio-view-origin="))
+        ?.slice("--studio-view-origin=".length),
       serverNativeAction: (serverId, method, value) => {
         const needsGesture = !["transcribeAudio", "getBackendUpdate"].includes(
           method,
         );
-        if (needsGesture && gestureOwner !== serverId)
+        if (owner !== serverId)
           return Promise.reject(new Error("Use a button in this server view."));
         return invoke(
           "serverNativeAction",

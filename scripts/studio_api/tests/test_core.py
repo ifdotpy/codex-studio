@@ -36,7 +36,7 @@ from studio_api.context import (
     api_schema_cache_key,
     read_cached_or_compute_api_schema_hash,
 )
-from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
+from studio_api.middleware import HeaderView, HttpTraceMiddleware, RequestBoundary
 from studio_api.models import ContractModel, JsonValue, ResponseModel
 from studio_api.responses import register_route_components
 from studio_api.server import _run_maintenance
@@ -283,6 +283,36 @@ class CoreResponseTests(unittest.TestCase):
             self.assertEqual(client.get("/scalar").json(), "provider response")
             self.assertIsNone(client.get("/null").json())
             self.assertEqual(client.get("/messages").json(), [{"id": "m1", "text": "hello"}])
+
+    def test_loopback_server_frame_alias_serves_only_static_shell_assets(self) -> None:
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(request_origin=lambda *_args: None)
+        boundary = RequestBoundary(lambda *_args: None, context)
+        base = {"type": "http", "method": "GET", "path": "/", "client": ("127.0.0.1", 50000), "server": ("127.0.0.1", 46000)}
+        headers = HeaderView([(b"host", b"studio-ojsw233umu.localhost:46000")])
+        for path in ("/", "/index.html", "/studio-sw.js", "/assets/index-12345678.js"):
+            self.assertTrue(boundary._trusted({**base, "path": path}, headers, write=False, federation=False))
+        for path in ("/api/session", "/api/sync/pull", "/api/messages", "/private.txt", "/assets/../api/session"):
+            self.assertFalse(boundary._trusted({**base, "path": path}, headers, write=False, federation=False))
+        self.assertFalse(boundary._trusted({**base, "client": ("100.64.0.1", 50000)}, headers, write=False, federation=False))
+        self.assertFalse(boundary._trusted(base, HeaderView([(b"host", b"studio-ojsw233umu.localhost:46000"), (b"x-forwarded-host", b"public.ts.net")]), write=False, federation=False))
+        self.assertFalse(boundary._trusted(base, headers, write=True, federation=False))
+
+    def test_actual_loopback_frame_alias_loads_html_but_cannot_read_local_session(self) -> None:
+        from codex_remote import RemoteAccess
+        from studio_api.app import create_app
+
+        with tempfile.TemporaryDirectory(prefix="studio-frame-alias-") as directory:
+            root = Path(directory)
+            (root / "index.html").write_text("<html>Server frame</html>")
+            context = ApiContext.for_schema()
+            context.remote = RemoteAccess(root)
+            with patch("codex_canvas.WEB", root), TestClient(create_app(context), base_url="http://studio-ojsw233umu.localhost:46000", client=("127.0.0.1", 50000)) as client:
+                page = client.get("/?studio-server=remote")
+                self.assertEqual(page.status_code, 200)
+                self.assertIn("Server frame", page.text)
+                self.assertIn("frame-ancestors 'self' http://127.0.0.1:*", page.headers["content-security-policy"])
+                self.assertEqual(client.get("/api/session").status_code, 403)
 
     def test_upload_timeout_is_total_not_reset_for_each_chunk(self) -> None:
         context = ApiContext.for_schema()
@@ -1061,7 +1091,7 @@ class CoreResponseTests(unittest.TestCase):
             "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
             "connect-src 'self' https://api.openai.com https://*.ts.net; "
             "img-src 'self' data: blob: https: http:; "
-            "media-src 'self' blob: data:; frame-src 'self' blob:; "
+            "media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; "
             "frame-ancestors 'none'; base-uri 'none'",
         )
 

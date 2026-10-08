@@ -1,7 +1,11 @@
+import {
+  parseStudioPreferences,
+  studioPreferencesStorageKey,
+} from "../studioPreferences";
 import { get, errorText } from "../api";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
-import { serverViewId } from "./environment";
+import { serverViewId, serverParentOrigin } from "./environment";
 import {
   isServerCommand,
   navigationSnapshot,
@@ -23,9 +27,29 @@ export function useServerFrame(
     const receive = (event: MessageEvent) => {
       if (
         event.source !== window.parent ||
-        event.origin !== location.origin ||
-        event.data?.kind !== "studio-server-command" ||
-        event.data.serverId !== serverViewId ||
+        event.origin !== serverParentOrigin ||
+        event.data.serverId !== serverViewId
+      )
+        return;
+      if (event.data.kind === "studio-server-preferences") {
+        try {
+          const value = JSON.stringify(
+            parseStudioPreferences(JSON.stringify(event.data.preferences)),
+          );
+          if (localStorage.getItem(studioPreferencesStorageKey) !== value) {
+            localStorage.setItem(studioPreferencesStorageKey, value);
+            window.dispatchEvent(
+              new StorageEvent("storage", {
+                key: studioPreferencesStorageKey,
+                newValue: value,
+              }),
+            );
+          }
+        } catch {}
+        return;
+      }
+      if (
+        event.data.kind !== "studio-server-command" ||
         !isServerCommand(event.data.command)
       )
         return;
@@ -40,7 +64,7 @@ export function useServerFrame(
                 requestId: command.requestId,
                 results: value.results,
               },
-              location.origin,
+              serverParentOrigin,
             );
           })
           .catch((failure: unknown) => {
@@ -52,7 +76,7 @@ export function useServerFrame(
                 error: errorText(failure),
                 results: [],
               },
-              location.origin,
+              serverParentOrigin,
             );
           });
       } else handler.current(command);
@@ -61,7 +85,7 @@ export function useServerFrame(
     const stop = watchResourceConnection((status) => {
       window.parent.postMessage(
         { kind: "studio-server-status", serverId: serverViewId, status },
-        location.origin,
+        serverParentOrigin,
       );
     });
     return () => {
@@ -83,7 +107,7 @@ export function useServerFrame(
           data ? desktopAlerts(data) : [],
         ),
       },
-      location.origin,
+      serverParentOrigin,
     );
   }, [data, opened, error, [...unread].join(":")]);
 }

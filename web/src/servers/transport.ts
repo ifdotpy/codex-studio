@@ -1,4 +1,4 @@
-import { serverViewId } from "./environment";
+import { serverViewId, isolatedServerView } from "./environment";
 import { viewServer, type StudioServer } from "./registry";
 
 // Pairing owns credentials and signing. This boundary never puts a credential
@@ -23,7 +23,7 @@ export function apiOrigin() {
     : (globalThis.location?.origin ?? "http://localhost");
 }
 export function serverFetch(request: Request) {
-  if (!serverViewId || serverViewId === "local")
+  if (!serverViewId || (serverViewId === "local" && !isolatedServerView))
     return globalThis.fetch(request);
   const server = viewServer(serverViewId);
   if (new URL(request.url).origin !== server.origin)

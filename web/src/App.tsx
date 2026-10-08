@@ -1,6 +1,10 @@
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
-import { isServerView, isRemoteServerView } from "./servers/environment";
+import {
+  isServerView,
+  isRemoteServerView,
+  serverParentOrigin,
+} from "./servers/environment";
 import { serverStorageEventKey } from "./servers/storage";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import SearchOverlay from "./components/shell/SearchOverlay";
@@ -298,6 +302,11 @@ export default function App() {
       if (next.theme !== colorScheme) setColorScheme(next.theme);
       try {
         localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        if (isServerView)
+          window.parent.postMessage(
+            { kind: "studio-server-preferences", preferences: next },
+            serverParentOrigin,
+          );
         setStudioPreferencesError("");
       } catch {
         setStudioPreferencesError(
@@ -354,7 +363,7 @@ export default function App() {
     if (isServerView) {
       window.parent.postMessage(
         { kind: "studio-server-toggle-sidebar" },
-        location.origin,
+        serverParentOrigin,
       );
       return;
     }
@@ -1008,7 +1017,7 @@ export default function App() {
         if (isServerView) {
           window.parent.postMessage(
             { kind: "studio-server-search" },
-            location.origin,
+            serverParentOrigin,
           );
           return;
         }
@@ -1822,7 +1831,7 @@ export default function App() {
           if (isServerView) {
             window.parent.postMessage(
               { kind: "studio-server-search" },
-              location.origin,
+              serverParentOrigin,
             );
             return;
           }
@@ -1995,7 +2004,7 @@ export default function App() {
                         if (isServerView)
                           window.parent.postMessage(
                             { kind: "studio-server-search" },
-                            location.origin,
+                            serverParentOrigin,
                           );
                         else setSearchOpen(true);
                       } else {

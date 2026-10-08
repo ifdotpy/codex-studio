@@ -1,4 +1,5 @@
 export interface CodexDesktop {
+  readonly serverViewOrigin?: string;
   serverNativeAction?(
     serverId: string,
     method: string,

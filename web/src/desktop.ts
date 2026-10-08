@@ -1,4 +1,5 @@
 export interface DesktopBridge {
+  serverViewOrigin?: string;
   serverCredentialAction?(
     request: import("./servers/desktopCredentials").CredentialRequest,
   ): Promise<unknown>;

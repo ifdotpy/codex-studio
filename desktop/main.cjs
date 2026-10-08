@@ -24,6 +24,7 @@ const {
 } = require("./recovery.cjs");
 const { loadWindowState, trackWindowState } = require("./window-state.cjs");
 const { createRendererRecovery } = require("./renderer-recovery.cjs");
+const { frameOwner } = require("./frame-owner.cjs");
 const { startUiHost } = require("./ui-host.cjs");
 const { uiOnlyInstallation } = require("./install-mode.cjs");
 const uiOnly = uiOnlyInstallation({ packaged: app.isPackaged });
@@ -71,6 +72,7 @@ app.enableSandbox();
 let win;
 let backend;
 let backendResources;
+let frameHost;
 let serverCredentials;
 const serverStreams = new Map();
 const workspaceURL = () =>
@@ -93,24 +95,30 @@ function notificationTarget(value) {
   };
 }
 function trusted(event) {
-  if (
-    !win ||
-    win.isDestroyed() ||
-    event.sender !== win.webContents ||
-    event.senderFrame !== win.webContents.mainFrame ||
-    event.senderFrame.url !== workspaceURL()
-  )
-    throw new Error("Native access is restricted to the workspace main frame.");
-  if (event.studioServerFrame) {
-    const frame = event.studioServerFrame;
-    if (
-      frame.isDestroyed?.() ||
-      frame.url !==
-        `${backend.origin}/?studio-server=${encodeURIComponent(event.studioServerId)}` ||
-      !win.webContents.mainFrame.frames.includes(frame)
-    )
-      throw new Error("The server view is no longer available.");
+  if (!win || win.isDestroyed() || event.sender !== win.webContents)
+    throw new Error("Native access is restricted to this workspace.");
+  if (event.senderFrame === win.webContents.mainFrame) {
+    if (event.senderFrame.url !== workspaceURL())
+      throw new Error(
+        "Native access is restricted to the workspace main frame.",
+      );
+    return;
   }
+  const owner = frameOwner(
+    event.senderFrame?.url,
+    frameHost?.origin,
+    backend.origin,
+  );
+  if (
+    !owner ||
+    event.senderFrame.parent !== win.webContents.mainFrame ||
+    !win.webContents.mainFrame.frames.includes(event.senderFrame) ||
+    event.senderFrame.isDestroyed?.() ||
+    (event.studioServerId && event.studioServerId !== owner)
+  )
+    throw new Error("Invalid server frame owner.");
+  event.studioServerId = owner;
+  return owner;
 }
 function string(value, max = 4096) {
   if (
@@ -233,10 +241,47 @@ function nativeDownload(event, item, contents) {
   });
 }
 async function nativeAction(event, request) {
-  trusted(event);
+  const owner = trusted(event);
   if (!request || typeof request !== "object")
     throw new Error("Invalid native action.");
+  if (
+    owner &&
+    !["serverCredentialAction", "serverNativeAction"].includes(request.method)
+  ) {
+    if (
+      owner !== "local" &&
+      ["pickDirectory", "revealPath", "fileAction"].includes(request.method)
+    )
+      throw new Error(
+        "This file belongs to another computer. Use the server folder list or Save As.",
+      );
+    if (
+      ![
+        "requestMicrophone",
+        "prepareTranscription",
+        "transcribeAudio",
+        "cancelTranscription",
+        "pickDirectory",
+        "pickFiles",
+        "revealPath",
+        "saveFile",
+        "fileAction",
+        "openExternal",
+        "getBackendUpdate",
+      ].includes(request.method)
+    )
+      throw new Error("Unknown server native action.");
+    if (owner !== "local" && request.method === "getBackendUpdate")
+      return { availableBackendBuild: null, updateRequired: null };
+  }
   switch (request.method) {
+    case "releaseServerView": {
+      if (owner) throw new Error("Use the workspace shell.");
+      const serverId = string(request.value, 128);
+      for (const stream of serverStreams.values())
+        if (stream.serverId === serverId) stream.controller.abort();
+      return;
+    }
     case "serverCredentialAction": {
       const value = request.value;
       if (
@@ -244,22 +289,15 @@ async function nativeAction(event, request) {
         !["pair", "request", "cancel", "forget"].includes(value.action)
       )
         throw new Error("Invalid server credential action.");
-      if (value.frameOwner) {
-        const frame = win.webContents.mainFrame.frames.find(
-          (item) =>
-            item.url ===
-            `${backend.origin}/?studio-server=${encodeURIComponent(value.frameOwner)}`,
-        );
-        if (!frame || value.frameOwner !== value.serverId)
-          throw new Error("Invalid server frame owner.");
-        event = {
-          sender: event.sender,
-          senderFrame: event.senderFrame,
-          studioServerFrame: frame,
-          studioServerId: value.frameOwner,
-        };
-        trusted(event);
-      }
+      if (
+        ["request", "cancel"].includes(value.action) &&
+        (!owner ||
+          value.serverId !== owner ||
+          (value.frameOwner && value.frameOwner !== owner))
+      )
+        throw new Error("Invalid server frame owner.");
+      if (owner && ["pair", "forget"].includes(value.action))
+        throw new Error("Use the server manager.");
       if (value.action === "pair") {
         if (value.frameOwner) throw new Error("Pair from the server manager.");
         return serverCredentials.pair(value);
@@ -277,7 +315,7 @@ async function nativeAction(event, request) {
         if (
           stream &&
           stream.serverId === value.serverId &&
-          stream.frameOwner === value.frameOwner
+          stream.frameOwner === owner
         )
           stream.controller.abort();
         return;
@@ -286,17 +324,33 @@ async function nativeAction(event, request) {
         throw new Error("The server stream identity is already in use.");
       const controller = new AbortController();
       const pending = {
-        serverId: value.serverId,
-        frameOwner: value.frameOwner,
+        serverId: owner,
+        frameOwner: owner,
         controller,
       };
       serverStreams.set(id, pending);
       const deadline = setTimeout(() => controller.abort(), 15000);
       try {
-        const response = await serverCredentials.request(
-          value,
-          controller.signal,
-        );
+        let response;
+        if (owner === "local") {
+          if (uiOnly)
+            throw new Error("The local server is unavailable in UI-only mode.");
+          const url = new URL(value.url);
+          if (
+            url.origin !== backend.origin ||
+            !url.pathname.startsWith("/api/") ||
+            !["GET", "POST", "HEAD"].includes(value.method)
+          )
+            throw new Error("The request does not belong to this server.");
+          response = await fetch(url, {
+            method: value.method,
+            headers: value.headers,
+            ...(value.body?.byteLength ? { body: value.body } : {}),
+            signal: controller.signal,
+            redirect: "error",
+          });
+        } else
+          response = await serverCredentials.request(value, controller.signal);
         trusted(event);
         const metadata = {
           status: response.status,
@@ -316,7 +370,7 @@ async function nativeAction(event, request) {
                 const chunk = await reader.read();
                 if (chunk.done) break;
                 trusted(event);
-                win.webContents.send("codex-desktop-server-stream", {
+                event.senderFrame.send("codex-desktop-server-stream", {
                   serverId: value.serverId,
                   streamId: id,
                   bytes: chunk.value.buffer.slice(
@@ -331,14 +385,14 @@ async function nativeAction(event, request) {
                 }
               }
               if (!win.isDestroyed())
-                win.webContents.send("codex-desktop-server-stream", {
+                event.senderFrame.send("codex-desktop-server-stream", {
                   serverId: value.serverId,
                   streamId: id,
                   done: true,
                 });
             } catch {
               if (!win.isDestroyed())
-                win.webContents.send("codex-desktop-server-stream", {
+                event.senderFrame.send("codex-desktop-server-stream", {
                   serverId: value.serverId,
                   streamId: id,
                   error: "The server connection closed.",
@@ -364,7 +418,8 @@ async function nativeAction(event, request) {
       }
     }
     case "serverNativeAction": {
-      const owner = string(request.value?.serverId, 128);
+      if (!owner || request.value?.serverId !== owner)
+        throw new Error("Invalid server frame owner.");
       const method = string(request.value?.method, 128);
       const allowed = new Set([
         "requestMicrophone",
@@ -381,34 +436,7 @@ async function nativeAction(event, request) {
       ]);
       if (!allowed.has(method))
         throw new Error("Unknown server native action.");
-      const frame = win.webContents.mainFrame.frames.find(
-        (item) =>
-          item.url ===
-          `${backend.origin}/?studio-server=${encodeURIComponent(owner)}`,
-      );
-      if (
-        !frame ||
-        (owner !== "local" && !(await serverCredentials.owns(owner)))
-      )
-        throw new Error("The server view is no longer available.");
-      if (
-        owner !== "local" &&
-        ["pickDirectory", "revealPath", "fileAction"].includes(method)
-      )
-        throw new Error(
-          "This file belongs to another computer. Use the server folder list or Save As.",
-        );
-      if (owner !== "local" && method === "getBackendUpdate")
-        return { availableBackendBuild: null, updateRequired: null };
-      return nativeAction(
-        {
-          sender: event.sender,
-          senderFrame: event.senderFrame,
-          studioServerFrame: frame,
-          studioServerId: owner,
-        },
-        { method, value: request.value.value },
-      );
+      return nativeAction(event, { method, value: request.value.value });
     }
 
     case "saveFile": {
@@ -538,7 +566,7 @@ async function nativeAction(event, request) {
           signal: controller.signal,
           onProgress: (progress) => {
             if (!controller.signal.aborted && !sender.isDestroyed())
-              sender.send("codex-desktop-transcription-progress", {
+              event.senderFrame.send("codex-desktop-transcription-progress", {
                 id,
                 ...progress,
               });
@@ -712,6 +740,9 @@ async function start() {
           CODEX_AGENTS_SUPERVISOR_MODE: supervisorPreference() ? "1" : "0",
         },
       });
+  frameHost = uiOnly
+    ? backend
+    : await startUiHost({ resources: backendResources, port: 0 });
   serverCredentials =
     require("./server-credentials.cjs").createServerCredentials({
       profile: app.getPath("userData"),
@@ -739,6 +770,8 @@ async function start() {
       sandbox: true,
       contextIsolation: true,
       nodeIntegration: false,
+      nodeIntegrationInSubFrames: true,
+      additionalArguments: [`--studio-view-origin=${frameHost.origin}`],
       webSecurity: true,
       webviewTag: false,
       allowRunningInsecureContent: false,
@@ -757,10 +790,7 @@ async function start() {
     return (win.webContents.mainFrame.frames || []).some(
       (frame) =>
         frame.url === url &&
-        frame.url.startsWith(backend.origin + "/?studio-server=") &&
-        /^\?studio-server=[a-zA-Z0-9_-]{1,128}$/.test(
-          new URL(frame.url).search,
-        ),
+        !!frameOwner(frame.url, frameHost.origin, backend.origin),
     );
   };
   const audioOwner = (url, main) =>
@@ -785,7 +815,8 @@ async function start() {
   win.webContents.session.setPermissionCheckHandler(
     (contents, permission, origin, details) =>
       contents === win.webContents &&
-      origin === backend.origin &&
+      (origin === backend.origin ||
+        allowedFrame(details.requestingUrl, false)) &&
       ((permission === "clipboard-sanitized-write" &&
         allowedFrame(details.requestingUrl, details.isMainFrame)) ||
         (permission === "media" &&
@@ -814,10 +845,10 @@ async function start() {
     } catch {}
     if (
       event.isMainFrame === false &&
-      url?.origin === backend.origin &&
-      url.pathname === "/" &&
-      /^\?studio-server=[a-zA-Z0-9_-]{1,128}$/.test(url.search) &&
-      !url.hash &&
+      !!frameOwner(url?.href, frameHost.origin, backend.origin) &&
+      (!frameOwner(event.frame?.url, frameHost.origin, backend.origin) ||
+        frameOwner(event.frame.url, frameHost.origin, backend.origin) ===
+          frameOwner(url.href, frameHost.origin, backend.origin)) &&
       event.frame?.parent === win.webContents.mainFrame
     )
       return;
@@ -826,7 +857,7 @@ async function start() {
   win.webContents.on("will-redirect", (event) => event.preventDefault());
   win.webContents.session.on?.("will-download", nativeDownload);
   ipcMain.handle("codex-desktop", nativeAction);
-  if (uiOnly) app.once("before-quit", () => void backend.close());
+  app.once("before-quit", () => void frameHost.close());
   const applicationMenu = Menu.buildFromTemplate([
     {
       label: "Codex Studio",

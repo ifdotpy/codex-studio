@@ -4,6 +4,7 @@ import {
   handleEntitySyncFixtureRequest,
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
+  apiSchemaHandshakeSse,
 } from "../playwright.mjs";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
@@ -92,7 +93,10 @@ async function fixture(label, signed = false) {
   const server = createServer(async (request, response) => {
     response.setHeader("Access-Control-Allow-Origin", "*");
     response.setHeader("Access-Control-Allow-Headers", "*");
-    response.setHeader("Access-Control-Expose-Headers", "*");
+    response.setHeader(
+      "Access-Control-Expose-Headers",
+      "X-Studio-Server, X-Studio-API-Schema, X-Studio-API-Schema-Mismatch, ETag, Content-Disposition, X-Log-Truncated",
+    );
     if (request.method === "OPTIONS") {
       response.writeHead(204);
       response.end();
@@ -150,6 +154,15 @@ async function fixture(label, signed = false) {
         expect(h["x-studio-request-id"]).toBe(
           body.requestId || body.request_id,
         );
+    }
+    if (url.pathname === "/api/monitor/log") {
+      response.writeHead(200, {
+        "Content-Type": "text/plain",
+        "Content-Disposition": 'attachment; filename="remote-monitor.log"',
+        "X-Log-Truncated": "true",
+      });
+      response.end("remote log");
+      return;
     }
     if (url.pathname === "/api/multi-server/v1/pair") {
       pairs.push(bytes.toString());
@@ -225,7 +238,7 @@ async function fixture(label, signed = false) {
       return;
     }
     if (url.pathname === "/api/messages") {
-      writes.push(body);
+      writes.push({ ...body, _canvasToken: request.headers["x-canvas-token"] });
       json({ id: body.id, status: "queued" });
       return;
     }
@@ -271,8 +284,10 @@ async function fixture(label, signed = false) {
       if (url.pathname === "/")
         response.setHeader(
           "Content-Security-Policy",
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob:; frame-ancestors " +
-            (url.searchParams.has("studio-server") ? "'self'" : "'none'") +
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors " +
+            (url.searchParams.has("studio-server")
+              ? "'self' http://127.0.0.1:* http://localhost:*"
+              : "'none'") +
             "; base-uri 'none'",
         );
       response.end(file);
@@ -303,7 +318,10 @@ async function fixture(label, signed = false) {
     },
     async close() {
       for (const stream of streams) stream.destroy();
-      await new Promise((resolve) => server.close(resolve));
+      await new Promise((resolve) => {
+        server.close(resolve);
+        server.closeAllConnections();
+      });
     },
   };
 }
@@ -451,10 +469,26 @@ test("one UI routes overlapping chats to two and three signed servers without re
         page.locator(".server-sidebar [data-chat='overlap']"),
       ).toHaveCount(count);
       const startupMs = Date.now() - start;
-      const metric = await cdp.send("Performance.getMetrics");
-      const heap = metric.metrics.find(
+      let heap = (await cdp.send("Performance.getMetrics")).metrics.find(
         (row) => row.name === "JSHeapUsedSize",
       ).value;
+      for (const frame of page
+        .frames()
+        .filter((frame) => frame !== page.mainFrame())) {
+        let frameCdp;
+        try {
+          frameCdp = await context.newCDPSession(frame);
+        } catch (error) {
+          if (error.message.includes("part of the parent frame's session"))
+            continue;
+          throw error;
+        }
+        await frameCdp.send("Performance.enable");
+        heap += (await frameCdp.send("Performance.getMetrics")).metrics.find(
+          (row) => row.name === "JSHeapUsedSize",
+        ).value;
+        await frameCdp.detach();
+      }
       const processes = await browserCdp.send("SystemInfo.getProcessInfo");
       const ids = processes.processInfo
         .map((row) => row.id)
@@ -599,6 +633,102 @@ test("one UI routes overlapping chats to two and three signed servers without re
       page.getByRole("complementary", { name: "Servers and projects" }),
     ).toBeVisible();
     await page.setViewportSize({ width: 1280, height: 720 });
+    const remoteWindow = page
+      .frames()
+      .find(
+        (frame) =>
+          new URL(frame.url()).searchParams.get("studio-server") === "remote",
+      );
+    const frameSecurity = await remoteWindow.evaluate(async () => {
+      let parentBlocked = false,
+        siblingBlocked = false;
+      try {
+        void parent.document;
+      } catch (error) {
+        parentBlocked = error.name === "SecurityError";
+      }
+      try {
+        void parent.frames[0].document;
+      } catch (error) {
+        siblingBlocked = error.name === "SecurityError";
+      }
+      const correlation = crypto.randomUUID();
+      const blocked = await new Promise((resolve) => {
+        const receive = (event) => {
+          if (
+            event.data?.kind === "studio-server-transport-result" &&
+            event.data.correlation === correlation
+          ) {
+            removeEventListener("message", receive);
+            resolve(event.data.error);
+          }
+        };
+        addEventListener("message", receive);
+        parent.postMessage(
+          {
+            kind: "studio-server-transport",
+            correlation,
+            value: {
+              action: "request",
+              serverId: "third",
+              streamId: "attack",
+              url: "https://third.tailnet.ts.net/api/session",
+              method: "GET",
+            },
+          },
+          new URLSearchParams(location.search).get("studio-parent"),
+        );
+      });
+      return { parentBlocked, siblingBlocked, blocked };
+    });
+    expect(frameSecurity.parentBlocked).toBe(true);
+    expect(frameSecurity.siblingBlocked).toBe(true);
+    expect(frameSecurity.blocked).toContain("Invalid server frame owner");
+    const exportHeaders = await remoteWindow.evaluate(async () => {
+      const correlation = crypto.randomUUID();
+      return new Promise((resolve) => {
+        const receive = (event) => {
+          if (
+            event.data?.kind === "studio-server-transport-result" &&
+            event.data.correlation === correlation
+          ) {
+            removeEventListener("message", receive);
+            resolve(event.data.result?.headers);
+          }
+        };
+        addEventListener("message", receive);
+        parent.postMessage(
+          {
+            kind: "studio-server-transport",
+            correlation,
+            value: {
+              action: "request",
+              serverId: "remote",
+              streamId: "monitor-export",
+              url: "https://remote.tailnet.ts.net/api/monitor/log?id=monitor",
+              method: "GET",
+            },
+          },
+          new URLSearchParams(location.search).get("studio-parent"),
+        );
+      });
+    });
+    const exported = new Headers(exportHeaders);
+    expect(exported.get("Content-Disposition")).toBe(
+      'attachment; filename="remote-monitor.log"',
+    );
+    expect(exported.get("X-Log-Truncated")).toBe("true");
+    await remoteWindow.evaluate(async () => {
+      const registration =
+        await navigator.serviceWorker.register("/studio-sw.js");
+      await navigator.serviceWorker.ready;
+      if (registration.waiting)
+        registration.waiting.postMessage({ type: "STUDIO_SKIP_WAITING" });
+    });
+    await context.setOffline(true);
+    await remoteWindow.goto(remoteWindow.url());
+    await expect(remoteFrame.locator("#message")).toBeVisible();
+    await context.setOffline(false);
     await page.screenshot({
       path: testInfo.outputPath("multi-server-ui.png"),
       fullPage: true,
@@ -612,5 +742,53 @@ test("one UI routes overlapping chats to two and three signed servers without re
   } finally {
     await page.goto("about:blank").catch(() => {});
     await Promise.all([local.close(), remote.close(), third.close()]);
+  }
+});
+
+test("phone HTTPS Serve route opens the normal App and its local session", async ({
+  page,
+  context,
+}) => {
+  const local = await fixture("Phone");
+  try {
+    await context.route("https://phone.tailnet.ts.net/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/sync/stream") {
+        await route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          body: apiSchemaHandshakeSse("event: resources\ndata: []\n\n"),
+        });
+        return;
+      }
+      const response = await route.fetch({
+        url: local.origin + url.pathname + url.search,
+      });
+      await route.fulfill({ response });
+    });
+    await page.goto("https://phone.tailnet.ts.net/");
+    await expect(page.locator("#message")).toBeVisible();
+    await expect(
+      page.getByRole("dialog", { name: "Studio servers" }),
+    ).toHaveCount(0);
+    await expect(page.locator("iframe")).toHaveCount(0);
+    const sent = await page.evaluate(async () => {
+      const session = await (await fetch("/api/session")).json();
+      const response = await fetch("/api/messages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Canvas-Token": session.token,
+        },
+        body: JSON.stringify({ id: crypto.randomUUID(), text: "phone send" }),
+      });
+      return response.status;
+    });
+    expect(sent).toBe(200);
+    expect(local.writes[0]._canvasToken).toBe("local-only");
+  } finally {
+    await page.goto("about:blank").catch(() => {});
+    await local.close();
   }
 });

@@ -84,3 +84,90 @@ it("releases a successful JSON write through the API facade after a lost respons
     vi.unstubAllGlobals();
   }
 });
+it("releases a final pre-handler HTTP failure for the next user action", async () => {
+  const requests: Request[] = [];
+  vi.stubGlobal("fetch", async (request: Request) => {
+    requests.push(request);
+    return Response.json({ error: "Validation failed" }, { status: 400 });
+  });
+  try {
+    await expect(post("/api/sync/drafts", { rows: [] })).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(post("/api/sync/drafts", { rows: [] })).rejects.toMatchObject({
+      status: 400,
+    });
+    expect(requests[0].headers.get("X-Studio-Request-Id")).not.toBe(
+      requests[1].headers.get("X-Studio-Request-Id"),
+    );
+    expect(rows.size).toBe(0);
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});
+it("bounds an ordinary remote POST and keeps the same identity for its retry", async () => {
+  vi.useFakeTimers();
+  const requests: Request[] = [];
+  vi.stubGlobal("fetch", (request: Request) => {
+    requests.push(request);
+    if (requests.length > 1)
+      return Promise.resolve(Response.json({ rows: [] }));
+    return new Promise<Response>((_resolve, reject) =>
+      request.signal.addEventListener("abort", () =>
+        reject(request.signal.reason),
+      ),
+    );
+  });
+  try {
+    const pending = post("/api/sync/drafts", { rows: [] }).then(
+      () => "success",
+      (error) => error.name,
+    );
+    await vi.waitFor(() => expect(requests).toHaveLength(1));
+    await vi.advanceTimersByTimeAsync(16000);
+    expect(requests[0].signal.aborted).toBe(true);
+    expect(await pending).toBe("NetworkTimeoutError");
+    await post("/api/sync/drafts", { rows: [] });
+    expect(requests[1].headers.get("X-Studio-Request-Id")).toBe(
+      requests[0].headers.get("X-Studio-Request-Id"),
+    );
+  } finally {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  }
+});
+it.each([500, 503, 504, 410])(
+  "retains uncertain HTTP %i writes even after a later validation failure",
+  async (status) => {
+    const requests: Request[] = [];
+    vi.stubGlobal("fetch", async (request: Request) => {
+      requests.push(request);
+      return Response.json(
+        {
+          error: "Not resolved",
+          ...(status === 410 ? { code: "receipt_expired" } : {}),
+        },
+        { status: requests.length === 1 ? status : 400 },
+      );
+    });
+    try {
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).rejects.toBeInstanceOf(Error);
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).rejects.toBeInstanceOf(Error);
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).rejects.toBeInstanceOf(Error);
+      expect(
+        new Set(
+          requests.map((request) => request.headers.get("X-Studio-Request-Id")),
+        ).size,
+      ).toBe(1);
+      expect(rows.size).toBe(1);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  },
+);

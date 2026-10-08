@@ -147,13 +147,5 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
 }
 export function nativeCredentialBridge(): DesktopBridge | undefined {
   if (window.codexDesktop?.serverCredentialAction) return window.codexDesktop;
-  try {
-    if (
-      serverViewId &&
-      window.parent !== window &&
-      window.parent.codexDesktop?.serverCredentialAction
-    )
-      return window.parent.codexDesktop;
-  } catch {}
   return undefined;
 }

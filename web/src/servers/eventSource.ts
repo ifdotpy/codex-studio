@@ -1,5 +1,5 @@
 import { apiOrigin, serverFetch } from "./transport";
-import { serverViewId } from "./environment";
+import { serverViewId, isolatedServerView } from "./environment";
 
 export type ServerEventSource = Pick<
   EventSource,
@@ -104,7 +104,7 @@ export class SignedEventSource
   }
 }
 export function openServerEvents(url: string): ServerEventSource {
-  return serverViewId && serverViewId !== "local"
+  return serverViewId && (serverViewId !== "local" || isolatedServerView)
     ? new SignedEventSource(url)
     : new EventSource(url);
 }
