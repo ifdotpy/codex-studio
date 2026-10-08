@@ -186,6 +186,10 @@ account used by future workers while the lead stays on its current account.
 See [the parity checks](docs/verification/2026-09-22-claude-parity.md) for evidence
 and the tested reference revision.
 
+When a team transfer is blocked, Chat settings shows the saved transfer status
+and an explicit **Retry** action when the receipt can be retried. Retry continues
+that transfer receipt; it does not resend the chat input.
+
 The command installer creates links in `~/.local/bin`. Add that directory to PATH
 if your shell does not include it. Use `--bin-dir` for another directory.
 It refuses to replace unrelated files or links. To update links from the old
