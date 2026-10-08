@@ -67,6 +67,11 @@ def git_environment() -> dict[str, str]:
 
 def git_command(directory: Path | str, *arguments: str, file_transport: bool = False) -> list[str]:
     config = ['core.fsmonitor=false', 'core.hooksPath=/dev/null', 'core.pager=cat',
+              'core.attributesFile=/dev/null', 'core.alternateRefsCommand=',
+              'core.alternateRefsPrefixes=', 'core.sshCommand=false', 'core.gitProxy=false',
+              'credential.helper=', 'uploadpack.packObjectsHook=',
+              'fetch.recurseSubmodules=false', 'submodule.recurse=false',
+              'status.submoduleSummary=false', 'maintenance.auto=false', 'gc.auto=0', 'diff.renames=false',
               'log.showSignature=false', 'gpg.program=false', 'gpg.ssh.program=false',
               'gpg.x509.program=false', 'diff.external=', 'protocol.allow=never',
               'protocol.ext.allow=never', 'protocol.ssh.allow=never',
@@ -75,6 +80,26 @@ def git_command(directory: Path | str, *arguments: str, file_transport: bool = F
     command = ['git', '--no-pager', '--no-optional-locks']
     for setting in config:
         command.extend(['-c', setting])
+    # Config inspection does not convert repository content or run drivers.
+    # Includes can define drivers outside .git/config, so inspect effective keys.
+    names, code, truncated = bounded_command([*command, '-C', str(directory), 'config',
+        '--includes', '-z', '--name-only', '--get-regexp', r'^(filter|diff)\..*\.'])
+    if truncated or code not in {0, 1}:
+        raise ValueError('Git could not read the effective content driver configuration')
+    drivers = set()
+    for name in names.split(b'\0'):
+        if not name:
+            continue
+        key = os.fsdecode(name)
+        group, separator, suffix = key.partition('.')
+        driver, last_separator, _field = suffix.rpartition('.')
+        if group not in {'filter', 'diff'} or not separator or not last_separator or not driver:
+            raise ValueError('Invalid Git content driver configuration')
+        drivers.add((group, driver))
+    for group, driver in sorted(drivers):
+        settings = ('clean=', 'smudge=', 'process=', 'required=false') if group == 'filter' else ('command=', 'textconv=')
+        for setting in settings:
+            command.extend(['-c', group + '.' + driver + '.' + setting])
     return [*command, '-C', str(directory), *arguments]
 
 
@@ -105,6 +130,8 @@ class MultiServerService:
         self.runtime, self.transport = runtime, transport
         self._running = False
         self._claim_lock = threading.RLock()
+        # The scheduler claim must never wait behind an inbound SQLite writer.
+        self._tick_lock = threading.Lock()
         self._pruned_at = 0.0
         with runtime.db() as db:
             db.executescript('''
@@ -178,6 +205,16 @@ class MultiServerService:
             envelope, server = json.loads(row['body']), row['server']
             if row['state'] == 'complete' and envelope['action'] != 'chunk':
                 return json.loads(row['result'])  # type: ignore[no-any-return]
+            if envelope['action'] == 'input' and db.execute("""
+                SELECT 1 FROM runtime_server_outbox earlier
+                WHERE earlier.rowid < (SELECT rowid FROM runtime_server_outbox WHERE id=?)
+                  AND earlier.state!='complete' AND earlier.server=?
+                  AND json_extract(earlier.body,'$.action')='input'
+                  AND json_extract(earlier.body,'$.payload.worker')=?
+                  AND json_extract(earlier.body,'$.payload.link')=? LIMIT 1
+                """, (key, server, envelope['payload']['worker'], envelope['payload']['link'])).fetchone():
+                return {'requestId': key, 'outcome': 'unknown', 'queued': True,
+                        'waitingFor': 'The earlier input receipt'}
         try:
             result = self.transport.request(server, envelope, timeout=TIMEOUT)
             if result.get('requestId') != key or result.get('outcome') not in {'applied', 'not_applied', 'unknown'}:
@@ -218,7 +255,7 @@ class MultiServerService:
         return result
 
     def tick(self) -> None:
-        with self._claim_lock:
+        with self._tick_lock:
             if self._running or self.runtime.closed:
                 return
             self._running = True
@@ -227,13 +264,24 @@ class MultiServerService:
                 if time.time() - self._pruned_at > 3600:
                     self.prune()
                 with self.runtime.read_db() as db:
-                    keys = [r[0] for r in db.execute("SELECT id FROM runtime_server_outbox WHERE state='queued' AND next_at<=? ORDER BY rowid LIMIT 8", (time.time(),))]
+                    keys = [r[0] for r in db.execute("""
+                        SELECT current.id FROM runtime_server_outbox current
+                        WHERE current.state='queued' AND current.next_at<=?
+                          AND (json_extract(current.body,'$.action')!='input' OR NOT EXISTS (
+                            SELECT 1 FROM runtime_server_outbox earlier
+                            WHERE earlier.rowid<current.rowid AND earlier.state!='complete'
+                              AND earlier.server=current.server
+                              AND json_extract(earlier.body,'$.action')='input'
+                              AND json_extract(earlier.body,'$.payload.worker')=json_extract(current.body,'$.payload.worker')
+                              AND json_extract(earlier.body,'$.payload.link')=json_extract(current.body,'$.payload.link')))
+                        ORDER BY current.rowid LIMIT 8
+                        """, (time.time(),))]
                 for key in keys:
                     if self.runtime.closed:
                         break
                     self.deliver(key)
             finally:
-                with self._claim_lock:
+                with self._tick_lock:
                     self._running = False
         self.runtime.delivery_executor().submit(run)
 
@@ -569,8 +617,9 @@ class MultiServerService:
                 link['parentEpoch'] = p['parentEpoch']
                 db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), link_id))
                 return {'rebound': True}
-            if link['side'] == 'home' and p.get('parentEpoch', link['parentEpoch']) != link['parentEpoch']:
-                if action in {'event', 'state'}:
+            parent_superseded = link['side'] == 'home' and p.get('parentEpoch', link['parentEpoch']) != link['parentEpoch']
+            if parent_superseded and action != 'state':
+                if action == 'event':
                     return {'stored': False, 'reason': 'The parent epoch was superseded'}
                 raise ValueError('The parent epoch was superseded')
             if action in {'input', 'stop'}:
@@ -614,19 +663,20 @@ class MultiServerService:
                     return {'stored': False, 'reason': 'A newer remote state already exists'}
                 worker['remoteStateSequence'] = p['sequence']
                 worker['remoteEpoch'] = max(worker.get('remoteEpoch', 0), record['epoch'])
-                if not worker['autoWake'] or self.runtime.agent(link['parent'], db)['epoch'] != link['parentEpoch']:
-                    if record.get('status') in {'paused','failed','completed','interrupted'} and not record.get('inFlight'):
-                        worker.update(inFlight=False, remoteReservation=False)
-                    self.runtime.put(db, 'agents', worker)
-                    return {'stored': False, 'reason': 'The parent or worker was stopped'}
-                if (record.get('status') in {'completed','failed','paused','interrupted'}
+                terminal = record.get('status') in {'completed', 'failed', 'paused', 'idle', 'interrupted'} and not record.get('inFlight')
+                if (terminal
                         and worker.get('remoteAdmissionRequest')
                         and record.get('admissionId') != worker['remoteAdmissionRequest']):
                     self.runtime.put(db, 'agents', worker)
                     return {'stored': False, 'reason': 'This snapshot belongs to an earlier admission'}
+                if terminal:
+                    # Parent resume must not strand the previous native slot.
+                    # Admission identity still prevents releasing a newer turn.
+                    worker.update(inFlight=False, remoteReservation=False)
+                if parent_superseded or not worker['autoWake'] or self.runtime.agent(link['parent'], db)['epoch'] != link['parentEpoch']:
+                    self.runtime.put(db, 'agents', worker)
+                    return {'stored': False, 'reason': 'The parent or worker was stopped or superseded'}
                 worker.update({k: record[k] for k in ('status', 'cwd', 'branch', 'workerBaseCommit', 'inFlight', 'tokensUsed', 'error') if k in record})
-                if record.get('status') in {'completed', 'failed', 'paused', 'idle', 'interrupted'} and not record.get('inFlight'):
-                    worker['remoteReservation'] = False
                 worker['inFlight'] = bool(worker.get('remoteReservation') or record.get('inFlight'))
                 worker['remoteEpoch'] = record['epoch']
                 self.runtime.put(db, 'agents', worker)
@@ -847,6 +897,8 @@ class MultiServerService:
             raise ValueError('Unsupported read-only Git command')
         if argv[0] in {'log', 'show'}:
             argv = [argv[0], '--no-show-signature', '--no-ext-diff', '--no-textconv', *argv[1:]]
+        elif argv[0] == 'status':
+            argv = [*argv, '--no-renames', '--ignore-submodules=all']
         command = git_command(directory, *argv)
         raw, code, truncated = bounded_command(command)
         return {'exitCode': code, 'output': raw.decode('utf-8', errors='replace'), 'truncated': truncated}

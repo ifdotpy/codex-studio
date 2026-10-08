@@ -3,12 +3,15 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 import copy
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import sqlite3
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import patch
@@ -428,6 +431,158 @@ class CrossServer(unittest.TestCase):
         git('add', 'file')
         git('commit', '-qm', 'base')
         return repo, git
+
+    def test_review_status_disables_filters_from_included_config(self):
+        repo, git = self.review_repo()
+        (repo / '.gitattributes').write_text('file filter=fixture.driver diff=fixture.driver\n')
+        git('add', '.gitattributes')
+        git('commit', '-qm', 'Attributes')
+        marker, program = self.root / 'filter-executed', self.root / 'filter-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\ncat\n')
+        program.chmod(0o700)
+        config = self.root / 'external-config'
+        config.write_text('[filter "fixture.driver"]\n clean = "' + str(program) + '"\n required = true\n')
+        git('config', 'include.path', str(config))
+        (repo / 'file').write_text('work')  # Same size forces Git to compare filtered content.
+        git('status', '--porcelain=v1')
+        self.assertTrue(marker.exists(), 'The unsafe control must execute the clean filter')
+        marker.unlink()
+        result = self.network['remote'].receive('home', {'requestId': 'filtered-status', 'action': 'git',
+            'payload': {'cwd': str(repo), 'argv': ['status', '--porcelain=v1']}})
+        self.assertFalse(marker.exists())
+        self.assertEqual(result['outcome'], 'applied')
+        self.assertEqual(result['value']['exitCode'], 0)
+        self.assertIn('file', result['value']['output'])
+        # A broken include makes the effective driver list unknowable.
+        config.write_text('[invalid config\n')
+        refused = self.network['remote'].receive('home', {'requestId': 'broken-filter-config', 'action': 'git',
+            'payload': {'cwd': str(repo), 'argv': ['status', '--porcelain=v1']}})
+        self.assertEqual(refused['outcome'], 'not_applied')
+
+    def test_review_fetch_disables_alternate_refs_programs(self):
+        repo, git = self.review_repo()
+        target = self.root / 'home' / 'shared-target'
+        subprocess.run(['git', 'clone', '-q', '--shared', str(repo), str(target)], check=True)
+        (repo / 'file').write_text('Remote work')
+        git('add', 'file')
+        git('commit', '-qm', 'Remote work')
+        worker = self.spawn(cwd=str(repo))['agents'][0]['id']
+        marker, program = self.root / 'alternate-executed', self.root / 'alternate-program'
+        program.write_text('#!/bin/sh\ntouch "' + str(marker) + '"\nexit 0\n')
+        program.chmod(0o700)
+        subprocess.run(['git', '-C', str(target), 'config', 'core.alternateRefsCommand', str(program)], check=True)
+        # Prove the marker crosses Git's alternate object boundary without hardening.
+        subprocess.run(['git', '-C', str(target), 'fetch', '-q', str(repo), 'worker'], check=True)
+        self.assertTrue(marker.exists())
+        marker.unlink()
+        # The first fetch uses the already-present commit through a local file fetch.
+        first = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'safe-shared-local')
+        self.assertEqual(first['bytes'], 0)
+        self.assertFalse(marker.exists())
+        # A new commit requires a bundle fetch into the same shared repository.
+        (repo / 'file').write_text('More remote work')
+        git('add', 'file')
+        git('commit', '-qm', 'More remote work')
+        second = self.network['home'].tools(self.lead, {'action': 'fetch', 'server': 'remote', 'agent_id': worker,
+            'branch': 'worker', 'destination': str(target)}, 'safe-shared-bundle')
+        self.assertGreater(second['bytes'], 0)
+        self.assertEqual(second['commit'], git('rev-parse', 'HEAD'))
+        self.assertFalse(marker.exists())
+
+    def test_review_old_parent_terminal_snapshot_releases_slot(self):
+        worker = self.spawn()['agents'][0]['id']
+        self.home.stop(self.lead['id'], True)
+        self.drain('home')
+        self.home.send(self.lead['id'], 'Resume the team', 'resume-before-terminal', resume=True)
+        self.drain('home')
+        self.drain('remote')
+        proxy = self.home.agent(worker)
+        self.assertFalse(proxy['inFlight'])
+        self.assertFalse(proxy['remoteReservation'])
+        self.assertFalse(proxy['autoWake'])
+        # Released slots permit an unrelated worker at concurrency one.
+        with self.home.lock, self.home.db() as db:
+            lead = self.home.agent(self.lead['id'], db)
+            lead['concurrency'] = 1
+            self.home.put(db, 'agents', lead)
+        self.lead = self.home.agent(self.lead['id'])
+        self.assertEqual(self.spawn(key='worker-after-old-terminal')['outcome'], 'applied')
+
+    def test_review_input_queue_keeps_order_during_backoff(self):
+        worker = self.spawn()['agents'][0]['id']
+        other = self.spawn(key='other-order-worker')['agents'][0]['id']
+        self.home.send(worker, 'First', 'ordered-first', resume=True)
+        self.home.send(worker, 'Second', 'ordered-second', resume=True)
+        self.home.send(other, 'Independent', 'ordered-other', resume=True)
+        service = self.network['home']
+        first_id = identity('input', 'ordered-first')
+        second_id = identity('input', 'ordered-second')
+        original = service.transport.request
+        def offline_first(server, envelope, **kwargs):
+            if envelope['requestId'] == first_id:
+                raise TimeoutError('First input has no receipt')
+            return original(server, envelope, **kwargs)
+        with patch.object(service.transport, 'request', side_effect=offline_first):
+            service.tick()
+            f.f.eventually(lambda: not service._running)
+        with self.remote.read_db() as db:
+            self.assertIsNone(db.execute('SELECT 1 FROM runtime_events WHERE text=?', ('Second',)).fetchone())
+            self.assertIsNotNone(db.execute('SELECT 1 FROM runtime_events WHERE text=?', ('Independent',)).fetchone())
+        # Direct retry of a later receipt must honor the same order.
+        self.assertEqual(service.deliver(second_id)['outcome'], 'unknown')
+        with self.home.db() as db:
+            db.execute('UPDATE runtime_server_outbox SET next_at=0 WHERE id=?', (first_id,))
+        service.tick()
+        f.f.eventually(lambda: not service._running)
+        # The scheduler can deliver Second on its next pass after First completes.
+        service.tick()
+        f.f.eventually(lambda: not service._running)
+        with self.remote.read_db() as db:
+            inputs = [row[0] for row in db.execute('SELECT text FROM runtime_events WHERE agent=? AND text IN (?,?) ORDER BY rowid',
+                (worker, 'First', 'Second'))]
+        self.assertEqual(inputs, ['First', 'Second'])
+
+    def test_review_receive_db_wait_does_not_block_tick_claim(self):
+        service = self.network['remote']
+        service._pruned_at = time.time()
+        entered, tick_done = threading.Event(), threading.Event()
+        errors = []
+        original_db = self.remote.db
+        @contextmanager
+        def waiting_db(*args, **kwargs):
+            entered.set()
+            with original_db(*args, **kwargs) as db:
+                yield db
+        def receive():
+            try:
+                service.receive('home', {'requestId': 'writer-wait', 'action': 'folders',
+                    'payload': {'cwd': str(self.root / 'remote')}})
+            except Exception as error:
+                errors.append(error)
+        def tick():
+            service.tick()
+            tick_done.set()
+        writer = sqlite3.connect(self.remote.db_path, timeout=1)
+        writer.execute('BEGIN IMMEDIATE')
+        threads = []
+        try:
+            with patch.object(self.remote, 'db', waiting_db), patch.object(self.remote, 'delivery_executor'):
+                threads.append(threading.Thread(target=receive))
+                threads[-1].start()
+                self.assertTrue(entered.wait(2))
+                threads.append(threading.Thread(target=tick))
+                threads[-1].start()
+                responsive = tick_done.wait(.25)
+        finally:
+            writer.rollback()
+            writer.close()
+            for thread in threads:
+                thread.join(5)
+            service._running = False
+        self.assertTrue(responsive, 'A SQLite writer must not block the scheduler claim')
+        self.assertFalse(errors)
+        self.assertFalse(any(thread.is_alive() for thread in threads))
 
     def test_review_git_read_never_executes_repo_gpg(self):
         repo, git = self.review_repo()

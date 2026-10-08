@@ -22,11 +22,15 @@ Remote input keeps its delivery mode. Remote input rejects attachments before
 acceptance. An input cannot resume a worker after a concurrent stop changes its
 epoch. Explicit parent resume rebinds the remote link to the parent's new epoch.
 A resume that arrives before its stop or parent update waits for those operations.
+Input for one worker follows queue order. A later input waits for the earlier
+input receipt, including during an offline retry. Other workers can proceed.
 
 The home server reserves the batch's execution slots before it sends the
 request. A remote worker requires home admission before each subsequent turn.
 An offline or unknown admission cannot start a native turn. Terminal native
 state releases the slot. Remote proxies never start local model sessions.
+A terminal snapshot releases its native slot after a parent resume, even when
+the snapshot has the previous parent epoch. It cannot release a newer admission.
 
 ## Server tools
 
@@ -52,6 +56,10 @@ fsmonitor, and the pager. Other commands fail before execution.
 The commands disable signature programs, external diffs, textconv, lazy object
 fetch, and external Git transports. Local fetch rejects URL rewrites that match
 the bundle path. Only the local file transport is permitted for fetch.
+Before each command, Git reads the effective content driver names, including
+config includes. The command disables all listed filters and diff drivers.
+An unreadable driver list prevents the command. Alternate-ref programs,
+credential helpers, SSH programs, pack hooks, and automatic maintenance are disabled.
 
 Fetch uses a Git bundle through the paired channel. The server keeps the
 export for the original request. Each chunk and the complete bundle have a
