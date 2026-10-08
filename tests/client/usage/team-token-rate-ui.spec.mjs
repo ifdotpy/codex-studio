@@ -1,4 +1,9 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  expect,
+  readTestState,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Real batch SSE, hidden Chrome, temp state. No model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
