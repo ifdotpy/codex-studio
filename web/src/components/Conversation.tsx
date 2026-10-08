@@ -23,7 +23,7 @@ import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
-  MoreHorizontal,
+  ListTree,
   Trash2,
   Square,
   Terminal,
@@ -1475,7 +1475,7 @@ export default function Conversation(p: {
               aria-label="Conversation tools"
               title="Conversation tools"
             >
-              <MoreHorizontal size={18} />
+              <ListTree size={18} />
               <span className="sr-only">Conversation tools</span>
             </summary>
             <div

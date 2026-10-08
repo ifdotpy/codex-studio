@@ -127,3 +127,16 @@ html[data-server-view] .workspace {
   font-size: var(--studio-sidebar-font-size);
   font-family: var(--studio-font-family);
 }
+/* On phones the floating Servers button covered the composer footer. Show it
+   only while the conversations drawer is open, in the drawer's free corner. */
+@media (max-width: 760px) {
+  .server-manager-launch {
+    display: none;
+  }
+  body:has(#sidebar) .server-manager-launch {
+    display: inline-flex;
+    bottom: 12px;
+    left: 16px;
+    z-index: 1000;
+  }
+}

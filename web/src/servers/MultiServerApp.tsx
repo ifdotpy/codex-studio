@@ -1,4 +1,10 @@
-import { Button, TextInput, Modal, useMantineColorScheme } from "@mantine/core";
+import {
+  Button,
+  TextInput,
+  Modal,
+  useMantineColorScheme,
+  Portal,
+} from "@mantine/core";
 import { useCallback, useEffect, useRef, useState } from "react";
 import App from "../App";
 import { frameURL } from "./frameOrigin";
@@ -472,13 +478,16 @@ export default function MultiServerApp() {
     return (
       <>
         <App />
-        <Button
-          className="server-manager-launch"
-          size="xs"
-          onClick={() => setManager(true)}
-        >
-          Servers
-        </Button>
+        {/* A portal lets the button sit above the mobile conversations drawer. */}
+        <Portal>
+          <Button
+            className="server-manager-launch"
+            size="xs"
+            onClick={() => setManager(true)}
+          >
+            Servers
+          </Button>
+        </Portal>
         {management}
       </>
     );

@@ -2007,6 +2007,12 @@ export default function App() {
           {!room?.radio && (
             <Button
               id="messages-toggle"
+              aria-label="Messages"
+              title={
+                attentionCount > 0
+                  ? `Messages, ${attentionCount} need you`
+                  : "Messages"
+              }
               leftSection={<MessageSquare size={16} />}
               disabled={!lead}
               onClick={() => {
