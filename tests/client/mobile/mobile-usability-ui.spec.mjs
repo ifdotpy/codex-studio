@@ -15,11 +15,16 @@ test("Mobile usability", async () => {
   const { webkit, devices } = createRequire(join(repo, "web/package.json"))(
     "playwright-core",
   );
+  const requireWebKit = process.env.REQUIRE_WEBKIT === "1";
   const webkitPath = webkit.executablePath();
   test.skip(
-    !existsSync(webkitPath),
+    !existsSync(webkitPath) && !requireWebKit,
     `WebKit runtime is not installed at ${webkitPath}`,
   );
+  if (!existsSync(webkitPath) && requireWebKit)
+    throw new Error(
+      `REQUIRE_WEBKIT=1 but WebKit runtime is not installed at ${webkitPath}`,
+    );
   const phase =
     process.argv.find((arg) => arg.startsWith("--phase="))?.split("=")[1] ||
     "after";
@@ -124,7 +129,7 @@ test("Mobile usability", async () => {
       const missingLibrary = String(error).match(
         /error while loading shared libraries: ([^:]+): cannot open shared object file/,
       )?.[1];
-      if (missingLibrary)
+      if (missingLibrary && !requireWebKit)
         test.skip(
           true,
           `WebKit system library is unavailable: ${missingLibrary}`,
