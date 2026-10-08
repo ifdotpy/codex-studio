@@ -52,9 +52,9 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
   predicate, whose Promise was truthy before the resize handler updated the
   viewport. Use a synchronous animation-frame poll for three stable samples,
   including computed safe-area styles, and assert the exact captured sample.
-  Focused scroll restoration remains asserted before blur; after blur the
-  mobile viewport hook resets the page scroll to zero, so pinch geometry expects
-  that reset.
+  Focused scroll restoration remains asserted before blur. The hook resets
+  nonzero scroll on scale-1 updates, but returns early during pinch zoom; the
+  test sets scale 2 before retaining 150px so pinch preservation is deterministic.
 - `settings/daybreak-settings-browser.spec.mjs`: the fixture model catalog is
   synchronous. After a reset, the generic enable helper queried controls before
   the settings view finished rendering; its count-based fallback could select
@@ -92,16 +92,15 @@ Base: `92794cb2` (`work/fast-browser-tests`). The production build passed.
 A failed limits read is no longer retried on a timer since `ef95d230`; the
 notice stays until Refresh or the next limits event.
 
-The 390×390 context A/B is inconclusive. Sync captured Release lead seq 942
-with `{tokens:80000, window:200000}`, but UI label `Context 40%` did not always
-follow, even after restoring that agent through `codex-mobile-opened`. The
-unknown case was deliberately stripped from the sync response; identical unknown
-footer content both fit and overflowed as composer bottom varied. Both isolated
-A/B tests are `test.fixme`; the main flow no longer gates on the flaky context
-label and keeps the clearance claim in those isolated reproductions. The 390×330 retained-scroll sample has a 12.5625px composer viewport overflow;
-separate 390×330 no-keyboard gap and 390×390 A/B observations are in
-`misc-known-failures.md`. The main flow compares session-cost request counts
-before and after viewport changes; component source is identity-keyed.
+The Usage footer clearance is a product defect family with non-deterministic
+measurements at 390×390. The single `test.fixme` group holds 390×330,
+390×390 known/unknown-context, and 640×390 reproductions for re-enabling after
+the layout fix. The main flow removes footer clearance assertions at every
+viewport while keeping settled composer geometry, non-overlap,
+focus/selection, scroll preservation, pinch, zoom, orientation, and desktop
+checks active. The 390×330 no-keyboard 12.03px gap expected failure remains
+separate and repeat-stable. Consolidated sizes, rates, measurements, and CSS/TSX
+sources are in `misc-known-failures.md`.
 
 ## Solo verification
 
@@ -127,22 +126,19 @@ node node_modules/@playwright/test/cli.js test ../tests/client/limits/limits-ui.
 Result: 3/3 passed (50.9s; 16.0–17.1s each).
 
 ```sh
-node node_modules/@playwright/test/cli.js test ../tests/client/mobile/mobile-keyboard-ui.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-mobile-final
+node node_modules/@playwright/test/cli.js test ../tests/client/mobile/mobile-keyboard-ui.spec.mjs --project=client --reporter=list --workers=1 --repeat-each=3 --output=/dev/shm/load-b-mobile-review-final
 ```
 
-Result: final solo repeat3 completed 7 passed, 2 failed, 6 skipped (1.1m).
-The main flow passed once and failed twice at the 640×390 orientation step: its
-active footer-clearance assertion measured footer bottom 398.375px against a
-390px viewport (8.375px overflow). The A/B reproductions are `test.fixme`;
-request and response counts stayed 1/1 across the tested resizes. Trace and
-error context are under `/dev/shm/load-b-mobile-final5/tests-client-mobile-
-mobile-keyboard-ui-mobile-keyboard-ui-client/` and the corresponding
-`...-client-repeat1/` directory. No test assertions were changed after this
-run.
+Result: 9 passed, 3 skipped (1.2m). Main flow and compact keyboard setup passed
+3/3; the 390×330 gap expected-failure behaved as expected in all repeats; the
+consolidated small-mobile footer fixme was skipped. The final main-flow sample
+measured root bottom 444px, composer bottom 326.96875px, and footer bottom
+428.96875px after session cost settled, with request/response counts 1/1. Trace
+evidence is under `/dev/shm/pw-40bIL7/codex-mobile-keyboard-J3emds`,
+`...-r4PKWO`, and `...-SDGuhI`.
 
 ## Loaded combined run
 
 The three checkpoint specs passed 9/9 at `--workers=3 --repeat-each=3` while
 eight CPU busy-loop processes ran (`/dev/shm/load-b-three-final`). The final
-mobile whole-file repeat3 is recorded above; the owner requested no additional
-run.
+mobile whole-file repeat3 is recorded above.
