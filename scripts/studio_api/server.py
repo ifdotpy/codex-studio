@@ -236,7 +236,9 @@ class BoundServer:
         ), context)
         self.server.shutdown_event = shutdown_requested
         self.server_address = sock.getsockname()
-        self.server_port = int(sock.getsockname()[1]) if sock.family != socket.AF_UNIX else context.server_port
+        self.server_port = (int(sock.getsockname()[1])
+                            if sock.family != getattr(socket, "AF_UNIX", None)
+                            else context.server_port)
         self.address_family = sock.family
         self.owned_socket_identity = owned_unix
         self._closed = False
