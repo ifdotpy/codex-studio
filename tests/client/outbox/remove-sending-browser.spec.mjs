@@ -177,6 +177,7 @@ test("remove-sending-browser", async ({ page: fixturePage }) => {
     exact: true,
   });
   await settings.getByRole("tab", { name: "Appearance", exact: true }).click();
+  await settings.locator(".studio-appearance-more summary").click();
   await settings
     .getByRole("button", {
       name: "Remove all sending messages",
