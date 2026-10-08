@@ -1201,6 +1201,16 @@ class AccountHistoryRecord(TypedDict):
     sourceHistoryMissing: NotRequired[JsonObject]
 
 
+class RemoteWorkerLinkRecord(TypedDict):
+    server: str
+    link: str
+
+
+class RemoteParentLinkRecord(TypedDict):
+    home: str
+    link: str
+
+
 class AgentRecord(TypedDict):
     """JSON object stored in ``runtime_agents.record`` after mode projection."""
 
@@ -1237,9 +1247,9 @@ class AgentRecord(TypedDict):
     error: NotRequired[str | JsonObject | None]
     tail: NotRequired[str]
     worktree: NotRequired[bool]
-    remoteWorker: NotRequired[JsonObject]
-    remoteOrigin: NotRequired[JsonObject]
-    remoteAnchor: NotRequired[JsonObject]
+    remoteWorker: NotRequired[RemoteWorkerLinkRecord]
+    remoteOrigin: NotRequired[RemoteParentLinkRecord]
+    remoteAnchor: NotRequired[RemoteParentLinkRecord]
     remoteEpoch: NotRequired[int]
     remoteControlEpoch: NotRequired[int]
     remoteStateSequence: NotRequired[int]

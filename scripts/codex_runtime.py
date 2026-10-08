@@ -3305,6 +3305,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))  # type: ignore[no-untyped-call]
         service = self.__dict__.get('_cross_server_service')
         if changed and table == 'agents' and service:
+            if previous and previous.get('autoWake') is False and record.get('autoWake'):
+                service.rebind_parent(db, record)
             service.state(db, record, previous)
         if changed:
             self.sync_workspace_volatile(db)  # type: ignore[no-untyped-call]

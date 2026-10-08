@@ -218,6 +218,9 @@ class MultiServerService:
                     result TEXT);
                 CREATE TABLE IF NOT EXISTS runtime_server_links (
                     id TEXT PRIMARY KEY, record TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_server_links_home_parent
+                    ON runtime_server_links(json_extract(record,'$.parent'))
+                    WHERE json_extract(record,'$.side')='home';
                 CREATE TABLE IF NOT EXISTS runtime_server_fetch (
                     id TEXT PRIMARY KEY, server TEXT NOT NULL, signature TEXT NOT NULL,
                     state TEXT NOT NULL, result TEXT);
@@ -545,16 +548,25 @@ class MultiServerService:
         self.runtime.put(db, 'agents', worker)
         return False
 
+    def rebind_parent(self, db: Any, agent: dict[str, Any]) -> None:
+        if not agent.get('isLead'):
+            return
+        rows = db.execute("SELECT id,record FROM runtime_server_links WHERE json_extract(record,'$.side')='home' AND json_extract(record,'$.parent')=?", (agent['id'],)).fetchall()
+        if not rows:
+            return
+        for row in rows:
+            link = json.loads(row['record'])
+            link['parentEpoch'] = agent['epoch']
+            db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), row['id']))
+            self.queue(db, link['server'], 'rebind', {'link': row['id'], 'parentEpoch': agent['epoch']},
+                identity(row['id'], 'rebind', str(agent['epoch'])))
+
     def state(self, db: Any, agent: dict[str, Any], previous: dict[str, Any] | None) -> None:
-        if previous and not previous['autoWake'] and agent['autoWake']:
-            for row in db.execute("SELECT id,record FROM runtime_server_links WHERE json_extract(record,'$.side')='home' AND json_extract(record,'$.parent')=?", (agent['id'],)).fetchall():
-                link = json.loads(row['record'])
-                link['parentEpoch'] = agent['epoch']
-                db.execute('UPDATE runtime_server_links SET record=? WHERE id=?', (encoded(link), row['id']))
-                self.queue(db, link['server'], 'rebind', {'link': row['id'], 'parentEpoch': agent['epoch']},
-                    identity(row['id'], 'rebind', str(agent['epoch'])))
         origin = agent.get('remoteOrigin')
-        if origin and agent.get('remoteAdmission') and agent['status'] in {'completed', 'failed', 'paused', 'interrupted'} and not agent.get('inFlight'):
+        remote = agent.get('remoteWorker')
+        if not (origin or remote or agent.get('remoteAnchor')):
+            return
+        if origin and agent.get('remoteAdmission') and agent.get('status') in {'completed', 'failed', 'paused', 'interrupted'} and not agent.get('inFlight'):
             agent.pop('remoteAdmission', None)
             self.runtime.put(db, 'agents', agent)
         fields = ('status', 'cwd', 'branch', 'workerBaseCommit', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
@@ -568,8 +580,7 @@ class MultiServerService:
             self.queue(db, origin['home'], 'state', {'link': origin['link'], 'worker': agent['id'],
                 'parentEpoch': link['parentEpoch'], 'sequence': sequence, 'record': {**record,
                     'admissionId': (agent.get('remoteAdmission') or {}).get('id') or agent.get('remoteLastAdmission')}}, key)
-        remote = agent.get('remoteWorker')
-        if remote and previous and previous['autoWake'] and not agent['autoWake']:
+        if remote and previous and previous.get('autoWake') and agent.get('autoWake') is False:
             self.queue(db, remote['server'], 'stop', {'link': remote['link'], 'worker': agent['id'],
                 'reason': agent.get('error') or 'Stopped by the parent', 'controlEpoch': agent['epoch']}, identity(agent['id'], 'stop', str(agent['epoch'])))
 

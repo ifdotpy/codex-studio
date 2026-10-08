@@ -68,6 +68,33 @@ class CrossServer(unittest.TestCase):
         with self.runtimes[server].read_db() as db:
             keys = [r[0] for r in db.execute("SELECT id FROM runtime_server_outbox WHERE state='queued' ORDER BY rowid")]
         return [self.network[server].deliver(key) for key in keys]
+    def test_local_and_partial_state_does_not_access_database(self):
+        from unittest.mock import Mock
+        db = Mock()
+        db.execute.side_effect = AssertionError('Local state must not query SQLite')
+        service = self.network['home']
+        service.state(db, {'id': 'partial'}, {'id': 'partial'})
+        service.state(db, {'id': 'local-lead', 'autoWake': True}, {'autoWake': False})
+        service.state(db, {'id': 'partial-remote', 'remoteWorker': {'server': 'remote', 'link': 'link'}},
+            {'id': 'partial-remote'})
+        db.execute.assert_not_called()
+    def test_parent_rebind_only_runs_on_resume_and_uses_index(self):
+        service = self.network['home']
+        with patch.object(service, 'rebind_parent', wraps=service.rebind_parent) as rebind:
+            with self.home.lock, self.home.db() as db:
+                lead = self.home.agent(self.lead['id'], db)
+                lead['name'] = 'Updated local lead'
+                self.home.put(db, 'agents', lead)
+            self.home.stop(self.lead['id'], True)
+            rebind.assert_not_called()
+            self.home.send(self.lead['id'], 'Resume', 'indexed-parent-resume', resume=True)
+            self.home.send(self.lead['id'], 'Continue', 'indexed-parent-input', resume=True)
+            self.assertEqual(rebind.call_count, 1)
+        with self.home.read_db() as db:
+            plan = db.execute("EXPLAIN QUERY PLAN SELECT id,record FROM runtime_server_links "
+                "WHERE json_extract(record,'$.side')='home' AND json_extract(record,'$.parent')=?",
+                (self.lead['id'],)).fetchall()
+        self.assertTrue(any('USING INDEX runtime_server_links_home_parent' in row[3] for row in plan))
     def test_spawn_links_and_default_local_path(self):
         result = self.spawn()
         self.assertEqual(result['outcome'], 'applied')
