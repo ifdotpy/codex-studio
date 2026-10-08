@@ -1,3 +1,4 @@
+import { useServerActivity } from "../servers/activity";
 import { chatWaitState } from "./chat-status/chatStatusModel";
 import { serviceTimeText } from "../local-time";
 import { nativeStatusMessage } from "./conversation/nativeStatus";
@@ -22,7 +23,7 @@ import { createPortal } from "react-dom";
 import {
   ArrowDown,
   ArrowUp,
-  MoreHorizontal,
+  ListTree,
   Trash2,
   Square,
   Terminal,
@@ -557,6 +558,7 @@ export default function Conversation(p: {
     (row) => row.agent === p.id,
   );
   const uploading = addingFiles || pendingFiles.length > 0;
+  useServerActivity(addingFiles || uploadRecovery.pending.length > 0);
   const [limitsOpen, setLimitsOpen] = useState(false);
   const refreshedFailure = useRef("");
   const sendLock = useRef<symbol | null>(null);
@@ -1473,7 +1475,7 @@ export default function Conversation(p: {
               aria-label="Conversation tools"
               title="Conversation tools"
             >
-              <MoreHorizontal size={18} />
+              <ListTree size={18} />
               <span className="sr-only">Conversation tools</span>
             </summary>
             <div

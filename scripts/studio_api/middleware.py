@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
+import re
 import json
 import secrets
 import sqlite3
@@ -228,7 +230,7 @@ class RequestBoundary:
             return
 
         if method not in {"POST", "PUT", "PATCH"}:
-            await self.app(scope, receive, send)
+            await self._dispatch(scope, receive, send)
             return
 
         limit = _request_limit(path)
@@ -317,9 +319,18 @@ class RequestBoundary:
             delivered = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
-        await self.app(scope, replay_receive, send)
+        await self._dispatch(scope, replay_receive, send)
+
+    async def _dispatch(self, scope: Scope, receive: Receive, send: Send) -> None:
+        gate = scope.get("studio_access_reserve")
+        if gate is not None and not await gate():
+            return
+        await self.app(scope, receive, send)
 
     def _trusted(self, scope: Scope, headers: HeaderView, *, write: bool, federation: bool) -> bool:
+        if isinstance(scope.get("studio_principal"), dict):
+            # Only MultiServerBoundary sets this scope value after verification.
+            return True
         extensions = scope.get("extensions", {})
         unix_transport = bool(extensions.get("studio.unix_socket"))
         if federation and unix_transport:
@@ -331,6 +342,22 @@ class RequestBoundary:
             peer = str(client[0]) if client else ""
             server = scope.get("server")
             port = int(server[1]) if server and server[1] else 0
+            static_path = scope.get("path", "")
+            static_alias = (
+                not write and not federation and scope.get("method") in {"GET", "HEAD"}
+                and (static_path in {"/", "/index.html", "/studio-sw.js", "/studio-startup.js", "/manifest.webmanifest", "/apple-touch-icon.png"}
+                     or re.fullmatch(r"/assets/[a-zA-Z0-9_.-]+", static_path) is not None)
+                and len(headers.get_all("host")) == 1
+                and re.fullmatch(rf"studio-[a-z2-7]{{1,50}}(?:\.[a-z2-7]{{1,50}})*\.localhost:{port}", headers.get("host", "") or "") is not None
+                and not any(headers.get_all(name) for name in ("x-forwarded-host", "x-forwarded-proto", "x-forwarded-for"))
+                and len(headers.get_all("origin")) <= 1
+            )
+            if static_alias:
+                try:
+                    if ipaddress.ip_address(peer).is_loopback and headers.get("origin") in (None, "http://" + (headers.get("host") or "")):
+                        return True
+                except ValueError:
+                    pass
             origin = self.context.remote.request_origin(headers, peer, port)
         if origin is None:
             return False

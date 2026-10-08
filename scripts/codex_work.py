@@ -458,6 +458,8 @@ class WorkMixin:
             return {'status': 'skipped', 'reason': 'The task owner is the lead or is unassigned'}
         with self.lock, self.db() as db:
             owner = self.agent(owner_id, db)
+            if owner.get('remoteWorker'):
+                return {'status': 'kept', 'reason': 'The remote worker workspace requires review on its own server'}
             work = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?',
                                          (result['id'],)).fetchone()[0])
             open_tasks = [row[0] for row in db.execute(

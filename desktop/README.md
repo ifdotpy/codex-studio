@@ -177,3 +177,10 @@ Run `npm --prefix web run test:unit -- desktopAlerts.test.mjs` and
 records native bridge calls; it does not display or verify macOS banners.
 
 Native transcription accepts an attempt `id`. `onTranscriptionProgress()` reports completed and total audio parts for that ID. `cancelTranscription(id)` stops that attempt after a user action. The saved recording remains on the device.
+
+## UI-only package
+
+Use `npm run start:ui` to start the UI without a local backend.
+Use `npm run package:ui` to create the UI-only application.
+Set `CODEX_UI_PORT` and `CODEX_DESKTOP_PROFILE` for isolated checks.
+See [Multi-server UI](../docs/multi-server-ui.md) for pairing and verification commands.

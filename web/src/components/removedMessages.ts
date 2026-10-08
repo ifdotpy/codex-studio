@@ -1,3 +1,7 @@
+import {
+  serverStorageEventKey,
+  serverLocalStorage as localStorage,
+} from "../servers/storage";
 import { useCallback, useMemo, useSyncExternalStore } from "react";
 import type { Message } from "../types";
 
@@ -98,7 +102,8 @@ export function useRemovedMessages(
   const subscribe = useCallback(
     (notify: () => void) => {
       const storage = (event: StorageEvent) => {
-        if (event.key === storageKey || event.key === null) notify();
+        if (serverStorageEventKey(event) === storageKey || event.key === null)
+          notify();
       };
       const local = (event: Event) => {
         if ((event as CustomEvent<string>).detail === storageKey) notify();
