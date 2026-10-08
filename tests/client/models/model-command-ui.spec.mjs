@@ -1,9 +1,12 @@
 import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   readTestState,
   test,
   expect,
   spawnFixture as spawn,
 } from "../playwright.mjs";
+import { randomUUID } from "node:crypto";
 import { chooseSetupValue } from "../../setup-controls.mjs";
 // Production renderer, isolated runtime, real settings and message endpoints.
 import assert from "node:assert/strict";
@@ -221,6 +224,47 @@ db.close()`;
       viewport: { width: 1440, height: 960 },
     });
     const secondPage = await secondContext.newPage();
+    let staleReplica = false;
+    let committedMainEntity;
+    let committedMainDocument;
+    let staleMainEntity;
+    await secondContext.route("**/api/sync/pull?*", async (route) => {
+      const url = new URL(route.request().url());
+      const response = await route.fetch();
+      if (url.searchParams.get("scope") !== "state:entities:v1")
+        return route.fulfill({ response });
+      const body = await response.json();
+      const mainDocument = (body.documents || []).find((document) => {
+        const payload = JSON.parse(document.payload);
+        return payload.collection === "agent" && payload.value?.id === main.id;
+      });
+      if (!staleReplica && !mainDocument)
+        return route.fulfill({ response, json: body });
+      if (!staleReplica) {
+        const payload = JSON.parse(mainDocument.payload);
+        committedMainDocument = structuredClone(mainDocument);
+        committedMainEntity = {
+          seq: mainDocument.seq,
+          model: payload.value.model,
+          effort: payload.value.effort,
+        };
+        return route.fulfill({ response, json: body });
+      }
+      const staleDocument =
+        mainDocument || structuredClone(committedMainDocument);
+      const payload = JSON.parse(staleDocument.payload);
+      staleMainEntity = {
+        seq: committedMainEntity.seq - 1,
+        model: main.model,
+        effort: main.effort,
+      };
+      staleDocument.seq = staleMainEntity.seq;
+      payload.value.model = staleMainEntity.model;
+      payload.value.effort = staleMainEntity.effort;
+      staleDocument.payload = JSON.stringify(payload);
+      if (!mainDocument) body.documents.push(staleDocument);
+      return route.fulfill({ response, json: body });
+    });
     const entityPull = secondPage.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
@@ -238,6 +282,9 @@ db.close()`;
       },
       { id: main.id, stateDir: initial.stateDir },
     );
+    const streamConnected = secondPage.waitForResponse((response) => {
+      return new URL(response.url()).pathname === "/api/sync/stream";
+    });
     await secondPage.goto(origin);
     const entityBody = await (await entityPull).json();
     const mainEntity = entityBody.documents
@@ -298,6 +345,65 @@ db.close()`;
       model: "gpt-5.6-sol",
       effort: "high",
     });
+    assert.deepEqual(committedMainEntity, {
+      seq: secondEntitySettings.sequence,
+      model: "gpt-5.6-sol",
+      effort: "high",
+    });
+    await streamConnected;
+    staleReplica = true;
+    const stalePull = secondPage.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1"
+      );
+    });
+    const notifyResponse = await fetch(new URL("/api/sync/notify", origin), {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": initial.token,
+        [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+      },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "state" }],
+      }),
+    });
+    assert.equal(
+      notifyResponse.status,
+      200,
+      "The fixture accepted the state invalidation",
+    );
+    await stalePull;
+    assert(
+      staleMainEntity,
+      "The second renderer received the lagging main-agent row",
+    );
+    assert(staleMainEntity.seq < committedMainEntity.seq);
+    assert.deepEqual(
+      { model: staleMainEntity.model, effort: staleMainEntity.effort },
+      { model: main.model, effort: main.effort },
+    );
+    const afterStaleReplica = {
+      model: await modelValue(
+        secondDialog.getByLabel("Main agent model", { exact: true }),
+      ),
+      effort: await secondDialog
+        .getByLabel("Main agent reasoning", { exact: true })
+        .getAttribute("data-value"),
+    };
+    console.log("Lower-sequence stale entity and second renderer:", {
+      committed: committedMainEntity,
+      stale: staleMainEntity,
+      shown: afterStaleReplica,
+    });
+    assert.deepEqual(
+      afterStaleReplica,
+      { model: "gpt-5.6-sol", effort: "high" },
+      "A lower-sequence stale entity cannot overwrite saved main settings",
+    );
     assert.equal(messages.length, 0);
     assert(
       settings
