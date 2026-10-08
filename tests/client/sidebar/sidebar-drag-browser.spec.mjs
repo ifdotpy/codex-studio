@@ -1,5 +1,7 @@
 import {
+  API_SCHEMA_HASH_HEADER,
   readTestState,
+  readApiSchemaHash,
   test,
   expect,
   spawnFixture as spawn,
@@ -472,6 +474,9 @@ async function startSidebarOverlapSetup(page) {
     const project = page.locator(`[data-project-path="${projectPath}"]`);
     const team = project.locator(".peer-team-toggle");
     await team.waitFor();
+    await expect(
+      page.getByRole("alertdialog", { name: "Studio update required" }),
+    ).toBeHidden();
     const topItems = () =>
       project
         .locator(".project-chats > [data-sidebar-item]")
@@ -511,11 +516,22 @@ async function startSidebarOverlapSetup(page) {
       const isFirstRequest = bodies.length === 1;
       try {
         const response = await route.fetch();
+        assert.equal(
+          response.headers()[API_SCHEMA_HASH_HEADER.toLowerCase()],
+          readApiSchemaHash(),
+          "The held project save response carries the current API schema hash",
+        );
         if (isFirstRequest) {
           firstReachedServer();
           await responseGate;
         }
-        await route.fulfill({ response });
+        await route.fulfill({
+          response,
+          headers: {
+            ...response.headers(),
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+          },
+        });
         if (isFirstRequest) firstResponseFulfilled();
       } catch (error) {
         if (isFirstRequest) {
@@ -550,6 +566,9 @@ test("sidebar reorder setup holds the first save after its optimistic move", asy
 }) => {
   const setup = await startSidebarOverlapSetup(runnerPage);
   try {
+    await expect(
+      runnerPage.getByRole("alertdialog", { name: "Studio update required" }),
+    ).toBeHidden();
     assert.equal(
       setup.bodies.length,
       1,
@@ -568,6 +587,9 @@ test("sidebar queues a second reorder while the first save is pending", async ({
 }) => {
   const setup = await startSidebarOverlapSetup(runnerPage);
   try {
+    await expect(
+      runnerPage.getByRole("alertdialog", { name: "Studio update required" }),
+    ).toBeHidden();
     test.fail(
       true,
       "A second reorder during an in-flight save is currently silently dropped",
