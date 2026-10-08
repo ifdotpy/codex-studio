@@ -69,6 +69,20 @@ def _process_commandline(pid):
     return result.stdout.strip()
 
 
+def _stop_entrypoint_tree(process):
+    command = _process_commandline(process.pid)
+    if "codex_windows_server.py" not in command:
+        raise AssertionError("Refusing to stop a process with an unexpected command line")
+    subprocess.run(["taskkill.exe", "/PID", str(process.pid), "/T", "/F"],
+                   capture_output=True, text=True, timeout=15, check=True)
+    process.wait(timeout=15)
+
+
+def _new_port_owner(port, previous_pid):
+    pid = _port_owner(port)
+    return pid if pid is not None and pid != previous_pid else None
+
+
 @skip_posix
 class WindowsServerContract(unittest.TestCase):
     def test_entrypoint_uses_configured_state_port_and_origin(self):
@@ -148,19 +162,15 @@ class WindowsServerContract(unittest.TestCase):
                 self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
                 lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 os.kill(first_pid, signal.SIGTERM)
-                second_pid = _wait_until(lambda: (pid := _port_owner(port)) if pid and pid != first_pid else None)
+                second_pid = _wait_until(lambda: _new_port_owner(port, first_pid))
                 next_lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 self.assertNotEqual(first_pid, second_pid)
                 self.assertEqual(next_lease, lease)
                 from codex_process_supervisor import status
                 self.assertEqual(status(state)["stateDir"], str(state.resolve()))
             finally:
-                process.terminate()
-                try:
-                    process.wait(timeout=15)
-                except subprocess.TimeoutExpired:
-                    process.kill()
-                    process.wait(timeout=5)
+                if process.poll() is None:
+                    _stop_entrypoint_tree(process)
 
     def test_worktree_handles_spaces_unicode_and_fixture_commit(self):
         with tempfile.TemporaryDirectory(prefix="studio git Ω ") as temporary:
