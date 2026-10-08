@@ -309,11 +309,11 @@ class OperatorCloseContract(unittest.TestCase):
         release_ack = threading.Event()
         ack_finished = threading.Event()
         replacement_opened = threading.Event()
-        release_replacement_constructor = threading.Event()
-        replacement_constructor_done = threading.Event()
-        replacement_constructor_errors = []
+        replacement_reader_parked = threading.Event()
+        release_replacement_reader = threading.Event()
+        replacement_reader_failed = threading.Event()
         self.addCleanup(release_ack.set)
-        self.addCleanup(release_replacement_constructor.set)
+        self.addCleanup(release_replacement_reader.set)
         original_ack = first.proc.ack
 
         def delayed_ack(sequence):
@@ -335,59 +335,62 @@ class OperatorCloseContract(unittest.TestCase):
         other.chmod(0o700)
         handle = 'test:operator-replace'
 
+        original_next_event = supervisor.ProcessProxy.next_event
+
+        def gate_replacement_reader(proxy):
+            is_replacement = (proxy.handle == handle
+                              and proxy.generation > first.proc.generation)
+            if is_replacement:
+                replacement_reader_parked.set()
+                if not release_replacement_reader.wait(90):
+                    raise RuntimeError('fixture did not release the replacement reader')
+            try:
+                return original_next_event(proxy)
+            except Exception:
+                if is_replacement:
+                    replacement_reader_failed.set()
+                raise
+
+        next_event_patch = patch.object(supervisor.ProcessProxy, 'next_event',
+                                         gate_replacement_reader)
+        next_event_patch.start()
+        self.addCleanup(next_event_patch.stop)
+
         def open_replacement(stderr_sink):
             proxy = supervisor.attach(self.case.root, handle,
                 [str(other), 'app-server', '--listen', 'stdio://'], dict(os.environ),
                 stderr_sink=stderr_sink)
+            # The fake's known initialize result lets AppServer finish setup
+            # while its first reader call is held at the test-controlled gate.
+            proxy.initialize_result = {'userAgent': 'fake-model/1.0.0'}
             replacement_opened.set()
-            if not release_replacement_constructor.wait(90):
-                raise RuntimeError('fixture did not release the replacement AppServer constructor')
             return proxy
 
-        replacement = {}
-
-        def construct_replacement():
-            try:
-                replacement['server'] = AppServer(self.case.root, lambda _: None, lambda _: None,
-                    lambda _: None, executable=str(other), supervisor_handle=handle,
-                    process_factory=open_replacement)
-            except BaseException as error:
-                replacement_constructor_errors.append(error)
-            finally:
-                replacement_constructor_done.set()
-
-        constructor_thread = threading.Thread(target=construct_replacement, daemon=True)
-        constructor_thread.start()
-        self.addCleanup(constructor_thread.join, 10)
+        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda _: None,
+                           executable=str(other), supervisor_handle=handle,
+                           process_factory=open_replacement)
+        self.case.servers.append(second)
         self.assertTrue(replacement_opened.wait(30),
                         'replacement supervisor open did not capture its cursor')
-
-        # The replacement ProcessProxy has captured its cursor, but its AppServer
-        # reader has not started yet. Let the old, real ACK commit first.
-        release_ack.set()
-        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
-        release_replacement_constructor.set()
-        self.assertTrue(replacement_constructor_done.wait(30),
-                        'replacement AppServer constructor did not finish')
-        if replacement_constructor_errors:
-            error = replacement_constructor_errors[0]
-            expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
-                        'Supervisor replay cursor is stale or ahead of the journal')
-            if not isinstance(error, RuntimeError) or str(error) != expected:
-                raise error
-            self.replacement_transport_error = str(error)
-            return
-        second = replacement['server']
-        self.case.servers.append(second)
+        self.assertTrue(replacement_reader_parked.wait(30),
+                        'replacement reader did not reach the controlled replay gate')
         self.assertFalse(second.supervisor_resumed)
         self.assertEqual(second.proc.generation, first.proc.generation + 1)
+        pending_replacement_model_list = second.submit('model/list', {})
+
+        # The replacement ProcessProxy has captured its cursor, but its reader
+        # has not polled yet. Commit the old proxy's real ACK before that poll.
+        release_ack.set()
+        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
+        release_replacement_reader.set()
+        self.assertTrue(replacement_reader_failed.wait(30),
+                        'replacement reader did not surface the stale-cursor response')
         new_pid = fixture.wait_for(lambda: (
             candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
         self.assertNotEqual(new_pid, pid)
 
-        # Reading from the captured cursor now exposes the stale-cursor defect.
         try:
-            self.replacement_model_list = second.call('model/list', {}, timeout=30)
+            self.replacement_model_list = second.wait(pending_replacement_model_list, timeout=30)
         except RuntimeError as error:
             expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
                         'Supervisor replay cursor is stale or ahead of the journal')
