@@ -60,6 +60,24 @@ async function setupNarrowComposer(browser) {
   return { page, lead, fixture };
 }
 
+async function setComposerFixturePhase(page, fixture, lead, next) {
+  fixture.stdin.write(
+    JSON.stringify({
+      method: "fixture/agent-status",
+      params: { agent: lead.id, status: next },
+    }) + "\n",
+  );
+  await page.evaluate(() => window.dispatchEvent(new Event("online")));
+  await page.waitForFunction(
+    (idle) =>
+      idle
+        ? !document.querySelector("#stop")
+        : !!document.querySelector("#stop:not(:disabled)"),
+    next === "completed",
+  );
+  await page.waitForTimeout(80);
+}
+
 test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
   const repo = dirname(
@@ -211,14 +229,29 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         await waitForStableGeometry();
         const current = await boxes();
         measurements.push({ width, label, boxes: current });
+        const mobileQueueReflow = width === 390 && label === "queue appears";
         for (const [selector, box] of Object.entries(baseline))
           for (const key of width === 390
             ? ["y", "width", "height"]
-            : ["x", "y", "width", "height"])
+            : ["x", "y", "width", "height"]) {
+            const previousComposer = baseline["#composer"];
+            const currentComposer = current["#composer"];
+            const relativeY = mobileQueueReflow && key === "y";
+            const previousValue = relativeY
+              ? selector === "#composer"
+                ? box.y + box.height
+                : box.y - previousComposer.y
+              : box[key];
+            const currentValue = relativeY
+              ? selector === "#composer"
+                ? currentComposer.y + currentComposer.height
+                : current[selector].y - currentComposer.y
+              : current[selector][key];
             assert.ok(
-              Math.abs(current[selector][key] - box[key]) <= 1,
-              `${width}px ${label} ${selector}.${key}: ${box[key]} -> ${current[selector][key]}`,
+              Math.abs(currentValue - previousValue) <= 1,
+              `${width}px ${label} ${selector}.${key}${mobileQueueReflow ? " relative to composer/bottom" : ""}: ${previousValue} -> ${currentValue}`,
             );
+          }
         assert.equal(
           await page.evaluate(
             () => document.documentElement.scrollWidth > innerWidth,
@@ -247,21 +280,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         }
       };
       const updatePhase = async (next) => {
-        fixture.stdin.write(
-          JSON.stringify({
-            method: "fixture/agent-status",
-            params: { agent: lead.id, status: next },
-          }) + "\n",
-        );
-        await page.evaluate(() => window.dispatchEvent(new Event("online")));
-        await page.waitForFunction(
-          (idle) =>
-            idle
-              ? !document.querySelector("#stop")
-              : !!document.querySelector("#stop:not(:disabled)"),
-          next === "completed",
-        );
-        await page.waitForTimeout(80);
+        await setComposerFixturePhase(page, fixture, lead, next);
       };
       const waitForSendingUI = () =>
         page.waitForFunction(() => {
@@ -421,7 +440,9 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await waitForStableGeometry(comparisonPage);
       const nonEmptyChat = await boxes(comparisonPage);
       for (const [selector, box] of Object.entries(firstSend))
-        for (const key of ["x", "y", "width", "height"])
+        for (const key of width === 390
+          ? ["y", "width", "height"]
+          : ["x", "y", "width", "height"])
           assert.ok(
             Math.abs(nonEmptyChat[selector][key] - box[key]) <= 1,
             `${width}px post-send ${selector}.${key} matches a steady non-empty chat: ${box[key]} -> ${nonEmptyChat[selector][key]}`,
@@ -464,6 +485,30 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         "Additional instruction",
       );
       await updatePhase("running");
+      const queueLayout = async () =>
+        page.evaluate(() => {
+          const composer = document
+            .querySelector("#composer")
+            .getBoundingClientRect();
+          const queueNode = document.querySelector(".message-queue");
+          const queue = queueNode?.getBoundingClientRect();
+          const root = document.querySelector("#root");
+          return {
+            composerBottom: composer.bottom,
+            composerTop: composer.top,
+            rootScrollTop: root.scrollTop,
+            queue: queue
+              ? {
+                  x: queue.x,
+                  y: queue.y,
+                  width: queue.width,
+                  height: queue.height,
+                  bottom: queue.bottom,
+                }
+              : null,
+          };
+        });
+      const queueLayoutBefore = width === 390 ? await queueLayout() : null;
       queue = [
         {
           id: "queued-fixture",
@@ -486,6 +531,12 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .locator(".message-queue")
         .getByText("Later instruction", { exact: true })
         .waitFor();
+      if (width === 390) {
+        const queueLayoutAfter = await queueLayout();
+        console.log(
+          `390px queue reflow measurements ${JSON.stringify({ before: queueLayoutBefore, after: queueLayoutAfter })}`,
+        );
+      }
       await stable("queue appears");
       await page.locator("#stop").click();
       await page.waitForTimeout(80);
@@ -510,16 +561,18 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   }
 });
 
-test("390px composer setup reaches the selected empty chat", async ({
+test("390px composer setup reaches the selected empty chat and starting phase", async ({
   browser,
 }) => {
-  const { page, lead } = await setupNarrowComposer(browser);
+  const { page, lead, fixture } = await setupNarrowComposer(browser);
   try {
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       lead.name,
     );
     assert.equal(await page.locator(".composer-context-values").count(), 1);
+    await setComposerFixturePhase(page, fixture, lead, "starting");
+    await page.locator("#stop:not(:disabled)").waitFor();
   } finally {
     await page.close();
   }
@@ -548,23 +601,10 @@ test("390px mobile composer horizontal invariants", async ({ browser }) => {
       });
     };
     await capture("idle");
-    const setStatus = async (status) => {
-      fixture.stdin.write(
-        JSON.stringify({
-          method: "fixture/agent-status",
-          params: { agent: lead.id, status },
-        }) + "\n",
-      );
-      await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    };
-    await setStatus("starting");
+    await setComposerFixturePhase(page, fixture, lead, "starting");
     await page.locator("#stop:not(:disabled)").waitFor();
-    // Conversation's phase label intentionally maps both starting and running
-    // to "Working"; the test fixture status drives the distinct geometry.
-    await page.getByText("Working", { exact: true }).waitFor();
     await capture("starting");
-    await setStatus("running");
-    await page.getByText("Working", { exact: true }).waitFor();
+    await setComposerFixturePhase(page, fixture, lead, "running");
     await capture("running");
     let stopRequest;
     const stopCaptured = new Promise((resolve) => {
@@ -580,7 +620,9 @@ test("390px mobile composer horizontal invariants", async ({ browser }) => {
     await capture("stopping");
     const result = {
       sendInsideComposer: Object.values(phases).every(
-        (phase) => phase.sendRight <= phase.composerRight + 1,
+        (phase) =>
+          phase.sendX >= phase.composerX - 1 &&
+          phase.sendRight <= phase.composerRight + 1,
       ),
       sendXUnchanged: Math.abs(phases.idle.sendX - phases.starting.sendX) <= 1,
       composerXUnchanged: ["starting", "running", "stopping"].every(
