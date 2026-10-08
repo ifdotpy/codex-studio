@@ -177,7 +177,19 @@ def _version(path, home):
 def native_candidate(path):
     """Resolve an npm launcher to its platform bundle without executing JS."""
     path = Path(path).expanduser().resolve()
-    if path.name.casefold() not in {'codex.js', 'codex.cmd'} or path.parent.name.casefold() != 'bin':
+    if os.name == 'nt' and path.name.casefold() == 'codex.cmd':
+        candidates = []
+        for directory in (path.parent, *path.parent.parents):
+            candidates.extend((
+                directory / 'node_modules' / '@openai' / 'codex' / 'bin' / 'codex.js',
+                directory / '@openai' / 'codex' / 'bin' / 'codex.js',
+            ))
+        for candidate in candidates:
+            if candidate.is_file():
+                return native_candidate(candidate)
+        raise ValueError('Codex npm command shim has no package launcher')
+    allowed_names = {'codex.js'} | ({'codex.cmd'} if os.name == 'nt' else set())
+    if path.name.casefold() not in allowed_names or path.parent.name.casefold() != 'bin':
         return path
     package = path.parent.parent
     metadata = package / 'package.json'

@@ -13,8 +13,7 @@ import sys
 import tempfile
 from typing import Mapping, Sequence
 
-from codex_state import cache_dir
-
+from codex_cache_paths import cache_dir
 
 API_IMPORT_CHECK = "import fastapi, httpx, pydantic, uvicorn, watchdog"
 MINIMUM_PYTHON = (3, 11)

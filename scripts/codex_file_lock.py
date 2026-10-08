@@ -8,14 +8,15 @@ LOCK_SH = 1
 LOCK_EX = 2
 LOCK_NB = 4
 LOCK_UN = 8
+_WINDOWS_LOCK_OFFSET = 1024 * 1024
 
 
 def flock(file_or_fd, operation: int) -> None:
     """Lock one byte range, and release it when asked.
 
     POSIX delegates to the native ``flock`` implementation. Windows uses a
-    synchronous ``LockFileEx`` lock on byte zero. The operating system releases
-    either lock when its file handle closes or its owning process exits.
+    synchronous ``LockFileEx`` lock beyond the metadata region. The operating
+    system releases either lock when its file handle closes or its owning process exits.
     """
     fd = file_or_fd if isinstance(file_or_fd, int) else file_or_fd.fileno()
     if os.name != "nt":
@@ -53,8 +54,8 @@ def flock(file_or_fd, operation: int) -> None:
 
     handle = wintypes.HANDLE(msvcrt.get_osfhandle(fd))
     overlapped = Overlapped()
-    overlapped.Offset = 0
-    overlapped.OffsetHigh = 0
+    overlapped.Offset = _WINDOWS_LOCK_OFFSET & 0xFFFFFFFF
+    overlapped.OffsetHigh = _WINDOWS_LOCK_OFFSET >> 32
     if operation & LOCK_UN:
         if not unlock_file(handle, 0, 1, 0, ctypes.byref(overlapped)):
             raise ctypes.WinError(ctypes.get_last_error())
