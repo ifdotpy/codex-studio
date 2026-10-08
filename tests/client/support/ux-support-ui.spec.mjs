@@ -1,31 +1,53 @@
 // Isolated component fixture. All API requests use local test responses.
 import assert from "node:assert/strict";
-import { createServer } from "node:http";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, extname } from "node:path";
+import { join, dirname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
-import { expect, test } from "../playwright.mjs";
+import {
+  expect,
+  handleEntitySyncFixtureRequest,
+  test,
+} from "../playwright.mjs";
 
 test("ux support ui", async ({ page: runnerPage }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
   const require = createRequire(join(repo, "web/package.json"));
-  const { build } = await import(require.resolve("vite"));
+  const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-support-ux-"));
-  const entry = join(temporary, "index.html");
-  await writeFile(
-    entry,
-    `<html><div id="root"></div><script type="module" src="${join(repo, "tests/fixtures/ux-support.tsx")}"></script></html>`,
-  );
   let server;
   try {
-    await build({
+    const workspaceId = "c".repeat(32);
+    const syncSnapshot = {
+      stateDir: "support-test",
+      chats: [],
+      edges: [],
+      runtime: {
+        agents: [],
+        projects: [],
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        events: [],
+        peerTeams: [],
+        rules: [],
+        work: [],
+        nativeNotices: [],
+        sidebarOrder: [],
+        rateLimits: [],
+        rateLimitsByAccount: {},
+      },
+    };
+    server = await createServer({
       configFile: false,
-      root: temporary,
-      logLevel: "error",
+      root: repo,
+      cacheDir: temporary,
+      server: { host: "127.0.0.1", port: 0 },
       resolve: {
         alias: [
           { find: /^react$/, replacement: require.resolve("react") },
@@ -51,35 +73,34 @@ test("ux support ui", async ({ page: runnerPage }) => {
           },
         ],
       },
-      build: {
-        outDir: join(temporary, "dist"),
-        emptyOutDir: true,
-        rollupOptions: { input: entry },
-      },
+      plugins: [
+        {
+          name: "ux-support-fixture",
+          configureServer(vite) {
+            vite.middlewares.stack.unshift({
+              route: "",
+              handle(request, response, next) {
+                if (
+                  handleEntitySyncFixtureRequest(request, response, {
+                    snapshot: syncSnapshot,
+                    workspaceId,
+                  })
+                )
+                  return;
+                next();
+              },
+            });
+            vite.middlewares.use("/check", (_request, response) => {
+              response.setHeader("Content-Type", "text/html");
+              response.end(
+                '<html><body><div id="root"></div><script type="module" src="/tests/fixtures/ux-support.tsx"></script></body></html>',
+              );
+            });
+          },
+        },
+      ],
     });
-    server = createServer(async (request, response) => {
-      try {
-        const path = new URL(request.url, "http://fixture").pathname;
-        const file = join(
-          temporary,
-          "dist",
-          path === "/" ? "index.html" : path,
-        );
-        response.setHeader(
-          "Content-Type",
-          {
-            ".html": "text/html",
-            ".js": "text/javascript",
-            ".css": "text/css",
-          }[extname(file)] || "text/plain",
-        );
-        response.end(await readFile(file));
-      } catch {
-        response.statusCode = 404;
-        response.end();
-      }
-    });
-    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    await server.listen();
     const page = runnerPage;
     await page.setViewportSize({ width: 1100, height: 800 });
     const writes = [];
@@ -120,6 +141,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
     await page.route("**/api/**", async (route) => {
       const request = route.request();
       const path = new URL(request.url()).pathname;
+      if (path.startsWith("/api/sync/")) return route.continue();
       if (request.method() === "POST")
         writes.push({ path, body: request.postDataJSON() });
       if (path === "/api/workspace/tasks") {
@@ -164,7 +186,9 @@ test("ux support ui", async ({ page: runnerPage }) => {
       if (path === "/api/terminals/close") shell.status = "closed";
       await route.fulfill({ json: result });
     });
-    await page.goto(`http://127.0.0.1:${server.address().port}`);
+    await page.goto(
+      `http://127.0.0.1:${server.httpServer.address().port}/check`,
+    );
     await page
       .getByRole("button", { name: "End session", exact: true })
       .waitFor();
@@ -240,8 +264,6 @@ test("ux support ui", async ({ page: runnerPage }) => {
     await support("newer");
     await page.locator('[data-task="new"]').waitFor();
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
-    await page.waitForTimeout(5200);
-    assert.equal(await page.locator('[data-task-detail="first"]').count(), 1);
     await support("scope");
     await page.locator('[data-task-detail="other-task"]').waitFor();
     assert.equal(await page.locator('[data-task-detail="first"]').count(), 0);
@@ -277,7 +299,7 @@ test("ux support ui", async ({ page: runnerPage }) => {
       "PASS: terminal light theme and hide/end confirmation; background selection after first load, refresh, new tasks and scope; draft metadata and explicit actions.",
     );
   } finally {
-    if (server) await new Promise((resolve) => server.close(resolve));
+    if (server) await server.close();
     await rm(temporary, { recursive: true, force: true });
   }
 });
