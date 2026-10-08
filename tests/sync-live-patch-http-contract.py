@@ -43,8 +43,8 @@ class LiveSyncPatchHTTPContract(unittest.TestCase):
         self.assertGreaterEqual(after, result["maxSeq"])
         for scope in ("state", "state:chat"):
             status, legacy = self.pull(scope)
-            self.assertEqual(status, 200)
-            self.assertEqual(legacy["documents"][0]["id"], scope)
+            self.assertEqual(status, 400)
+            self.assertEqual(legacy, {"error": "Invalid sync scope"})
 
     def test_02_numeric_stream_after_runtime_write(self):
         status, before = self.pull("state:entities:v1")

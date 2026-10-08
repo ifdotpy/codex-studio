@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
+  API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
   protocol3SseEvent,
+  readApiSchemaHash,
   test,
   expect,
 } from "../playwright.mjs";
@@ -16,8 +18,10 @@ test("mobile sync browser", async ({ page }) => {
     )
   );
   const streams = new Set();
+  const streamResources = new Map();
   let opened = 0;
   let revision = 1;
+  const workspaceId = "e".repeat(32);
   const streamScopes = [];
   const server = await createServer({
     configFile: false,
@@ -31,14 +35,35 @@ test("mobile sync browser", async ({ page }) => {
             response.setHeader("Content-Type", "text/event-stream");
             response.setHeader("Cache-Control", "no-cache");
             response.write(apiSchemaHandshakeSse());
+            const query = new URL(_request.url, "http://localhost")
+              .searchParams;
+            const resources = JSON.parse(query.get("resources") || "[]");
+            response.write(
+              protocol3SseEvent("resources", {
+                protocol: 3,
+                workspaceId,
+                epoch: "fixture-epoch",
+                revision,
+                reason: "change",
+                resources,
+                resourceVersions: resources.map((resource) => ({
+                  resource,
+                  revision,
+                })),
+              }),
+            );
             opened++;
+            streamResources.set(response, resources);
             streamScopes.push(
               new URL(_request.url, "http://localhost").searchParams.get(
                 "scope",
               ) || "legacy",
             );
             streams.add(response);
-            response.on("close", () => streams.delete(response));
+            response.on("close", () => {
+              streams.delete(response);
+              streamResources.delete(response);
+            });
           });
         },
       },
@@ -59,13 +84,15 @@ test("mobile sync browser", async ({ page }) => {
     let identities = 0;
     const pulls = [];
     const pullCursors = [];
-    const workspaceId = "e".repeat(32);
     await page.route("**/check", (route) =>
       route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
     );
     await page.route("**/api/sync/identity", (route) => {
       identities++;
-      return route.fulfill({ json: { workspaceId } });
+      return route.fulfill({
+        json: { workspaceId },
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      });
     });
     await page.route("**/api/sync/pull?*", (route) => {
       const url = new URL(route.request().url());
@@ -101,6 +128,12 @@ test("mobile sync browser", async ({ page }) => {
                 ]
               : [],
           checkpoint: { seq: revision },
+          ...(entityScope
+            ? {
+                initialHigh: Number(url.searchParams.get("initialHigh") || 0),
+                maxSeq: revision,
+              }
+            : {}),
         },
       });
     });
@@ -113,17 +146,18 @@ test("mobile sync browser", async ({ page }) => {
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.values = {};
-      window.stops = await Promise.all(
-        ["state", "team", "history:lead", "state"].map((scope) =>
-          client.watchProjection(
-            scope,
-            (value) => {
-              window.values[scope] = value;
-            },
-            () => {},
-          ),
-        ),
-      );
+      window.stops = ["state", "team", "history:lead", "state"].map((scope) => {
+        const accept = (value) => {
+          window.values[scope] = value;
+        };
+        return scope === "state"
+          ? client.subscribeStateProjection(accept, () => {})
+          : client.subscribeTranscriptProjection(
+              `transcript:${scope}`,
+              accept,
+              () => {},
+            );
+      });
       window.stops.push(await client.startDraftReplication(() => {}));
       window.resumeCalls = 0;
       window.stopResume = (await import("/src/sync/resume.ts")).onResume(
@@ -150,15 +184,23 @@ test("mobile sync browser", async ({ page }) => {
     const beforeBurst = pulls.length;
     revision = 2;
     for (let index = 0; index < 30; index++)
-      for (const stream of streams)
+      for (const stream of streams) {
+        const resources = streamResources.get(stream) || [];
         stream.write(
-          protocol3SseEvent("heartbeat", {
+          protocol3SseEvent("resources", {
             protocol: 3,
             workspaceId,
             epoch: "fixture-epoch",
+            reason: "change",
             revision,
+            resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision,
+            })),
           }),
         );
+      }
     await page.waitForFunction(
       () =>
         window.values.state?.runtime?.agents?.[0]?.name === "Agent 2" &&
@@ -166,10 +208,16 @@ test("mobile sync browser", async ({ page }) => {
         window.values["history:lead"]?.revision === 2,
     );
     await delay(150);
+    const burstPulls = pulls.slice(beforeBurst);
     assert.equal(
-      pulls.length - beforeBurst,
-      4,
-      "A burst causes one pull per subscribed projection scope, including draft replication",
+      burstPulls.filter((scope) => scope !== "state:entities:v1").length,
+      3,
+      "A burst coalesces each transcript scope and draft replication",
+    );
+    assert.ok(
+      burstPulls.filter((scope) => scope === "state:entities:v1").length >= 1 &&
+        burstPulls.filter((scope) => scope === "state:entities:v1").length <= 2,
+      `A burst refreshes the entity projection and can settle its sequence checkpoint: ${JSON.stringify(burstPulls)}`,
     );
 
     await page.evaluate(() => {
@@ -271,10 +319,9 @@ test("mobile sync browser", async ({ page }) => {
     await page.reload();
     await page.evaluate(async () => {
       window.value = null;
-      window.stopCompact = await (
+      window.stopCompact = (
         await import("/src/sync/client.ts")
-      ).watchProjection(
-        "state",
+      ).subscribeStateProjection(
         (value) => (window.value = value),
         () => {},
       );
@@ -303,7 +350,6 @@ test("mobile sync browser", async ({ page }) => {
         entity: JSON.parse(
           (await db.projections.findOne("entity:agent:lead").exec()).payload,
         ),
-        remote: Boolean(await db.projections.findOne("state:chat").exec()),
       };
     });
     assert.equal(

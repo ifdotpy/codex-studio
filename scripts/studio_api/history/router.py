@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
+import sqlite3
 from typing import TYPE_CHECKING, Any, Annotated, Callable, Protocol, TypeVar, cast
 
 from fastapi import APIRouter, Depends, Request
@@ -45,6 +47,16 @@ ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
 
 
 class HistoryRuntime(Protocol):
+    lock: Any
+
+    def db(self) -> AbstractContextManager[sqlite3.Connection]: ...
+
+    def agent(self, key: str, db: sqlite3.Connection) -> dict[str, JsonValue]: ...
+
+    def agent_entity_view(
+        self, db: sqlite3.Connection, record: dict[str, JsonValue]
+    ) -> dict[str, JsonValue]: ...
+
     def transcript(
         self,
         agent: str | None,
@@ -233,7 +245,12 @@ def create_router(context: ApiContext) -> APIRouter:
         if not isinstance(raw_value, dict):
             raise TypeError("Branch producer did not return an agent record")
         value = raw_value
-        public_agent: object = project("agent", value)
+        agent_id = value.get("id")
+        if not isinstance(agent_id, str):
+            raise TypeError("Branch producer did not return an agent id")
+        with runtime.lock, runtime.db() as db:
+            current = runtime.agent(agent_id, db)
+            public_agent: object = project("agent", runtime.agent_entity_view(db, current))
         if not isinstance(public_agent, dict):
             raise TypeError("Branch producer did not return an agent record")
         result = {**public_agent}

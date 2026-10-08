@@ -163,8 +163,6 @@ class FederationContract(unittest.TestCase):
         return room_id
 
     def test_room_producers_emit_only_named_local_participant_fields(self):
-        from studio_api.sync.models import SnapshotRoomDto
-
         cases = (
             (self._room(), {"id", "role", "name"}, {"lead"}),
             (self._room(share_names=True, share_status=True, include_child=True),
@@ -177,16 +175,15 @@ class FederationContract(unittest.TestCase):
                         "SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)
                     ).fetchone()
                 record = json.loads(row[0])
-                dto = SnapshotRoomDto.model_validate({
-                    "id": room_id,
-                    "localParticipants": record["localParticipants"],
-                })
-                participants = [
-                    participant.model_dump(mode="json", exclude_unset=True)
-                    for participant in dto.localParticipants or []
-                ]
+                participants = record["localParticipants"]
                 self.assertEqual({participant["role"] for participant in participants}, expected_roles)
                 self.assertTrue(all(set(participant) == expected_keys for participant in participants))
+                with service.runtime.read_db() as db:
+                    payload = db.execute("SELECT payload FROM sync_entities WHERE collection='room' AND id=?",
+                                         (room_id,)).fetchone()[0]
+                value = json.loads(payload)["value"]
+                self.assertEqual(value["peerLabel"], record["peerLabel"])
+                self.assertEqual(value["localMembers"], sorted(set(record["localMembers"])))
 
     @staticmethod
     def _outbox_record(service, peer_id):
@@ -341,6 +338,9 @@ class FederationContract(unittest.TestCase):
         a.revoke_peer(peer["stateId"])
         with a.runtime.read_db() as db:
             self.assertEqual(db.execute("SELECT count(*) FROM runtime_federation_outbox WHERE peer_id=? AND json_extract(record,'$.status')='queued'", (peer["stateId"],)).fetchone()[0], 0)
+            deleted = db.execute("SELECT deleted FROM sync_entities WHERE collection='room' AND id=?",
+                                 (room,)).fetchone()[0]
+            self.assertEqual(deleted, 1)
         fake = {"stateId": "00000000-0000-4000-8000-000000000000"}
         body = _json({"protocol": PROTOCOL}).encode()
         headers = {"Content-Type": "application/json", "X-Studio-Federation-State": fake["stateId"],

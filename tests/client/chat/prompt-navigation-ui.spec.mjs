@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -50,7 +49,7 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.setDefaultTimeout(12000);
-    const state = await (await fetch(url + "/api/state")).json();
+    const state = await readTestState(url);
     const lead = state.runtime.agents.find((a) => a.name === "Release lead");
     const original = await (
       await fetch(url + "/api/transcript?id=" + lead.id)

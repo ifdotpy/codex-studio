@@ -115,27 +115,6 @@ class ActiveTasks(unittest.TestCase):
         db.execute("DELETE FROM runtime_tasks WHERE id='running-first'")
         self.runtime._assert_workspace_idle(db, agent)
 
-    def test_team_skips_unused_work_and_preserves_response(self):
-        first = {'id': 'lead', 'rootId': 'lead', 'name': 'Lead', 'status': 'running'}
-        other = {'id': 'other', 'rootId': 'other'}
-        snapshots = []
-        class Team:
-            def snapshot(self, *, include_work=True):
-                snapshots.append(include_work)
-                if include_work:
-                    raise AssertionError('Team lookup loaded unused work history')
-                return {'agents': [first, other], 'monitors': [{'id': 'yes', 'agent': 'lead'}, {'id': 'no', 'agent': 'other'}]}
-            def agent(self, key):
-                return first
-            def worker_defaults(self, agent):
-                return {'model': 'configured'}
-        result = Runtime.team(Team(), 'lead')
-        self.assertEqual(snapshots, [False])
-        self.assertEqual(result['workerDefaults'], {'model': 'configured'})
-        self.assertEqual(result['monitors'], [{'id': 'yes', 'agent': 'lead'}])
-        self.assertEqual(result['agents'], [{key: first.get(key) for key in
-            ('id', 'parentId', 'name', 'status', 'cwd', 'model', 'effort', 'fastMode', 'workerDefaults', 'tokensUsed', 'error')}])
-
     def test_archive_preserves_all_original_uncertain_status_guards(self):
         db = self.runtime.connection
         blockers = _blockers(self.runtime, db, self.runtime.agent('first', db))

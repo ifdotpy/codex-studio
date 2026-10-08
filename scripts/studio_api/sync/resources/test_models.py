@@ -39,6 +39,12 @@ class ResourceContractTests(unittest.TestCase):
             "revision": 0,
             "reason": "initial",
             "resources": [{"kind": "panel", "agentId": "agent-a"}],
+            "resourceVersions": [
+                {
+                    "resource": {"kind": "panel", "agentId": "agent-a"},
+                    "revision": 0,
+                }
+            ],
         })
         self.assertEqual(event.resources[0].root.kind, "panel")
         heartbeat = ResourceHeartbeatEvent.model_validate({
@@ -116,6 +122,7 @@ class ResourceContractTests(unittest.TestCase):
                 "revision": 0,
                 "reason": "change",
                 "resources": [{"kind": "panel"}],
+                "resourceVersions": [],
             })
 
     def test_token_rates_reject_non_finite_and_negative_values_and_export_json_constraints(self) -> None:

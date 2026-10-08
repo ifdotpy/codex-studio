@@ -60,6 +60,11 @@ class _RuntimeFixture:
     def agent(self, _agent_id: str, _db: sqlite3.Connection) -> dict[str, object]:
         return _agent_record()
 
+    def agent_entity_view(
+        self, _db: sqlite3.Connection, record: dict[str, object]
+    ) -> dict[str, object]:
+        return record
+
     def empty_lead(self, _db: sqlite3.Connection, _agent: dict[str, object]) -> bool:
         return False
 
@@ -160,6 +165,9 @@ class _SyncDbFixture:
 class _SyncCursorFixture:
     def fetchall(self) -> list[tuple[str, str, int, str, int]]:
         return [("agent", "agent-created", 42, '{"id":"agent-created"}', 0)]
+
+    def fetchone(self) -> None:
+        return None
 
 
 class _SyncFixture:

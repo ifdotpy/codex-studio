@@ -1,11 +1,17 @@
 #!/usr/bin/env node
+import {
+  syncIdentityFixture,
+  legacySnapshotRoute,
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Production UI with isolated state and terminal responses. No model or PTY starts.
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Team Motion Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -58,7 +64,7 @@ test("Team Motion Ui", async ({
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((a) => a.name === "Release lead");
     const target = initial.threads.find(
       (a) => a.rootId === lead.id && a.name === "Worker 00",
@@ -78,16 +84,31 @@ test("Team Motion Ui", async ({
     });
     const shells = [shell("Existing terminal", 1)];
     const page = testPage;
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
+    });
     await page.setViewportSize({ width: 1440, height: 980 });
-    // Keep the status fixture on HTTP snapshots; sync has separate coverage.
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({ status: 503, body: "Fixture uses HTTP snapshots" }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: identityResponse }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
+    await page.route("**/api/sync/pull?*", async (route) => {
       const response = await route.fetch();
       const data = await response.json();
-      data.runtime.requests = [];
-      for (const a of data.threads)
+      data.documents = (data.documents || []).filter((document) => {
+        if (document._deleted) return true;
+        const entity = JSON.parse(document.payload);
+        if (entity.collection === "request") return false;
+        if (entity.collection !== "agent") return true;
+        const a = entity.value;
         if (a.rootId === lead.id && !a.isLead) {
           a.status = "running";
           a.overview = {
@@ -105,11 +126,13 @@ test("Team Motion Ui", async ({
                 ),
             };
           } else if (a.name === "Worker 01") {
-            // Keep the waiting summary row present in both phases so this
-            // checks count changes without changing the summary's row set.
             a.status = "queued";
           }
+          entity.value = a;
+          document.payload = JSON.stringify(entity);
         }
+        return true;
+      });
       await route.fulfill({ response, json: data });
     });
     await page.route("**/api/terminals", async (route) => {
@@ -131,6 +154,13 @@ test("Team Motion Ui", async ({
       route.fulfill({ json: { text: "", offset: 0, status: "exited" } }),
     );
     await page.goto(origin);
+    await page.locator("[data-chat]").first().waitFor();
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Release lead" })
@@ -265,6 +295,12 @@ test("Team Motion Ui", async ({
       "An older poll cannot remove the newly confirmed terminal",
     );
     assert.equal(await page.locator(".terminal-session").count(), 2);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
     await page.screenshot({
       path: join(root, "team-motion.png"),
       animations: "disabled",
@@ -275,6 +311,8 @@ test("Team Motion Ui", async ({
         evidence: root,
         summaryShift: result.after.searchY - result.before.searchY,
         terminalShift: confirmed.y - local.y,
+        syncPullRequests: syncPullRequests.length,
+        stateRequests,
       }),
     );
   } finally {

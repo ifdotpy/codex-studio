@@ -1,11 +1,10 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Headless production renderer with a large synthetic entity feed.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("perf renderer memory @performance", async ({
   browser: runnerBrowser,
 }) => {
@@ -32,7 +31,7 @@ test("perf renderer memory @performance", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state?view=chat")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const workspaceId = (
       await (await fetch(origin + "/api/sync/identity")).json()

@@ -1,12 +1,16 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Real runtime records, lost HTTP response, and responsive message navigation.
 import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Messages Ui", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -54,7 +58,7 @@ test("Messages Ui", async ({
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((a) => a.name === "Release lead");
     const records = state.runtime.complaints;
     assert.equal(records.length, 2);

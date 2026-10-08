@@ -1,10 +1,9 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Production HTTP policy and renderer. External image responses are isolated fixtures.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("markdown image http ui", async ({ page: runnerPage }) => {
   const repo = new URL("../../../", import.meta.url).pathname;
   const root = await mkdtemp(join(tmpdir(), "studio-image-http-"));
@@ -28,7 +27,7 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
       response.headers.get("content-security-policy"),
       "Use the production content policy",
     );
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Other project");
     const page = runnerPage;
     const requests = [];

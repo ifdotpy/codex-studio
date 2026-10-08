@@ -10,6 +10,8 @@ from typing import ContextManager, Protocol, cast
 from fastapi import APIRouter, Depends, HTTPException, Request
 from starlette.responses import Response
 
+from codex_records import AgentRecord
+from studio_api.models import JsonValue
 from studio_api.context import ApiContext
 from studio_api.request_helpers import body_data, first_nonempty_query
 from codex_sync_entities import project
@@ -52,7 +54,7 @@ from .models import (
 )
 from studio_api.models import JsonValue, ResponseModel
 
-AgentRecord = dict[str, JsonValue]
+AgentJsonRecord = dict[str, JsonValue]
 
 
 class RuntimeLock(Protocol):
@@ -73,11 +75,12 @@ class AgentRuntime(Protocol):
     def db(self) -> ContextManager[sqlite3.Connection]: ...
     def new_lead(self, data: dict[str, JsonValue]) -> AgentRecord: ...
     def agent(self, key: str, db: sqlite3.Connection) -> AgentRecord: ...
+    def agent_entity_view(self, db: sqlite3.Connection, record: AgentRecord) -> dict[str, object]: ...
     def empty_lead(self, db: sqlite3.Connection, agent: AgentRecord) -> bool: ...
     def create(self, data: dict[str, JsonValue], parent: str | None = None) -> AgentRecord: ...
     def conversation_settings(self, key: str, data: dict[str, JsonValue]) -> AgentRecord: ...
     def configure(self, key: str, data: dict[str, JsonValue]) -> dict[str, JsonValue]: ...
-    def set_account(self, key: str, account_key: str, cwd: str | None = None) -> AgentRecord: ...
+    def set_account(self, key: str, account_key: str, cwd: str | None = None) -> AgentJsonRecord: ...
     def native_action(
         self,
         key: str,
@@ -86,7 +89,7 @@ class AgentRuntime(Protocol):
         context: dict[str, JsonValue] | None = None,
     ) -> dict[str, JsonValue]: ...
     def native_command_action(self, data: dict[str, JsonValue]) -> dict[str, JsonValue] | None: ...
-    def import_thread(self, data: dict[str, JsonValue]) -> AgentRecord: ...
+    def import_thread(self, data: dict[str, JsonValue]) -> AgentJsonRecord: ...
     def stop(self, key: str, descendants: bool = True) -> dict[str, JsonValue]: ...
     def capacity_retry(self, key: str, retry_id: str, action: str) -> dict[str, JsonValue]: ...
     def usage_resume_action(self, key: str, resume_id: str, enabled: bool) -> dict[str, JsonValue] | None: ...
@@ -132,23 +135,25 @@ def create_router(context: ApiContext) -> APIRouter:
             raise HTTPException(status_code=404, detail="Not found")
         return cast(AgentRuntime, runtime)
 
+    def agent_entity(runtime: AgentRuntime, agent_id: str) -> JsonValue:
+        """Return the exact canonical projection used by entity sync."""
+        with runtime.lock, runtime.db() as db:
+            record = runtime.agent(agent_id, db)
+            return project("agent", cast(JsonValue, runtime.agent_entity_view(db, record)))
+
     @router.post("/api/leads", response_model=AgentResponse)
     def create_lead(http_request: Request, body: CreateLeadRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         created = runtime.new_lead(request)
-        # Preserve the original receipt-before-snapshot behavior.
-        with runtime.lock, runtime.db() as db:
-            created = runtime.agent(cast(str, created["id"]), db)
-            created["empty"] = runtime.empty_lead(db, created)
-        return context.send(http_request, project("agent", created))
+        return context.send(http_request, agent_entity(runtime, created["id"]))
 
     @router.post("/api/agents", response_model=AgentResponse)
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
         created = runtime.create(request, parent=body.parent)
-        return context.send(http_request, project("agent", created))
+        return context.send(http_request, agent_entity(runtime, created["id"]))
 
     @router.post("/api/conversation", response_model=AgentResponse)
     def conversation_settings(http_request: Request, body: ConversationRequest) -> Response:
@@ -160,7 +165,7 @@ def create_router(context: ApiContext) -> APIRouter:
             if any(key in request for key in ("agent_mode", "expected_mode_revision", "subagent_concurrency")):
                 return context.send(http_request, {"error": str(error), "outcome": "not_applied"}, status=400)
             raise
-        return context.send(http_request, project("agent", result))
+        return context.send(http_request, agent_entity(runtime, body.id))
 
     @router.post("/api/configure", response_model=ConfigureResponse)
     def configure(http_request: Request, body: ConfigureRequest) -> Response:
@@ -173,10 +178,7 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = current_runtime()
         request = body_data(body)
         selected = runtime.set_account(body.id, body.account_key, body.cwd)
-        with runtime.lock, runtime.db() as db:
-            selected = runtime.agent(cast(str, selected["id"]), db)
-            selected["empty"] = runtime.empty_lead(db, selected)
-        return context.send(http_request, project("agent", selected))
+        return context.send(http_request, agent_entity(runtime, cast(str, selected["id"])))
 
     @router.post("/api/agents/account-transfer", response_model=TransferResponse)
     def account_transfer(http_request: Request, body: AccountTransferRequest) -> Response:
@@ -234,7 +236,7 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = current_runtime()
         request = body_data(body)
         imported = runtime.import_thread(request)
-        return context.send(http_request, project("agent", imported))
+        return context.send(http_request, agent_entity(runtime, cast(str, imported["id"])))
 
     @router.post("/api/stop", response_model=StopResponse)
     def stop(http_request: Request, body: StopRequest) -> Response:

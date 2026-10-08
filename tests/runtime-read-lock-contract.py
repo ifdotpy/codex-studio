@@ -17,6 +17,7 @@ import unittest
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas
 from codex_native_sweep import _account_busy
 from codex_runtime import Runtime
@@ -49,7 +50,7 @@ class RuntimeReadLock(unittest.TestCase):
             db.execute("INSERT INTO runtime_chat_messages "
                        "(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                        ("fixture-message", self.room, self.lead["id"], "hello", time.time(), "{}"))
-        SyncStore(self.runtime.db, lambda: {}, lambda _key: {})
+        SyncStore(self.runtime.db, lambda _key: {})
 
     def tearDown(self):
         self.runtime.close()
@@ -95,11 +96,11 @@ class RuntimeReadLock(unittest.TestCase):
         self.assertTrue(entered.wait(2))
         try:
             began = time.monotonic()
-            state = context.snapshot(include_work=False)
+            state = read_runtime_state(self.runtime, include_work=False)
             chat = self.runtime.chat_read(self.room)
             peers = self.runtime.peers(self.lead["id"])
             self.assertLess(time.monotonic() - began, 2)
-            self.assertEqual(state["runtime"]["agents"][0]["id"], self.lead["id"])
+            self.assertEqual(state["agents"][0]["id"], self.lead["id"])
             self.assertEqual(chat["messages"][0]["text"], "hello")
             self.assertEqual(peers["self"], self.lead["id"])
         finally:
@@ -108,14 +109,14 @@ class RuntimeReadLock(unittest.TestCase):
 
     def test_read_transaction_keeps_one_generation(self):
         with self.runtime.read_db() as db:
-            before = self.runtime.snapshot(include_work=False, db=db)
+            before = read_runtime_state(self.runtime, include_work=False, db=db)
             with self.runtime.lock, self.runtime.db() as writer:
                 agent = self.runtime.agent(self.lead["id"], writer)
                 agent["name"] = "After snapshot"
                 self.runtime.put(writer, "agents", agent)
-            again = self.runtime.snapshot(include_work=False, db=db)
+            again = read_runtime_state(self.runtime, include_work=False, db=db)
             self.assertEqual(before["agents"][0]["name"], again["agents"][0]["name"])
-        self.assertEqual(self.runtime.snapshot(include_work=False)["agents"][0]["name"],
+        self.assertEqual(read_runtime_state(self.runtime, include_work=False)["agents"][0]["name"],
                          "After snapshot")
 
     def test_old_read_snapshot_cannot_poison_current_agent_cache(self):

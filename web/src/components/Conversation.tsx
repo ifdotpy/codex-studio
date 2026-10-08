@@ -1446,7 +1446,7 @@ export default function Conversation(p: {
           <ConversationWarnings
             key={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
             scope={`${p.data.stateDir}:${p.id}:${agent.accountKey || "default"}`}
-            notices={(runtime?.nativeNotices || []).filter(isJsonObject)}
+            notices={runtime?.nativeNotices ?? []}
             accountKey={agent.accountKey || "default"}
             messages={items}
           />,

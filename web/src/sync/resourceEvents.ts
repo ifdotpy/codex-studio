@@ -27,7 +27,14 @@ export type ResourceHeartbeatEvent =
 export type ResourceTokenRatesEvent =
   components["schemas"]["ResourceTokenRatesEvent"];
 
-export type ResourceVersion = { epoch: string; revision: number };
+export type ResourceVersion = {
+  epoch: string;
+  revision: number;
+  /** Highest entity row represented by this StateResource revision, when present. */
+  entitySequence?: number;
+  /** The server cannot enumerate the exact changed rows; clients must reconcile. */
+  entitySequenceReset?: boolean;
+};
 type Version = ResourceVersion;
 export type ResourceConnectionState =
   | "connecting"
@@ -107,6 +114,7 @@ const PEER_HEARTBEAT_MS = 3_000;
 const PEER_TIMEOUT_MS = 10_000;
 const BASE_RETRY_MS = 500;
 const MAX_RETRY_MS = 15_000;
+const COORDINATOR_IDLE_STOP_MS = 1_000;
 const RESOURCE_FLUSH_MS = 20;
 const MAX_INACTIVE_RESOURCE_VERSIONS = 128;
 
@@ -114,6 +122,7 @@ const subscribers = new Map<string, Set<Listener>>();
 const resourceRefs = new Map<string, ResourceRef>();
 const resourceValues = new Map<string, Version>();
 const baselineReconciliations = new Set<string>();
+const deliveredEntitySequenceBatches = new Set<string>();
 const transportStatusListeners = new Set<
   (status: ResourceConnectionState) => void
 >();
@@ -140,7 +149,9 @@ let peerHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
 let heartbeatTimeout: ReturnType<typeof setTimeout> | undefined;
 let schemaHandshakeTimeout: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+let flushGeneration = 0;
 let flushTimer: ReturnType<typeof setTimeout> | undefined;
+let coordinatorIdleStopTimer: ReturnType<typeof setTimeout> | undefined;
 let retryCount = 0;
 let preHandshakeFailures = 0;
 let preHandshakeResponseGeneration: number | undefined;
@@ -153,6 +164,7 @@ let lastTokenRevision: number | undefined;
 let lastTokenEvent: ResourceTokenRatesEvent | undefined;
 let lastLeaderHeartbeatAt = 0;
 let activeQueryKey = "";
+let streamUpdateGeneration = 0;
 let keepLiveOnReconfigure = false;
 let pendingResources = new Set<string>();
 let pendingReset = false;
@@ -242,9 +254,19 @@ function hasTokenRateInterest() {
   );
 }
 
-function dispatchResource(resource: ResourceRef, version: Version) {
-  if (!rememberResourceVersion(resource, version)) return;
-  pendingResources.add(resourceKey(resource));
+function dispatchResource(
+  resource: ResourceRef,
+  version: Version,
+  force = false,
+) {
+  const key = resourceKey(resource);
+  if (force) resourceValues.set(key, version);
+  else if (!rememberResourceVersion(resource, version)) return;
+  pendingResources.add(key);
+}
+
+function entitySequenceBatchKey(sequences: number[]) {
+  return [...sequences].sort((left, right) => left - right).join(",");
 }
 
 function rememberResourceVersion(resource: ResourceRef, version: Version) {
@@ -262,6 +284,23 @@ function rememberResourceVersion(resource: ResourceRef, version: Version) {
   }
   resourceValues.set(key, version);
   return true;
+}
+
+export function acknowledgeEntitySequences(
+  sequences: number[],
+  incomingWorkspaceId?: string,
+) {
+  if (incomingWorkspaceId && incomingWorkspaceId !== workspaceId) return;
+  const exactBatch = [...new Set(sequences)]
+    .filter((sequence) => Number.isSafeInteger(sequence) && sequence >= 0)
+    .sort((left, right) => left - right);
+  if (!exactBatch.length) return;
+  deliveredEntitySequenceBatches.add(exactBatch.join(","));
+  while (deliveredEntitySequenceBatches.size > 128) {
+    const oldest = deliveredEntitySequenceBatches.values().next().value;
+    if (oldest === undefined) break;
+    deliveredEntitySequenceBatches.delete(oldest);
+  }
 }
 
 function pruneResourceVersions(active: Set<string>) {
@@ -287,7 +326,8 @@ function dispatchEvent(event: ResourceChangeEvent) {
     setStatus("degraded");
     return;
   }
-  if (lastEpoch !== event.epoch) {
+  const epochChanged = lastEpoch !== event.epoch;
+  if (epochChanged) {
     lastEpoch = event.epoch;
     lastRevision = undefined;
     lastHeartbeatRevision = undefined;
@@ -295,6 +335,7 @@ function dispatchEvent(event: ResourceChangeEvent) {
     lastTokenRevision = undefined;
     lastTokenEvent = undefined;
     resourceValues.clear();
+    deliveredEntitySequenceBatches.clear();
   }
   const staleRevision =
     lastRevision !== undefined && event.revision < lastRevision;
@@ -302,14 +343,62 @@ function dispatchEvent(event: ResourceChangeEvent) {
   if (!staleRevision && !isDuplicate) lastRevision = event.revision;
   if (source) refreshHeartbeatTimeout();
   const active = new Set(aggregateResources().map(resourceKey));
-  for (const resource of event.resources) {
+  const versions = event.resourceVersions?.length
+    ? new Map(
+        event.resourceVersions.flatMap((entry, index) => {
+          const resource = entry.resource ?? event.resources[index];
+          return resource
+            ? [
+                [
+                  resourceKey(resource),
+                  { epoch: event.epoch, revision: entry.revision },
+                ] as const,
+              ]
+            : [];
+        }),
+      )
+    : undefined;
+  for (const [resourceIndex, resource] of event.resources.entries()) {
     const key = resourceKey(resource);
-    const version = {
+    const version: Version = versions?.get(key) ?? {
       epoch: event.epoch,
       revision: event.revision,
     };
-    if (active.has(key)) dispatchResource(resource, version);
-    else rememberResourceVersion(resource, version);
+    const revisionEntry =
+      event.resourceVersions?.find(
+        (entry) => entry.resource && resourceKey(entry.resource) === key,
+      ) ?? event.resourceVersions?.[resourceIndex];
+    const entitySequences =
+      resource.kind === "state" ? revisionEntry?.entitySequences : undefined;
+    if (
+      resource.kind === "state" &&
+      revisionEntry &&
+      !revisionEntry.entitySequenceReset
+    )
+      version.entitySequence = entitySequences?.length
+        ? Math.max(...entitySequences)
+        : revisionEntry.revision;
+    if (resource.kind === "state" && revisionEntry?.entitySequenceReset)
+      version.entitySequenceReset = true;
+    if (
+      !revisionEntry?.entitySequenceReset &&
+      entitySequences?.length &&
+      deliveredEntitySequenceBatches.delete(
+        entitySequenceBatchKey(entitySequences),
+      )
+    ) {
+      rememberResourceVersion(resource, version);
+      continue;
+    }
+    if (active.has(key)) {
+      dispatchResource(
+        resource,
+        version,
+        !versions || !!revisionEntry?.entitySequenceReset,
+      );
+    } else if (!rememberResourceVersion(resource, version) && !versions) {
+      resourceValues.set(key, version);
+    }
     if (event.reason !== "change" && baselineReconciliations.delete(key))
       pendingResources.add(key);
   }
@@ -319,6 +408,11 @@ function dispatchEvent(event: ResourceChangeEvent) {
     event.reason !== "change" &&
     !staleRevision &&
     !isDuplicate &&
+    (epochChanged ||
+      event.reason === "reconnect" ||
+      event.reason === "overflow" ||
+      event.reason === "workspace" ||
+      !versions) &&
     local.every((key) =>
       event.resources.some((resource) => resourceKey(resource) === key),
     )
@@ -356,7 +450,9 @@ function receiveTokenRateEvent(value: unknown, fromPeer = false) {
 
 function scheduleFlush() {
   if (flushTimer !== undefined) return;
+  const generation = ++flushGeneration;
   flushTimer = setTimeout(function flushResourceChanges() {
+    if (generation !== flushGeneration) return;
     flushTimer = undefined;
     try {
       if (pendingReset) {
@@ -478,7 +574,7 @@ function receiveChannelMessage(value: unknown) {
       seenAt: Date.now(),
     });
     if (owner) {
-      updateOwnerStream();
+      scheduleOwnerStreamUpdate();
       replayResourceBaseline(added);
       if (
         record.tokenRates === true &&
@@ -486,6 +582,7 @@ function receiveChannelMessage(value: unknown) {
         lastTokenEvent
       )
         broadcast({ kind: "token-rates", event: lastTokenEvent });
+      scheduleCoordinatorIdleStop();
     }
   } else if (record.kind === "tab-heartbeat") {
     const peer = peerSubscriptions.get(record.tabId);
@@ -543,7 +640,11 @@ function replayResourceBaseline(resources: ResourceRef[]) {
     group.resources.push(resource);
     groups.set(key, group);
   }
-  for (const { version, resources: known } of groups.values())
+  for (const { version, resources: known } of groups.values()) {
+    const resourceVersions = known.flatMap((resource) => {
+      const resourceVersion = resourceValues.get(resourceKey(resource));
+      return resourceVersion ? [{ revision: resourceVersion.revision }] : [];
+    });
     broadcast({
       kind: "resource-event",
       event: {
@@ -553,8 +654,10 @@ function replayResourceBaseline(resources: ResourceRef[]) {
         revision: version.revision,
         reason: "initial",
         resources: known,
+        resourceVersions,
       },
     });
+  }
 }
 
 function announceSubscriptions(reset = false) {
@@ -565,7 +668,32 @@ function announceSubscriptions(reset = false) {
     tokenRates: tokenRateListeners.size > 0,
     reset,
   });
-  if (owner || independent) updateOwnerStream();
+  if (owner || independent) scheduleOwnerStreamUpdate();
+}
+
+function scheduleOwnerStreamUpdate() {
+  const generation = ++streamUpdateGeneration;
+  queueMicrotask(() => {
+    if (generation === streamUpdateGeneration) updateOwnerStream();
+  });
+}
+
+function scheduleCoordinatorIdleStop() {
+  if (coordinatorIdleStopTimer !== undefined)
+    clearTimeout(coordinatorIdleStopTimer);
+  coordinatorIdleStopTimer = setTimeout(() => {
+    coordinatorIdleStopTimer = undefined;
+    const now = Date.now();
+    for (const [peerId, peer] of peerSubscriptions) {
+      if (now - peer.seenAt > PEER_TIMEOUT_MS) peerSubscriptions.delete(peerId);
+    }
+    if (
+      !subscribers.size &&
+      !tokenRateListeners.size &&
+      (!owner || (!aggregateResources().length && !hasTokenRateInterest()))
+    )
+      stopCoordinator();
+  }, COORDINATOR_IDLE_STOP_MS);
 }
 
 function closeSource() {
@@ -794,10 +922,15 @@ function sendPeerHeartbeat() {
   if (owner) {
     broadcast({ kind: "leader-heartbeat" });
     const now = Date.now();
+    let removedPeer = false;
     for (const [peerId, peer] of peerSubscriptions) {
-      if (now - peer.seenAt > PEER_TIMEOUT_MS) peerSubscriptions.delete(peerId);
+      if (now - peer.seenAt > PEER_TIMEOUT_MS) {
+        peerSubscriptions.delete(peerId);
+        removedPeer = true;
+      }
     }
-    updateOwnerStream();
+    scheduleOwnerStreamUpdate();
+    if (removedPeer) scheduleCoordinatorIdleStop();
   } else if (
     channel &&
     navigator.locks &&
@@ -818,7 +951,7 @@ function startIndependent() {
   if (!coordinatorActive || owner || independent) return;
   independent = true;
   startPeerHeartbeat();
-  openSource();
+  scheduleOwnerStreamUpdate();
 }
 
 function startAsOwner() {
@@ -857,7 +990,7 @@ function startAsOwner() {
         startPeerHeartbeat();
         broadcast({ kind: "discover-subscriptions" });
         broadcast({ kind: "status", status: "connecting" });
-        openSource();
+        scheduleOwnerStreamUpdate();
         await new Promise<void>((resolve) => {
           releaseOwner = resolve;
         });
@@ -959,7 +1092,7 @@ function resumeTransport() {
     startPeerHeartbeat();
     if (!owner && !independent) startAsOwner();
   }
-  if (owner || independent) openSource();
+  if (owner || independent) scheduleOwnerStreamUpdate();
   announceSubscriptions(true);
 }
 
@@ -967,7 +1100,12 @@ function stopCoordinator() {
   coordinatorActive = false;
   coordinatorGeneration++;
   initializing = false;
+  if (coordinatorIdleStopTimer !== undefined)
+    clearTimeout(coordinatorIdleStopTimer);
+  coordinatorIdleStopTimer = undefined;
+  streamUpdateGeneration++;
   releaseStream();
+  flushGeneration += 1;
   if (flushTimer !== undefined) clearTimeout(flushTimer);
   flushTimer = undefined;
   clearTimeout(heartbeatTimeout);
@@ -990,6 +1128,7 @@ function stopCoordinator() {
   lastTokenEvent = undefined;
   resourceValues.clear();
   baselineReconciliations.clear();
+  deliveredEntitySequenceBatches.clear();
   resourceRefs.clear();
   peerSubscriptions.clear();
   setStatus(isApiSchemaMismatch() ? "schema-mismatch" : "connecting");
@@ -1033,6 +1172,9 @@ export function watchResourceChanges(
   callback: (version?: ResourceVersion) => void,
 ): () => void {
   const key = resourceKey(resource);
+  if (coordinatorIdleStopTimer !== undefined)
+    clearTimeout(coordinatorIdleStopTimer);
+  coordinatorIdleStopTimer = undefined;
   let listeners = subscribers.get(key);
   if (!listeners) subscribers.set(key, (listeners = new Set()));
   resourceRefs.set(key, resource);
@@ -1055,12 +1197,10 @@ export function watchResourceChanges(
       baselineReconciliations.delete(key);
     }
     announceSubscriptions();
-    if (
-      !subscribers.size &&
-      !tokenRateListeners.size &&
-      (!owner || !aggregateResources().length)
-    )
-      stopCoordinator();
+    if (!subscribers.size && !tokenRateListeners.size) {
+      cancelIdentityProbe();
+      scheduleCoordinatorIdleStop();
+    }
   };
 }
 
@@ -1075,6 +1215,9 @@ export function watchResourceConnection(
 export function watchTokenRateEvents(
   listener: (event: ResourceTokenRatesEvent) => void,
 ): () => void {
+  if (coordinatorIdleStopTimer !== undefined)
+    clearTimeout(coordinatorIdleStopTimer);
+  coordinatorIdleStopTimer = undefined;
   tokenRateListeners.add(listener);
   if (lastTokenEvent && lastTokenEvent.workspaceId === workspaceId)
     listener(lastTokenEvent);
@@ -1086,7 +1229,8 @@ export function watchTokenRateEvents(
     stopped = true;
     tokenRateListeners.delete(listener);
     announceSubscriptions();
-    if (!subscribers.size && !tokenRateListeners.size) stopCoordinator();
+    if (!subscribers.size && !tokenRateListeners.size)
+      scheduleCoordinatorIdleStop();
   };
 }
 

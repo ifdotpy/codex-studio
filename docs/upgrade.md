@@ -89,10 +89,12 @@ For a restart, stop admitting new work and wait until agents, monitors,
 background tasks, and terminals are idle. Use the installation's existing
 normal restart/recovery mechanism. Do not terminate the backend directly while
 work is active. Keep the same state directory. Start Studio once, then confirm
-that the existing backend is serving `/api/state` and `/api/sync/identity`:
+that the existing backend is serving `/api/session`, `/api/desktop`, and
+`/api/sync/identity`:
 
 ```sh
-curl --fail --silent http://127.0.0.1:4620/api/state >/tmp/studio-state.json
+curl --fail --silent http://127.0.0.1:4620/api/session >/dev/null
+curl --fail --silent http://127.0.0.1:4620/api/desktop >/dev/null
 curl --fail --silent http://127.0.0.1:4620/api/sync/identity
 ```
 
@@ -171,8 +173,8 @@ separate `--gc` option only after the migration has completed and its seven-day
 orphan grace period has elapsed.
 
 Run the upgrade check again. Require each `payloads` entry to report
-`complete: true`. Confirm `canvas.sqlite3` still opens and `/api/state` and
-`/api/sync/identity` still work. Spot-check long transcript bodies and search
+`complete: true`. Confirm `canvas.sqlite3` still opens and `/api/session`,
+`/api/desktop`, and `/api/sync/identity` still work. Spot-check long transcript bodies and search
 results through the normal UI before considering the upgrade complete.
 
 ## 5. VACUUM only when needed
@@ -194,7 +196,7 @@ sqlite3 "$STATE/canvas.sqlite3" 'PRAGMA integrity_check; VACUUM; PRAGMA integrit
 ```
 
 Require both integrity checks to print `ok`, then restart Studio once and
-verify `/api/state`, `/api/sync/identity`, and `/api/diagnostics`.
+verify `/api/session`, `/api/desktop`, `/api/sync/identity`, and `/api/diagnostics`.
 
 ## 6. Optional process supervisor
 
@@ -231,6 +233,20 @@ continues to launch the old backend.
 
 ## Rollback and recovery
 
+- **Round 3 sync-entity rollback:** The pull request that completed the move to
+  sync entities (round 3), `#11`, raises the
+  `agent_organization_fields` marker in `sync_entity_meta` to version 3 and
+  adds fields to stored entity rows. To go back to a build from before that
+  pull request: stop the server; delete only the rows `seeded` and
+  `agent_organization_fields` from `sync_entity_meta`; start the old build. It
+  reseeds entities in its own shape and writes its own marker. If the markers
+  are left in place the old build also starts, but its strict pull validator
+  rejects entity rows that carry the promoted fields. A later start of the new
+  build runs the upgrade to version 3 again. Room entities that the upgrade
+  retired stay retired under the old build; their messages are not touched.
+  This procedure was verified by two reviews on a copy of a real database; a
+  full start of the old server on real data was not performed, so keep a copy
+  of the database before rolling back.
 - **Before source update:** no changes were made; stop safely.
 - **After source update, before migration:** at an idle boundary, restore the
   prior reviewed source revision using the installation's normal source

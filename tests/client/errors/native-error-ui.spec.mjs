@@ -1,12 +1,16 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Real app-server notification handlers, SQLite, event stream, and browser. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("native error ui", async ({ page: runnerPage }) => {
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -33,7 +37,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () => await (await fetch(origin + "/api/state")).json();
+    const state = async () => await readTestState(origin);
     page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
     const errors = [];

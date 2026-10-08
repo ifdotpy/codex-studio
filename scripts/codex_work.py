@@ -13,12 +13,116 @@ import unicodedata
 import uuid
 import shutil
 from pathlib import Path
+from typing import Protocol, TYPE_CHECKING, overload
+
+from codex_records import RecordStore
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterable, Mapping
+    from contextlib import AbstractContextManager as ContextManager
+    from concurrent.futures import Executor
+    from typing import Any, Literal
+    from codex_records import AgentRecord, AnnotationRecord, ComplaintRecord, JsonObject, JsonValue, PlanRecord, QueueMessageRecord, QueueSnapshotRecord, QueueUpdateResultRecord, RoomRecord, WorkArchiveRecord, WorkRecord, WorkResultRecord, WorkViewRecord
+    from codex_runtime import Runtime
 
 from codex_agent_management import (management_tools, manage_agent, _archive_reviewer,
                                     _worker_worktree_root, _worktree_check)
 
 
-def text_field(value, name, maximum=32000, empty=False):
+class _WorkHost(RecordStore, Protocol):
+    root: Path
+    db_path: Path
+    lock: "ContextManager[object]"
+    closed: bool
+    changed: threading.Event
+    search_migration_thread: threading.Thread | None
+    search_migration_error: str | None
+    _accepted_archive_index_ready: bool
+
+    def db(self: "_WorkHost", *, busy_timeout: int | None = None) -> "ContextManager[sqlite3.Connection]": ...
+    def read_db(self: "_WorkHost") -> "ContextManager[sqlite3.Connection]": ...
+    def delivery_executor(self: "_WorkHost") -> "Executor": ...
+    def enqueue(self: "_WorkHost", db: "sqlite3.Connection", agent: "AgentRecord", kind: str,
+                text: str, key: str | None = None) -> None: ...
+    def enqueue_recovery_event(self: "_WorkHost", db: "sqlite3.Connection", agent: "AgentRecord",
+                               kind: str, text: str, key: str) -> None: ...
+    def _stage_event_resources(self: "_WorkHost", db: "sqlite3.Connection", agent_id: str,
+                               *, queue: bool = True, receipts: bool = True) -> None: ...
+    def workspace_path(self: "_WorkHost", agent_id: str, path: str) -> Path: ...
+    def workspace_exec_prefix(self: "_WorkHost", agent: "AgentRecord") -> list[str]: ...
+    def asset_record(self: "_WorkHost", key: str, db: "sqlite3.Connection | None" = None) -> "JsonObject": ...
+    def asset_view(self: "_WorkHost", asset: "JsonObject") -> "JsonObject": ...
+    def _work_action(self: "_WorkHost", agent_id: str, data: "dict[str, Any]", key: str | None = None,
+                     actor: str | None = None, epoch: int | None = None) -> "dict[str, Any]": ...
+    def _archive_work_result(self: "_WorkHost", task_id: str | None, result_id: str) -> str: ...
+    def _finish_accepted_action(self: "_WorkHost", agent_id: str, result: "dict[str, Any]", key: str | None,
+                                epoch: int | None) -> "dict[str, Any]": ...
+    def _archive_accepted_owner(self: "_WorkHost", agent_id: str, result: "dict[str, Any]",
+                                epoch: int | None) -> "dict[str, Any]": ...
+    def _queue_accepted_archive(self: "_WorkHost", task_id: str, intent_id: str) -> None: ...
+    def _run_accepted_archive(self: "_WorkHost", task_id: str, intent_id: str) -> None: ...
+    def setup_search_rows(self: "_WorkHost", db: "sqlite3.Connection") -> None: ...
+    def work_records(self: "_WorkHost", db: "sqlite3.Connection", root_id: str) -> list["WorkRecord"]: ...
+    def latest_work_result_file(self: "_WorkHost", db: "sqlite3.Connection", agent_id: str) -> str | None: ...
+    def work_by_id(self: "_WorkHost", db: "sqlite3.Connection", task_id: str | None,
+                   root_id: str) -> "WorkRecord | None": ...
+    def work_dependency_statuses(self: "_WorkHost", db: "sqlite3.Connection", root_id: str,
+                                 dependencies: list[str]) -> dict[str, str]: ...
+    def work_dependent_records(self: "_WorkHost", db: "sqlite3.Connection", root_id: str,
+                               dependency_id: str) -> list["WorkRecord"]: ...
+    def work_view(self: "_WorkHost", work: "WorkRecord", works: "dict[str, str] | list[WorkRecord]") -> "WorkViewRecord": ...
+    def _work_continuation_pending(self: "_WorkHost", agent: "AgentRecord") -> bool: ...
+    def continuation_work_claims(self: "_WorkHost", db: "sqlite3.Connection",
+                                 agent: "AgentRecord") -> list[str]: ...
+    def continuation_work_claims_valid(self: "_WorkHost", db: "sqlite3.Connection", agent: "AgentRecord",
+                                       claims: list[str]) -> bool: ...
+    def checked_actor(self: "_WorkHost", db: "sqlite3.Connection", agent_id: str,
+                      actor: str | None = None) -> "AgentRecord": ...
+    def operation_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                          body: "dict[str, Any]") -> tuple[str, "JsonObject | None"]: ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                     signature: str, result: "WorkViewRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                     signature: str, result: "WorkResultRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                     signature: str, result: "AnnotationRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                     signature: str, result: "QueueUpdateResultRecord") -> "QueueUpdateResultRecord": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: str | None,
+                     signature: str, result: "dict[str, Any]") -> "dict[str, Any]": ...
+
+    def work_action(self: '_WorkHost', agent_id: 'str', data: 'dict[str, Any]', key: 'str | None'=None, actor: 'str | None'=None, epoch: 'int | None'=None) -> 'dict[str, Any]': ...
+    def accepted_archive_tick(self: '_WorkHost') -> 'None': ...
+    def setup_work(self: '_WorkHost', db: 'sqlite3.Connection') -> 'None': ...
+    def _search_phase(self: '_WorkHost', db: 'sqlite3.Connection') -> 'str': ...
+    def search_is_indexed(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str') -> 'bool': ...
+    def _index_search_next(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str', agent: 'str', kind: 'str', body: 'str') -> 'None': ...
+    def _delete_search_next(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str') -> 'None': ...
+    def index_item(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str', agent: 'str', kind: 'str', body: 'str | None'=None) -> 'None': ...
+    def delete_search_item(self: '_WorkHost', db: 'sqlite3.Connection', key: 'str') -> 'None': ...
+    def search_migration_start(self: '_WorkHost') -> 'bool': ...
+    def _search_migration_run(self: '_WorkHost') -> 'None': ...
+    def _search_migration_batch(self: '_WorkHost', db: 'sqlite3.Connection', batch_size: 'int'=5, max_bytes: 'int'=64 * 1024) -> 'bool': ...
+    def _check_search_rows_batch(self: '_WorkHost', db: 'sqlite3.Connection', batch_size: 'int'=500) -> 'bool': ...
+    def _search_migration_verify_and_switch(self: '_WorkHost', db: 'sqlite3.Connection') -> 'None': ...
+    def _search_cleanup_batch(self: '_WorkHost', db: 'sqlite3.Connection', batch_size: 'int'=5) -> 'None': ...
+    def release_failed_work(self: '_WorkHost', db: 'sqlite3.Connection', agents: 'list[AgentRecord]', force: 'bool'=False) -> 'list[str]': ...
+    def search_work(self: '_WorkHost', query: 'str', agent_id: 'str | None'=None, limit: 'int'=50) -> 'JsonObject': ...
+    @staticmethod
+    def _search_excerpt(body: 'str', query: 'str', token_limit: 'int'=30) -> 'str': ...
+    def chat_organization(self: '_WorkHost', key: 'str', data: 'dict[str, Any]') -> 'AgentRecord | dict[str, Any]': ...
+    def plan_action(self: '_WorkHost', key: 'str', data: 'dict[str, Any] | None'=None) -> 'PlanRecord': ...
+    def queue_action(self: '_WorkHost', agent_id: 'str', data: 'dict[str, Any] | None'=None) -> 'QueueSnapshotRecord | QueueUpdateResultRecord': ...
+    def annotate(self: '_WorkHost', agent_id: 'str', data: 'dict[str, Any]') -> 'dict[str, Any]': ...
+    def search_item(self: '_WorkHost', key: 'str') -> 'JsonObject': ...
+
+
+def text_field(value: object, name: str, maximum: int = 32000, empty: bool = False) -> str:
     if (
         not isinstance(value, str)
         or len(value) > maximum
@@ -30,7 +134,7 @@ def text_field(value, name, maximum=32000, empty=False):
     return value.strip()
 
 
-def work_tools(tool, text):
+def work_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["JsonObject"]:
     return management_tools(tool, text) + [
         tool(
             "orchestration_task",
@@ -89,7 +193,7 @@ def work_tools(tool, text):
 
 
 class WorkMixin:
-    def work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+    def work_action(self: "_WorkHost", agent_id: "str", data: "dict[str, Any]", key: "str | None"=None, actor: "str | None"=None, epoch: "int | None"=None) -> "dict[str, Any]":
         result = self._work_action(agent_id, data, key, actor, epoch)
         if data.get('action') == 'submit' and result.get('results'):
             self._archive_work_result(data.get('task_id'), result['results'][-1]['id'])
@@ -99,7 +203,7 @@ class WorkMixin:
         with lock:
             return self._finish_accepted_action(agent_id, result, key, epoch)
 
-    def _finish_accepted_action(self, agent_id, result, key, epoch):
+    def _finish_accepted_action(self: "_WorkHost", agent_id: "str", result: "dict[str, Any]", key: "str | None", epoch: "int | None") -> "dict[str, Any]":
         with self.lock, self.db() as db:
             stored = db.execute('SELECT record FROM runtime_work WHERE id=?', (result['id'],)).fetchone()
             prior = json.loads(stored[0]).get('archive') if stored else None
@@ -151,7 +255,7 @@ class WorkMixin:
             self._queue_accepted_archive(result['id'], intent_id)
         return result
 
-    def _queue_accepted_archive(self, task_id, intent_id):
+    def _queue_accepted_archive(self: "_WorkHost", task_id: "str", intent_id: "str") -> "None":
         reserved = None
         try:
             with self.lock, self.db() as db:
@@ -188,7 +292,7 @@ class WorkMixin:
                     running.discard(reserved)
             raise
 
-    def accepted_archive_tick(self):
+    def accepted_archive_tick(self: "_WorkHost") -> "None":
         with self.lock:
             now = time.monotonic()
             previous = self.__dict__.get('_accepted_archive_tick_at')
@@ -230,7 +334,7 @@ class WorkMixin:
             if intent.get('id'):
                 self._queue_accepted_archive(row['id'], intent['id'])
 
-    def _run_accepted_archive(self, task_id, intent_id):
+    def _run_accepted_archive(self: "_WorkHost", task_id: "str", intent_id: "str") -> "None":
         key = (task_id, intent_id)
         try:
             with self.lock, self.db() as db:
@@ -248,7 +352,7 @@ class WorkMixin:
                     return
                 owner = self.agent(work['owner'], db) if work.get('owner') else None
                 root = self.agent(work['rootId'], db)
-                outcome = None
+                outcome: dict[str, Any] | None = None
                 if work.get('status') != 'accepted' or not owner:
                     outcome = {'status': 'kept', 'reason': 'The accepted task owner changed'}
                 elif owner.get('deletedAt') or owner.get('agentArchive'):
@@ -262,7 +366,7 @@ class WorkMixin:
                             and archived.get('at', 0) >= intent.get('created', 0)
                             and archived.get('cleanupPending') is False):
                         cleaned = owner.get('cleanedWorktree') if not owner.get('worktreeReady') else None
-                        worktree = ({'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
+                        worktree: JsonObject = ({'state': 'missing', 'reason': cleaned.get('note'), 'bytes': 0}
                                     if cleaned and cleaned.get('missing') else
                                     {'state': 'removed', 'bytes': cleaned.get('bytes')}
                                     if cleaned else
@@ -301,7 +405,7 @@ class WorkMixin:
             with self.lock:
                 self.__dict__.setdefault('_accepted_archive_running', set()).discard(key)
 
-    def _archive_work_result(self, task_id, result_id):
+    def _archive_work_result(self: "_WorkHost", task_id: "str | None", result_id: "str") -> "str":
         """Write the committed result once, then return its stable absolute path."""
         with self.lock, self.db() as db:
             row = db.execute('SELECT record FROM runtime_work WHERE id=?', (task_id,)).fetchone()
@@ -347,7 +451,7 @@ class WorkMixin:
             raise
         return str(path)
 
-    def _archive_accepted_owner(self, agent_id, result, epoch):
+    def _archive_accepted_owner(self, agent_id, result, epoch) : # type: (_WorkHost, str, dict[str, Any], int | None) -> dict[str, Any]
         owner_id = result.get('owner')
         if not owner_id or owner_id == result['rootId']:
             return {'status': 'skipped', 'reason': 'The task owner is the lead or is unassigned'}
@@ -394,14 +498,14 @@ class WorkMixin:
                 if worktree_root is None:
                     raise ValueError('The saved worker path is outside its Studio worktree')
                 repo_path = worktree_root.parent.parent.parent
-            def git(*args, check=True):
+            def git(*args, check = True) : # type: (*str, bool) -> subprocess.CompletedProcess[str]
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     raise subprocess.TimeoutExpired('accepted main check', 8)
                 return subprocess.run([*prefix, 'git', '-C', str(repo_path), *args],
                                       check=check, capture_output=True, text=True, timeout=remaining)
 
-            def scope():
+            def scope() : # type: () -> tuple[str, list[str], list[str], list[str]]
                 common = git('rev-parse', '--path-format=absolute', '--git-common-dir').stdout.strip()
                 remotes = git('remote').stdout.splitlines()
                 raw_urls = git('config', '--get-all', 'remote.origin.url').stdout.splitlines() if 'origin' in remotes else []
@@ -425,7 +529,7 @@ class WorkMixin:
                         or git('show-ref', '--verify', '--quiet', reference, check=False).returncode == 0):
                     return {'status': 'kept', 'reason': 'The private main check identity is already in use'}
 
-                def fetch_receipt(output):
+                def fetch_receipt(output) : # type: (object) -> str | None
                     if not isinstance(output, str):
                         return None
                     updates = [line.split() for line in output.splitlines()
@@ -468,7 +572,7 @@ class WorkMixin:
                 target = 'fresh origin/main or local main' if remotes else 'local main'
                 return {'status': 'kept', 'reason': 'The result commit is not reachable from ' + target}
             if owner.get('worktreeReady'):
-                _, reason = _worktree_check(self, agent_id, owner_id, epoch)
+                _, reason = _worktree_check(self, agent_id, owner_id, epoch)  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
                 if reason:
                     retryable = any(value in reason for value in (
                         'active_turn', 'workspace_operation', 'thread_preparation', 'descendants',
@@ -489,8 +593,9 @@ class WorkMixin:
                         or latest.get('results') != work.get('results')):
                     return {'status': 'kept', 'reason': 'The accepted task or owner changed during the archive check'}
             try:
-                archived = manage_agent(self, agent_id, {'action': 'archive', 'agent_id': owner_id,
-                                                          'reason': 'Accepted task result is on main'}, epoch)
+                archived = manage_agent(self, agent_id,  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
+                                         {'action': 'archive', 'agent_id': owner_id,
+                                          'reason': 'Accepted task result is on main'}, epoch)
             except (OSError, ValueError, subprocess.SubprocessError) as error:
                 return {'status': 'kept', 'reason': str(error)[:180]}
         except (KeyError, OSError, ValueError, subprocess.SubprocessError, UnicodeError):
@@ -514,7 +619,7 @@ class WorkMixin:
                     'reason': cleanup.get('reason', 'The worktree was kept')}
         return {'status': 'archived', 'worktree': cleanup, 'mainEvidence': main_evidence}
 
-    def setup_work(self, db):
+    def setup_work(self, db) : # type: (_WorkHost, sqlite3.Connection) -> None
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_work (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE INDEX IF NOT EXISTS runtime_work_root_status
@@ -553,10 +658,10 @@ class WorkMixin:
                 "SELECT id,record FROM runtime_agents WHERE json_type(record,'$.reviewArchiveScheduled')='text'"):
             child = json.loads(row['record'])
             self.delivery_executor().submit(
-                _archive_reviewer, self, child['rootId'], child.get('parentId'),
+                _archive_reviewer, self, child['rootId'], child.get('parentId'),  # type: ignore[arg-type]  # typed-narrowing: Runtime is concrete mixin host
                 child['id'], child['reviewArchiveScheduled'])
 
-    def setup_search_rows(self, db):
+    def setup_search_rows(self: "_WorkHost", db: "sqlite3.Connection") -> "None":
         # FTS UNINDEXED columns cannot support an equality lookup. Keep the
         # document address in an ordinary indexed table, including legacy rows.
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
@@ -566,12 +671,12 @@ class WorkMixin:
         db.execute("INSERT OR IGNORE INTO runtime_search_rows_rollout(id,cursor) VALUES(1,0)")
 
     @staticmethod
-    def work_records(db, root_id):
+    def work_records(db: "sqlite3.Connection", root_id: "str") -> "list[WorkRecord]":
         return [json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root_id,))]
 
     @staticmethod
-    def latest_work_result_file(db, agent_id):
+    def latest_work_result_file(db: "sqlite3.Connection", agent_id: "str") -> "str | None":
         rows = db.execute("SELECT record FROM runtime_work WHERE json_extract(record,'$.owner')=?",
                           (agent_id,)).fetchall()
         results = [item for row in rows for item in json.loads(row[0]).get('results', [])
@@ -579,13 +684,13 @@ class WorkMixin:
         return max(results, key=lambda item: item.get('created', 0))['resultFile'] if results else None
 
     @staticmethod
-    def work_by_id(db, task_id, root_id):
+    def work_by_id(db: "sqlite3.Connection", task_id: "str | None", root_id: "str") -> "WorkRecord | None":
         row = db.execute("SELECT record FROM runtime_work WHERE id=?", (task_id,)).fetchone()
         task = json.loads(row[0]) if row else None
         return task if task and task.get('rootId') == root_id else None
 
     @staticmethod
-    def work_dependency_statuses(db, root_id, dependencies):
+    def work_dependency_statuses(db: "sqlite3.Connection", root_id: "str", dependencies: "list[str]") -> "dict[str, str]":
         if not dependencies:
             return {}
         marks = ",".join("?" for _ in dependencies)
@@ -595,25 +700,25 @@ class WorkMixin:
             (*dependencies, root_id))}
 
     @staticmethod
-    def work_dependent_records(db, root_id, dependency_id):
+    def work_dependent_records(db: "sqlite3.Connection", root_id: "str", dependency_id: "str") -> "list[WorkRecord]":
         return [json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=? "
             "AND json_extract(record,'$.owner') IS NOT NULL AND EXISTS "
             "(SELECT 1 FROM json_each(runtime_work.record,'$.dependencies') WHERE value=?)",
             (root_id, dependency_id))]
 
-    def _search_phase(self, db):
+    def _search_phase(self: "_WorkHost", db: "sqlite3.Connection") -> "str":
         row = db.execute("SELECT phase FROM runtime_search_rollout WHERE id=1").fetchone()
         return row[0] if row else "legacy"
 
-    def search_is_indexed(self, db, key):
+    def search_is_indexed(self: "_WorkHost", db: "sqlite3.Connection", key: "str") -> "bool":
         if self._search_phase(db) in {"active", "dropping", "complete"}:
             return db.execute("SELECT 1 FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone() is not None
         if db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_search_rows'").fetchone():
             return db.execute("SELECT 1 FROM runtime_search_rows WHERE id=?", (key,)).fetchone() is not None
         return False
 
-    def _index_search_next(self, db, key, agent, kind, body):
+    def _index_search_next(self: "_WorkHost", db: "sqlite3.Connection", key: "str", agent: "str", kind: "str", body: "str") -> "None":
         previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
         if previous:
             db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
@@ -624,13 +729,13 @@ class WorkMixin:
             db.execute("INSERT INTO runtime_search_next_meta VALUES (?,?,?,?)", (key, agent, kind, rowid))
         db.execute("INSERT INTO runtime_search_next(rowid,body) VALUES (?,?)", (rowid, body))
 
-    def _delete_search_next(self, db, key):
+    def _delete_search_next(self: "_WorkHost", db: "sqlite3.Connection", key: "str") -> "None":
         previous = db.execute("SELECT search_rowid FROM runtime_search_next_meta WHERE id=?", (key,)).fetchone()
         if previous:
             db.execute("DELETE FROM runtime_search_next WHERE rowid=?", (previous[0],))
             db.execute("DELETE FROM runtime_search_next_meta WHERE id=?", (key,))
 
-    def index_item(self, db, key, agent, kind, body=None):
+    def index_item(self: "_WorkHost", db: "sqlite3.Connection", key: "str", agent: "str", kind: "str", body: "str | None"=None) -> "None":
         from codex_search_text import search_text
         body = search_text(db, key)
         phase = self._search_phase(db)
@@ -650,7 +755,7 @@ class WorkMixin:
         ).fetchone():
             self._index_search_next(db, key, agent, kind, body)
 
-    def delete_search_item(self, db, key):
+    def delete_search_item(self: "_WorkHost", db: "sqlite3.Connection", key: "str") -> "None":
         phase = self._search_phase(db)
         if phase not in {"active", "dropping", "complete"}:
             row = db.execute("SELECT search_rowid FROM runtime_search_rows WHERE id=?", (key,)).fetchone()
@@ -661,8 +766,8 @@ class WorkMixin:
         if phase in {"building", "active", "dropping", "complete"}:
             self._delete_search_next(db, key)
 
-    def search_migration_start(self):
-        if getattr(self, "search_migration_thread", None) and self.search_migration_thread.is_alive():
+    def search_migration_start(self: "_WorkHost") -> "bool":
+        if getattr(self, "search_migration_thread", None) and self.search_migration_thread.is_alive():  # type: ignore[union-attr]  # typed-narrowing: guard implies stored thread exists
             return False
         phase = None
         with self.db() as db:
@@ -675,7 +780,7 @@ class WorkMixin:
         worker.start()
         return True
 
-    def _search_migration_run(self):
+    def _search_migration_run(self: "_WorkHost") -> "None":
         while not self.closed:
             delay = 0.001
             try:
@@ -727,7 +832,7 @@ class WorkMixin:
                 self.search_migration_error = str(error)[:500]
                 time.sleep(5)
 
-    def _search_migration_batch(self, db, batch_size=5, max_bytes=64 * 1024):
+    def _search_migration_batch(self: "_WorkHost", db: "sqlite3.Connection", batch_size: "int"=5, max_bytes: "int"=64 * 1024) -> "bool":
         state = db.execute("SELECT cursor FROM runtime_search_rollout WHERE id=1").fetchone()
         cursor = int(state[0])
         rows = db.execute(
@@ -768,7 +873,7 @@ class WorkMixin:
         self.search_migration_last_batch_bytes = total_bytes
         return True
 
-    def _check_search_rows_batch(self, db, batch_size=500):
+    def _check_search_rows_batch(self: "_WorkHost", db: "sqlite3.Connection", batch_size: "int"=500) -> "bool":
         # The check table is dropped when the check completes.
         if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
                           "AND name='runtime_search_rows_rollout'").fetchone():
@@ -787,7 +892,7 @@ class WorkMixin:
         db.execute("UPDATE runtime_search_rows_rollout SET cursor=? WHERE id=1", (rows[-1]["rowid"],))
         return True
 
-    def _search_migration_verify_and_switch(self, db):
+    def _search_migration_verify_and_switch(self: "_WorkHost", db: "sqlite3.Connection") -> "None":
         missing = db.execute("SELECT r.id FROM runtime_search_rows r LEFT JOIN runtime_search_next_meta n ON n.id=r.id WHERE n.id IS NULL LIMIT 1").fetchone()
         mismatch = db.execute("SELECT n.id FROM runtime_search_next_meta n LEFT JOIN runtime_search_rows r ON r.id=n.id WHERE r.id IS NULL LIMIT 1").fetchone()
         if missing or mismatch:
@@ -818,7 +923,7 @@ class WorkMixin:
                 raise RuntimeError("Full-text transfer hash verification failed for " + item["id"])
         db.execute("UPDATE runtime_search_rollout SET phase='dropping',updated=? WHERE id=1", (time.time(),))
 
-    def _search_cleanup_batch(self, db, batch_size=5):
+    def _search_cleanup_batch(self: "_WorkHost", db: "sqlite3.Connection", batch_size: "int"=5) -> "None":
         rows = db.execute("SELECT search_rowid,id FROM runtime_search_rows ORDER BY search_rowid LIMIT ?", (batch_size,)).fetchall()
         if rows:
             for row in rows:
@@ -830,7 +935,7 @@ class WorkMixin:
         db.execute("DROP TABLE IF EXISTS runtime_search_rows")
         db.execute("DROP TABLE IF EXISTS runtime_search_indexed")
         db.execute("UPDATE runtime_search_rollout SET phase='complete',updated=? WHERE id=1", (time.time(),))
-    def checked_actor(self, db, agent_id, actor=None):
+    def checked_actor(self: "_WorkHost", db: "sqlite3.Connection", agent_id: "str", actor: "str | None"=None) -> "AgentRecord":
         a = self.agent(agent_id, db)
         if a.get("deletedAt"):
             raise ValueError("This agent was deleted")
@@ -842,7 +947,7 @@ class WorkMixin:
                 raise ValueError("This record belongs to another team")
         return a
 
-    def operation_receipt(self, db, key, body):
+    def operation_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", body: "dict[str, Any]") -> "tuple[str, JsonObject | None]":
         signature = hashlib.sha256(
             json.dumps(body, sort_keys=True).encode()
         ).hexdigest()
@@ -858,7 +963,18 @@ class WorkMixin:
             raise ValueError("This request id has different content")
         return signature, json.loads(row["result"]) if row else None
 
-    def save_receipt(self, db, key, signature, result):
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str", result: "WorkViewRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str", result: "WorkResultRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str", result: "AnnotationRecord") -> "dict[str, Any]": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str", result: "QueueUpdateResultRecord") -> "QueueUpdateResultRecord": ...
+    @overload
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str", result: "dict[str, Any]") -> "dict[str, Any]": ...
+    def save_receipt(self: "_WorkHost", db: "sqlite3.Connection", key: "str | None", signature: "str",
+                     result: "WorkViewRecord | WorkResultRecord | AnnotationRecord | QueueUpdateResultRecord | dict[str, Any]") -> "WorkViewRecord | WorkResultRecord | AnnotationRecord | QueueUpdateResultRecord | dict[str, Any]":
         if key:
             db.execute(
                 "INSERT INTO runtime_operation_receipts VALUES (?,?,?)",
@@ -866,10 +982,10 @@ class WorkMixin:
             )
         return result
 
-    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None):
+    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None) : # type: (_WorkHost, str, dict[str, Any], str | None, str | None, int | None) -> dict[str, Any]
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id, actor)
-            if epoch is not None and self.agent(actor, db)["epoch"] != epoch:
+            if epoch is not None and self.agent(actor, db)["epoch"] != epoch:  # type: ignore[arg-type]  # typed-suspect: epoch may be set without an actor
                 raise ValueError("The caller was stopped")
             signature, previous = self.operation_receipt(
                 db, key, {"agent": agent_id, "actor": actor, "body": data}
@@ -879,11 +995,12 @@ class WorkMixin:
             action = data.get("action", "list")
             if action == "list":
                 works = self.work_records(db, a["rootId"])
-                statuses = {work["id"]: work["status"] for work in works}
+                statuses: dict[str, str] = {work["id"]: work["status"] for work in works}
                 return {
                     "items": [self.work_view(w, statuses) for w in works],
                     "tasks": [self.work_view(w, statuses) for w in works],
                 }
+            w: WorkRecord | None
             if action == "create":
                 if actor and a["id"] != a["rootId"]:
                     raise ValueError("Only the lead can create work")
@@ -954,7 +1071,7 @@ class WorkMixin:
                     graph[w["id"]] = w["dependencies"]
                     visited = set()
 
-                    def visit(node, path):
+                    def visit(node, path) : # type: (str, set[str]) -> None
                         if node in path:
                             raise ValueError("Task dependencies contain a cycle")
                         if node in visited:
@@ -982,7 +1099,7 @@ class WorkMixin:
                     raise ValueError("This work item is not ready")
                 if w["owner"] and w["owner"] != claimant:
                     raise ValueError("Another agent owns this work item")
-                w.update(owner=claimant, status="running")
+                w.update(owner=claimant, status="running")  # type: ignore[call-arg]  # typed-update
             elif action == "submit":
                 if w["status"] not in {"running", "ready", "blocked", "review"}:
                     raise ValueError("This result is already accepted")
@@ -1001,7 +1118,7 @@ class WorkMixin:
                 submitter = w.get("owner") or a["id"]
                 for path in files:
                     self.workspace_path(submitter, path)
-                result = {
+                result: WorkResultRecord = {
                     "id": str(uuid.uuid4()),
                     "agent": submitter,
                     "text": text_field(data.get("result"), "a result"),
@@ -1013,7 +1130,7 @@ class WorkMixin:
                     "created": time.time(),
                 }
                 from codex_execution import safe_record, submission_identity
-                result.update(safe_record(db, submission_identity, db, self.agent(submitter, db)) or {})
+                result.update(safe_record(db, submission_identity, db, self.agent(submitter, db)) or {})  # type: ignore[typeddict-item]  # typed-narrowing: callback adds typed run metadata
                 result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
                 w["results"].append(result)
                 w["status"] = "review"
@@ -1044,7 +1161,7 @@ class WorkMixin:
                     "by": actor or a["id"], "owner": owner_id,
                     "created": time.time(),
                 })
-                w.update(status="cancelled", owner=None)
+                w.update(status="cancelled", owner=None)  # type: ignore[call-arg]  # typed-update
                 owner_row = (db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner_id,)).fetchone()
                              if owner_id else None)
                 owner = json.loads(owner_row[0]) if owner_row else None
@@ -1085,7 +1202,7 @@ class WorkMixin:
                         and (action == 'reject' or w['owner'] == a['rootId'])):
                     self.enqueue_recovery_event(
                         db,
-                        self.agent(w["owner"], db),
+                        self.agent(w["owner"], db),  # type: ignore[arg-type]  # typed-narrowing: owner guard proves recipient exists
                         "work_decision",
                         json.dumps(
                             {"task": w["id"], "decision": action, "reason": reason}
@@ -1100,7 +1217,7 @@ class WorkMixin:
                         if not self.work_view(other, statuses)["blockedBy"]:
                             self.enqueue_recovery_event(
                                 db,
-                                self.agent(other["owner"], db),
+                                self.agent(other["owner"], db),  # type: ignore[arg-type]  # typed-narrowing: owner guard proves recipient exists
                                 "work_ready",
                                 json.dumps({"task": other["id"], "title": other["title"],
                                             "description": other.get("description", "")}, ensure_ascii=False),
@@ -1108,11 +1225,11 @@ class WorkMixin:
                             )
             else:
                 raise ValueError("Unknown work action")
-            w.update(version=w["version"] + 1, updated=time.time())
+            w.update(version=w["version"] + 1, updated=time.time())  # type: ignore[call-arg]  # typed-update
             self.put(db, "work", w)
             result = self.work_view(w, self.work_dependency_statuses(
-                db, a["rootId"], w["dependencies"]))
-            ready = w["status"] in {"ready", "running"} and not result["blockedBy"]
+                db, a["rootId"], w["dependencies"]))  # type: ignore[assignment]  # typed-narrowing: view is JSON receipt data
+            ready = w["status"] in {"ready", "running"} and not result["blockedBy"]  # type: ignore[typeddict-item]  # typed-narrowing: assignment stores view response mapping
             if (action in {"update", "cancel"} and previous_owner
                     and (action == "cancel" or previous_owner != w.get("owner") or previous_ready != ready)):
                 db.execute("UPDATE runtime_events SET status='stored_only',error=? "
@@ -1124,7 +1241,7 @@ class WorkMixin:
                     and ready
                     and (action == "create" or w["owner"] != previous_owner or not previous_ready)):
                 self.enqueue_recovery_event(
-                    db, self.agent(w["owner"], db), "work_ready",
+                    db, self.agent(w["owner"], db), "work_ready",  # type: ignore[arg-type]  # typed-narrowing: owner guard proves recipient exists
                     json.dumps({"task": w["id"], "title": w["title"],
                                 "description": w["description"]}, ensure_ascii=False),
                     "work-ready:" + w["id"] + ":assignment:" + str(w["version"]))
@@ -1135,7 +1252,7 @@ class WorkMixin:
                 result,
             )
 
-    def release_failed_work(self, db, agents, force=False):
+    def release_failed_work(self: "_WorkHost", db: "sqlite3.Connection", agents: "list[AgentRecord]", force: "bool"=False) -> "list[str]":
         """Return unfinished work of failed or deleted workers to the board.
 
         A failed worker cannot submit, so its claim would block the task forever.
@@ -1180,7 +1297,7 @@ class WorkMixin:
         return released
 
     @staticmethod
-    def _work_continuation_pending(agent):
+    def _work_continuation_pending(agent) : # type: (AgentRecord) -> bool
         """Keep a task claim while its exact automatic continuation can still run."""
         if not agent.get("autoWake") or agent.get("deletedAt"):
             return False
@@ -1192,7 +1309,7 @@ class WorkMixin:
         usage = agent.get("usageResume") or {}
         restart = agent.get("restartRecovery") or {}
 
-        def matches(record, statuses, turn_field):
+        def matches(record, statuses, turn_field) : # type: (Mapping[str, object], set[str], str) -> bool
             return (record.get("status") in statuses
                     and record.get("accountKey", "default") == account
                     and record.get("threadId") == thread and bool(thread)
@@ -1204,10 +1321,10 @@ class WorkMixin:
                 or (restart.get("stage") == "pending" and restart.get("autoWake")
                     and restart.get("accountKey", "default") == account
                     and restart.get("threadId") == thread and bool(thread)
-                    and restart.get("epoch") == epoch))
+                    and restart.get("epoch") == epoch))  # type: ignore[return-value]  # typed-suspect: missing autoWake may return None
 
     @staticmethod
-    def continuation_work_claims(db, agent):
+    def continuation_work_claims(db: "sqlite3.Connection", agent: "AgentRecord") -> "list[str]":
         rows = db.execute(
             "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.status') NOT IN ('accepted','cancelled') ORDER BY id",
@@ -1215,7 +1332,7 @@ class WorkMixin:
         return [row['id'] for row in rows]
 
     @staticmethod
-    def continuation_work_claims_valid(db, agent, claims):
+    def continuation_work_claims_valid(db: "sqlite3.Connection", agent: "AgentRecord", claims: "list[str]") -> "bool":
         rows = db.execute(
             "SELECT id FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
@@ -1224,7 +1341,7 @@ class WorkMixin:
         return {row['id'] for row in rows} == set(claims)
 
     @staticmethod
-    def work_view(w, works):
+    def work_view(w: "WorkRecord", works: "dict[str, str] | list[WorkRecord]") -> "WorkViewRecord":
         statuses = works if isinstance(works, dict) else {t["id"]: t["status"] for t in works}
         blocked = [d for d in w["dependencies"] if statuses.get(d) != "accepted"]
         return {
@@ -1237,7 +1354,7 @@ class WorkMixin:
             ),
         }
 
-    def search_work(self, query, agent_id=None, limit=50):
+    def search_work(self: "_WorkHost", query: "str", agent_id: "str | None"=None, limit: "int"=50) -> "JsonObject":
         query = text_field(query, "a search query", 500)
         limit = max(1, min(100, int(limit)))
         # Quote each word; user input never becomes FTS operators or SQL.
@@ -1285,8 +1402,8 @@ class WorkMixin:
                 ("work", "work", "title"),
                 ("complaints", "complaint", "title"),
                 ("plans", "plan", "text"),
-            ]:
-                for row in self.records(db, table):
+            ]:  # type: tuple[Literal["work", "complaints", "plans"], str, str]
+                for row in self.records(db, table):  # type: ignore[call-overload]  # typed-narrowing: search loop uses supported tables
                     root = row.get("rootId") or row.get("leadId") or row.get("id")
                     if caller and root != caller["rootId"]:
                         continue
@@ -1331,7 +1448,7 @@ class WorkMixin:
             }
 
     @staticmethod
-    def _search_excerpt(body, query, token_limit=30):
+    def _search_excerpt(body: "str", query: "str", token_limit: "int"=30) -> "str":
         """Make a plain-text result window for the contentless index."""
         tokens = list(re.finditer(r"[^\W_]+", body, flags=re.UNICODE))
         if len(tokens) <= token_limit:
@@ -1339,7 +1456,7 @@ class WorkMixin:
         normalize = lambda value: "".join(
             char for char in unicodedata.normalize("NFD", value.casefold())
             if unicodedata.category(char) != "Mn"
-        )
+        )  # type: Callable[[str], str]
         terms = {normalize(word) for word in re.findall(r"[^\W_]+", query, flags=re.UNICODE)}
         hits = [index for index, token in enumerate(tokens) if normalize(token.group()) in terms]
         center = hits[0] if hits else 0
@@ -1352,7 +1469,7 @@ class WorkMixin:
             excerpt += " … "
         return excerpt
 
-    def chat_organization(self, key, data):
+    def chat_organization(self: "_WorkHost", key: "str", data: "dict[str, Any]") -> "AgentRecord | dict[str, Any]":
         from codex_workspace import active_monitors
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
@@ -1404,13 +1521,13 @@ class WorkMixin:
             self.put(db, "agents", a)
             return a
 
-    def plan_action(self, key, data=None):
+    def plan_action(self: "_WorkHost", key: "str", data: "dict[str, Any] | None"=None) -> "PlanRecord":
         with self.lock, self.db() as db:
             a = self.checked_actor(db, key)
             row = db.execute(
                 "SELECT record FROM runtime_plans WHERE id=?", (key,)
             ).fetchone()
-            plan = (
+            plan: PlanRecord = (
                 json.loads(row[0])
                 if row
                 else {
@@ -1426,7 +1543,7 @@ class WorkMixin:
                 return plan
             if data.get("version") != plan["version"]:
                 raise ValueError("The plan changed. Reload before saving")
-            plan.update(
+            plan.update(  # type: ignore[call-arg]  # typed-update
                 text=text_field(data.get("text"), "a plan", 64000, empty=True),
                 version=plan["version"] + 1,
                 updated=time.time(),
@@ -1441,14 +1558,14 @@ class WorkMixin:
             )
             return plan
 
-    def queue_action(self, agent_id, data=None):
+    def queue_action(self, agent_id, data=None) : # type: (_WorkHost, str, dict[str, Any] | None) -> QueueSnapshotRecord | QueueUpdateResultRecord
         import math
 
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id)
 
-            def snapshot():
-                rows = []
+            def snapshot() : # type: () -> QueueSnapshotRecord
+                rows: list[QueueMessageRecord] = []
                 for stored in db.execute(
                     "SELECT e.id,e.text,e.kind,e.status,e.error,e.created,m.record AS metadata "
                     "FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
@@ -1456,9 +1573,9 @@ class WorkMixin:
                     "AND e.kind IN ('user','followup') ORDER BY e.created,e.rowid",
                     (agent_id, a["epoch"]),
                 ):
-                    row = dict(stored)
+                    row: QueueMessageRecord = dict(stored)  # type: ignore[assignment]  # typed-narrowing: query returns declared queue columns
                     metadata = json.loads(row.pop("metadata") or "{}")
-                    row.update(
+                    row.update(  # type: ignore[call-arg]  # typed-update
                         assets=[self.asset_view(self.asset_record(v)) for v in metadata.get("assets", [])],
                         delivery=metadata.get("delivery", "queue"),
                         requestedDelivery=metadata.get("requestedDelivery", metadata.get("delivery", "queue")),
@@ -1485,7 +1602,7 @@ class WorkMixin:
                 db, receipt_key, {"agent": agent_id, "body": data},
             )
             if previous is not None:
-                return previous
+                return previous  # type: ignore[return-value]  # typed-narrowing: stored receipt has queue shape
             current = snapshot()
             if (("expected_revision" in data or action == "reorder")
                     and data.get("expected_revision") != current["revision"]):
@@ -1573,15 +1690,15 @@ class WorkMixin:
                 a["queueMutationRevision"] = a.get("queueMutationRevision", 0) + 1
                 self.put(db, "agents", a)
                 updated = snapshot()
-            result = self.save_receipt(db, receipt_key, signature, {
+            result: QueueUpdateResultRecord = self.save_receipt(db, receipt_key, signature, {
                 "status": "updated", "revision": updated["revision"],
                 "capabilities": updated["capabilities"],
-            })
+            })  # type: ignore[assignment]  # typed-narrowing: literal matches queue update record
             self._stage_event_resources(db, str(agent_id), queue=queue_changed, receipts=True)
             self.changed.set()
             return result
 
-    def annotate(self, agent_id, data):
+    def annotate(self: "_WorkHost", agent_id: "str", data: "dict[str, Any]") -> "dict[str, Any]":
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id)
             signature, previous = self.operation_receipt(
@@ -1594,7 +1711,7 @@ class WorkMixin:
             line = data.get("line")
             if not isinstance(line, int) or line < 1:
                 raise ValueError("Supply a positive line number")
-            note = {
+            note: AnnotationRecord = {
                 "id": data.get("id") or str(uuid.uuid4()),
                 "agent": agent_id,
                 "rootId": a["rootId"],
@@ -1618,7 +1735,7 @@ class WorkMixin:
             )
             return self.save_receipt(db, data.get("id"), signature, note)
 
-    def search_item(self, key):
+    def search_item(self: "_WorkHost", key: "str") -> "JsonObject":
         with self.lock, self.db() as db:
             row = db.execute(
                 "SELECT agent,record FROM runtime_items WHERE id=?", (key,)

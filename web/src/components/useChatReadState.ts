@@ -7,15 +7,11 @@ import {
   useState,
   type RefObject,
 } from "react";
-import { get, post, ApiError, errorText } from "../api";
+import { post, ApiError, errorText } from "../api";
+import { refreshProjection } from "../sync/client";
 import type { Agent, Message, Snapshot } from "../types";
 
-export type ChatReadState = {
-  threadId: string;
-  turnId: string;
-  read: boolean;
-  revision: number;
-};
+export type ChatReadState = NonNullable<Agent["readState"]>;
 export type ChatReadProof = { id: string; threadId: string; turnId: string };
 const completed = (agent: Agent): ChatReadProof | null =>
   agent.threadId &&
@@ -29,6 +25,14 @@ const completed = (agent: Agent): ChatReadProof | null =>
     : null;
 const sameResult = (a: ChatReadProof, b: ChatReadProof) =>
   a.id === b.id && a.threadId === b.threadId && a.turnId === b.turnId;
+export function matchingCompletedAgent(
+  agents: Agent[],
+  proof: ChatReadProof,
+): Agent | null {
+  const agent = agents.find((value) => value.id === proof.id);
+  const result = agent && completed(agent);
+  return result && sameResult(result, proof) ? agent : null;
+}
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 const parseReadState = (value: unknown): ChatReadState | null =>
@@ -46,8 +50,6 @@ const parseReadState = (value: unknown): ChatReadState | null =>
         revision: value.revision,
       }
     : null;
-const storedState = (agent: Pick<Agent, "readState">): ChatReadState | null =>
-  parseReadState(agent.readState);
 
 export function useChatReadState(
   data: Snapshot | null,
@@ -94,7 +96,7 @@ export function useChatReadState(
   latest.current = { data, opened, notify, refresh, workspaceId };
   const readStateFor = useCallback(
     (agent: Agent): ChatReadState | null => {
-      const saved = storedState(agent);
+      const saved = agent.readState ?? null;
       const known = scope.current.states.get(agent.id);
       if (saved && (!known || saved.revision > known.revision)) {
         scope.current.states.set(agent.id, saved);
@@ -207,23 +209,19 @@ export function useChatReadState(
         if (valid()) {
           current.attempted.delete(attempt);
           current.uncertain.add(proof.id);
-          // Reconcile a lost success before a queued Unread can use local state.
-          // The app's normal refresh can update only credentials during sync.
+          // Reconcile a lost success from the entity projection before a
+          // queued Unread can use local state.
           try {
-            const snapshot = await get("/api/state", {
-              query: { view: "chat" },
+            const snapshot = await refreshProjection({
+              afterCurrentPull: true,
             });
             if (!valid()) return;
-            const canonical = snapshot.threads.find(
-              (value) => value.id === proof.id,
-            );
-            const result = canonical && completed(canonical);
-            if (
-              snapshot.stateDir === latest.current.data?.stateDir &&
-              result &&
-              sameResult(result, proof)
-            ) {
-              const state = canonical ? storedState(canonical) : null;
+            const canonical =
+              snapshot.stateDir === latest.current.data?.stateDir
+                ? matchingCompletedAgent(snapshot.threads, proof)
+                : null;
+            if (canonical) {
+              const state = canonical.readState ?? null;
               const known = current.states.get(proof.id);
               if (state && (!known || state.revision >= known.revision))
                 current.states.set(proof.id, state);

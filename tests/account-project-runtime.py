@@ -12,6 +12,7 @@ spec = importlib.util.spec_from_file_location(
 )
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
+from studio_api.testing import read_runtime_records
 
 
 class ProjectRuntime(unittest.TestCase):
@@ -143,7 +144,7 @@ class ProjectRuntime(unittest.TestCase):
                        "mcpServer/elicitation/request"):
             with self.subTest(method=method):
                 server.request({"id": method, "method": method, "params": {"threadId": a["threadId"]}})
-                request = next(r for r in self.runtime.snapshot()["requests"] if r["rpcId"] == method)
+                request = next(r for r in read_runtime_records(self.runtime, "requests") if r["rpcId"] == method)
                 before = len(server.responses)
                 self.runtime.answer(request["id"], {"decision": "accept"})
                 self.assertEqual(len(server.responses), before + 1)

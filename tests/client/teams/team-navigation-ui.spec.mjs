@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production client and an isolated fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("team-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -41,7 +44,7 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const workers = initial.threads.filter(
       (agent) => agent.rootId === lead.id && !agent.isLead,
@@ -109,7 +112,9 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
               id: "team-navigation-answer",
               method: "agent/asyncQuestion",
               agent: worker(2).id,
-              epoch: worker(2).epoch,
+              epoch: initial.runtime.agents.find(
+                (agent) => agent.id === worker(2).id,
+              ).epoch,
               status: "pending",
               params: {
                 questions: [{ id: "scope", question: "Which scope?" }],

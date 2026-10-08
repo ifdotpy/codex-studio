@@ -188,7 +188,8 @@ class SchedulerAgentScope(unittest.TestCase):
         owner = dict(archived)
         owner.update(id="archived-work-owner", name="Work owner")
         repair = dict(archived)
-        repair.update(id="archived-repair-owner", name="Repair owner", contextRepairWait={"stage": "pending"})
+        repair.update(id="archived-repair-owner", name="Repair owner",
+                      contextRepairWait={"stage": "pending"})
         stale = dict(archived)
         stale.update(id="archived-stale", name="Archived stale", restartRecovery={"stage": "finished"})
         with self.runtime.lock, self.runtime.db() as db:

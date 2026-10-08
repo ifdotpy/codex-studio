@@ -1,9 +1,13 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("sidebar drag browser", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
@@ -21,7 +25,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const url = `http://127.0.0.1:${port}`;
-    const state = async () => await (await fetch(url + "/api/state")).json();
+    const state = async () => await readTestState(url);
     const initial = await state();
     const agents = Object.fromEntries(
       initial.runtime.agents.map((a) => [a.name, a]),
@@ -88,6 +92,17 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
         )
         .allTextContents();
     assert.deepEqual(await projects(), ["Project A", "Project B", "Project C"]);
+    const reorderResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      const order = request.postDataJSON()?.groups?.projects;
+      return (
+        new URL(response.url()).pathname === "/api/projects" &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.action === "reorder" &&
+        Array.isArray(order) &&
+        order[0] === resolve(stateDir, "Project C")
+      );
+    });
     await drag(
       project("Project C").locator(
         "> .project-tree-heading > .project-tree-toggle",
@@ -104,6 +119,65 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     );
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);
     console.log("Project pointer drag passed");
+    const response = await reorderResponse;
+    const responseBody = await response.json();
+    const expectedOrder = [
+      resolve(stateDir, "Project C"),
+      resolve(stateDir, "Project A"),
+      resolve(stateDir, "Project B"),
+    ];
+    assert.ok(
+      responseBody._syncEntities?.some((entity) => {
+        if (entity.id !== "entity:workspace:current") return false;
+        const payload = JSON.parse(entity.payload);
+        return (
+          JSON.stringify(payload.value.sidebarOrder.groups.projects) ===
+          JSON.stringify(expectedOrder)
+        );
+      }),
+      "The reorder response carries the updated workspace entity",
+    );
+    const workspaceCache = () =>
+      page.evaluate(async () => {
+        const names = (await indexedDB.databases())
+          .map((database) => database.name)
+          .filter((name) => name?.startsWith("rxdb-dexie-studio"));
+        return Promise.all(
+          names.map(
+            (name) =>
+              new Promise((resolve) => {
+                const request = indexedDB.open(name);
+                request.onerror = () => resolve({ name, error: true });
+                request.onsuccess = () => {
+                  const db = request.result;
+                  const tx = db.transaction("docs", "readonly");
+                  const rows = tx.objectStore("docs").getAll();
+                  rows.onsuccess = () => {
+                    const workspace = rows.result.find(
+                      (row) => row.id === "entity:workspace:current",
+                    );
+                    resolve({
+                      name,
+                      workspace: workspace
+                        ? JSON.parse(workspace.payload).value.sidebarOrder
+                        : null,
+                    });
+                    db.close();
+                  };
+                };
+              }),
+          ),
+        );
+      });
+    await expect
+      .poll(async () =>
+        (await workspaceCache()).some(
+          (entry) =>
+            JSON.stringify(entry.workspace?.groups?.projects) ===
+            JSON.stringify(expectedOrder),
+        ),
+      )
+      .toBe(true);
     await page.reload();
     await row("Destination").waitFor();
     assert.deepEqual(await projects(), ["Project C", "Project A", "Project B"]);
@@ -294,8 +368,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     assert.equal(await row("Team source").count(), 0);
     const repeated = await post(conversionBodies[0]);
     assert.equal(repeated.status, 200);
+    const finalState = await state();
     assert.equal(
-      (await state()).runtime.agents.find((a) => a.id === moved.id).epoch,
+      finalState.runtime.agents.find((a) => a.id === moved.id).epoch,
       moved.epoch,
     );
     expect(errors).toEqual([]);

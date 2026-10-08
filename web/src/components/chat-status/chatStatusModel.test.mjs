@@ -189,8 +189,9 @@ it("classifies unread, work, answer, error and paused states from current runtim
   assert.equal(state({ ...lead, autoWake: false, inFlight: true }), "working");
   for (const type of ["tasks", "monitors"]) {
     assert.equal(
-      state(lead, { [type]: [{ agent: "lead", status: "running", epoch: 1 }] }),
-      "unread",
+      state(lead, { [type]: [{ agent: "lead", status: "running" }] }),
+      "working",
+      "task and monitor entities have no epoch to mark this work stale",
     );
   }
   assert.equal(
@@ -284,12 +285,6 @@ it("classifies unread, work, answer, error and paused states from current runtim
     ).size,
     0,
   );
-  assert.equal(
-    chatActivities(
-      snapshot([lead, pausedChild], { tasks: [{ ...command, epoch: 1 }] }),
-    ).size,
-    0,
-  );
   const activeChild = { ...child, status: "running", inFlight: true };
   assert.equal(
     chatActivities(snapshot([lead, activeChild], { tasks: [command] })).get(
@@ -376,11 +371,10 @@ it("classifies unread, work, answer, error and paused states from current runtim
       .live,
     false,
   );
-  const ownCommand = { ...command, agent: "lead", kind: "command", epoch: 2 };
+  const ownCommand = { ...command, agent: "lead", kind: "command" };
   const ownMonitor = {
     id: "monitor",
     agent: "lead",
-    epoch: 2,
     command: "watch build",
     status: "running",
   };
@@ -397,7 +391,6 @@ it("classifies unread, work, answer, error and paused states from current runtim
   for (const record of [
     { status: "completed" },
     { status: "failed" },
-    { epoch: 1 },
     { agent: "other" },
   ]) {
     assert.equal(
@@ -604,7 +597,6 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
     const work = {
       id: "work",
       agent: child.id,
-      epoch: child.epoch,
       status: "running",
       command: "watch build",
     };
@@ -630,8 +622,6 @@ it("keeps a parent waiting for a child with current command or monitor work", ()
       { status: "failed" },
       { status: "cancelled" },
       { status: "lost" },
-      { epoch: child.epoch - 1 },
-      { epoch: "2" },
       { agent: "unknown" },
     ]) {
       const snapshot = makeSnapshot([lead, child], {
@@ -817,7 +807,7 @@ it("indexes one wide team's children once for all chat indicators", () => {
   assert(reads <= 3, `the team roster was read ${reads} times`);
 });
 
-it("rejects malformed epochs while preserving absent, null and numeric epoch rules", () => {
+it("rejects malformed request epochs while preserving absent, null and numeric rules", () => {
   const failed = makeAgent({ status: "failed", epoch: 4 });
   const waiting = makeAgent({ status: "waiting", epoch: 4 });
   const requestEpochs = [
@@ -843,25 +833,6 @@ it("rejects malformed epochs while preserving absent, null and numeric epoch rul
       current ? "answer" : "error",
       `indicator request epoch ${JSON.stringify(record)}`,
     );
-  }
-
-  for (const kind of ["tasks", "monitors"]) {
-    for (const [record, current] of requestEpochs) {
-      const activity = {
-        id: `activity-${kind}-${JSON.stringify(record)}`,
-        agent: "lead",
-        status: "running",
-        ...record,
-      };
-      const activities = chatActivities(
-        makeSnapshot([waiting], { [kind]: [activity] }),
-      );
-      assert.equal(
-        activities.get("lead")?.some(({ id }) => id === activity.id) ?? false,
-        current,
-        `${kind} epoch ${JSON.stringify(record)}`,
-      );
-    }
   }
 });
 
@@ -1063,18 +1034,10 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
           command: "cat",
         },
         {
-          id: "matching-null-epoch",
+          id: "agent-without-epoch",
           agent: "no-epoch",
-          epoch: 9,
           status: "running",
           name: "named task",
-        },
-        {
-          id: "wrong-epoch",
-          agent: "lead",
-          epoch: 1,
-          status: "running",
-          command: "stale",
         },
         {
           id: "tool-by-kind",
@@ -1089,10 +1052,10 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
   assert.deepEqual(
     activities.get("lead").map(({ id }) => id),
     [
+      "agent-without-epoch",
       "command-kind-only",
       "command-without-kind",
       "different-turn",
-      "matching-null-epoch",
       "same-turn",
       "tool-by-kind",
       "unscoped-turn",
@@ -1107,7 +1070,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
           (entry) => entry.id === id,
         ),
       ),
-    ["different-turn", "matching-null-epoch"],
+    ["agent-without-epoch", "different-turn"],
   );
   assert.equal(
     activities.get("lead").find(({ id }) => id === "same-turn").label,
@@ -1125,7 +1088,7 @@ it("uses the runtime command, turn, epoch and fallback rules for activities", ()
   );
   assert.equal(
     activities.get("lead").find(({ id }) => id === "tool-by-kind").command,
-    "exec",
+    "tool",
   );
   assert.equal(activities.get("no-epoch")[0].command, "named task");
   assert.equal(activities.get("no-epoch")[0].label, "Tool call");

@@ -22,6 +22,7 @@ from studio_api.sync.resources.models import (
     LimitsResource,
     ModelsResource,
     ResourceRef,
+    StateResource,
 )
 from studio_api.sync.resources.hub import (
     ResourceHub,
@@ -117,7 +118,8 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             canvas = SimpleNamespace(root=state_dir, runtime=None)
             context = ApiContext(cast(Any, canvas), remote=cast(Any, object()))
             setattr(context, "_sync_store", SyncIdentity())
-            context.initialize()
+            with patch.object(context, "entity_sequence", return_value=0):
+                context.initialize()
             hub = context.resource_hub()
             subscription = hub.subscribe(
                 [ResourceRef(AccountsResource(kind="accounts"))], loop=asyncio.get_running_loop()
@@ -129,6 +131,36 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
                 assert event is not None
                 self.assertEqual(event.reason, "change")
                 self.assertEqual(event.resources, [ResourceRef(AccountsResource(kind="accounts"))])
+            finally:
+                subscription.close()
+                context.close()
+
+    async def test_api_context_reconciles_entity_commit_during_hub_registration(self) -> None:
+        from studio_api.context import ApiContext
+
+        class SyncIdentity:
+            def identity(self) -> dict[str, str]:
+                return {"workspaceId": "startup-race-workspace"}
+
+        with tempfile.TemporaryDirectory() as temporary:
+            state_dir = Path(temporary)
+            canvas = SimpleNamespace(root=state_dir, runtime=None)
+            context = ApiContext(cast(Any, canvas), remote=cast(Any, object()))
+            setattr(context, "_sync_store", SyncIdentity())
+            with patch.object(context, "entity_sequence", side_effect=[4, 5]):
+                context.initialize()
+            hub = context.resource_hub()
+            subscription = hub.subscribe(
+                [ResourceRef(StateResource(kind="state"))],
+                loop=asyncio.get_running_loop(),
+            )
+            try:
+                # The commit happens while the hub is registered but before
+                # context initialization returns, so a later subscriber must
+                # receive it in its baseline rather than as a second event.
+                self.assertEqual(subscription.initial.reason, "initial")
+                self.assertEqual(subscription.initial.resourceVersions[0].revision, 5)
+                self.assertIsNone(await subscription.next_event(timeout=0))
             finally:
                 subscription.close()
                 context.close()

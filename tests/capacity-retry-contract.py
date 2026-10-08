@@ -44,25 +44,58 @@ class CapacityContract(unittest.TestCase):
         self.assertEqual(current['status'], 'scheduled')
         self.assertGreater(current['dueAt'], time.time())
         self.assertFalse(current.get('claimedAt'))
-        with self.runtime.lock, self.runtime.db() as db:
-            sibling = self.runtime.agent('busy-sibling', db)
-            sibling.update(inFlight=False, status='completed', turnId=None)
-            self.runtime.put(db, 'agents', sibling)
-            agent = self.runtime.agent(self.key, db)
-            agent['capacityRetry']['dueAt'] = time.time()-1
-            self.runtime.capacity_save(db, agent, agent['capacityRetry'])
-            self.runtime.put(db, 'agents', agent)
-        self.runtime.capacity_tick()
-        fixture.eventually(lambda: bool(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId')))
+        original_submit = self.runtime.pool.submit
+        retry_futures = []
+        retry_submitted = threading.Event()
+
+        def track_retry(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if (getattr(function, '__name__', None) == 'capacity_run'
+                    and args and args[0] == self.key):
+                retry_futures.append(future)
+                retry_submitted.set()
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=track_retry):
+            with self.runtime.lock, self.runtime.db() as db:
+                sibling = self.runtime.agent('busy-sibling', db)
+                sibling.update(inFlight=False, status='completed', turnId=None)
+                self.runtime.put(db, 'agents', sibling)
+                agent = self.runtime.agent(self.key, db)
+                agent['capacityRetry']['dueAt'] = time.time()-1
+                self.runtime.capacity_save(db, agent, agent['capacityRetry'])
+                self.runtime.put(db, 'agents', agent)
+            self.runtime.capacity_tick()
+            retry_submitted.wait()
+        self.assertEqual(len(retry_futures), 1)
+        retry_futures[0].result()
+        self.assertTrue(self.runtime.agent(self.key)['capacityRetry'].get('acceptedTurnId'))
 
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.runtime = Runtime(self.root, fixture.FakeServer)
         self.server = self.runtime.connect()
+        self._start_futures = {}
+        self._start_condition = threading.Condition()
+        executor = self.runtime.delivery_executor()
+        original_submit = executor.submit
+
+        def track_start(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, '__name__', None) == 'start' and args:
+                agent_id = args[0]['id']
+                with self._start_condition:
+                    self._start_futures.setdefault(agent_id, []).append(future)
+                    self._start_condition.notify_all()
+            return future
+
+        self._submit_patch = patch.object(executor, 'submit', side_effect=track_start)
+        self._submit_patch.start()
+        self.addCleanup(self._submit_patch.stop)
         a = self.runtime.create({'name': 'Lead', 'cwd': self.temp.name, 'prompt': 'Original task'})
         self.key = a['id']
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.wait_start(self.key)
 
     def tearDown(self):
         if self.server.start_gate:
@@ -89,6 +122,13 @@ class CapacityContract(unittest.TestCase):
     def starts(self):
         return [p for method, p in self.server.calls if method == 'turn/start']
 
+    def wait_start(self, agent_id):
+        with self._start_condition:
+            while not self._start_futures.get(agent_id):
+                self._start_condition.wait()
+            future = self._start_futures[agent_id].pop(0)
+        future.result()
+
     def fail(self, info='serverOverloaded', turn_id=None):
         a = self.agent()
         turn_id = turn_id or a['turnId']
@@ -100,7 +140,44 @@ class CapacityContract(unittest.TestCase):
     def retry(self, retry=None, action='retry'):
         return self.runtime.capacity_retry(self.key, (retry or self.agent()['capacityRetry'])['id'], action)
 
+    def retry_and_wait(self, retry=None, action='retry'):
+        result, futures = self.retry_captured(retry, action)
+        self.assertEqual(len(futures), 1)
+        futures[0].result()
+        return result
+
+    def retry_captured(self, retry=None, action='retry'):
+        original_submit = self.runtime.pool.submit
+        futures = []
+
+        def track_retry(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if (getattr(function, '__name__', None) == 'capacity_run'
+                    and args and args[0] == self.key):
+                futures.append(future)
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=track_retry):
+            result = self.retry(retry, action)
+        return result, futures
+
     def expire(self):
+        original_submit = self.runtime.pool.submit
+        futures = []
+
+        def track_retry(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if (getattr(function, '__name__', None) == 'capacity_run'
+                    and args and args[0] == self.key):
+                futures.append(future)
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=track_retry):
+            self._expire()
+        for future in futures:
+            future.result()
+
+    def _expire(self):
         with self.runtime.lock, self.runtime.db() as db:
             a = self.agent()
             a['capacityRetry']['dueAt'] = time.time() - 1
@@ -120,7 +197,6 @@ class CapacityContract(unittest.TestCase):
             self.assertEqual(retry['attempt'], index + 1)
             self.assertAlmostEqual(retry['dueAt'] - time.time(), delay, delta=1)
             self.expire()
-            fixture.eventually(lambda: self.agent().get('turnId'))
             self.assertEqual(self.starts()[-1]['input'], [])
             self.assertNotIn('clientUserMessageId', self.starts()[-1])
             self.assertEqual(self.agent()['capacityRetryCount'], index + 1)
@@ -129,26 +205,45 @@ class CapacityContract(unittest.TestCase):
         self.assertIsNone(retry['dueAt'])
         self.runtime.capacity_tick()
         self.assertEqual(len(self.starts()), 5)
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait(retry)
         self.assertEqual(len(self.starts()), 6)
         self.assertEqual(self.fail()['status'], 'exhausted')
 
     def test_connection_failures_retry_longer_with_the_same_continuation(self):
-        retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
-        self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
-        self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
-        self.expire()
-        fixture.eventually(lambda: self.agent().get('turnId'))
-        self.assertEqual(self.starts()[-1]['input'], [])
-        retry = self.fail('responseStreamDisconnected')
-        self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
-        self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
+        capacity_tick = self.runtime.capacity_tick
+
+        def manual_capacity_tick():
+            if threading.current_thread() is not self.runtime.scheduler:
+                capacity_tick()
+
+        # Keep the scheduled deadlines stable while this contract checks their
+        # exact values; expiration remains driven explicitly by expire().
+        with patch.object(self.runtime, 'capacity_tick', side_effect=manual_capacity_tick):
+            retry = self.fail({'httpConnectionFailed': {'httpStatusCode': None}})
+            self.assertEqual((retry['cause'], retry['maxAttempts'], retry['status']), ('httpConnectionFailed', 7, 'scheduled'))
+            self.assertAlmostEqual(retry['dueAt'] - time.time(), 10, delta=1)
+            self.expire()
+            self.assertEqual(self.starts()[-1]['input'], [])
+            retry = self.fail('responseStreamDisconnected')
+            self.assertEqual((retry['cause'], retry['attempt']), ('responseStreamDisconnected', 2))
+            self.assertAlmostEqual(retry['dueAt'] - time.time(), 30, delta=1)
 
     def test_request_and_context_errors_are_not_retried(self):
         for info in ('badRequest', 'contextWindowExceeded', {'other': {}}):
             self.assertIsNone(self.fail(info))
             self.assertEqual(len(self.starts()), 1)
+
+    def test_failed_turn_projects_capacity_retry_renderer_fields(self):
+        retry = self.fail()
+        with self.runtime.db() as db:
+            value = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.key,)).fetchone()[0])["value"]["capacityRetry"]
+        self.assertEqual(value["id"], retry["id"])
+        self.assertEqual(value["status"], retry["status"])
+        self.assertEqual(value["threadId"], retry["threadId"])
+        self.assertNotIn("cwd", value)
+        self.assertNotIn("settings", value)
 
     def test_cancel_and_stale_timer_do_not_claim_but_manual_retry_can(self):
         retry = self.fail()
@@ -158,16 +253,26 @@ class CapacityContract(unittest.TestCase):
         self.runtime.capacity_retry(self.key, retry['id'], 'retry', _automatic=True)
         self.assertEqual(len(self.starts()), 1)
         self.assertTrue(self.agent()['autoWake'])
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait(retry)
         self.assertEqual(self.retry(retry, 'cancel')['status'], 'starting')
         self.assertEqual(len(self.starts()), 2)
 
     def test_duplicate_http_actions_and_scheduler_race_claim_once(self):
         retry = self.fail()
-        with ThreadPoolExecutor(max_workers=8) as pool:
-            results = list(pool.map(lambda _: self.retry(retry), range(16)))
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        original_submit = self.runtime.pool.submit
+        futures = []
+
+        def track_retry(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, '__name__', None) == 'capacity_run' and args and args[0] == self.key:
+                futures.append(future)
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=track_retry):
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                results = list(pool.map(lambda _: self.retry(retry), range(16)))
+        self.assertEqual(len(futures), 1)
+        futures[0].result()
         self.assertEqual(len(self.starts()), 2)
         self.assertTrue(all(r.get('claimedAt') for r in results))
         newer = self.fail()
@@ -182,21 +287,33 @@ class CapacityContract(unittest.TestCase):
         with self.runtime.lock, self.runtime.db() as db:
             a = self.agent()
             self.runtime.enqueue(db, a, 'followup', 'A later task', 'held-event')
-        self.retry()
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait()
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT status FROM runtime_events WHERE id='held-event'").fetchone()[0], 'pending')
         a = self.agent()
-        self.server.complete(a['threadId'], a['turnId'])
-        fixture.eventually(lambda: len(self.starts()) == 3)
+        started = threading.Event()
+        original = self.server.call
+
+        def track_followup(method, params, timeout=60):
+            try:
+                return original(method, params, timeout)
+            finally:
+                if method == 'turn/start' and 'A later task' in str(params.get('input')):
+                    started.set()
+
+        with patch.object(self.server, 'call', side_effect=track_followup):
+            self.server.complete(a['threadId'], a['turnId'])
+            self.runtime.dispatch()
+            started.wait()
+        self.assertEqual(len(self.starts()), 3)
         self.assertIn('A later task', self.starts()[-1]['input'][0]['text'])
         self.assertNotIn('capacityRetryCount', self.agent())
 
     def test_unknown_native_outcome_and_restart_never_replay(self):
         retry = self.fail()
         self.server.fail_start = True
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'unknown')
         self.assertTrue(self.agent()['inFlight'])
         self.retry(retry)
         self.runtime.capacity_tick()
@@ -229,8 +346,7 @@ class CapacityContract(unittest.TestCase):
         self.server.call = exact_native_history
         self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')
         self.server.seq = 100  # Native turn identities do not restart with the process.
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait(retry)
         self.assertEqual(len(self.starts()), 1)
         self.assertEqual(self.starts()[0]['input'], [])
 
@@ -242,8 +358,8 @@ class CapacityContract(unittest.TestCase):
                 raise NativeRpcError({'code': -32600, 'message': 'Rejected'})
             return original(method, params, timeout)
         self.server.call = reject
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'failed')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'failed')
         self.assertEqual(self.agent().get('capacityRetryCount', 0), 0)
         self.server.call = original
         self.retry(retry)
@@ -257,8 +373,7 @@ class CapacityContract(unittest.TestCase):
             raise codex_context_repair._waiting('Context repair waits for tasks: busy-command')
         codex_context_repair.repair_before_start = busy
         try:
-            self.retry(retry)
-            fixture.eventually(lambda: self.agent()['capacityRetry'].get('waits') == 1)
+            self.retry_and_wait(retry)
         finally:
             codex_context_repair.repair_before_start = original
         waiting = self.agent()['capacityRetry']
@@ -268,7 +383,6 @@ class CapacityContract(unittest.TestCase):
         self.assertEqual(self.agent().get('capacityRetryCount', 0), 0)
         self.assertEqual(len(self.starts()), 1)
         self.expire()
-        fixture.eventually(lambda: len(self.starts()) == 2)
         self.assertEqual(self.starts()[-1]['input'], [])
 
     def test_old_failed_context_wait_is_scheduled_again(self):
@@ -325,6 +439,7 @@ class CapacityContract(unittest.TestCase):
         retry = self.fail()
         original = self.server.call
         ack = threading.Event()
+        terminal = threading.Event()
         def complete_before_ack(method, params, timeout=60):
             if method != 'turn/start':
                 return original(method, params, timeout)
@@ -332,16 +447,20 @@ class CapacityContract(unittest.TestCase):
             self.server.notify({'method': 'turn/completed', 'params': {'threadId': params['threadId'],
                 'turn': {'id': 'retry-terminal', 'status': 'failed',
                          'error': {'message': 'capacity', 'codexErrorInfo': 'serverOverloaded'}}}})
-            ack.wait(5)
+            terminal.set()
+            ack.wait()
             return {'turn': {'id': 'retry-terminal'}}
         self.server.call = complete_before_ack
         try:
-            self.retry(retry)
-            fixture.eventually(lambda: self.agent().get('lastCompletedTurn') == 'retry-terminal')
+            _, futures = self.retry_captured(retry)
+            terminal.wait()
+            self.assertEqual(self.agent().get('lastCompletedTurn'), 'retry-terminal')
             self.assertEqual(self.agent()['capacityRetry']['id'], retry['id'])
             self.assertEqual(self.agent().get('capacityRetryCount', 0), 0)
             ack.set()
-            fixture.eventually(lambda: self.agent()['capacityRetry']['id'] != retry['id'])
+            self.assertEqual(len(futures), 1)
+            futures[0].result()
+            self.assertNotEqual(self.agent()['capacityRetry']['id'], retry['id'])
             self.assertEqual(self.agent()['capacityRetry']['attempt'], 2)
             self.assertEqual(self.agent()['capacityRetryCount'], 1)
             self.assertEqual(len(self.starts()), 2)
@@ -352,24 +471,31 @@ class CapacityContract(unittest.TestCase):
         retry = self.fail()
         original = self.server.call
         ack = threading.Event()
+        terminal = threading.Event()
         def complete_before_ack(method, params, timeout=60):
             if method != 'turn/start' or params.get('input'):
                 return original(method, params, timeout)
             self.server.calls.append((method, params))
             self.server.notify({'method': 'turn/completed', 'params': {'threadId': params['threadId'],
                 'turn': {'id': 'retry-success', 'status': 'completed'}}})
-            ack.wait(5)
+            terminal.set()
+            ack.wait()
             return {'turn': {'id': 'retry-success'}}
         self.server.call = complete_before_ack
         try:
             with self.runtime.lock, self.runtime.db() as db:
                 self.runtime.enqueue(db, self.agent(), 'followup', 'Later task', 'later-task')
-            self.retry(retry)
-            fixture.eventually(lambda: self.agent().get('lastCompletedTurn') == 'retry-success')
+            _, futures = self.retry_captured(retry)
+            terminal.wait()
+            self.assertEqual(self.agent().get('lastCompletedTurn'), 'retry-success')
             self.runtime.dispatch()
             self.assertEqual(len(self.starts()), 2)
             ack.set()
-            fixture.eventually(lambda: len(self.starts()) == 3)
+            self.assertEqual(len(futures), 1)
+            futures[0].result()
+            self.runtime.dispatch()
+            self.wait_start(self.key)
+            self.assertEqual(len(self.starts()), 3)
             self.assertIn('Later task', self.starts()[-1]['input'][0]['text'])
             self.assertFalse(self.agent().get('nativeFailureHold'))
         finally:
@@ -381,12 +507,27 @@ class CapacityContract(unittest.TestCase):
         wait = self.server.wait
         self.server.wait = lambda future, timeout=60: (_ for _ in ()).throw(
             ResponseTimeout('Response timed out; outcome unknown'))
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'unknown')
         self.retry(retry)
         self.server.wait = wait
-        self.server.start_gate.set()
-        fixture.eventually(lambda: bool(self.agent()['capacityRetry'].get('acceptedTurnId')))
+        original_submit = self.runtime.pool.submit
+        futures = []
+        submitted = threading.Event()
+
+        def track_result(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, '__name__', None) == 'late_result':
+                futures.append(future)
+                submitted.set()
+            return future
+
+        with patch.object(self.runtime.pool, 'submit', side_effect=track_result):
+            self.server.start_gate.set()
+            submitted.wait()
+        self.assertEqual(len(futures), 1)
+        futures[0].result()
+        self.assertTrue(self.agent()['capacityRetry'].get('acceptedTurnId'))
         self.assertEqual(self.agent()['capacityRetryCount'], 1)
         self.assertEqual(len(self.starts()), 2)
         self.assertEqual(self.fail()['attempt'], 2)
@@ -407,15 +548,13 @@ class CapacityContract(unittest.TestCase):
         self.server.seq = 100
         self.assertEqual(self.agent()['capacityRetry']['status'], 'cancelled')
         self.assertNotIn('claimedAt', self.agent()['capacityRetry'])
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait(retry)
         self.assertEqual(len(self.starts()), 1)
 
 
     def test_duplicate_internal_dispatch_does_not_submit_again(self):
         retry = self.fail()
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.retry_and_wait(retry)
         self.runtime.run_native_action(self.key, self.agent()['startAttempt'])
         self.assertEqual(len(self.starts()), 2)
 
@@ -425,8 +564,8 @@ class CapacityContract(unittest.TestCase):
         def malformed(method, params, timeout=60):
             return {} if method == 'turn/start' else original(method, params, timeout)
         self.server.call = malformed
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'unknown')
         self.assertTrue(self.agent()['inFlight'])
         self.assertFalse(self.agent()['capacityRetry'].get('acceptedTurnId'))
         self.retry(retry)
@@ -439,8 +578,8 @@ class CapacityContract(unittest.TestCase):
             self.mutate(tokenBudget=1, tokensUsed=1)
             return original(a)
         self.runtime.prepare = change_budget
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'failed')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'failed')
         self.assertIn('budget', self.agent()['capacityRetry']['reason'])
         self.assertEqual(len(self.starts()), 1)
 
@@ -474,14 +613,15 @@ class CapacityContract(unittest.TestCase):
         def gated(a):
             if (a.get('startAttempt') or {}).get('action') == 'capacity':
                 entered.set()
-                release.wait(5)
+                release.wait()
             return original(a)
         self.runtime.prepare = gated
         try:
             self.retry(retry)
-            self.assertTrue(entered.wait(2))
+            entered.wait()
             self.runtime.send(self.key, 'Replacement task')
-            fixture.eventually(lambda: bool(self.agent().get('turnId')))
+            self.wait_start(self.key)
+            self.assertTrue(self.agent().get('turnId'))
             release.set()
             self.assertEqual(len(self.starts()), 2)
             self.assertIn('Replacement task', self.starts()[-1]['input'][0]['text'])
@@ -493,17 +633,16 @@ class CapacityContract(unittest.TestCase):
     def test_new_message_uses_its_own_reservation_after_unknown_retry(self):
         retry = self.fail()
         self.server.fail_start = True
-        self.retry(retry)
-        fixture.eventually(lambda: self.agent()['capacityRetry']['status'] == 'unknown')
+        self.retry_and_wait(retry)
+        self.assertEqual(self.agent()['capacityRetry']['status'], 'unknown')
         self.runtime.send(self.key, 'Follow-up task')
         self.runtime.dispatch()
-        fixture.eventually(lambda: len(self.starts()) == 3)
+        self.wait_start(self.key)
+        self.assertEqual(len(self.starts()), 3)
         self.assertTrue(self.agent()['inFlight'])
-        def one_uncertain():
-            with self.runtime.db() as db:
-                return db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
-                                  (self.key,)).fetchone()[0] == 1
-        fixture.eventually(one_uncertain)
+        with self.runtime.db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_events WHERE agent=? AND status='uncertain'",
+                                        (self.key,)).fetchone()[0], 1)
         self.assertEqual(sum('Follow-up task' in str(p['input']) for p in self.starts()), 1)
 
     def test_stop_and_new_user_instruction_replace_timer(self):
@@ -513,7 +652,8 @@ class CapacityContract(unittest.TestCase):
         self.assertEqual(len(self.starts()), 1)
         self.assertNotIn('capacityRetry', self.agent())
         self.runtime.send(self.key, 'New task')
-        fixture.eventually(lambda: self.agent().get('turnId'))
+        self.runtime.dispatch()
+        self.wait_start(self.key)
         self.assertEqual(self.fail()['attempt'], 1)
 
 

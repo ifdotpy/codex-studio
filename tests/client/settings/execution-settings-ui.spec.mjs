@@ -1,3 +1,4 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import {
   setupControl,
   setupToggle,
@@ -10,8 +11,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { modelValue, openModelList, selectModel } from "../../model-picker.mjs";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -128,8 +127,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
     } else {
       await page.goto(url);
     }
-    const state = async () =>
-      (await (await fetch(url + "/api/state")).json()).runtime.agents;
+    const state = async () => (await readTestState(url)).runtime.agents;
     const settingsResponse = (id, matches) =>
       page.waitForResponse((response) => {
         const request = response.request();
@@ -519,7 +517,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       );
     }
     await page.setViewportSize({ width: 1440, height: 960 });
-    const snapshot = await (await fetch(url + "/api/state")).json();
+    const snapshot = await readTestState(url);
     const freshResponse = await fetch(url + "/api/leads", {
       method: "POST",
       headers: {

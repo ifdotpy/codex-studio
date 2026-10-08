@@ -65,8 +65,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -207,8 +209,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -355,8 +359,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -493,8 +499,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -635,8 +643,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -773,8 +783,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -921,8 +933,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1066,8 +1080,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1204,8 +1220,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1346,8 +1364,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1487,8 +1507,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1630,8 +1652,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1772,8 +1796,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -1914,8 +1940,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -2052,8 +2080,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -2195,8 +2225,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -2337,8 +2369,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -2475,8 +2509,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },
@@ -2617,8 +2653,10 @@
             "seq": 2,
             "text": "federated hello"
           },
+          "localMembers": ["a-worker", "lead-0"],
           "members": ["a-worker", "lead-0"],
           "name": "Federated",
+          "peerLabel": "Peer",
           "updated": 1700000000.0
         }
       },

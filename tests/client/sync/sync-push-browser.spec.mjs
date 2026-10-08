@@ -47,6 +47,10 @@ test("Sync push", async ({ context: testContext }) => {
               revision,
               reason: "initial",
               resources,
+              resourceVersions: resources.map((resource) => ({
+                resource,
+                revision,
+              })),
             }),
           ),
         );
@@ -89,8 +93,7 @@ test("Sync push", async ({ context: testContext }) => {
     );
     await page.evaluate(async () => {
       window.client = await import("/src/sync/client.ts");
-      window.stopPush = window.client.subscribeProjection(
-        "state",
+      window.stopPush = window.client.subscribeStateProjection(
         (value) => {
           window.pushState = value?.threads?.find(
             (row) => row.id === "lead",
@@ -113,6 +116,10 @@ test("Sync push", async ({ context: testContext }) => {
           revision: 2,
           reason: "change",
           resources,
+          resourceVersions: resources.map((resource) => ({
+            resource,
+            revision: 2,
+          })),
         }),
       );
     await page.waitForFunction(() => window.pushState === "Pushed lead");

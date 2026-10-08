@@ -1,5 +1,9 @@
 # Mobile reliability, 2026-09-11
 
+This historical verification records the old `state:chat` fixture; the
+`/api/state` endpoint and legacy pull scopes were removed in the pull request
+that completed the move to sync entities (round 3), `#11`.
+
 ## Scope
 
 Source baseline: `5851a3f6f607836ced8348a211023a4c51460ded`.
@@ -38,13 +42,13 @@ It contains no user history. Chromium uses a 390 by 844 viewport.
 Network limits: 200,000 bytes/s download, 100,000 bytes/s upload, 100 ms latency.
 The CPU rate multiplier is four.
 
-| Measurement | Result |
-| --- | ---: |
-| Full state, gzip level 3 | 4,369,810 bytes |
-| Chat state, gzip level 3 | 15,034 bytes |
-| Cold composer | 3,765 ms |
-| Cached draft after reload | 323 ms |
-| Shared sync streams | 1 |
+| Measurement               |          Result |
+| ------------------------- | --------------: |
+| Full state, gzip level 3  | 4,369,810 bytes |
+| Chat state, gzip level 3  |    15,034 bytes |
+| Cold composer             |        3,765 ms |
+| Cached draft after reload |          323 ms |
+| Shared sync streams       |               1 |
 
 [Machine-readable measurements](2026-09-11-mobile-reliability.json) identify the build and fixture.
 The separate saved-workspace check held the identity request while the browser stayed online.

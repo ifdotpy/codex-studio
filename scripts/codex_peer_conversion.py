@@ -1,6 +1,13 @@
 """User-confirmed conversion of an idle peer lead and its tree into workers."""
 import json
 import time
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Collection
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 from codex_agent_modes import assert_delegation
 from codex_peer_teams import _lead, _members, _teams
@@ -8,11 +15,11 @@ from codex_work import text_field
 
 
 # Root ownership fields follow the schemas in WorkMixin and RulesMixin.
-MOVE_FIELDS = {
+MOVE_FIELDS: dict[str, tuple[str, ...]] = {
     'work': ('rootId',), 'plans': ('rootId',), 'annotations': ('rootId',),
     'complaints': ('leadId',), 'event_meta': ('rootId', 'leadId'), 'rules': ('rootId',),
 }
-INDEXES = {
+INDEXES: dict[str, list[tuple[str, str, str | None]]] = {
     'requests': [('runtime_request_agent_status', "json_extract(record,'$.agent'),json_extract(record,'$.status')", None)],
     'rules': [('runtime_rule_agent_inflight', "json_extract(record,'$.agent'),json_extract(record,'$.inFlight')", None)],
     'workspace_operations': [('runtime_workspace_operation_agent_phase', "json_extract(record,'$.agent'),json_extract(record,'$.phase')", None)],
@@ -33,7 +40,7 @@ for _table, _fields in MOVE_FIELDS.items():
             _expression + ' IS NOT NULL'))
 
 
-def setup_indexes(db):
+def setup_indexes(db: "sqlite3.Connection") -> None:
     """Run once at startup, before user actions and the scheduler."""
     tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for table, indexes in INDEXES.items():
@@ -44,11 +51,11 @@ def setup_indexes(db):
                        + (' WHERE ' + predicate if predicate else ''))
 
 
-def _marks(ids):
+def _marks(ids: "Collection[str]") -> str:
     return ','.join('?' * len(ids))
 
 
-def busy_query(table, ids):
+def busy_query(table: str, ids: "Collection[str]") -> tuple[str, tuple[str, ...]]:
     predicate = "json_extract(record,'$.agent') IN (" + _marks(ids) + ')'
     predicates = {
         'tasks': "json_extract(record,'$.status') IN ('running','starting','approval')",
@@ -62,15 +69,19 @@ def busy_query(table, ids):
             + ' WHERE ' + predicate + ' AND ' + predicates[table] + ' LIMIT 1', tuple(ids))
 
 
-def move_query(table, source_id):
+def move_query(table: str, source_id: str) -> tuple[str, tuple[str, ...]]:
     return ('SELECT record FROM runtime_' + table + ' WHERE ' + ' OR '.join(
         "json_extract(record,'$." + field + "')=?" for field in MOVE_FIELDS[table]),
         (source_id,) * len(MOVE_FIELDS[table]))
 
 
-def rooms_query(roots, ids, radio=False):
+def rooms_query(
+    roots: "Collection[str]", ids: "Collection[str]", radio: bool = False
+) -> tuple[str, tuple[str, ...]]:
     # Pair rooms use member indexes. Longer saved rooms use a narrow partial
     # index, then check every member so no historical membership is omitted.
+    predicates: list[str]
+    params: list[str]
     predicates, params = [], []
     if roots:
         predicates.append("json_extract(record,'$.rootId') IN (" + _marks(roots) + ')')
@@ -89,11 +100,15 @@ def rooms_query(roots, ids, radio=False):
     return query, tuple(params)
 
 
-def _query_records(db, query):
+def _query_records(
+    db: "sqlite3.Connection", query: tuple[str, tuple[str, ...]]
+) -> list[Any]:
     return [json.loads(row[0]) for row in db.execute(*query)]
 
 
-def _idle(runtime, db, agents, tables):
+def _idle(
+    runtime: "Runtime", db: "sqlite3.Connection", agents: list["AgentRecord"], tables: set[str]
+) -> None:
     ids = {agent['id'] for agent in agents}
     for agent in agents:
         name = agent.get('name') or agent['id']
@@ -135,7 +150,7 @@ def _idle(runtime, db, agents, tables):
             raise ValueError('Finish or stop the shared chat exchange before moving')
 
 
-def convert(runtime, data):
+def convert(runtime: "Runtime", data: Any) -> Any:
     # This action is exposed only by the token/origin-checked user HTTP route.
     # Model tools cannot change another root's ownership.
     allowed = {'action', 'path', 'member', 'target', 'expected_revision', 'request_id'}
@@ -179,7 +194,7 @@ def convert(runtime, data):
         at = time.time()
         project['peerTeams'] = [dict(id=t['id'], name=t['name'], members=[m for m in t['members'] if m != source_id])
                                 for t in teams if len([m for m in t['members'] if m != source_id]) >= 2]
-        project.update(peerTeamsRevision=revision + 1, updated=at)
+        project.update(peerTeamsRevision=revision + 1, updated=at)  # type: ignore[call-arg]  # typed-update
         runtime.put(db, 'projects', project)
         for agent in moving:
             agent.update(rootId=target_id, updated=at)
@@ -226,14 +241,11 @@ def convert(runtime, data):
                 room.update(kind='private', members=[a['id'] for a in moving if not a.get('deletedAt')],
                             customName=(source.get('name') or source_id) + ' (previous broadcast)')
             runtime.put(db, 'rooms', room)
-        # Project membership and dynamic room projections need explicit tombstones.
-        from codex_sync_entities import put as sync_put
-        for team in teams:
-            updated = next((t for t in project['peerTeams'] if t['id'] == team['id']), None)
-            sync_put(db, 'peerTeam', team['id'], dict(updated, projectPath=path) if updated else {}, updated is None)
+        # Keep peer-team entities aligned with the same filtered view used by snapshots.
+        from codex_peer_teams import sync_entities as sync_peer_team_entities
+        sync_peer_team_entities(runtime, db, {path})
         for room in affected_rooms:
-            visible = next(iter(runtime.chat_rooms(db, room_id=room['id'])), None)
-            sync_put(db, 'room', room['id'], visible or {}, visible is None)
+            runtime.sync_room_entity(db, room['id'], tombstone_unavailable=True)
         result = {'id': source_id, 'parentId': target_id, 'rootId': target_id,
                   'movedAgents': [a['id'] for a in moving], 'peerTeamsRevision': revision + 1}
         runtime.save_receipt(db, receipt, signature, result)

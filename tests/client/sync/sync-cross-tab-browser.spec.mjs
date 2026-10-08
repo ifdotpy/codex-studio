@@ -282,6 +282,7 @@ test("sync-cross-tab-browser @performance", async ({
           revision: 9000,
           reason: "change",
           resources: [{ kind: "state" }],
+          resourceVersions: [{ resource: { kind: "state" }, revision: 9000 }],
         },
       });
       channel.close();

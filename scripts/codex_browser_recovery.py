@@ -2,6 +2,13 @@
 import time
 import threading
 import uuid
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Iterable
+    from codex_records import AgentRecord, BrowserRecoveryRecord
+    from codex_runtime import Runtime
 
 DISCOVERY_ERRORS = {"No browser is available", "Browser is not available: chrome",
                     "Browser is not available: extension"}
@@ -12,7 +19,7 @@ HOLD = {"pending", "reconnecting"}
 DRAIN_SECONDS = 300
 
 
-def text_results(item):
+def text_results(item: Any) -> list[str]:
     result = item.get("result") or {}
     if not isinstance(result, dict):
         return []
@@ -20,7 +27,10 @@ def text_results(item):
             if isinstance(v, dict) and v.get("type") == "text" and isinstance(v.get("text"), str)]
 
 
-def observe(runtime, db, actor, item, turn_id, connection_id):
+def observe(
+    runtime: "Runtime", db: "sqlite3.Connection", actor: "AgentRecord", item: Any,
+    turn_id: str, connection_id: str | None,
+) -> None:
     # Read error results, never model arguments, quoted page text, or arbitrary timeouts.
     if (item.get("type") != "mcpToolCall" or item.get("server") != "node_repl"
             or item.get("tool") != "js" or not item.get("id")):
@@ -41,7 +51,7 @@ def observe(runtime, db, actor, item, turn_id, connection_id):
                 or (previous.get("stage") == "pending" and not receipt)
                 or recovered_probe) and any(
                 t.startswith("# Selected Browser\n- Name: Chrome\n- Type: extension\n") for t in texts)):
-            previous.update(stage="verified", verifiedAt=time.time(), verificationItem=item["id"])
+            previous.update(stage="verified", verifiedAt=time.time(), verificationItem=item["id"])  # type: ignore[call-arg]  # typed-update
             actor["browserRecovery"] = previous
         return
     reason = next((t for t in texts if t in DISCOVERY_ERRORS), None)
@@ -51,7 +61,7 @@ def observe(runtime, db, actor, item, turn_id, connection_id):
         return
     if previous.get("stage") in {"verify", "failed"}:
         # One automatic attempt per failure episode. A failed probe must not loop.
-        previous.update(stage="failed", error=reason, failedAt=time.time())
+        previous.update(stage="failed", error=reason, failedAt=time.time())  # type: ignore[call-arg]  # typed-update
         actor["browserRecovery"] = previous
         return
     actor["browserRecovery"] = {
@@ -62,13 +72,13 @@ def observe(runtime, db, actor, item, turn_id, connection_id):
     }
 
 
-def same_identity(runtime, actor, recovery):
+def same_identity(runtime: "Runtime", actor: "AgentRecord", recovery: "BrowserRecoveryRecord") -> bool:
     return (actor.get("threadId") == recovery["threadId"] and actor["epoch"] == recovery["epoch"]
             and actor.get("accountKey", "default") == recovery["accountKey"]
             and runtime.connection_current(recovery["accountKey"], recovery["connectionId"]))
 
 
-def busy(runtime, db, actor):
+def busy(runtime: "Runtime", db: "sqlite3.Connection", actor: "AgentRecord") -> bool:
     from codex_context_repair import blocked
     if blocked(actor):
         return True
@@ -83,7 +93,7 @@ def busy(runtime, db, actor):
     return False
 
 
-def tick(runtime, db, actors):
+def tick(runtime: "Runtime", db: "sqlite3.Connection", actors: "Iterable[AgentRecord]") -> None:
     if runtime.closed:
         return
     for actor in actors:
@@ -91,12 +101,12 @@ def tick(runtime, db, actors):
         if recovery.get("stage") not in HOLD:
             continue
         if not same_identity(runtime, actor, recovery):
-            recovery.update(stage="failed", error="Browser recovery belongs to an earlier session")
+            recovery.update(stage="failed", error="Browser recovery belongs to an earlier session")  # type: ignore[call-arg]  # typed-update
             runtime.put(db, "agents", actor)
             continue
         if recovery["stage"] == "reconnecting":
             # After a process restart a persisted operation has no in-memory owner.
-            jobs = getattr(runtime, "_browser_recovery_jobs", set())
+            jobs: set[str] = getattr(runtime, "_browser_recovery_jobs", set())
             if recovery["id"] not in jobs:
                 fail(runtime, db, actor, "Browser reconnection outcome is unknown after restart")
             continue
@@ -113,7 +123,7 @@ def tick(runtime, db, actors):
         jobs = runtime.__dict__.setdefault("_browser_recovery_jobs", set())
         if len(jobs) >= 2:
             continue
-        recovery.update(stage="reconnecting", startedAt=time.time())
+        recovery.update(stage="reconnecting", startedAt=time.time())  # type: ignore[call-arg]  # typed-update
         runtime.put(db, "agents", actor)
         jobs.add(recovery["id"])
         try:
@@ -127,17 +137,19 @@ def tick(runtime, db, actors):
             raise
 
 
-def fail(runtime, db, actor, error):
+def fail(runtime: "Runtime", db: "sqlite3.Connection", actor: "AgentRecord", error: str) -> None:
     recovery = actor["browserRecovery"]
-    recovery.update(stage="failed", error=error, failedAt=time.time())
-    actor.update(error=error, nativeFailureHold=True, status="failed")
+    recovery.update(stage="failed", error=error, failedAt=time.time())  # type: ignore[call-arg]  # typed-update
+    actor.update(error=error, nativeFailureHold=True, status="failed")  # type: ignore[call-arg]  # typed-update
     runtime.put(db, "agents", actor)
     if not runtime.worker_continuation_pending(actor):
         runtime.child_stopped_event(db, actor, "failed", error,
                                     "browser-recovery:" + str(recovery["id"]))
 
 
-def recovery_current(runtime, actor, operation):
+def recovery_current(
+    runtime: "Runtime", actor: "AgentRecord", operation: "BrowserRecoveryRecord"
+) -> bool | None:
     return (not runtime.closed and not actor.get("deletedAt") and actor.get("autoWake")
             and not actor.get("nativeFailureHold")
             and actor.get("browserRecovery", {}).get("id") == operation["id"]
@@ -145,7 +157,10 @@ def recovery_current(runtime, actor, operation):
             and same_identity(runtime, actor, operation))
 
 
-def native_call(runtime, server, agent_id, operation, method, params, timeout):
+def native_call(
+    runtime: "Runtime", server: Any, agent_id: str, operation: "BrowserRecoveryRecord",
+    method: str, params: Any, timeout: float,
+) -> Any:
     # Preserve the exact native request ID before waiting. Do not replay an
     # ambiguous mutation just because its response has not arrived.
     with runtime.lock, runtime.db() as db:
@@ -160,12 +175,12 @@ def native_call(runtime, server, agent_id, operation, method, params, timeout):
         actor = runtime.agent(agent_id, db)
         if not recovery_current(runtime, actor, operation):
             raise RuntimeError("Agent changed while waiting for native browser response")
-        actor["browserRecovery"]["nativeRequest"].update(receivedAt=time.time(), outcome="received")
+        actor["browserRecovery"]["nativeRequest"].update(receivedAt=time.time(), outcome="received")  # type: ignore[call-arg]  # typed-update
         runtime.put(db, "agents", actor)
     return result
 
 
-def reconnect(runtime, agent_id, operation):
+def reconnect(runtime: "Runtime", agent_id: str, operation: "BrowserRecoveryRecord") -> None:
     try:
         with runtime.lock:
             guard = runtime.prepare_locks.setdefault(agent_id, threading.Lock())
@@ -187,7 +202,7 @@ def reconnect(runtime, agent_id, operation):
                     if recovery_current(runtime, current, operation):
                         current["browserRecovery"].update(
                             stage="failed", error="Native browser integration is unavailable: " + reason,
-                            failedAt=time.time())
+                            failedAt=time.time())  # type: ignore[call-arg]  # typed-update
                         runtime.put(db, "agents", current)
                 return
             server = runtime.connect(operation["accountKey"])
@@ -217,7 +232,7 @@ def reconnect(runtime, agent_id, operation):
                 if previous and previous["future"].done():
                     runtime.preparations.pop(agent_id, None)
                 runtime.loaded.add(agent_id)
-                current["browserRecovery"].update(stage="verify", resumedAt=time.time())
+                current["browserRecovery"].update(stage="verify", resumedAt=time.time())  # type: ignore[call-arg]  # typed-update
                 # This is new diagnostic input. It does not replay the failed tool,
                 # any earlier user message, or the last browser command.
                 message = (

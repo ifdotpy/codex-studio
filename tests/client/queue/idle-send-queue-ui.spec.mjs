@@ -1,12 +1,16 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Production renderer and isolated durable queue. No model service or user state.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("idle send queue ui", async ({ browser }) => {
   const repo = join(import.meta.dirname, "../../..");
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-ui-"));
@@ -56,7 +60,7 @@ test("idle send queue ui", async ({ browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(origin + "/api/state")).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find((agent) => agent.name === "Release lead");
     const queue = () =>
       fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>

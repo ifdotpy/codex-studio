@@ -2,18 +2,45 @@ import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
-import type { RxCollection, RxDocumentData } from "rxdb";
+import type { RxCollection, RxDocument, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
-import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
-import { syncGet, syncPost, ApiError, saved, save, setWorkspace } from "../api";
 import {
+  applyEntityRows,
+  emptyEntityProjection,
+  type EntityRow,
+} from "./entityProjection";
+import {
+  syncGet,
+  syncPost,
+  ApiError,
+  saved,
+  save,
+  setWorkspace,
+  isApiSchemaMismatch,
+  onMatchingApiSchemaResponse,
+  registerSyncEntityPersister,
+  type GetResult,
+} from "../api";
+import type { Snapshot } from "../types";
+import {
+  canAcknowledgeEntitySequenceBatch,
+  entitySequenceInvalidationCovered,
+  EntitySequenceCheckpoint,
+  getEntitySequenceCheckpoint,
+  setEntitySequenceProjection,
+} from "./entitySequence";
+import {
+  acknowledgeEntitySequences,
   watchResourceChanges,
   watchResourceConnection,
   type ResourceConnectionState,
   type ResourceRef,
+  type ResourceVersion,
 } from "./resourceEvents";
 
 import { onResume } from "./resume";
+import { readRetryDelay, retryableReadError } from "./readRetry";
+import { refreshAfterCurrentPull } from "./refreshAfterCurrentPull";
 import { isEntityResetResponse, requiredSyncNumber } from "./pullContract";
 import {
   cacheTranscriptValue,
@@ -22,6 +49,11 @@ import {
   subscribeTranscript,
 } from "./transcriptCache";
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
+import { API_SCHEMA_HASH } from "../generated/apiSchema";
+import {
+  deleteOtherEntityProjectionDatabases,
+  entityProjectionDatabaseName,
+} from "./entityCacheStorage";
 
 export { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 
@@ -37,6 +69,15 @@ export type SyncDocument = {
   payload: string;
   seq: number;
   _deleted?: boolean;
+};
+export type SyncEntityPersisterProbe = {
+  sequences: number[];
+  checkpoint: number;
+  advanced: boolean;
+  acknowledged: boolean;
+  checkpointBefore: number;
+  syncEntitiesAfter: number | null | undefined;
+  at: number;
 };
 class WorkspaceMismatchError extends Error {
   constructor() {
@@ -74,6 +115,8 @@ async function open() {
   const initialIdentity = identify();
   let grace: ReturnType<typeof setTimeout> | undefined;
   let identity: Awaited<ReturnType<typeof identify>> | null = null;
+  let cleanupScheduled = false;
+  let stopSchemaMatchCleanup = () => {};
   try {
     identity = await (hasCache
       ? Promise.race([
@@ -85,6 +128,7 @@ async function open() {
       : initialIdentity);
   } catch (error) {
     const unavailable =
+      isApiSchemaMismatch() ||
       error instanceof TypeError ||
       (error instanceof ApiError &&
         (error.status >= 500 || [408, 429].includes(error.status)));
@@ -93,7 +137,14 @@ async function open() {
     clearTimeout(grace);
   }
   const workspaceId = identity?.workspaceId || cached;
+  setEntitySequenceProjection(workspaceId, API_SCHEMA_HASH);
   if (identity) save("codex-sync-workspace", workspaceId);
+  const cleanupOtherSchemaCaches = () => {
+    if (cleanupScheduled || isApiSchemaMismatch()) return;
+    cleanupScheduled = true;
+    stopSchemaMatchCleanup();
+    deleteOtherEntityProjectionDatabases(workspaceId, API_SCHEMA_HASH);
+  };
   // Cached display does not authorize reads or draft writes against another Mac.
   // Retain the original request after the grace period, and retry failed checks.
   let verified = !!identity;
@@ -123,6 +174,19 @@ async function open() {
     multiInstance: true,
   });
   await db.addCollections({
+    drafts: { schema, conflictHandler: draftConflictHandler },
+    outbox: { schema },
+  });
+  const currentProjectionDatabase = entityProjectionDatabaseName(
+    workspaceId,
+    API_SCHEMA_HASH,
+  );
+  const projectionDb = await createRxDatabase({
+    name: currentProjectionDatabase,
+    storage: getRxStorageDexie(),
+    multiInstance: true,
+  });
+  const { projections } = await projectionDb.addCollections({
     projections: {
       schema,
       conflictHandler: {
@@ -145,9 +209,15 @@ async function open() {
             : realMasterState,
       },
     },
-    drafts: { schema, conflictHandler: draftConflictHandler },
-    outbox: { schema },
   });
+  Object.defineProperty(db, "projections", { value: projections });
+  if (isApiSchemaMismatch()) stopSchemaMatchCleanup();
+  else {
+    stopSchemaMatchCleanup = onMatchingApiSchemaResponse(
+      cleanupOtherSchemaCaches,
+    );
+    if (cleanupScheduled) stopSchemaMatchCleanup();
+  }
   db.projections.$.subscribe((event) => {
     const doc = event.documentData;
     if (doc.id.startsWith("transcript:") && doc.id.split(":").length === 2)
@@ -163,19 +233,118 @@ export function syncDatabase() {
 }
 
 if (typeof window !== "undefined")
-  window.addEventListener("codex-sync-entities", (event: Event) => {
-    const detail = (event as CustomEvent).detail;
-    if (!detail || !Array.isArray(detail.documents)) return;
-    void syncDatabase()
-      .then(async ({ db, workspaceId }) => {
-        if (detail.workspaceId && detail.workspaceId !== workspaceId) return;
-        for (const document of detail.documents as SyncDocument[]) {
-          if (!document.id.startsWith("entity:")) continue;
+  registerSyncEntityPersister(
+    async (
+      targetWorkspaceId,
+      documents,
+      syncEntitiesAfter,
+      isPersistenceCurrent,
+    ) => {
+      const { db, workspaceId } = await syncDatabase();
+      if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
+      const checkpoint = getEntitySequenceCheckpoint(
+        "state:entities:v1",
+        API_SCHEMA_HASH,
+      );
+      const resetVersion = checkpoint.resetVersion;
+      const entities = documents.filter((document) =>
+        document.id.startsWith("entity:"),
+      );
+      let checkpointAdvanced = false;
+      let checkpointBefore = 0;
+      let checkpointAfter = 0;
+      let checkpointAcknowledged = false;
+      try {
+        for (const document of entities)
           await persistProjection(db.projections, document);
+        if (isPersistenceCurrent() && entities.length > 0) {
+          const [persistedCheckpoint, readyMarker] =
+            await db.projections.storageInstance.findDocumentsById(
+              ["state:entities:checkpoint", "state:entities:ready"],
+              true,
+            );
+          checkpointBefore = persistedCheckpoint?.seq ?? 0;
+          checkpointAfter = checkpointBefore;
+          if (
+            readyMarker?.payload !== "resetting" &&
+            checkpoint.canUseDurableCheckpoint &&
+            checkpoint.resetVersion === resetVersion &&
+            checkpointBefore > checkpoint.value
+          ) {
+            // Another tab can durably advance the shared projection row while
+            // this tab's in-memory checkpoint remains behind. Reconcile that
+            // durable shadow before evaluating this response's contiguous
+            // checkpoint, while retaining the projection reset fence.
+            checkpoint.assignWithinEpoch(checkpointBefore);
+          }
+          const highestSequence = Math.max(
+            ...entities.map((document) => document.seq),
+          );
+          if (
+            typeof syncEntitiesAfter === "number" &&
+            isPersistenceCurrent() &&
+            readyMarker?.payload !== "resetting"
+          ) {
+            checkpointAdvanced = await checkpoint.advanceIfContiguous(
+              syncEntitiesAfter,
+              highestSequence,
+              resetVersion,
+              checkpointBefore,
+              async () => {
+                if (!isPersistenceCurrent())
+                  throw new Error("Mutation persistence is no longer current");
+                await persistProjection(db.projections, {
+                  id: "state:entities:checkpoint",
+                  payload: persistedCheckpoint?.payload ?? "{}",
+                  seq: highestSequence,
+                });
+              },
+            );
+            if (checkpointAdvanced) {
+              checkpoint.markDurableCheckpointValid();
+              checkpointAfter = highestSequence;
+            }
+          }
+          const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
+            checkpointAfter,
+            highestSequence,
+            isPersistenceCurrent(),
+            checkpointAdvanced || checkpointBefore >= highestSequence,
+          );
+          if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
+            // The exact envelope can suppress a later matching frame only after
+            // either this response advanced the checkpoint or it was already
+            // covered by a completed pull.
+            acknowledgeEntitySequences(
+              entities.map((document) => document.seq),
+              targetWorkspaceId,
+            );
+            checkpointAcknowledged = true;
+          }
         }
-      })
-      .catch(() => {});
-  });
+      } catch (error) {
+        await refreshProjection().catch(() => {});
+        throw error;
+      }
+      const probe = (
+        window as Window & {
+          __studioSyncEntityPersisterProbe?: (
+            value: SyncEntityPersisterProbe,
+          ) => void;
+        }
+      ).__studioSyncEntityPersisterProbe;
+      if (probe !== undefined)
+        probe({
+          sequences: entities.map((document) => document.seq),
+          checkpoint: checkpointAfter,
+          advanced: checkpointAdvanced,
+          acknowledged: checkpointAcknowledged,
+          checkpointBefore,
+          syncEntitiesAfter,
+          at: performance.timeOrigin + performance.now(),
+        });
+    },
+  );
 
 async function pull(
   scope: string,
@@ -218,12 +387,12 @@ function resourceForScope(scope: string): ResourceRef {
 }
 
 export function watchSyncInvalidations(
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
   scope?: string,
 ): () => void;
 export function watchSyncInvalidations(
   scope: string,
-  resync: () => void,
+  resync: (version?: ResourceVersion) => void,
 ): () => void;
 export function watchSyncInvalidations(
   first: string | (() => void),
@@ -371,7 +540,7 @@ async function resetEntityProjection(collection: RxCollection<SyncDocument>) {
     })
     .exec();
   const stored = await collection.storageInstance.findDocumentsById(
-    docs.map((doc: any) => doc.id),
+    docs.map((doc) => doc.id),
     true,
   );
   const rows = stored.map((previous) => {
@@ -561,6 +730,7 @@ type ProjectionState = {
   foreground: number;
   stop: () => Promise<unknown>;
   refresh: (signal?: AbortSignal) => Promise<void>;
+  refreshAfterCurrent: () => Promise<void>;
   activateInvalidation: () => void;
   listeners: Set<(error: unknown | null) => void>;
 };
@@ -588,6 +758,25 @@ async function acquireProjection(
     let stopped = false;
     let pending: Promise<void> | undefined;
     let invalidated = false;
+    let unversionedInvalidation = false;
+    let requiredEntitySequence: number | undefined;
+    // Sequence zero is a valid initial baseline. Keep a sentinel until the
+    // first pull establishes that the local projection already has that row.
+    const isEntityScope = remoteScope === "state:entities:v1";
+    const latestEntitySequence = isEntityScope
+      ? getEntitySequenceCheckpoint(remoteScope, API_SCHEMA_HASH)
+      : new EntitySequenceCheckpoint();
+    if (
+      remoteScope === "state:entities:v1" &&
+      !latestEntitySequence.initialized
+    ) {
+      const [checkpoint] =
+        await db.projections.storageInstance.findDocumentsById(
+          ["state:entities:checkpoint"],
+          true,
+        );
+      if (checkpoint) latestEntitySequence.assign(checkpoint.seq);
+    }
     let resetReadySeq: number | undefined;
     let invalidationBlocked = false;
     let readFailed = false;
@@ -605,12 +794,16 @@ async function acquireProjection(
       request: () => Promise<T>,
       signal?: AbortSignal,
     ): Promise<T> => {
+      // A request sent before the stream reaches live gets one attempt. If it
+      // fails, the stream baseline will schedule the retry with its sequence.
+      const retryStartedLive = connectionStatus === "live";
       for (let attempt = 0; ; attempt++) {
         try {
           return await request();
         } catch (error) {
           const canRetry =
             attempt < 2 &&
+            retryStartedLive &&
             isTransientSyncReadFailure(error) &&
             connectionStatus === "live" &&
             !document.hidden &&
@@ -641,20 +834,40 @@ async function acquireProjection(
 
     const checkpointId =
       remoteScope === "state:entities:v1" ? "state:entities:checkpoint" : scope;
+    const settleCoveredEntityInvalidation = () => {
+      if (
+        !entitySequenceInvalidationCovered(
+          latestEntitySequence.effectiveCoverage(),
+          requiredEntitySequence,
+          unversionedInvalidation,
+        )
+      )
+        return false;
+      invalidated = false;
+      requiredEntitySequence = undefined;
+      return true;
+    };
     const refresh = (signal?: AbortSignal): Promise<void> => {
       if (stopped) return Promise.resolve();
       if (pending) return pending;
       pending = (async () => {
         do {
+          const iterationUnversioned = unversionedInvalidation;
+          const iterationCanSkipVersioned =
+            invalidated &&
+            requiredEntitySequence !== undefined &&
+            !iterationUnversioned;
           if (signal?.aborted && scopes.get(scope)?.foreground === 0)
             throw new DOMException("Aborted", "AbortError");
           invalidated = false;
+          unversionedInvalidation = false;
           if (
             scopes.get(scope)?.foreground === 0 &&
             (document.hidden || navigator.onLine === false)
           )
             throw new TypeError("The device is offline or the page is hidden.");
           let more = true;
+          let firstRequest = true;
           const markers =
             remoteScope === "state:entities:v1"
               ? await db.projections.storageInstance.findDocumentsById(
@@ -717,6 +930,46 @@ async function acquireProjection(
               signal && scopes.get(scope)?.foreground === 0
                 ? signal
                 : undefined;
+            if (
+              firstRequest &&
+              iterationCanSkipVersioned &&
+              remoteScope === "state:entities:v1" &&
+              requiredEntitySequence !== undefined &&
+              !iterationUnversioned &&
+              !unversionedInvalidation &&
+              latestEntitySequence.canUseDurableCheckpoint &&
+              !latestEntitySequence.covers(requiredEntitySequence)
+            ) {
+              // Another tab has its own in-memory registry but can advance
+              // this shared IndexedDB checkpoint after persisting the rows.
+              if (previous && previous.seq >= requiredEntitySequence) {
+                latestEntitySequence.assignWithinEpoch(previous.seq);
+                latestEntitySequence.markDurableCheckpointValid();
+              }
+            }
+            const pullResetVersion = latestEntitySequence.resetVersion;
+            const coveredBeforeDispatch =
+              firstRequest &&
+              iterationCanSkipVersioned &&
+              remoteScope === "state:entities:v1" &&
+              !iterationUnversioned &&
+              !unversionedInvalidation &&
+              latestEntitySequence.canUseDurableCheckpoint &&
+              requiredEntitySequence !== undefined &&
+              latestEntitySequence.coversWithInFlight(requiredEntitySequence);
+            if (coveredBeforeDispatch) {
+              if (
+                remoteScope === "state:entities:v1" &&
+                requiredEntitySequence !== undefined
+              )
+                latestEntitySequence.markInFlightCoverageUsed(
+                  requiredEntitySequence,
+                );
+              settleCoveredEntityInvalidation();
+              more = false;
+              break;
+            }
+            firstRequest = false;
             const result = await retryRead(
               () =>
                 pull(
@@ -737,7 +990,18 @@ async function acquireProjection(
               requestSignal,
             );
             if (stopped) return;
+            // An epoch/reset during this request invalidates the old server
+            // checkpoint. Same-epoch responses remain usable and cannot move
+            // the local checkpoint backwards.
+            if (
+              remoteScope === "state:entities:v1" &&
+              !latestEntitySequence.isSameResetVersion(pullResetVersion)
+            ) {
+              more = true;
+              continue;
+            }
             if (isEntityResetResponse(result, remoteScope)) {
+              latestEntitySequence.reset();
               resetReadySeq = await resetEntityProjection(db.projections);
               initialHigh = 0;
               continue;
@@ -839,11 +1103,17 @@ async function acquireProjection(
             }
             if (remoteScope === "state:entities:v1") {
               await persistProjectionBatch(db.projections, entityBatch);
+              if (!latestEntitySequence.isSameResetVersion(pullResetVersion)) {
+                more = true;
+                continue;
+              }
+              latestEntitySequence.assignWithinEpoch(result.checkpoint.seq);
               await persistProjection(db.projections, {
                 id: checkpointId,
                 payload: JSON.stringify({ initialHigh: result.initialHigh }),
-                seq: result.checkpoint.seq,
+                seq: latestEntitySequence.value,
               });
+              latestEntitySequence.markDurableCheckpointValid();
               if (!readyPublished) {
                 await persistProjection(db.projections, {
                   id: "state:entities:ready",
@@ -864,6 +1134,7 @@ async function acquireProjection(
               more = false;
             }
           }
+          settleCoveredEntityInvalidation();
           report(null);
         } while (invalidated && !stopped);
         if (!stopped && remoteScope === "state:entities:v1") {
@@ -885,17 +1156,54 @@ async function acquireProjection(
         })
         .finally(() => {
           pending = undefined;
+          // An invalidation can land between the final loop condition and
+          // clearing `pending`; make that edge schedule one more projection.
+          if (invalidated && !stopped)
+            queueMicrotask(() => void refresh().catch(() => {}));
         });
       return pending;
     };
+    const stopCoverageFallback = isEntityScope
+      ? latestEntitySequence.onInFlightCoverageInvalidated(() => {
+          // A skipped versioned frame can no longer be satisfied by the
+          // mutation response. Run one ordinary refresh from the durable cursor.
+          invalidated = true;
+          requiredEntitySequence = undefined;
+          void refresh().catch(() => {});
+        })
+      : undefined;
+    const refreshAfterCurrent = () => refreshAfterCurrentPull(pending, refresh);
     const transcriptId = scope.startsWith("transcript:")
       ? scope.slice(11)
       : null;
     let stopInvalidation: (() => void) | undefined;
-    const invalidate = () => {
+    const invalidate = (version?: ResourceVersion) => {
       // A stream hint cannot authorize another read after a permanent rejection.
       // Explicit refresh still uses the normal workspace and HTTP checks.
       if (invalidationBlocked) return;
+      if (remoteScope === "state:entities:v1" && version) {
+        latestEntitySequence.observeEpoch(version.epoch);
+        if (version.entitySequenceReset) {
+          latestEntitySequence.reset();
+          requiredEntitySequence = undefined;
+        }
+      }
+      if (
+        remoteScope === "state:entities:v1" &&
+        version?.entitySequence !== undefined
+      ) {
+        if (
+          latestEntitySequence.canUseDurableCheckpoint &&
+          latestEntitySequence.covers(version.entitySequence)
+        )
+          return;
+        requiredEntitySequence = Math.max(
+          requiredEntitySequence ?? 0,
+          version.entitySequence,
+        );
+      } else {
+        unversionedInvalidation = true;
+      }
       invalidated = true;
       void refresh().catch(() => {});
     };
@@ -923,10 +1231,12 @@ async function acquireProjection(
       foreground: 0,
       listeners,
       refresh,
+      refreshAfterCurrent,
       activateInvalidation,
       stop: async () => {
         stopped = true;
         stopInvalidation?.();
+        stopCoverageFallback?.();
         stopConnection?.();
         stopResume?.();
         await pending?.catch(() => {});
@@ -966,80 +1276,85 @@ async function acquireProjection(
   }
 }
 
-export async function watchProjection(
-  scope: string,
-  accept: (payload: any | null) => void,
+type StateProjectionPayload = Snapshot | null;
+type TranscriptProjectionPayload = GetResult<"/api/transcript"> | null;
+
+async function watchStateProjection(
+  accept: (payload: StateProjectionPayload) => void,
+  fail: (e: unknown) => void,
+) {
+  const { db, state, release } = await acquireProjection("state");
+  state.listeners.add(fail);
+  const projection = emptyEntityProjection();
+  let ready = false;
+  let entitiesLoaded = false;
+  let latestRows: EntityRow[] = [];
+  // RxDB caches immutable document versions. Keep one JSON view per version
+  // without retaining removed documents in a strong cache.
+  const documentRows = new WeakMap<object, SyncDocument>();
+  let published: ReturnType<typeof applyEntityRows>;
+  const publishCurrent = () => {
+    if (!ready || !entitiesLoaded) return;
+    const next = applyEntityRows(projection, latestRows, true);
+    if (next && next !== published) {
+      published = next;
+      accept(next);
+    }
+  };
+  const publish = (documents: RxDocument<SyncDocument>[]) => {
+    entitiesLoaded = true;
+    latestRows = documents.map((document) => {
+      let row = documentRows.get(document);
+      if (!row) {
+        row = document.toJSON();
+        documentRows.set(document, row);
+      }
+      return row;
+    });
+    publishCurrent();
+  };
+  const entities = db.projections
+    .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+    .$.subscribe(publish);
+  const marker = db.projections
+    .findOne("state:entities:ready")
+    .$.subscribe((document) => {
+      const row = document?.toJSON();
+      ready = row?.payload === "ready" && !row?._deleted;
+      publishCurrent();
+    });
+  // Start the first incomplete projection pull as soon as the stream has been
+  // subscribed, without waiting for its baseline frame. A completed local
+  // cache already supplies content and needs no speculative pull.
+  const [complete] = await db.projections.storageInstance.findDocumentsById(
+    ["state:entities:complete"],
+    true,
+  );
+  if (!complete || complete._deleted) void state.refresh().catch(() => {});
+  return () => {
+    entities.unsubscribe();
+    marker.unsubscribe();
+    state.listeners.delete(fail);
+    void release();
+  };
+}
+
+async function watchTranscriptProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: TranscriptProjectionPayload) => void,
   fail: (e: unknown) => void,
 ) {
   const { db, workspaceId, state, release } = await acquireProjection(scope);
   state.listeners.add(fail);
-  const id = scope.startsWith("transcript:") ? scope.slice(11) : null;
-  const stopCache = id
-    ? subscribeTranscript(workspaceId, id, (entry) => accept(entry.payload))
-    : () => {};
-  const subscription =
-    scope === "state"
-      ? (() => {
-          const projection = emptyEntityProjection();
-          // RxDB caches immutable document versions. Retain one JSON view per
-          // version without holding removed documents in another strong cache.
-          const documentRows = new WeakMap<object, SyncDocument>();
-          let ready = false;
-          let entitiesLoaded = false;
-          let latestRows: any[] = [];
-          let published: ReturnType<typeof applyEntityRows>;
-          const publishCurrent = () => {
-            if (!ready || !entitiesLoaded) return;
-            const next = applyEntityRows(projection, latestRows, true);
-            if (next && next !== published) {
-              published = next;
-              accept(next);
-            }
-          };
-          const publish = (documents: any[]) => {
-            entitiesLoaded = true;
-            latestRows = documents.map((document) => {
-              if (!document.toJSON) return document;
-              let row = documentRows.get(document);
-              if (!row) {
-                row = document.toJSON();
-                documentRows.set(document, row!);
-              }
-              return row;
-            });
-            publishCurrent();
-          };
-          const entities = db.projections
-            .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
-            .$.subscribe(publish);
-          const marker = db.projections
-            .findOne("state:entities:ready")
-            .$.subscribe((document: any) => {
-              const row = document?.toJSON ? document.toJSON() : document;
-              ready = row?.payload === "ready" && !row?._deleted;
-              publishCurrent();
-            });
-          return {
-            unsubscribe() {
-              entities.unsubscribe();
-              marker.unsubscribe();
-            },
-          };
-        })()
-      : db.projections.findOne(scope).$.subscribe((doc: any) => {
-          if (!id) {
-            accept(doc ? JSON.parse(doc.payload) : null);
-            return;
-          }
-          if (doc)
-            void cacheStoredTranscript(
-              db.projections,
-              workspaceId,
-              `transcript:${id}`,
-              doc,
-            );
-          else if (!peekTranscript(workspaceId, id)) accept(null);
-        });
+  const id = scope.slice("transcript:".length);
+  const stopCache = subscribeTranscript(workspaceId, id, (entry) =>
+    accept(entry.payload),
+  );
+  const subscription = db.projections.findOne(scope).$.subscribe((doc) => {
+    if (doc)
+      void cacheStoredTranscript(db.projections, workspaceId, scope, doc);
+    else if (!peekTranscript(workspaceId, id)) accept(null);
+  });
   return () => {
     subscription.unsubscribe();
     stopCache();
@@ -1048,11 +1363,29 @@ export async function watchProjection(
   };
 }
 
-/** Reconcile the entity projection after an action without fetching /api/state. */
-export async function refreshProjection(scope: string) {
-  const handle = await acquireProjection(scope);
+/** Pull and return the current entity projection for state reconciliation. */
+export async function refreshProjection(
+  options: { afterCurrentPull?: boolean } = {},
+): Promise<Snapshot> {
+  const handle = await acquireProjection("state");
   try {
-    await handle.state.refresh();
+    if (options.afterCurrentPull) await handle.state.refreshAfterCurrent();
+    else await handle.state.refresh();
+    const [ready, documents] = await Promise.all([
+      handle.db.projections.findOne("state:entities:ready").exec(),
+      handle.db.projections
+        .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
+        .exec(),
+    ]);
+    if (!ready || ready.payload !== "ready" || ready._deleted)
+      throw new Error("The entity projection is not ready yet.");
+    const snapshot = applyEntityRows(
+      emptyEntityProjection(),
+      documents.map((document) => document.toJSON()),
+      true,
+    );
+    if (!snapshot) throw new Error("The entity projection is unavailable.");
+    return snapshot;
   } finally {
     await handle.release();
   }
@@ -1087,7 +1420,7 @@ export function prefetchTranscript(
       // Query the same persisted document used by the foreground view.
       const subscription = handle.db.projections
         .findOne(`transcript:${id}`)
-        .$.subscribe((doc: any) => {
+        .$.subscribe((doc) => {
           if (doc)
             void cacheStoredTranscript(
               handle.db.projections,
@@ -1112,7 +1445,10 @@ export function prefetchTranscript(
 }
 
 export async function startDraftReplication(
-  report: (e: unknown | null) => void,
+  report: (
+    e: unknown | null,
+    direction: "pull" | "push" | "replication" | null,
+  ) => void,
   /** @internal Test-only instrumentation; production callers omit this field. */
   options: {
     testOnly?: {
@@ -1134,7 +1470,7 @@ export async function startDraftReplication(
   // downstream waits before cancelling the one active RxDB state.
   // Invariants: no pull sequence without a trigger; no outage trigger is lost;
   // at most one restart per minimum interval.
-  const failures = new Map<string, unknown>();
+  const failures = new Map<"pull" | "push" | "replication", unknown>();
   let stopped = false;
   let pushFailed = false;
   let pullTriggered = false;
@@ -1188,7 +1524,10 @@ export async function startDraftReplication(
     options.testOnly?.cancel
       ? options.testOnly.cancel(() => current.cancel())
       : current.cancel();
-  const state = (direction: string, error: unknown | null) => {
+  const state = (
+    direction: "pull" | "push" | "replication",
+    error: unknown | null,
+  ) => {
     if (stopped) return;
     if (error === null) failures.delete(direction);
     else failures.set(direction, error);
@@ -1200,7 +1539,17 @@ export async function startDraftReplication(
       }
       servePendingPull();
     }
-    report(failures.size ? failures.values().next().value : null);
+    const failedDirection = failures.has("push")
+      ? "push"
+      : failures.has("pull")
+        ? "pull"
+        : failures.has("replication")
+          ? "replication"
+          : null;
+    report(
+      failedDirection === null ? null : failures.get(failedDirection)!,
+      failedDirection,
+    );
   };
   const beginTriggeredPull = () => {
     if (
@@ -1259,7 +1608,7 @@ export async function startDraftReplication(
   };
   const attempt = async <T>(
     generation: number,
-    direction: string,
+    direction: "pull" | "push",
     request: () => Promise<T>,
   ) => {
     try {
@@ -1463,7 +1812,7 @@ export async function startDraftReplication(
       await restarting;
       await cancelReplication(replication);
     } catch (error) {
-      report(error);
+      report(error, "replication");
     } finally {
       settlePushWait();
     }
@@ -1471,28 +1820,66 @@ export async function startDraftReplication(
 }
 
 // Reopen a subscription after an initial connection failure, without a page reload.
-export function subscribeProjection(
-  scope: string,
-  accept: (payload: any | null) => void,
+function subscribeProjection<T>(
+  watch: (
+    accept: (payload: T) => void,
+    fail: (error: unknown) => void,
+  ) => Promise<() => void>,
+  accept: (payload: T) => void,
   report: (error: unknown | null) => void,
+  retryBeforeData?: () => Promise<unknown>,
 ) {
   let stopped = false,
     connecting = false,
     attached = false;
   let dispose = () => {};
+  let hasData = false;
+  let retryCount = 0;
+  let retryTimer: ReturnType<typeof setTimeout> | undefined;
+  const clearRetry = () => {
+    clearTimeout(retryTimer);
+    retryTimer = undefined;
+  };
+  const onFailure = (error: unknown | null) => {
+    if (stopped) return;
+    report(error);
+    if (error === null) {
+      retryCount = 0;
+      clearRetry();
+      return;
+    }
+    if (
+      !retryBeforeData ||
+      hasData ||
+      retryTimer !== undefined ||
+      !retryableReadError(error) ||
+      document.hidden ||
+      navigator.onLine === false
+    )
+      return;
+    retryTimer = setTimeout(() => {
+      retryTimer = undefined;
+      if (stopped || hasData) return;
+      if (attached) void retryBeforeData().catch(onFailure);
+      else void connect();
+    }, readRetryDelay(retryCount++));
+  };
   const connect = async () => {
     if (stopped || connecting || attached) return;
+    clearRetry();
     connecting = true;
     try {
-      const stop = await watchProjection(
-        scope,
-        (value) => {
-          if (!stopped) accept(value);
-        },
-        (error) => {
-          if (!stopped) report(error);
-        },
-      );
+      const stop = await watch((value) => {
+        if (!stopped) {
+          if (value !== null) {
+            hasData = true;
+            clearRetry();
+            retryCount = 0;
+            onFailure(null);
+          }
+          accept(value);
+        }
+      }, onFailure);
       if (stopped) stop();
       else {
         dispose = stop;
@@ -1500,7 +1887,7 @@ export function subscribeProjection(
       }
     } catch (error) {
       if (!stopped) {
-        report(error);
+        onFailure(error);
       }
     } finally {
       connecting = false;
@@ -1516,5 +1903,27 @@ export function subscribeProjection(
     stopResume();
     stopConnection();
     dispose();
+    clearRetry();
   };
+}
+
+export function subscribeStateProjection(
+  accept: (payload: StateProjectionPayload) => void,
+  report: (error: unknown | null) => void,
+) {
+  return subscribeProjection(watchStateProjection, accept, report, () =>
+    refreshProjection(),
+  );
+}
+
+export function subscribeTranscriptProjection(
+  scope: `transcript:${string}`,
+  accept: (payload: TranscriptProjectionPayload) => void,
+  report: (error: unknown | null) => void,
+) {
+  return subscribeProjection(
+    (next, fail) => watchTranscriptProjection(scope, next, fail),
+    accept,
+    report,
+  );
 }

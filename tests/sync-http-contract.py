@@ -6,10 +6,13 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import time
 import urllib.error
 import urllib.request
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from studio_api.testing import read_test_state
 
 root = Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory() as directory:
@@ -35,7 +38,8 @@ with tempfile.TemporaryDirectory() as directory:
                     if error.code != 503 or time.monotonic() >= deadline:
                         raise
                     time.sleep(.1)
-        identity, state = get('/api/sync/identity'), get('/api/state')
+        identity = get('/api/sync/identity')
+        state = read_test_state(get)
         protocol = get('/api/sync/protocol')
         assert protocol['protocolVersion'] == 3
         assert protocol['supportedVersions'] == [3]
@@ -45,25 +49,7 @@ with tempfile.TemporaryDirectory() as directory:
                 raise AssertionError(f'removed route still exists: {removed}')
             except urllib.error.HTTPError as error:
                 assert error.code in (404, 405)
-        status_file = Path(directory) / 'codex-swarm-status.legacy-contract.json'
-        status_file.write_text(json.dumps([{
-            'name': 'Legacy fixture', 'threadId': 'a' * 36, 'runId': 'b' * 36,
-            'wave': 'legacy-contract', 'launcherPid': os.getpid(),
-            'turnStatus': 'running', 'cwd': directory,
-        }]))
-        deadline = time.monotonic() + 5
-        projection = get('/api/sync/pull?scope=state')
-        while time.monotonic() < deadline:
-            payload = json.loads(projection['documents'][0]['payload'])
-            if any(row['name'] == 'Legacy fixture' for row in payload['threads']):
-                break
-            time.sleep(.05)
-            projection = get('/api/sync/pull?scope=state')
-        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
-        payload = json.loads(projection['documents'][0]['payload'])
-        assert 'runtime' in payload and 'threads' in payload and 'token' not in payload
-        assert any(row['name'] == 'Legacy fixture' for row in payload['threads'])
-        assert projection['workspaceId'] == identity['workspaceId']
+        # Status-file changes after initial seed are not entity-store writes.
         entities = get('/api/sync/pull?scope=state%3Aentities%3Av1&after=0&limit=100')
         assert entities['workspaceId'] == identity['workspaceId']
         assert entities['documents'] and all(row['id'].startswith('entity:') for row in entities['documents'])
@@ -83,7 +69,7 @@ with tempfile.TemporaryDirectory() as directory:
             request = urllib.request.Request(
                 origin + '/api/sync/drafts', data=json.dumps({'rows': rows}).encode(),
                 headers={'Content-Type': 'application/json', 'Origin': origin,
-                         'X-Canvas-Token': state['token'], 'X-Canvas-Workspace': workspace},
+                         'X-Canvas-Token': state.token, 'X-Canvas-Workspace': workspace},
             )
             return json.load(urllib.request.urlopen(request, timeout=10))
         assert push([row], identity['workspaceId']) == []
@@ -95,12 +81,12 @@ with tempfile.TemporaryDirectory() as directory:
                 raise AssertionError('Invalid push accepted')
             except urllib.error.HTTPError as error:
                 assert error.code == status, error.read()
-        lead_id = next(item['id'] for item in state['threads'] if item.get('isLead'))
+        lead_id = next(item['id'] for item in state.values('agent') if item.get('isLead'))
         lead = lead_id
         def voice(action, **body):
             request = urllib.request.Request(origin + '/api/voice/' + action,
                 data=json.dumps({'agent': lead, **body}).encode(),
-                headers={'Content-Type': 'application/json', 'X-Canvas-Token': state['token'],
+                headers={'Content-Type': 'application/json', 'X-Canvas-Token': state.token,
                          'X-Canvas-Workspace': identity['workspaceId']})
             with urllib.request.urlopen(request, timeout=10) as response:
                 return json.load(response)

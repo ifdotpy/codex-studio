@@ -59,7 +59,7 @@ def measure():
                         db.execute("INSERT INTO runtime_monitors VALUES (?,?)", (key, json.dumps(record)))
             db.executemany("INSERT INTO sync_entities VALUES (?,?,?,?,?,?)", rows)
 
-        store = SyncStore(connect, lambda: {}, lambda _key: {})
+        store = SyncStore(connect, lambda _key: {})
         before_started = time.perf_counter()
         with connect() as db:
             cursor = 0

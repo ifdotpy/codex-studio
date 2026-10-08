@@ -6,6 +6,7 @@ import {
   isRetryableSnapshotDeferred,
   readRetryKey,
 } from "./http_outcomes.mjs";
+import { fetchRuntimeIdentity } from "./identity.mjs";
 
 const pull = (scope, after = 0, limit = 100) =>
   `http://127.0.0.1/api/sync/pull?scope=${scope}&after=${after}&limit=${limit}`;
@@ -58,7 +59,7 @@ test("a different tab, scope, cursor, or route cannot recover a 503", () => {
     { tab: 2, url: pull("team", 7) },
     { tab: 1, url: pull("state", 7) },
     { tab: 1, url: pull("team", 8) },
-    { tab: 1, url: "http://127.0.0.1/api/state" },
+    { tab: 1, url: "http://127.0.0.1/api/session" },
   ])
     outcomes.record({ ...sample, status: 200, method: "GET", atEpochMs: 200 });
   assert.equal(outcomes.unrecoveredSnapshotReads().length, 1);
@@ -85,6 +86,89 @@ test("unrecovered snapshot and non-snapshot 503s remain failures", () => {
   });
   assert.equal(outcomes.unrecoveredSnapshotReads().length, 1);
   assert.equal(outcomes.failures.length, 1);
+});
+
+test("runtime identity reconciles repeated entity versions and tombstones", async () => {
+  const calls = [];
+  const entity = (id, value, seq, deleted = false) => ({
+    payload: JSON.stringify({ collection: "agent", id, value }),
+    seq,
+    _deleted: deleted,
+  });
+  const pages = new Map([
+    [
+      "0",
+      {
+        documents: [entity("lead", { id: "lead", mode: 1 }, 1)],
+        checkpoint: { seq: 1 },
+        maxSeq: 4,
+      },
+    ],
+    [
+      "1",
+      {
+        documents: [
+          entity("lead", { id: "lead", mode: 2 }, 2),
+          entity("gone", { id: "gone" }, 3),
+        ],
+        checkpoint: { seq: 3 },
+        maxSeq: 4,
+      },
+    ],
+    [
+      "3",
+      {
+        documents: [entity("gone", {}, 4, true)],
+        checkpoint: { seq: 4 },
+        maxSeq: 4,
+      },
+    ],
+  ]);
+  const fetchStub = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith("/api/session"))
+      return Response.json({ token: "session-token" });
+    if (url.endsWith("/api/desktop"))
+      return Response.json({ stateDir: "/scratch/state" });
+    const query = new URL(url).searchParams;
+    assert.equal(query.get("scope"), "state:entities:v1");
+    return Response.json(pages.get(query.get("after")));
+  };
+  assert.deepEqual(
+    await fetchRuntimeIdentity("http://127.0.0.1:43123", fetchStub),
+    {
+      stateDir: "/scratch/state",
+      threads: [{ id: "lead", mode: 2 }],
+    },
+  );
+  assert.equal(calls.length, 5);
+  assert(
+    calls
+      .slice(1)
+      .every(
+        ({ options }) => options.headers["X-Canvas-Token"] === "session-token",
+      ),
+  );
+});
+
+test("runtime identity caps a non-advancing entity page stream", async () => {
+  let pullCount = 0;
+  const fetchStub = async (url) => {
+    if (url.endsWith("/api/session")) return Response.json({ token: "token" });
+    if (url.endsWith("/api/desktop"))
+      return Response.json({ stateDir: "/scratch/state" });
+    pullCount += 1;
+    return Response.json({
+      documents: [],
+      checkpoint: { seq: pullCount },
+      maxSeq: 1000,
+    });
+  };
+  await assert.rejects(
+    fetchRuntimeIdentity("http://127.0.0.1:43123", fetchStub),
+    /exceeded its 100-page limit at checkpoint 100/,
+  );
+  assert.equal(pullCount, 100);
 });
 
 test("one successful read recovers every prior retry of the same read", () => {
@@ -161,7 +245,7 @@ test("read retry identity includes tab and complete read cursor", () => {
     readRetryKey(1, pull("team", 1)),
     readRetryKey(1, pull("team", 2)),
   );
-  assert.equal(readRetryKey(1, "http://127.0.0.1/api/state"), null);
+  assert.equal(readRetryKey(1, "http://127.0.0.1/api/session"), null);
 });
 
 test("only the known SnapshotDeferred error qualifies for retry accounting", () => {
@@ -172,7 +256,7 @@ test("only the known SnapshotDeferred error qualifies for retry accounting", () 
   );
   for (const sample of [
     [503, "GET", url, { error: "another 503" }],
-    [503, "GET", "http://127.0.0.1/api/state", deferredSnapshot],
+    [503, "GET", "http://127.0.0.1/api/session", deferredSnapshot],
     [503, "POST", url, deferredSnapshot],
     [500, "GET", url, deferredSnapshot],
   ])

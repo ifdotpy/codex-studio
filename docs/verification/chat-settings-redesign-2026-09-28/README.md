@@ -1,5 +1,9 @@
 # Chat settings redesign measurements
 
+This historical timing note mentions the old `/api/state` refresh; that endpoint
+was removed in the pull request that completed the move to sync entities (round
+3), `#11`.
+
 Measured in headless Chromium against the production web build and isolated local API fixtures. The fixture mounted 261 chats and supplied a 301-turn Claude history. It used no live app, database, account, or model request.
 
 | Interaction                                      |                                   Before |      After |   Target |

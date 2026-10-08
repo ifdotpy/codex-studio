@@ -5,16 +5,23 @@ import {
   apiDownload,
   get,
   post,
+  registerSyncEntityPersister,
   refreshSession,
   setToken,
   setWorkspace,
   syncGet,
 } from "./api";
+import {
+  entitySequenceInvalidationCovered,
+  setEntitySequenceProjection,
+} from "./sync/entitySequence";
+import { API_SCHEMA_HASH } from "./generated/apiSchema";
 
 describe("OpenAPI transport facade", () => {
   beforeEach(() => {
     setToken("test-token");
     setWorkspace("workspace-a");
+    setEntitySequenceProjection("workspace-a", API_SCHEMA_HASH);
   });
 
   afterEach(() => {
@@ -24,13 +31,15 @@ describe("OpenAPI transport facade", () => {
 
   it("keeps GET query and cache headers while omitting POST credentials", async () => {
     const fetch = vi.fn(async (request: Request) => {
-      expect(new URL(request.url).searchParams.get("view")).toBe("chat");
+      expect(new URL(request.url).searchParams.get("account_key")).toBe(
+        "default",
+      );
       return Response.json({});
     });
     vi.stubGlobal("fetch", fetch);
 
-    await get("/api/state", {
-      query: { view: "chat" },
+    await get("/api/limits", {
+      query: { account_key: "default" },
       etag: "etag-old",
       readMetadata: {},
     });
@@ -126,8 +135,8 @@ describe("OpenAPI transport facade", () => {
     );
     const readMetadata: { etag?: string; notModified?: boolean } = {};
 
-    const result = await get("/api/state", {
-      query: { view: "chat" },
+    const result = await get("/api/limits", {
+      query: { account_key: "default" },
       etag: "etag-old",
       readMetadata,
     });
@@ -161,6 +170,45 @@ describe("OpenAPI transport facade", () => {
     expect(request.signal.aborted).toBe(false);
   });
 
+  it("does not let a mutation for another workspace reset or cover this projection", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const checkpoint = setEntitySequenceProjection(
+      "workspace-a",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.assign(10);
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 12,
+        payload: "{}",
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ _syncEntities: documents, _syncEntitiesAfter: 10 }),
+      ),
+    );
+    const persister = vi.fn(async () => {});
+    const unregister = registerSyncEntityPersister(persister);
+    try {
+      await post(
+        "/api/sync/drafts",
+        { rows: [] },
+        {
+          workspaceId: "workspace-b",
+        },
+      );
+      expect(persister).toHaveBeenCalledOnce();
+      expect(checkpoint.value).toBe(10);
+      expect(checkpoint.effectiveCoverage()).toBe(10);
+    } finally {
+      unregister();
+    }
+  });
+
   it.each([
     ["204", () => new Response(null, { status: 204 })],
     [
@@ -173,14 +221,8 @@ describe("OpenAPI transport facade", () => {
     ],
     ["empty body without Content-Length", () => new Response(null)],
   ] as const)(
-    "resolves an empty successful POST (%s) without dispatching sync",
+    "resolves an empty successful POST (%s)",
     async (_label, response) => {
-      const events = new EventTarget();
-      const syncEvents: CustomEvent[] = [];
-      events.addEventListener("codex-sync-entities", (event) => {
-        syncEvents.push(event as CustomEvent);
-      });
-      vi.stubGlobal("window", events);
       vi.stubGlobal(
         "fetch",
         vi.fn(async () => response()),
@@ -189,32 +231,297 @@ describe("OpenAPI transport facade", () => {
       await expect(
         post("/api/sync/drafts", { rows: [] }),
       ).resolves.toBeUndefined();
-      expect(syncEvents).toEqual([]);
     },
   );
 
-  it("dispatches sync entities from a successful POST response", async () => {
+  it("waits for mutation entities to persist before resolving the POST", async () => {
     const events = new EventTarget();
-    const syncEvents: CustomEvent[] = [];
-    events.addEventListener("codex-sync-entities", (event) => {
-      syncEvents.push(event as CustomEvent);
-    });
     vi.stubGlobal("window", events);
     const documents = [
-      { id: "entity:projects:/work", seq: 4, payload: "{}", _deleted: false },
+      {
+        id: "entity:workspace:current",
+        seq: 5,
+        payload: JSON.stringify({
+          collection: "workspace",
+          id: "current",
+          value: {
+            sidebarOrder: { revision: 1, groups: { projects: ["c", "a"] } },
+          },
+        }),
+        _deleted: false,
+      },
     ];
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => Response.json({ _syncEntities: documents })),
     );
-
-    await post("/api/sync/drafts", { rows: [] });
-
-    expect(syncEvents).toHaveLength(1);
-    expect(syncEvents[0]?.detail).toEqual({
-      workspaceId: "workspace-a",
-      documents,
+    let releasePersistence = () => {};
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
     });
+    let markPersisterStarted = () => {};
+    const persisterStarted = new Promise<void>((resolve) => {
+      markPersisterStarted = resolve;
+    });
+    const unregister = registerSyncEntityPersister(
+      async (workspaceId, rows) => {
+        expect(workspaceId).toBe("workspace-a");
+        expect(rows).toEqual(documents);
+        markPersisterStarted();
+        await persistence;
+      },
+    );
+    try {
+      let settled = false;
+      const request = post("/api/sync/drafts", { rows: [] }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await persisterStarted;
+      expect(settled).toBe(false);
+      releasePersistence();
+      await request;
+      expect(settled).toBe(true);
+    } finally {
+      unregister();
+    }
+  });
+
+  it("publishes contiguous mutation coverage before the held persister runs", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const workspaceId = "coverage-held-workspace";
+    setWorkspace(workspaceId);
+    const checkpoint = setEntitySequenceProjection(
+      workspaceId,
+      API_SCHEMA_HASH,
+    );
+    checkpoint.reset();
+    checkpoint.assign(10);
+    const documents = [
+      { id: "entity:agent:a", seq: 12, payload: "{}", _deleted: false },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ _syncEntities: documents, _syncEntitiesAfter: 10 }),
+      ),
+    );
+    let releasePersistence = () => {};
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    let markStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const unregister = registerSyncEntityPersister(async () => {
+      markStarted();
+      await persistence;
+      checkpoint.assign(12);
+    });
+    try {
+      const request = post("/api/sync/drafts", { rows: [] });
+      await started;
+      expect(checkpoint.effectiveCoverage()).toBe(12);
+      const pull = vi.fn(async () => "unexpected pull");
+      const covered = entitySequenceInvalidationCovered(
+        checkpoint.effectiveCoverage(),
+        12,
+        false,
+      );
+      expect(covered).toBe(true);
+      checkpoint.markInFlightCoverageUsed(12);
+      expect(pull).not.toHaveBeenCalled();
+      releasePersistence();
+      await request;
+      expect(checkpoint.value).toBe(12);
+      expect(checkpoint.effectiveCoverage()).toBe(12);
+      expect(
+        entitySequenceInvalidationCovered(
+          checkpoint.effectiveCoverage(),
+          12,
+          false,
+        ),
+      ).toBe(true);
+      expect(pull).not.toHaveBeenCalled();
+      const foreignPull = vi.fn(async () => "foreign change pulled");
+      expect(
+        entitySequenceInvalidationCovered(
+          checkpoint.effectiveCoverage(),
+          13,
+          false,
+        ),
+      ).toBe(false);
+      await foreignPull();
+      expect(foreignPull).toHaveBeenCalledOnce();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("passes an unknown watermark through without inventing one", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 22,
+        payload: "{}",
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => Response.json({ _syncEntities: documents })),
+    );
+    const persist = vi.fn(async () => {});
+    const unregister = registerSyncEntityPersister(persist);
+    try {
+      await post("/api/sync/drafts", { rows: [] });
+      expect(persist).toHaveBeenCalledWith(
+        "workspace-a",
+        documents,
+        undefined,
+        expect.any(Function),
+      );
+    } finally {
+      unregister();
+    }
+  });
+
+  it("keeps a committed mutation result and reports persistence failures", async () => {
+    vi.stubGlobal("window", new EventTarget());
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    const workspaceId = "coverage-reject-workspace";
+    setWorkspace(workspaceId);
+    const checkpoint = setEntitySequenceProjection(
+      workspaceId,
+      API_SCHEMA_HASH,
+    );
+    checkpoint.reset();
+    checkpoint.assign(20);
+    const documents = [
+      {
+        id: "entity:workspace:current",
+        seq: 22,
+        payload: JSON.stringify({
+          collection: "workspace",
+          id: "current",
+          value: {},
+        }),
+        _deleted: false,
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({ _syncEntities: documents, _syncEntitiesAfter: 20 }),
+      ),
+    );
+    const fallback = vi.fn();
+    const fallbackPull = vi.fn(async () => undefined);
+    checkpoint.onInFlightCoverageInvalidated(() => {
+      fallback();
+      if (!entitySequenceInvalidationCovered(checkpoint.value, 22, false))
+        void fallbackPull();
+    });
+    const unregister = registerSyncEntityPersister(async () => {
+      checkpoint.markInFlightCoverageUsed(22);
+      throw new Error("IndexedDB write failed");
+    });
+    try {
+      await expect(
+        post("/api/sync/drafts", { rows: [] }),
+      ).resolves.toMatchObject({
+        _syncEntities: documents,
+      });
+      expect(diagnostic).toHaveBeenCalledWith(
+        "Mutation entity persistence failed",
+        expect.objectContaining({ workspaceId }),
+      );
+      expect(checkpoint.effectiveCoverage()).toBe(20);
+      expect(fallback).toHaveBeenCalledOnce();
+      expect(fallbackPull).toHaveBeenCalledOnce();
+    } finally {
+      unregister();
+    }
+  });
+
+  it("bounds a stalled mutation entity persistence wait", async () => {
+    vi.useFakeTimers();
+    vi.stubGlobal("window", new EventTarget());
+    const workspaceId = "coverage-timeout-workspace";
+    setWorkspace(workspaceId);
+    const checkpoint = setEntitySequenceProjection(
+      workspaceId,
+      API_SCHEMA_HASH,
+    );
+    checkpoint.reset();
+    checkpoint.assign(30);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        Response.json({
+          _syncEntitiesAfter: 30,
+          _syncEntities: [
+            {
+              id: "entity:workspace:current",
+              seq: 35,
+              payload: "{}",
+              _deleted: false,
+            },
+          ],
+        }),
+      ),
+    );
+    const diagnostic = vi.spyOn(console, "error").mockImplementation(() => {});
+    const fallback = vi.fn();
+    const fallbackPull = vi.fn(async () => undefined);
+    checkpoint.onInFlightCoverageInvalidated(() => {
+      fallback();
+      if (!entitySequenceInvalidationCovered(checkpoint.value, 35, false))
+        void fallbackPull();
+    });
+    let markStarted = () => {};
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let releasePersistence = () => {};
+    let persistenceGuard: (() => boolean) | undefined;
+    const persistence = new Promise<void>((resolve) => {
+      releasePersistence = resolve;
+    });
+    const unregister = registerSyncEntityPersister(
+      async (_workspaceId, _rows, _after, isCurrent) => {
+        markStarted();
+        checkpoint.markInFlightCoverageUsed(35);
+        persistenceGuard = isCurrent;
+        await persistence;
+      },
+    );
+    try {
+      let settled = false;
+      const request = post("/api/sync/drafts", { rows: [] }).then((result) => {
+        settled = true;
+        return result;
+      });
+      await started;
+      await vi.advanceTimersByTimeAsync(250);
+      await expect(request).resolves.toMatchObject({
+        _syncEntities: expect.any(Array),
+      });
+      expect(settled).toBe(true);
+      expect(diagnostic).toHaveBeenCalledWith(
+        "Mutation entity persistence failed",
+        expect.objectContaining({ error: "IndexedDB persistence timed out" }),
+      );
+      expect(persistenceGuard?.()).toBe(false);
+      expect(checkpoint.effectiveCoverage()).toBe(30);
+      expect(fallback).toHaveBeenCalledOnce();
+      expect(fallbackPull).toHaveBeenCalledOnce();
+      releasePersistence();
+    } finally {
+      unregister();
+    }
   });
 
   it("does not apply the default read deadline to POST writes", async () => {

@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI and local fixture. Account variants replace only read responses.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("limits-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -28,9 +31,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
     fixture.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const initial = await fetch(`${origin}/api/state`).then((response) =>
-    response.json(),
-  );
+  const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const leadAgent = initial.runtime.agents.find(
     (agent) => agent.threadId === lead.threadId,
@@ -60,6 +61,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
     at: now,
   };
   const page = fixturePage;
+  await page.exposeFunction("__readTestState", () => readTestState(origin));
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
   await page.route("**/api/accounts", (route) =>
@@ -182,11 +184,17 @@ test("limits-ui", async ({ page: fixturePage }) => {
     }
     return route.fulfill({ json: sessionCostResult(agentId) });
   });
-  await page.route(/\/api\/state(?:\?.*)?$/, async (route) => {
+  await page.route("**/api/sync/pull?*", async (route) => {
     const response = await route.fetch();
-    const state = await response.json();
-    state.runtime.rateLimits = { ...limits, accountKey: selectedAccount };
-    await route.fulfill({ response, json: state });
+    const projection = await response.json();
+    for (const document of projection.documents ?? []) {
+      if (document.id !== "entity:workspace:current" || document._deleted)
+        continue;
+      const entity = JSON.parse(document.payload);
+      entity.value.rateLimits = { ...limits, accountKey: selectedAccount };
+      document.payload = JSON.stringify(entity);
+    }
+    await route.fulfill({ response, json: projection });
   });
   const toggle = () =>
     page.getByRole("button", { name: "Account limits", exact: true });
@@ -810,9 +818,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
     await page.locator("#send").click();
     let active;
     for (let attempt = 0; attempt < 100; attempt++) {
-      const state = await fetch(`${origin}/api/state`).then((response) =>
-        response.json(),
-      );
+      const state = await readTestState(origin);
       active = state.runtime.agents.find(
         (agent) => agent.id === selectedChat.id,
       );
@@ -889,9 +895,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
       animations: "disabled",
     });
     await page.waitForFunction(async (id) => {
-      const snapshot = await fetch("/api/state").then((response) =>
-        response.json(),
-      );
+      const snapshot = await window.__readTestState();
       return (
         snapshot.runtime.agents.find((agent) => agent.id === id)?.status ===
         "failed"

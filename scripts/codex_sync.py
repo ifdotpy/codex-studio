@@ -7,13 +7,12 @@ import time
 import uuid
 import zlib
 from contextlib import contextmanager
+from typing import Any, Callable, ContextManager, Iterator
+from codex_records import JsonObject
 from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import scope as sqlite_scope
 
 SCOPE_STRIPES = 64
-# Windows pull state together after each RESYNC. Without a write in between,
-# they share one snapshot. The age bound limits in-memory state staleness.
-SNAPSHOT_REUSE_SECONDS = 2
 TRANSCRIPT_MAX_TOMBSTONES = 512
 TRANSCRIPT_ORDER_ID = '@order'
 TRANSCRIPT_META_ID = '@meta'
@@ -22,19 +21,17 @@ TRANSCRIPT_REVISION_ID = '@revision'
 
 
 class SyncStore:
-    def __init__(self, connect, snapshot, transcript, chat_snapshot=None, state_signature=None):
-        self.connect, self.snapshot, self.transcript = connect, snapshot, transcript
-        self.chat_snapshot = chat_snapshot
-        self.state_signature = state_signature
-        self._observed_state_signature = None
-        self._signature_lock = threading.Lock()
+    def __init__(self, connect: Callable[[], ContextManager[sqlite3.Connection]],
+                 transcript: Callable[[str], Any], runtime: Any = None,
+                 canvas: Any = None) -> None:
+        self.connect, self.transcript = connect, transcript
+        self.runtime = runtime
+        self.canvas = canvas
         self._entity_prune_lock = threading.Lock()
         self.entity_prune_status = {"status": "idle", "updated": time.time(), "deleted": 0}
-        # Transcript and legacy snapshot comparisons stay serial within their
-        # stripe. The fixed stripe count bounds memory. Entity reads use SQLite
-        # snapshots without these stripes.
+        # Transcript reads stay serial within their stripe. Entity reads use
+        # SQLite snapshots without these stripes.
         self.locks = tuple(threading.RLock() for _ in range(SCOPE_STRIPES))
-        self.snapshots = {}
         with self.connection("SyncStore.initialize") as db:
             from codex_sync_entities import ensure_tables
             ensure_tables(db)
@@ -52,82 +49,47 @@ class SyncStore:
                 db.execute('INSERT INTO sync_identity VALUES (?)', (uuid.uuid4().hex,))
 
     @contextmanager
-    def connection(self, site="SyncStore"):
+    def connection(self, site: str = "SyncStore") -> Iterator[sqlite3.Connection]:
         """Guard the provider connection at every SyncStore handoff."""
         with self.connect() as db:
             with sqlite_scope(db, site):
                 yield db
 
-    def __del__(self):
+    def __del__(self) -> None:
         reader = getattr(self, '_version_reader', None)
         if reader is not None:
             reader.close()
 
-    def identity(self):
+    def identity(self) -> dict[str, object]:
         reader = getattr(self, '_version_reader', None)
         if reader is None:
             with self.connection("SyncStore.identity") as db:
                 workspace_id = db.execute('SELECT id FROM sync_identity').fetchone()[0]
         else:
-            with self._version_lock:
+            with self._version_lock:  # type: ignore[attr-defined]  # typed-narrowing: lazily initialized with version reader
                 workspace_id = reader.execute('SELECT id FROM sync_identity').fetchone()[0]
-        return {'workspaceId': workspace_id, 'syncProtocol': 2,
-                **({'chatState': True} if self.chat_snapshot else {})}
+        return {'workspaceId': workspace_id, 'syncProtocol': 2}
 
-    def generation(self):
+    def generation(self) -> int:
         # A persistent reader sees one data_version change per committed writer
         # transaction. The old row triggers wrote the same page for every row.
         self._ensure_versions()
-        with self._version_lock:
-            return self._version_reader.execute('PRAGMA data_version').fetchone()[0]
+        with self._version_lock:  # type: ignore[attr-defined]  # typed-narrowing: lazily initialized with version reader
+            return self._version_reader.execute('PRAGMA data_version').fetchone()[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 pragma result is dynamically typed
 
-    def generation_state(self):
-        # The legacy generation also covers file-backed/state:chat clients.
-        # Transcript pulls still use their per-agent revision to skip unchanged
-        # projections; the shared stream is only an invalidation hint.
-        if self.state_signature:
-            current = self.state_signature()
-            with self._signature_lock:
-                if current is not None and current != self._observed_state_signature:
-                    with self.connection("SyncStore.external_state") as db:
-                        db.execute('UPDATE sync_generation SET value=value+1 WHERE id=1')
-                    self._observed_state_signature = current
-        generation = self.generation()
-        revisions = self.transcript_revisions(generation)
-        return {"protocol": 2, **self.identity(), "generations": {
-            "state": generation, "transcripts": generation,
-            "drafts": self.draft_sequence()},
-            **({"transcriptRevisions": revisions} if revisions is not None else {})}
-
-    def transcript_revisions(self, generation):
-        """Read compact chat revisions once per committed database change."""
-        with self._version_lock:
-            cached = getattr(self, '_transcript_revisions_cache', None)
-            if cached is not None and cached[0] == generation:
-                return cached[1]
-            try:
-                rows = self._version_reader.execute(
-                    "SELECT a.id,COALESCE(r.revision,0) FROM runtime_agents a "
-                    "LEFT JOIN runtime_transcript_revisions r ON r.agent=a.id",
-                ).fetchall()
-            except sqlite3.OperationalError:
-                return None
-            revisions = {agent: int(revision) for agent, revision in rows}
-            self._transcript_revisions_cache = (generation, revisions)
-            return revisions
-
-    def entity_sequence(self):
+    def entity_sequence(self) -> int:
         from codex_sync_entities import max_seq
         with self.connection("SyncStore.entity_sequence") as db:
             return max_seq(db)
 
-    def _schedule_entity_pruning(self):
+    def _schedule_entity_pruning(self) -> None:
         """Continue tombstone cleanup outside task writes and HTTP pulls."""
         if not self._entity_prune_lock.acquire(blocking=False):
             return
         self.entity_prune_status = {"status": "running", "updated": time.time(), "deleted": 0}
 
         def prune():
+            # type: () -> None
             total_deleted = 0
             try:
                 from codex_sync_entities import (ENTITY_TOMBSTONE_LIMIT,
@@ -164,11 +126,11 @@ class SyncStore:
 
         threading.Thread(target=prune, name='entity-tombstone-pruner', daemon=True).start()
 
-    def draft_sequence(self):
+    def draft_sequence(self) -> int:
         with self.connection("SyncStore.draft_sequence") as db:
-            return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]
+            return db.execute("SELECT COALESCE(MAX(seq),0) FROM sync_documents WHERE scope='drafts'").fetchone()[0]  # type: ignore[no-any-return]  # typed-narrowing: sqlite3 aggregate results are dynamically typed
 
-    def stream_batch(self, scope, after, limit=100):
+    def stream_batch(self, scope: str, after: int, limit: int = 100) -> dict[str, Any]:
         """Read one bounded durable stream batch; never retain per-client events."""
         after = int(after)
         limit = min(100, max(1, int(limit)))
@@ -209,7 +171,7 @@ class SyncStore:
                     'cursor': cursor, 'maxSeq': cursor}
         raise ValueError('Invalid sync stream scope')
 
-    def _ensure_versions(self):
+    def _ensure_versions(self) -> None:
         # Existing make_server closures retain their SyncStore across a live
         # patch, so all new state must be initialized on first use.
         if getattr(self, '_versions_ready', False):
@@ -255,10 +217,10 @@ class SyncStore:
                                                     check_same_thread=False, timeout=10)
             self._versions_ready = True
 
-    def scope_lock(self, scope):
+    def scope_lock(self, scope: str) -> Any:
         return self.locks[zlib.crc32(str(scope).encode()) % SCOPE_STRIPES]
 
-    def transcript_revision(self, agent):
+    def transcript_revision(self, agent: str) -> int | None:
         """Return the per-agent durable revision, or None on older stores."""
         try:
             with self.connection("SyncStore.transcript_revision") as db:
@@ -270,7 +232,7 @@ class SyncStore:
             return None
         return int(row[0]) if row else 0
 
-    def transcript_revision_matches(self, scope, revision, after):
+    def transcript_revision_matches(self, scope: str, revision: int, after: int) -> int | None:
         with self.connection("SyncStore.transcript_revision_matches") as db:
             row = db.execute(
                 "SELECT hash,deleted FROM sync_entities WHERE collection=? AND id=?",
@@ -286,10 +248,11 @@ class SyncStore:
         return high if row[0] == digest else None
 
     @staticmethod
-    def document(row):
+    def document(row: Any) -> dict[str, Any]:
         return {'id': row[1], 'payload': row[2], 'seq': row[0], '_deleted': bool(row[3])}
 
-    def transcript_pull(self, scope, after, payload, deleted, revision=None):
+    def transcript_pull(self, scope: str, after: int, payload: Any, deleted: bool,
+                        revision: int | None = None) -> dict[str, Any]:
         """Project transcript deltas from bounded hash-only entity revisions."""
         from codex_sync_entities import next_sequence
 
@@ -302,6 +265,7 @@ class SyncStore:
         metadata = {key: value for key, value in payload.items() if key != 'items'} if isinstance(payload, dict) else {}
 
         def digest(value):
+            # type: (Any) -> str
             encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
             return hashlib.sha256(encoded.encode('utf-8')).hexdigest()
 
@@ -323,6 +287,7 @@ class SyncStore:
             sequence = next_sequence(db)
 
             def put(key, value_hash, is_deleted=False):
+                # type: (str, str, bool) -> bool
                 nonlocal sequence
                 old = current.get(key)
                 if old and old[2] == value_hash and bool(old[3]) == is_deleted:
@@ -349,7 +314,7 @@ class SyncStore:
                 for key, row in tuple(current.items()):
                     if key.startswith('item:') and key not in live_keys and not row[3]:
                         put(key, row[2], True)
-                put(TRANSCRIPT_ORDER_ID, order_hash, False)
+                put(TRANSCRIPT_ORDER_ID, order_hash, False)  # type: ignore[arg-type]  # typed-narrowing: order hash is present on the non-deleted path
                 put(TRANSCRIPT_META_ID, metadata_hash, False)
                 if revision_hash is not None:
                     put(TRANSCRIPT_REVISION_ID, revision_hash, False)
@@ -419,18 +384,22 @@ class SyncStore:
             return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                     'documents': documents, 'checkpoint': {'seq': checkpoint}}
 
-    def _put(self, db, scope, key, payload, deleted=False):
+    def _put(self, db: sqlite3.Connection, scope: str, key: str, payload: Any,
+             deleted: bool = False) -> None:
         self._ensure_versions()
         encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
+        # Start the write transaction before inspecting the previous row so
+        # the comparison and sequence allocation share one snapshot.
+        from codex_sync_entities import next_sequence
+        sequence = next_sequence(db)
         old = db.execute('SELECT payload, deleted FROM sync_documents WHERE scope=? AND id=?', (scope, key)).fetchone()
         if old and old[0] == encoded and bool(old[1]) == deleted:
             return
         # All persisted sync collections share one sequence space.
-        from codex_sync_entities import next_sequence
         db.execute('INSERT OR REPLACE INTO sync_documents(seq,scope,id,payload,deleted) VALUES (?,?,?,?,?)',
-                   (next_sequence(db), scope, key, encoded, int(deleted)))
+                   (sequence, scope, key, encoded, int(deleted)))
 
-    def entity_maintenance_needed(self, db):
+    def entity_maintenance_needed(self, db: sqlite3.Connection) -> bool:
         """Check the existing window rules within the pull's read snapshot."""
         from codex_entity_contracts import monitor_records
         from codex_sync_entities import encoded, project
@@ -440,7 +409,8 @@ class SyncStore:
         markers = dict(db.execute("SELECT key,value FROM sync_entity_meta WHERE key IN "
             "('seeded','agent_organization_fields','task_window_migrated','event_window_seq')"))
         if ('seeded' not in markers
-                or ('runtime_agents' in tables and 'agent_organization_fields' not in markers)
+                or (self.runtime is not None and self.canvas is not None and 'runtime_agents' in tables and
+                    int(markers.get('agent_organization_fields', '0')) < 3)
                 or ({'runtime_tasks', 'runtime_agents'} <= tables and 'task_window_migrated' not in markers)):
             return True
         if 'runtime_events' in tables:
@@ -451,16 +421,33 @@ class SyncStore:
             recent = monitor_records(db)
             stored = dict(db.execute("SELECT id,hash FROM sync_entities WHERE collection='monitor' "
                                      "AND deleted=0 LIMIT ?", (len(recent) + 1,)))
-            if set(stored) != {str(record['id']) for record in recent}:
-                return True
+            valid_recent: list[tuple[str, JsonObject]] = []
+            unprojectable: set[str] = set()
             for record in recent:
-                key = str(record['id'])
-                _, digest, _ = encoded('monitor', key, project('monitor', record))
-                if stored[key] != digest:
+                key = record.get('id')
+                if not isinstance(key, str) or not key:
+                    from codex_sync_entities import _report_bad_entity
+                    _report_bad_entity('monitor', str(key or ''), ValueError('stored record has no valid id'))
+                    continue
+                projected = project('monitor', record)
+                if projected is None:
+                    unprojectable.add(key)
+                    continue
+                valid_recent.append((key, record))
+            comparable_stored = {key: value for key, value in stored.items() if key not in unprojectable}
+            if set(comparable_stored) != {key for key, _record in valid_recent}:
+                return True
+            for key, record in valid_recent:
+                projected = project('monitor', record)
+                if projected is None:
+                    continue
+                _, digest, _ = encoded('monitor', key, projected)
+                if comparable_stored[key] != digest:
                     return True
         return False
 
-    def entity_pull(self, after, limit, fresh, initial_high, reset_support, priority_id):
+    def entity_pull(self, after: int, limit: int, fresh: bool, initial_high: int,
+                    reset_support: bool, priority_id: str | None) -> dict[str, Any]:
         """Use SQLite snapshots and its writer lock without a shared scope stripe."""
         from codex_sync_entities import (entity_tombstone_floor, max_seq,
                                          seed, sync_task_window,
@@ -474,7 +461,7 @@ class SyncStore:
                 # The existing maintenance functions read again under the writer.
                 db.rollback()
                 db.execute('BEGIN IMMEDIATE')
-                seed(db, self.chat_snapshot or self.snapshot)
+                seed(db, runtime_owner=self.runtime, canvas_owner=self.canvas)
                 startup_memory_mark("entity-seed")
                 # Retire old task DTOs gradually so existing checkpoints
                 # consume the resulting tombstones through ordinary deltas.
@@ -491,7 +478,7 @@ class SyncStore:
             floor = entity_tombstone_floor(db)
             initial_high = (min(high, max(0, int(initial_high)))
                             if fresh and int(initial_high) > 0 else high)
-            if reset_support and not fresh and after > 0 and after < floor:
+            if reset_support and not fresh and after > 0 and (after < floor or after > high):
                 return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                         'reset': True, 'floor': floor, 'maxSeq': high}
             # A new browser has no rows to remove. Existing checkpoints
@@ -511,15 +498,27 @@ class SyncStore:
                                    AND (?=0 OR deleted=0 OR seq>?)
                                  ORDER BY seq LIMIT ?''',
                               (after, floor, int(bool(fresh)), initial_high, limit)).fetchall()
-            documents = [{'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
-                          'seq': row[2], '_deleted': bool(row[4])} for row in rows]
-            checkpoint = (documents[-1]['seq'] if len(documents) == limit else high)
+            documents = []
+            from codex_sync_entities import validate_stored_entity_payload, _report_bad_entity
+            for row in rows:
+                try:
+                    validate_stored_entity_payload(row[3], str(row[0]), str(row[1]), bool(row[4]))
+                except Exception as error:
+                    _report_bad_entity(str(row[0]), str(row[1]), error)
+                    continue
+                documents.append({'id': 'entity:' + row[0] + ':' + row[1], 'payload': row[3],
+                                  'seq': row[2], '_deleted': bool(row[4])})
+            # Validation may omit bad stored rows. Advance over the fetched
+            # source page, not the filtered document list, or a short filtered
+            # page would skip all remaining valid rows up to high-watermark.
+            checkpoint = (rows[-1][2] if len(rows) == limit else high)
             return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
                     'documents': documents, 'checkpoint': {'seq': checkpoint},
                     'maxSeq': high, 'initialHigh': initial_high if fresh else 0}
 
-    def pull(self, scope, after=0, limit=100, fresh=False, initial_high=0,
-             reset_support=False, priority_id=None):
+    def pull(self, scope: str, after: int = 0, limit: int = 100, fresh: bool = False,
+             initial_high: int = 0, reset_support: bool = False,
+             priority_id: str | None = None) -> dict[str, Any]:
         after = max(0, int(after))
         limit = min(500 if scope == 'state:entities:v1' else 100, max(1, int(limit)))
         self._ensure_versions()
@@ -528,85 +527,41 @@ class SyncStore:
             # its read snapshot and maintenance writes consistent. A scope
             # stripe would queue readers behind unrelated transcript work.
             return self.entity_pull(after, limit, fresh, initial_high, reset_support, priority_id)
-        with self.scope_lock(scope):
-            if scope == 'state' or (scope == 'state:chat' and self.chat_snapshot):
-                encoded, digest = self.shared_snapshot(scope)
-                deleted = False
-            elif scope.startswith('transcript:') and len(scope) < 300:
-                revision = self.transcript_revision(scope.split(':', 1)[1])
+        if scope.startswith('transcript:') and len(scope) < 300:
+            with self.scope_lock(scope):
+                agent_id = scope.split(':', 1)[1]
+                revision = self.transcript_revision(agent_id)
                 if revision is not None:
                     checkpoint = self.transcript_revision_matches(scope, revision, after)
                     if checkpoint is not None:
                         return {'workspaceId': self.identity()['workspaceId'],
                                 'documents': [], 'checkpoint': {'seq': checkpoint}}
                 try:
-                    payload, deleted = self.transcript(scope.split(':', 1)[1]), False
+                    payload, deleted = self.transcript(agent_id), False
                 except ValueError:
                     payload, deleted = {}, True
-                if scope.startswith('transcript:'):
-                    return self.transcript_pull(scope, after, payload, deleted, revision)
-            elif scope != 'drafts':
-                raise ValueError('Invalid sync scope')
-            if scope.startswith('transcript:'):
-                return self.transcript_pull(scope, after, payload, deleted)
-            with self.connection("SyncStore.pull") as db:
-                if scope == 'drafts':
-                    rows = db.execute('SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
-                                      (scope, after, limit)).fetchall()
-                    documents = [self.document(row) for row in rows]
-                else:
-                    current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
-                    if current is None or current[1] != digest or bool(current[2]) != deleted:
-                        # Different scope stripes can update simultaneously.
-                        # Claim the next global sequence under SQLite's writer
-                        # lock, then recheck a version written while waiting.
-                        db.execute('BEGIN IMMEDIATE')
-                        current = db.execute('SELECT seq,hash,deleted FROM sync_versions WHERE scope=?', (scope,)).fetchone()
-                        if current is None or current[1] != digest or bool(current[2]) != deleted:
-                            legacy = (db.execute('SELECT seq,payload,deleted FROM sync_documents WHERE scope=? AND id=?',
-                                                 (scope, scope)).fetchone() if current is None else None)
-                            if legacy and legacy[1] == encoded and bool(legacy[2]) == deleted:
-                                seq = legacy[0]
-                            else:
-                                from codex_sync_entities import next_sequence
-                                seq = next_sequence(db)
-                            if current is None:
-                                db.execute('INSERT INTO sync_versions VALUES (?,?,?,?,?)',
-                                           (seq, scope, digest, int(deleted), time.time()))
-                            else:
-                                db.execute('UPDATE sync_versions SET seq=?,hash=?,deleted=?,updated=? WHERE scope=?',
-                                           (seq, digest, int(deleted), time.time(), scope))
-                        else:
-                            seq = current[0]
-                    else:
-                        seq = current[0]
-                    documents = ([{'id': scope, 'payload': encoded, 'seq': seq, '_deleted': deleted}]
-                                 if seq > after else [])
-                return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
-                        'documents': documents,
-                        'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
+                return self.transcript_pull(scope, after, payload, deleted, revision)
+        if scope != 'drafts':
+            raise ValueError('Invalid sync scope')
+        with self.scope_lock(scope), self.connection("SyncStore.pull") as db:
+            rows = db.execute(
+                'SELECT seq,id,payload,deleted FROM sync_documents WHERE scope=? AND seq>? ORDER BY seq LIMIT ?',
+                (scope, after, limit),
+            ).fetchall()
+            documents = [self.document(row) for row in rows]
+            return {'workspaceId': db.execute('SELECT id FROM sync_identity').fetchone()[0],
+                    'documents': documents,
+                    'checkpoint': {'seq': documents[-1]['seq'] if documents else after}}
 
-    def shared_snapshot(self, scope):
-        # The caller holds this scope's lock.
-        generation = self.generation()
-        cached = self.snapshots.get(scope)
-        if cached and cached[0] == generation and time.monotonic() - cached[1] < SNAPSHOT_REUSE_SECONDS:
-            return cached[2], cached[3]
-        payload = dict(self.chat_snapshot() if scope == 'state:chat' else self.snapshot())
-        payload.pop('token', None)
-        payload.pop('at', None)
-        encoded = json.dumps(payload, sort_keys=True, separators=(',', ':'), ensure_ascii=False)
-        digest = hashlib.sha256(encoded.encode('utf-8')).hexdigest()
-        # A write during the snapshot changes the generation; the next pull rebuilds.
-        # Retain the wire representation in the existing cache. The raw object
-        # has no caller after this point and would otherwise be kept as well.
-        self.snapshots[scope] = (generation, time.monotonic(), encoded, digest)
-        return encoded, digest
-
-    def push_drafts(self, rows):
+    def push_drafts(self, rows: Any) -> list[dict[str, Any]]:
         if not isinstance(rows, list) or len(rows) > 100:
             raise ValueError('Invalid draft batch')
         conflicts = []
+        # Lazy DDL must finish before the draft write transaction. The
+        # initializer opens its own connection and can otherwise deadlock with
+        # the writer that reaches _put below.
+        if rows:
+            self._ensure_versions()
         with self.scope_lock('drafts'), self.connection("SyncStore.draft_write") as db:
             db.execute('BEGIN IMMEDIATE')
             for row in rows:

@@ -1,5 +1,4 @@
 """ASIF image backend for macOS workspaces."""
-
 from __future__ import annotations
 
 import ctypes
@@ -13,8 +12,15 @@ import subprocess
 import sys
 import threading
 import time
+from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from subprocess import CompletedProcess
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from codex_records import ImageWorkspaceBaseState
+    from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
 
 ATTR_CMNEXT_PRIVATESIZE = 0x00000008
 FSOPT_NOFOLLOW = 0x00000001
@@ -34,21 +40,21 @@ class _AttrList(ctypes.Structure):
                 ('forkattr', ctypes.c_uint32)]
 
 
-def _run(args, *, timeout=120, check=True, **kwargs):
+def _run(args: Sequence[str | Path], *, timeout: float = 120, check: bool = True, **kwargs: Any) -> CompletedProcess[bytes]:
     return subprocess.run([str(x) for x in args], timeout=timeout, check=check,
                           capture_output=True, **kwargs)
 
 
-def _diskutil_plist(args):
+def _diskutil_plist(args: Sequence[str]) -> dict[str, Any]:
     result = _run(['diskutil', *args, '--plist'], timeout=300)
-    return plistlib.loads(result.stdout)
+    return plistlib.loads(result.stdout)  # type: ignore[no-any-return]  # typed-narrowing: diskutil plist is an OS response decoded at this boundary
 
 
-def _mounted(path):
+def _mounted(path: str | Path) -> bool:
     return Path(path).is_mount()
 
 
-def _device_for_mount(mount):
+def _device_for_mount(mount: str | Path) -> str | None:
     mount = Path(mount).resolve()
     info = plistlib.loads(_run(['hdiutil', 'info', '-plist'], timeout=5).stdout)
     for image in info.get('images', []):
@@ -63,16 +69,17 @@ def _device_for_mount(mount):
             entry = next((item for item in entities
                           if re.fullmatch(r'/dev/disk\d+', item.get('dev-entry', ''))), None)
             if entry:
-                return entry['dev-entry']
+                return entry['dev-entry']  # type: ignore[no-any-return]  # typed-narrowing: diskutil returns a device path string
     return None
 
 
-def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
+def _copy_tree_parallel(source: Path, dest: Path, excludes: Iterable[str | Path] = (), *,
+                        check: Callable[[], None] | None = None) -> None:
     source, dest = Path(source).resolve(), Path(dest).resolve()
     exclusions = [Path(value).as_posix() for value in excludes]
-    units = []
+    units: list[list[str]] = []
 
-    def partition(directory, depth=0):
+    def partition(directory: str | Path, depth: int = 0) -> None:
         if check:
             check()
         relative = Path(directory)
@@ -84,7 +91,8 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
         if depth >= 2:
             units.append([relative.as_posix()])
             return
-        files, directories = [], []
+        files: list[str] = []
+        directories: list[Path] = []
         for entry in entries:
             path = relative / entry.name
             path_value = path.as_posix()
@@ -103,11 +111,11 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
     partition(Path('.'))
     if not units:
         return
-    shards = [[] for _ in range(min(16, len(units)))]
+    shards: list[list[str]] = [[] for _ in range(min(16, len(units)))]
     for index, unit in enumerate(units):
         shards[index % len(shards)].extend(unit)
 
-    def copy_shard(names):
+    def copy_shard(names):  # type: (list[str]) -> None
         if not names:
             return
         if check:
@@ -120,8 +128,9 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
                 command.extend(['--exclude', relative, '--exclude', relative + '/*'])
         command.extend(['--', *names])
         producer = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        consumer = None
+        consumer: subprocess.Popen[bytes] | None = None
         try:
+            assert producer.stdout is not None
             consumer = subprocess.Popen(['tar', '-C', str(dest), '-xf', '-'], stdin=producer.stdout,
                                         stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
             producer.stdout.close()
@@ -135,6 +144,7 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
             if check:
                 check()
             producer_stderr = producer.communicate(timeout=5)[1]
+            assert consumer is not None
             consumer_stderr = consumer.communicate(timeout=5)[1]
         except BaseException:
             if producer.stdout:
@@ -153,6 +163,7 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
                     process.kill()
                     process.wait()
             raise
+        assert consumer is not None
         if producer.returncode or consumer.returncode:
             raise RuntimeError((producer_stderr + consumer_stderr).decode(errors='replace')[-3000:])
 
@@ -162,7 +173,7 @@ def _copy_tree_parallel(source, dest, excludes=(), *, check=None):
             future.result()
 
 
-def _fsevent_api():
+def _fsevent_api() -> tuple[Any, Any, Any]:
     global _FSEVENT_API
     if _FSEVENT_API is not None:
         return _FSEVENT_API
@@ -198,7 +209,7 @@ def _fsevent_api():
     return _FSEVENT_API
 
 
-def _read_events(root, since):
+def _read_events(root: str | Path, since: int) -> tuple[list[tuple[str, int, int]], int]:
     """Return (paths, flags, newest id); event history loss is explicit."""
     core, foundation, dispatch = _fsevent_api()
     current = int(core.FSEventsGetCurrentEventId())
@@ -216,7 +227,7 @@ def _read_events(root, since):
                                      ctypes.POINTER(ctypes.c_char_p), ctypes.POINTER(ctypes.c_uint32),
                                      ctypes.POINTER(ctypes.c_uint64))
 
-    def callback(_stream, _info, count, cfpaths, flags_ptr, ids_ptr):
+    def callback(_stream, _info, count, cfpaths, flags_ptr, ids_ptr):  # type: (Any, Any, Any, Any, Any, Any) -> None
         try:
             flags = ctypes.cast(flags_ptr, ctypes.POINTER(ctypes.c_uint32))
             ids = ctypes.cast(ids_ptr, ctypes.POINTER(ctypes.c_uint64))
@@ -229,6 +240,7 @@ def _read_events(root, since):
 
     callback_ref = callback_type(callback)
     # FSEventStreamContext is five pointer-sized fields.
+    # Preserve the nested structure's original line position for its bytecode fingerprint.
     class _Context(ctypes.Structure):
         _fields_ = [('version', ctypes.c_long), ('info', ctypes.c_void_p),
                     ('retain', ctypes.c_void_p), ('release', ctypes.c_void_p),
@@ -258,12 +270,13 @@ def _read_events(root, since):
     return collected, latest
 
 
-def current_event_id(_root):
+def current_event_id(_root: str | Path) -> int:
     core, _foundation, _dispatch = _fsevent_api()
     return int(core.FSEventsGetCurrentEventId())
 
 
-def _rsync_folder(source, target, excludes=(), *, destination_root=None):
+def _rsync_folder(source: Path, target: Path, excludes: Iterable[str | Path] = (), *,
+                  destination_root: Path | None = None) -> None:
     source, target = Path(source), Path(target)
     destination_root = Path(destination_root) if destination_root is not None else target
     _prepare_delta_directory(target, destination_root)
@@ -274,7 +287,7 @@ def _rsync_folder(source, target, excludes=(), *, destination_root=None):
         raise RuntimeError(result.stderr.decode(errors='replace')[-3000:])
 
 
-def _prepare_delta_parent(target, destination_root):
+def _prepare_delta_parent(target: Path, destination_root: Path) -> None:
     target, destination_root = Path(target), Path(destination_root)
     parent = target.parent
     relative = parent.relative_to(destination_root)
@@ -294,7 +307,7 @@ def _prepare_delta_parent(target, destination_root):
             current.mkdir()
 
 
-def _prepare_delta_directory(target, destination_root):
+def _prepare_delta_directory(target: Path, destination_root: Path) -> None:
     target, destination_root = Path(target), Path(destination_root)
     if target != destination_root:
         _prepare_delta_parent(target, destination_root)
@@ -311,7 +324,7 @@ def _prepare_delta_directory(target, destination_root):
         target.mkdir()
 
 
-def _copy_delta_entry(source, target, destination_root=None):
+def _copy_delta_entry(source: Path, target: Path, destination_root: Path | None = None) -> None:
     if not source.exists() and not source.is_symlink():
         if destination_root is not None:
             _prepare_delta_parent(target, destination_root)
@@ -348,13 +361,13 @@ def _copy_delta_entry(source, target, destination_root=None):
         else:
             target.unlink()
     try:
-        os.clonefile(source, target)
+        os.clonefile(source, target)  # type: ignore[attr-defined]  # typed-narrowing: clonefile is supplied by macOS at runtime
     except (AttributeError, OSError):
         shutil.copy2(source, target)
 
 
 class Backend:
-    def supported(self, repo_root):
+    def supported(self, repo_root: Path) -> tuple[bool, str]:
         if sys.platform != 'darwin':
             return False, 'macOS image workspaces require Darwin'
         if not Path(repo_root).is_dir():
@@ -363,7 +376,7 @@ class Backend:
             return False, 'diskutil is unavailable'
         return True, ''
 
-    def exclude_store(self, store):
+    def exclude_store(self, store: Path) -> None:
         store = Path(store)
         store.mkdir(parents=True, exist_ok=True)
         marker = store / '.time-machine-excluded'
@@ -371,14 +384,14 @@ class Backend:
             _run(['tmutil', 'addexclusion', str(store)], timeout=30)
             marker.touch()
 
-    def current_event_id(self, repo_root):
+    def current_event_id(self, repo_root: Path) -> int:
         return current_event_id(repo_root)
 
-    def base_needs_refresh(self, repo_root, base_state):
+    def base_needs_refresh(self, repo_root: Path, base_state: ImageWorkspaceBaseState) -> bool:
         if not base_state or not base_state.get('token'):
             return False
         try:
-            events, _newest = _read_events(repo_root, int(base_state['token']))
+            events, _newest = _read_events(repo_root, int(base_state['token']))  # type: ignore[arg-type]  # typed-narrowing: saved FSEvents tokens are integer event IDs
         except (OSError, RuntimeError, TimeoutError):
             return True
         if len(events) >= 1000:
@@ -396,7 +409,7 @@ class Backend:
         base_bytes = self.private_bytes(Path(base_state.get('image', ''))) or 0
         return changed_bytes >= max(16 * 1024**2, int(base_bytes * .35))
 
-    def open_base_refresh(self, repo_root, repo_key, version, old_state):
+    def open_base_refresh(self, repo_root: Path, repo_key: str, version: str, old_state: ImageWorkspaceBaseState) -> WorkspaceBaseStaging:
         store = Path(os.environ.get('CODEX_WORKSPACE_STORE') or
                      Path.home() / '.local/state/codex-agents/workspaces')
         version_path = store / 'bases' / repo_key / 'versions' / version
@@ -415,7 +428,7 @@ class Backend:
                 'versionPath': version_path, 'token': old_state.get('token'), 'version': version,
                 'refresh': True}
 
-    def open_base_staging(self, repo_root, repo_key, version):
+    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> WorkspaceBaseStaging:
         root = Path(os.environ.get('CODEX_WORKSPACE_STORE') or
                     Path.home() / '.local/state/codex-agents/workspaces')
         version_path = root / 'bases' / repo_key / 'versions' / version
@@ -438,16 +451,17 @@ class Backend:
         return {'root': mount / 'repo', 'image': image, 'mount': mount,
                 'versionPath': version_path, 'token': token, 'version': version}
 
-    def copy_base_tree(self, repo_root, destination, *, excludes=(), check=None):
+    def copy_base_tree(self, repo_root: Path, destination: Path, *, excludes: tuple[str, ...] = (),
+                       check: Callable[[], None] | None = None) -> None:
         _copy_tree_parallel(Path(repo_root).resolve(), Path(destination), excludes, check=check)
 
-    def seal_base(self, staging):
+    def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging:
         mount = Path(staging['mount'])
         self.unmount_workspace(mount)
         return {'image': Path(staging['image']), 'versionPath': Path(staging['versionPath']),
                 'token': staging.get('token')}
 
-    def clone_workspace(self, base_image, agent_dir):
+    def clone_workspace(self, base_image: Path, agent_dir: Path) -> Path:
         base_image, agent_dir = Path(base_image), Path(agent_dir)
         agent_dir.mkdir(parents=True, exist_ok=True)
         image = agent_dir / 'workspace.asif'
@@ -458,7 +472,7 @@ class Backend:
                 shutil.copy2(base_image, image)
         return image
 
-    def mount_workspace(self, layer, mount, *, base_image=None):
+    def mount_workspace(self, layer: Path, mount: Path, *, base_image: Path | None = None) -> WorkspaceMount:
         layer, mount = Path(layer), Path(mount)
         mount.mkdir(parents=True, exist_ok=True)
         if _mounted(mount):
@@ -466,7 +480,7 @@ class Backend:
         _diskutil_plist(['image', 'attach', '--nobrowse', '--mountPoint', str(mount), str(layer)])
         return {'mount': str(mount)}
 
-    def sync_delta(self, repo_root, target_repo, token, *, excludes=()):
+    def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *, excludes: tuple[str, ...] = ()) -> WorkspaceDelta:
         current = token.get('token') if isinstance(token, dict) else token
         excluded = {Path(value) for value in excludes}
         root = Path(repo_root).resolve()
@@ -474,7 +488,7 @@ class Backend:
         changed_paths = set()
         scan_paths = set()
 
-        def apply(events):
+        def apply(events):  # type: (list[tuple[str, int, int]]) -> bool
             did_copy = False
             scans = []
             paths = set()
@@ -520,7 +534,7 @@ class Backend:
 
         for _pass in range(12):
             try:
-                events, newest = _read_events(repo_root, int(current or 0))
+                events, newest = _read_events(repo_root, int(current or 0))  # type: ignore[call-overload]  # typed-narrowing: event tokens originate in FSEvents as integers
             except _FSEventsHistoryLost:
                 _rsync_folder(root, target, excludes)
                 return {'token': current_event_id(root), 'changedPaths': ['.'],
@@ -545,7 +559,7 @@ class Backend:
 
         # One final delta pass bounds work during sustained writes.
         try:
-            events, newest = _read_events(repo_root, int(current or 0))
+            events, newest = _read_events(repo_root, int(current or 0))  # type: ignore[call-overload]  # typed-narrowing: event tokens originate in FSEvents as integers
         except _FSEventsHistoryLost:
             _rsync_folder(root, target, excludes)
             return {'token': current_event_id(root), 'changedPaths': ['.'],
@@ -560,10 +574,10 @@ class Backend:
             else:
                 apply(events)
             current = newest
-        return {'token': current, 'changedPaths': sorted(changed_paths),
+        return {'token': current, 'changedPaths': sorted(changed_paths),  # type: ignore[typeddict-item]  # typed-narrowing: event tokens originate in FSEvents as integers
                 'scanPaths': sorted(scan_paths), 'historyLost': False}
 
-    def unmount_workspace(self, mount, *, force=False):
+    def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, object]:
         mount = Path(mount)
         if not _mounted(mount):
             return {'method': 'already-unmounted', 'terminatedPids': 0}
@@ -578,6 +592,7 @@ class Backend:
             eject_timed_out = True
             error = 'Timed out while ejecting the workspace disk image'
         else:
+            assert result is not None
             error = result.stderr.decode(errors='replace')[-3000:]
         if result is not None and result.returncode == 0 and not _mounted(mount):
             return {'method': 'eject', 'terminatedPids': 0}
@@ -636,10 +651,10 @@ class Backend:
                 'lsofTimedOut': lsof_timed_out, 'ejectTimedOut': eject_timed_out}
 
 
-    def remove_layer(self, agent_dir):
+    def remove_layer(self, agent_dir: Path) -> None:
         shutil.rmtree(agent_dir, ignore_errors=False)
 
-    def remove_base_version(self, path):
+    def remove_base_version(self, path: Path) -> None:
         path = Path(path)
         mount = path / 'mount' if path.is_dir() else path.parent / 'mount'
         if mount.exists() and _mounted(mount):
@@ -650,14 +665,14 @@ class Backend:
         if path.is_dir():
             shutil.rmtree(path, ignore_errors=True)
 
-    def private_bytes(self, path):
-        return _apfs_private_bytes(Path(path))
+    def private_bytes(self, path: Path) -> int:
+        return _apfs_private_bytes(Path(path))  # type: ignore[return-value]  # typed-suspect: private APFS byte count can be unavailable
 
-    def exec_prefix(self):
+    def exec_prefix(self) -> list[str]:
         return []
 
 
-def _pid_exists(pid):
+def _pid_exists(pid: int) -> bool:
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -667,7 +682,7 @@ def _pid_exists(pid):
     return True
 
 
-def _apfs_private_bytes(path):
+def _apfs_private_bytes(path: Path) -> int | None:
     try:
         function = ctypes.CDLL(None, use_errno=True).getattrlist
         function.argtypes = [ctypes.c_char_p, ctypes.POINTER(_AttrList), ctypes.c_void_p,

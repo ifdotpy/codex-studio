@@ -34,8 +34,28 @@ def eventually(predicate, timeout=4):
 
 
 class LifecycleScenarios(unittest.TestCase):
-    setUp = fixture.MonitorLifecycleContract.setUp
-    tearDown = fixture.MonitorLifecycleContract.tearDown
+    def setUp(self):
+        fixture.MonitorLifecycleContract.setUp(self)
+        self.monitor_done = {}
+        self.track_monitor_completion()
+
+    def track_monitor_completion(self):
+        original = self.runtime.run_monitor
+
+        def run(key):
+            try:
+                return original(key)
+            finally:
+                self.monitor_done.setdefault(key, threading.Event()).set()
+
+        self.runtime.run_monitor = run
+
+    def tearDown(self):
+        try:
+            fixture.MonitorLifecycleContract.tearDown(self)
+        finally:
+            if hasattr(self, "real_rules_tick"):
+                Runtime.rules_tick = self.real_rules_tick
     record = fixture.MonitorLifecycleContract.record
     exits = fixture.MonitorLifecycleContract.exits
 
@@ -58,14 +78,10 @@ class LifecycleScenarios(unittest.TestCase):
             thread.join(3)
             self.assertFalse(thread.is_alive())
         self.monitor_threads.clear()
-        if hold_rules_tick:
-            tick = Runtime.rules_tick
+        if hold_rules_tick and not hasattr(self, "real_rules_tick"):
+            self.real_rules_tick = Runtime.rules_tick
             Runtime.rules_tick = lambda runtime: None
-        try:
-            self.runtime = Runtime(Path(self.temp.name), fixture.MonitorServer)
-        finally:
-            if hold_rules_tick:
-                Runtime.rules_tick = tick
+        self.runtime = Runtime(Path(self.temp.name), fixture.MonitorServer)
         self.agent = self.runtime.agent(self.agent["id"])
         self.server = self.runtime.server or self.runtime.servers.get("default")
         original = self.runtime.run_monitor
@@ -75,6 +91,7 @@ class LifecycleScenarios(unittest.TestCase):
             return original(key)
 
         self.runtime.run_monitor = run
+        self.track_monitor_completion()
 
     def monitor_record(self, key):
         with self.runtime.db() as db:
@@ -83,11 +100,25 @@ class LifecycleScenarios(unittest.TestCase):
             ).fetchone()
         return json.loads(row[0])
 
+    def reset_monitor_agent(self):
+        """Give the next independent monitor operation a clean agent lease."""
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.agent["id"])
+            agent.update(status="running", autoWake=True, inFlight=False, turnId=None)
+            agent.pop("contextRepairWait", None)
+            agent.pop("disconnectRecovery", None)
+            self.runtime.put(db, "agents", agent)
+            self.agent = agent
+
     def monitor_count(self, key):
         with self.runtime.db() as db:
             return db.execute(
                 "SELECT COUNT(*) FROM runtime_events WHERE id=?", ("monitor:" + key,)
             ).fetchone()[0]
+
+    def wait_monitor(self, key, timeout=4):
+        done = self.monitor_done.setdefault(key, threading.Event())
+        self.assertTrue(done.wait(timeout), "Monitor worker did not complete")
 
     def abandon_pending_commands(self):
         self.server.timeout_commands = True
@@ -97,12 +128,13 @@ class LifecycleScenarios(unittest.TestCase):
         # No durable result file: restart reports unknown and does not rerun.
         self.server.timeout_commands = True
         unknown = self.monitor(success_exit_codes=[0, 1])
-        eventually(lambda: bool(self.record(unknown).get("error")))
+        self.wait_monitor(unknown)
         self.abandon_pending_commands()
         self.restart()
         self.assertEqual(self.monitor_record(unknown)["status"], "lost")
         self.assertEqual(self.monitor_count(unknown), 1)
         self.assertTrue(self.no_command_replayed())
+        self.reset_monitor_agent()
 
         self.server = self.runtime.connect("default")
         # A result file survives a failed SQLite commit and restores exit code 1.
@@ -116,18 +148,20 @@ class LifecycleScenarios(unittest.TestCase):
         self.runtime._finish_monitor = fail_commit
         self.server.finish(pending, 1)
         receipt = monitor_result_path(self.temp.name, pending)
-        eventually(receipt.exists)
+        self.wait_monitor(pending)
+        self.assertTrue(receipt.exists())
         self.assertEqual(self.monitor_record(pending)["status"], "running")
         self.runtime._finish_monitor = original
         self.restart()
         self.assertEqual(self.monitor_record(pending)["status"], "completed")
         self.assertEqual(self.monitor_record(pending)["exitCode"], 1)
         self.assertEqual(self.monitor_count(pending), 1)
+        self.reset_monitor_agent()
 
         # A committed result remains exact and does not create a second event.
         committed = self.monitor(success_exit_codes=[0, 1])
         self.server.finish(committed, 1)
-        eventually(lambda: self.monitor_record(committed)["status"] == "completed")
+        self.wait_monitor(committed)
         self.restart()
         self.assertEqual(self.monitor_record(committed)["exitCode"], 1)
         self.assertEqual(self.monitor_count(committed), 1)
@@ -135,7 +169,7 @@ class LifecycleScenarios(unittest.TestCase):
     def test_scenario_11_late_exact_receipt_sends_one_explicit_correction(self):
         self.server.timeout_commands = True
         key = self.monitor(success_exit_codes=[0, 1])
-        eventually(lambda: bool(self.record(key).get("error")))
+        self.wait_monitor(key)
         monitor = self.monitor_record(key)
         self.abandon_pending_commands()
         self.restart()
@@ -184,14 +218,32 @@ class LifecycleScenarios(unittest.TestCase):
         self.assertEqual(self.monitor_record(key)["status"], "lost")
         self.assertEqual(self.monitor_count(key), 1)
         self.assertTrue(self.no_command_replayed())
+        self.reset_monitor_agent()
 
+        self.reset_monitor_agent()
         self.server = self.runtime.connect("default")
         self.server.timeout_commands = True
         key = self.monitor()
-        eventually(lambda: "outcome unknown" in (self.monitor_record(key).get("error") or ""))
+        self.wait_monitor(key)
+        original_submit = self.runtime.pool.submit
+        results = []
+
+        def track_result(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, "__name__", None) == "monitor_result":
+                results.append(future)
+            return future
+
+        self.runtime.pool.submit = track_result
         self.server.died()
         self.assertEqual(self.monitor_record(key)["status"], "lost")
-        self.abandon_pending_commands()
+        self.server.commands[key].set_exception(
+            ResponseTimeout("command/exec response timed out; outcome unknown")
+        )
+        eventually(lambda: bool(results))
+        results[0].result(timeout=4)
+        self.runtime.pool.submit = original_submit
+        self.server.commands.clear()
         self.restart()
         self.assertEqual(self.monitor_record(key)["status"], "lost")
         self.assertEqual(self.monitor_count(key), 1)
@@ -202,15 +254,32 @@ class LifecycleScenarios(unittest.TestCase):
             monitor = self.monitor_record(key)
             monitor["activityAt"] = time.time() - 120
             self.runtime.put(db, "monitors", monitor)
-        self.runtime.monitors_tick()
-        eventually(lambda: self.monitor_record(key).get("lastLivenessResult") is not None)
+        original_submit = self.runtime.pool.submit
+        probes = []
+
+        def track_probe(function, *args, **kwargs):
+            future = original_submit(function, *args, **kwargs)
+            if getattr(function, "__name__", None) == "monitor_stall_probe":
+                probes.append(future)
+            return future
+
+        # The tick submits the probe to the existing runtime executor. Wait for
+        # that exact Future before inspecting its committed monitor state.
+        self.runtime.pool.submit = track_probe
+        try:
+            self.runtime.monitors_tick()
+            self.assertEqual(len(probes), 1)
+            probes[0].result(timeout=4)
+        finally:
+            self.runtime.pool.submit = original_submit
+        self.assertIsNotNone(self.monitor_record(key).get("lastLivenessResult"))
         before = sum(1 for method, params in self.server.calls
                      if method == "command/exec" and params.get("processId", "").startswith("liveness:"))
         self.assertEqual(before, 1)
         self.server.commands[key].set_exception(
             ResponseTimeout("command/exec response timed out; outcome unknown")
         )
-        eventually(lambda: bool(self.monitor_record(key).get("error")))
+        self.wait_monitor(key)
         self.server.commands.clear()
         self.restart()
         self.assertEqual(self.monitor_record(key)["status"], "lost")
@@ -244,7 +313,7 @@ class LifecycleScenarios(unittest.TestCase):
                              "epoch": owner["epoch"], "accountKey": owner.get("accountKey", "default"),
                              "threadId": owner["threadId"]})
             self.runtime.put(db, "agents", owner)
-        self.runtime.rules_tick()
+        self.real_rules_tick(self.runtime)
         with self.runtime.db() as db:
             records = {r["id"]: r for r in self.runtime.records(db, "rules")}
         self.assertEqual([records[r["id"]]["status"] for r in rules], ["active"] * 3)
@@ -256,7 +325,7 @@ class LifecycleScenarios(unittest.TestCase):
                 "threadId": owner["threadId"], "autoWake": True,
             }
             self.runtime.put(db, "agents", owner)
-        self.runtime.rules_tick()
+        self.real_rules_tick(self.runtime)
         with self.runtime.db() as db:
             records = {r["id"]: r for r in self.runtime.records(db, "rules")}
         self.assertEqual([records[r["id"]]["status"] for r in rules], ["active"] * 3)
@@ -279,7 +348,7 @@ class LifecycleScenarios(unittest.TestCase):
         monitor = self.runtime.monitor(worker["id"], {"command": "true"},
                                        approved=True, rule={**rule, "inFlight": True, "checks": 1})
         self.server.command_wait_entered.wait(3)
-        eventually(lambda: bool(self.monitor_record(monitor["id"]).get("error")))
+        self.wait_monitor(monitor["id"])
         self.abandon_pending_commands()
         self.restart(hold_rules_tick=True)
         with self.runtime.db() as db:

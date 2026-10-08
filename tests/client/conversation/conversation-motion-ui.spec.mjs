@@ -1,12 +1,18 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+  readFixtureSyncContract,
+  stubEntityState,
+} from "../playwright.mjs";
 // Production renderer with controlled transcript timing and isolated server state.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("conversation motion ui @performance", async ({ page: runnerPage }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -53,10 +59,9 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
-    const syncIdentity = await (
-      await fetch(origin + "/api/sync/identity")
-    ).json();
+    const state = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
+    const syncIdentity = syncContract.identity;
     const lead = state.threads.find((a) => a.name === "Other project");
     const other = state.threads.find((a) => a.name === "Release lead");
     let items = Array.from({ length: 36 }, (_, i) => ({
@@ -104,36 +109,41 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           },
           true,
         );
-        window.EventSource = class extends EventTarget {
-          constructor(url) {
-            super();
-            this.url = url;
-            window.motionStreams.push(this);
-          }
-          close() {
-            window.motionStreams = window.motionStreams.filter(
-              (s) => s !== this,
-            );
-          }
-        };
+        const NativeEventSource = window.EventSource;
+        window.EventSource = new Proxy(NativeEventSource, {
+          construct(target, args) {
+            const url = String(args[0]);
+            if (new URL(url, location.href).pathname === "/api/sync/stream")
+              return Reflect.construct(target, args);
+            class TranscriptFixtureStream extends EventTarget {
+              constructor() {
+                super();
+                this.url = url;
+                window.motionStreams.push(this);
+              }
+              close() {
+                window.motionStreams = window.motionStreams.filter(
+                  (stream) => stream !== this,
+                );
+              }
+            }
+            return new TranscriptFixtureStream();
+          },
+        });
         window.motionEmit = (id, data) => {
           for (const s of window.motionStreams)
             if (new URL(s.url, location.href).searchParams.get("id") === id)
               s.onmessage?.({ data: JSON.stringify(data) });
         };
       });
-      // These controlled snapshots use the HTTP path, not fixture replication.
-      await page.route("**/api/sync/**", (route) =>
-        route.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
-      );
-      await page.route(/\/api\/state(?:\?.*)?$/, (r) =>
-        r.fulfill({
-          json: {
-            ...state,
-            threads: state.threads.map((a) => (a.id === lead.id ? agent : a)),
-            runtime: { ...state.runtime, requests: [] },
-          },
-        }),
+      await stubEntityState(
+        page,
+        {
+          ...state,
+          threads: state.threads.map((a) => (a.id === lead.id ? agent : a)),
+          runtime: { ...state.runtime, requests: [] },
+        },
+        syncContract,
       );
       await page.route("**/api/transcript?*", (r) =>
         r.fulfill({

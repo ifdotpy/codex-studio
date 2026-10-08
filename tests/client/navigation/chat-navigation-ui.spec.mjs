@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("chat-navigation-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -117,7 +120,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     .first()
     .click();
   await page.getByRole("heading", { name: "New chat", exact: true }).waitFor();
-  const state = await (await fetch(url + "/api/state")).json();
+  const state = await readTestState(url);
   assert.ok(
     state.runtime.agents.some(
       (a) => a.name === "New chat" && a.status === "idle",
@@ -282,7 +285,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     .locator("#messages")
     .getByText("/monitor must-not-run", { exact: true })
     .waitFor();
-  const afterMessage = await (await fetch(url + "/api/state")).json();
+  const afterMessage = await readTestState(url);
   assert.equal(
     afterMessage.runtime.monitors.length,
     state.runtime.monitors.length,

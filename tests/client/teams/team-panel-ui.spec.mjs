@@ -1,7 +1,12 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  readFixtureSyncContract,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,18 +36,13 @@ test("Team panel ui", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
     const errors = [],
       actions = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    const diskRequests = [];
-    page.on("request", (request) => {
-      if (new URL(request.url()).pathname === "/api/worktree-disk")
-        diskRequests.push(request.url());
-    });
     await page.route("**/api/action", (route) => {
       actions.push(route.request().postDataJSON());
       return route.fulfill({
@@ -98,14 +98,10 @@ test("Team panel ui", async ({
     snapshot.runtime.requests = [
       { id: "answer", agent: needsYou.id, status: "pending" },
     ];
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({
-        status: 503,
-        json: { error: "Fixture uses HTTP snapshots" },
-      }),
-    );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: snapshot }),
+    await stubEntityState(
+      page,
+      snapshot,
+      await readFixtureSyncContract(origin),
     );
     await page.goto(origin);
     await page.locator("#message").waitFor();
@@ -230,11 +226,6 @@ test("Team panel ui", async ({
       await card.locator(".worker-error-details summary").click();
     }
     assert.deepEqual(errors, []);
-    assert.deepEqual(
-      diskRequests,
-      [],
-      "Team panel must not request folder sizes",
-    );
     console.log(
       `PASS compact team, readable error, complete details, 1440/320px. ${evidence}`,
     );

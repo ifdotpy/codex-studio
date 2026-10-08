@@ -53,6 +53,25 @@ class Source {
   }
   emit(name: string, value: unknown) {
     if (name === "api-schema") this.schemaEmitted = true;
+    if (
+      name === "resources" &&
+      value &&
+      typeof value === "object" &&
+      !("resourceVersions" in value) &&
+      Array.isArray((value as { resources?: unknown }).resources)
+    ) {
+      const frame = value as {
+        revision: number;
+        resources: Array<{ kind: string }>;
+      };
+      value = {
+        ...frame,
+        resourceVersions: frame.resources.map((resource) => ({
+          resource,
+          revision: frame.revision,
+        })),
+      };
+    }
     this.emitRaw(name, value);
   }
   emitRaw(name: string, value: unknown) {
@@ -127,6 +146,264 @@ describe("shared resource event transport", () => {
     await vi.advanceTimersByTimeAsync(30_000);
     expect(syncDatabase).toHaveBeenCalledTimes(2);
     expect(Source.instances[0]!.closed).toBe(true);
+  });
+
+  it("coalesces same-turn subscriptions and never reopens an identical URL", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const stopState = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    const stopCosts = transport.watchResourceChanges(
+      { kind: "costs" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const initialUrl = Source.instances[0]!.url;
+    expect(
+      JSON.parse(
+        new URL(initialUrl, "http://studio.test").searchParams.get(
+          "resources",
+        )!,
+      ),
+    ).toHaveLength(2);
+
+    const stopAccounts = transport.watchResourceChanges(
+      { kind: "accounts" },
+      vi.fn(),
+    );
+    const stopAccountsAgain = transport.watchResourceChanges(
+      { kind: "accounts" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(2));
+    expect(Source.instances[1]!.url).not.toBe(initialUrl);
+    expect(Source.instances.filter((source) => !source.closed)).toHaveLength(1);
+    const latestUrl = Source.instances[1]!.url;
+
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(Source.instances.at(-1)!.url).toBe(latestUrl);
+    expect(Source.instances).toHaveLength(2);
+    stopAccountsAgain();
+    stopAccounts();
+    stopCosts();
+    stopState();
+  });
+
+  it("suppresses only the exact entity sequence batch applied from a response", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const state = { kind: "state" } as const;
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(state, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const stream = Source.instances[0]!;
+    const emit = (
+      revision: number,
+      entitySequences?: number[],
+      resourceRevision = revision,
+    ) =>
+      stream.emit("resources", {
+        protocol: 3,
+        workspaceId,
+        epoch: "epoch-one",
+        revision,
+        reason: "change",
+        resources: [state],
+        ...(entitySequences
+          ? {
+              resourceVersions: [
+                {
+                  revision: resourceRevision,
+                  entitySequences,
+                },
+              ],
+            }
+          : {}),
+      });
+
+    emit(1, []);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 1,
+      entitySequence: 1,
+    });
+    transport.acknowledgeEntitySequences([2, 3], workspaceId);
+    emit(3, [2, 3]);
+    await Promise.resolve();
+    expect(onChange).toHaveBeenCalledTimes(1);
+
+    emit(4, [2, 4]);
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 4,
+      entitySequence: 4,
+    });
+    stream.emitRaw("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 5,
+      reason: "change",
+      resources: [state],
+    });
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(3));
+
+    transport.acknowledgeEntitySequences([5, 6], workspaceId);
+    emit(6, [5, 6]);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(onChange).toHaveBeenCalledTimes(3);
+    emit(7, [5, 6], 6);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(onChange).toHaveBeenCalledTimes(3);
+    stop();
+  });
+
+  it("dispatches a reset frame even when the state revision is unchanged", async () => {
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+
+    const transport = await import("./resourceEvents");
+    const state = { kind: "state" } as const;
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(state, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const stream = Source.instances[0]!;
+    stream.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 8,
+      reason: "change",
+      resources: [state],
+      resourceVersions: [{ revision: 8 }],
+    });
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
+
+    stream.emit("resources", {
+      protocol: 3,
+      workspaceId,
+      epoch: "epoch-one",
+      revision: 8,
+      reason: "change",
+      resources: [state],
+      resourceVersions: [{ revision: 8, entitySequenceReset: true }],
+    });
+
+    await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
+    expect(onChange).toHaveBeenLastCalledWith({
+      epoch: "epoch-one",
+      revision: 8,
+      entitySequenceReset: true,
+    });
+    stop();
+  });
+
+  it("rechecks peer subscriptions before the coordinator idle stop", async () => {
+    vi.useFakeTimers();
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", {
+      onLine: true,
+      locks: {
+        request: (
+          _name: string,
+          _options: unknown,
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
+      },
+    });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
+    vi.stubGlobal("EventSource", Source);
+    vi.stubGlobal("BroadcastChannel", Channel);
+
+    const transport = await import("./resourceEvents");
+    const stop = transport.watchResourceChanges({ kind: "state" }, vi.fn());
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    const ownerChannel = Channel.instances[0]!;
+    stop();
+    await vi.advanceTimersByTimeAsync(900);
+    ownerChannel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "tab-peer",
+        apiSchemaHash: API_SCHEMA_HASH,
+        resources: [{ kind: "costs" }],
+        tokenRates: false,
+        reset: true,
+      },
+    } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(Source.instances).toHaveLength(2);
+    expect(Source.instances[1]!.closed).toBe(false);
+    expect(Source.instances[1]!.url).not.toBe(Source.instances[0]!.url);
+    ownerChannel.onmessage?.({
+      data: {
+        kind: "subscriptions",
+        workspaceId,
+        tabId: "tab-peer",
+        apiSchemaHash: API_SCHEMA_HASH,
+        resources: [],
+        tokenRates: false,
+        reset: true,
+      },
+    } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(1_000);
+    vi.useRealTimers();
   });
 
   it("ignores resource-channel messages sent by another schema version", async () => {
@@ -449,6 +726,64 @@ describe("shared resource event transport", () => {
     },
   );
 
+  it("restarts the identity probe when a listener returns during idle grace", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Math, "random").mockReturnValue(0.5);
+    syncDatabase.mockResolvedValue({ workspaceId });
+    vi.stubGlobal("window", {
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    vi.stubGlobal("document", {
+      hidden: false,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    });
+    vi.stubGlobal("navigator", { onLine: true });
+    vi.stubGlobal("location", { origin: "http://studio.test" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
+    vi.stubGlobal("EventSource", Source);
+    const fetch = vi.fn(
+      (request: Request) =>
+        new Promise<Response>((_resolve, reject) => {
+          request.signal.addEventListener(
+            "abort",
+            () => reject(new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        }),
+    );
+    vi.stubGlobal("fetch", fetch);
+    Source.skipNextAutoHandshake = true;
+    const transport = await import("./resourceEvents");
+    const stopFirst = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
+    Source.instances[0]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(1);
+    const firstSignal = fetch.mock.calls[0]![0].signal;
+
+    stopFirst();
+    expect(firstSignal.aborted).toBe(true);
+    Source.skipNextAutoHandshake = true;
+    const stopSecond = transport.watchResourceChanges(
+      { kind: "state" },
+      vi.fn(),
+    );
+    await vi.advanceTimersByTimeAsync(500);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.onerror?.();
+    expect(fetch).toHaveBeenCalledTimes(2);
+    const secondSignal = fetch.mock.calls[1]![0].signal;
+    expect(secondSignal.aborted).toBe(false);
+
+    stopSecond();
+    expect(secondSignal.aborted).toBe(true);
+  });
+
   it("retries pre-handshake failures three times and ignores a late handshake", async () => {
     vi.useFakeTimers();
     vi.spyOn(Math, "random").mockReturnValue(0.5);
@@ -484,6 +819,7 @@ describe("shared resource event transport", () => {
     for (let attempt = 2; attempt <= 3; attempt++) {
       Source.skipNextAutoHandshake = true;
       resumeListeners.forEach((resume) => resume());
+      await vi.waitFor(() => expect(Source.instances).toHaveLength(attempt));
       const next = Source.instances.at(-1)!;
       next.open();
       next.onerror?.();
@@ -926,6 +1262,7 @@ describe("shared resource event transport", () => {
       revision: 1,
       reason: "initial",
       resources: [panel],
+      resourceVersions: [{ resource: panel, revision: 1 }],
     });
     await vi.waitFor(() => expect(panelChanges).toHaveBeenCalledTimes(1));
     first.emit("resources", {
@@ -935,6 +1272,7 @@ describe("shared resource event transport", () => {
       revision: 1,
       reason: "change",
       resources: [panel],
+      resourceVersions: [{ resource: panel, revision: 1 }],
     });
     await new Promise((resolve) => setTimeout(resolve, 30));
     expect(panelChanges).toHaveBeenCalledTimes(1);
@@ -945,6 +1283,9 @@ describe("shared resource event transport", () => {
       revision: 2,
       reason: "change",
       resources: [{ kind: "panel", agentId: "another-agent" }],
+      resourceVersions: [
+        { resource: { kind: "panel", agentId: "another-agent" }, revision: 2 },
+      ],
     });
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(panelChanges).toHaveBeenCalledTimes(1);
@@ -1438,6 +1779,12 @@ describe("shared resource event transport", () => {
       },
     } as MessageEvent);
 
+    await vi.waitFor(() =>
+      expect(Source.instances).toHaveLength(
+        sourceCountBeforeLateSubscription + 1,
+      ),
+    );
+
     expect(Source.instances).toHaveLength(
       sourceCountBeforeLateSubscription + 1,
     );
@@ -1504,9 +1851,7 @@ describe("shared resource event transport", () => {
     const local = { kind: "panel", agentId: "resume-panel" } as const;
     const onChange = vi.fn();
     const stop = transport.watchResourceChanges(local, onChange);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(Source.instances).toHaveLength(1);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const initial = {
       protocol: 3,
       workspaceId,
@@ -1514,6 +1859,7 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [local],
+      resourceVersions: [{ resource: local, revision: 7 }],
     };
     Source.instances[0]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
@@ -1591,6 +1937,10 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [a, b],
+      resourceVersions: [
+        { resource: a, revision: 7 },
+        { resource: b, revision: 7 },
+      ],
     };
     const send = (kind: string, value: unknown) =>
       followerChannel.onmessage?.({
@@ -1672,9 +2022,7 @@ describe("shared resource event transport", () => {
     const onB = vi.fn();
     let stopA = transport.watchResourceChanges(a, onA);
     const stopB = transport.watchResourceChanges(b, onB);
-    await Promise.resolve();
-    await Promise.resolve();
-    expect(Source.instances).toHaveLength(1);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
 
     const baseline = {
       protocol: 3,
@@ -1683,6 +2031,10 @@ describe("shared resource event transport", () => {
       revision: 7,
       reason: "initial",
       resources: [a, b],
+      resourceVersions: [
+        { resource: a, revision: 7 },
+        { resource: b, revision: 7 },
+      ],
     };
     Source.instances[0]!.emit("resources", baseline);
     await vi.advanceTimersByTimeAsync(20);

@@ -52,6 +52,11 @@ class WorkResultFiles(unittest.TestCase):
             event = db.execute("SELECT text FROM runtime_events WHERE id=?",
                 ('work-result:' + first['results'][-1]['id'],)).fetchone()
         self.assertEqual(saved['results'][-1]['resultFile'], str(path))
+        with self.rt.db() as db:
+            entity = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.worker['id'],)).fetchone()[0])['value']
+        self.assertEqual(entity['overview']['resultFile'], str(path))
         self.assertEqual(json.loads(event[0])['result']['text'], first['results'][-1]['text'])
         self.assertEqual(json.loads(event[0])['result']['resultFile'], str(path))
         with self.assertRaisesRegex(ValueError, 'different content'):

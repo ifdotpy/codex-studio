@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Real runtime notification handlers, SQLite, SSE and Chromium. No inference.
 import assert from "node:assert/strict";
 import { mkdtemp, readFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -52,7 +51,7 @@ test("rich preview ui", async ({ browser: _browser }) => {
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () => await (await fetch(origin + "/api/state")).json();
+    const state = async () => await readTestState(origin);
     browser = _browser;
     const context = await browser.newContext({
       viewport: { width: 1280, height: 960 },

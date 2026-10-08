@@ -1,8 +1,7 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { randomUUID, createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { mkdtemp, readFile, rm } from "node:fs/promises";
@@ -49,7 +48,7 @@ test("Message receipt pagination browser", async ({
   const receiptRequests = [];
   const errors = [];
 
-  const changeFixture = (agent, phase) => {
+  const changeFixture = async (agent, phase, target, token) => {
     execFileSync(
       python,
       [
@@ -105,6 +104,25 @@ test("Message receipt pagination browser", async ({
       ],
       { timeout: 5000, stdio: "pipe" },
     );
+    if (phase === "delivered") {
+      const response = await fetch(target + "/api/sync/notify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Origin: target,
+          "X-Canvas-Token": token,
+        },
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [
+            { kind: "queue", agentId: agent },
+            { kind: "receipts", agentId: agent },
+            { kind: "transcript", agentId: agent },
+          ],
+        }),
+      });
+      assert.equal(response.status, 200, await response.text());
+    }
   };
 
   const until = async (check, label, timeout = 10000) => {
@@ -146,10 +164,10 @@ test("Message receipt pagination browser", async ({
       );
       return response.json();
     };
-    const state = await get("/api/state?view=chat");
+    const state = await readTestState(target);
     const agent = state.threads.find((agent) => agent.name === "Release lead");
     assert.ok(agent?.id);
-    changeFixture(agent.id, "initial");
+    await changeFixture(agent.id, "initial", target, state.token);
 
     server = await createServer({
       configFile: false,
@@ -295,7 +313,7 @@ test("Message receipt pagination browser", async ({
       "Accepted intentions must never be sent again",
     );
 
-    changeFixture(agent.id, "delivered");
+    await changeFixture(agent.id, "delivered", target, state.token);
     const latest = await get(`/api/transcript?id=${agent.id}`);
     assert.equal(latest.items.length, 120);
     assert.ok(
@@ -306,7 +324,7 @@ test("Message receipt pagination browser", async ({
     );
     assert.deepEqual((await get(`/api/queue?agent=${agent.id}`)).items, []);
     assert.ok(
-      !(await get("/api/state?view=chat")).runtime.events.some(
+      !(await readTestState(target)).runtime.events.some(
         (event) => event.id === id,
       ),
     );

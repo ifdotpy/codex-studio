@@ -508,7 +508,7 @@ class CoreResponseTests(unittest.TestCase):
             context.start_api_schema_hash().result(timeout=2)
         client = TestClient(app)
         for method, path, request_headers in (
-            ("GET", "/api/state", {"Origin": "http://test"}),
+            ("GET", "/api/session", {"Origin": "http://test"}),
             ("POST", "/api/messages", {
                 "Origin": "http://test", "X-Canvas-Token": context.token,
                 "Content-Type": "application/json",
@@ -519,7 +519,7 @@ class CoreResponseTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), response.headers)
         response = client.get(
-            "/api/state",
+            "/api/session",
             headers={"Origin": "http://test", API_SCHEMA_HASH_HEADER: "renderer-hash"},
         )
         self.assertEqual(response.status_code, 503)
@@ -557,7 +557,7 @@ class CoreResponseTests(unittest.TestCase):
             ) as client:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
                 hashless = await client.get(
-                    "/api/state",
+                    "/api/session",
                     headers={"Origin": "http://test"},
                 )
                 self.assertEqual(hashless.status_code, 200)
@@ -780,7 +780,7 @@ class CoreResponseTests(unittest.TestCase):
             ) as client:
                 self.assertTrue(await asyncio.to_thread(started.wait, 2))
                 before = time.perf_counter()
-                early_get = await client.get("/api/state")
+                early_get = await client.get("/api/session")
                 early_latency = time.perf_counter() - before
                 self.assertEqual(early_get.status_code, 200)
                 self.assertNotIn(API_SCHEMA_HASH_HEADER.lower(), early_get.headers)
@@ -805,7 +805,7 @@ class CoreResponseTests(unittest.TestCase):
                 self.assertFalse(stream_request.done())
                 release.set()
                 await asyncio.to_thread(hash_future.result, 2)
-                api_response = await client.get("/api/state")
+                api_response = await client.get("/api/session")
                 self.assertEqual(api_response.headers[API_SCHEMA_HASH_HEADER.lower()], "server-schema")
                 self.assertEqual(api_response.status_code, 200)
                 post_response, stream_response = await asyncio.gather(
@@ -1006,6 +1006,8 @@ class CoreResponseTests(unittest.TestCase):
         request.scope["studio_sync_entities_after"] = 0
         with closing(sqlite3.connect(":memory:")) as db:
             db.execute("CREATE TABLE sync_entities(collection, id, seq, payload, deleted)")
+            db.execute("CREATE TABLE sync_entity_meta(key, value)")
+            db.execute("INSERT INTO sync_entity_meta VALUES ('entity_tombstone_floor', '0')")
             db.execute("INSERT INTO sync_entities VALUES ('agent', 'a1', 1, '{}', 0)")
             with patch.object(self.context, "sync", return_value=SimpleNamespace(connect=lambda: db)):
                 first = self.context.send(request, value)
@@ -1014,6 +1016,7 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertEqual(json.loads(bytes(first.body)), {
             "paired": True,
+            "_syncEntitiesAfter": 0,
             "_syncEntities": [{"id": "entity:agent:a1", "seq": 1, "payload": "{}", "_deleted": False}],
         })
         self.assertEqual(bytes(second.body), b'{"paired":true}')
@@ -1092,13 +1095,6 @@ class CoreResponseTests(unittest.TestCase):
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
 
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        fake_modules[sync_models.__name__] = sync_models
         schema_package = ModuleType("studio_api.sync")
         schema_package.__path__ = []
         fake_modules[schema_package.__name__] = schema_package
@@ -1110,9 +1106,7 @@ class CoreResponseTests(unittest.TestCase):
             app = create_app(ApiContext.for_schema())
             paths = app.openapi()["paths"]
         self.assertIn("/api/session", paths)
-        self.assertIn("/api/state", paths)
-        self.assertIn("400", paths["/api/state"]["get"]["responses"])
-        self.assertIn("403", paths["/api/state"]["get"]["responses"])
+        self.assertNotIn("/api/state", paths)
         self.assertIn("409", paths["/api/federation/v1/raw"]["post"]["responses"])
         self.assertIn("RawFederationBody", app.openapi()["components"]["schemas"])
         self.assertNotIn("x-studio-components", paths["/api/federation/v1/raw"]["post"])
@@ -1146,17 +1140,6 @@ class CoreResponseTests(unittest.TestCase):
             router_module.create_router = create_router  # type: ignore[attr-defined]
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
-
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        sync_package = ModuleType("studio_api.sync")
-        sync_package.__path__ = []
-        fake_modules[sync_package.__name__] = sync_package
-        fake_modules[sync_models.__name__] = sync_models
 
         context = ApiContext.for_schema()
         context.remote = SimpleNamespace(request_origin=lambda _headers, _peer, _port: "http://testserver")
@@ -1218,24 +1201,6 @@ class CoreResponseTests(unittest.TestCase):
             fake_modules[package_name] = package
             fake_modules[router_module.__name__] = router_module
 
-        sync_package = ModuleType("studio_api.sync")
-        sync_package.__path__ = []
-        sync_models = ModuleType("studio_api.sync.models")
-
-        class StateSnapshot(ResponseModel):
-            threads: list[JsonValue]
-            chats: list[JsonValue]
-            nodes: list[JsonValue]
-            edges: list[JsonValue]
-            at: float
-            stateDir: str
-            runtime: JsonValue | None
-            token: str
-
-        sync_models.StateSnapshot = StateSnapshot  # type: ignore[attr-defined]
-        fake_modules[sync_package.__name__] = sync_package
-        fake_modules[sync_models.__name__] = sync_models
-
         with tempfile.TemporaryDirectory(prefix="studio-api-core-") as state_dir:
             from codex_canvas import Canvas
             import codex_canvas
@@ -1257,7 +1222,7 @@ class CoreResponseTests(unittest.TestCase):
                 with patch.object(codex_canvas, "WEB", web_root):
                     with httpx.Client(base_url=f"http://127.0.0.1:{server.server_port}", timeout=5) as client:
                         session = client.get("/api/session")
-                        state = client.get("/api/state")
+                        identity = session
                         static = client.get("/")
                         unknown = client.get("/api/unknown")
                         mismatch = client.post(
@@ -1277,7 +1242,7 @@ class CoreResponseTests(unittest.TestCase):
                         headers={"X-Canvas-Token": unix_session.json()["token"]},
                     )
                 self.assertEqual(session.status_code, 200)
-                self.assertEqual(state.status_code, 200)
+                self.assertEqual(identity.status_code, 200)
                 self.assertEqual(static.status_code, 200)
                 self.assertEqual(static.content, b"<html>fixture</html>")
                 self.assertEqual(unknown.status_code, 404)

@@ -95,7 +95,7 @@ def create_router(context: ApiContext) -> APIRouter:
         def dispatch() -> Response:
             try:
                 value = body.model_dump(mode="json", exclude_unset=True)
-                service = runtime.federation()  # type: ignore[no-untyped-call]
+                service = runtime.federation()
                 if isinstance(body, ApprovePeerRequest):
                     result = service.approve_peer(body.state_id, body.accept_missing_whois)
                 else:
@@ -150,7 +150,7 @@ def create_router(context: ApiContext) -> APIRouter:
             try:
                 # Keep the signed byte sequence untouched; the service verifies
                 # its signature against these exact bytes.
-                result = runtime.federation().route(action, headers, peer, raw)  # type: ignore[no-untyped-call]
+                result = runtime.federation().route(action, headers, peer, raw)
                 return context.send(request, result)
             except PermissionError as error:
                 return context.send(request, {"error": str(error)}, status=403)

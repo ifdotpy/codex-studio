@@ -12,7 +12,11 @@ import subprocess
 import sys
 import tempfile
 import time
-from typing import Any, Iterable
+from collections.abc import Callable, Iterable
+from typing import Any
+
+from codex_records import JsonObject
+from codex_workspace_images import WorkspaceBaseStaging, WorkspaceDelta, WorkspaceMount
 
 
 _HOLDERS: dict[int, subprocess.Popen[bytes]] = {}
@@ -62,7 +66,8 @@ def _relative_excludes(root: Path, excludes: Iterable[str | Path]) -> set[Path]:
 
 
 def _copy_folder(source: Path, destination: Path,
-                 excludes: Iterable[str | Path] = (), *, check=None) -> None:
+                 excludes: Iterable[str | Path] = (), *,
+                 check: Callable[[], None] | None = None) -> None:
     """Copy a folder tree with rsync and the requested folder exclusions."""
     source = source.resolve()
     if destination.exists():
@@ -128,9 +133,9 @@ def _proc_start_time(pid: int) -> str | None:
         return None
 
 
-def _namespace_alive(record: dict[str, Any]) -> bool:
+def _namespace_alive(record: JsonObject) -> bool:
     try:
-        pid = int(record["pid"])
+        pid = int(record["pid"])  # type: ignore[arg-type]  # typed-narrowing: persisted namespace PID is an OS integer or decimal string
     except (KeyError, TypeError, ValueError):
         return False
     if _proc_start_time(pid) != str(record.get("startTime")):
@@ -142,7 +147,7 @@ def _namespace_alive(record: dict[str, Any]) -> bool:
         return False
 
 
-def _write_json(path: Path, value: dict[str, Any]) -> None:
+def _write_json(path: Path, value: JsonObject) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, temp_name = tempfile.mkstemp(prefix=path.name + ".", dir=path.parent)
     try:
@@ -176,7 +181,7 @@ class Backend:
         del repo_root
         return None
 
-    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> dict[str, Any]:
+    def open_base_staging(self, repo_root: Path, repo_key: str, version: str) -> WorkspaceBaseStaging:
         del repo_root
         parent = _workspace_store() / "bases" / repo_key
         parent.mkdir(parents=True, exist_ok=True)
@@ -193,10 +198,11 @@ class Backend:
         return {"root": repo, "token": None, "versionPath": staging_path}
 
     def copy_base_tree(self, repo_root: Path, destination: Path, *,
-                       excludes: tuple[str, ...], check=None) -> None:
+                       excludes: tuple[str, ...],
+                       check: Callable[[], None] | None = None) -> None:
         _copy_folder(Path(repo_root), Path(destination), excludes, check=check)
 
-    def seal_base(self, staging: dict[str, Any]) -> dict[str, Any]:
+    def seal_base(self, staging: WorkspaceBaseStaging) -> WorkspaceBaseStaging:
         staging_path = Path(staging["versionPath"]).resolve()
         version = staging_path.with_name(staging_path.name[1:-len(".building")])
         if version.exists():
@@ -219,7 +225,7 @@ class Backend:
         return agent_dir
 
     def mount_workspace(self, layer: Path, mount: Path, *,
-                        base_image: Path | None = None) -> dict[str, Any]:
+                        base_image: Path | None = None) -> WorkspaceMount:
         if base_image is None:
             raise ValueError("Linux overlay mount requires a frozen base_image")
         layer, mount, base_image = Path(layer).resolve(), Path(mount).resolve(), Path(base_image).resolve()
@@ -234,8 +240,8 @@ class Backend:
                   "overlay", str(mount), options])
         return {"mount": str(mount), "layer": str(layer), "baseImage": str(base_image), "pid": pid}
 
-    def sync_delta(self, repo_root: Path, target_repo: Path, token: object, *,
-                   excludes: tuple[str, ...]) -> dict[str, Any]:
+    def sync_delta(self, repo_root: Path, target_repo: Path, token: str | int | dict[str, object] | None, *,
+                   excludes: tuple[str, ...]) -> WorkspaceDelta:
         current_token = token.get("token") if isinstance(token, dict) else token
         repo_root = Path(repo_root).resolve()
         target_repo = Path(os.path.abspath(target_repo))
@@ -262,11 +268,11 @@ class Backend:
         for line in result.stdout.splitlines():
             if len(line) < 12 or line[11] != " ":
                 continue
-            path = line[12:]
-            path = path.removeprefix("./").rstrip("/")
+            path = line[12:]  # type: ignore[assignment]  # typed-narrowing: Git status output rebinds the previous Path loop variable to text
+            path = path.removeprefix("./").rstrip("/")  # type: ignore[attr-defined]  # typed-narrowing: the preceding status field is text
             if path:
                 changed_paths.add(path)
-        return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}
+        return {"token": current_token, "changedPaths": sorted(changed_paths), "historyLost": False}  # type: ignore[typeddict-item]  # typed-narrowing: backend tokens are JSON scalar values from the persisted state
 
     def unmount_workspace(self, mount: Path, *, force: bool = False) -> dict[str, Any]:
         mount = Path(mount).resolve()

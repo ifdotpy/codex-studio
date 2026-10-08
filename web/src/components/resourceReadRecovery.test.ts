@@ -83,6 +83,7 @@ vi.mock("../sync/resourceEvents", () => ({
 import { useMessageReceipts } from "./useMessageReceipts";
 import { useMessageQueue } from "./useMessageQueue";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
+import { useAccounts } from "./Accounts";
 import Usage from "./Usage";
 import { ApiError } from "../api";
 
@@ -168,6 +169,31 @@ describe("resource read callers", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes the accounts list after an accounts resource event", async () => {
+    const before = {
+      accounts: [{ id: "connected", email: "person@example.test" }],
+      archivedAccounts: [],
+      defaultAccountKey: "connected",
+      logins: [],
+    };
+    const after = {
+      ...before,
+      accounts: [
+        { id: "connected", email: "person@example.test", disconnected: true },
+      ],
+    };
+    get.mockResolvedValueOnce(before).mockResolvedValueOnce(after);
+    mount(() => useAccounts("workspace"));
+
+    notify({ kind: "accounts" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states[0]?.value).toEqual(before);
+    notify({ kind: "accounts" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states[0]?.value).toEqual(after);
+    expect(get).toHaveBeenCalledTimes(2);
+  });
+
   it("recovers a deferred queue read without repeating the queue mutation", async () => {
     const old = {
       items: [{ id: "message-one", text: "old" }],
@@ -245,6 +271,28 @@ describe("resource read callers", () => {
       models: [{ model: "gpt-6-luna" }],
       error: "",
       pending: false,
+    });
+  });
+
+  it("uses the selected account catalog after an account switch", async () => {
+    get.mockImplementation(
+      async (_path: string, options: { query: { account_key: string } }) => ({
+        data: [{ model: `${options.query.account_key}-model` }],
+      }),
+    );
+    mount(() => useWorkerModels("first-account", true, true));
+    notify({ kind: "models" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "first-account-model" }],
+    });
+
+    for (const cleanup of cleanups.splice(0)) cleanup();
+    mount(() => useWorkerModels("current-account", true, true));
+    notify({ kind: "models" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(states[0]?.value).toMatchObject({
+      models: [{ model: "current-account-model" }],
     });
   });
 

@@ -1,3 +1,9 @@
+import {
+  test,
+  expect,
+  handleEntitySyncFixtureRequest,
+  syncIdentityFixture,
+} from "../playwright.mjs";
 // Production React build with isolated account fixtures. No credentials or model calls.
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
@@ -5,8 +11,6 @@ import { access, readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
 
 async function runAccountsUi(mode, { page: fixturePage }) {
   const root = dirname(
@@ -181,6 +185,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       },
     };
   };
+  const syncWorkspaceId = syncIdentityFixture().workspaceId;
   const server = createServer(async (req, res) => {
     const url = new URL(req.url, "http://localhost");
     let body = {};
@@ -194,26 +199,34 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       res.setHeader("Content-Type", "application/json");
       res.end(JSON.stringify(data));
     };
-    if (url.pathname === "/api/state") {
-      stateReads++;
-      return json({
-        token: "fixture",
-        stateDir: evidence,
-        threads: agents,
-        chats: [],
-        runtime: {
-          agents,
-          rooms: [],
-          complaints: [],
-          requests: [],
-          monitors: [],
-          tasks: [],
-          work: [],
-          userTasks: [],
-          rateLimitsByAccount: snapshotLimits,
+    const stateForEntities = {
+      stateDir: evidence,
+      threads: agents,
+      chats: [],
+      runtime: {
+        agents,
+        rooms: [],
+        complaints: [],
+        requests: [],
+        monitors: [],
+        tasks: [],
+        work: [],
+        userTasks: [],
+        rateLimitsByAccount: snapshotLimits,
+      },
+    };
+    if (
+      handleEntitySyncFixtureRequest(req, res, {
+        snapshot: stateForEntities,
+        workspaceId: syncWorkspaceId,
+        onPull: () => {
+          stateReads++;
         },
-      });
-    }
+      })
+    )
+      return;
+    if (url.pathname === "/api/session") return json({ token: "fixture" });
+
     if (
       url.pathname === "/api/accounts" ||
       url.pathname === "/api/accounts/discover" ||

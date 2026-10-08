@@ -33,6 +33,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
           revision,
           reason: "change",
           resources: [resource],
+          resourceVersions: [{ resource, revision }],
         })}\n\n`,
       );
     }
@@ -66,6 +67,10 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
             revision: 0,
             reason: "initial",
             resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision: 0,
+            })),
           })}\n\n`,
         );
         const stream = {
@@ -146,7 +151,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     for (const kind of ["timeout", "network", "408", "429", "503"]) {
       await page.evaluate((kind) => {
         window.states = [];
-        window.stop = window.client.subscribeProjection(
+        window.stop = window.client.subscribeTranscriptProjection(
           `transcript:${kind}`,
           () => {},
           (error) => window.states.push(error ? String(error) : "live"),
@@ -192,7 +197,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     for (const kind of ["403", "workspace"]) {
       await page.evaluate((kind) => {
         window.states = [];
-        window.stop = window.client.subscribeProjection(
+        window.stop = window.client.subscribeTranscriptProjection(
           `transcript:${kind}`,
           () => {},
           (error) => window.states.push(error ? String(error) : "live"),
@@ -210,7 +215,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     }
     await page.evaluate(() => {
       window.states = [];
-      window.stop = window.client.subscribeProjection(
+      window.stop = window.client.subscribeTranscriptProjection(
         "transcript:persistent503",
         () => {},
         (error) => window.states.push(error ? String(error) : "live"),
@@ -238,7 +243,7 @@ test("sync-read-retry-browser", async ({ page: fixturePage }) => {
     await page.evaluate(() => window.stop());
     await page.evaluate(() => {
       window.states = [];
-      window.stop = window.client.subscribeProjection(
+      window.stop = window.client.subscribeTranscriptProjection(
         "transcript:decode",
         () => {},
         (error) => window.states.push(error ? String(error) : "live"),

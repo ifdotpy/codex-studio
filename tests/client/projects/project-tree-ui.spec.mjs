@@ -1,4 +1,10 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath } from "node:fs/promises";
@@ -6,8 +12,6 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test("project tree ui", async ({ page: runnerPage }) => {
   test.setTimeout(240_000);
   const skill = dirname(
@@ -123,8 +127,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
     } else {
       await page.goto(url);
     }
-    const state = async () =>
-      (await (await fetch(url + "/api/state")).json()).runtime.agents;
+    const state = async () => (await readTestState(url)).runtime.agents;
     const waitFor = async (predicate) => {
       for (let i = 0; i < 100; i++) {
         const result = await predicate();
@@ -133,7 +136,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
       }
       throw Error("Timed out: " + log);
     };
-    const token = (await (await fetch(url + "/api/state")).json()).token;
+    const token = (await readTestState(url)).token;
     const post = async (path, body) => {
       const response = await fetch(url + path, {
         method: "POST",
@@ -228,12 +231,10 @@ test("project tree ui", async ({ page: runnerPage }) => {
     const beforeProjects = await projectOrder();
     await waitFor(
       async () =>
-        (await (await fetch(url + "/api/state")).json()).runtime.sidebarOrder
-          ?.groups !== null,
+        (await readTestState(url)).runtime.sidebarOrder?.groups !== null,
     );
     if (!process.env.CODEX_TEST_DESKTOP) {
-      const migrated = (await (await fetch(url + "/api/state")).json()).runtime
-        .sidebarOrder;
+      const migrated = (await readTestState(url)).runtime.sidebarOrder;
       assert.deepEqual(migrated.groups.projects, [
         folders.assistant,
         folders["Newcrom Case"],

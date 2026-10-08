@@ -583,7 +583,7 @@ class SystemApiTests(unittest.TestCase):
             db.execute("COMMIT")
             result = cast(list[dict[str, JsonValue]], history()["recent"])[-1]
         validated = SqliteTransaction.model_validate(result)
-        self.assertEqual(validated.state.value, "ended")
+        self.assertEqual(validated.state.value, "committed")
         result["state"] = "unknown"
         with self.assertRaises(ValidationError):
             SqliteTransaction.model_validate(result)

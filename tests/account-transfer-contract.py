@@ -131,6 +131,11 @@ class TransferContract(f.AccountContracts):
     def start_transfer(self):
         op = self.store.request(self.lead_agent['id'], self.other_key, str(uuid.uuid4()))
         self.current_transfer_id = op['id']
+        with self.runtime.db() as db:
+            entity = json.loads(db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.lead_agent['id'],)).fetchone()[0])['value']
+        self.assertEqual(entity['accountTransferId'], op['id'])
         return op
 
     def tick(self):
@@ -647,8 +652,8 @@ class TransferContract(f.AccountContracts):
                 'id': 'claude-fixture', 'provider': 'claude', 'home': str(self.root / 'claude-home'),
                 'label': 'Claude fixture', 'status': 'ready'}
         self.set_agent(self.lead_agent['id'], provider='claude', accountKey='claude-fixture',
-                       workerDefaults={**self.runtime.agent(self.lead_agent['id'])['workerDefaults'],
-                                       'accountKey': 'default'})
+                        workerDefaults={**self.runtime.agent(self.lead_agent['id'])['workerDefaults'],
+                                        'accountKey': 'default'})
         codex = self.runtime.create({'name': 'Codex worker', 'prompt': 'Task'},
                                     parent=self.lead_agent['id'], defer=True)
         self.set_agent(codex['id'], status='completed', inFlight=False, threadId='native-codex', turnId=None)

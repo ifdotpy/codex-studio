@@ -7,10 +7,23 @@ from pathlib import Path
 import threading
 import time
 import uuid
+from typing import TYPE_CHECKING, Protocol
+
+from codex_records import RecordStore
 from codex_work import text_field
 
+if TYPE_CHECKING:
+    import sqlite3
+    from concurrent.futures import Future
+    from concurrent.futures import ThreadPoolExecutor
+    from contextlib import AbstractContextManager
+    from threading import Event
+    from typing import Callable
 
-def rule_tools(tool, text):
+    from codex_records import AgentRecord, JsonObject, JsonValue, RuleRecord
+
+
+def rule_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["JsonObject"]:
     return [
         tool(
             "orchestration_watch",
@@ -64,8 +77,74 @@ def rule_tools(tool, text):
     ]
 
 
+class RulesExecutor(Protocol):
+    def submit(self, fn: "Callable[..., object]", *args: object,
+               **kwargs: object) -> "Future[object]": ...
+
+
+class RuleServer(Protocol):
+    closed: bool
+
+    def call(self, method: str, params: "JsonObject", timeout: float = ...) -> "JsonObject": ...
+    def after_events(self, callback: "Callable[[], object]") -> object: ...
+    def on_result(self, future: "Future[object]", callback: "Callable[[Future[object]], object]") -> object: ...
+    def wait(self, future: "Future[object]") -> "JsonObject": ...
+
+
+class RulesLock(Protocol):
+    def __enter__(self) -> object: ...
+    def __exit__(self, *args: object) -> object: ...
+    def _is_owned(self) -> bool: ...
+
+
+class RulesRuntime(RecordStore, Protocol):
+    lock: RulesLock
+    closed: bool
+    changed: "Event"
+    pool: "ThreadPoolExecutor"
+    connection_ids: dict[str, str | None]
+    servers: dict[str, RuleServer]
+
+    def db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
+    def read_db(self) -> "AbstractContextManager[sqlite3.Connection]": ...
+    def agent(self, key: str, db: "sqlite3.Connection | None" = None) -> "AgentRecord": ...
+    def checked_actor(self, db: "sqlite3.Connection", agent_id: str,
+                      actor: str | None = None) -> "AgentRecord": ...
+    def team_agents(self, db: "sqlite3.Connection", root_id: str, *, include_deleted: bool = False,
+                    include_id: str | None = None) -> list["AgentRecord"]: ...
+    def workspace_path(self, agent_id: str, path: str) -> "Path": ...
+    def cancel_monitor(self, key: str, owner: str | None = None) -> object: ...
+    def enqueue_recovery_event(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                               kind: str, text: str, key: str) -> None: ...
+    def prepare(self, agent: "AgentRecord", timing: "JsonObject | None" = None) -> "AgentRecord": ...
+    def monitor_auto_approved(self, agent: "AgentRecord") -> bool: ...
+    def monitor(self, agent_id: str, data: "JsonObject", key: str | None = None,
+                approved: bool = False, epoch: int | None = None,
+                rule: "RuleRecord | None" = None) -> object: ...
+    def defer_preparation(self, error: object, continuation: "Callable[[], object]",
+                          failure: "Callable[[object], object]") -> object: ...
+    def connect(self, account_key: str = "default", *, for_login: bool = False) -> RuleServer: ...
+    def connection_current(self, account_key: str, connection_id: str | None) -> bool: ...
+    def submit_reserved(self, server: RuleServer, method: str, params: "JsonObject",
+                        operation_id: str | None = None) -> "Future[object]": ...
+    def rules_action(self, data: "JsonObject | None" = None, actor: str | None = None,
+                     epoch: int | None = None) -> "JsonObject": ...
+    def rules_tick(self) -> None: ...
+    def rule_owner_recovery_pending(self, agent: "AgentRecord", epoch: int) -> bool: ...
+    def file_fingerprint(self, path: str) -> "list[JsonValue] | None": ...
+    def low_workers_tick(self, db: "sqlite3.Connection", rule: "RuleRecord",
+                         lead: "AgentRecord", now: float) -> None: ...
+    def rule_event(self, db: "sqlite3.Connection", agent: "AgentRecord",
+                   kind: str, text: str, event_key: str) -> None: ...
+    def run_rule(self, rule: "RuleRecord") -> None: ...
+    def rule_finished(self, key: str, code: int | None, error: str | None,
+                      output: str, db: "sqlite3.Connection | None" = None) -> None: ...
+    def monitor_input(self, key: str, data: "JsonObject",
+                       actor: str | None = None) -> "JsonObject": ...
+
+
 class RulesMixin:
-    def setup_rules(self, db):
+    def setup_rules(self: "RulesRuntime", db: "sqlite3.Connection") -> None:
         db.execute(
             "CREATE TABLE IF NOT EXISTS runtime_rules (id TEXT PRIMARY KEY, record TEXT NOT NULL)"
         )
@@ -97,7 +176,8 @@ class RulesMixin:
                 )
                 self.put(db, "rules", r)
 
-    def rules(self, data=None, actor=None, epoch=None):
+    def rules(self: "RulesRuntime", data: "JsonObject | None" = None,
+              actor: str | None = None, epoch: int | None = None) -> "JsonObject":
         result = self.rules_action(data, actor, epoch)
         if data and data.get("action") in {"pause", "delete"}:
             from codex_workspace import active_monitors
@@ -112,7 +192,8 @@ class RulesMixin:
                 self.cancel_monitor(watch)
         return result
 
-    def rules_action(self, data=None, actor=None, epoch=None):
+    def rules_action(self: "RulesRuntime", data: "JsonObject | None" = None,
+                     actor: str | None = None, epoch: int | None = None) -> "JsonObject":
         with self.lock, self.db() as db:
             if actor and epoch is not None and self.agent(actor, db)["epoch"] != epoch:
                 raise ValueError("The caller was stopped")
@@ -258,7 +339,7 @@ class RulesMixin:
             return rule
 
     @staticmethod
-    def file_fingerprint(path):
+    def file_fingerprint(path: str) -> list["JsonValue"] | None:
         try:
             p = Path(path)
             s = p.stat()
@@ -266,7 +347,7 @@ class RulesMixin:
         except FileNotFoundError:
             return None
 
-    def rules_tick(self):
+    def rules_tick(self: "RulesRuntime") -> None:
         if self.lock._is_owned():
             raise RuntimeError("Rule ticks must run outside the runtime lock")
         if self.closed:
@@ -274,7 +355,7 @@ class RulesMixin:
         now = time.time()
         launch = []
 
-        def stalled(r):
+        def stalled(r):  # type: (RuleRecord) -> bool
             return (r["kind"] == "file" and r.get("stallTimeoutSeconds", 1800)
                     and now - r.get("fileActivityAt", r.get("created", now)) >= r["stallTimeoutSeconds"]
                     and r.get("fileGeneration", 0) > r.get("stallWakeGeneration", -1))
@@ -388,7 +469,7 @@ class RulesMixin:
             self.pool.submit(self.run_rule, r)
 
     @staticmethod
-    def rule_owner_recovery_pending(agent, epoch):
+    def rule_owner_recovery_pending(agent: "AgentRecord", epoch: int) -> bool:
         restart = agent.get("restartRecovery") or {}
         if (restart.get("stage") == "pending" and restart.get("autoWake")
                 and restart.get("epoch") == epoch
@@ -406,7 +487,8 @@ class RulesMixin:
                                                    ("accountKey", "accountKey"),
                                                    ("threadId", "threadId"))))
 
-    def low_workers_tick(self, db, rule, lead, now):
+    def low_workers_tick(self: "RulesRuntime", db: "sqlite3.Connection", rule: "RuleRecord",
+                         lead: "AgentRecord", now: float) -> None:
         from codex_workspace import active_monitors
         workers = [a for a in self.team_agents(db, lead["id"])
                    if not a.get("isLead")]
@@ -433,7 +515,8 @@ class RulesMixin:
         if previous != current:
             self.put(db, "rules", rule)
 
-    def rule_event(self, db, a, kind, text, event_key):
+    def rule_event(self: "RulesRuntime", db: "sqlite3.Connection", a: "AgentRecord",
+                   kind: str, text: str, event_key: str) -> None:
         # Rules are same-agent subscriptions. Rule wakes never re-enter this hook.
         alias = {
             "child_completed": "worker_completed",
@@ -460,7 +543,7 @@ class RulesMixin:
                 self.put(db, "rules", r)
                 self.pool.submit(self.run_rule, r.copy())
 
-    def run_rule(self, r):
+    def run_rule(self: "RulesRuntime", r: "RuleRecord") -> None:
         try:
             with self.lock, self.db() as db:
                 row = db.execute(
@@ -510,7 +593,8 @@ class RulesMixin:
                 return
             self.rule_finished(r["id"], None, str(error), "")
 
-    def rule_finished(self, key, code, error, output, db=None):
+    def rule_finished(self: "RulesRuntime", key: str, code: int | None, error: str | None,
+                      output: str, db: "sqlite3.Connection | None" = None) -> None:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.rule_finished(key, code, error, output, connection)
@@ -582,11 +666,12 @@ class RulesMixin:
             r["status"] = "completed"
         self.put(db, "rules", r)
 
-    def monitor_input(self, key, data, owner=None, epoch=None):
+    def monitor_input(self: "RulesRuntime", key: str, data: "JsonObject",
+                      owner: str | None = None, epoch: int | None = None) -> "JsonObject":
         from codex_native_errors import NativeRpcError
         from codex_runtime import SubmissionRejected
 
-        def load(db):
+        def load(db):  # type: (sqlite3.Connection) -> tuple[JsonObject, JsonObject] | None
             row = db.execute("SELECT record FROM runtime_monitors WHERE id=?", (key,)).fetchone()
             if not row:
                 raise ValueError("Unknown monitor")
@@ -602,7 +687,7 @@ class RulesMixin:
                 raise ValueError("This interactive monitor is not active")
             return monitor, agent
 
-        def identity(monitor, agent):
+        def identity(monitor, agent):  # type: (JsonObject, AgentRecord) -> bool
             return (monitor["agent"], monitor["epoch"], monitor.get("operation"),
                     monitor.get("created"), monitor.get("command"),
                     agent["epoch"], agent.get("accountKey", "default"), agent.get("threadId"))
@@ -654,7 +739,7 @@ class RulesMixin:
                 # cancel the command; it cannot make this request safe to replay.
                 db.commit()
 
-            def settle(error=None):
+            def settle(error=None):  # type: (str | None) -> None
                 # Transport failures can use any message. Only a native rejection
                 # or proof that no bytes were submitted releases this receipt.
                 unknown = error is not None and not isinstance(error, (NativeRpcError, SubmissionRejected))
@@ -689,7 +774,7 @@ class RulesMixin:
                             latest.pop("stdinError", None)
                     self.put(db, "monitors", latest)
 
-            def reconcile(future):
+            def reconcile(future):  # type: (Future[object]) -> None
                 try:
                     future.result()
                 except Exception as error:

@@ -10,9 +10,13 @@ import tempfile
 import threading
 import uuid
 import time
+from typing import TYPE_CHECKING
 
 from codex_state import codex_home
 from studio_api.accounts.events import publish_account_change
+
+if TYPE_CHECKING:
+    from codex_records import AccountDataRecord, AccountSnapshotRecord
 
 
 def auth_metadata(home):
@@ -122,7 +126,7 @@ class AccountStore:
             if os.path.exists(name):
                 os.unlink(name)
 
-    def _row(self, key):
+    def _row(self, key: object) -> "AccountDataRecord":
         if (
             not isinstance(key, str)
             or not re.fullmatch(r"[A-Za-z0-9-]{1,100}", key)

@@ -248,14 +248,6 @@ identity remains available to diagnostics without a persistent notice in chats.
 Reviewed live patches apply in the background without a backend restart.
 See [live updates](docs/live-updates.md) for publication and verification.
 
-The team view measures worker worktree disk use in the background. It shows each
-worker and the team total. The default warning limit is 100 GiB across all
-worker worktrees. Set `CODEX_WORKTREE_DISK_LIMIT_BYTES` before Studio starts to
-change the limit. Set it to `0` to disable the warning. On Apple File System
-(APFS), the measure counts bytes that are private to each file. Other file
-systems use allocated blocks. The UI shows the measure for each worktree and
-the total. On other file systems, the sum can exceed physical disk use.
-
 The packaged macOS application restores its backend after login or a process
 failure. Saved input and verified interrupted work recover automatically.
 See [restart recovery](docs/restart-recovery.md) for the exact behavior and limits.
@@ -294,8 +286,15 @@ New chats, new file uploads, and voice require the Mac connection.
 Return to Studio to resume sync and delivery. Delivery while iOS suspends Studio
 is not guaranteed. Keep the page open for voice.
 
-The chat snapshot excludes work result histories. The work view loads those
-histories through its existing API. One shared protocol-3 event stream tells
+The chat entity projection excludes work result histories. The work view loads
+those histories through its existing API. Renderer state uses sync entities;
+entity pulls skip and report unreadable stored envelopes, while DTO mismatches
+omit forbidden fields and return the remaining entity so one bad row cannot
+block later updates. Known fields with invalid values are reported and passed
+through for compatibility with the renderer's envelope-level row guard.
+the old `/api/state` endpoint and `state` / `state:chat` pull scopes were removed
+in the pull request that completed the move to sync entities (round 3),
+`#11`. One shared protocol-3 event stream tells
 visible windows when entity state, drafts, or open transcripts need an update.
 The renderer sends its generated API schema hash with API requests and
 protocol-3 stream connections. API responses carry the server hash. A
@@ -505,3 +504,5 @@ The old broadcast becomes a private room for the original tree and keeps its
 messages. New broadcasts use the destination's broadcast room.
 The action saves one receipt with the exact request body. A retry with the same
 request ID returns that receipt. A different body with that ID is refused.
+
+Runtime typing is checked with `npm run typecheck:runtime` (equivalent to `python3 scripts/codex_python.py --mypy`). The strict mypy ratchet is not part of the pre-commit hook.

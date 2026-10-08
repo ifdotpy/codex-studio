@@ -25,8 +25,12 @@ try:
         raise ValueError("Agent sessions must use their team runtime tools. The graph CLI is for the user.")
     canvas = Canvas(read_only=args.action == 'list')
     if args.action == 'list':
-        snapshot = canvas.snapshot()
-        result = {k: snapshot[k] for k in ('nodes', 'edges')}
+        with canvas.connect() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            threads = canvas.threads(db=db)
+            chats = canvas.chats(db=db)
+            result = {'nodes': threads + chats, 'edges': canvas.edges(threads, db=db)}
     else:
         result = canvas.register_agent(args.id, args.name, args.parent, args.thread, args.status)
         notify_external_write(str(uuid.uuid4()), [

@@ -1,15 +1,17 @@
+import {
+  readTestState,
+  stubEntityState,
+  readFixtureSyncContract,
+  apiSchemaHandshakeEvent,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Production renderer, isolated fixture, and controlled delivery acknowledgements.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import {
-  apiSchemaHandshakeEvent,
-  spawnFixture as spawn,
-  test,
-} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -59,7 +61,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const original = await (await fetch(`${origin}/api/state`)).json();
+    const original = await readTestState(origin);
     const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
     const state = {
       ...original,
@@ -81,7 +83,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
         inFlight: true,
         turnId: "delivery-fixture-turn",
       });
-      let stateRevision = 100;
       const context = await browser.newContext({
         viewport: { width: 1440, height: 960 },
       });
@@ -117,6 +118,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
                     data: JSON.stringify(schemaHandshake),
                   }),
                 );
+                window.publishDelivery("initial", 0);
               });
             }
             close() {
@@ -156,6 +158,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
                       revision,
                       reason: "change",
                       resources,
+                      resourceVersions: resources.map((resource) => ({
+                        resource,
+                        revision,
+                      })),
                     }),
                   }),
                 );
@@ -186,8 +192,10 @@ test("message delivery ui", async ({ browser: _browser }) => {
         [a.id, 100],
         [b.id, 100],
       ]);
-      await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-        route.fulfill({ json: state }),
+      const { update: updateEntityState } = await stubEntityState(
+        page,
+        state,
+        await readFixtureSyncContract(origin),
       );
       const queuedItems = new Map();
       await page.route("**/api/queue?*", (route) => {
@@ -205,11 +213,9 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await page.route("**/api/sync/pull?*", (route) => {
         const url = new URL(route.request().url());
         const scope = url.searchParams.get("scope");
-        const stateScope = scope === "state:chat";
-        if (!stateScope && !scope.startsWith("transcript:"))
-          return route.fallback();
+        if (!scope.startsWith("transcript:")) return route.fallback();
         const id = scope.slice("transcript:".length);
-        const seq = stateScope ? stateRevision : revisions.get(id);
+        const seq = revisions.get(id);
         const after = Number(url.searchParams.get("after") || 0);
         if (scope.startsWith("transcript:")) transcriptPulls++;
         return route.fulfill({
@@ -220,9 +226,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
                 ? [
                     {
                       id: scope,
-                      payload: JSON.stringify(
-                        stateScope ? state : history.get(id),
-                      ),
+                      payload: JSON.stringify(history.get(id)),
                       seq,
                       _deleted: false,
                     },
@@ -581,7 +585,7 @@ test("message delivery ui", async ({ browser: _browser }) => {
       // A timed-out steer can outlive its target turn. The automatic fallback to
       // queue must not assign a new identity to the same unresolved message.
       Object.assign(a, { status: "completed", inFlight: false, turnId: null });
-      stateRevision++;
+      await updateEntityState(state);
       revisions.set(a.id, revisions.get(a.id) + 1);
       await page.reload();
       await page.locator(`[data-chat="${a.id}"]`).click();

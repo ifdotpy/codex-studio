@@ -35,6 +35,7 @@ from studio_api.sync.resources.models import (
 )
 from codex_runtime import Runtime
 from codex_sync import SyncStore
+from codex_sync_entities import encoded, max_seq, put
 
 
 class StoreStub:
@@ -51,10 +52,12 @@ class StoreStub:
         self.draft_revision_increment = 1
 
     def identity(self) -> dict[str, object]:
-        return {"workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True}
+        return {"workspaceId": "workspace-a", "syncProtocol": 2}
 
     def pull(self, *args: object) -> dict[str, object]:
         self.pull_arguments = args
+        if args and args[0] in {"state", "state:chat"}:
+            raise ValueError("Invalid sync scope")
         if self.reset_pull:
             return {
                 "workspaceId": "workspace-a", "reset": True, "floor": 4, "maxSeq": 8,
@@ -68,11 +71,6 @@ class StoreStub:
 
     def generation(self) -> int:
         return 3
-
-    def generation_state(self) -> dict[str, object]:
-        return {"protocol": 2, "workspaceId": "workspace-a", "generations": {
-            "state": 1, "transcripts": 1, "drafts": 1,
-        }}
 
     def draft_sequence(self) -> int:
         return self.drafts_revision
@@ -144,7 +142,11 @@ class ProgressWatchdogStub:
 
     def subscribe(self, agent_id: str, _on_change: object):
         self.agents.append(agent_id)
-        return lambda: None
+
+        def detach() -> None:
+            self.agents.remove(agent_id)
+
+        return detach
 
 
 class ConnectedRequest(Request):
@@ -211,10 +213,82 @@ def make_client(context: ContextStub, raise_server_exceptions: bool = True) -> T
     async def validation_error(_request: Request, error: RequestValidationError) -> JSONResponse:
         return JSONResponse({"error": str(error)}, status_code=400)
 
+    @app.exception_handler(ValueError)
+    async def service_error(_request: Request, error: ValueError) -> JSONResponse:
+        return JSONResponse({"error": str(error)}, status_code=400)
+
     return TestClient(app, raise_server_exceptions=raise_server_exceptions)
 
 
 class SyncRouterTests(unittest.TestCase):
+    def test_cancelled_event_stream_send_closes_progress_subscription(self) -> None:
+        context = ContextStub()
+
+        class ShutdownEventStub:
+            def __init__(self) -> None:
+                self.event = asyncio.Event()
+
+            def async_event(self) -> asyncio.Event:
+                return self.event
+
+        async def verify() -> None:
+            event = ShutdownEventStub()
+            path = "/api/sync/stream?protocol=3&resources=" + json.dumps(
+                [{"kind": "panel", "agentId": "agent-a"}], separators=(",", ":")
+            )
+            scope: dict[str, object] = {
+                "type": "http",
+                "asgi": {"version": "3.0", "spec_version": "2.3"},
+                "http_version": "1.1",
+                "method": "GET",
+                "scheme": "http",
+                "path": "/api/sync/stream",
+                "raw_path": b"/api/sync/stream",
+                "query_string": path.split("?", 1)[1].encode(),
+                "headers": [],
+                "client": ("test", 1000),
+                "server": ("test", 80),
+                "state": {"studio_shutdown_event": event},
+            }
+            request = ConnectedRequest(scope)
+            router = create_router(cast(ApiContext, context))
+            route = cast(
+                APIRoute,
+                next(
+                    route
+                    for route in router.routes
+                    if getattr(route, "path", None) == "/api/sync/stream"
+                ),
+            )
+            response = await route.endpoint(
+                request,
+                SyncStreamQuery(
+                    protocol="3",
+                    resources=request.query_params.get("resources"),
+                ),
+            )
+            receive_started = False
+            sent_types: list[str] = []
+
+            async def receive() -> dict[str, object]:
+                nonlocal receive_started
+                if not receive_started:
+                    receive_started = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                await asyncio.Future()
+
+            async def send(message: dict[str, object]) -> None:
+                sent_types.append(str(message["type"]))
+                if message["type"] == "http.response.body":
+                    raise asyncio.CancelledError
+
+            await response(scope, receive, send)
+            self.assertIn("http.response.body", sent_types)
+            self.assertEqual(context.watchdog.agents, [])
+            self.assertEqual(context.hub._subscriptions, set())
+
+        asyncio.run(verify())
+
     def test_entity_pull_retires_legacy_agent_alias_and_preserves_canonical_chat(self) -> None:
         context = ContextStub()
         legacy = json.dumps({
@@ -252,21 +326,246 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(row["payload"], legacy)
         self.assertEqual(body["documents"][2]["payload"], workspace)
 
+    def test_entity_pull_exposes_only_entity_fields_for_agent_rule_and_workspace(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        store.pull("state:entities:v1", fresh=True)
+        limits = {"accountKey": "default", "at": 1.0, "processedAt": 2.0, "checkedAt": 3.0,
+                  "data": {"rateLimits": {"primary": {"usedPercent": 42}}}}
+        agent = {
+            "id": "agent-a", "kind": "agent", "name": "Worker", "accountHistory": [{"secret": "history"}],
+            "deliveredMode": {"secret": "delivery"}, "nativeRelease": {"phase": "released", "targetEpoch": 4,
+                                                                              "targetRootId": "private-root"},
+            "startAttempt": {"claudeInputRequest": {"text": "private-input"}},
+            "contextRepair": {"savedInput": "private-repair-input"},
+            "contextRepairHistory": [{"savedInput": "private-repair-history"}],
+            "lastContextRepairCheck": {"savedInput": "private-repair-check"},
+            "lastContextRepairWait": {"savedInput": "private-repair-wait"},
+            "contextRepairWait": {
+                "phase": "waiting", "reason": "private-reason", "scope": "native",
+                "error": "public-wait-error",
+            },
+        }
+        rule = {
+            "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+            "kind": "interval", "intervalSeconds": 30, "nextAt": 100.0,
+            "at": 90.0, "path": "/private/path", "event": "file-change",
+            "command": "private-command", "stallTimeoutSeconds": 1800,
+            "livenessCommand": "private-liveness", "text": "private-text",
+            "status": "completed", "checks": 4, "wakes": 2,
+            "minimumWorkers": 3, "durationMinutes": 5,
+            "error": "private-error", "lastExitCode": 0,
+            "lastOutput": "private-output", "restartHoldNotified": {"epoch": 1},
+            "lastFinished": 2.0, "activeWorkers": 1, "lastStallExitCode": 0,
+            "stallProbe": False, "eventText": "private-event",
+        }
+        work = {
+            "id": "work-a", "archive": {"status": "kept"},
+            "archiveIntent": {"status": "pending", "token": "private-archive"},
+            "releases": [{"agent": "agent-a", "token": "private-release"}],
+        }
+        with connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            put(db, "agent", agent["id"], agent)
+            put(db, "rule", rule["id"], rule)
+            put(db, "work", work["id"], work)
+            put(db, "workspace", "current", {
+                "id": "current", "connected": True, "rateLimits": limits,
+                "rateLimitsByAccount": {"default": limits},
+            })
+            db.commit()
+        context.store = store
+        response = make_client(context).get(
+            "/api/sync/pull?scope=state:entities:v1&after=0&fresh=1&reset=1"
+        )
+        self.assertEqual(response.status_code, 200)
+        entities = {
+            row["id"]: json.loads(row["payload"])["value"]
+            for row in response.json()["documents"]
+        }
+        self.assertEqual(entities["entity:agent:agent-a"], {
+            "id": "agent-a", "kind": "agent", "name": "Worker",
+            "nativeRelease": {"phase": "released"}, "startAttempt": {},
+            "contextRepairWait": {"scope": "native", "error": "public-wait-error"},
+        })
+        self.assertEqual(entities["entity:rule:rule-a"], {
+            "id": "rule-a", "agent": "agent-a", "name": "Housekeeping",
+            "enabled": True, "description": "Scheduled maintenance",
+        })
+        self.assertEqual(entities["entity:work:work-a"]["archive"], {"status": "kept"})
+        self.assertNotIn("archiveIntent", entities["entity:work:work-a"])
+        self.assertNotIn("releases", entities["entity:work:work-a"])
+        self.assertEqual(entities["entity:workspace:current"]["rateLimits"], limits)
+        self.assertEqual(entities["entity:workspace:current"]["rateLimitsByAccount"]["default"], limits)
+        wire = json.dumps(response.json())
+        for private in ("history", "delivery", "targetEpoch", "private-root", "private-input",
+                        "private/path", "private-command", "private-liveness", "private-text",
+                        "private-error", "private-output", "private-event", "private-repair-input",
+                        "private-repair-history", "private-repair-check", "private-repair-wait",
+                        "private-reason"):
+            self.assertNotIn(private, wire)
+        self.assertNotIn("private-archive", wire)
+        self.assertNotIn("private-release", wire)
+
+    def test_entity_pull_skips_malformed_stored_rows_and_advances_checkpoint(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        payloads = (
+            ("agent", "before", {"id": "before", "kind": "agent", "name": "Before"}),
+            ("agent", "after", {"id": "after", "kind": "agent", "name": "After"}),
+        )
+        with connect() as db:
+            seq = max_seq(db)
+            for collection, key, value in payloads:
+                payload, digest, _ = encoded(collection, key, value)
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,?,0)""",
+                           (collection, key, seq, digest, payload))
+            for key, raw in (("bad-json", "not-json"), ("wrong-root", '["agent"]'),
+                             ("missing-id", '{"collection":"agent","value":{}}')):
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES ('agent',?,?,?, ?,0)""",
+                           (key, seq, "malformed", raw))
+            after, digest, _ = encoded("agent", "after-malformed", {
+                "id": "after-malformed", "kind": "agent", "name": "After malformed",
+            })
+            seq += 1
+            db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                          VALUES ('agent','after-malformed',?,?,?,0)""",
+                       (seq, digest, after))
+            db.commit()
+        context.store = store
+        with self.assertLogs("codex_sync_entities", level="WARNING") as captured:
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        body = response.json()
+        ids = [document["id"] for document in body["documents"]]
+        self.assertIn("entity:agent:before", ids)
+        for malformed in ("bad-json", "wrong-root", "missing-id"):
+            self.assertNotIn(f"entity:agent:{malformed}", ids)
+        self.assertIn("entity:agent:after-malformed", ids)
+        self.assertEqual(body["checkpoint"]["seq"], seq)
+        self.assertEqual(len(captured.records), 3)
+
+    def test_entity_pull_strips_extras_but_delivers_bad_dto_and_private_fields(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        entries = [
+            ("agent", "extra", {"id": "extra", "kind": "agent", "name": "Worker",
+                                  "accountHistory": [{"secret": "agent-private"}]}, False),
+            ("agent", "wrong-type", {"id": "wrong-type", "kind": "agent", "name": 42,
+                                       "accountHistory": [{"secret": "wrong-private"}]}, False),
+            ("work", "work-extra", {"id": "work-extra", "archive": {"status": "kept"},
+                                     "archiveIntent": {"token": "work-private"}}, False),
+            ("agent", "tombstone-extra", {"id": "tombstone-extra", "kind": "agent",
+                                           "accountHistory": [{"secret": "tombstone-private"}]}, True),
+        ]
+        with connect() as db:
+            seq = max_seq(db)
+            for collection, key, value, deleted in entries:
+                payload, digest, _ = encoded(collection, key, value)
+                seq += 1
+                db.execute("""INSERT INTO sync_entities(collection,id,seq,hash,payload,deleted)
+                              VALUES (?,?,?,?,?,?)""",
+                           (collection, key, seq, digest, payload, int(deleted)))
+            db.commit()
+        context.store = store
+        with self.assertLogs("studio_api.sync.router", level="WARNING") as captured:
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        documents = {row["id"]: row for row in response.json()["documents"]}
+        self.assertEqual(set(documents), {f"entity:{collection}:{key}" for collection, key, _, _ in entries})
+        self.assertNotIn("accountHistory", json.loads(documents["entity:agent:extra"]["payload"])["value"])
+        wrong_type = json.loads(documents["entity:agent:wrong-type"]["payload"])["value"]
+        self.assertEqual(wrong_type["name"], 42)
+        self.assertNotIn("accountHistory", wrong_type)
+        work = json.loads(documents["entity:work:work-extra"]["payload"])["value"]
+        self.assertEqual(work["archive"], {"status": "kept"})
+        self.assertNotIn("archiveIntent", work)
+        tombstone = documents["entity:agent:tombstone-extra"]
+        self.assertTrue(tombstone["_deleted"])
+        self.assertNotIn("accountHistory", json.loads(tombstone["payload"])["value"])
+        self.assertEqual(response.json()["checkpoint"]["seq"], seq)
+        log_text = "\n".join(captured.output)
+        self.assertIn("accountHistory", log_text)
+        self.assertIn("archiveIntent", log_text)
+        for secret in ("agent-private", "wrong-private", "work-private", "tombstone-private"):
+            self.assertNotIn(secret, log_text)
+        self.assertNotIn("42", log_text)
+        self.assertNotIn("agent-private", response.text)
+        self.assertNotIn("wrong-private", response.text)
+        self.assertNotIn("work-private", response.text)
+        self.assertNotIn("tombstone-private", response.text)
+
     def test_entity_pull_fails_open_and_logs_invalid_public_data(self) -> None:
         context = ContextStub()
-        projection = {"workspaceId": "workspace-a", "documents": [{
-            "id": "entity:agent:a", "seq": 1, "_deleted": False,
-            "payload": json.dumps({"collection": "agent", "id": "a", "value": {
-                "id": "a", "kind": "chat", "name": 42,
-            }}),
-        }], "checkpoint": {"seq": 1}, "maxSeq": 1}
+        payload = json.dumps({"collection": "agent", "id": "a", "value": {
+            "id": "a", "kind": "agent", "name": "A", "unrecognized": "secret",
+        }})
+        later = json.dumps({"collection": "agent", "id": "b", "value": {
+            "id": "b", "kind": "agent", "name": "B",
+        }})
+        projection = {"workspaceId": "workspace-a", "documents": [
+            {"id": "entity:agent:a", "seq": 1, "_deleted": False, "payload": payload},
+            {"id": "entity:agent:b", "seq": 2, "_deleted": False, "payload": later},
+        ], "checkpoint": {"seq": 2}, "maxSeq": 2}
         with patch.object(context.store, "pull", return_value=projection), \
-                self.assertLogs("studio_api.sync.router", level="ERROR") as logs:
+                self.assertLogs("studio_api.sync.router", level="WARNING") as logs:
             response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["documents"][0]["payload"], projection["documents"][0]["payload"])
-        self.assertFalse(response.json()["documents"][0]["_deleted"])
+        rows = response.json()["documents"]
+        self.assertEqual(len(rows), 2)
+        self.assertNotIn("unrecognized", json.loads(rows[0]["payload"])["value"])
+        self.assertEqual(rows[1]["payload"], later)
+        self.assertFalse(rows[0]["_deleted"])
         self.assertIn("entity:agent:a", logs.output[0])
+        self.assertIn("unrecognized", logs.output[0])
+        self.assertNotIn("secret", logs.output[0])
 
     def test_stream_openapi_declares_protocol_three_event_stream(self) -> None:
         app = FastAPI()
@@ -422,12 +721,26 @@ class SyncRouterTests(unittest.TestCase):
         self.assertIn('"kind":"state"', body)
         self.assertEqual(context.watchdog.agents, [])
 
-    def test_pull_uses_legacy_first_nonempty_query_value(self) -> None:
+    def test_pull_uses_first_nonempty_entity_scope_query_value(self) -> None:
         context = ContextStub()
-        response = make_client(context).get("/api/sync/pull?scope=&scope=state&after=&after=9&limit=20")
+        response = make_client(context).get("/api/sync/pull?scope=&scope=state:entities:v1&after=&after=9&limit=20")
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["workspaceId"], "workspace-a")
-        self.assertEqual(context.store.pull_arguments, ("state", 9, 20, False, 0, False, None))
+        self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 9, 20, False, 0, False, None))
+
+    def test_pull_without_scope_defaults_to_entity_scope(self) -> None:
+        context = ContextStub()
+        response = make_client(context).get("/api/sync/pull")
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(context.store.pull_arguments, ("state:entities:v1", 0, 100, False, 0, False, None))
+
+    def test_legacy_pull_scopes_return_bad_request(self) -> None:
+        client = make_client(ContextStub())
+        for scope in ("state", "state:chat"):
+            with self.subTest(scope=scope):
+                response = client.get("/api/sync/pull?scope=" + scope)
+                self.assertEqual(response.status_code, 400)
+                self.assertEqual(response.json(), {"error": "Invalid sync scope"})
 
     def test_real_sync_store_returns_unchanged_transcript_for_full_pull(self) -> None:
         context = ContextStub()
@@ -448,7 +761,6 @@ class SyncRouterTests(unittest.TestCase):
 
         store = SyncStore(
             connect,
-            snapshot=lambda: {},
             transcript=context.runtime.transcript,
         )
         context.sync = lambda: store
@@ -463,6 +775,32 @@ class SyncRouterTests(unittest.TestCase):
         self.assertEqual(unchanged.status_code, 200)
         self.assertEqual(unchanged.json()["documents"], [])
         self.assertEqual(unchanged.json()["checkpoint"]["seq"], checkpoint)
+
+    def test_entity_pull_resets_when_client_checkpoint_exceeds_server_high(self) -> None:
+        context = ContextStub()
+        database = Path(tempfile.mkdtemp()) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(
+            connect,
+            transcript=context.runtime.transcript,
+        )
+        with connect() as db:
+            db.execute("BEGIN IMMEDIATE")
+            put(db, "workspace", "current", {"id": "current"})
+
+        response = store.pull(
+            "state:entities:v1", after=100, reset_support=True
+        )
+        self.assertTrue(response["reset"])
+        self.assertEqual(response["maxSeq"], 1)
 
     def test_pull_keeps_query_parameter_openapi_schema(self) -> None:
         app = FastAPI()
@@ -490,7 +828,8 @@ class SyncRouterTests(unittest.TestCase):
         response = make_client(ContextStub(), raise_server_exceptions=False).get(
             "/api/sync/pull?after=invalid&after=9"
         )
-        self.assertEqual(response.status_code, 500)
+        self.assertEqual(response.status_code, 400)
+        self.assertNotEqual(response.json(), {"error": "Invalid sync scope"})
 
     def test_entity_pull_reset_has_its_own_complete_response_variant(self) -> None:
         context = ContextStub()
@@ -595,10 +934,10 @@ class SyncRouterTests(unittest.TestCase):
         with patch.object(context, "sync", return_value=store):
             with TestClient(app, raise_server_exceptions=False) as client:
                 identity = client.get("/api/sync/identity")
-                pull = client.get("/api/sync/pull?scope=state&after=0")
+                pull = client.get("/api/sync/pull?scope=state:entities:v1&after=0")
         self.assertEqual(identity.status_code, 200)
         self.assertEqual(identity.json(), {
-            "workspaceId": "workspace-a", "syncProtocol": 2, "chatState": True,
+            "workspaceId": "workspace-a", "syncProtocol": 2,
         })
         self.assertEqual(pull.status_code, 200)
         self.assertEqual(pull.json()["generation"], 3)

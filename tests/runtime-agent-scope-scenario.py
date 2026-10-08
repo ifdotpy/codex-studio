@@ -9,7 +9,8 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 sys.path.insert(0, str(src / "scripts"))
 from codex_runtime import Runtime
-from codex_sync_entities import put as sync_entity_put
+from codex_canvas import Canvas
+from codex_sync_entities import put as sync_entity_put, upgrade_agent_organization
 spec = importlib.util.spec_from_file_location("runtime_contract_fixture", src / "tests" / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
 
@@ -52,6 +53,7 @@ def seed(runtime):
         {"id": "orphan-private", "kind": "private", "members": ["missing-agent"], "updated": NOW},
     ]
     leads[0]["sharedRoomId"] = "shared-a"; leads[1]["sharedRoomId"] = "shared-a"
+    canvas = Canvas(runtime.root)
     with runtime.db() as db:
         db.execute("DELETE FROM runtime_agents")
         for r in recs:
@@ -65,7 +67,8 @@ def seed(runtime):
                                                "name": "Federated"})))
         if scenario != "peer-team-then-unrelated-rename":
             db.execute("INSERT OR REPLACE INTO runtime_projects(id,record) VALUES (?,?)",
-                       (P, json.dumps({"id": P, "path": P, "peerTeamsRevision": 1, "peerTeams": [
+                       (P, json.dumps({"id": P, "path": P, "created": NOW,
+                                      "peerTeamsRevision": 1, "peerTeams": [
                            {"id": "team-1", "name": "Peers", "members": ["lead-0", "lead-1", "lead-2"]}]})))
         db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                    ("m1", "private:lead-1:b-worker", "lead-1", "hello", NOW, "{}"))
@@ -77,6 +80,13 @@ def seed(runtime):
             db.execute("INSERT INTO runtime_agents(id,record) VALUES (?,?)",
                        (legacy["id"], json.dumps(legacy)))
             recs.append(legacy)
+        # Seed the pre-recovery entity baseline for the whole roster. The
+        # scenario measures which existing entity rows recovery changes.
+        for agent in recs:
+            sync_entity_put(db, "agent", agent["id"], agent)
+        # This synthetic database starts with already-current entity rows, so
+        # use the production marker path before measuring recovery writes.
+        upgrade_agent_organization(db, runtime, canvas)
     return {r["id"]: r for r in recs}
 
 def get(db, key):
@@ -110,12 +120,29 @@ try:
                 runtime.put(db, "agents", queued_owner)
             runtime.send(queued_owner["id"], "Continue after snapshot", "legacy-recovery-input")
             with runtime.db() as db:
-                sync_before = {
-                    agent_id: db.execute(
-                        "SELECT seq FROM sync_entities WHERE collection='agent' AND id=?", (agent_id,)
-                    ).fetchone()[0]
-                    for agent_id in (paused_owner["id"], queued_owner["id"])
-                }
+                close_before = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                close_values_before = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
+            runtime.close()
+            with runtime.db() as db:
+                close_after = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+                close_advanced = sorted(agent_id for agent_id, seq in close_after.items()
+                                        if seq > close_before.get(agent_id, -1))
+                close_values_after = {key: json.loads(payload).get("value") for key, payload in db.execute(
+                    "SELECT id,payload FROM sync_entities WHERE collection='agent' AND deleted=0")}
+                close_fields_changed = {agent_id: sorted(
+                    key for key in set(close_values_before.get(agent_id, {}))
+                    | set(close_values_after.get(agent_id, {}))
+                    if close_values_before.get(agent_id, {}).get(key)
+                    != close_values_after.get(agent_id, {}).get(key))
+                    for agent_id in close_advanced}
+            # Close may persist ordinary shutdown state; take the baseline
+            # immediately before the simulated restart recovery begins.
+            with runtime.db() as db:
+                sync_before = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
                 legacy_records = [
                     {key: record.get(key) for key in (
                         "id", "rootId", "accountKey", "deletedAt", "status", "autoWake",
@@ -124,7 +151,6 @@ try:
                     if record.get("workspaceOperation")
                 ]
                 workspace_operation_rows = runtime.records(db, "workspace_operations")
-            runtime.close()
             runtime = Runtime(Path(temp.name), fixture.FakeServer)
             runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
             runtime.stop = lambda *a, **k: None
@@ -139,22 +165,30 @@ try:
                     "SELECT COUNT(*) FROM runtime_workspace_operations"
                 ).fetchone()[0]
                 synced = {}
-                sync_sequence_delta = {}
                 for agent_id in recovered:
                     row = db.execute(
                         "SELECT seq,payload FROM sync_entities WHERE collection='agent' AND id=?",
                         (agent_id,),
                     ).fetchone()
-                    sync_sequence_delta[agent_id] = row[0] - sync_before[agent_id]
                     value = json.loads(row[1])["value"]
                     synced[agent_id] = {key: value.get(key) for key in (
                         "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
+                sync_after = dict(db.execute(
+                    "SELECT id,seq FROM sync_entities WHERE collection='agent' AND deleted=0"))
+            affected = {paused_owner["id"], queued_owner["id"]}
+            advanced = {agent_id for agent_id, seq in sync_after.items()
+                        if seq > sync_before.get(agent_id, -1)}
+            assert advanced == affected, (advanced, affected)
+            assert all(sync_after[agent_id] > sync_before[agent_id] for agent_id in affected)
+            assert all(synced[agent_id]["workspaceOperation"] is None for agent_id in affected)
             out["result"] = {
                 "agents": {agent_id: {key: recovered[agent_id].get(key) for key in (
                     "workspaceOperation", "workspaceReservationId", "checkpointError", "status", "autoWake")}
                     for agent_id in recovered},
                 "syncedAgents": synced,
-                "syncSequenceDelta": sync_sequence_delta,
+                "agentEntityRowsAdvanced": sorted(advanced),
+                "closeEntityRowsAdvanced": close_advanced,
+                "closeEntityFieldsChanged": close_fields_changed,
                 "pendingInput": dict(pending) if pending else None,
                 "workspaceOperationRows": operation_count,
                 "legacyRecordsBeforeRestart": legacy_records,

@@ -9,17 +9,57 @@ import re
 import tempfile
 import threading
 import time
+from typing import Protocol, TYPE_CHECKING
+
+from codex_records import RecordStore
+
+if TYPE_CHECKING:
+    import sqlite3
+    from collections.abc import Iterable, Mapping
+    from typing import Any, Callable, ContextManager
+    from codex_records import AgentRecord, ComplaintRecord, DeliveredModeRecord, JsonObject, JsonValue, ToolRequestRecord, WorkRecord, WorkViewRecord
 
 
-def packed(value):
+class _EfficiencyHost(RecordStore, Protocol):
+    root: Path
+    lock: "ContextManager[object]"
+
+    def db(self: "_EfficiencyHost", *, busy_timeout: int | None = None) -> "ContextManager[sqlite3.Connection]": ...
+    def read_db(self: "_EfficiencyHost") -> "ContextManager[sqlite3.Connection]": ...
+    def checked_actor(self: "_EfficiencyHost", db: "sqlite3.Connection", agent_id: str, actor: str | None = None) -> "AgentRecord": ...
+    def work_action(self: "_EfficiencyHost", actor_id: str, args: dict[str, "Any"], key: str | None, *, actor: str, epoch: int | None) -> dict[str, "Any"]: ...
+    def task_brief(self: "_EfficiencyHost", task: "WorkViewRecord | dict[str, Any]") -> dict[str, "Any"]: ...
+    def work_records(self: "_EfficiencyHost", db: "sqlite3.Connection", root_id: str) -> list["WorkRecord"]: ...
+    def work_by_id(self: "_EfficiencyHost", db: "sqlite3.Connection", task_id: str | None, root_id: str) -> "WorkRecord" | None: ...
+    def work_view(self: "_EfficiencyHost", work: "WorkRecord", works: "dict[str, str] | list[WorkRecord]") -> "WorkViewRecord": ...
+    def worker_defaults(self: "_EfficiencyHost", root: "AgentRecord") -> "JsonObject": ...
+    def dispatch_active_slots(self: "_EfficiencyHost", db: "sqlite3.Connection") -> list["JsonObject"]: ...
+    def tool_request(self: "_EfficiencyHost", key: str | None, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None": ...
+    def profiles(self: "_EfficiencyHost") -> list["JsonObject"]: ...
+    def unanswered_complaints(self: "_EfficiencyHost", db: "sqlite3.Connection", lead_id: str) -> list["ComplaintRecord"]: ...
+    def complaint_message(self: "_EfficiencyHost", db: "sqlite3.Connection", complaints: list["ComplaintRecord"]) -> str: ...
+    def role_guidance(self: "_EfficiencyHost", actor: "AgentRecord") -> str: ...
+    def panel_guidance(self: "_EfficiencyHost") -> str: ...
+    def progress_file(self: "_EfficiencyHost", actor: "AgentRecord") -> None: ...
+    def tool_definitions(self: "_EfficiencyHost", actor: "AgentRecord") -> list["JsonObject"]: ...
+    def model_peers_directory(self: "_EfficiencyHost", db: "sqlite3.Connection", actor_id: str, args: dict[str, "Any"], actor: "AgentRecord") -> dict[str, "Any"]: ...
+    def model_page(self: "_EfficiencyHost", rows: list["Any"], args: dict[str, "Any"], scope: "Any", byte_limit: int | None = None, revision_rows: list["Any"] | None = None) -> dict[str, "Any"]: ...
+    def model_saved_message(self: "_EfficiencyHost", db: "sqlite3.Connection", actor: "AgentRecord", key: str, args: dict[str, "Any"]) -> dict[str, "Any"]: ...
+    def model_known_context(self: "_EfficiencyHost", db: "sqlite3.Connection", actor: "AgentRecord") -> tuple[list["Any"], dict[str, "Any"], dict[str, "Any"]]: ...
+    def reported_plan(self: "_EfficiencyHost", db: "sqlite3.Connection", root_id: str) -> "JsonObject" | None: ...
+    def remember_role_text(self: "_EfficiencyHost", text: str) -> None: ...
+    def role_update(self: "_EfficiencyHost", previous_version: "Any", text: str) -> str: ...
+    def _archive_child_result_event(self: "_EfficiencyHost", row: "JsonObject", value: "JsonObject", result_text: str) -> str: ...
+
+def packed(value: "Any") -> str:
     return json.dumps(value, ensure_ascii=False, separators=(',', ':'))
 
 
-def clip(text, size):
+def clip(text: object, size: int) -> str:
     return str(text).encode('utf-8')[:size].decode('utf-8', errors='ignore')
 
 
-def remember_context_manifest(db, agent_id, event_id):
+def remember_context_manifest(db: "sqlite3.Connection", agent_id: str, event_id: str) -> bool:
     """Cache only a manifest whose event reached delivered state."""
     row = db.execute("SELECT e.status,m.record FROM runtime_events e JOIN runtime_event_meta m ON m.id=e.id "
                      "WHERE e.id=? AND e.agent=?", (event_id, agent_id)).fetchone()
@@ -48,11 +88,11 @@ def remember_context_manifest(db, agent_id, event_id):
     return True
 
 
-def digest(value):
+def digest(value: "Any") -> str:
     return hashlib.sha256(packed(value).encode()).hexdigest()[:24]
 
 
-def finished_worktree_ids(db, root_id):
+def finished_worktree_ids(db: "sqlite3.Connection", root_id: str) -> list[str]:
     """Find the lead's finished workers without copying every agent record."""
     return [row[0] for row in db.execute(
         "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId')=? "
@@ -67,12 +107,12 @@ def finished_worktree_ids(db, root_id):
         (root_id, root_id))]
 
 
-def model_text_bytes(value):
+def model_text_bytes(value: "Any") -> int:
     # Match the generic tool projection, including JSON escaping inside text.
     return len(packed([{'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]).encode())
 
 
-def efficiency_tools(tool, text):
+def efficiency_tools(tool: 'Callable[[str, str, dict[str, Any], list[str]], dict[str, Any]]', text: dict[str, "Any"]) -> list[dict[str, "Any"]]:
     return [tool('orchestration_read',
         'Read a full saved tool response or orchestration event by output_ref. Offsets are Unicode characters; each page has up to 30000 characters. '
         'Use contains to locate relevant output. Same-agent records only. Never rerun a mutation to recover its result.',
@@ -86,7 +126,7 @@ def efficiency_tools(tool, text):
 
 
 class EfficiencyMixin:
-    def model_page(self, rows, args, scope, byte_limit=None, revision_rows=None):
+    def model_page(self: "_EfficiencyHost", rows: list["Any"], args: dict[str, "Any"], scope: "Any", byte_limit: int | None = None, revision_rows: list["Any"] | None = None) -> dict[str, "Any"]:
         limit = args.get('limit', 20)
         if type(limit) is not int or not 1 <= limit <= 50:
             raise ValueError('limit must be 1 to 50')
@@ -108,7 +148,7 @@ class EfficiencyMixin:
         cursor = base64.urlsafe_b64encode(packed({'offset': next_offset, 'revision': revision}).encode()).decode() if next_offset < len(rows) else None
         return {'apiVersion': 2, 'items': page, 'total': len(rows), 'revision': revision, 'nextCursor': cursor}
 
-    def model_work(self, actor_id, args, key=None, epoch=None):
+    def model_work(self: "_EfficiencyHost", actor_id: str, args: dict[str, "Any"], key: str | None = None, epoch: int | None = None) -> dict[str, "Any"]:
         action = args.get('action', 'list')
         if action not in {'list', 'get', 'history'}:
             full = self.work_action(actor_id, args, key, actor=actor_id, epoch=epoch)
@@ -118,7 +158,7 @@ class EfficiencyMixin:
             actor = self.checked_actor(db, actor_id, actor_id)
             if action == 'list':
                 works = self.work_records(db, actor['rootId'])
-                statuses = {work['id']: work['status'] for work in works}
+                statuses: dict[str, str] = {work['id']: work['status'] for work in works}
                 rows = [self.task_brief(self.work_view(w, statuses)) for w in works
                         if (not args.get('owner') or w.get('owner') == args['owner'])
                         and (not args.get('state') or w.get('status') == args['state'])]
@@ -142,32 +182,32 @@ class EfficiencyMixin:
                     'history': {'results': len(task['results']), 'decisions': len(task['decisions'])}}
 
     @staticmethod
-    def task_brief(task):
+    def task_brief(task: "WorkViewRecord | dict[str, Any]") -> dict[str, "Any"]:
         brief = {k: task.get(k) for k in ('id', 'title', 'owner', 'status', 'version', 'blockedBy')}
         if task.get('archive'):
             brief['archive'] = {k: task['archive'].get(k) for k in ('status', 'reason')
                                 if task['archive'].get(k) is not None}
         return brief
 
-    def model_peers_directory(self, db, actor_id, args, actor):
+    def model_peers_directory(self: "_EfficiencyHost", db: "sqlite3.Connection", actor_id: str, args: dict[str, "Any"], actor: "AgentRecord") -> dict[str, "Any"]:
         scope = args.get('scope', 'team')
         if scope != 'team':
             raise ValueError('Agent discovery is limited to your team')
         from codex_peer_teams import peers_for
-        agents = self.team_agents(db, actor['rootId'])
+        agents: "Any" = self.team_agents(db, actor['rootId'])
         peer_ids = {peer['id'] for peer in peers_for(self, db, actor)}
         agents = {agent['id']: agent for agent in agents}
         agents.update(self.named_agents(db, peer_ids))
-        rows = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
+        rows: list[dict[str, "Any"]] = [{k: a.get(k) for k in ('id', 'name', 'role', 'rootId', 'parentId', 'status')}
                 for a in agents.values() if not a.get('deletedAt')]
         rows.sort(key=lambda a: a['id'])
-        rooms = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName',
+        rooms: list[dict[str, "Any"]] = [{k: r.get(k) for k in ('id', 'kind', 'members', 'rootId', 'peerTeamId', 'peerTeamName',
                                          'federated', 'peerId', 'peerLabel', 'localMembers')}
                  for r in self.chat_rooms(db, actor_id)]
         rooms.sort(key=lambda r: r['id'])
         # One cursor covers both collections. Room discovery continues
         # after the agents, without repeating rooms on each agent page.
-        entries = [{'entry': 'agent', 'value': r} for r in rows]
+        entries: list[dict[str, "Any"]] = [{'entry': 'agent', 'value': r} for r in rows]
         entries += [{'entry': 'room', 'value': r} for r in rooms]
         # The cursor follows identities; each page retains current status.
         revision_rows = [{'entry': 'agent', 'value': {k: v for k, v in r.items() if k != 'status'}}
@@ -188,7 +228,7 @@ class EfficiencyMixin:
             result['parent'] = actor['parentId']
         return result
 
-    def model_directory(self, actor_id, name, args):
+    def model_directory(self: "_EfficiencyHost", actor_id: str, name: str, args: dict[str, "Any"]) -> dict[str, "Any"]:
         if name == 'orchestration_status' and 'include_finished' in args and type(args['include_finished']) is not bool:
             raise ValueError('include_finished must be a boolean')
         if name == 'orchestration_peers':
@@ -202,12 +242,12 @@ class EfficiencyMixin:
             ids = {a['id'] for a in team}
             terminal_agents = {'completed', 'failed', 'interrupted'}
             terminal_monitors = {'completed', 'failed', 'cancelled', 'lost'}
-            def agent_record(a):
+            def agent_record(a):  # type: ("AgentRecord") -> dict[str, "Any"]
                 return {**{k: a.get(k) for k in ('id', 'name', 'status', 'inFlight', 'parentId')}, 'kind': 'agent',
                         'error': clip(a.get('error') or '', 600),
                         **({'waitsForEvent': a['parkedEvent']}
                            if a.get('status') == 'parked' and a.get('parkedEvent') else {})}
-            def monitor_record(m):
+            def monitor_record(m):  # type: (dict[str, "Any"]) -> dict[str, "Any"]
                 return {**{k: m.get(k) for k in ('id', 'agent', 'status', 'exitCode')}, 'kind': 'monitor',
                         'error': clip(m.get('error') or '', 600)}
             active_team = [a for a in team if a['status'] not in terminal_agents]
@@ -327,9 +367,9 @@ class EfficiencyMixin:
                                       'revision': revision, 'nextCursor': next_cursor}
             return result
 
-    def model_tool_result(self, actor, key, result):
+    def model_tool_result(self: "_EfficiencyHost", actor: str, key: str, result: dict[str, "Any"]) -> dict[str, "Any"]:
         from codex_agent_modes import tool_mode_context
-        result = tool_mode_context(self, actor, result, key)
+        result = tool_mode_context(self, actor, result, key)  # type: ignore[arg-type]  # typed-narrowing: host protocol supplies runtime arguments
         content = result.get('contentItems', [])
         texts = [c for c in content if c.get('type') == 'inputText' and not c.get('text', '').startswith(('[Time awareness]', '[Studio agent mode,'))]
         for item in texts:
@@ -346,7 +386,7 @@ class EfficiencyMixin:
         # The full result was committed before this projection. Images and
         # immutable clock metadata stay intact.
         raw = '\n'.join(c.get('text', '') for c in texts)
-        preview = {'requestId': key, 'outputRef': key, 'success': result.get('success'),
+        preview: dict[str, "Any"] = {'requestId': key, 'outputRef': key, 'success': result.get('success'),
                    'truncated': True, 'textBytes': len(raw.encode()), 'excerpt': clip(raw, 4000),
                    'read': {'tool': 'orchestration_read', 'output_ref': key}}
         with self.db() as db:
@@ -372,7 +412,7 @@ class EfficiencyMixin:
         return {**result, 'contentItems': [{'type': 'inputText', 'text': packed(preview)}]
                 + [c for c in content if c not in texts]}
 
-    def model_read(self, actor_id, args):
+    def model_read(self: "_EfficiencyHost", actor_id: str, args: dict[str, "Any"]) -> "JsonObject":
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             key = args.get('output_ref')
@@ -439,7 +479,7 @@ class EfficiencyMixin:
                     **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated')),
                         'commandStatus': payload.get('status'), 'exitCode': payload.get('exitCode')} if native else {})}
 
-    def model_saved_message(self, db, actor, key, args):
+    def model_saved_message(self: "_EfficiencyHost", db: "sqlite3.Connection", actor: "AgentRecord", key: str, args: dict[str, "Any"]) -> "JsonObject":
         source, record_id = key.split(':', 1)
         if source == 'event':
             row = db.execute('SELECT * FROM runtime_events WHERE id=? AND agent=?',
@@ -471,11 +511,11 @@ class EfficiencyMixin:
         return {'outputRef': key, 'source': source, 'identity': identity, 'offset': offset,
                 'nextOffset': end if end < len(text) else None, 'totalChars': len(text), 'text': excerpt}
 
-    def model_chat_page(self, room, messages, more):
+    def model_chat_page(self: "_EfficiencyHost", room: dict[str, "Any"], messages: list[dict[str, "Any"]], more: bool) -> dict[str, "Any"]:
         # UI reads keep complete pages. Model reads return recent messages first
         # within the byte budget; every clipped body has an authorized reader.
         room = {k: room[k] for k in ('id', 'kind', 'rootId', 'name') if k in room}
-        page = []
+        page: list[dict[str, "Any"]] = []
         for message in reversed(messages):
             brief = dict(message)
             brief.pop('deliveries', None)
@@ -490,7 +530,7 @@ class EfficiencyMixin:
         return {'room': room, 'messages': page,
                 'nextBefore': page[0]['seq'] if page and (more or len(page) < len(messages)) else None}
 
-    def remember_role_text(self, text):
+    def remember_role_text(self: "_EfficiencyHost", text: str) -> None:
         # A later role change is sent as a diff against the delivered version.
         # Without this snapshot the full role text is sent again.
         path = self.root / 'context-snapshots' / (digest(text) + '.txt')
@@ -502,7 +542,7 @@ class EfficiencyMixin:
             temporary.write_text(text, encoding='utf-8')
             os.replace(temporary, path)
 
-    def role_update(self, previous_version, text):
+    def role_update(self: "_EfficiencyHost", previous_version: "Any", text: str) -> str:
         try:
             previous = (self.root / 'context-snapshots' / (previous_version + '.txt')).read_text(encoding='utf-8')
         except (OSError, TypeError):
@@ -519,7 +559,7 @@ class EfficiencyMixin:
                 'Studio changed your role skill. Apply this diff to the role skill you received earlier. '
                 'It is not a user message. ' + source + '\n' + diff + '[End Studio role skill update]')
 
-    def preparation_context_versions(self, actor, params):
+    def preparation_context_versions(self: "_EfficiencyHost", actor: "AgentRecord", params: dict[str, "Any"]) -> "JsonObject":
         from codex_progress import progress_context
         values = {'roleSkill': self.role_guidance(actor),
                   'progressFile': progress_context(self.root, actor['id'])}
@@ -530,7 +570,7 @@ class EfficiencyMixin:
         instructions = params.get('developerInstructions', '')
         return {key: digest(value) for key, value in values.items() if value and value in instructions}
 
-    def model_known_context(self, db, actor):
+    def model_known_context(self: "_EfficiencyHost", db: "sqlite3.Connection", actor: "AgentRecord") -> tuple[list["Any"], dict[str, "Any"], dict[str, "Any"]]:
         epoch = [actor.get('threadId'), actor.get('compactions', 0)]
         latest = db.execute("SELECT record FROM runtime_context_manifests WHERE agent=? "
                             "ORDER BY sequence DESC LIMIT 1", (actor['id'],)).fetchone()
@@ -553,7 +593,7 @@ class EfficiencyMixin:
                 known['agentMode'] = current
         return epoch, old, known
 
-    def confirm_model_tool_result(self, actor_id, key, result, delivery_epoch=None):
+    def confirm_model_tool_result(self: "_EfficiencyHost", actor_id: str, key: str, result: dict[str, "Any"], delivery_epoch: list["JsonValue"] | None = None) -> None:
         # A projection is not a delivery. Call only after the native response
         # write succeeds. A failed write leaves the policy eligible for refresh.
         with self.lock, self.db() as db:
@@ -568,16 +608,16 @@ class EfficiencyMixin:
                               (actor_id, key)).fetchall()
             texts = [c.get('text') for c in result.get('contentItems', []) if c.get('type') == 'inputText']
             for row in rows:
-                record = json.loads(row[0])
+                record: "DeliveredModeRecord" = json.loads(row[0])
                 if record['epoch'] != epoch or not record.get('text') or record['text'] not in texts:
                     continue
                 previous = actor.get('deliveredMode') or {}
                 if previous.get('epoch') == epoch and previous.get('revision', -1) > record['revision']:
                     continue
-                actor['deliveredMode'] = {k: record[k] for k in ('epoch', 'version', 'revision')}
+                actor['deliveredMode'] = {k: record[k] for k in ('epoch', 'version', 'revision')}  # type: ignore[typeddict-item]  # typed-narrowing: projection preserves declared field types
                 self.put(db, 'agents', actor)
 
-    def reported_plan(self, db, root_id):
+    def reported_plan(self: "_EfficiencyHost", db: "sqlite3.Connection", root_id: str) -> "JsonObject | None":
         row = db.execute('SELECT record FROM runtime_plans WHERE id=?', (root_id,)).fetchone()
         plan = json.loads(row[0]) if row else None
         if not plan or not isinstance(plan.get('native'), dict):
@@ -586,8 +626,9 @@ class EfficiencyMixin:
                 'steps': plan['native'].get('plan', []),
                 'explanation': plan['native'].get('explanation') or ''}
 
-    def model_context(self, actor_id, args):
+    def model_context(self: "_EfficiencyHost", actor_id: str, args: dict[str, "Any"]) -> "JsonObject":
         topic = args.get('topic')
+        value: "Any"
         with self.lock, self.db() as db:
             actor = self.checked_actor(db, actor_id, actor_id)
             if topic == 'plan':
@@ -615,7 +656,7 @@ class EfficiencyMixin:
                 raise ValueError('Unknown context topic')
         return {'topic': topic, 'version': digest(value), 'content': value}
 
-    def model_turn_context(self, db, actor, event_id):
+    def model_turn_context(self: "_EfficiencyHost", db: "sqlite3.Connection", actor: "AgentRecord", event_id: str) -> str:
         epoch, old, known = self.model_known_context(db, actor)
         versions, blocks = {}, []
         from codex_agent_modes import guidance
@@ -670,7 +711,7 @@ class EfficiencyMixin:
         return ('\n\n' + '\n\n'.join(blocks)) if blocks else ''
 
     @staticmethod
-    def progress_only(rows):
+    def progress_only(rows: list[dict[str, "Any"]]) -> bool:
         if not rows:
             return False
         for row in rows:
@@ -685,17 +726,17 @@ class EfficiencyMixin:
         return True
 
     @staticmethod
-    def progress_batch_ready(rows, now=None):
+    def progress_batch_ready(rows: list[dict[str, "Any"]], now: float | None = None) -> bool:
         # User, question, blocker, failure and unclassified events bypass delay.
         now = time.time() if now is None else now
         return not EfficiencyMixin.progress_only(rows) or now - min(r['created'] for r in rows) >= 1.0
 
     @staticmethod
-    def bounded_event(row, text, byte_limit):
+    def bounded_event(row: dict[str, "Any"], text: str, byte_limit: int) -> str:
         if row['kind'] in {'work_review', 'child_result'}:
             try:
                 value = json.loads(text)
-                result = value.get('result') if isinstance(value, dict) else None
+                result: "Any" = value.get('result') if isinstance(value, dict) else None
                 result_text = result.get('text') if isinstance(result, dict) else result
                 if isinstance(result_text, str) and len(result_text.encode('utf-8')) > 20000:
                     path = result.get('resultFile') if isinstance(result, dict) else value.get('resultFile')
@@ -763,7 +804,7 @@ class EfficiencyMixin:
             summary['tail'] = summary['tail'][len(summary['tail']) // 2:] if len(summary['tail']) > 1 else ''
         return packed(summary)
 
-    def _archive_child_result_event(self, row, value, result_text):
+    def _archive_child_result_event(self: "_EfficiencyHost", row: dict[str, "Any"], value: dict[str, "Any"], result_text: str) -> str:
         child_id = value.get('agent_id', '')
         if not isinstance(child_id, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,200}', child_id):
             child_id = hashlib.sha256(str(child_id).encode()).hexdigest()
@@ -793,10 +834,10 @@ class EfficiencyMixin:
             raise
         return str(path)
 
-    def model_event_text(self, rows):
+    def model_event_text(self: "_EfficiencyHost", rows: list[dict[str, "Any"]]) -> str:
         # Only versioned progress for the same sender, room and topic supersedes an
         # earlier update. Keep every original event and receipt in the database.
-        latest, counts, versions, conflicts = {}, {}, {}, set()
+        latest, counts, versions, conflicts = {}, {}, {}, set()  # type: (dict[tuple[str, str, str], tuple[int, str]], dict[tuple[str, str, str], int], dict[tuple[str, str, str], set[int]], set[tuple[str, str, str]])
         for row in rows:
             if row['kind'] != 'agent_message' or row.get('preserveProgress'):
                 continue

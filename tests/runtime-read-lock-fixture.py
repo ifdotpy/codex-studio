@@ -17,6 +17,7 @@ sys.path.insert(0, str(repo / "tests"))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
 sys.path.insert(0, str(repo / "scripts"))
+from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas, make_server
 from codex_native_sweep import _account_busy, _protected
 from codex_runtime import Runtime
@@ -101,7 +102,7 @@ def measure():
                     db.execute("INSERT INTO runtime_chat_messages "
                                "(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
                                (f"message-{index}", room_id, lead["id"], "message", time.time(), "{}"))
-            SyncStore(runtime.db, lambda: {}, lambda _key: {})
+            SyncStore(runtime.db, lambda _key: {})
             traced = MeasuredLock(runtime.lock)
             runtime.lock = traced
             canvas.lock = traced
@@ -113,7 +114,7 @@ def measure():
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL))
             operations = {
                 "httpSnapshot": lambda: http_snapshot(False),
-                "runtimeSnapshot": lambda: runtime.snapshot(include_work=False),
+                "runtimeSnapshot": lambda: read_runtime_state(runtime, include_work=False),
                 "chatRead": lambda: runtime.chat_read(room_id),
                 "peers": lambda: runtime.peers(lead["id"]),
                 "nativeSweepChecks": lambda: native_checks(runtime, lead["id"]),

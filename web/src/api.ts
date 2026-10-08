@@ -16,6 +16,7 @@ import type {
 } from "./apiContracts";
 import { onResume } from "./sync/resume";
 import { displayError } from "./errorPresentation";
+import { getEntitySequenceCheckpointForWorkspace } from "./sync/entitySequence";
 
 type Method = "get" | "post";
 type PathsFor<M extends Method> = ApiPathsFor<paths, M> & keyof paths;
@@ -111,6 +112,7 @@ let successfulSession: { generation: number; token: string } | undefined;
 let confirmedSession: { generation: number; token: string } | undefined;
 let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
+const matchingSchemaListeners = new Set<() => void>();
 let schemaMismatch = false;
 let matchingSchemaResponseGeneration = 0;
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
@@ -141,6 +143,12 @@ export function isApiSchemaMismatch() {
 
 export function matchingApiSchemaResponseGeneration() {
   return matchingSchemaResponseGeneration;
+}
+
+export function onMatchingApiSchemaResponse(listener: () => void) {
+  matchingSchemaListeners.add(listener);
+  if (matchingSchemaResponseGeneration > 0 && !schemaMismatch) listener();
+  return () => matchingSchemaListeners.delete(listener);
 }
 
 export function onApiSchemaMismatch(listener: () => void) {
@@ -243,11 +251,21 @@ export const client = createClient<paths, "application/json">({
       (response.ok &&
         new URL(request.url).pathname === "/api/sync/identity" &&
         !serverHash)
-    )
+    ) {
       markApiSchemaMismatch();
-    else if (serverHash === API_SCHEMA_HASH) {
+      // Do not let a response from another contract reach a projection or
+      // mutation persister. The update gate is still raised before rejection.
+      throw new ApiSchemaMismatchError(true);
+    } else if (serverHash === API_SCHEMA_HASH) {
       matchingSchemaResponseGeneration++;
       clearSchemaUpdateAttemptAfterMatch();
+      for (const listener of matchingSchemaListeners) {
+        try {
+          listener();
+        } catch {
+          // Schema confirmation observers must not break a successful request.
+        }
+      }
     }
     return response;
   },
@@ -352,21 +370,96 @@ function requestController(options: ApiOptions, timeoutMs: number | undefined) {
 
 type SyncEnvelope = {
   _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+  _syncEntitiesAfter?: number | null;
 };
 
-function syncDocuments(
+type SyncEntityDocument = components["schemas"]["SyncEntity"];
+type SyncEntityPersister = (
+  workspaceId: string,
+  documents: SyncEntityDocument[],
+  syncEntitiesAfter: number | null | undefined,
+  isPersistenceCurrent: () => boolean,
+) => Promise<void>;
+let syncEntityPersister: SyncEntityPersister | undefined;
+const SYNC_ENTITY_PERSIST_TIMEOUT_MS = 250;
+
+export function registerSyncEntityPersister(
+  persist: SyncEntityPersister,
+): () => void {
+  syncEntityPersister = persist;
+  return () => {
+    if (syncEntityPersister === persist) syncEntityPersister = undefined;
+  };
+}
+
+async function syncDocuments(
   value: SyncEnvelope | null | undefined,
   workspaceId: string | undefined,
-) {
+): Promise<void> {
   if (!value?._syncEntities?.length || typeof window === "undefined") return;
-  window.dispatchEvent(
-    new CustomEvent("codex-sync-entities", {
-      detail: {
-        workspaceId: workspaceId ?? workspace,
-        documents: value._syncEntities,
-      },
-    }),
+  const targetWorkspaceId = workspaceId ?? workspace;
+  if (syncEntityPersister) {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let persistenceCurrent = true;
+    try {
+      await Promise.race([
+        syncEntityPersister(
+          targetWorkspaceId,
+          value._syncEntities,
+          value._syncEntitiesAfter,
+          () => persistenceCurrent,
+        ),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            persistenceCurrent = false;
+            reject(new Error("IndexedDB persistence timed out"));
+          }, SYNC_ENTITY_PERSIST_TIMEOUT_MS);
+        }),
+      ]);
+    } catch (error) {
+      persistenceCurrent = false;
+      console.error("Mutation entity persistence failed", {
+        workspaceId: targetWorkspaceId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+function beginMutationEntityCoverage(
+  value: SyncEnvelope | null | undefined,
+  targetWorkspaceId: string,
+):
+  | {
+      checkpoint: NonNullable<
+        ReturnType<typeof getEntitySequenceCheckpointForWorkspace>
+      >;
+      token: number;
+    }
+  | undefined {
+  const rows = value?._syncEntities;
+  const after = value?._syncEntitiesAfter;
+  if (
+    !rows?.length ||
+    !syncEntityPersister ||
+    typeof after !== "number" ||
+    !Number.isSafeInteger(after) ||
+    typeof window === "undefined"
+  )
+    return undefined;
+  const entities = rows.filter((document) => document.id.startsWith("entity:"));
+  if (entities.length === 0) return undefined;
+  const through = Math.max(...entities.map((document) => document.seq));
+  const checkpoint = getEntitySequenceCheckpointForWorkspace(
+    targetWorkspaceId,
+    "state:entities:v1",
+    API_SCHEMA_HASH,
   );
+  if (!checkpoint) return undefined;
+  const token = checkpoint.beginInFlightCoverage(after, through);
+  return token === undefined ? undefined : { checkpoint, token };
 }
 
 async function performGet<Path extends PathsFor<"get">>(
@@ -468,8 +561,18 @@ export async function post<Path extends PathsFor<"post">>(
     if (!("data" in result)) return undefined as PostResult<Path>;
     if (result.data === null)
       throw new Error("Successful response did not contain a body.");
-    syncDocuments(result.data as PostResult<Path>, options.workspaceId);
-    return result.data as PostResult<Path>;
+    const data = result.data as PostResult<Path>;
+    const targetWorkspaceId = options.workspaceId ?? workspace;
+    const coverage = beginMutationEntityCoverage(
+      data as SyncEnvelope,
+      targetWorkspaceId,
+    );
+    try {
+      await syncDocuments(data as SyncEnvelope, options.workspaceId);
+    } finally {
+      if (coverage) coverage.checkpoint.settleInFlightCoverage(coverage.token);
+    }
+    return data;
   } catch (error) {
     if (controller.timedOut()) throw new NetworkTimeoutError();
     throw error;

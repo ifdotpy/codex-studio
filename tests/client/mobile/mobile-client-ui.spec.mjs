@@ -1,7 +1,6 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Isolated server and headless browser. No model requests or user state.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp, mkdir, writeFile, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -116,7 +115,7 @@ test("Mobile client ui", async ({
       await page.setViewportSize({ width, height: 844 });
       const settingsAction = await openChatActions();
       assert.equal(await page.locator(".workspace-shortcuts").count(), 0);
-      const snapshot = await (await fetch(url + "/api/state")).json();
+      const snapshot = await readTestState(url);
       const selected = await page.evaluate(() =>
         JSON.parse(localStorage.getItem("codex-mobile-opened")),
       );
@@ -232,7 +231,7 @@ test("Mobile client ui", async ({
       (id) => JSON.parse(localStorage.getItem("codex-mobile-opened")) === id,
       created.id,
     );
-    const serverState = await (await fetch(url + "/api/state")).json();
+    const serverState = await readTestState(url);
     assert.equal(
       serverState.threads.filter((item) => item.id === created.id).length,
       1,

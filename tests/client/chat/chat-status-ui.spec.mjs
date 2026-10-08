@@ -1,11 +1,17 @@
+import {
+  readTestState,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  legacySnapshotRoute,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production renderer with isolated HTTP fixtures. No model calls or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("chat-status-ui", async ({ browser }) => {
   test.setTimeout(120_000);
@@ -58,7 +64,7 @@ test("chat-status-ui", async ({ browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = await (await fetch(origin + "/api/state")).json();
+    const state = await readTestState(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     const worker = (index) =>
@@ -99,7 +105,7 @@ test("chat-status-ui", async ({ browser }) => {
         leadId: lead.id,
         author: lead.id,
         recipient: "user",
-        needsResponse: true,
+        needsUserResponse: true,
         status: "open",
         title: "Inbox item without a question",
         created: 1,
@@ -149,19 +155,43 @@ test("chat-status-ui", async ({ browser }) => {
       viewport: { width: 1440, height: 980 },
     });
     page = await context.newPage();
+    const syncPullRequests = [],
+      stateRequests = [];
+    page.on("request", (request) => {
+      const path = new URL(request.url()).pathname;
+      if (path === "/api/sync/pull") syncPullRequests.push(request.url());
+      if (legacySnapshotRoute.test(request.url()))
+        stateRequests.push(request.url());
+    });
     page.setDefaultTimeout(10000);
     const errors = [],
       writes = [];
     page.on("pageerror", (error) => errors.push(error.message));
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({
-        status: 404,
-        json: { error: "Fixture uses HTTP snapshots" },
-      }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    let fixtureMaxSeq = 0;
+    let pullTombstones = [];
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: identityResponse }),
     );
-    await page.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: state }),
-    );
+    await page.route("**/api/sync/pull?*", (route) => {
+      const url = new URL(route.request().url());
+      const projection = entityPullFixtureForRequest(state, url, {
+        ...(fixtureMaxSeq ? { maxSeq: fixtureMaxSeq } : {}),
+        tombstones: pullTombstones,
+      });
+      if (typeof projection.maxSeq === "number")
+        fixtureMaxSeq = Math.max(fixtureMaxSeq, projection.maxSeq);
+      return route.fulfill({
+        json: {
+          workspaceId,
+          ...projection,
+        },
+      });
+    });
     await page.route("**/api/transcript/stream?*", (route) =>
       route.fulfill({
         status: 404,
@@ -242,6 +272,13 @@ test("chat-status-ui", async ({ browser }) => {
       { stateDir: state.stateDir, id: lead.id },
     );
     await page.goto(origin);
+    await page.locator("#conversation-title").waitFor();
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
     const row = (agent) => page.locator(`[data-chat="${agent.id}"]`);
     const indicatorLabel = (label, agent) =>
       agent.model
@@ -293,7 +330,21 @@ test("chat-status-ui", async ({ browser }) => {
     console.log(
       "PASS sidebar, header, worker statuses; question overrides active work; monitor spinner and question pulse",
     );
+    const removedRequest = state.runtime.requests[0];
     state.runtime.requests = [];
+    fixtureMaxSeq += 1;
+    pullTombstones = [
+      {
+        id: `entity:request:${removedRequest.id}`,
+        seq: fixtureMaxSeq,
+        payload: JSON.stringify({
+          collection: "request",
+          id: removedRequest.id,
+          value: removedRequest,
+        }),
+        _deleted: true,
+      },
+    ];
     await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await status(row(lead), "working");
     await status(page.locator("#conversation-title"), "working");
@@ -476,6 +527,12 @@ test("chat-status-ui", async ({ browser }) => {
       "PASS production Conversation, header, and sidebar: exact wake kinds and counts, static end without a spinner",
     );
     expect(errors).toEqual([]);
+    assert.ok(
+      syncPullRequests.some(
+        (url) => new URL(url).searchParams.get("scope") === "state:entities:v1",
+      ),
+    );
+    assert.deepEqual(stateRequests, []);
     console.log(
       JSON.stringify({
         browser: browser.browserType().name(),

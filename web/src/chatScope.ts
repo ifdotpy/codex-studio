@@ -1,9 +1,4 @@
-import {
-  complaintNeedsUserResponse,
-  type Agent,
-  type Room,
-  type Snapshot,
-} from "./types";
+import type { Agent, Room, Snapshot } from "./types";
 
 // Private rooms predate rootId metadata. Their participants define the scope.
 // Historical cross-team rooms remain visible to the user in the participant chats.
@@ -34,7 +29,6 @@ export function chatSnapshot(
   );
   const ids = new Set(members.map((agent) => agent.id));
   const owns = (id?: string) => !!id && ids.has(id);
-  if (!runtime) return { ...data, threads: members, chats: [] };
   return {
     ...data,
     threads: members,
@@ -54,17 +48,18 @@ export function chatSnapshot(
       monitors: runtime.monitors.filter((monitor) =>
         owns(monitor.agent || undefined),
       ),
-      tasks: runtime.tasks?.filter((task) => owns(task.agent || undefined)),
-      work: runtime.work?.filter((task) => !!rootId && task.rootId === rootId),
-      rules: runtime.rules?.filter((rule) => owns(rule.agent || undefined)),
+      tasks: runtime.tasks.filter((task) => owns(task.agent || undefined)),
+      work: runtime.work.filter((task) => !!rootId && task.rootId === rootId),
+      rules: runtime.rules.filter((rule) => owns(rule.agent || undefined)),
     },
   };
 }
 
 export function messageAttentionCount(data: Snapshot | null): number {
-  if (!data?.runtime) return 0;
+  if (!data) return 0;
   return (
     data.runtime.requests.filter((request) => !request.deferred).length +
-    data.runtime.complaints.filter(complaintNeedsUserResponse).length
+    data.runtime.complaints.filter((complaint) => complaint.needsUserResponse)
+      .length
   );
 }

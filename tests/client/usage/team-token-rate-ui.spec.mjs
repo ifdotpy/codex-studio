@@ -1,11 +1,10 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 // Real batch SSE, hidden Chrome, temp state. No model calls.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -65,8 +64,7 @@ test("team token rate ui", async ({ browser }) => {
         proc.once("exit", () => reject(Error(log)));
       });
       const origin = `http://127.0.0.1:${port}`;
-      const state = async () =>
-        (await (await fetch(origin + "/api/state")).json()).runtime.agents;
+      const state = async () => (await readTestState(origin)).runtime.agents;
       const agents = await state();
       const lead = agents.find((agent) => agent.name === "Release lead");
       const workers = agents

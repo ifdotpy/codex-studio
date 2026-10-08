@@ -1,5 +1,12 @@
 """Per-chat subagent concurrency and its derived delegation mode."""
 import time
+from typing import TYPE_CHECKING, Any
+
+from codex_records import AgentRecord
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_runtime import Runtime
 
 DEFAULT_SUBAGENT_CONCURRENCY = 32
 MAX_SUBAGENT_CONCURRENCY = 512
@@ -11,7 +18,7 @@ DEFAULT_GLOBAL_CONCURRENCY = MAX_SUBAGENT_CONCURRENCY + LEAD_TEAM_RECORDS
 CONCURRENCY_SCHEMA_VERSION = 2
 
 
-def concurrency(agent):
+def concurrency(agent: AgentRecord) -> int:
     """Read the canonical limit, migrating old mode-only records in memory."""
     if agent.get('subagentConcurrencyVersion', 0) < CONCURRENCY_SCHEMA_VERSION:
         if agent.get('agentMode') == 'single':
@@ -21,7 +28,7 @@ def concurrency(agent):
     return 0 if agent.get('agentMode') == 'single' else DEFAULT_SUBAGENT_CONCURRENCY
 
 
-def mode_fields(agent):
+def mode_fields(agent: AgentRecord) -> AgentRecord:
     if agent.get('isLead'):
         limit = concurrency(agent)
         agent['concurrency'] = limit
@@ -35,23 +42,23 @@ def mode_fields(agent):
     return agent
 
 
-def global_concurrency_limit():
+def global_concurrency_limit() -> int:
     """Global process resource ceiling; per-chat limits remain separate."""
     import os
     return max(1, int(os.environ.get('CODEX_CANVAS_CONCURRENCY', str(DEFAULT_GLOBAL_CONCURRENCY))))
 
 
-def assert_delegation(root):
+def assert_delegation(root: AgentRecord) -> None:
     if concurrency(root) == 0:
         raise ValueError('Single agent mode disables new delegation. Complete the task in the lead chat or select Multi agent.')
 
 
-def assert_worker_input(runtime, db, target):
+def assert_worker_input(runtime: "Runtime", db: "sqlite3.Connection", target: AgentRecord) -> None:
     if target['id'] != target['rootId']:
         assert_delegation(runtime.agent(target['rootId'], db))
 
 
-def change_mode(runtime, key, data):
+def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentRecord:
     """Apply new limit requests and exact legacy mode retries atomically."""
     new_request = 'subagent_concurrency' in data
     legacy_request = 'agent_mode' in data
@@ -87,13 +94,13 @@ def change_mode(runtime, key, data):
         signature, previous = runtime.operation_receipt(db, request, body)
         if previous is not None:
             return mode_fields(agent)
-        current = concurrency(agent)
+        current_limit = concurrency(agent)
         if agent.get('agentModeRevision', 0) != revision:
             raise ValueError('Subagent concurrency changed. Read the current value before saving')
         prior_max_agents = agent.get('maxAgents')
-        changed = current != limit
-        if current != limit:
-            agent.update(concurrency=limit, agentModeRevision=revision + 1,
+        changed = current_limit != limit
+        if current_limit != limit:
+            agent.update(concurrency=limit, agentModeRevision=revision + 1,  # type: ignore[call-arg]  # typed-update
                          agentModeChangedAt=time.time(), agentModeChangedBy='user')
         # `maxAgents` is a stored-team guard, not the parallelism limit. Keep
         # enough records available for the requested workers plus the lead.
@@ -115,11 +122,11 @@ def change_mode(runtime, key, data):
             supported, reason = runtime.image_workspace_support(repo)
             if supported:
                 with runtime.lock, runtime.db() as db:
-                    current = runtime.agent(key, db)
-                    if concurrency(current) > 0:
-                        current['imageWorkspaceBaseRepo'] = repo
-                        runtime.put(db, 'agents', current)
-                if concurrency(current) > 0:
+                    current_agent = runtime.agent(key, db)
+                    if concurrency(current_agent) > 0:
+                        current_agent['imageWorkspaceBaseRepo'] = repo
+                        runtime.put(db, 'agents', current_agent)
+                if concurrency(current_agent) > 0:
                     canonical['imageWorkspaceBaseRepo'] = repo
                     error_text = None
                     try:
@@ -146,7 +153,7 @@ def change_mode(runtime, key, data):
     return canonical
 
 
-def guidance(root):
+def guidance(root: AgentRecord) -> str:
     limit = concurrency(root)
     revision = root.get('agentModeRevision', 0)
     mode = 'Single' if limit == 0 else 'Multi'
@@ -161,7 +168,7 @@ def guidance(root):
     return f'[Studio subagent concurrency, revision {revision}] {text}'
 
 
-def tool_mode_context(runtime, actor_id, result, key=None):
+def tool_mode_context(runtime: "Runtime", actor_id: str, result: dict[str, Any], key: str | None = None) -> dict[str, Any]:
     # Keep a stable policy attachment for each result, revision and compaction
     # epoch. Suppress later results only after confirmed response delivery.
     with runtime.lock, runtime.db() as db:

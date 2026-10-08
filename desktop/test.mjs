@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:net";
+import { readTestState } from "../tests/client/playwright.mjs";
 const require = createRequire(import.meta.url);
 const { ensureBackend, identity } = require("./backend.cjs");
 const root = path.dirname(fileURLToPath(import.meta.url));
@@ -120,10 +121,29 @@ try {
   });
   await desktop.evaluate(({ Notification, app }) => {
     app.__testNotificationShow = Notification.prototype.show;
-    Notification.prototype.show = function () { this.emit("failed", {}, "Notifications are not allowed for this application"); };
+    Notification.prototype.show = function () {
+      this.emit(
+        "failed",
+        {},
+        "Notifications are not allowed for this application",
+      );
+    };
   });
-  assert.match(await page.evaluate(() => window.codexDesktop.notify({title:"Permission test",body:"Test",target:{agentId:"fixture",section:"messages"}}).catch(e=>e.message)), /STUDIO_NOTIFICATIONS_DENIED/);
-  await desktop.evaluate(({ Notification, app }) => { Notification.prototype.show = app.__testNotificationShow; });
+  assert.match(
+    await page.evaluate(() =>
+      window.codexDesktop
+        .notify({
+          title: "Permission test",
+          body: "Test",
+          target: { agentId: "fixture", section: "messages" },
+        })
+        .catch((e) => e.message),
+    ),
+    /STUDIO_NOTIFICATIONS_DENIED/,
+  );
+  await desktop.evaluate(({ Notification, app }) => {
+    Notification.prototype.show = app.__testNotificationShow;
+  });
   assert.match(
     await page.evaluate(() =>
       window.codexDesktop
@@ -206,7 +226,7 @@ try {
     .getByRole("button", { name: "Use this folder", exact: true })
     .click();
   assert.equal((await projectResponse).status(), 200);
-  const uiState = await (await fetch(`${backend.origin}/api/state`)).json();
+  const uiState = await readTestState(backend.origin);
   const lead = uiState.runtime.agents.find((agent) => agent.isLead);
   assert.ok(lead.cwd.endsWith(path.basename(temp)));
   assert.equal(lead.threadId, null);
@@ -254,7 +274,7 @@ try {
   );
   await page.locator("#native-external-link").evaluate((link) => link.remove());
   assert.equal(page.url(), `${backend.origin}/`);
-  const finalState = await (await fetch(`${backend.origin}/api/state`)).json();
+  const finalState = await readTestState(backend.origin);
   assert.ok(
     finalState.runtime.agents.every(
       (agent) => !agent.threadId && !agent.inFlight,

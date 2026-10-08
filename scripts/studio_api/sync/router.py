@@ -13,6 +13,7 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.sse import format_sse_event
 from fastapi.responses import StreamingResponse
 from starlette.concurrency import run_in_threadpool
+from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
 from studio_api.models import ErrorResponse
@@ -27,6 +28,7 @@ from studio_api.sync.models import (
     SyncIdentityResponse,
     SyncProtocolResponse,
     SyncDocument,
+    SyncEntityPayload,
     SyncPullResponse,
     SyncPullResetResponse,
     SyncStreamQuery,
@@ -75,6 +77,7 @@ class SyncStoreContract(Protocol):
     ) -> SyncPullProjection: ...
     def generation(self) -> int: ...
     def push_drafts(self, rows: list[dict[str, object]]) -> list[dict[str, object]]: ...
+    def draft_sequence(self) -> int: ...
 
 
 class PanelAgentValidator(Protocol):
@@ -126,7 +129,7 @@ def _resource_event(
     return format_sse_event(
         event=event,
         id=str(payload.revision),
-        data_str=payload.model_dump_json(by_alias=True),
+        data_str=payload.model_dump_json(by_alias=True, exclude_none=True),
     )
 
 
@@ -137,12 +140,24 @@ def _schema_event(payload: dict[str, object]) -> bytes:
     )
 
 
+class ClosingEventStreamResponse(StreamingResponse):
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            close = getattr(self.body_iterator, "aclose", None)
+            if close is not None:
+                await close()
+
+
 def _stream_response(content: AsyncIterator[bytes]) -> StreamingResponse:
     headers = {
         "Cache-Control": "no-cache, no-transform",
         "X-Accel-Buffering": "no",
     }
-    return StreamingResponse(content, media_type="text/event-stream; charset=utf-8", headers=headers)
+    return ClosingEventStreamResponse(
+        content, media_type="text/event-stream; charset=utf-8", headers=headers
+    )
 
 
 def create_router(context: ApiContext) -> APIRouter:
@@ -188,7 +203,7 @@ def create_router(context: ApiContext) -> APIRouter:
         reset: str | None = None,
         priorityId: str | None = None,
     ) -> object:
-        scope = _first(request, "scope", "state") or "state"
+        scope = _first(request, "scope", "state:entities:v1") or "state:entities:v1"
         after = _query_int(request, "after", 0)
         limit = _query_int(request, "limit", SYNC_BATCH_LIMIT)
         initial_high = _query_int(request, "initialHigh", 0)
@@ -197,24 +212,56 @@ def create_router(context: ApiContext) -> APIRouter:
         priority_id = _first(request, "priorityId")
         store = _sync_store(context)
         projection = store.pull(scope, after, limit, fresh_flag, initial_high, reset_flag, priority_id)
-        for document in projection.get("documents", []):
-            if scope == "state:entities:v1" and not document.get("_deleted"):
-                from codex_sync_entities import response_entity_payload
+        if scope == "state:entities:v1":
+            from codex_sync_entities import (
+                _report_bad_entity,
+                response_entity_payload_fail_open,
+            )
 
+            valid_documents: list[dict[str, object]] = []
+            for document in projection.get("documents", []):
                 payload = document.get("payload")
+                row_id = str(document.get("id", ""))
                 if not isinstance(payload, str):
-                    return context.send(request, {"error": "Invalid sync entity payload"}, status=500)
+                    _report_bad_entity("response", row_id, TypeError("payload is not a string"))
+                    continue
+                was_deleted = bool(document.get("_deleted"))
                 try:
-                    document["payload"], document["_deleted"] = response_entity_payload(payload)
-                except ValidationError as error:
-                    # Fail open: one stored entity with a field outside its DTO
-                    # must not block every client pull. Send it unchanged and
-                    # log the exact mismatch for a DTO correction.
+                    # SyncStore rejects unreadable envelopes. For readable rows,
+                    # strip DTO extras but deliver other mismatches so one stale
+                    # row cannot block the checkpoint or later entity updates.
+                    (document["payload"], alias_deleted, dropped_paths,
+                     remaining_mismatch) = response_entity_payload_fail_open(payload)
+                except (ValueError, TypeError) as error:
+                    # SyncStore skips unreadable envelopes before they reach this
+                    # route; retain the guard for alternate stores and test doubles.
+                    _report_bad_entity("response", row_id, error)
+                    continue
+                document["_deleted"] = was_deleted or alias_deleted
+                if dropped_paths:
+                    logging.getLogger(__name__).warning(
+                        "Sync entity contract extras removed for %s: %s",
+                        row_id, ", ".join(dropped_paths),
+                    )
+                if remaining_mismatch:
                     logging.getLogger(__name__).error(
                         "Sync entity contract mismatch for %s: %s",
-                        document.get("id"), str(error)[:4000],
+                        row_id, remaining_mismatch,
                     )
+                valid_documents.append(document)
+            if "documents" in projection:
+                projection["documents"] = valid_documents
         return context.send(request, {**projection, "generation": store.generation()})
+
+    pull_route = router.routes[-1]
+    register_route_components(
+        pull_route,
+        {
+            "SyncEntityPayload": TypeAdapter(SyncEntityPayload).json_schema(
+                ref_template="#/components/schemas/{model}"
+            ),
+        },
+    )
 
     @router.get(
         "/api/sync/stream",
@@ -251,7 +298,7 @@ def create_router(context: ApiContext) -> APIRouter:
             **ERROR_RESPONSES,
         },
     )
-    async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:
+    async def sync_stream(request: Request, _query: SyncStreamQuery = Depends()) -> StreamingResponse:  # type: ignore[return]
         protocol_value = _first(request, "protocol")
         header_version = request.headers.get("X-Codex-Sync-Protocol")
         if protocol_value not in (None, "3") or header_version not in (None, "3"):
@@ -269,7 +316,7 @@ def create_router(context: ApiContext) -> APIRouter:
             server_hash = await context.get_api_schema_hash() if renderer_hash is not None else None
             if renderer_hash is not None and renderer_hash != server_hash:
                 async def schema_mismatch_event() -> AsyncIterator[bytes]:
-                    payload = {
+                    payload: dict[str, object] = {
                         "hash": server_hash,
                         API_SCHEMA_MISMATCH_FIELD: True,
                     }
@@ -323,13 +370,32 @@ def create_router(context: ApiContext) -> APIRouter:
 
             async def resource_events() -> AsyncIterator[bytes]:
                 runtime = context.runtime
+                shutdown_notifier = request.scope.get("state", {}).get("studio_shutdown_event")
+                shutdown_wait = (
+                    asyncio.create_task(shutdown_notifier.async_event().wait())
+                    if shutdown_notifier is not None else None
+                )
                 try:
                     if renderer_hash is not None:
                         yield _schema_event({"hash": server_hash})
                     yield _resource_event("resources", subscription.initial)
                     yield _resource_event("token-rates", subscription.initial_token_rates)
                     while not await request.is_disconnected() and not (runtime and runtime.closed):
-                        event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                        if shutdown_wait is not None:
+                            next_event = asyncio.create_task(
+                                subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
+                            )
+                            done, _pending = await asyncio.wait(
+                                (next_event, shutdown_wait),
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+                            if shutdown_wait in done:
+                                next_event.cancel()
+                                await asyncio.gather(next_event, return_exceptions=True)
+                                break
+                            event = next_event.result()
+                        else:
+                            event = await subscription.next_event(RESOURCE_HEARTBEAT_SECONDS)
                         if isinstance(event, ResourceTokenRatesEvent):
                             yield _resource_event("token-rates", event)
                         elif isinstance(event, ResourceChangeEvent):
@@ -338,6 +404,9 @@ def create_router(context: ApiContext) -> APIRouter:
                             yield _resource_event("heartbeat", subscription.heartbeat())
                 finally:
                     subscription.close()
+                    if shutdown_wait is not None:
+                        shutdown_wait.cancel()
+                        await asyncio.gather(shutdown_wait, return_exceptions=True)
 
             return _stream_response(resource_events())
 

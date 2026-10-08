@@ -1,11 +1,15 @@
 #!/usr/bin/env node
+import {
+  test,
+  expect,
+  spawnFixture as spawn,
+  readTestState,
+} from "../playwright.mjs";
 // Exercise real message selection and draft changes against an isolated runtime.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
-
 test.use({ hasTouch: true });
 
 test("Selection Quote Ui", async ({
@@ -244,7 +248,7 @@ test("Selection Quote Ui", async ({
     await page.locator("#send").click();
     let previewAgent;
     for (let attempt = 0; attempt < 100; attempt++) {
-      const state = await (await fetch(`${origin}/api/state`)).json();
+      const state = await readTestState(origin);
       previewAgent = state.threads.find(
         (agent) => agent.name === "Other project",
       );

@@ -1,7 +1,6 @@
-import { test } from "../playwright.mjs";
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Hidden Chrome, temporary state, real runtime notifications and existing SSE.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -35,8 +34,7 @@ test("Token rate ui", async ({
       proc.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const state = async () =>
-      (await (await fetch(origin + "/api/state")).json()).runtime.agents;
+    const state = async () => (await readTestState(origin)).runtime.agents;
     const initial = await state();
     const lead = initial.find((agent) => agent.name === "Release lead");
     const other = initial.find((agent) => agent.name === "Other project");

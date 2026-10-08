@@ -299,6 +299,9 @@ class ProviderVersionMonitor:
         if not published:
             self._defer(runtime, generation)
             return False
+        refresh = getattr(runtime, "refresh_workspace_volatile", None)
+        if callable(refresh):
+            refresh()
         runtime.changed.set()
         return True
 

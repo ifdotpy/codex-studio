@@ -1,12 +1,15 @@
+import {
+  readTestState,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Real production React, isolated HTTP fixture, controlled status and delivery timing.
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
@@ -31,7 +34,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       fixture.once("exit", () => reject(Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(`${origin}/api/state`)).json();
+    const initial = await readTestState(origin);
     const lead = initial.threads.find(
       (agent) => agent.name === "Other project",
     );

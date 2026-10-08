@@ -49,7 +49,7 @@ class DraftIdentityContract(unittest.TestCase):
                 finally:
                     db.close()
 
-            store = SyncStore(connect, lambda: {}, lambda _key: {})
+            store = SyncStore(connect, lambda _key: {})
             original = {
                 "id": "device-a:chat-a",
                 "device": "device-a",
@@ -90,9 +90,10 @@ class FakeRuntime:
         self.send_calls = []
         self.receipt_error = None
 
-    def snapshot(self, *, include_work=True):
-        return {
-            "agents": [{
+    def records(self, _db, table, *, shared=False):
+        if table != "agents":
+            return []
+        return [{
                 "id": "managed-agent",
                 "rootId": "managed-agent",
                 "name": "Managed agent",
@@ -102,7 +103,9 @@ class FakeRuntime:
                 "canSend": True,
                 "launcherAlive": True,
             }]
-        }
+
+    def agent_entity_view(self, _db, record):
+        return record
 
     def send(self, key, text, message_id):
         self.send_calls.append((key, text, message_id))

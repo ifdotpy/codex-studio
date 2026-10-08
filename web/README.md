@@ -68,7 +68,11 @@ from the isolated Storybook stories.
 - `src/components/Dictation.tsx`: saved recordings and explicit transcript insertion.
 - `src/components/Usage.tsx`: context usage, compaction count, and account limits.
 - `src/components/Analytics.tsx`: response usage history, tool payload measurements, and export.
-- `src/hooks.ts`: server snapshots and transcript updates.
+- `src/hooks.ts`: entity projections and transcript updates.
+
+The renderer's state projection uses the sync-entity pull. `/api/state` and the
+legacy `state` / `state:chat` pull scopes were removed in the pull request that
+completed the move to sync entities (round 3), `#11`.
 
 Shared UI views live beside their callers in the feature folders above. Typed presentational components
 have colocated `*.stories.tsx` files; the application imports those same
@@ -151,6 +155,9 @@ each tab can open its own protocol-3 stream. Transcript updates use scoped
 generation-poll endpoint. Hash-bearing protocol-3 connections begin with an
 `api-schema` event; a mismatching connection receives only that handshake and
 closes without subscribing. Hashless connections keep the prior event sequence.
+Resource baselines carry per-resource revisions. The state revision is the
+durable non-transcript entity sequence, so subscription changes skip unchanged
+resources while a new stream epoch forces a full reconciliation.
 During the one-time rollout, a pre-gate tab can hold the stream lock while its
 hashless channel messages are ignored, leaving a new tab degraded until the old
 tab is closed or reloaded.

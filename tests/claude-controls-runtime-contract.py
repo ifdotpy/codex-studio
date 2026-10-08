@@ -179,6 +179,32 @@ class Controls(unittest.TestCase):
             self.assertEqual(self.call('rollback', turn_id='t2', request_id='completed-path'), result)
         self.assertEqual(self.server.forks, 1)
 
+    def test_workspace_operation_entity_tracks_real_rollback_producer(self):
+        entered, release = threading.Event(), threading.Event()
+        def pause_before_reply():
+            entered.set()
+            if not release.wait(3):
+                raise TimeoutError('rollback receipt gate expired')
+        self.server.before_reply = pause_before_reply
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(self.call, 'rollback', turn_id='t2', request_id='entity-rollback')
+            try:
+                self.assertTrue(entered.wait(3))
+                with self.rt.db() as db:
+                    payload = db.execute(
+                        "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                        (self.key,)).fetchone()[0]
+                self.assertEqual(json.loads(payload)['value']['workspaceOperation'], 'branch')
+            finally:
+                release.set()
+            future.result(timeout=3)
+        self.assertIsNone(self.rt.agent(self.key).get('workspaceOperation'))
+        with self.rt.db() as db:
+            payload = db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (self.key,)).fetchone()[0]
+        self.assertIsNone(json.loads(payload)['value']['workspaceOperation'])
+
     def test_rollback_receipt_and_hidden_history(self):
         result = self.call('rollback', turn_id='t2', request_id='r')
         self.assertEqual(result['threadId'], 'logical')

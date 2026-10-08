@@ -4,9 +4,15 @@ import os
 from pathlib import Path
 import subprocess
 import tempfile
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 
-def _title_model(catalog, agent):
+def _title_model(catalog: Any, agent: "AgentRecord") -> tuple[str, str | None]:
     rows = catalog.get("data", [])
     available = [row for row in rows if isinstance(row.get("model"), str) and row["model"] and not row.get("hidden")]
     if not available:
@@ -26,12 +32,12 @@ def _title_model(catalog, agent):
     return selected["model"], "low" if "low" in efforts else None
 
 
-def _messages(db, agent):
+def _messages(db: "sqlite3.Connection", agent: "AgentRecord") -> tuple[str, list[tuple[str, str]]]:
     rows = db.execute(
         "SELECT record FROM runtime_items WHERE agent=? ORDER BY created DESC LIMIT 40",
         (agent["id"],),
     ).fetchall()
-    messages = []
+    messages: list[tuple[str, str]] = []
     for row in reversed(rows):
         item = json.loads(row[0])
         if item.get("inputs"):
@@ -55,7 +61,9 @@ def _messages(db, agent):
     return first[:1200], [(role, text[:600]) for role, text in recent]
 
 
-def _generate(runtime, agent, first, recent):
+def _generate(
+    runtime: "Runtime", agent: "AgentRecord", first: str, recent: list[tuple[str, str]]
+) -> str:
     prompt = (
         "Write one short, specific title for this chat. Use the first user request and recent work. "
         "Return only the title, 2 to 8 words, at most 80 characters. No quotes or final period. "
@@ -109,7 +117,14 @@ def _generate(runtime, agent, first, recent):
     return title
 
 
-def _finish(runtime, key, request_id, agent, first, recent):
+def _finish(
+    runtime: "Runtime",
+    key: str,
+    request_id: str,
+    agent: "AgentRecord",
+    first: str,
+    recent: list[tuple[str, str]],
+) -> None:
     try:
         title = _generate(runtime, agent, first, recent)
         error = None
@@ -124,14 +139,14 @@ def _finish(runtime, key, request_id, agent, first, recent):
             current = runtime.agent(key, db)
             if current.get("deletedAt") or current["name"] != agent["name"]:
                 error = "The chat name changed before the title was ready."
-        result = {"id": key, "request_id": request_id, "status": "failed", "error": error} if error else _set_name(runtime, db, key, title)
+        result = {"id": key, "request_id": request_id, "status": "failed", "error": error} if error else _set_name(runtime, db, key, title)  # type: ignore[arg-type]  # typed-narrowing: Successful generation supplies its title
         if not error:
             result.update(request_id=request_id, status="applied")
         db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?", (json.dumps(result), request_id))
         runtime.__dict__.setdefault("_rename_jobs", set()).discard(request_id)
 
 
-def _set_name(runtime, db, key, name):
+def _set_name(runtime: "Runtime", db: "sqlite3.Connection", key: str, name: str) -> dict[str, str]:
     row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (key,)).fetchone()
     if row:
         room = json.loads(row[0])
@@ -141,12 +156,14 @@ def _set_name(runtime, db, key, name):
         agent = runtime.agent(key, db)
         if agent.get("deletedAt"):
             raise ValueError("This conversation was deleted")
-        agent.update(name=name, manualName=True, needsTitle=False)
+        agent.update(name=name, manualName=True, needsTitle=False)  # type: ignore[call-arg]  # typed-update
         runtime.put(db, "agents", agent)
     return {"id": key, "name": name}
 
 
-def rename(runtime, key, name, request_id=None):
+def rename(
+    runtime: "Runtime", key: str, name: str | None, request_id: str | None = None
+) -> dict[str, Any]:
     if request_id is not None and (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200):
         raise ValueError("A rename request id is required")
     if name is not None and (not isinstance(name, str) or not 1 <= len(name.strip()) <= 80):
@@ -182,7 +199,7 @@ def rename(runtime, key, name, request_id=None):
         runtime.pool.submit(_finish, runtime, key, request_id, agent, first, recent)
     except RuntimeError:
         with runtime.lock, runtime.db() as db:
-            runtime._rename_jobs.discard(request_id)
+            runtime._rename_jobs.discard(request_id)  # type: ignore[attr-defined]  # typed-narrowing: Module initializes rename job state
             result = {"id": key, "request_id": request_id, "status": "failed",
                       "error": "The title request could not start. Try /rename again."}
             db.execute("UPDATE runtime_operation_receipts SET result=? WHERE id=?",

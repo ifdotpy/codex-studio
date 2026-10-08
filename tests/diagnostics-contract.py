@@ -15,15 +15,61 @@ import sys
 import tempfile
 import threading
 import time
+import typing
+import types
+from enum import Enum
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
+
+from pydantic import BaseModel
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from codex_canvas import Canvas, make_server
 from codex_diagnostics import process_tree, snapshot
 from codex_lock_metrics import MeasuredRLock
+from studio_api.system.models import DiagnosticsResponse
+
+
+def minimal_model_value(annotation):
+    origin = typing.get_origin(annotation)
+    arguments = typing.get_args(annotation)
+    if origin is typing.Annotated:
+        return minimal_model_value(arguments[0])
+    if origin in (typing.Union, types.UnionType):
+        if type(None) in arguments:
+            return None
+        return minimal_model_value(arguments[0])
+    if origin is typing.Literal:
+        return arguments[0]
+    if origin is list:
+        return []
+    if origin is dict:
+        return {}
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        fields = annotation.model_fields
+        values = {name: minimal_model_value(field.annotation)
+                  for name, field in fields.items() if field.is_required()}
+        return annotation.model_validate(values)
+    if isinstance(annotation, type) and issubclass(annotation, Enum):
+        return next(iter(annotation)).value
+    if annotation is str:
+        return "fixture"
+    if annotation is int:
+        return 0
+    if annotation is float:
+        return 0.0
+    if annotation is bool:
+        return False
+    raise TypeError(f"No minimal diagnostics value for {annotation!r}")
+
+
+def minimal_model_instance(model):
+    fields = model.model_fields
+    values = {name: minimal_model_value(field.annotation)
+              for name, field in fields.items() if field.is_required()}
+    return model.model_validate(values)
 
 
 class Server:
@@ -123,6 +169,10 @@ class DiagnosticsContract(unittest.TestCase):
             server.context._maintenance_last = time.monotonic()
             thread = threading.Thread(target=server.serve_forever, daemon=True)
             thread.start()
+            fixture = minimal_model_instance(DiagnosticsResponse).wire_dump()
+            fixture.pop("supervisor")
+            expected_supervisor = {"mode": False, "fallback": False, "notice": None}
+            connection = None
             try:
                 with patch("codex_diagnostics.snapshot", return_value=fixture):
                     connection = http.client.HTTPConnection("127.0.0.1", server.server_port, timeout=5)
@@ -143,6 +193,8 @@ class DiagnosticsContract(unittest.TestCase):
                     self.assertEqual(printed.pop("supervisor"), supervisor)
                     self.assertEqual(printed, body)
             finally:
+                if connection is not None:
+                    connection.close()
                 server.shutdown()
                 thread.join(5)
                 server.server_close()

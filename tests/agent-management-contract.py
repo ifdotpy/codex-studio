@@ -17,6 +17,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_runtime_state
 from codex_agent_management import manage_agent, _missing_transferred_history, _finished
 from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids, remember_context_manifest
 from codex_tool_requests import RequestMixin
@@ -136,10 +137,8 @@ class Contract(unittest.TestCase):
             listed = self.call('list')
             archived = self.call('list_archived')
             inspected = self.call('inspect')
-        self.assertNotIn('worktreeDisk', listed['items'][0])
         self.assertNotIn('disk', listed)
         self.assertNotIn('disk', archived)
-        self.assertNotIn('worktreeDisk', inspected['agent'])
         self.assertNotIn('disk', inspected)
         with self.assertRaisesRegex(ValueError, 'Only the active orchestrator'):
             manage_agent(self.rt, 'worker', {'action': 'list'}, 1)
@@ -1024,12 +1023,12 @@ class RuntimeRouteContract(unittest.TestCase):
             invoke(9201,'orchestration_agent_manage',{'action':'inspect','agent_id':worker['id']})
             archive = {'action':'archive','agent_id':worker['id'],'reason':'Reviewed fixture'}
             invoke(9202,'orchestration_agent_manage',archive)
-            self.assertNotIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])
+            self.assertNotIn(worker['id'],[a['id'] for a in read_runtime_state(rt)['agents']])
             epoch=rt.agent(worker['id'])['epoch']
             invoke(9202,'orchestration_agent_manage',archive)
             self.assertEqual(epoch,rt.agent(worker['id'])['epoch'])
             invoke(9203,'orchestration_agent_manage',{'action':'restore','agent_id':worker['id']})
-            self.assertIn(worker['id'],[a['id'] for a in rt.snapshot()['agents']])
+            self.assertIn(worker['id'],[a['id'] for a in read_runtime_state(rt)['agents']])
             self.assertFalse(rt.agent(worker['id'])['autoWake'])
         finally:case.tearDown()
 

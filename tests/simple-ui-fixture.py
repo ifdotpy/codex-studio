@@ -15,6 +15,7 @@ skill = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(skill / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
+from studio_api.testing import read_runtime_state
 
 spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-contract.py')
 m = importlib.util.module_from_spec(spec)
@@ -59,6 +60,7 @@ class SettingsRuntime(Runtime):
         while not self.closed:
             self.changed.wait(0.1)
             self.changed.clear()
+            self._publish_committed_resource_changes()
 
 runtime_type = SettingsRuntime if os.environ.get('EXECUTION_SETTINGS_CATALOG') or os.environ.get('TOKEN_RATE_WORKER_COUNT') else Runtime
 c.runtime = runtime_type(c.root, BackgroundServer if os.environ.get('BACKGROUND_UI_FIXTURE') else LimitsServer)
@@ -68,6 +70,12 @@ if os.environ.get('RENAME_UI_FIXTURE'):
 if os.environ.get('EXECUTION_SETTINGS_CATALOG'):
     fixture_catalog = __import__('json').loads(os.environ['EXECUTION_SETTINGS_CATALOG'])
     c.runtime.catalog = lambda account='default': {'data': fixture_catalog}
+fixture_freshness_catalog = list(c.runtime.catalog().get('data', [])) + [
+    {'model': 'gpt-5.6-luna', 'displayName': 'Fixture worker model'},
+    {'model': 'fixture-model-old', 'displayName': 'Fixture model old'},
+]
+if os.environ.get('RESOURCE_FRESHNESS_UI_FIXTURE'):
+    c.runtime.catalog = lambda account='default': {'data': fixture_freshness_catalog}
 with c.runtime.lock, c.runtime.db() as db:
     lead = c.runtime.create({'name': 'Release lead', 'cwd': str(c.root), 'prompt': 'Review the release'}, defer=True)
     lead.update(autoWake=True, status='waiting')
@@ -120,7 +128,7 @@ for i in range(105):
 c.runtime.chat_message(child['id'], 'parent', 'A private update before the final answer.', 'fixture-private')
 c.runtime.chat_message(child['id'], 'broadcast', 'Release checks are ready for review.', 'fixture-broadcast')
 # Enough actual rooms to exercise the bounded sidebar at production-like sizes.
-roster = c.runtime.team(lead['id'])['agents']
+roster = read_runtime_state(c.runtime)['agents']
 for sender in [r for r in roster if r['name'] in {'Worker 38', 'Worker 39'}]:
     with c.runtime.lock, c.runtime.db() as db:
         a = c.runtime.agent(sender['id'], db)
@@ -196,12 +204,14 @@ if os.environ.get('PROGRESS_PUSH_UI_FIXTURE'):
                 ),
             }
 
-    server.app.add_api_route(
+    # The served app is the shutdown wrapper; routes live on the wrapped app.
+    api_app = getattr(server.app, 'app', server.app)
+    api_app.add_api_route(
         '/api/test/progress-watch-state', progress_watch_state,
         methods=['GET'], include_in_schema=False,
     )
-    fixture_route = server.app.routes.pop()
-    server.app.routes.insert(-1, fixture_route)
+    fixture_route = api_app.routes.pop()
+    api_app.routes.insert(-1, fixture_route)
 # Test-only notification input drives the real runtime and HTTP stream.
 import json
 import threading
@@ -241,9 +251,81 @@ def fixture_events():
                 agent['status'] = params['status']
                 c.runtime.put(db, 'agents', agent)
             print(json.dumps({'id': message['id'], 'committedAt': __import__('time').time()}), flush=True)
+        elif message.get('method') == 'fixture/entity-change':
+            params = message['params']
+            operation = params['operation']
+            if operation == 'batch':
+                agent_id = params['agent']
+                for _ in range(params['count']):
+                    with c.runtime.lock, c.runtime.db() as db:
+                        agent = c.runtime.agent(agent_id, db)
+                        agent['tokensUsed'] = int(agent.get('tokensUsed', 0)) + 1
+                        c.runtime.put(db, 'agents', agent)
+                collection, entity_id, deleted = 'agent', agent_id, False
+            elif operation == 'rename':
+                with c.runtime.lock, c.runtime.db() as db:
+                    agent = c.runtime.agent(params['agent'], db)
+                    agent['name'] = params['name']
+                    if params.get('status') is not None:
+                        agent['status'] = params['status']
+                        active = params['status'] in {'starting', 'running', 'approval'}
+                        agent['inFlight'] = active
+                        agent['turnId'] = 'fixture-turn' if active else None
+                    c.runtime.put(db, 'agents', agent)
+                collection, entity_id, deleted = 'agent', params['agent'], False
+            elif operation == 'project':
+                path = str(c.root / 'entity-change-project')
+                Path(path).mkdir(exist_ok=True)
+                c.runtime.projects({'action': 'register', 'path': path})
+                c.runtime.projects({'action': 'remove', 'path': path})
+                collection, entity_id, deleted = 'project', path, True
+            elif operation == 'rule':
+                import time
+                actor = params['agent']
+                rule_id = params['id']
+                c.runtime.rules_action({'action': 'save', 'agent': actor, 'id': rule_id,
+                    'name': 'Entity change fixture', 'kind': 'once', 'at': time.time() + 60})
+                c.runtime.rules_action({'action': 'delete', 'agent': actor, 'id': rule_id})
+                collection, entity_id, deleted = 'rule', rule_id, True
+            elif operation == 'budget':
+                from codex_budget import _save, _state
+                actor = params['agent']
+                with c.runtime.lock, c.runtime.db() as db:
+                    agent = c.runtime.agent(actor, db)
+                    state = _state(db, agent)
+                    state['noticeSpent'] += 13
+                    _save(db, agent, state)
+                collection, entity_id, deleted = 'agent', actor, False
+            else:
+                raise ValueError('Unknown entity change operation')
+            with c.runtime.db() as db:
+                row = db.execute('SELECT seq FROM sync_entities WHERE collection=? AND id=?',
+                                 (collection, entity_id)).fetchone()
+            print(json.dumps({'id': message['id'], 'ok': True,
+                'collection': collection, 'entityId': entity_id,
+                'deleted': deleted, 'seq': row[0] if row else None}), flush=True)
         elif message.get('method') == 'fixture/task':
             with c.runtime.lock, c.runtime.db() as db:
                 c.runtime.put(db, 'tasks', message['params'])
+        elif message.get('method') == 'fixture/model-catalog':
+            fixture_freshness_catalog[:] = message['params']['models']
+            from studio_api.sync.resources.models import ModelsResource, ResourceRef
+            server.context.resource_hub().publish(ResourceRef(ModelsResource(kind='models')))
+            print(json.dumps({'id': message['id'], 'ok': True}), flush=True)
+        elif message.get('method') == 'fixture/stream-transcript':
+            params = message['params']
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.item(
+                    db, params['agent'], params['id'], 'assistant', params['text'],
+                    streaming=True, index_search=False,
+                )
+            print(json.dumps({'id': message['id'], 'ok': True}), flush=True)
+        elif message.get('method') == 'fixture/request':
+            with c.runtime.lock, c.runtime.db() as db:
+                c.runtime.put(db, 'requests', message['params'])
+                agent = c.runtime.agent(message['params']['agent'], db)
+                agent.update(status='completed', inFlight=False, turnId=None)
+                c.runtime.put(db, 'agents', agent)
         elif message.get('method') == 'fixture/panel-action':
             try:
                 result = c.runtime.panel_action(message['agent'], message['params'], key=message['id'])
@@ -255,9 +337,9 @@ def fixture_events():
             c.runtime.request(message)
         else:
             account_key = message.get('accountKey', 'default')
-            server = c.runtime.servers.get(account_key)
-            if server is not None:
-                server.notify(message)
+            native_server = c.runtime.servers.get(account_key)
+            if native_server is not None:
+                native_server.notify(message)
             else:
                 c.runtime.notification(message, account_key, c.runtime.connection_ids.get(account_key))
 threading.Thread(target=fixture_events, daemon=True).start()

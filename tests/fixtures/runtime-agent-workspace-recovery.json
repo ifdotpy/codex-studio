@@ -1,4 +1,5 @@
 {
+  "agentEntityRowsAdvanced": ["lead-0", "lead-1"],
   "agents": {
     "lead-0": {
       "autoWake": false,
@@ -15,6 +16,12 @@
       "workspaceReservationId": null
     }
   },
+  "closeEntityFieldsChanged": {
+    "a-grandchild": ["concurrency"],
+    "a-worker": ["concurrency"],
+    "b-worker": ["concurrency"]
+  },
+  "closeEntityRowsAdvanced": ["a-grandchild", "a-worker", "b-worker"],
   "legacyRecordsBeforeRestart": [
     {
       "accountKey": "default",
@@ -40,10 +47,6 @@
   "pendingInput": {
     "agent": "lead-1",
     "status": "pending"
-  },
-  "syncSequenceDelta": {
-    "lead-0": 0,
-    "lead-1": 0
   },
   "syncedAgents": {
     "lead-0": {

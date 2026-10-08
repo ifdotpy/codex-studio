@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from codex_accounts import AccountStore
 from codex_account_transfer import transfer_store
@@ -55,6 +55,29 @@ from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_messag
 from native_notifications.dispatch import consume_native_notification, advance_native_status, notice, account_notices
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from codex_records import (
+        AccountTransferRecord,
+        AgentRecord,
+        AnnotationRecord,
+        CheckpointRecord,
+        ComplaintRecord,
+        JsonObject,
+        JsonValue,
+        MonitorApprovalRequestRecord,
+        NativeNoticeRecord,
+        NativeSafetyRetryRecord,
+        ProjectRecord,
+        PlanRecord,
+        RequestQuestionFieldRecord,
+        QuestionRequestRecord,
+        RequestRecord,
+        RoomRecord,
+        RuleRecord,
+        ToolRequestRecord,
+        WorkRecord,
+        WorkspaceOperationRecord,
+    )
     from studio_api.sync.resources.models import ResourceRef
 
 MAX_STAGED_RESOURCE_CHANGES = 256
@@ -72,6 +95,7 @@ WORKSPACE_AGENT_RESOURCE_FIELDS = (
     "imageWorkspace", "imageWorkspaceReady", "imageWorkspacePhase", "imageWorkspaceError",
     "imageWorkspaceRepo", "imageWorkspaceBaseRepo", "imageWorkspaceCreatedAt", "environment",
 )
+_WORKSPACE_REFRESH_DIAGNOSTICS_SEEN: set[str] = set()
 
 @dataclass(frozen=True)
 class TokenRateObservation:
@@ -1445,6 +1469,9 @@ class _RuntimeWalKeeper:
 
 
 class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, EfficiencyMixin, RequestMixin, QuestionsMixin, AnalyticsHistoryMixin, AnalyticsMixin, WorkMixin, WorkspaceMixin, RulesMixin, PanelMixin):
+    search_migration_thread: threading.Thread | None
+    search_migration_error: str | None
+
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
@@ -1644,7 +1671,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if marker.get("stage") == "held" and not a.get("deletedAt"):
                     held_restart_stops.append((a["id"], marker.get("turnId") or marker.get("at")))
                 if not restart_restored and a["status"] in {"running", "starting", "approval"}:
-                    a.update(status="interrupted", autoWake=False,
+                    a.update(status="interrupted", autoWake=False,  # type: ignore[call-arg]  # typed-update
                              error="Server restarted during a turn. Review history, then send a new instruction.")
                 a["inFlight"] = False
                 self.capacity_restart(db, a)
@@ -2462,11 +2489,59 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Read a complete old+new analytics view while an online copy is active."""
         with self.analytics_db() as db:
             from codex_analytics_storage import install_legacy_read_views
-            install_legacy_read_views(db)
+            install_legacy_read_views(db)  # type: ignore[no-untyped-call]
             db.execute("PRAGMA query_only=ON")
             yield db
 
-    def records(self, db, table=None, *, shared=False):
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[True]) -> tuple["AgentRecord", ...]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: Literal[False] = False) -> list["AgentRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["agents"], *, shared: bool) -> list["AgentRecord"] | tuple["AgentRecord", ...]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["work"], *, shared: bool = False) -> list["WorkRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["plans"], *, shared: bool = False) -> list["PlanRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["annotations"], *, shared: bool = False) -> list["AnnotationRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["checkpoints"], *, shared: bool = False) -> list["CheckpointRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["complaints"], *, shared: bool = False) -> list["ComplaintRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["projects"], *, shared: bool = False) -> list["ProjectRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["account_transfers"], *, shared: bool = False) -> list["AccountTransferRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["workspace_operations"], *, shared: bool = False) -> list["WorkspaceOperationRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["rooms"], *, shared: bool = False) -> list["RoomRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["requests"], *, shared: bool = False) -> list["RequestRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["native_notices"], *, shared: bool = False) -> list["NativeNoticeRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["rules"], *, shared: bool = False) -> list["RuleRecord"]: ...
+
+    @overload
+    def records(self, db: sqlite3.Connection, table: Literal["tool_requests"], *, shared: bool = False) -> list["ToolRequestRecord"]: ...
+
+    def records(self: Any, db: Any, table: Any = None, *, shared: Any = False) -> Any:
         # Calls already in progress may still use the former static form.
         if table is None:
             db, table, runtime = self, db, None
@@ -2504,7 +2579,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             cache.pop(next(iter(cache)))
         return rows if shared else [copy.deepcopy(row) for row in rows]
 
-    def team_agents(self, db, root_id, *, include_deleted=False, include_id=None):
+    def team_agents(
+        self, db: sqlite3.Connection, root_id: str, *,
+        include_deleted: bool = False, include_id: str | None = None,
+    ) -> list["AgentRecord"]:
         """Decode one team's agents without loading unrelated workspace records."""
         from codex_agent_modes import mode_fields
         live = "" if include_deleted else f"AND {LIVE_AGENT_SQL}"
@@ -2518,7 +2596,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             (root_id,))]
 
     @staticmethod
-    def account_agents(db, account_key):
+    def account_agents(db: sqlite3.Connection, account_key: str) -> list["AgentRecord"]:
         """Decode an account's roster through the existing account-scope index."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2527,7 +2605,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "ELSE json_extract(record,'$.accountKey') END=? ORDER BY rowid", (account_key,))]
 
     @staticmethod
-    def thread_agents(db, account_key, thread_id):
+    def thread_agents(
+        db: sqlite3.Connection, account_key: str, thread_id: str,
+    ) -> list["AgentRecord"]:
         """Decode one native thread's agents through the thread/account index."""
         from codex_agent_modes import mode_fields
         account_expression = ("CASE WHEN json_type(record,'$.accountKey') IS NULL THEN 'default' "
@@ -2537,7 +2617,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"AND {account_expression}=? ORDER BY rowid", (thread_id, account_key))]
 
     @staticmethod
-    def pending_restart_agents(db):
+    def pending_restart_agents(db: sqlite3.Connection) -> list["AgentRecord"]:
         """Load only agents with pending restart receipts."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2545,7 +2625,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "json_extract(record,'$.restartRecovery.stage')='pending' ORDER BY rowid")]
 
     @staticmethod
-    def descendant_agents(db, root_id):
+    def descendant_agents(db: sqlite3.Connection, root_id: str) -> list["AgentRecord"]:
         """Load a parentId subtree, including inconsistent cross-root children."""
         from codex_agent_modes import mode_fields
         seen = {root_id}
@@ -2565,7 +2645,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             f"SELECT record FROM runtime_agents WHERE id IN ({marks}) ORDER BY rowid", tuple(seen))]
 
     @staticmethod
-    def release_work_agents(db):
+    def release_work_agents(db: sqlite3.Connection) -> list["AgentRecord"]:
         """Select current failed/deleted owners with releasable work, bypassing caches."""
         from codex_agent_modes import mode_fields
         return [mode_fields(json.loads(row[0])) for row in db.execute(
@@ -2575,7 +2655,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "WHERE json_extract(record,'$.status') IN ('ready','running','blocked')) ORDER BY rowid")]
 
     @staticmethod
-    def named_agents(db, agent_ids):
+    def named_agents(
+        db: sqlite3.Connection, agent_ids: "Iterable[object]",
+    ) -> dict[str, "AgentRecord"]:
         """Decode only agents referenced by a set of entity IDs."""
         from codex_agent_modes import mode_fields
         ids = sorted({key for key in agent_ids if isinstance(key, str) and key})
@@ -2784,7 +2866,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return db.execute(query + " ORDER BY rowid").fetchall(), None, final_key
         return rows, key, final_key
 
-    def scheduler_agents(self, db):
+    def scheduler_agents(self, db: sqlite3.Connection) -> list["AgentRecord"]:
         """Load the rows consumed by dispatch and recovery hooks, not archived history."""
         from codex_agent_modes import mode_fields
         guard = self.__dict__.setdefault("_scheduler_agent_cache_lock", threading.RLock())
@@ -2925,11 +3007,42 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         members = list(agents)
         view = dict(room)
         view["members"] = members
-        view["name"] = view.get("customName") or root_name + " · Broadcast"
+        view["name"] = view.get("customName") or root_name + " · Broadcast"  # type: ignore[operator]
         last = db.execute("SELECT seq,text,created,sender FROM runtime_chat_messages "
                           "WHERE room=? ORDER BY seq DESC LIMIT 1", (room["id"],)).fetchone()
         view["lastMessage"] = {**dict(last), "text": last["text"][:180]} if last else None
         return view
+
+    def room_entity_view(self, db: sqlite3.Connection, room_id: str) -> "RoomRecord | None":
+        """Return the single durable renderer projection for any room kind."""
+        row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+        if row is not None:
+            stored = json.loads(row[0])
+            if not isinstance(stored, dict):
+                raise TypeError("room record is not an object")
+            if stored.get("kind") == "broadcast" and stored.get("rootId") != "all":
+                return self.broadcast_room(db, stored)  # type: ignore[no-any-return]  # typed-narrowing: runtime room JSON is narrowed above
+        return next(iter(self.chat_rooms(db, room_id=room_id, include_last_message=True,
+                                        include_peer_teams=True)), None)
+
+    def sync_room_entity(self, db: sqlite3.Connection, room_id: str, *,
+                         tombstone_unavailable: bool = False) -> bool:
+        """Refresh a room through its shared view, optionally retiring it on revocation."""
+        try:
+            view = self.room_entity_view(db, room_id)
+        except Exception as error:
+            from codex_sync_entities import _report_bad_entity
+            _report_bad_entity("room", room_id, error)
+            return False
+        from codex_sync_entities import put as sync_entity_put
+        if view is None:
+            if not tombstone_unavailable:
+                return False
+            existing = db.execute(
+                "SELECT 1 FROM sync_entities WHERE collection='room' AND id=? AND deleted=0",
+                (room_id,)).fetchone()
+            return sync_entity_put(db, "room", room_id, {}, True) if existing else False
+        return sync_entity_put(db, "room", room_id, view)
 
     @staticmethod
     def affected_agent_room_ids(db, previous, record):
@@ -2941,7 +3054,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not changed:
             return set()
         agent_id = str(record["id"])
-        ids = set()
+        ids: set[str] = set()
         roots = {value for value in (previous.get("rootId"), record.get("rootId"))
                  if isinstance(value, str) and value}
         if "deletedAt" in changed or "rootId" in changed or (
@@ -2973,14 +3086,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Rebuild only selected room entities, retaining chat_rooms tolerance."""
         from codex_sync_entities import put as sync_entity_put
         for room_id in sorted(set(room_ids)):
-            room = next(iter(self.chat_rooms(
-                db, room_id=room_id, include_last_message=True, include_peer_teams=True)), None)
-            # The legacy whole-roster path emitted no tombstone when a room became
-            # unavailable; keep that entity-store behavior exactly.
+            try:
+                room = self.room_entity_view(db, room_id)
+            except Exception as error:
+                from codex_sync_entities import _report_bad_entity
+                _report_bad_entity("room", room_id, error)
+                continue
             if room is not None:
-                sync_entity_put(db, "room", room_id, room)
+                sync_entity_put(db, "room", room_id, room)  # type: ignore[no-untyped-call]
             elif fallback and room_id in fallback:
-                sync_entity_put(db, "room", room_id, fallback[room_id])
+                sync_entity_put(db, "room", room_id, fallback[room_id])  # type: ignore[no-untyped-call]
 
     @staticmethod
     def new_agent_room_ids(db, record):
@@ -2999,11 +3114,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             "SELECT id FROM runtime_rooms WHERE json_extract(record,'$.kind')='private' "
             "AND json_extract(record,'$.projectPath')=?", (project_path,))}
 
-    def agent_entity_view(self, db, record):
-        # Match the renderer-facing fields added by snapshot(), so later
-        # internal agent writes cannot erase visible source/team details.
+    def agent_entity_view(
+        self, db: sqlite3.Connection, record: "AgentRecord",
+    ) -> dict[str, object]:
+        # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
-        block = native_thread_block(record)
+        block = native_thread_block(record)  # type: ignore[no-untyped-call]
         view.update(kind="agent", source="managed", canSend=not bool(block),
                     launcherAlive=not self.closed,
                     nextTurnSettingsSupported=True, readStateSupported=True)
@@ -3012,14 +3128,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         else:
             view.pop("nativeThreadBlock", None)
         if record.get("isLead"):
-            view["empty"] = self.empty_lead(db, record)
+            view["empty"] = self.empty_lead(db, record)  # type: ignore[no-untyped-call]
         else:
             task = str(record.get("prompt") or "")
             result = str(record.get("lastAnswer") or "") if (
                 record.get("lastCompletedTurn") and not record.get("turnId")
                 and not record.get("inFlight") and record.get("status") == "completed"
             ) else ""
-            result_file = self.latest_work_result_file(db, record['id'])
+            result_file = self.latest_work_result_file(db, record['id'])  # type: ignore[no-untyped-call]
             view["overview"] = {
                 "task": task[:4000], "taskTruncated": len(task) > 4000,
                 "result": result[:4000], "resultTruncated": len(result) > 4000,
@@ -3029,7 +3145,55 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
         return view
 
-    def put(self, db, table, record, *, sync_rooms=True, include_last_message=False):
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["agents"], record: "AgentRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["work"], record: "WorkRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["plans"], record: "PlanRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["annotations"], record: "AnnotationRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["checkpoints"], record: "CheckpointRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["complaints"], record: "ComplaintRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["projects"], record: "ProjectRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["account_transfers"], record: "AccountTransferRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["workspace_operations"], record: "WorkspaceOperationRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["rooms"], record: "RoomRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["requests"], record: "RequestRecord | QuestionRequestRecord | MonitorApprovalRequestRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["safety_retries"], record: "NativeSafetyRetryRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["native_notices"], record: "NativeNoticeRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["rules"], record: "RuleRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: Literal["tool_requests"], record: "ToolRequestRecord", *, sync_rooms: bool = True) -> None: ...
+
+    @overload
+    def put(self, db: sqlite3.Connection, table: str, record: "AgentRecord | WorkRecord | PlanRecord | AnnotationRecord | CheckpointRecord | ComplaintRecord | ProjectRecord | AccountTransferRecord | WorkspaceOperationRecord | RoomRecord | RequestRecord | NativeSafetyRetryRecord | NativeNoticeRecord | RuleRecord | ToolRequestRecord | dict[str, JsonValue]", *, sync_rooms: bool = True) -> None: ...
+
+    def put(self, db: sqlite3.Connection, table: str, record: Any, *, sync_rooms: bool = True) -> None:
         if table in {"checkpoints", "tool_requests"}:
             from codex_payloads import externalize_record
             record = externalize_record(self.root, db, table, record)
@@ -3040,8 +3204,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                    (record["id"], json.dumps(record)))
         if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
             from codex_execution import needs_record, reconcile_effect, safe_record
-            if needs_record(table, record, previous):
-                safe_record(db, reconcile_effect, self, db, table, record, previous)
+            if needs_record(table, record, previous):  # type: ignore[no-untyped-call]
+                safe_record(db, reconcile_effect, self, db, table, record, previous)  # type: ignore[no-untyped-call]
         from codex_sync_entities import put as sync_entity_put
         collection = {
             "agents": "agent", "tasks": "task", "monitors": "monitor",
@@ -3050,43 +3214,67 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         }.get(table)
         if collection:
             if table == "rooms":
-                room = (self.broadcast_room(db, record) if record.get("kind") == "broadcast"
-                        and record.get("rootId") != "all" else None)
-                if room is None:
-                    room = next(iter(self.chat_rooms(db, room_id=record["id"],
-                                                     include_last_message=include_last_message)), None)
-                sync_entity_put(db, collection, str(record["id"]), room or record, room is None)
+                self.sync_room_entity(db, str(record["id"]), tombstone_unavailable=True)
             elif table == "agents":
-                sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),
+                sync_entity_put(db, collection, str(record["id"]), self.agent_entity_view(db, record),  # type: ignore[no-untyped-call]
                                 bool(record.get("deletedAt")))
             elif table == "requests":
                 # The renderer lists every request entity; only pending ones need an answer.
-                sync_entity_put(db, collection, str(record["id"]), record, record.get("status") != "pending")
+                sync_entity_put(db, collection, str(record["id"]), record, record.get("status") != "pending")  # type: ignore[no-untyped-call]
             elif table == "tasks":
                 from codex_sync_entities import sync_task_write
-                sync_task_write(db, record)
+                sync_task_write(db, record)  # type: ignore[no-untyped-call]
             elif table == "monitors":
                 from codex_sync_entities import sync_monitor_write
-                sync_monitor_write(db, record)
+                sync_monitor_write(db, record)  # type: ignore[no-untyped-call]
+            elif table == "complaints":
+                sync_entity_put(db, collection, str(record["id"]), self.complaint_entity_view(db, record))  # type: ignore[no-untyped-call]
+            elif table == "work":
+                sync_entity_put(db, collection, str(record["id"]), record)  # type: ignore[no-untyped-call]
+                owners = {result.get("agent") for source in (previous, record) if source
+                          for result in source.get("results", [])
+                          if isinstance(result, dict) and isinstance(result.get("agent"), str)}
+                for owner in owners:
+                    row = db.execute("SELECT record FROM runtime_agents WHERE id=?", (owner,)).fetchone()
+                    if row:
+                        agent = json.loads(row[0])
+                        sync_entity_put(db, "agent", owner, self.agent_entity_view(db, agent),  # type: ignore[no-untyped-call]
+                                        bool(agent.get("deletedAt")))
             else:
-                sync_entity_put(db, collection, str(record["id"]), record)
+                sync_entity_put(db, collection, str(record["id"]), record)  # type: ignore[no-untyped-call]
+            if table == "agents" and previous is not None and previous.get("name") != record.get("name"):
+                rows = db.execute(
+                    "SELECT id,record FROM runtime_complaints WHERE "
+                    "json_extract(record,'$.author')=? OR json_extract(record,'$.leadId')=?",
+                    (record["id"], record["id"]))
+                for complaint_id, raw in rows:
+                    complaint = json.loads(raw)
+                    sync_entity_put(db, "complaint", complaint_id,
+                                    self.complaint_entity_view(db, complaint))  # type: ignore[no-untyped-call]
             if table == "agents" and previous is not None and (
                 previous.get("deletedAt") != record.get("deletedAt")
             ):
                 from codex_sync_entities import sync_task_agent_change
-                sync_task_agent_change(db, record["id"], bool(record.get("deletedAt")))
+                sync_task_agent_change(db, record["id"], bool(record.get("deletedAt")))  # type: ignore[no-untyped-call]
                 from codex_sync_entities import sync_monitor_agent_change
-                sync_monitor_agent_change(db)
+                sync_monitor_agent_change(db)  # type: ignore[no-untyped-call]
         if sync_rooms and table == "agents":
-            room_ids = (self.affected_agent_room_ids(db, previous, record) if previous is not None
-                        else self.new_agent_room_ids(db, record))
-            self.sync_agent_rooms(db, room_ids)
+            room_ids = (self.affected_agent_room_ids(db, previous, record)  # type: ignore[no-untyped-call]
+                        if previous is not None
+                        else self.new_agent_room_ids(db, record))  # type: ignore[no-untyped-call]
+            self.sync_agent_rooms(db, room_ids)  # type: ignore[no-untyped-call]
         elif (sync_rooms and table == "projects"
               and (previous or {}).get("peerTeams") != record.get("peerTeams")):
-            self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))
+            self.sync_agent_rooms(db, self.project_room_ids(db, record["id"]))  # type: ignore[no-untyped-call]
+        if changed:
+            self.sync_workspace_volatile(db)  # type: ignore[no-untyped-call]
         if table == "agents":
-            self.mark_agent_records_changed(record["id"])
-            self.touch_ui(record["id"], db, publish_resource=False)
+            self.mark_agent_records_changed(record["id"])  # type: ignore[no-untyped-call]
+            self.touch_ui(record["id"], db, publish_resource=False)  # type: ignore[no-untyped-call]
+            if previous is not None and any(previous.get(key) != record.get(key)
+                                             for key in ("deletedAt", "cwd", "isLead", "parentId", "rootId")):
+                from codex_peer_teams import sync_entities as sync_peer_team_entities
+                sync_peer_team_entities(self, db, {previous.get("cwd"), record.get("cwd")})
         elif table == "work":
             # Work ownership and status retain deleted owners in the scheduler roster.
             self.__dict__.pop("_scheduler_agent_roster", None)
@@ -3163,7 +3351,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Runtime.lock through transcript while holding the opposite lock order.
         return current, self.transcript(key) if current != revision else None
 
-    def agent(self, key, db=None):
+    def agent(self, key: str, db: sqlite3.Connection | None = None) -> "AgentRecord":
         if db is None:
             with self.lock, self.db() as own:
                 return self.agent(key, own)
@@ -3259,6 +3447,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_claude_controls import retire_idle_bridge
                     if retire_idle_bridge(self, account_key, account, server):
                         server = None
+                        # The pinned control module retires the bridge by
+                        # mutating servers directly; publish that source change
+                        # before attempting the replacement connection.
+                        self.refresh_workspace_volatile()
                 if (self.factory is AppServer and provider == "codex" and selected is None
                         and (server is None or account_key in self.offline_accounts)):
                     needs_executable = True
@@ -3268,6 +3460,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         server.close()
                         self.servers.pop(account_key, None)
                         server = None
+                        self.refresh_workspace_volatile()
                     if server is None:
                         desktop_changed = True
                         connection_id = uid()
@@ -3322,6 +3515,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         startup_memory_mark("account-server-start:" + account_key)
             if not needs_executable:
                 if desktop_changed:
+                    self.refresh_workspace_volatile()
                     self._publish_desktop_resource()
                 return server
             if needs_executable:
@@ -3339,6 +3533,99 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 self._committed_resource_changes[key] = resource
         self.changed.set()
+
+    def sync_workspace_volatile(self, db):
+        """Keep volatile workspace entity fields current with their live sources."""
+        owns_transaction = False
+        try:
+            if not db.in_transaction:
+                db.execute("BEGIN IMMEDIATE")
+                owns_transaction = True
+            row = db.execute("SELECT payload,deleted FROM sync_entities WHERE collection='workspace' AND id='current'").fetchone()
+            if not row or row[1] or not row[0]:
+                if owns_transaction:
+                    db.commit()
+                return False
+            from codex_sync_entities import put as sync_entity_put
+            value = json.loads(row[0]).get("value") or {}
+            changed = sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db, value))
+            if owns_transaction:
+                db.commit()
+            self.__dict__["_workspace_entity_refresh_dirty"] = False
+            return changed
+        except sqlite3.OperationalError as error:
+            if owns_transaction and db.in_transaction:
+                db.rollback()
+            busy = sqlite_busy(error)
+            if busy:
+                self.__dict__["_workspace_entity_refresh_dirty"] = True
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        except Exception as error:
+            if owns_transaction and db.in_transaction:
+                db.rollback()
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+
+    def workspace_entity_view(self, db, base=None):
+        """Build the workspace DTO from its runtime sources for seed and writes."""
+        from codex_project_folders import sidebar_order
+
+        value = dict(base or {})
+        value.update(
+            connected=bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
+            nativeNotices=account_notices(self, db)
+                         + __import__("codex_provider_versions").monitor(self).status()["warnings"],
+            rateLimits=self.rate_limits.copy(),
+            rateLimitsByAccount={key: item.copy() for key, item in self.rate_limits_by_account.copy().items()},
+            projectOrganizationVersion=1,
+            peerTeamsVersion=1,
+            tasksHistoryLimit=100,
+            sidebarOrder=sidebar_order(db),
+            stateDir=str(self.root),
+        )
+        return value
+
+    @staticmethod
+    def _workspace_refresh_diagnostic(error_kind):
+        if error_kind in _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN:
+            return
+        _WORKSPACE_REFRESH_DIAGNOSTICS_SEEN.add(error_kind)
+        print("workspace entity refresh skipped (" + error_kind + ")", file=sys.stderr)
+
+    def refresh_workspace_volatile(self):
+        """Refresh volatile workspace state after an asynchronous source update."""
+        if not self.lock.acquire(blocking=False):
+            self.__dict__["_workspace_entity_refresh_dirty"] = True
+            self._workspace_refresh_diagnostic("runtime-lock-busy")
+            return False
+        try:
+            with self.db(busy_timeout=0) as db:
+                return self.sync_workspace_volatile(db)
+        except sqlite3.OperationalError as error:
+            busy = sqlite_busy(error)
+            if busy:
+                self.__dict__["_workspace_entity_refresh_dirty"] = True
+            self._workspace_refresh_diagnostic("busy" if busy else type(error).__name__)
+            if not busy and self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        except Exception as error:
+            self._workspace_refresh_diagnostic(type(error).__name__)
+            if self.__dict__.get("_strict_workspace_refresh_errors", False):
+                raise
+            return False
+        finally:
+            self.lock.release()
+
+    def _retry_dirty_workspace_refresh(self):
+        """Retry a volatile workspace update skipped on the scheduler's last tick."""
+        if self.__dict__.get("_workspace_entity_refresh_dirty", False):
+            self.refresh_workspace_volatile()
 
     def supervisor_monitor_bindings(self, account_key, connection_id, proxy):
         """Bind exact accepted monitor RPCs before replay reads their replies."""
@@ -3601,7 +3888,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._record_supervisor_restore(account, "not_restored", "account_restore_failed",
                                                 type(error).__name__)
 
-    def connection_current(self, account_key, connection_id):
+    def connection_current(self, account_key: str, connection_id: str | None) -> bool:
         if connection_id is not None:
             for agent_id, current in self.__dict__.get("linux_connection_ids", {}).items():
                 if current == connection_id:
@@ -3737,7 +4024,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 uncertain = db.execute("UPDATE runtime_events SET status='uncertain', error='Codex disconnected' WHERE status='dispatching' AND agent=?", (a["id"],))
                 if uncertain.rowcount:
                     self._stage_event_resources(db, str(a["id"]))
-            for task in active_task_records(db):
+            for task in active_task_records(db):  # type: ignore[call-arg]  # typed-update
                 if task.get("agent") in ids and task.get("status") in {"running", "starting", "approval"}:
                     task["reattachRecovery"] = {"accountKey": account_key,
                         "epoch": self.agent(task["agent"], db).get("epoch"),
@@ -3770,6 +4057,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if voice:
             voice.disconnected_native(account_key, connection_id)
         if desktop_changed:
+            self.refresh_workspace_volatile()
             self._publish_desktop_resource()
 
     def item(self, db, agent, key, role, text, title=None, inputs=None, *, index_search=True, **metadata):
@@ -4328,7 +4616,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if "yolo_mode" in data:
                         previous["yoloMode"] = data["yolo_mode"]
                     if previous.get('projectFolder') != project_folder or previous['cwd'] != cwd:
-                        previous['projectFolderRevision'] = previous.get('projectFolderRevision', 0) + 1
+                        previous['projectFolderRevision'] = previous.get('projectFolderRevision', 0) + 1  # type: ignore[call-arg]  # typed-update
                     if previous.get("accountKey", "default") != account_key:
                         previous.setdefault("executionSettingsAccountKey", previous.get("accountKey", "default"))
                         previous.update(daybreakEnabled=False, cyberAccessProgram="standard")
@@ -4337,12 +4625,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         if previous.get("workerDefaults"):
                             previous["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
                     previous.update(accountKey=account_key, cwd=cwd)
-                    previous['projectFolder'] = project_folder
+                    previous['projectFolder'] = project_folder  # type: ignore[call-arg]  # typed-update
                     self.ensure_project(cwd, account_key, db)
                     self.put(db, "agents", previous)
                     if key:
-                        db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))
-                    return previous
+                        db.execute("INSERT INTO runtime_lead_requests VALUES (?,?,?)", (key, previous["id"], signature))  # type: ignore[call-arg]  # typed-update
+                    return previous  # type: ignore[call-arg]  # typed-update
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_projectFolder": project_folder,
                                 "_creationSignature": signature, "account_key": account_key,
@@ -4389,7 +4677,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a.pop("pendingSettings", None)
                 a.pop("pendingSettingsAccountKey", None)
             if a.get("accountKey", "default") != account_key:
-                self.usage_resume_cancel(db, a, "The chat moved to another account.")
+                self.usage_resume_cancel(db, a, "The chat moved to another account.")  # type: ignore[call-arg]  # typed-update
                 a.setdefault("executionSettingsAccountKey", a.get("accountKey", "default"))
                 a.update(daybreakEnabled=False, cyberAccessProgram="standard")
                 a.pop("pendingSettings", None)
@@ -4397,12 +4685,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if a.get("workerDefaults"):
                     a["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
             a.update(accountKey=account_key, cwd=directory)
-            self.ensure_project(directory, account_key, db)
+            self.ensure_project(directory, account_key, db)  # type: ignore[call-arg]  # typed-update
             self.put(db, "agents", a)
             return a
 
-    def delete_conversation(self, key):
-        voice = self.voice()
+    def delete_conversation(self, key):  # type: ignore[call-arg]  # typed-update
+        voice = self.voice()  # type: ignore[call-arg]  # typed-update
         # Keep tombstones so late callbacks cannot recreate deleted work.
         with self.lock, self.db() as db:
             a = self.agent(key, db)
@@ -4431,22 +4719,23 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 after = dict(before)
                 after.update(deletedAt=before.get("deletedAt") or True, autoWake=False)
                 affected_rooms.update(self.affected_agent_room_ids(db, before, after))
-            fallback_rooms = {}
-            broadcast_rows = db.execute(
-                "SELECT id,record FROM runtime_rooms WHERE id IN (" +
-                ",".join("?" * len(affected_rooms)) + ") "
-                "AND json_extract(record,'$.kind')='broadcast'", sorted(affected_rooms)
-            ).fetchall() if affected_rooms else []
-            for row in broadcast_rows:
-                room_record = json.loads(row[1])
-                root_id = room_record.get("rootId")
-                if root_id not in ids:
+            fallback_rooms: dict[str, dict[str, object]] = {}
+            for room_id in affected_rooms:
+                room_row = db.execute("SELECT record FROM runtime_rooms WHERE id=?", (room_id,)).fetchone()
+                if room_row is None:
                     continue
-                view = self.broadcast_room(db, room_record)
-                if view:
-                    view["members"] = [member for member in view["members"]
-                                       if member not in ids or member == root_id]
-                    fallback_rooms[row[0]] = view
+                room_record = json.loads(room_row[0])
+                root_id = room_record.get("rootId") if isinstance(room_record, dict) else None
+                if not isinstance(room_record, dict) or room_record.get("kind") != "broadcast" \
+                        or root_id not in ids:
+                    continue
+                view = self.room_entity_view(db, room_id)
+                if view is not None:
+                    fallback = dict(view)
+                    members = fallback.get("members")
+                    if isinstance(members, list):
+                        fallback["members"] = [member for member in members if member not in ids or member == root_id]
+                    fallback_rooms[room_id] = fallback
             for agent_id in reversed(ordered_ids):
                 a = by_id[agent_id]
                 if a["id"] in ids:
@@ -4456,7 +4745,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.release_failed_work(db, self.release_work_agents(db), force=True)
             for agent_id in ids:
                 voice.delete_agent(agent_id, db)
-        self.stop(key, True, "Conversation deleted")
+        try:
+            self.stop(key, True, "Conversation deleted")
+        finally:
+            # A timed-out interrupt can outlive deletion; settle only the saved
+            # attempt for these deleted agents after the native stop request.
+            try:
+                self._settle_deleted_conversations(ids)
+            except Exception as error:
+                self._log_runtime_diagnostic({"event": "deleted_conversation_settle_failed",
+                    "at": time.time(), "agentIds": sorted(ids), "error": str(error)})
         cleanup_failures = {}
         if image_ids:
             try:
@@ -4479,6 +4777,34 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if cleanup_failures:
             result["imageCleanupFailed"] = sorted(cleanup_failures)
         return result
+
+    def _settle_deleted_conversations(self, ids):
+        with self.lock, self.db() as db:
+            for agent_id in ids:
+                agent = self.agent(agent_id, db)
+                if not agent.get("deletedAt"):
+                    continue
+                attempt = agent.get("startAttempt") or {}
+                if not (agent.get("inFlight") or agent.get("turnId")
+                        or attempt.get("activeAtReservation")
+                        or agent.get("status") in {"running", "starting", "approval"}):
+                    continue
+                agent.update(status="paused", inFlight=False, turnId=None,
+                             activity=None, activeTools=[])
+                if attempt.get("activeAtReservation"):
+                    attempt["activeAtReservation"] = False
+                    agent["startAttempt"] = attempt
+                self.put(db, "agents", agent, sync_rooms=False)
+
+    def _log_runtime_diagnostic(self, diagnostic, server=None):
+        try:
+            target = server or next(iter(self.servers.values()), None)
+            log = getattr(target, "log", None)
+            if log:
+                log.write((json.dumps(diagnostic) + "\n").encode())
+                log.flush()
+        except Exception:
+            pass
 
     def conversation_settings(self, key, data):
         if ("agent_mode" in data or "expected_mode_revision" in data
@@ -4603,7 +4929,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["executionSettingsAccountKey"] = a.get("accountKey", "default")
             if "worker_defaults" in data:
                 a["workerDefaults"] = self.validate_worker_defaults(data["worker_defaults"], a["model"], worker_catalog)
-            if "review_defaults" in data:
+            if "review_defaults" in data:  # type: ignore[call-arg]  # typed-update
                 a["reviewDefaults"] = self.validate_review_defaults(data["review_defaults"], review_catalog)
             if "cwd" in data:
                 if a.get("threadId"):
@@ -4626,16 +4952,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if account_key != a.get("accountKey", "default"):
                     a.setdefault("executionSettingsAccountKey", a.get("accountKey", "default"))
                     a.update(daybreakEnabled=False, cyberAccessProgram="standard")
-                    a.pop("pendingSettings", None)
+                    a.pop("pendingSettings", None)  # type: ignore[call-arg]  # typed-update
                     a.pop("pendingSettingsAccountKey", None)
                     if a.get("workerDefaults"):
                         a["workerDefaults"].update(daybreakEnabled=False, cyberAccessProgram="standard")
                 a["accountKey"] = account_key
-                self.ensure_project(str(cwd), a["accountKey"], db)
+                self.ensure_project(str(cwd), a["accountKey"], db)  # type: ignore[call-arg]  # typed-update
             self.put(db, "agents", a)
             for member in team:
                 if member["id"] != key:
-                    member["yoloMode"] = a["yoloMode"]
+                    member["yoloMode"] = a["yoloMode"]  # type: ignore[call-arg]  # typed-update
                     self.put(db, "agents", member)
                 self.loaded.discard(member["id"])
             if not defaults_only:
@@ -5304,7 +5630,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a = latest
             try:
                 if registered is None:
-                    hook_name = self.git(a, ["rev-parse", "--git-path", "hooks/post-checkout"]).decode().strip()
+                    hook_name = self.git(a, ["rev-parse", "--git-path", "hooks/post-checkout"]).decode().strip()  # type: ignore[call-arg]  # typed-update
                     hook = Path(hook_name)
                     if not hook.is_absolute():
                         hook = Path(a["cwd"]) / hook
@@ -5410,7 +5736,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a["worktree"] and not a["worktreeReady"] and not a.get("imageWorkspace"):
             common_git_dir = subprocess.check_output(
                 ["git", "-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-                timeout=30).decode().strip()
+                timeout=30).decode().strip()  # type: ignore[call-arg]  # typed-update
             key = str(Path(common_git_dir).resolve())
             with self.lock:
                 pending = self.worktree_preparations.get(a["id"])
@@ -5556,7 +5882,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          profile=result.get("activePermissionProfile"))
                 if not (a.get("provider") == "claude"
                         and (operation.get("claudeReadSubmitted") or result.get("reattached") is True)):
-                    a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],
+                    a["preparedContext"] = {"epoch": [thread_id, a.get("compactions", 0)],  # type: ignore[call-arg]  # typed-update
                                             "versions": operation.get("contextVersions", {})}
                 if a.get("nativeRelease"):
                     from codex_native_release import _retire_unsubmitted_inspection
@@ -5569,7 +5895,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     mark_current(a, operation["toolCatalog"])
                 self.put(db, "agents", a)
                 db.commit()  # The cache must never outlive a failed thread-identity commit.
-                self.loaded.add(a["id"])
+                self.loaded.add(a["id"])  # type: ignore[call-arg]  # typed-update
             with self.lock:
                 if not completion.done():
                     completion.set_result(a)
@@ -5587,6 +5913,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if self.closed:
                 break
             try:
+                self._retry_dirty_workspace_refresh()
                 self._publish_committed_resource_changes()
                 self.monitors_tick()
                 self.rules_tick()
@@ -5884,7 +6211,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if fast_event_ids:
                     fast_marks["fastBudgetCheckedAt"] = time.monotonic_ns()
                 if a.get("budgetBlocked"):
-                    if a.get("error") == a["budgetBlocked"]:
+                    if a.get("error") == a["budgetBlocked"]:  # type: ignore[call-arg]  # typed-update
                         a["error"] = None
                     a.pop("budgetBlocked", None)
                     self.put(db, "agents", a)
@@ -5943,7 +6270,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         continue
                 else:
                     pending = pending_batch(self, db, a)
-                from codex_radio import select_pending
+                from codex_radio import select_pending  # type: ignore[call-arg]  # typed-update
                 pending = select_pending(self, db, a, pending)
                 if busy and pending:
                     # after_turn input waits in the queue until the active turn ends.
@@ -6007,7 +6334,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     continue
                 for event in rows:
                     reserved = db.execute(
-                        "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",
+                        "UPDATE runtime_events SET status='reserved' WHERE id=? AND status='pending'",  # type: ignore[call-arg]  # typed-update
                         (event["id"],),
                     )
                     if reserved.rowcount:
@@ -6022,7 +6349,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                        "events": [r["id"] for r in rows], "submitted": False,
                                        "created": time.time()})
                 if claude_retry:
-                    a["startAttempt"]["claudeRetryOf"] = claude_retry["id"]
+                    a["startAttempt"]["claudeRetryOf"] = claude_retry["id"]  # type: ignore[call-arg]  # typed-update
                 self.put(db, "agents", a)
                 if not busy:
                     active.append(a)
@@ -6288,7 +6615,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 current["startAttempt"]["supervisorIdentity"] = supervisor_identity(server)
                 self.put(db, "agents", current)
                 dispatch_attempt = dict(current["startAttempt"])
-                db.commit()
+                db.commit()  # type: ignore[call-arg]  # typed-update
             timing["reservationCommittedAt"] = time.monotonic_ns()
             # A submitted reservation is durable before native I/O. If the answer
             # is lost, recovery inspects native history; it never sends this batch again.
@@ -6391,55 +6718,84 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                        (json.dumps(deliveries), message_id))
 
     def start_accepted(self, agent_id, attempt, result):
+        deleted_server = None
         with self.lock, self.db() as db:
             a = self.agent(agent_id, db)
-            if not self.operation_current(a, attempt, epoch=False) or a["threadId"] != attempt["threadId"]:
-                return
-            from codex_claude_input_recovery import rejected_start_saved
-            if a.get('provider') == 'claude' and rejected_start_saved(db, agent_id, attempt):
-                return
-            turn = result["turn"]["id"]
-            if not isinstance(turn, str) or not turn:
-                raise ValueError("Native response has no turn identity; outcome unknown")
-            if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
-                return
-            self.mark_event_timing(db, attempt.get("events", []), "acceptedAt")
-            if attempt.get("events") and db.execute(
-                    "SELECT 1 FROM runtime_events WHERE id=? AND kind='radio_turn'",
-                    (attempt["events"][0],)).fetchone():
-                self.changed.set()
-            if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
-                return
-            a.pop("startOutcomeHold", None)
-            self.capacity_started(db, a, attempt, turn)
-            completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
-            if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
-                self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
-                                               "error": a.get("error")}, True)
-                self.usage_resume_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+            if a.get("deletedAt"):
+                saved_attempt = a.get("startAttempt") or {}
+                turn = (result.get("turn") or {}).get("id")
+                if (saved_attempt.get("id") != attempt.get("id")
+                        or a.get("threadId") != attempt.get("threadId")
+                        or not isinstance(turn, str) or not turn):
+                    return
+                deleted_thread = a["threadId"]
+                deleted_account = a.get("accountKey", "default")
+                if not self.connection_current(deleted_account, attempt.get("connectionId")):
+                    return
+                deleted_server = self.servers.get(deleted_account)
+            if not deleted_server:
+                if (a.get("deletedAt") or not self.operation_current(a, attempt, epoch=False)
+                        or a["threadId"] != attempt["threadId"]):
+                    return
+                from codex_claude_input_recovery import rejected_start_saved
+                if a.get('provider') == 'claude' and rejected_start_saved(db, agent_id, attempt):
+                    return
+                turn = result["turn"]["id"]
+                if not isinstance(turn, str) or not turn:
+                    raise ValueError("Native response has no turn identity; outcome unknown")
+                if not self.bind_start(db, a, attempt["id"], turn, historical=attempt):
+                    return
+                self.mark_event_timing(db, attempt.get("events", []), "acceptedAt")
+                if attempt.get("events") and db.execute(
+                        "SELECT 1 FROM runtime_events WHERE id=? AND kind='radio_turn'",
+                        (attempt["events"][0],)).fetchone():
+                    self.changed.set()
+                if (a.get("startAttempt") or {}).get("id") != attempt["id"]:
+                    return
+                a.pop("startOutcomeHold", None)
+                self.capacity_started(db, a, attempt, turn)
+                completed = db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?", (agent_id + ":" + turn,)).fetchone()
+                if completed and a.get("lastCompletedTurn") == turn and a.get("lastCompletedTurnStatus"):
+                    self.capacity_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
                                                    "error": a.get("error")}, True)
-                if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
-                        and not a.get("nativeFailureHold")
-                    and not a.get("accountTransferId") and db.execute(
-                            "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
-                            (a["id"], a["epoch"])).fetchone()):
-                    a["status"] = "queued"
-            stopped = not a["autoWake"] or a["epoch"] != attempt["epoch"]
-            if not completed:
-                # Studio submits each reserved batch once. The client message ID
-                # helps recovery identify it; native deduplication is not assumed.
-                # Codex returns the containing turn ID for either start or steer.
-                # A busy agent needs no new slot before submission. If native
-                # starts a new turn anyway, record it even when slots are full.
-                a.update(turnId=turn, inFlight=True)
-                if not stopped:
-                    a.update(status="running", error=None)
-            self.put(db, "agents", a)
+                    self.usage_resume_completed(db, a, {"id": turn, "status": a["lastCompletedTurnStatus"],
+                                                       "error": a.get("error")}, True)
+                    if (a["lastCompletedTurnStatus"] == "completed" and a["autoWake"]
+                            and not a.get("nativeFailureHold")
+                        and not a.get("accountTransferId") and db.execute(
+                                "SELECT 1 FROM runtime_events WHERE agent=? AND status='pending' AND epoch=?",
+                                (a["id"], a["epoch"])).fetchone()):
+                        a["status"] = "queued"
+                stopped = not a["autoWake"] or a["epoch"] != attempt["epoch"]
+                if not completed:
+                    # Studio submits each reserved batch once. The client message ID
+                    # helps recovery identify it; native deduplication is not assumed.
+                    # Codex returns the containing turn ID for either start or steer.
+                    # A busy agent needs no new slot before submission. If native
+                    # starts a new turn anyway, record it even when slots are full.
+                    a.update(turnId=turn, inFlight=True)
+                    if not stopped:
+                        a.update(status="running", error=None)
+                self.put(db, "agents", a)
+        if deleted_server:
+            try:
+                deleted_server.call("turn/interrupt", {"threadId": deleted_thread, "turnId": turn})
+            except Exception as error:
+                diagnostic = {"event": "deleted_turn_interrupt_unconfirmed", "at": time.time(),
+                              "agent": agent_id, "threadId": deleted_thread,
+                              "turnId": turn, "error": str(error)}
+                self._log_runtime_diagnostic(diagnostic, deleted_server)
+                with self.lock, self.db() as db:
+                    latest = self.agent(agent_id, db)
+                    if latest.get("deletedAt") and latest.get("threadId") == deleted_thread:
+                        latest["error"] = "Deleted turn interrupt acknowledgement unavailable: " + str(error)
+                        self.put(db, "agents", latest, sync_rooms=False)
+            return
         if stopped and not completed:
             self.interrupt(a)
-
+  # type: ignore[call-arg]  # typed-update
     def start_result(self, agent_id, attempt, future):
-        try:
+        try:  # type: ignore[call-arg]  # typed-update
             result = future.result()
         except Exception as error:
             self.start_error(agent_id, attempt["id"], error, unknown="outcome unknown" in str(error))
@@ -6510,7 +6866,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     meta = db.execute("SELECT record FROM runtime_event_meta WHERE id=?", (event_id,)).fetchone()
                     visible_error = str(error) if meta and json.loads(meta[0]).get("sendNow") else None
                     db.execute("UPDATE runtime_events SET status='pending',turn_id=NULL,error=? "
-                               "WHERE id=? AND agent=? AND epoch=? "
+                               "WHERE id=? AND agent=? AND epoch=? "  # type: ignore[call-arg]  # typed-update
                                "AND status IN ('reserved','dispatching','uncertain')",
                                (visible_error, event_id, agent_id, attempt["epoch"]))
                 if attempt["events"]:
@@ -6532,7 +6888,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # Native rejects this request before submitting a turn. A cached
                 # load is no longer valid, even when the rollout still exists.
                 # Reload the same thread on the next authorized dispatch; do not
-                # replay this input batch or replace its thread identity.
+                # replay this input batch or replace its thread identity.  # type: ignore[call-arg]  # typed-update
                 if (isinstance(error, NativeRpcError) and error.code == -32600
                         and isinstance(error.error, dict)
                         and error.error.get("message") == "thread not found: " + str(a.get("threadId"))
@@ -6547,11 +6903,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if worktree_hold:
                 a.update(status="paused", autoWake=False, error=str(error))
                 a.pop("worktreePreparation", None)
-            attempt["executionOutcome"] = "unknown" if unknown else "unsent" if not attempt.get("submitted") else "rejected"
+            attempt["executionOutcome"] = "unknown" if unknown else "unsent" if not attempt.get("submitted") else "rejected"  # type: ignore[call-arg]  # typed-update
             self.capacity_error(db, a, attempt, error, unknown)
             self.put(db, "agents", a)
             for event_id in attempt["events"]:
-                # Input never sent because preparation failed waits for the next start
+                # Input never sent because preparation failed waits for the next start  # type: ignore[call-arg]  # typed-update
                 # (the agent stays failed, so nothing retries by itself). Input that was
                 # sent, or that a check rejected (for example team isolation), stays failed.
                 preparation = preparation or getattr(error, "studioPreparation", False)
@@ -6663,7 +7019,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.enqueue_recovery_event(db, parent, "child_result", json.dumps(payload, ensure_ascii=False), event_id)
         return event_id
 
-    def permanent_worker_hold(self, db, a, operation_id, transition, reason):
+    def permanent_worker_hold(self, db: sqlite3.Connection, a: "AgentRecord", operation_id: str,
+                              transition: str, reason: str) -> None:
         """Save one lead event when an operation removes automatic continuation."""
         if a.get("isLead") or not a.get("parentId"):
             return None
@@ -7115,7 +7472,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if item.get("questions"):
                         request_id = a["id"] + ":question:" + item["id"]
                         if not db.execute("SELECT 1 FROM runtime_requests WHERE id=?", (request_id,)).fetchone():
-                            questions = [{"id": str(i), "question": q["title"],
+                            questions: list[RequestQuestionFieldRecord] = [{"id": str(i), "question": q["title"],
                                           "options": [{"label": o} if isinstance(o, str) else o for o in q.get("options") or []],
                                           "multiSelect": bool(q.get("multiSelect", q.get("multi_select", False))),
                                           "isSecret": bool(q.get("isSecret"))}
@@ -7424,9 +7781,25 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock, self.db() as db:
             if self.closed or not self.connection_current(account_key, connection_id):
                 raise ConnectionError("The native request was not admitted because its account connection ended")
-            p = message.get("params", {})
+            p: JsonObject = message.get("params", {})
             request_thread = p.get("threadId")
             a = self.tool_request_actor(db, request_thread, account_key)
+            if a and a.get("deletedAt"):
+                method = message["method"]
+                if method in {"item/commandExecution/requestApproval", "item/fileChange/requestApproval"}:
+                    self.reply({"id": message["id"], "result": {"decision": "decline"}},
+                               account_key, connection_id)
+                elif method == "item/permissions/requestApproval":
+                    self.reply({"id": message["id"], "result": {"permissions": {}, "scope": "turn"}},
+                               account_key, connection_id)
+                elif method == "mcpServer/elicitation/request":
+                    self.reply({"id": message["id"], "result": {"action": "decline", "content": None}},
+                               account_key, connection_id)
+                else:
+                    self.reply({"id": message["id"], "error": {"code": -32600,
+                        "message": "This agent is unavailable and cannot handle this request."}},
+                        account_key, connection_id)
+                return
             if a and not a.get("isLead") and message["method"] == "item/tool/requestUserInput":
                 self.reply({"id": message["id"], "error": {"code": -32600,
                     "message": "Only the orchestrator can ask the user. Send your question with orchestration_message target=lead; the orchestrator decides whether to contact the user."}},
@@ -7434,7 +7807,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return
             r = {"id": uid(), "rpcId": message["id"], "method": message["method"],
                  "params": p, "agent": a["id"] if a else None, "status": "pending",
-                 "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}
+                 "accountKey": account_key, "connectionId": connection_id, "createdAt": time.time()}  # type: RequestRecord
             if a and native_thread_block(a):
                 r["status"] = "blocked"
                 self.put(db, "requests", r)
@@ -7857,7 +8230,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 elif name == "orchestration_interrupt":
                     target = self.agent(args["agent_id"])
                     cursor = target
-                    while cursor.get("parentId") and cursor["parentId"] != a["id"]:
+                    while cursor.get("parentId") and cursor["parentId"] != a["id"]:  # type: ignore[call-arg]  # typed-update
                         cursor = self.agent(cursor["parentId"])
                     if cursor.get("parentId") != a["id"]:
                         raise ValueError("You can interrupt only your descendants")
@@ -8254,22 +8627,31 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     "responder": "user", "response": response}, ensure_ascii=False), "complaint-response:" + key)
             return self.save_receipt(db, key, signature, c)
 
-    def complaint_summaries(self, db):
-        complaints = self.records(db, "complaints")
-        # Decode only the agents that the complaints name.
-        ids = sorted({key for c in complaints for key in (c["author"], c["leadId"])})
-        agents = {a["id"]: a for a in (json.loads(r[0]) for r in db.execute(
-            "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
-        result = []
-        for c in complaints:
-            result.append({**{k: c[k] for k in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
-                           "title": c["text"][:140], "text": c["text"], "responses": c["responses"], "recipient": self.complaint_recipient(c),
-                           "version": c["version"], "needsResponse": self.complaint_needs_response(c),
-                           "authorName": agents.get(c["author"], {}).get("name", "You" if c["author"] == "user" else c["author"]),
-                           "leadName": agents.get(c["leadId"], {}).get("name", c["leadId"]),
-                           "leadStopped": not agents.get(c["leadId"], {}).get("autoWake", False),
-                           "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
-        return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
+    def complaint_entity_view(self, db, complaint, agents=None):
+        """Build viewer-independent complaint entity fields from their named sources."""
+        if agents is None:
+            ids = sorted({value for value in (complaint.get("author"), complaint.get("leadId"))
+                          if isinstance(value, str) and value != "user"})
+            agents = {a["id"]: a for a in (json.loads(row[0]) for row in db.execute(
+                "SELECT record FROM runtime_agents WHERE id IN (" + ",".join("?" * len(ids)) + ")", ids))} if ids else {}
+        responses = complaint.get("responses")
+        safe_complaint = {
+            **complaint,
+            "responses": [response for response in responses or []
+                          if isinstance(response, dict) and isinstance(response.get("author"), str)],
+        }
+        return {
+            **{key: complaint.get(key) for key in ("id", "leadId", "author", "status", "created", "updated", "readAt")},
+            "title": str(complaint.get("text") or "")[:140],
+            "recipient": "user" if complaint.get("recipient") == "user" else "lead",
+            "version": complaint.get("version"),
+            "needsUserResponse": (complaint.get("recipient") == "user"
+                                  and self.complaint_needs_response(
+                                      {**safe_complaint, "recipient": "user"})),
+            "authorName": agents.get(complaint.get("author"), {}).get(
+                "name", "You" if complaint.get("author") == "user" else complaint.get("author")),
+            "leadName": agents.get(complaint.get("leadId"), {}).get("name", complaint.get("leadId")),
+        }
 
     def complaint_detail(self, key):
         with self.lock, self.db() as db:
@@ -8349,14 +8731,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 reconcile_complaints(self, db, lead)
                 if c["author"] != "user" and c["author"] != actor_id:
                     reporter = self.agent(c["author"], db)
-                    if not reporter.get("deletedAt"):
+                    if not reporter.get("deletedAt"):  # type: ignore[call-arg]  # typed-update
                         self.enqueue(db, reporter, "complaint_response", json.dumps({"complaint_id": c["id"],
                             "lead": actor_id, "response": response}, ensure_ascii=False), "complaint-response:" + key)
                 return c
             raise ValueError("Choose submit, read, or respond")
 
     def chat_rooms(self, db, viewer=None, room_id=None, *, include_last_message=None,
-                   include_peer_teams=False):
+                   include_peer_teams: bool = False) -> list["RoomRecord"]:
         if include_last_message is None:
             include_last_message = room_id is None
         targeted_room = None
@@ -8482,7 +8864,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  and room['kind'] == 'private' and len(members) == 2
                                  and all(agents[m].get("sharedRoomId") == room['id']
                                          and agents[m].get("cwd") == room.get("projectPath") for m in members))
-                if room['kind'] != 'private' or len(members) != 2 or not (peer_team or direct_shared):
+                if room['kind'] != 'private' or len(members) != 2 or not (peer_team or direct_shared):  # type: ignore[call-arg]  # typed-update
                     continue
             room["members"] = members
             room["name"] = ("All agents" if room.get("rootId") == "all" else
@@ -8696,17 +9078,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 event_id = "chat:" + key + ":" + recipient["id"]
                 self.enqueue(db, recipient, "agent_message", event, event_id)
                 deliveries[recipient["id"]] = "queued"
-            message_row = db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
-                                     (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
-            derived_room = (self.broadcast_room(db, room) if room["kind"] == "broadcast"
-                            and room.get("rootId") != "all" else
-                            next(iter(self.chat_rooms(db, room_id=room["id"],
-                                                      include_last_message=False)), None))
-            if derived_room:
-                derived_room["lastMessage"] = {"seq": message_row.lastrowid, "text": text[:180],
-                                                "created": room["updated"], "sender": sender_id}
-                from codex_sync_entities import put as sync_entity_put
-                sync_entity_put(db, "room", room["id"], derived_room)
+            db.execute("INSERT INTO runtime_chat_messages(id,room,sender,text,created,deliveries) VALUES (?,?,?,?,?,?)",
+                       (key, room["id"], sender_id, text, room["updated"], json.dumps(deliveries)))
+            self.sync_room_entity(db, str(room["id"]))
             return self.save_receipt(db, key, signature, {"id": key, "room": room["id"], "deliveries": deliveries})
 
     def monitor(self, agent_id, data, key=None, approved=False, epoch=None, rule=None):
@@ -9600,7 +9974,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         latest["error"] = f"Stop requested; interrupt acknowledgement unavailable: {error}"
                     self.put(db, "agents", latest)
 
-    def stop(
+    def stop(  # type: ignore[call-arg]  # typed-update
         self,
         key,
         descendants=True,
@@ -9643,7 +10017,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", a)
                 db.execute("UPDATE runtime_events SET status='cancelled' WHERE agent=? AND status='pending'", (a["id"],))
                 if not descendants or a["id"] == key or sender:
-                    self.child_stopped_event(db, a, "paused", reason,
+                    self.child_stopped_event(db, a, "paused", reason,  # type: ignore[call-arg]  # typed-update
                         "stop:" + str(stopped_turn), requested_by_lead=bool(sender))
             for request in self.records(db, "requests"):
                 if request.get("agent") in ids and request["status"] == "pending" and request["method"] != "monitor/approve":
@@ -9664,7 +10038,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             row = db.execute("SELECT record FROM runtime_requests WHERE id=?", (key,)).fetchone()
             if not row:
                 raise ValueError("Unknown request")
-            r = json.loads(row[0])
+            r: RequestRecord = json.loads(row[0])
             if r.get("answerSignature"):
                 if r["answerSignature"] != answer_signature(data):
                     raise ValueError("This request already has a different answer")
@@ -9683,7 +10057,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a = self.agent(r["agent"], db)
                 if a["epoch"] != r["epoch"] or not a["autoWake"]:
                     raise ValueError("This question belongs to a stopped turn")
-                text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])
+                text = "\n".join(q["question"] + "\n" + "\n".join(answers.get(q["id"], {}).get("answers", [])) for q in r["params"]["questions"])  # type: ignore[call-overload,index,misc,operator,union-attr]  # typed-narrowing: Method determines stored params shape
                 from codex_radio import route_question_answer
                 if not route_question_answer(self, db, r, text):
                     db.commit()
@@ -9911,128 +10285,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                  if w["rootId"] in ids and (not root or w["rootId"] == root)]}
             raise ValueError("Unknown workspace view")
 
-    def snapshot(self, *, include_work=True, db=None):
-        if db is None:
-            with self.read_db() as own:
-                return self._snapshot_from_db(own, include_work)
-        return self._snapshot_from_db(db, include_work)
-
-    def _snapshot_from_db(self, db, include_work):
-        from codex_peer_teams import snapshot as peer_snapshot
-        from codex_project_folders import sidebar_order
-        agents = [a.copy() for a in self.records(db, "agents", shared=True) if not a.get("deletedAt")]
-        agent_ids = {a["id"] for a in agents}
-        worker_ids = {a["id"] for a in agents if not a.get("isLead")}
-        team_names = {a["id"]: a["name"] for a in agents}
-        work_records = self.records(db, "work") if include_work else []
-        work_result_files = {}
-        if worker_ids:
-            if include_work:
-                result_records = iter(sorted(
-                    work_records,
-                    key=lambda record: (record.get("owner") or "", record.get("status") is not None,
-                                        record.get("status") or ""),
-                ))
-            else:
-                rows = db.execute(
-                    "SELECT record FROM runtime_work WHERE json_extract(record,'$.owner') IN "
-                    "(SELECT value FROM json_each(?)) "
-                    "ORDER BY json_extract(record,'$.owner'),json_extract(record,'$.status'),rowid",
-                    (json.dumps(sorted(worker_ids)),),
-                )
-                result_records = (json.loads(row[0]) for row in rows)
-            for record in result_records:
-                owner = record.get("owner")
-                if owner not in worker_ids:
-                    continue
-                for result in record.get("results", []):
-                    if result.get("agent") != owner or not result.get("resultFile"):
-                        continue
-                    created = result.get("created", 0)
-                    prior = work_result_files.get(owner)
-                    if prior is None or created > prior[0]:
-                        work_result_files[owner] = (created, result["resultFile"])
-        for a in agents:
-            a["nextTurnSettingsSupported"] = True
-            a["readStateSupported"] = True
-            a["empty"] = self.empty_lead(db, a)
-            if not a.get("isLead"):
-                task = str(a.get("prompt") or "")
-                # A completed message can be commentary. Publish the last report
-                # only once the current turn has completed successfully.
-                result = str(a.get("lastAnswer") or "") if (
-                    a.get("lastCompletedTurn") and not a.get("turnId")
-                    and not a.get("inFlight") and a.get("status") == "completed"
-                ) else ""
-                result_file = work_result_files.get(a['id'], (None, None))[1]
-                a["overview"] = {
-                    "task": task[:4000], "taskTruncated": len(task) > 4000,
-                    "result": result[:4000], "resultTruncated": len(result) > 4000,
-                    "resultTurnId": a.get("lastCompletedTurn") if result else None,
-                    "resultFile": result_file,
-                }
-            for private in ("prompt", "lastAnswer", "sandbox", "profile", "approvalPolicy") + (
-                ("contextRepair", "contextRepairHistory", "lastContextRepairCheck",
-                 "lastContextRepairWait", "nativeNameSynced") if not include_work else ()
-            ):
-                a.pop(private, None)
-            block = native_thread_block(a)
-            if block:
-                a["nativeThreadBlock"] = block
-            a.update(kind="agent", source="managed", canSend=not bool(block), launcherAlive=not self.closed,
-                     wave="Team: " + team_names.get(a["rootId"], "Team"))
-        from codex_entity_contracts import event_records
-        from codex_sync_entities import project
-        events = [project("event", record) for record in event_records(db)]
-        return {
-            "agents": agents,
-            "projects": self.projects(db=db)["items"],
-            "projectOrganizationVersion": 1,
-            "sidebarOrder": sidebar_order(db),
-            "peerTeamsVersion": 1,
-            "peerTeams": peer_snapshot(self, db),
-            "tasks": self.recent_tasks(db),
-            "tasksHistoryLimit": 100,
-            "monitors": [
-                m
-                for m in self.recent_monitors(db)
-                if m["agent"] in agent_ids
-            ],
-            "requests": [
-                r
-                for r in self.records(db, "requests")
-                if r["status"] == "pending"
-                and r.get("agent") in agent_ids
-            ],
-            "rooms": [r for r in self.chat_rooms(db) if not r.get("userHidden")],
-            "complaints": self.complaint_summaries(db),
-            # The chat view reads work through /api/work when opened.
-            # Omit it before the database read so old result histories do
-            # not delay every chat update.
-            **({"work": [
-                w
-                for w in work_records
-                if w["rootId"] in agent_ids
-            ]} if include_work else {}),
-            "rules": [
-                r
-                for r in self.records(db, "rules")
-                if r["agent"] in agent_ids
-            ],
-            "rateLimits": self.rate_limits.copy(),
-            "nativeNotices": account_notices(self, db) + __import__("codex_provider_versions").monitor(self).status()["warnings"],
-            "rateLimitsByAccount": {k: value.copy() for k, value in self.rate_limits_by_account.copy().items()},
-            "events": events,
-            "connected": bool(set(self.servers.copy()) - self.offline_accounts.copy()) and not self.closed,
-        }
-
-    def team(self, root):
-        state = self.snapshot(include_work=False)
-        agents = [a for a in state["agents"] if a["rootId"] == root]
-        return {"workerDefaults": self.worker_defaults(self.agent(root)),
-                "agents": [{k: a.get(k) for k in ("id", "parentId", "name", "status", "cwd", "model", "effort", "fastMode", "workerDefaults", "tokensUsed", "error")} for a in agents],
-                "monitors": [m for m in state["monitors"] if m["agent"] in {a["id"] for a in agents}]}
-
     def transcript(self, key, before=None, around=None, limit=120, after=None):
         with self.db() as db:
             # Read one committed snapshot without waiting for agent execution.
@@ -10182,14 +10434,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_agent_modes import mode_fields
                     mode_fields(a)
                 else:
-                    a.pop('concurrency', None)
+                    a.pop('concurrency', None)  # type: ignore[call-arg]  # typed-update
                     a.update(maxAgents=limit, tokenBudget=budget)
                 self.put(db, "agents", a)
             self.changed.set()
             return {"id": key, "concurrency": root['concurrency'],
                     "agentMode": 'multi' if root['concurrency'] else 'single',
                     "agentModeRevision": root.get('agentModeRevision', 0),
-                    "maxAgents": limit, "tokenBudget": budget}
+                    "maxAgents": limit, "tokenBudget": budget}  # type: ignore[call-arg]  # typed-update
 
     def native_action(self, key, action, request_id=None, context=None):
         if isinstance(action, dict) and 'safety' in action:
@@ -10249,7 +10501,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if durable:
                 a["startAttempt"]["actionRequestId"] = request_id
                 a["startAttempt"]["actionIdentity"] = {name: receipt[name] for name in ("accountKey", "threadId", "epoch")}
-            self.put(db, "agents", a)
+            self.put(db, "agents", a)  # type: ignore[call-arg]  # typed-update
         try:
             result = self.run_native_action(key, dict(a["startAttempt"]))
         except Exception as error:
@@ -10419,7 +10671,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return a
 
     def close(self):
-        federation = getattr(self, "_federation_service", None)
+        federation = getattr(self, "_federation_service", None)  # type: ignore[call-arg]  # typed-update
         if federation:
             federation.close()
         with self.lock:

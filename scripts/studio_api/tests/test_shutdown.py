@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import contextmanager
+from collections.abc import Callable, Iterator
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import time
 from types import ModuleType, SimpleNamespace
+from typing import Any, cast
 import unittest
 from unittest.mock import patch
 
@@ -35,31 +37,31 @@ def run_fixture(mode: str) -> None:
 
     runtime_module = ModuleType("codex_runtime")
     updates_module = ModuleType("codex_live_updates")
-    listeners = []
+    listeners: list[Any] = []
 
-    def make_runtime(_root):
+    def make_runtime(_root: object) -> Any:
         if mode == "startup":
             print(json.dumps({"ready": listeners[0].server_port}), flush=True)
             os.kill(os.getpid(), signal.SIGTERM)
             time.sleep(30)
         return SimpleNamespace(close=close_runtime, lock=threading.RLock())
 
-    runtime_module.Runtime = make_runtime
+    setattr(runtime_module, "Runtime", make_runtime)
 
-    def start_updates(_runtime):
+    def start_updates(_runtime: object) -> None:
         print(json.dumps({"ready": listeners[0].server_port}), flush=True)
 
-    updates_module.start = start_updates
-    original_factory = codex_canvas.make_server
-    original_send = RequestResponseCycle.send
+    setattr(updates_module, "start", start_updates)
+    original_factory = cast(Callable[..., Any], codex_canvas.make_server)
+    original_send = cast(Callable[..., Any], RequestResponseCycle.send)
 
-    def make_server(*args, **kwargs):
+    def make_server(*args: Any, **kwargs: Any) -> Any:
         server = original_factory(*args, **kwargs)
         server.context._maintenance_last = time.monotonic()
         listeners.append(server)
         return server
 
-    async def send_response(cycle, message):
+    async def send_response(cycle: Any, message: dict[str, Any]) -> None:
         if mode != "idle" and message["type"] == "http.response.body" and cycle.scope["path"] == "/api/session":
             number = signal.SIGINT if mode == "sigint" else signal.SIGTERM
             os.kill(os.getpid(), number)
@@ -87,9 +89,9 @@ def run_fixture(mode: str) -> None:
 
 class BackendShutdownTests(unittest.TestCase):
     @contextmanager
-    def backend(self, mode: str):
+    def backend(self, mode: str) -> Iterator[tuple[subprocess.Popen[str], Path, int]]:
         # macOS Unix sockets cannot use the long default temporary path.
-        with tempfile.TemporaryDirectory(prefix="studio-shutdown-", dir="/tmp") as directory:
+        with tempfile.TemporaryDirectory(prefix="studio-shutdown-", dir=os.environ.get("TMPDIR")) as directory:
             root = Path(directory)
             scripts = Path(__file__).resolve().parents[2]
             environment = os.environ.copy()
@@ -139,7 +141,7 @@ class BackendShutdownTests(unittest.TestCase):
                     process.kill()
                 process.communicate(timeout=5)
 
-    def assert_exit(self, process, *, code: int = 0):
+    def assert_exit(self, process: subprocess.Popen[str], *, code: int = 0) -> tuple[str, str, dict[str, Any]]:
         try:
             stdout, stderr = process.communicate(timeout=4)
         except subprocess.TimeoutExpired:
@@ -153,7 +155,7 @@ class BackendShutdownTests(unittest.TestCase):
         self.assertEqual(records[0]["pid"], process.pid)
         return stdout, stderr, records[0]
 
-    def test_sigterm_during_response_finishes_and_stops_both_listeners(self):
+    def test_sigterm_during_response_finishes_and_stops_both_listeners(self) -> None:
         for listener in ("tcp", "unix"):
             with self.subTest(listener=listener), self.backend("response") as (process, state, port):
                 transport = httpx.HTTPTransport(uds=str(state / "canvas.sock")) if listener == "unix" else None
@@ -165,7 +167,7 @@ class BackendShutdownTests(unittest.TestCase):
                 self.assertEqual(record["signal"], signal.SIGTERM)
                 self.assertFalse((state / "canvas.sock").exists())
 
-    def test_repeat_sigterm_and_sigint_allow_response_to_finish(self):
+    def test_repeat_sigterm_and_sigint_allow_response_to_finish(self) -> None:
         for mode in ("repeat", "sigint"):
             with self.subTest(mode=mode), self.backend(mode) as (process, state, port):
                 response = httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=3)
@@ -175,7 +177,7 @@ class BackendShutdownTests(unittest.TestCase):
                 self.assertEqual(record["signal"], signal.SIGINT if mode == "sigint" else signal.SIGTERM)
                 self.assertFalse((state / "canvas.sock").exists())
 
-    def test_graceful_timeout_cancels_a_stalled_response(self):
+    def test_graceful_timeout_cancels_a_stalled_response(self) -> None:
         with self.backend("grace") as (process, state, port):
             with self.assertRaises(httpx.RemoteProtocolError):
                 httpx.get(f"http://127.0.0.1:{port}/api/session", timeout=3)
@@ -184,7 +186,7 @@ class BackendShutdownTests(unittest.TestCase):
             self.assertIn("timeout graceful shutdown exceeded", stderr)
             self.assertFalse((state / "canvas.sock").exists())
 
-    def test_hard_deadline_covers_loop_cleanup_and_interpreter_threads(self):
+    def test_hard_deadline_covers_loop_cleanup_and_interpreter_threads(self) -> None:
         for mode in ("loop", "cleanup", "thread"):
             with self.subTest(mode=mode), self.backend(mode) as (process, _state, port):
                 started = time.monotonic()
@@ -199,13 +201,13 @@ class BackendShutdownTests(unittest.TestCase):
                 if mode == "thread":
                     self.assertIn("runtime-closed", stdout)
 
-    def test_sigterm_during_runtime_startup_obeys_hard_deadline(self):
+    def test_sigterm_during_runtime_startup_obeys_hard_deadline(self) -> None:
         with self.backend("startup") as (process, _state, _port):
             started = time.monotonic()
             self.assert_exit(process, code=1)
             self.assertLess(time.monotonic() - started, 3)
 
-    def test_idle_backend_serves_requests_until_external_sigterm(self):
+    def test_idle_backend_serves_requests_until_external_sigterm(self) -> None:
         with self.backend("idle") as (process, state, port):
             with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=3) as client:
                 first = client.get("/api/session")

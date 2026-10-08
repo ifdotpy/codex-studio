@@ -1,3 +1,11 @@
+import {
+  readTestState,
+  entityPullFixtureForRequest,
+  test,
+  browserExecutablePath,
+  spawnFixture as spawn,
+  apiSchemaHandshakeSse,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
@@ -5,13 +13,6 @@ import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 import { createRequire } from "node:module";
-import {
-  test,
-  browserExecutablePath,
-  spawnFixture as spawn,
-  apiSchemaHandshakeSse,
-} from "../playwright.mjs";
-
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -20,9 +21,16 @@ test("Terminal dock", async () => {
   const workspaceId = "1234567890abcdef1234567890abcdef";
   const epoch = "terminal-dock-fixture";
   let resourceRevision = 0;
+  const resourceVersions = new Map();
   const resourceStreams = new Set();
   const writeResourceEvent = (stream, reason, resources = stream.resources) => {
-    if (reason !== "initial") resourceRevision++;
+    if (reason !== "initial") {
+      resourceRevision++;
+      for (const resource of resources) {
+        const key = JSON.stringify(resource);
+        resourceVersions.set(key, (resourceVersions.get(key) || 0) + 1);
+      }
+    }
     const event = {
       protocol: 3,
       workspaceId,
@@ -30,6 +38,10 @@ test("Terminal dock", async () => {
       revision: resourceRevision,
       reason,
       resources,
+      resourceVersions: resources.map((resource) => ({
+        resource,
+        revision: resourceVersions.get(JSON.stringify(resource)) || 0,
+      })),
     };
     assert.ok(
       Array.isArray(event.resources) && Number.isFinite(event.revision),
@@ -212,22 +224,21 @@ test("Terminal dock", async () => {
       let value = {};
       if (path === "/api/sync/identity" || path === "/api/sync/stream")
         return route.continue();
-      if (path.startsWith("/api/sync/"))
+      if (path === "/api/sync/pull")
         return route.fulfill({
           status: 200,
           json: {
             workspaceId,
-            documents: [],
-            checkpoint: { seq: 0 },
-            maxSeq: 0,
+            ...entityPullFixtureForRequest(state, url),
           },
         });
+      if (path.startsWith("/api/sync/"))
+        return route.fulfill({ status: 200, json: { workspaceId } });
       if (path === "/api/accounts")
         value = { accounts: [], defaultAccountKey: "default" };
       else if (path === "/api/voice/records")
         value = { records: [], cursor: 0, delivered: [] };
       else if (path === "/api/session") value = { token: state.token };
-      else if (path === "/api/state") value = state;
       else if (path === "/api/transcript") value = { items: [], agent };
       else if (path === "/api/transcript/stream")
         return route.fulfill({ status: 503, body: "fixture polling" });
@@ -711,7 +722,7 @@ test("Terminal dock", async () => {
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
     liveOrigin = `http://127.0.0.1:${port}`;
-    const initial = await (await fetch(liveOrigin + "/api/state")).json();
+    const initial = await readTestState(liveOrigin);
     liveToken = initial.token;
     liveBrowser = await chromium.launch({
       executablePath: browserExecutablePath,
@@ -799,7 +810,7 @@ test("Terminal dock", async () => {
       readsAfterExit,
       "an idle terminal performs no periodic output reads",
     );
-    const after = await (await fetch(liveOrigin + "/api/state")).json();
+    const after = await readTestState(liveOrigin);
     const ownerBefore = initial.threads.find(
       (item) => item.id === sessions.items[0].agent,
     );

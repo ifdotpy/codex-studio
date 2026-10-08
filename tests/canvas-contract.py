@@ -12,6 +12,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from types import SimpleNamespace
 from types import ModuleType
@@ -24,13 +25,26 @@ sys.dont_write_bytecode = True
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
+from studio_api.testing import read_session_token
 import codex_canvas
 
 
 class RelayFixture(BaseHTTPRequestHandler):
     def do_GET(self):
-        body = json.dumps({"token": "canvas-test-token", "stateDir": self.server.state_dir}).encode()
-        self.send_response(200)
+        if self.path == "/api/session":
+            status, payload = 200, {"token": "canvas-test-token"}
+        elif self.path == "/api/desktop":
+            status, payload = 200, {"stateDir": self.server.state_dir}
+        elif self.path.startswith("/api/sync/pull?scope=state:entities:v1"):
+            status, payload = 200, {
+                "documents": [],
+                "checkpoint": {"seq": 0},
+                "maxSeq": 0,
+            }
+        else:
+            status, payload = 404, {"error": "Unexpected canvas contract fixture GET"}
+        body = json.dumps(payload).encode()
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
@@ -87,18 +101,27 @@ class CanvasContract(unittest.TestCase):
     def write(self, wave, rows):
         (self.root / f"codex-swarm-status.{wave}.json").write_text(json.dumps(rows))
 
+    def graph(self):
+        with self.canvas.connect() as db:
+            db.execute("PRAGMA query_only=ON")
+            db.execute("BEGIN")
+            threads = self.canvas.threads(db=db)
+            chats = self.canvas.chats(db=db)
+            return {"threads": threads, "chats": chats, "nodes": threads + chats,
+                    "edges": self.canvas.edges(threads, db=db)}
+
     def group(self):
         key = str(uuid.uuid4())
         ids = [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]
         self.canvas.create_chat("Runtime team", ids, key)
         return key, ids
 
-    def test_snapshot_uses_process_liveness(self):
+    def test_threads_use_process_liveness(self):
         self.write("dead", [{"name": "dead", "threadId": "dead", "runId": "dead", "turnStatus": "running", "launcherPid": 0}])
-        dead = next(t for t in self.canvas.snapshot()["threads"] if t["name"] == "dead")
+        dead = next(t for t in self.canvas.threads() if t["name"] == "dead")
         self.assertEqual(dead["status"], "abandoned")
         self.assertFalse(dead["canSend"])
-        self.assertEqual(len(self.canvas.snapshot()["chats"]), 0)
+        self.assertEqual(len(self.canvas.chats()), 0)
 
     def test_chat_is_a_node_and_connections_define_membership(self):
         chat = str(uuid.uuid4())
@@ -108,7 +131,7 @@ class CanvasContract(unittest.TestCase):
         self.canvas.connect_chat(first, chat)
         other = str(uuid.uuid4())
         self.canvas.create_chat('Other chat', [first, second], other)
-        snapshot = self.canvas.snapshot()
+        snapshot = self.graph()
         self.assertEqual(len([n for n in snapshot['nodes'] if n['kind'] == 'chat']), 2)
         self.assertEqual(len([e for e in snapshot['edges'] if e['source'] == first]), 2)
         self.canvas.post(chat, 'history', str(uuid.uuid4()), author=first, notify=False)
@@ -133,7 +156,7 @@ class CanvasContract(unittest.TestCase):
         rows = self.canvas.threads()
         self.write('three', [{'name':'third', 'threadId':'third-thread', 'runId':'third-run',
                              'turnStatus':'running','launcherPid':os.getpid(), 'orchestratorId':'native-root'}])
-        graph = self.canvas.snapshot()
+        graph = self.graph()
         children = [e for e in graph['edges'] if e['source'] == 'native-root' and e['kind'] == 'spawn']
         self.assertEqual(len(children), 2)
         self.assertEqual(len([t for t in graph['threads'] if t['id'] == 'native-root']), 1)
@@ -409,7 +432,7 @@ class CanvasContract(unittest.TestCase):
         self.assertFalse(list(self.root.glob("codex-inbox.*")))
 
     def test_graph_refuses_agent_context_before_read_or_registration(self):
-        before = self.canvas.snapshot()
+        before = self.graph()
         for variable in ("CODEX_AGENT_OWNER", "CODEX_BOARD_OWNER"):
             env = {**os.environ, "CODEX_AGENT_OWNER": "", "CODEX_BOARD_OWNER": "", variable: "one:run-one:worker"}
             for args in (["list"], ["agent", "--id", "foreign-parent", "--name", "Foreign"]):
@@ -417,14 +440,14 @@ class CanvasContract(unittest.TestCase):
                 self.assertNotEqual(result.returncode, 0)
                 self.assertIn("unsupported" if variable == "CODEX_BOARD_OWNER" else "team runtime tools", result.stderr)
                 self.assertEqual(result.stdout, "")
-        after = self.canvas.snapshot()
+        after = self.graph()
         self.assertEqual(before["nodes"], after["nodes"])
         self.assertEqual(before["edges"], after["edges"])
 
     def test_old_owner_environment_is_rejected_before_user_or_worker_access(self):
         room, ids = self.group()
         self.canvas.post(room, "Private history", str(uuid.uuid4()), author=ids[0], notify=False)
-        before = self.canvas.snapshot()
+        before = self.graph()
         for current_owner in ("", "one:run-one:worker"):
             env = {**os.environ, "CODEX_AGENT_OWNER": current_owner,
                    "CODEX_BOARD_OWNER": "one:run-one:worker"}
@@ -442,7 +465,7 @@ class CanvasContract(unittest.TestCase):
                 self.assertIn("CODEX_BOARD_OWNER is unsupported", result.stderr)
                 self.assertEqual(result.stdout, "")
         self.assertFalse(list(self.root.glob("codex-inbox.*")))
-        after = self.canvas.snapshot()
+        after = self.graph()
         self.assertEqual(before["nodes"], after["nodes"])
         self.assertEqual(before["edges"], after["edges"])
         self.assertEqual(len(self.canvas.messages(room)), 1)
@@ -475,14 +498,16 @@ class CanvasContract(unittest.TestCase):
         alternate.mkdir()
         (alternate / "codex-board.json").write_text('{"claims":{"native":{"worker":"unknown","at":1}}}')
         with patch.dict(os.environ, {"CODEX_BOARD_STATE_DIR": str(alternate)}):
-            self.assertNotIn("board", self.canvas.snapshot())
-            self.assertNotIn("boardError", self.canvas.snapshot())
+            self.assertTrue(self.canvas.threads())
+            self.assertNotIn("board", self.graph())
+            self.assertNotIn("boardError", self.graph())
         (self.root / "codex-swarm-status.one.json").write_text("broken")
-        with self.assertRaises(RuntimeError):
-            self.canvas.snapshot()
+        with self.assertRaisesRegex(RuntimeError, "cannot read"):
+            self.canvas.threads()
 
     def test_removed_worktree_disk_route_does_not_scan_folders(self):
         server = make_server(self.canvas)
+        server._context._maintenance_last = time.monotonic()
         thread = threading.Thread(target=server.serve_forever, daemon=True)
         thread.start()
         base = f"http://127.0.0.1:{server.server_port}"
@@ -517,11 +542,10 @@ class CanvasContract(unittest.TestCase):
             except urllib.error.HTTPError as error:
                 return error.code, error.read()
         try:
-            status, data = request("/api/state")
-            self.assertEqual(status, 200)
-            token = json.loads(data)["token"]
+            token = read_session_token(lambda path: json.loads(request(path)[1]))
+            self.assertTrue(token)
             self.assertEqual(request("/", headers={"Host": "evil.example"})[0], 403)
-            self.assertEqual(request("/api/state", headers={"Origin": "https://evil.example"})[0], 403)
+            self.assertEqual(request("/api/session", headers={"Origin": "https://evil.example"})[0], 403)
             self.assertEqual(request("/api/chats", {})[0], 403)
             body = {"id": str(uuid.uuid4()), "name": "team", "members": [t["id"] for t in self.canvas.threads() if t["wave"] == "one"]}
             headers = {"Origin": base, "X-Canvas-Token": token}

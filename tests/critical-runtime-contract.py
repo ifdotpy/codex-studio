@@ -20,6 +20,7 @@ import unittest
 from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_runtime_state
 from codex_runtime import AppServer, Runtime
 
 def load(name):
@@ -156,7 +157,7 @@ class CriticalRuntimeContract(unittest.TestCase):
         a = self.runtime.prepare(a)
         self.runtime.request({'id': 700, 'method': 'item/commandExecution/requestApproval',
                               'params': {'threadId': a['threadId'], 'command': 'git status'}})
-        request = self.runtime.snapshot()['requests'][0]
+        request = read_runtime_state(self.runtime)['requests'][0]
         original = self.server.write
         def lost_ack(message):
             original(message)
@@ -181,7 +182,7 @@ class CriticalRuntimeContract(unittest.TestCase):
         a = self.runtime.prepare(a)
         self.runtime.request({'id': 701, 'method': 'item/commandExecution/requestApproval',
                               'params': {'threadId': a['threadId'], 'command': 'git status'}})
-        request = self.runtime.snapshot()['requests'][0]
+        request = read_runtime_state(self.runtime)['requests'][0]
         with patch.object(self.runtime, 'reply', side_effect=SubmissionRejected('input busy; not submitted')):
             with self.assertRaises(SubmissionRejected):
                 self.runtime.answer(request['id'], {'decision': 'accept'})

@@ -1,4 +1,5 @@
 import type { Agent, Snapshot } from "../../types";
+import type { components } from "../../generated/api";
 
 export type ChatIndicatorKind =
   | "working"
@@ -11,12 +12,7 @@ export interface ChatIndicator {
   kind: ChatIndicatorKind;
   label: string;
 }
-export interface ReadState {
-  threadId: string;
-  turnId: string;
-  read: boolean;
-  revision: number;
-}
+export type ReadState = components["schemas"]["ReadStateDto"];
 
 export interface ChatActivity {
   id: string;
@@ -133,10 +129,7 @@ export function chatWaitState(
         request.agent === agent.id &&
         (!request.status || request.status === "pending") &&
         !request.deferred &&
-        epochMatches(
-          "epoch" in request ? request.epoch : undefined,
-          agent.epoch,
-        ),
+        epochMatches(request.epoch, agent.epoch),
     ).length ?? 0;
   const event = agent.parkedEvent || undefined;
   const count = (value: number, name: string) =>
@@ -196,10 +189,6 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
     const agent = byId.get(record.agent || "");
     if (
       !agent ||
-      !epochMatches(
-        "epoch" in record ? record.epoch : undefined,
-        agent.epoch,
-      ) ||
       !["starting", "running", "approval"].includes(record.status || "")
     )
       continue;
@@ -207,21 +196,11 @@ export function chatActivities(data: Snapshot): Map<string, ChatActivity[]> {
     const background =
       kind === "monitor" ||
       agent.inFlight === false ||
-      !!(
-        "turnId" in record &&
-        record.turnId &&
-        agent.turnId &&
-        agent.turnId !== record.turnId
-      );
-    const type =
-      "type" in record && typeof record.type === "string"
-        ? record.type
-        : undefined;
+      !!(record.turnId && agent.turnId && agent.turnId !== record.turnId);
     const command =
       record.command ||
       (kind === "task" ? record.query : undefined) ||
       record.name ||
-      type ||
       (kind === "task" ? record.kind : undefined) ||
       undefined;
     add(agent, {
@@ -294,19 +273,7 @@ export function unreadResult(
 }
 
 function savedReadState(agent: Agent): ReadState | null {
-  if (!("readState" in agent)) return null;
-  const value = agent.readState;
-  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const threadId = "threadId" in value ? value.threadId : undefined;
-  const turnId = "turnId" in value ? value.turnId : undefined;
-  const read = "read" in value ? value.read : undefined;
-  const revision = "revision" in value ? value.revision : undefined;
-  return typeof threadId === "string" &&
-    typeof turnId === "string" &&
-    typeof read === "boolean" &&
-    typeof revision === "number"
-    ? { threadId, turnId, read, revision }
-    : null;
+  return agent.readState ?? null;
 }
 
 // Operational state and read receipts are separate: a question cannot disappear
@@ -335,14 +302,7 @@ export function chatIndicators(
     for (const request of requests) {
       if (request.status && request.status !== "pending") continue;
       const agent = byId.get(request.agent || "");
-      if (
-        !agent ||
-        !epochMatches(
-          "epoch" in request ? request.epoch : undefined,
-          agent.epoch,
-        )
-      )
-        continue;
+      if (!agent || !epochMatches(request.epoch, agent.epoch)) continue;
       if (request.deferred) deferred.add(agent.id);
       else includeLead(answers, agent.id);
     }

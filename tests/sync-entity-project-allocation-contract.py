@@ -17,6 +17,7 @@ from codex_sync_entities import project
 
 source = {
     "id": "worker-1",
+    "kind": "agent",
     "name": "Worker",
     "status": "running",
     "tail": "t" * 3000,

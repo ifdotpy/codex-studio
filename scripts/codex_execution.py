@@ -7,6 +7,13 @@ import json
 import logging
 import time
 import uuid
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import sqlite3
+    from typing import Any
+    from codex_records import AgentRecord
+    from codex_runtime import Runtime
 
 
 SCHEMA = (
@@ -35,13 +42,14 @@ RETENTION_SECONDS = 30 * 86400
 PRUNE_LIMIT = 200
 
 
-def _log_failure(callback, error):
+def _log_failure(callback: "Any", error: BaseException) -> None:
     # Do not log provider input, results, or request arguments.
     logging.getLogger(__name__).error("Execution record failed: %s (%s)",
                                      getattr(callback, '__name__', type(callback).__name__), type(error).__name__)
 
 
-def safe_record(db, callback, *args, **kwargs):
+def safe_record(db: "sqlite3.Connection", callback: "Any", *args: "Any",
+                **kwargs: "Any") -> "Any":
     """Rollback partial side records without discarding the caller's state."""
     opened = False
     try:
@@ -66,13 +74,14 @@ def safe_record(db, callback, *args, **kwargs):
         return None
 
 
-def needs_record(table, record, previous):
+def needs_record(table: str, record: dict[str, "Any"], previous: dict[str, "Any"] | None) -> bool:
     if table == 'agents' and previous:
         return any(previous.get(field) != record.get(field) for field in AGENT_FIELDS)
     return True
 
 
-def prune(db, *, now=None, limit=PRUNE_LIMIT):
+def prune(db: "sqlite3.Connection", *, now: float | None = None,
+          limit: int = PRUNE_LIMIT) -> int:
     """Delete at most 200 expired finished runs in server maintenance."""
     cutoff = (time.time() if now is None else now) - RETENTION_SECONDS
     ids = [row[0] for row in db.execute(
@@ -88,7 +97,7 @@ def prune(db, *, now=None, limit=PRUNE_LIMIT):
     return len(ids)
 
 
-def maintenance(runtime):
+def maintenance(runtime: "Runtime") -> int:
     # The HTTP server already performs hourly maintenance. Never run in put().
     deadline = time.monotonic() + 2
     total = 0
@@ -108,33 +117,36 @@ def maintenance(runtime):
     return total
 
 
-def observe_child_thread(db, account, method, params):
+def observe_child_thread(db: "sqlite3.Connection", account: str, method: str,
+                         params: dict[str, "Any"]) -> None:
     parent = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.threadId')=? AND COALESCE(json_extract(record,'$.accountKey'),'default')=? LIMIT 1", (params['parentThreadId'], account)).fetchone()
     if parent:
         observe_native(db, json.loads(parent[0]), method, params)
 
 
-def record_spawn(db, actor, child, request_id):
+def record_spawn(db: "sqlite3.Connection", actor: "AgentRecord", child: "AgentRecord",
+                 request_id: str | None) -> None:
     effect(db, actor_run(db, actor), 'spawn', child['id'], requestId=request_id, status=child.get('status'))
 
 
-def submission_identity(db, actor):
+def submission_identity(db: "sqlite3.Connection", actor: "AgentRecord") -> dict[str, "Any"]:
     run = actor_run(db, actor)
     return {'runId': run['id'], 'attemptId': run.get('latestAttemptId')} if run else {}
 
 
-def ensure_tables(db):
+def ensure_tables(db: "sqlite3.Connection") -> None:
     # New, empty tables only. Never scan or rewrite the existing history.
     for statement in SCHEMA:
         db.execute(statement)
 
 
-def _load(db, table, key):
+def _load(db: "sqlite3.Connection", table: str, key: str | None) -> "Any":
     row = db.execute('SELECT record FROM runtime_execution_' + table + ' WHERE id=?', (key,)).fetchone()
     return json.loads(row[0]) if row else None
 
 
-def native_run(db, agent, account, thread, turn):
+def native_run(db: "sqlite3.Connection", agent: str, account: str,
+               thread: str | None, turn: str | None) -> "Any":
     if not turn:
         return None
     rows = db.execute('SELECT record FROM runtime_execution_runs WHERE agent=? AND account=? AND thread IS ? AND turn=? LIMIT 2',
@@ -142,7 +154,7 @@ def native_run(db, agent, account, thread, turn):
     return json.loads(rows[0][0]) if len(rows) == 1 else None
 
 
-def actor_run(db, agent, *, turn=None):
+def actor_run(db: "sqlite3.Connection", agent: "AgentRecord", *, turn: str | None = None) -> "Any":
     turn = turn or agent.get('turnId')
     if turn:
         return native_run(db, agent['id'], agent.get('accountKey', 'default'), agent.get('threadId'), turn)
@@ -151,19 +163,21 @@ def actor_run(db, agent, *, turn=None):
     return run if run and run['status'] not in TERMINAL else None
 
 
-def _save_run(db, run):
+def _save_run(db: "sqlite3.Connection", run: dict[str, "Any"]) -> None:
     if run['status'] in TERMINAL:
         db.execute("UPDATE runtime_execution_attempts SET record=json_set(record,'$.turnStatus',?,'$.resultRunId',?) WHERE run=? AND json_extract(record,'$.turnStatus') IS NOT ?", (run['status'], run['id'], run['id'], run['status']))
     db.execute('INSERT INTO runtime_execution_runs VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET thread=excluded.thread,turn=excluded.turn,record=excluded.record',
                (run['id'], run['agent'], run['accountKey'], run['epoch'], run.get('threadId'), run.get('turnId'), run['created'], json.dumps(run)))
 
 
-def _save(db, table, key, run, record):
+def _save(db: "sqlite3.Connection", table: str, key: str, run: str,
+          record: dict[str, "Any"]) -> None:
     db.execute('INSERT INTO runtime_execution_' + table + ' VALUES (?,?,?) ON CONFLICT(id) DO UPDATE SET run=excluded.run,record=excluded.record',
                (key, run, json.dumps(record)))
 
 
-def effect(db, run, kind, reference, **fields):
+def effect(db: "sqlite3.Connection", run: dict[str, "Any"] | None, kind: str,
+           reference: str, **fields: "Any") -> None:
     if not run:
         return
     key = kind + ':' + reference
@@ -179,7 +193,8 @@ def effect(db, run, kind, reference, **fields):
                    (key, run_id, kind, reference, json.dumps(record)))
 
 
-def _new_run(agent, identity, attempt=None):
+def _new_run(agent: "AgentRecord", identity: str,
+             attempt: "Any" = None) -> dict[str, "Any"]:
     attempt = attempt or {}
     return {'id': 'run:' + identity, 'agent': agent['id'],
             'accountKey': attempt.get('accountKey', agent.get('accountKey', 'default')),
@@ -189,11 +204,12 @@ def _new_run(agent, identity, attempt=None):
             'status': 'pending', 'firstAttemptId': None, 'rootAttemptId': None, 'latestAttemptId': None}
 
 
-def reconcile_agent(db, agent, previous):
+def reconcile_agent(db: "sqlite3.Connection", agent: "AgentRecord",
+                    previous: "AgentRecord | None") -> None:
     if previous and all(previous.get(field) == agent.get(field) for field in AGENT_FIELDS):
         return
     attempt = agent.get('startAttempt') or {}
-    historical = (agent.get('restartRecovery') or {}).get('startAttempt') or (previous or {}).get('startAttempt') or {}
+    historical: "Any" = (agent.get('restartRecovery') or {}).get('startAttempt') or (previous or {}).get('startAttempt') or {}  # type: ignore[call-overload]  # typed-narrowing: Absent previous yields empty fallback
     historical_saved = _load(db, 'attempts', historical['id']) if historical.get('id') else None
     if not attempt and historical.get('id') and not historical_saved:
         attempt = historical
@@ -273,7 +289,7 @@ def reconcile_agent(db, agent, previous):
             run.update(status=status, finished=time.time(), result=agent.get('lastAnswer', '')[:16000],
                        error=agent.get('lastCompletedTurnError'))
     for field in ('restartRecovery', 'disconnectRecovery', 'connectionRecovery'):
-        marker = agent.get(field)
+        marker: "Any" = agent.get(field)
         if (marker and marker.get('turnId') in (None, run.get('turnId'))
                 and marker.get('accountKey', run['accountKey']) == run['accountKey']
                 and marker.get('threadId', run.get('threadId')) == run.get('threadId')):
@@ -281,14 +297,15 @@ def reconcile_agent(db, agent, previous):
     _save_run(db, run)
 
 
-def reject_attempt(db, attempt, error):
+def reject_attempt(db: "sqlite3.Connection", attempt: dict[str, "Any"], error: BaseException) -> None:
     saved = _load(db, 'attempts', attempt.get('id'))
     if saved and saved.get('submission') not in {'accepted', 'observed'}:
         saved.update(submission='rejected', error=str(error))
         _save(db, 'attempts', saved['id'], saved['runId'], saved)
 
 
-def reconcile_effect(runtime, db, table, record, previous=None):
+def reconcile_effect(runtime: "Runtime", db: "sqlite3.Connection", table: str,
+                     record: "Any", previous: "Any" = None) -> None:
     if table == 'agents':
         if not previous and record.get('parentId'):
             parent = runtime.agent(record['parentId'], db)
@@ -322,14 +339,15 @@ def reconcile_effect(runtime, db, table, record, previous=None):
                        status='submitted', resultReference=result.get('resultFile'), revision=result.get('revision'))
 
 
-def child_event(params):
+def child_event(params: dict[str, "Any"]) -> bool:
     turn = params.get('turn') or {}
     return bool(params.get('parentTurnId') or params.get('parentThreadId')
                 or params.get('background') or params.get('isBackground')
                 or turn.get('parentTurnId') or turn.get('parentId') or turn.get('background'))
 
 
-def observe_native(db, agent, method, params):
+def observe_native(db: "sqlite3.Connection", agent: "AgentRecord", method: str,
+                   params: dict[str, "Any"]) -> None:
     """Keep child and background nodes without assigning root authority."""
     turn = params.get('turn') or {}
     if method == 'turn/completed' and turn.get('status') == 'interrupted':
@@ -367,7 +385,8 @@ def observe_native(db, agent, method, params):
         _save(db, 'nodes', key, root['id'], node)
 
 
-def chain(db, *, agent=None, limit=25):
+def chain(db: "sqlite3.Connection", *, agent: str | None = None,
+          limit: int = 25) -> dict[str, "Any"]:
     rows = db.execute('SELECT record FROM runtime_execution_runs ' + ('WHERE agent=? ' if agent else '') + 'ORDER BY created DESC LIMIT ?',
                       (agent, limit) if agent else (limit,)).fetchall()
     runs = [json.loads(row[0]) for row in rows]
@@ -380,7 +399,8 @@ def chain(db, *, agent=None, limit=25):
     return {'runs': runs, 'limit': limit, 'relatedLimit': 100}
 
 
-def message_identity(runtime, agent, thread, turn):
+def message_identity(runtime: "Runtime", agent: str, thread: str | None,
+                    turn: str) -> dict[str, "Any"]:
     with runtime.db() as db:
         rows = db.execute('SELECT record FROM runtime_execution_runs WHERE agent=? AND thread IS ? AND turn=? LIMIT 2', (agent, thread, turn)).fetchall()
         if len(rows) != 1:

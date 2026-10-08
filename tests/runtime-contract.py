@@ -17,6 +17,7 @@ isolate_supervisor_environment()
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
 
 # Keep general protocol fixtures independent of host image support. Dedicated
@@ -190,8 +191,8 @@ class RuntimeContract(unittest.TestCase):
                          'thread_token_usage': usage}},
         )))
 
-        store = SyncStore(self.runtime.db, lambda: {}, lambda _agent: {})
-        store.generation_state()
+        store = SyncStore(self.runtime.db, lambda _agent: {})
+        store._ensure_versions()
         with self.runtime.db() as db:
             tables = {row[0] for row in db.execute(
                 "SELECT name FROM sqlite_master WHERE type='table'"
@@ -254,7 +255,7 @@ class RuntimeContract(unittest.TestCase):
         return self.runtime.agent(a['id'])
 
     def snapshot(self):
-        return self.runtime.snapshot()
+        return read_runtime_state(self.runtime)
 
     def delete_client(self):
         from fastapi.testclient import TestClient
@@ -312,7 +313,7 @@ class RuntimeContract(unittest.TestCase):
         with ThreadPoolExecutor(max_workers=4) as pool:
             results = list(pool.map(lambda _: self.runtime.new_lead(request), range(8)))
         self.assertEqual({a['id'] for a in results}, {first['id']})
-        self.assertEqual(len(self.snapshot()['agents']), 1)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 1)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.new_lead(request)['id'], first['id'])
@@ -446,7 +447,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.delete_conversation(child['id'])
         replacement = self.runtime.create({'name': 'New worker', 'prompt': 'Review', 'role': 'reviewer'}, lead['id'], defer=True)
         self.assertNotEqual(child['id'], replacement['id'])
-        self.assertEqual(len(self.runtime.team(lead['id'])['agents']), 2)
+        self.assertEqual(len(read_runtime_state(self.runtime)['agents']), 2)
 
     def test_finished_workers_do_not_consume_active_team_capacity(self):
         lead = self.lead(maxAgents=2)
@@ -638,7 +639,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len(first['responses']), 1)
         with self.runtime.db() as db:
             self.assertEqual(db.execute("SELECT COUNT(*) FROM runtime_events WHERE agent=? AND kind='complaint_response'", (child['id'],)).fetchone()[0], 1)
-        self.assertFalse(self.snapshot()['complaints'][0]['needsResponse'])
+        self.assertFalse(self.snapshot()['complaints'][0]['needsUserResponse'])
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.complaint_detail(c['id'])['status'], 'resolved')
@@ -661,7 +662,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertFalse(stopped['autoWake'])
         self.assertEqual(stopped['status'], 'failed')
         self.assertIn('Three turns', stopped['error'])
-        self.assertTrue(self.snapshot()['complaints'][0]['needsResponse'])
+        self.assertFalse(self.snapshot()['complaints'][0]['needsUserResponse'])
         self.runtime.send(lead['id'], 'Read the complaint and act')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         a = self.runtime.agent(lead['id'])
@@ -709,7 +710,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.notification({'method':'account/rateLimits/updated','params':{'rateLimits':{'limitId':'codex','primary':{'usedPercent':42,'windowDurationMins':300}}}})
         self.assertEqual(self.runtime.rate_limits['data']['accountId'], 'test-account')
         self.assertEqual(self.runtime.rate_limits['data']['rateLimitResetCredits']['availableCount'], 3)
-        self.assertEqual(self.snapshot()['rateLimits']['data']['rateLimits']['primary']['usedPercent'], 42)
+        self.assertEqual(self.runtime.rate_limits['data']['rateLimits']['primary']['usedPercent'], 42)
         self.runtime.close()
         self.runtime = Runtime(self.root, FakeServer)
         self.assertEqual(self.runtime.agent(a['id'])['compactions'], 1)
@@ -768,7 +769,8 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.rename(room, 'Review chat', 'room-rename')
         self.assertEqual(self.runtime.rename(room, 'Review chat', 'room-rename')['name'], 'Review chat')
         self.runtime.hide_room(room)
-        self.assertEqual(self.snapshot()['rooms'], [])
+        self.assertEqual(len(self.snapshot()['rooms']), 1)
+        self.assertTrue(self.snapshot()['rooms'][0]['userHidden'])
         self.assertEqual(len(self.runtime.chat_read(room,a['id'])['messages']), 1)
         self.runtime.chat_message(a['id'], b['id'], 'New message', 'rename-next')
         self.assertEqual(self.snapshot()['rooms'][0]['name'], 'Review chat')
@@ -1130,7 +1132,7 @@ class RuntimeContract(unittest.TestCase):
             self.runtime.chat_message(worker['id'], a['id'], 'Worker result', 'source-result')
         event_id = 'chat:source-result:' + a['id']
         eventually(lambda: any(e['id'] == event_id and e['status'] == 'delivered'
-                               for e in self.runtime.snapshot()['events']))
+                               for e in read_runtime_state(self.runtime)['events']))
         with self.runtime.db() as db:
             event_text = db.execute("SELECT text FROM runtime_events WHERE id=?", (event_id,)).fetchone()[0]
         items = self.runtime.transcript(a['id'])['items']
@@ -1153,8 +1155,8 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.server.request({'id': 101, 'method': 'item/tool/call', 'params': {
             'threadId': lead['threadId'], 'callId': 'spawn-one', 'tool': 'orchestration_spawn',
             'arguments': {'agents': [{'name': 'Stop target', 'prompt': 'Wait', 'role': 'reviewer'}]}}})
-        eventually(lambda: len(self.runtime.snapshot()['agents']) == 2)
-        child = next(a for a in self.runtime.snapshot()['agents'] if a['id'] != lead['id'])
+        eventually(lambda: len(read_runtime_state(self.runtime)['agents']) == 2)
+        child = next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] != lead['id'])
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running'
                    and self.runtime.agent(child['id']).get('turnId'))
         child = self.runtime.agent(child['id'])
@@ -1213,12 +1215,12 @@ class RuntimeContract(unittest.TestCase):
         self.complete(lead)
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: bool(self.snapshot()['monitors'][0]['tail']))
+        eventually(lambda: bool(read_runtime_state(self.runtime)['monitors'][0]['tail']))
         time.sleep(.12)
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
-        watch = self.snapshot()['monitors'][0]
+        watch = read_runtime_state(self.runtime)['monitors'][0]
         self.assertEqual(watch['exitCode'], 7)
         self.assertEqual(watch['status'], 'failed')
         self.assertEqual(Path(watch['log']).read_text(), 'early output\n')
@@ -1246,7 +1248,8 @@ class RuntimeContract(unittest.TestCase):
         self.complete(child)
         time.sleep(.15)
         self.assertEqual(before, len([m for m,p in self.runtime.server.calls if m == 'turn/start']))
-        self.assertTrue(all(not a['autoWake'] for a in self.snapshot()['agents']))
+        self.assertTrue(all(not self.runtime.agent(a['id'])['autoWake']
+                            for a in read_runtime_state(self.runtime)['agents']))
         self.runtime.send(lead['id'], 'Resume only the lead')
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
         self.assertFalse(self.runtime.agent(child['id'])['autoWake'])
@@ -1270,10 +1273,10 @@ class RuntimeContract(unittest.TestCase):
         self.complete(first)
         eventually(lambda: (self.runtime.agent(child['id'])['status'] == 'running'
                             and self.runtime.agent(child['id'])['turnId'] != first['turnId']))
-        self.assertFalse(any(e['kind'] == 'child_result' for e in self.runtime.snapshot()['events']))
+        self.assertFalse(any(e['kind'] == 'child_result' for e in read_runtime_state(self.runtime)['events']))
         final = self.runtime.agent(child['id'])
         self.runtime.server.complete(final['threadId'], final['turnId'], 'Final result after the lead answer')
-        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events'] if e['kind'] == 'child_result']) == 1)
         with self.runtime.db() as db:
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['result'], 'Final result after the lead answer')
@@ -1286,7 +1289,7 @@ class RuntimeContract(unittest.TestCase):
         self.runtime.send(child['id'], 'A late answer')
         self.runtime.server.notify({'method': 'turn/completed', 'params': {'threadId': current['threadId'],
             'turn': {'id': current['turnId'], 'status': 'failed', 'error': {'message': 'failed now'}}}})
-        eventually(lambda: len([e for e in self.runtime.snapshot()['events'] if e['kind'] == 'child_result']) == 1)
+        eventually(lambda: len([e for e in read_runtime_state(self.runtime)['events'] if e['kind'] == 'child_result']) == 1)
         with self.runtime.db() as db:
             result = db.execute("SELECT text FROM runtime_events WHERE kind='child_result'").fetchone()[0]
         self.assertEqual(json.loads(result)['status'], 'failed')
@@ -1400,10 +1403,10 @@ class RuntimeContract(unittest.TestCase):
     def test_monitor_cancel_preserves_exit_history_and_prevents_wake(self):
         lead = self.lead(); self.complete(lead)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: self.snapshot()['monitors'][0]['status'] == 'running')
+        eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] == 'running')
         self.runtime.cancel_monitor(m['id'])
         time.sleep(.1)
-        self.assertEqual(self.snapshot()['monitors'][0]['status'], 'cancelled')
+        self.assertEqual(read_runtime_state(self.runtime)['monitors'][0]['status'], 'cancelled')
         exits = [e for e in self.snapshot()['events'] if e['kind'] == 'monitor_exit']
         self.assertEqual(len(exits), 1)
 
@@ -1431,7 +1434,7 @@ class RuntimeContract(unittest.TestCase):
                                          'turnId': lead['turnId'], 'itemId': 'exec-1',
                                          'startedAtMs': 1750000000000, 'approvalId': 'approval-stdin',
                                          'reason': 'Send input to an existing terminal to continue the reviewed command.'}})
-        request = self.runtime.snapshot()['requests'][0]
+        request = read_runtime_state(self.runtime)['requests'][0]
         self.runtime.answer(request['id'], {'decision': 'decline'})
         self.assertEqual(self.runtime.server.responses[-1], {'id': 101, 'result': {'decision': 'decline'}})
         self.runtime.request({'id': 102, 'method': 'item/tool/requestUserInput',
@@ -1523,7 +1526,7 @@ class RuntimeContract(unittest.TestCase):
         eventually(lambda: self.runtime.agent(child['id'])['status'] == 'running')
         child = self.runtime.agent(child['id'])
         self.runtime.monitor(child['id'], {'command': 'example-command'}, approved=True)
-        eventually(lambda: self.snapshot()['monitors'][0]['status'] == 'running')
+        eventually(lambda: read_runtime_state(self.runtime)['monitors'][0]['status'] == 'running')
         self.complete(child)
         self.assertEqual(self.runtime.agent(child['id'])['status'], 'waiting')
         self.assertFalse(any(e['kind'] == 'child_result' for e in self.snapshot()['events']))
@@ -1633,7 +1636,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len(self.snapshot()['requests']), 1)
         self.runtime.cancel_monitor(monitor['id'])
         self.assertEqual(self.snapshot()['requests'], [])
-        record = self.snapshot()['monitors'][0]
+        record = read_runtime_state(self.runtime)['monitors'][0]
         self.assertEqual(record['status'], 'cancelled')
         self.assertGreaterEqual(record['finished'], record['created'])
 

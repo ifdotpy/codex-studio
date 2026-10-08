@@ -14,6 +14,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+from studio_api.testing import read_runtime_state
 from codex_runtime import Runtime
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('runtime-contract.py'))
 fixture = importlib.util.module_from_spec(spec)
@@ -106,6 +107,30 @@ class NativeErrorContract(unittest.TestCase):
         self.assertEqual(self.runtime.agent(self.key)['error'], error)
         self.assertTrue(any(m.get('nativeError') == error for m in self.messages()))
 
+    def test_unknown_provider_turn_status_is_stored_without_blocking_agent_write(self):
+        self.send('turn/completed', turn={'id': self.turn, 'status': 'inProgress'})
+        agent = self.runtime.agent(self.key)
+        self.assertEqual(agent['lastCompletedTurnStatus'], 'inProgress')
+        self.assertEqual(agent['status'], 'failed')
+        self.assertIsNone(agent.get('turnId'))
+        with self.runtime.db() as db:
+            payload = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                 (self.key,)).fetchone()[0]
+        self.assertEqual(json.loads(payload)['value']['lastCompletedTurnStatus'], 'inProgress')
+
+    def test_notification_last_event_is_projected_to_agent_entity(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            agent = self.runtime.agent(self.key, db)
+            agent['lastEvent'] = '2000-01-01T00:00:00Z'
+            self.runtime.put(db, 'agents', agent)
+        self.send('error', error={'message': 'event refresh'}, willRetry=False)
+        agent = self.runtime.agent(self.key)
+        with self.runtime.db() as db:
+            payload = db.execute("SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                                 (self.key,)).fetchone()[0]
+        self.assertNotEqual(agent['lastEvent'], '2000-01-01T00:00:00Z')
+        self.assertEqual(json.loads(payload)['value']['lastEvent'], agent['lastEvent'])
+
     def test_guardian_denial_is_failure_not_user_interruption(self):
         error = {'message': 'Native Guardian limit', 'codexErrorInfo': 'tooManyDenials'}
         self.send('turn/completed', turn={'id': self.turn, 'status': 'interrupted', 'error': error})
@@ -179,7 +204,7 @@ class NativeErrorContract(unittest.TestCase):
         fixture.eventually(lambda: len(self.server.calls) > len(calls))
         self.send('turn/completed', turn={'id': self.turn, 'status': 'failed', 'error': error})
         for _ in range(3):
-            self.runtime.snapshot()
+            read_runtime_state(self.runtime)
             self.runtime.limits()
         recovered = self.server.calls[len(calls):]
         self.assertEqual([call for call in recovered if call[0] == 'account/rateLimits/read'],
@@ -318,7 +343,7 @@ class NativeErrorContract(unittest.TestCase):
         self.runtime.dispatch()
         self.assertEqual([call for call in self.server.calls
                           if call[0] not in {'account/rateLimits/read', 'thread/name/set'}], calls)
-        visible = next(a for a in self.runtime.snapshot()['agents'] if a['id'] == self.key)
+        visible = next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] == self.key)
         self.assertFalse(visible['canSend'])
         self.assertEqual(visible['nativeThreadBlock'], {'threadId': self.a['threadId'], 'error': error})
         self.assertEqual(self.runtime.delivery_receipt(queued['id'])['status'], 'pending')
@@ -356,7 +381,7 @@ class NativeErrorContract(unittest.TestCase):
             a['nativeThreadBlock'] = {'threadId': 'another-thread', 'error': error}
             self.runtime.put(db, 'agents', a)
         self.runtime.send(self.key, 'Current thread still accepts input')
-        self.assertTrue(next(a for a in self.runtime.snapshot()['agents'] if a['id'] == self.key)['canSend'])
+        self.assertTrue(next(a for a in read_runtime_state(self.runtime)['agents'] if a['id'] == self.key)['canSend'])
 
     def test_policy_blocks_pending_and_later_native_requests_without_response(self):
         request = {'id': 'policy-approval', 'method': 'item/commandExecution/requestApproval',
@@ -522,16 +547,18 @@ class NativeErrorContract(unittest.TestCase):
 
     def test_account_warning_before_thread_is_durable_and_scoped(self):
         self.runtime.notification({'method': 'configWarning', 'params': {'summary': 'Invalid setting', 'details': 'Check config.toml'}}, 'default', self.connection)
-        notices = self.runtime.snapshot()['nativeNotices']
+        notices = read_runtime_state(self.runtime)['nativeNotices']
         self.assertEqual(notices[0]['accountKey'], 'default')
         self.assertEqual(notices[0]['message'], 'Invalid setting')
         self.assertFalse(any(m.get('nativeNotice') for m in self.messages()))
         self.runtime.notification({'method': 'mcpServer/startupStatus/updated', 'params': {'name': 'Search', 'status': 'failed', 'error': 'Missing command'}}, 'default', self.connection)
-        self.assertEqual(len(self.runtime.snapshot()['nativeNotices']), 2)
+        self.assertEqual(len(read_runtime_state(self.runtime)['nativeNotices']), 2)
         self.runtime.notification({'method': 'mcpServer/startupStatus/updated', 'params': {'name': 'Search', 'status': 'ready'}}, 'default', self.connection)
-        self.assertEqual(len(self.runtime.snapshot()['nativeNotices']), 1)
+        self.assertEqual(len(read_runtime_state(self.runtime)['nativeNotices']), 1)
         self.runtime.connection_ids['default'] = 'replacement'
-        self.assertEqual(self.runtime.snapshot()['nativeNotices'], [])
+        from codex_native_errors import account_notices
+        with self.runtime.db() as db:
+            self.assertEqual(account_notices(self.runtime, db), [])
 
     def test_provider_version_advisory_uses_existing_account_warning_channel(self):
         warning = {'id': 'provider-version:default', 'accountKey': 'default',
@@ -539,7 +566,7 @@ class NativeErrorContract(unittest.TestCase):
                    'message': 'Codex CLI 0.153.3 is older than this repository tested baseline. Continue at your own risk.'}
         with patch('codex_provider_versions.monitor', return_value=SimpleNamespace(
                 status=lambda: {'warnings': [warning]})):
-            notices = self.runtime.snapshot()['nativeNotices']
+            notices = read_runtime_state(self.runtime)['nativeNotices']
         self.assertEqual([item for item in notices if item['id'] == warning['id']], [warning])
 
     def test_steer_rejection_does_not_poison_active_turn(self):

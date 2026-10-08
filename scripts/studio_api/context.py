@@ -190,7 +190,7 @@ class ApiContext:
     ) -> None:
         self.canvas = canvas
         self.token = token if token is not None else secrets.token_urlsafe(32)
-        self.remote = remote if remote is not None else cast(RemoteAccessContract, RemoteAccess(canvas.root))  # type: ignore[no-untyped-call]
+        self.remote = remote if remote is not None else cast(RemoteAccessContract, RemoteAccess(canvas.root))
         self.server_port = server_port
         self.unix_socket = unix_socket
         self.schema_only = schema_only
@@ -224,6 +224,7 @@ class ApiContext:
         """Return the attached runtime, which may not exist during startup."""
         runtime = cast("Runtime | None", self.canvas.runtime)
         if runtime is not None and self._sync_store is not None:
+            self._sync_store.runtime = runtime
             setattr(runtime, "sync_store", self._sync_store)
         return runtime
 
@@ -333,66 +334,24 @@ class ApiContext:
             if self._terminal is None:
                 from codex_terminals import TerminalManager
 
-                self._terminal = TerminalManager(self.canvas.root)  # type: ignore[no-untyped-call]
+                self._terminal = TerminalManager(self.canvas.root)
             return self._terminal
 
     def sync(self) -> SyncStore:
         with self._lock:
             if self._sync_store is None:
                 from codex_sync import SyncStore
-
-                def state_signature() -> tuple[object, ...] | None:
-                    runtime = self.runtime
-                    connected = False
-                    volatile = None
-                    if runtime:
-                        if not runtime.start_lock.acquire(blocking=False):
-                            return None
-                        try:
-                            if not runtime.lock.acquire(blocking=False):
-                                return None
-                            try:
-                                connected = bool(set(runtime.servers) - runtime.offline_accounts) and not runtime.closed
-                                monitor = getattr(runtime, "provider_version_monitor", None)
-                                warnings = monitor.status()["warnings"] if monitor else []
-                                volatile = json.dumps({
-                                    "rateLimits": runtime.rate_limits,
-                                    "rateLimitsByAccount": {
-                                        key: runtime.rate_limits_for(key)  # type: ignore[no-untyped-call]
-                                        for key in runtime.rate_limits_by_account
-                                    },
-                                    "connectionIds": runtime.connection_ids,
-                                    "providerWarnings": warnings,
-                                }, sort_keys=True, separators=(",", ":"))
-                            finally:
-                                runtime.lock.release()
-                        finally:
-                            runtime.start_lock.release()
-                    files = []
-                    for path in sorted(self.canvas.root.glob("codex-swarm-status.*.json")):
-                        try:
-                            stat = path.stat()
-                        except FileNotFoundError:
-                            continue
-                        files.append((path.name, stat.st_ino, stat.st_size, stat.st_mtime_ns))
-                    from codex_state import process_is_alive, read_threads
-
-                    liveness = tuple(sorted((
-                        (row.get("launcherPid"), process_is_alive(cast(int, row["launcherPid"])))
-                        for row in read_threads(self.canvas.root)
-                        if row.get("launcherPid") is not None
-                    ), key=lambda item: str(item[0])))
-                    return connected, volatile, tuple(files), liveness
-
-                self._sync_store = SyncStore(  # type: ignore[no-untyped-call]
+                self._sync_store = SyncStore(
                     self.canvas.connect,
-                    self.snapshot,
                     self.canvas.transcript,
-                    chat_snapshot=lambda: self.snapshot(include_work=False),
-                    state_signature=state_signature,
+                    runtime=self.runtime,
+                    canvas=self.canvas,
                 )
                 if self.runtime is not None:
                     setattr(self.runtime, "sync_store", self._sync_store)
+            runtime = self.runtime
+            if runtime is not None:
+                self._sync_store.runtime = runtime
             return self._sync_store
 
     def resource_hub(self) -> ResourceHub:
@@ -413,12 +372,17 @@ class ApiContext:
                     TokenRateSnapshot.model_validate(token_rates(runtime).workspace_snapshot())
                     if runtime else TokenRateSnapshot(rates={}, teams={})
                 )
+                entity_sequence = self.entity_sequence() or 0
                 self._resource_hub = ResourceHub(
                     cast(str, identity["workspaceId"]),
                     LazyProgressWatchdog(self.canvas.root),
                     initial_rates,
+                    entity_sequence=entity_sequence,
                 )
                 register_resource_hub(self.canvas.root, self._resource_hub)
+                latest_sequence = self.entity_sequence() or 0
+                if latest_sequence > entity_sequence:
+                    self._resource_hub.publish_entity_sequence(latest_sequence, reset=True)
             return self._resource_hub
 
     def initialize(self) -> None:
@@ -427,25 +391,20 @@ class ApiContext:
             self.sync()
             self.resource_hub()
 
-    def snapshot(self, include_work: bool = True) -> dict[str, JsonValue]:
-        from studio_api.sync.projection import project_snapshot
-
-        if self.runtime:
-            with self.runtime.read_db() as db:
-                runtime_value = self.runtime.snapshot(include_work=include_work, db=db)  # type: ignore[no-untyped-call]
-                return project_snapshot(cast(dict[str, JsonValue], {
-                    **self.canvas.snapshot(runtime_snapshot=runtime_value, db=db),  # type: ignore[no-untyped-call]
-                    "runtime": runtime_value,
-                }))
-        return project_snapshot(cast(dict[str, JsonValue], {**self.canvas.snapshot(), "runtime": None}))  # type: ignore[no-untyped-call]
-
     def entity_sequence(self) -> int | None:
         """Read the sync cursor without constructing services or mutating state."""
         uri = self.canvas.db.absolute().as_uri() + "?mode=ro"
         try:
             with closing(sqlite3.connect(uri, uri=True, timeout=1)) as db:
-                row = db.execute("SELECT COALESCE(MAX(seq), 0) FROM sync_entities").fetchone()
-                return int(row[0]) if row is not None else 0
+                row = db.execute(
+                    "SELECT COALESCE(MAX(seq), 0) FROM sync_entities "
+                    "WHERE collection NOT LIKE 'transcript:%'"
+                ).fetchone()
+                high = int(row[0]) if row is not None else 0
+                floor = db.execute(
+                    "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'"
+                ).fetchone()
+                return max(high, int(floor[0]) if floor else 0)
         except sqlite3.OperationalError as error:
             if "no such table" in str(error).lower():
                 return None
@@ -468,8 +427,8 @@ class ApiContext:
                 from codex_pricing import PricingCatalog
 
                 if self._pricing is None:
-                    self._pricing = PricingCatalog(self.canvas.root)  # type: ignore[no-untyped-call]
-                self._cost_reader = AccountCostReader(self.canvas.root, runtime.accounts, pricing=self._pricing)  # type: ignore[no-untyped-call]
+                    self._pricing = PricingCatalog(self.canvas.root)
+                self._cost_reader = AccountCostReader(self.canvas.root, runtime.accounts, pricing=self._pricing)
             return self._cost_reader
 
     def session_costs(self) -> SessionCostReader:
@@ -478,11 +437,11 @@ class ApiContext:
             if self._pricing is None:
                 from codex_pricing import PricingCatalog
 
-                self._pricing = PricingCatalog(self.canvas.root)  # type: ignore[no-untyped-call]
+                self._pricing = PricingCatalog(self.canvas.root)
             if self._session_cost_reader is None:
                 from codex_session_costs import SessionCostReader
 
-                self._session_cost_reader = SessionCostReader(  # type: ignore[no-untyped-call]
+                self._session_cost_reader = SessionCostReader(
                     self.canvas.root / "canvas.sqlite3",
                     self._pricing,
                     accounts=getattr(runtime, "accounts", None),
@@ -519,12 +478,21 @@ class ApiContext:
                        WHERE seq>? AND collection NOT LIKE 'transcript:%' ORDER BY seq""",
                     (sync_after,),
                 ).fetchall()
+                floor_row = db.execute(
+                    "SELECT value FROM sync_entity_meta WHERE key='entity_tombstone_floor'",
+                    (),
+                ).fetchone()
+                tombstone_floor = int(floor_row[0]) if floor_row else 0
             if rows:
                 body_value = dict(body_value)
                 body_value["_syncEntities"] = [
                     {"id": f"entity:{row[0]}:{row[1]}", "seq": row[2], "payload": row[3], "_deleted": bool(row[4])}
                     for row in rows
                 ]
+                from codex_sync_entities import MAX_MUTATION_SYNC_ENTITIES
+
+                if len(rows) <= MAX_MUTATION_SYNC_ENTITIES and tombstone_floor <= sync_after:
+                    body_value["_syncEntitiesAfter"] = sync_after
         if content_type.startswith(JSON_CONTENT_TYPE):
             try:
                 route = request.scope.get("route")
@@ -688,10 +656,10 @@ class ApiContext:
         resource_hub = None
         with self._lock:
             if self._cost_reader is not None:
-                self._cost_reader.close()  # type: ignore[no-untyped-call]
+                self._cost_reader.close()
                 self._cost_reader = None
             if self._terminal is not None:
-                self._terminal.close()  # type: ignore[no-untyped-call]
+                self._terminal.close()
                 self._terminal = None
             if self._session_cost_reader is not None:
                 self._session_cost_reader = None

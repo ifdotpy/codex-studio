@@ -3,12 +3,18 @@ import copy
 import json
 import time
 import uuid
+from typing import TYPE_CHECKING, Any
 
 from codex_agent_modes import assert_delegation
 from codex_time import stamp_tool_result
 
+if TYPE_CHECKING:
+    import sqlite3
+    from codex_records import AgentRecord, JsonObject
+    from codex_runtime import Runtime
 
-def review_tools(tool, text):
+
+def review_tools(tool: Any, text: str) -> list[Any]:
     variants = []
     for kind, properties, required in (
         ('uncommittedChanges', {}, []),
@@ -35,7 +41,7 @@ def review_tools(tool, text):
          'request_id': {'type': 'string', 'minLength': 1, 'maxLength': 200}})]
 
 
-def validate(args):
+def validate(args: Any) -> dict[str, Any]:
     if not isinstance(args, dict) or set(args) - {'target', 'cwd', 'model', 'effort', 'request_id'}:
         raise ValueError('Supply only target, cwd, model, effort and optional request_id')
     for name in ('model', 'effort'):
@@ -66,7 +72,7 @@ def validate(args):
     return copy.deepcopy(target)
 
 
-def require_repository(directory):
+def require_repository(directory: str) -> None:
     """Native review reads git history in the reviewer folder."""
     from codex_runtime import git_toplevel
     if git_toplevel(directory) is None:
@@ -76,7 +82,15 @@ def require_repository(directory):
                          'Pass cwd with the repository folder')
 
 
-def _existing(rt, db, key, actor, target, directory, args):
+def _existing(
+    rt: "Runtime",
+    db: "sqlite3.Connection",
+    key: str,
+    actor: "AgentRecord",
+    target: dict[str, Any],
+    directory: str,
+    args: Any,
+) -> dict[str, Any] | None:
     child_id = str(uuid.uuid5(uuid.NAMESPACE_URL, key))
     row = db.execute('SELECT record FROM runtime_agents WHERE id=?', (child_id,)).fetchone()
     if not row:
@@ -94,10 +108,10 @@ def _existing(rt, db, key, actor, target, directory, args):
             or review.get('target') != target or not same_args
             or child.get('cwd') != directory):
         raise ValueError('This review request id has different content')
-    return review['response']
+    return review['response']  # type: ignore[no-any-return]  # typed-suspect: Stored response may be malformed
 
 
-def request(rt, actor, args, key):
+def request(rt: "Runtime", actor: "AgentRecord", args: dict[str, Any], key: str) -> dict[str, Any]:
     target = validate(args)
     if actor.get('provider', 'codex') != 'codex':
         raise ValueError('Native review is available only for Codex agents')
@@ -164,8 +178,8 @@ def request(rt, actor, args, key):
             child['nativeReview'] = {'target': target, 'requestId': key, 'actorId': current['id'],
                                      'args': requested, 'status': 'pending', 'response': copy.deepcopy(value)}
             rt.put(db, 'agents', child)
-            result = stamp_tool_result({'success': True, 'contentItems': [
-                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())
+            result: "JsonObject" = stamp_tool_result({'success': True, 'contentItems': [
+                {'type': 'inputText', 'text': json.dumps(value, ensure_ascii=False)}]}, time.time())  # type: ignore[assignment]  # typed-narrowing: Tool output contains JSON values
             from codex_payloads import externalize_result
             db.execute('INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)',
                        (key, json.dumps(externalize_result(rt.root, db, result))))
@@ -174,11 +188,11 @@ def request(rt, actor, args, key):
             return value
         except Exception as error:
             # rt.create is the uncertainty boundary even if a later write fails.
-            error.review_child_created = True
+            error.review_child_created = True  # type: ignore[attr-defined]  # typed-suspect: Custom exception may reject assignment
             raise
 
 
-def claim(rt, db, agent):
+def claim(rt: "Runtime", db: "sqlite3.Connection", agent: "AgentRecord") -> dict[str, Any] | None:
     """Called under the dispatch lock after normal concurrency/budget admission."""
     current = rt.agent(agent['id'], db)
     review = current.get('nativeReview') or {}
@@ -191,9 +205,9 @@ def claim(rt, db, agent):
     attempt = {'id': str(uuid.uuid4()), 'epoch': current['epoch'],
                'accountKey': current.get('accountKey', 'default'), 'events': [],
                'action': 'review', 'reviewTarget': copy.deepcopy(review['target']), 'submitted': False}
-    review.update(status='started', startedAt=time.time())
+    review.update(status='started', startedAt=time.time())  # type: ignore[call-arg]  # typed-update
     current.update(nativeReview=review, status='starting', inFlight=True,
-                   turnEpoch=current['epoch'], startAttempt=attempt)
+                   turnEpoch=current['epoch'], startAttempt=attempt)  # type: ignore[call-arg]  # typed-update
     rt.put(db, 'agents', current)
     agent.update(current)
     return copy.deepcopy(attempt)

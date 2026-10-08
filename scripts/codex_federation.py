@@ -1,5 +1,6 @@
 """Opt-in peer federation. Wire protocol v1; message IDs and receipts are transport independent."""
 from __future__ import annotations
+from collections.abc import Mapping
 
 import base64
 import hashlib
@@ -19,6 +20,10 @@ import urllib.request
 import uuid
 
 from codex_remote import RemoteAccess
+from codex_records import (
+    FederationIdentityRecord, FederationInviteRecord, FederationOutboxRecord,
+    AgentRecord, FederationPeerRecord, JsonObject, JsonValue, RecordStore, RoomRecord,
+)
 
 PROTOCOL = 1
 MAX_CLOCK_SKEW = 300
@@ -29,11 +34,11 @@ MAX_BATCH_BYTES = 200 * 1024
 CRYPTO_HELPER = Path(__file__).with_name("codex_federation_crypto.mjs")
 
 
-def _json(value):
+def _json(value: JsonValue) -> str:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
-def _crypto(operation, **fields):
+def _crypto(operation: str, **fields: JsonValue) -> JsonObject:
     node = os.environ.get("CODEX_NODE") or shutil.which("node")
     if not node:
         raise RuntimeError("The Studio Node runtime is required for Ed25519 federation and is unavailable")
@@ -50,12 +55,12 @@ def _crypto(operation, **fields):
         raise RuntimeError("Ed25519 operation failed") from None
 
 
-def _sign(private_key, data):
+def _sign(private_key: str, data: bytes) -> str:
     return _crypto("sign", privateKey=private_key,
                    data=base64.b64encode(data).decode())["signature"]
 
 
-def _verify(public_key, data, signature):
+def _verify(public_key: str, data: bytes, signature: str) -> bool:
     try:
         return _crypto("verify", publicKey=public_key,
                        data=base64.b64encode(data).decode(),
@@ -64,39 +69,39 @@ def _verify(public_key, data, signature):
         return False
 
 
-def _record(row):
+def _record(row: sqlite3.Row | None) -> JsonObject | None:
     return json.loads(row[0]) if row else None
 
 
-def _safe_peer(peer):
+def _safe_peer(peer: FederationPeerRecord) -> JsonObject:
     return {key: peer.get(key) for key in (
         "stateId", "label", "origin", "publicKey", "status", "localApproved",
         "remoteApproved", "whoisStatus", "whoisUser", "created", "updated", "lastError")}
 
 
-def _peer_allowed(peer):
+def _peer_allowed(peer: FederationPeerRecord) -> bool:
     return (peer and peer.get("status") == "approved"
             and peer.get("localApproved") is True
             and peer.get("remoteApproved") is True)
 
 
-def _fresh(timestamp):
+def _fresh(timestamp: int) -> bool:
     now = int(time.time())
     return type(timestamp) is int and now - MAX_CLOCK_SKEW <= timestamp <= now + MAX_CLOCK_SKEW
 
 
-def _request_bytes(method, path, timestamp, nonce, body):
+def _request_bytes(method: str, path: str, timestamp: int, nonce: str, body: JsonObject) -> bytes:
     digest = hashlib.sha256(body).hexdigest()
     return f"studio-federation-v1\n{method}\n{path}\n{timestamp}\n{nonce}\n{digest}".encode()
 
 
-def _message_bytes(envelope):
+def _message_bytes(envelope: JsonObject) -> bytes:
     return b"studio-federation-message-v1\n" + _json(
         {key: value for key, value in envelope.items() if key != "signature"}
     ).encode()
 
 
-def _whoami():
+def _whoami() -> JsonObject:
     executable = shutil.which("tailscale")
     if not executable:
         return {"status": "unavailable", "warning": "Tailscale identity could not be checked"}
@@ -113,7 +118,7 @@ def _whoami():
         return {"status": "unavailable", "warning": "Tailscale identity could not be checked"}
 
 
-def _observed_whois(headers, remote_address):
+def _observed_whois(headers: Mapping[str, str], remote_address: str) -> str | None:
     # Serve removes identity headers supplied by clients. Never trust X-Forwarded-
     # For unless RemoteAccess has already authenticated its loopback proxy path.
     login = headers.get("Tailscale-User-Login")
@@ -149,13 +154,13 @@ def _observed_whois(headers, remote_address):
 class FederationService:
     """Durable state and a restartable HTTP delivery pump for one server identity."""
 
-    def __init__(self, runtime):
+    def __init__(self, runtime: RecordStore) -> None:
         self.runtime = runtime
         self.stop_event = threading.Event()
         self.thread = None
 
     @staticmethod
-    def ensure_tables(db):
+    def ensure_tables(db: sqlite3.Connection) -> None:
         db.executescript("""
         CREATE TABLE IF NOT EXISTS runtime_federation_settings (
           id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -181,7 +186,7 @@ class FederationService:
           ON runtime_federation_nonces(created);
         """)
 
-    def enabled(self, db=None):
+    def enabled(self, db: sqlite3.Connection=None) -> bool:
         if db is not None:
             value = _record(db.execute("SELECT record FROM runtime_federation_settings WHERE id='global'").fetchone())
         else:
@@ -189,7 +194,7 @@ class FederationService:
                 value = _record(read.execute("SELECT record FROM runtime_federation_settings WHERE id='global'").fetchone())
         return bool(value and value.get("enabled") is True)
 
-    def ensure_identity(self, db):
+    def ensure_identity(self, db: sqlite3.Connection) -> FederationIdentityRecord:
         identity = _record(db.execute("SELECT record FROM runtime_federation_identity WHERE id='local'").fetchone())
         if identity:
             return identity
@@ -206,7 +211,7 @@ class FederationService:
         db.execute("INSERT INTO runtime_federation_identity(id,record) VALUES('local',?)", (_json(identity),))
         return identity
 
-    def _local_identity(self, *, create=False):
+    def _local_identity(self, *, create: bool=False) -> FederationIdentityRecord:
         with self.runtime.lock, self.runtime.db() as db:
             identity = _record(db.execute("SELECT record FROM runtime_federation_identity WHERE id='local'").fetchone())
             if identity or not create:
@@ -214,19 +219,19 @@ class FederationService:
             db.execute("BEGIN IMMEDIATE")
             return self.ensure_identity(db)
 
-    def start(self):
+    def start(self) -> None:
         if self.thread and self.thread.is_alive():
             return
         self.stop_event.clear()
         self.thread = threading.Thread(target=self.run, name="studio-federation", daemon=True)
         self.thread.start()
 
-    def close(self):
+    def close(self) -> None:
         self.stop_event.set()
         if self.thread and threading.current_thread() is not self.thread:
             self.thread.join()
 
-    def run(self):
+    def run(self) -> None:
         while not self.stop_event.wait(1):
             if self.runtime.closed or not self.enabled():
                 continue
@@ -236,7 +241,7 @@ class FederationService:
                 # Durable rows retain their retry identity. The UI reads lastError.
                 continue
 
-    def snapshot(self):
+    def snapshot(self) -> JsonObject:
         with self.runtime.read_db() as db:
             settings = _record(db.execute("SELECT record FROM runtime_federation_settings WHERE id='global'").fetchone()) or {"enabled": False}
             peers = [_safe_peer(json.loads(row[0])) for row in db.execute("SELECT record FROM runtime_federation_peers ORDER BY id")]
@@ -255,12 +260,12 @@ class FederationService:
                 "queued": pending}
 
     @staticmethod
-    def public_room(room):
+    def public_room(room: RoomRecord) -> JsonObject:
         return {k: room.get(k) for k in (
             "id", "peerId", "peerLabel", "name", "status", "localMembers",
             "remoteMembers", "shareNames", "shareStatus", "created")}
 
-    def action(self, body):
+    def action(self, body: JsonObject) -> JsonObject:
         action = body.get("action")
         if action == "status":
             return self.snapshot()
@@ -296,7 +301,7 @@ class FederationService:
             return self.room_options(body)
         raise ValueError("Unknown federation action")
 
-    def create_invite(self, body):
+    def create_invite(self, body: JsonObject) -> JsonObject:
         label = body.get("label", "Studio server")
         if not isinstance(label, str) or not 1 <= len(label.strip()) <= 80:
             raise ValueError("Server label must be 1 to 80 characters")
@@ -329,13 +334,13 @@ class FederationService:
                 "warning": "Share this invitation privately. It expires in 15 minutes and can be used once."}
 
     @staticmethod
-    def local_lead_name(db):
+    def local_lead_name(db: sqlite3.Connection) -> str | None:
         row = db.execute("SELECT record FROM runtime_agents WHERE json_extract(record,'$.isLead')=1 "
                          "AND (json_extract(record,'$.deletedAt') IS NULL OR json_extract(record,'$.deletedAt')=0) "
                          "ORDER BY id LIMIT 1").fetchone()
         return json.loads(row[0]).get("name", "Lead") if row else "Lead"
 
-    def accept_peer(self, invitation):
+    def accept_peer(self, invitation: JsonObject) -> JsonObject:
         if not isinstance(invitation, dict) or invitation.get("protocol") != PROTOCOL:
             raise ValueError("Unsupported federation invitation version")
         required = ("inviteId", "token", "stateId", "label", "origin", "publicKey", "expires")
@@ -379,7 +384,7 @@ class FederationService:
         self.start()
         return self.snapshot()
 
-    def _save_peer(self, peer):
+    def _save_peer(self, peer: FederationPeerRecord) -> None:
         if _peer_allowed(peer):
             peer.pop("inviteId", None)
             peer.pop("inviteToken", None)
@@ -389,7 +394,7 @@ class FederationService:
                        "ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                        (peer["stateId"], _json(peer)))
 
-    def _send_pair(self, peer):
+    def _send_pair(self, peer: FederationPeerRecord) -> None:
         local = self._local_identity(create=False)
         if not local:
             raise ValueError("Local federation identity is missing")
@@ -402,7 +407,7 @@ class FederationService:
         return self._request(peer["origin"], "/api/federation/v1/pair", body, local,
                              expected_key=peer["publicKey"], expected_state=peer["stateId"])
 
-    def approve_peer(self, state_id, accept_missing_whois=False):
+    def approve_peer(self, state_id: str, accept_missing_whois: bool=False) -> JsonObject:
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
             peer = _record(db.execute("SELECT record FROM runtime_federation_peers WHERE id=?", (state_id,)).fetchone())
@@ -417,7 +422,7 @@ class FederationService:
             self.start()
         return self.snapshot()
 
-    def revoke_peer(self, state_id):
+    def revoke_peer(self, state_id: str) -> JsonObject:
         if not isinstance(state_id, str):
             raise ValueError("Select a peer to revoke")
         with self.runtime.lock, self.runtime.db() as db:
@@ -440,9 +445,10 @@ class FederationService:
                         db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), row[0]))
             db.execute("UPDATE runtime_federation_rooms SET record=json_set(record,'$.status','revoked') "
                        "WHERE json_extract(record,'$.peerId')=?", (state_id,))
+            self._sync_peer_rooms(db, state_id)
         return self.snapshot()
 
-    def _request(self, origin, path, body, identity, *, expected_key, expected_state=None, method="POST"):
+    def _request(self, origin: str, path: str, body: JsonObject, identity: FederationIdentityRecord, *, expected_key: str, expected_state: str | None=None, method: str="POST") -> JsonObject:
         raw = _json(body).encode()
         if len(raw) > MAX_BODY:
             raise ValueError("Federation request exceeds the size limit")
@@ -476,7 +482,7 @@ class FederationService:
             detail = error.read(2048).decode("utf-8", "replace")
             raise ValueError(f"Federation peer rejected the request ({error.code}): {detail[:300]}") from None
 
-    def signed_response(self, result):
+    def signed_response(self, result: JsonObject) -> JsonObject:
         identity = self._local_identity(create=False)
         if not identity:
             raise RuntimeError("Federation identity is unavailable")
@@ -486,7 +492,7 @@ class FederationService:
                                    b"studio-federation-response-v1\n" + _json(proof).encode())
         return proof
 
-    def route(self, action, headers, remote_address, raw):
+    def route(self, action: str, headers: Mapping[str, str], remote_address: str, raw: bytes) -> JsonObject:
         if not self.enabled():
             raise PermissionError("Federation is disabled on this server")
         if len(raw) > MAX_BODY:
@@ -572,10 +578,10 @@ class FederationService:
             return self.signed_response(self.pull(peer, body))
         raise ValueError("Unknown federation endpoint")
 
-    def _observed_login(self, headers, remote_address):
+    def _observed_login(self, headers: Mapping[str, str], remote_address: str) -> str | None:
         return _observed_whois(headers, remote_address)
 
-    def _validate_whois(self, invite, body, headers, remote_address):
+    def _validate_whois(self, invite: FederationInviteRecord, body: JsonObject, headers: Mapping[str, str], remote_address: str) -> None:
         observed = self._observed_login(headers, remote_address)
         claimed = body.get("tailscaleUser")
         if observed and claimed and observed.lower() != claimed.lower():
@@ -588,13 +594,13 @@ class FederationService:
             return "missing"
         return "verified"
 
-    def _validate_peer_origin(self, peer, headers, remote_address):
+    def _validate_peer_origin(self, peer: FederationPeerRecord, headers: Mapping[str, str], remote_address: str) -> None:
         observed = self._observed_login(headers, remote_address)
         expected = peer.get("whoisUser")
         if observed and expected and observed.lower() != expected.lower():
             raise PermissionError("Tailscale whois identity mismatch")
 
-    def _verified_peer(self, peer_id, path, timestamp, nonce, signature, raw, *, allow_revoked=False):
+    def _verified_peer(self, peer_id: str, path: str, timestamp: int, nonce: str, signature: str, raw: bytes, *, allow_revoked: bool=False) -> FederationPeerRecord:
         with self.runtime.lock, self.runtime.db() as db:
             peer = _record(db.execute("SELECT record FROM runtime_federation_peers WHERE id=?", (peer_id,)).fetchone())
             if not _peer_allowed(peer) and not (allow_revoked and peer and peer.get("status") == "revoked"):
@@ -605,7 +611,7 @@ class FederationService:
             return peer
 
     @staticmethod
-    def _consume_nonce(db, peer_id, nonce, timestamp):
+    def _consume_nonce(db: sqlite3.Connection, peer_id: str, nonce: str, timestamp: int) -> bool:
         now = int(time.time())
         db.execute("DELETE FROM runtime_federation_nonces WHERE created<?", (now - MAX_CLOCK_SKEW * 2,))
         recent = db.execute("SELECT count(*) FROM runtime_federation_nonces WHERE peer_id=? AND created>=?",
@@ -618,7 +624,7 @@ class FederationService:
         except sqlite3.IntegrityError:
             raise PermissionError("Repeated federation nonce") from None
 
-    def create_room(self, body):
+    def create_room(self, body: JsonObject) -> JsonObject:
         peer_id = body.get("peer_id")
         local_members = body.get("local_members")
         share_names = body.get("share_names", False)
@@ -678,7 +684,7 @@ class FederationService:
         self.start()
         return self.snapshot()
 
-    def approve_room(self, body):
+    def approve_room(self, body: JsonObject) -> JsonObject:
         room_id = body.get("room_id")
         local_members = body.get("local_members")
         if not isinstance(local_members, list) or not local_members or len(local_members) > 50:
@@ -736,7 +742,7 @@ class FederationService:
         self.start()
         return self.snapshot()
 
-    def room_options(self, body):
+    def room_options(self, body: JsonObject) -> JsonObject:
         room_id = body.get("room_id")
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
@@ -752,7 +758,7 @@ class FederationService:
             db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?", (_json(room), room_id))
         return self.snapshot()
 
-    def _queue_locked(self, db, peer, identity, room, kind, payload, key):
+    def _queue_locked(self, db: sqlite3.Connection, peer: FederationPeerRecord, identity: FederationIdentityRecord, room: RoomRecord, kind: str, payload: JsonObject, key: str) -> str:
         if not _peer_allowed(peer) or not self.enabled(db):
             raise ValueError("Federation is disabled or this peer is not approved")
         # Idempotent queue IDs make retries and restart recovery exact.
@@ -774,7 +780,7 @@ class FederationService:
                    (message_id, peer["stateId"], _json(value)))
         return message_id
 
-    def send_message(self, sender_id, room_id, text, key):
+    def send_message(self, sender_id: str, room_id: str, text: str, key: str) -> JsonObject:
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= MAX_MESSAGE:
             raise ValueError("Message must have 1 to 12000 characters")
         text = text.strip()
@@ -812,7 +818,7 @@ class FederationService:
             self.runtime.put(db, "rooms", {"id": room_id, "kind": "federated",
                 "members": room["localMembers"], "updated": created, "name": room["name"],
                 "federation": True, "peerId": room["peerId"], "peerLabel": room["peerLabel"]},
-                include_last_message=True)
+                )
             event_text = _json({"room": room_id, "message_id": message_id,
                                 "sender": sender_id, "sender_name": name,
                                 "text": text, "untrusted_remote": False,
@@ -831,7 +837,7 @@ class FederationService:
         return {"id": message_id, "room": room_id,
                 "deliveries": {"remote:" + room["peerId"]: "queued"}, "status": "queued"}
 
-    def user_message(self, room_id, text, key):
+    def user_message(self, room_id: str, text: str, key: str) -> JsonObject:
         with self.runtime.lock, self.runtime.db() as db:
             room = _record(db.execute("SELECT record FROM runtime_federation_rooms WHERE id=?", (room_id,)).fetchone())
             if not room or room.get("status") != "approved":
@@ -844,20 +850,20 @@ class FederationService:
             sender = leads[0]
         return self.send_message(sender, room_id, text, key)
 
-    def has_room(self, room_id):
+    def has_room(self, room_id: str) -> bool:
         if not isinstance(room_id, str) or not room_id.startswith("federated:"):
             return False
         with self.runtime.read_db() as db:
             return db.execute("SELECT 1 FROM runtime_federation_rooms WHERE id=?", (room_id,)).fetchone() is not None
 
-    def rooms_for_peer(self, agent_id, peer_id):
+    def rooms_for_peer(self, agent_id: str, peer_id: str) -> list[JsonObject]:
         with self.runtime.read_db() as db:
             rows = db.execute("SELECT record FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?",
                               (peer_id,)).fetchall()
             return [room for room in (json.loads(row[0]) for row in rows)
                     if room.get("status") == "approved" and agent_id in room.get("localMembers", [])]
 
-    def model_peers(self, db, agent_id):
+    def model_peers(self, db: sqlite3.Connection, agent_id: str) -> list[FederationPeerRecord]:
         if not self.enabled(db):
             return []
         rooms = [json.loads(row[0]) for row in db.execute(
@@ -875,12 +881,12 @@ class FederationService:
                                "status": "available"})
         return result
 
-    def _hash_envelope(self, envelope):
+    def _hash_envelope(self, envelope: JsonObject) -> str:
         immutable = {key: value for key, value in envelope.items()
                      if key not in {"timestamp", "nonce", "signature"}}
         return hashlib.sha256(_json(immutable).encode()).hexdigest()
 
-    def _outbound_envelope(self, outbox_record, local):
+    def _outbound_envelope(self, outbox_record: FederationOutboxRecord, local: FederationIdentityRecord) -> JsonObject:
         envelope = {"protocol": PROTOCOL, "senderServer": local["stateId"],
                     "id": outbox_record["id"], "kind": outbox_record["kind"],
                     "room": outbox_record["room"], "payload": outbox_record["payload"],
@@ -889,7 +895,7 @@ class FederationService:
         envelope["signature"] = _sign(local["privateKey"], _message_bytes(envelope))
         return envelope
 
-    def receive_envelope(self, peer, envelope):
+    def receive_envelope(self, peer: FederationPeerRecord, envelope: JsonObject) -> JsonObject:
         if not isinstance(envelope, dict) or envelope.get("protocol") != PROTOCOL:
             raise ValueError("Unsupported federation message version")
         timestamp, nonce = envelope.get("timestamp"), envelope.get("nonce")
@@ -958,6 +964,7 @@ class FederationService:
                     raise PermissionError("Room is not awaiting this peer's approval")
                 room.update(remoteMembers=participants, remoteApproved=True, status="approved", updated=time.time())
                 db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?", (_json(room), room_id))
+                self._sync_room_entity(db, room_id)
             else:
                 receipt = self._receive_chat_locked(db, peer, room_id, envelope, payload)
                 db.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?,?,?)",
@@ -973,7 +980,7 @@ class FederationService:
             return receipt
 
     @staticmethod
-    def valid_participants(participants, *, share_names=False, share_status=False):
+    def valid_participants(participants: list[JsonObject], *, share_names: bool=False, share_status: bool=False) -> list[JsonObject]:
         if not isinstance(participants, list) or not 1 <= len(participants) <= 50:
             return False
         seen = set()
@@ -990,7 +997,7 @@ class FederationService:
             seen.add(person["id"])
         return True
 
-    def _receive_chat_locked(self, db, peer, room_id, envelope, payload):
+    def _receive_chat_locked(self, db: sqlite3.Connection, peer: FederationPeerRecord, room_id: str, envelope: JsonObject, payload: JsonObject) -> None:
         text = payload.get("text")
         sender = payload.get("sender")
         if not isinstance(text, str) or not 1 <= len(text) <= MAX_MESSAGE or not isinstance(sender, str):
@@ -1031,7 +1038,7 @@ class FederationService:
         standard = {"id": room_id, "kind": "federated", "members": room["localMembers"],
                     "updated": room["updated"], "name": room["name"], "federation": True,
                     "peerId": peer["stateId"], "peerLabel": peer["label"]}
-        self.runtime.put(db, "rooms", standard, include_last_message=True)
+        self.runtime.put(db, "rooms", standard)
         # Remote text is explicitly labeled as untrusted data before entering a model turn.
         event_text = _json({"room": room_id, "message_id": envelope["id"],
                             "sender": display_sender, "sender_name": expected_name or peer["label"],
@@ -1046,7 +1053,7 @@ class FederationService:
         return {"protocol": PROTOCOL, "messageId": envelope["id"], "accepted": True,
                 "room": room_id, "sequence": row.lastrowid}
 
-    def pull(self, peer, body):
+    def pull(self, peer: FederationPeerRecord, body: JsonObject) -> JsonObject:
         acks = body.get("acks", [])
         if not isinstance(acks, list) or len(acks) > MAX_BATCH:
             raise ValueError("Invalid federation receipt batch")
@@ -1067,7 +1074,7 @@ class FederationService:
             rows = db.execute("SELECT id,record FROM runtime_federation_outbox WHERE peer_id=? "
                               "AND json_extract(record,'$.status')='queued' ORDER BY json_extract(record,'$.created'),id LIMIT ?",
                               (peer["stateId"], MAX_BATCH)).fetchall()
-            messages = []
+            messages: list[JsonObject] = []
             size = 0
             for row in rows:
                 item = json.loads(row[1])
@@ -1090,7 +1097,7 @@ class FederationService:
         return {"protocol": PROTOCOL, "messages": messages, "acks": receipts,
                 "acknowledged": acknowledged}
 
-    def pump_once(self):
+    def pump_once(self) -> None:
         with self.runtime.read_db() as db:
             peers = [_record(row) for row in db.execute("SELECT record FROM runtime_federation_peers")]
         for peer in peers:
@@ -1125,7 +1132,7 @@ class FederationService:
             except (OSError, ValueError, RuntimeError, urllib.error.URLError) as error:
                 self._set_peer_error(peer["stateId"], str(error)[:240])
 
-    def _deliver_peer(self, peer):
+    def _deliver_peer(self, peer: FederationPeerRecord) -> None:
         local = self._local_identity(create=False)
         if not local:
             return
@@ -1167,12 +1174,12 @@ class FederationService:
             receipt = self._receive_envelope(peer, envelope)
             self._record_ack(peer["stateId"], envelope["id"], self._hash_envelope(envelope), receipt)
 
-    def _receive_envelope(self, peer, envelope):
+    def _receive_envelope(self, peer: FederationPeerRecord, envelope: JsonObject) -> JsonObject:
         # Pulled envelopes carry the same Ed25519 signature and nonce contract
         # as directly delivered messages.
         return self.receive_envelope(peer, envelope)
 
-    def _save_delivery(self, peer, row_id, record, response, message_hash):
+    def _save_delivery(self, peer: FederationPeerRecord, row_id: str, record: FederationOutboxRecord, response: JsonObject, message_hash: str) -> None:
         if (response.get("protocol") != PROTOCOL or response.get("messageId") != record["id"]
                 or response.get("accepted") is not True):
             raise ValueError("Remote server did not provide a durable message receipt")
@@ -1190,7 +1197,7 @@ class FederationService:
                 deliveries = json.loads(message[0]); deliveries["remote:" + peer["stateId"]] = "delivered"
                 db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), row_id))
 
-    def _record_ack(self, peer_id, message_id, message_hash, receipt):
+    def _record_ack(self, peer_id: str, message_id: str, message_hash: str, receipt: JsonObject) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
             existing = _record(db.execute("SELECT record FROM runtime_federation_inbox WHERE peer_id=? AND message_id=?",
@@ -1202,7 +1209,7 @@ class FederationService:
                 db.execute("INSERT INTO runtime_federation_inbox(peer_id,message_id,record) VALUES(?,?,?)",
                            (peer_id, message_id, _json(record)))
 
-    def _confirm_outbox_ack(self, peer, message_id, message_hash):
+    def _confirm_outbox_ack(self, peer: FederationPeerRecord, message_id: str, message_hash: str) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
             record = _record(db.execute("SELECT record FROM runtime_federation_outbox WHERE id=? AND peer_id=?",
@@ -1216,8 +1223,17 @@ class FederationService:
                     deliveries = json.loads(row[0]); deliveries["remote:" + peer["stateId"]] = "delivered"
                     db.execute("UPDATE runtime_chat_messages SET deliveries=? WHERE id=?", (_json(deliveries), message_id))
 
-    @staticmethod
-    def _confirm_room_accept_locked(db, outbox):
+    def _sync_room_entity(self, db: sqlite3.Connection, room_id: str) -> bool:
+        """Refresh the durable room view after a federation source update."""
+        return self.runtime.sync_room_entity(db, room_id, tombstone_unavailable=True)
+
+    def _sync_peer_rooms(self, db: sqlite3.Connection, peer_id: str) -> None:
+        ids = [row[0] for row in db.execute(
+            "SELECT id FROM runtime_federation_rooms WHERE json_extract(record,'$.peerId')=?", (peer_id,))]
+        for room_id in ids:
+            self._sync_room_entity(db, room_id)
+
+    def _confirm_room_accept_locked(self, db: sqlite3.Connection, outbox: FederationOutboxRecord) -> None:
         if outbox.get("kind") != "room-accept":
             return
         row = db.execute("SELECT record FROM runtime_federation_rooms WHERE id=?",
@@ -1227,8 +1243,9 @@ class FederationService:
             room.update(remoteApproved=True, status="approved", updated=time.time())
             db.execute("UPDATE runtime_federation_rooms SET record=? WHERE id=?",
                        (_json(room), room["id"]))
+            self._sync_room_entity(db, room["id"])
 
-    def _confirm_inbox_ack(self, peer_id, message_id, message_hash):
+    def _confirm_inbox_ack(self, peer_id: str, message_id: str, message_hash: str) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("BEGIN IMMEDIATE")
             row = db.execute("SELECT record FROM runtime_federation_inbox WHERE peer_id=? AND message_id=?",
@@ -1239,21 +1256,21 @@ class FederationService:
                 db.execute("UPDATE runtime_federation_inbox SET record=? WHERE peer_id=? AND message_id=?",
                            (_json(record), peer_id, message_id))
 
-    def _retry_outbox(self, row_id, record, error):
+    def _retry_outbox(self, row_id: str, record: FederationOutboxRecord, error: str) -> None:
         attempts = min(int(record.get("attempts", 0)) + 1, 16)
         record.update(attempts=attempts, nextAt=time.time() + min(300, 2 ** min(attempts, 8)), error=error[:240])
         with self.runtime.lock, self.runtime.db() as db:
             db.execute("UPDATE runtime_federation_outbox SET record=? WHERE id=? AND json_extract(record,'$.status')='queued'",
                        (_json(record), row_id))
 
-    def _set_peer_error(self, peer_id, error):
+    def _set_peer_error(self, peer_id: str, error: str) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             peer = _record(db.execute("SELECT record FROM runtime_federation_peers WHERE id=?", (peer_id,)).fetchone())
             if peer and peer.get("status") != "revoked":
                 peer.update(lastError=error[:240], updated=time.time())
                 db.execute("UPDATE runtime_federation_peers SET record=? WHERE id=?", (_json(peer), peer_id))
 
-    def _mark_peer_revoked(self, peer_id):
+    def _mark_peer_revoked(self, peer_id: str) -> None:
         with self.runtime.lock, self.runtime.db() as db:
             peer = _record(db.execute("SELECT record FROM runtime_federation_peers WHERE id=?", (peer_id,)).fetchone())
             if peer:
@@ -1270,3 +1287,4 @@ class FederationService:
                 db.execute("DELETE FROM runtime_federation_outbox WHERE peer_id=?", (peer_id,))
                 db.execute("UPDATE runtime_federation_rooms SET record=json_set(record,'$.status','revoked') "
                            "WHERE json_extract(record,'$.peerId')=?", (peer_id,))
+                self._sync_peer_rooms(db, peer_id)

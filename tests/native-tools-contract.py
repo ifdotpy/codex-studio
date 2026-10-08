@@ -116,6 +116,8 @@ class Runtime:
         self.preparations = {}
         self.loaded = {"chat-1"}
         self.connection_ids = {"default": "connection-1"}
+        self.workspace_connected = True
+        self.workspace_refreshes = 0
         self.accounts = self
         self.servers = {"default": Native(self)}
         self.server = self.servers["default"]
@@ -166,6 +168,10 @@ class Runtime:
 
     def connect(self, key):
         return self.servers[key]
+
+    def sync_workspace_volatile(self, _db):
+        self.workspace_refreshes += 1
+        self.workspace_connected = bool(set(self.servers) - set(getattr(self, "offline_accounts", set())))
 
     @staticmethod
     def submit_reserved(server, method, params):
@@ -228,6 +234,7 @@ class Contract(unittest.TestCase):
 
     def test_preserves_chat_identity_full_history_and_receipt_scopes(self):
         before = self.rt.agent("chat-1")
+        self.assertTrue(self.rt.workspace_connected)
         result = tools.refresh_account(self.rt)
         self.assertEqual(result["status"], "completed", result)
         self.assertEqual(self.native.close_count, 1)
@@ -243,6 +250,8 @@ class Contract(unittest.TestCase):
         self.assertFalse(Path(file["temporary"]).exists())
         self.assertFalse(tools.account_reserved(self.rt, "default"))
         self.assertNotIn("default", self.rt.servers)
+        self.assertFalse(self.rt.workspace_connected)
+        self.assertEqual(self.rt.workspace_refreshes, 1)
         self.assertNotIn("chat-1", self.rt.loaded)
         self.assertFalse(any(method in {"turn/start", "thread/fork", "thread/archive"} for method, _ in self.native.calls))
 

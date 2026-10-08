@@ -1,4 +1,10 @@
 """Workspace files, checkpoints, conversation forks, and capability discovery."""
+from collections.abc import Iterable, Sequence
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import AbstractContextManager
+import sqlite3
+import threading
+from typing import TYPE_CHECKING, Any, Protocol
 
 import base64
 import codecs
@@ -15,14 +21,25 @@ import tempfile
 import time
 import uuid
 
+from codex_records import (
+    AccountDataRecord, AgentRecord, CheckpointRecord, JsonObject, ProjectRecord, RecordStore,
+    WorkspaceOperationRecord,
+)
 from codex_native_errors import NativeRpcError
+from codex_work import _WorkHost
+from codex_accounts import AccountStore
 from codex_safety_buffering import active as safety_retry_active
 from codex_work import text_field
 from codex_entity_contracts import (ACTIVE_MONITOR_STATUSES, monitor_records, task_records)
 
+if TYPE_CHECKING:
+    from codex_runtime import Runtime
 
-def active_task_records(db, statuses=("running",), *, agent=None):
+def active_task_records(db: sqlite3.Connection, statuses: Iterable[str] = ("running",), *,
+                        agent: str | None = None) -> list[Any]:
     """Use the status index before loading task payloads under the runtime lock."""
+    # Task producers share this unvalidated JSON table; callers perform the
+    # shape checks appropriate to their task kind.
     if not statuses:
         return []
     values = tuple(statuses)
@@ -38,11 +55,137 @@ def active_task_records(db, statuses=("running",), *, agent=None):
 SKILL_CATALOG_TIMEOUT_SECONDS = 5
 
 
-def active_monitors(db):
+def active_monitors(db: sqlite3.Connection) -> list[JsonObject]:
     """Monitors that can still run. The status index skips finished history."""
     return [json.loads(r[0]) for r in db.execute(
         "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status') IN (?,?,?) ORDER BY rowid",
         ACTIVE_MONITOR_STATUSES)]
+
+class WorkspaceNativeServer(Protocol):
+    def call(self, method: str, params: JsonObject, timeout: float = ...) -> JsonObject: ...
+
+
+class WorkspaceRuntime(_WorkHost, Protocol):
+    root: Path
+    lock: AbstractContextManager[object]
+    changed: threading.Event
+    closed: bool
+    pool: ThreadPoolExecutor
+    prepare_locks: dict[str, object]
+    accounts: AccountStore
+    capability_cache: dict[str, JsonObject]
+    loaded: set[str]
+
+    def db(self, *, busy_timeout: int | None = None) -> AbstractContextManager[sqlite3.Connection]: ...
+    def read_db(self) -> AbstractContextManager[sqlite3.Connection]: ...
+    def named_agents(self, db: sqlite3.Connection, agent_ids: Iterable[object]) -> dict[str, AgentRecord]: ...
+    def permanent_worker_hold(self, db: sqlite3.Connection, agent: AgentRecord, operation_id: str,
+                              transition: str, reason: str) -> None: ...
+    def sync_agent_rooms(self, db: sqlite3.Connection, room_ids: Iterable[str]) -> None: ...
+    def project_room_ids(self, db: sqlite3.Connection, project_id: str) -> list[str]: ...
+    def connect(self, account_key: str = "default", *, for_login: bool = False) -> WorkspaceNativeServer: ...
+    def thread_config(self) -> JsonObject: ...
+    def new_thread_params(self, agent: AgentRecord) -> JsonObject: ...
+    def search_is_indexed(self, db: sqlite3.Connection, key: str) -> bool: ...
+    def send(self, key: str, text: str, message_id: str | None = None, manual: bool = True,
+             resume: bool = False, delivery: str = "queue", assets: list[JsonObject] | None = None,
+             sender: str | None = None, sender_epoch: int | None = None,
+             radio_question: JsonObject | None = None) -> JsonObject: ...
+    def tool_definitions(self, agent: AgentRecord) -> list[JsonObject]: ...
+    def complaint_needs_response(self, complaint: JsonObject) -> bool: ...
+    def complaint_recipient(self, complaint: JsonObject) -> str: ...
+    def task_detail(self, key: str) -> JsonObject: ...
+    def item(self, db: sqlite3.Connection, agent: str, key: str, role: str, text: str,
+             title: str | None = None, inputs: list[JsonObject] | None = None, *,
+             index_search: bool = True, **metadata: JsonValue) -> None: ...
+    def index_item(self, db: sqlite3.Connection, key: str, agent: str, kind: str,
+                   body: str | None = None) -> None: ...
+    def parent_event(self, db: sqlite3.Connection, agent: AgentRecord, event_id: str, text: str,
+                     *, recovery: bool = False) -> None: ...
+# WorkspaceMixin methods are included so every self call is structurally checked.
+    def setup_workspace(self, db: sqlite3.Connection) -> None: ...
+    @staticmethod
+    def _workspace_operation_id(kind: str, agent_id: str, data: JsonObject) -> str: ...
+    @staticmethod
+    def _workspace_operation_signature(body: JsonObject) -> str: ...
+    @classmethod
+    def _workspace_restore_signature(cls: type["WorkspaceMixin"], agent_id: str, data: JsonObject) -> str: ...
+    @staticmethod
+    def _workspace_provider_result(response: JsonObject) -> JsonObject: ...
+    @staticmethod
+    def _workspace_source(a: AgentRecord) -> JsonObject: ...
+    def _assert_workspace_source(self, operation: WorkspaceOperationRecord, agent: AgentRecord) -> None: ...
+    def _workspace_operation(self, db: sqlite3.Connection, operation_id: str) -> WorkspaceOperationRecord | None: ...
+    def _workspace_operations(self, db: sqlite3.Connection, agent_id: str=None) -> list[WorkspaceOperationRecord]: ...
+    def _put_workspace_operation(self, db: sqlite3.Connection, operation: WorkspaceOperationRecord) -> None: ...
+    def _update_workspace_operation(self, operation_id: str, **changes: JsonValue) -> WorkspaceOperationRecord: ...
+    def _workspace_provider_rejected(self, error: BaseException | str | None) -> bool: ...
+    def _finish_workspace_operation(self, operation_id: str, agent_id: str, *, result: JsonObject=None, error: BaseException | str | None=None) -> None: ...
+    def _require_workspace_recovery(self, operation_id: str, agent_id: str, error: BaseException | str | None) -> None: ...
+    def _workspace_operation_busy(self, db: sqlite3.Connection, cwd: str | Path, exclude_operation: str | None=None) -> bool: ...
+    @staticmethod
+    def project_directory(value: object, require_existing: bool=True) -> str: ...
+    def project_account(self, cwd: str | Path, db: sqlite3.Connection=None) -> str: ...
+    def project_worker_base(self, cwd: str | Path, db: sqlite3.Connection=None) -> str | None: ...
+    def ensure_project(self, path: str | Path, account_key: str, db: sqlite3.Connection) -> ProjectRecord: ...
+    def projects(self, data: JsonObject=None, db: sqlite3.Connection=None) -> JsonObject: ...
+    def workspace_path(self, agent_id: str, path: str) -> Path: ...
+    def upload_asset(self, data: JsonObject) -> JsonObject: ...
+    def checked_actor_in_own_db(self, key: str, actor: str | None=None) -> AgentRecord: ...
+    @staticmethod
+    def asset_view(asset: JsonObject) -> JsonObject: ...
+    def asset_record(self, key: str, db: sqlite3.Connection | None = None) -> JsonObject: ...
+    def message_inputs(self, agent_id: str, text: str, asset_ids: Sequence[str]) -> JsonObject: ...
+    def file_info(self, agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None) -> JsonObject: ...
+    def file_content(self, agent_id: str | None = None, path: str | Path | None = None,
+                     asset_id: str | None = None, limit: int = 20 * 1024 * 1024) -> bytes: ...
+    def _image_file_size(self, file: Path, agent: AgentRecord | None = None) -> int: ...
+    def _read_image_file(self, file: Path, limit: int, agent: AgentRecord | None = None) -> bytes: ...
+    def git(self, a: AgentRecord, args: Sequence[str], env: dict[str, str]=None, input: bytes | None=None) -> subprocess.CompletedProcess[bytes]: ...
+    @staticmethod
+    def reported_change_files(patch: str) -> list[str]: ...
+    def reported_changes(self, agent_id: str) -> JsonObject: ...
+    def changes(self, agent_id: str, scope: str | None=None) -> JsonObject: ...
+    def snapshot_tree(self, a: AgentRecord) -> str: ...
+    def _reserve_checkpoint(self, db: sqlite3.Connection, agent: AgentRecord, kind: str, turn_id: str | None=None) -> str: ...
+    def queue_checkpoint_after_turn(self, db: sqlite3.Connection, agent: AgentRecord, turn_id: str | None) -> None: ...
+    def _checkpoint_completed_agent(self, db: sqlite3.Connection, request: tuple[str, int, str, str, str | None, str, str | None]) -> AgentRecord | None: ...
+    def _checkpoint_after_committed_turn(self, request: tuple[str, int, str, str, str | None, str, str | None]) -> None: ...
+    def _settle_checkpoint(self, db: sqlite3.Connection, agent: AgentRecord, operation_id: str, error: BaseException | str | None=None) -> None: ...
+    def _capture_reserved_checkpoint(self, key: str, label: str, turn_id: str | None, operation_id: str) -> CheckpointRecord | None: ...
+    def checkpoint_capture(self, agent_id: str, label: str='Checkpoint', turn_id: str | None=None, internal: bool=False) -> CheckpointRecord: ...
+    def capture_checkpoint(self, agent_id: str, label: str='Checkpoint', turn_id: str | None=None, tree: str | None=None) -> CheckpointRecord: ...
+    def _checkpoint_history_ids(self, db: sqlite3.Connection, checkpoint: CheckpointRecord) -> list[str]: ...
+    @staticmethod
+    def checkpoint_summary(checkpoint: CheckpointRecord) -> JsonObject: ...
+    def checkpoint_after_turn(self, key: str, turn_id: str | None, operation_id: str) -> None: ...
+    def checkpoint_preview(self, key: str, checkpoint_id: str) -> JsonObject: ...
+    def restore_checkpoint(self, key: str, data: JsonObject) -> JsonObject: ...
+    def _restore_checkpoint_locked(self, key: str, data: JsonObject) -> JsonObject: ...
+    def assert_workspace_idle(self, a: AgentRecord) -> None: ...
+    def _workspace_idle_snapshot(self, db: sqlite3.Connection, a: AgentRecord, *, current_state: bool=False) -> JsonObject: ...
+    def _resolve_workspace_idle(self, snapshot: JsonObject, a: AgentRecord) -> Path: ...
+    def _assert_workspace_idle(self, db: sqlite3.Connection, a: AgentRecord, reservation_id: str | None=None, *, current_state: bool=False, snapshot: JsonObject=None, resolved: Path | None=None) -> None: ...
+    def branch_conversation(self, key: str, data: JsonObject) -> JsonObject: ...
+    def branch_locked(self, key: str, data: JsonObject) -> JsonObject: ...
+    def profiles(self, data: JsonObject | None = None) -> Any: ...  # typed-suspect: same name has an incompatible MRO return shape in EfficiencyMixin
+    def skill_catalog(self, key: str) -> JsonObject: ...
+    def capabilities(self, key: str) -> JsonObject: ...
+    def workspace_snapshot(self, key: str=None, *, view: str='full') -> JsonObject: ...
+    def _workspace_records(self, db: sqlite3.Connection, table: str, ids: Iterable[str], field: str) -> list[JsonObject]: ...
+    @staticmethod
+    def _workspace_requests(db: sqlite3.Connection, ids: Iterable[str]) -> list[JsonObject]: ...
+    @staticmethod
+    def _workspace_work(db: sqlite3.Connection, root: Path) -> list[JsonObject]: ...
+    @staticmethod
+    def _workspace_rules(db: sqlite3.Connection, ids: Iterable[str]) -> list[JsonObject]: ...
+    def _workspace_complaints(self, db: sqlite3.Connection, lead_ids: Iterable[str] | None) -> list[JsonObject]: ...
+    def monitor_log(self, key: str) -> JsonObject: ...
+    def native_command_action(self, data: JsonObject) -> JsonObject: ...
+    def workspace_blockers(self, db: sqlite3.Connection, a: AgentRecord) -> list[dict[str, object]]: ...
+    def assert_workspace_available(self, db: sqlite3.Connection, a: AgentRecord) -> None: ...
+    def recent_tasks(self, db: sqlite3.Connection, root: str | None = None) -> list[JsonObject]: ...
+    def recent_monitors(self, db: sqlite3.Connection, root: str | None = None) -> list[JsonObject]: ...
 
 class WorkspaceMixin:
     WORKSPACE_OPERATION_ACTIVE = {
@@ -54,7 +197,7 @@ class WorkspaceMixin:
         "capture_running",
     }
 
-    def setup_workspace(self, db):
+    def setup_workspace(self: "WorkspaceRuntime", db: sqlite3.Connection) -> None:
         db.executescript("""
             CREATE TABLE IF NOT EXISTS runtime_assets (id TEXT PRIMARY KEY, record TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS runtime_checkpoints (id TEXT PRIMARY KEY, record TEXT NOT NULL);
@@ -125,10 +268,10 @@ class WorkspaceMixin:
                     db, a, "workspace:" + str(a.get("workspaceOperation")),
                     "restart-held", a["error"],
                 )
-        self.capability_cache = {}
+        self.capability_cache: dict[str, JsonObject] = {}
 
     @staticmethod
-    def _workspace_operation_id(kind, agent_id, data):
+    def _workspace_operation_id(kind: str, agent_id: str, data: JsonObject) -> str:
         if kind == "branch" and data.get("id"):
             return "branch:" + str(data["id"])
         value = data.get("checkpoint_id") or data.get("checkpoint")
@@ -139,11 +282,11 @@ class WorkspaceMixin:
         return "branch:" + str(agent_id) + ":" + str(data.get("message_id"))
 
     @staticmethod
-    def _workspace_operation_signature(body):
+    def _workspace_operation_signature(body: JsonObject) -> str:
         return hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest()
 
     @classmethod
-    def _workspace_restore_signature(cls, agent_id, data):
+    def _workspace_restore_signature(cls: type["WorkspaceMixin"], agent_id: str, data: JsonObject) -> str:
         return cls._workspace_operation_signature(
             {
                 "agent": agent_id,
@@ -153,7 +296,7 @@ class WorkspaceMixin:
         )
 
     @staticmethod
-    def _workspace_provider_result(response):
+    def _workspace_provider_result(response: JsonObject) -> JsonObject:
         thread = response.get("thread") if isinstance(response, dict) else None
         thread_id = thread.get("id") if isinstance(thread, dict) else None
         if not isinstance(thread_id, str) or not thread_id:
@@ -165,28 +308,28 @@ class WorkspaceMixin:
         return result
 
     @staticmethod
-    def _workspace_source(a):
+    def _workspace_source(a: AgentRecord) -> JsonObject:
         return {
             "accountKey": a.get("accountKey", "default"),
             "threadId": a.get("threadId"),
             "cwd": a["cwd"],
         }
 
-    def _assert_workspace_source(self, operation, agent):
+    def _assert_workspace_source(self: "WorkspaceRuntime", operation: WorkspaceOperationRecord, agent: AgentRecord) -> None:
         expected = operation.get("source")
         if expected and expected != self._workspace_source(agent):
             raise ValueError(
                 "Workspace operation source changed. Inspect the operation before retrying"
             )
 
-    def _workspace_operation(self, db, operation_id):
+    def _workspace_operation(self: "WorkspaceRuntime", db: sqlite3.Connection, operation_id: str) -> WorkspaceOperationRecord | None:
         row = db.execute(
             "SELECT record FROM runtime_workspace_operations WHERE id=?",
             (operation_id,),
         ).fetchone()
         return json.loads(row[0]) if row else None
 
-    def _workspace_operations(self, db, agent_id=None):
+    def _workspace_operations(self: "WorkspaceRuntime", db: sqlite3.Connection, agent_id: str=None) -> list[WorkspaceOperationRecord]:
         phases = tuple(sorted(self.WORKSPACE_OPERATION_ACTIVE))
         query = ("SELECT record FROM runtime_workspace_operations "
                  "WHERE json_extract(record,'$.phase') IN ("
@@ -197,10 +340,10 @@ class WorkspaceMixin:
             params += (agent_id,)
         return [json.loads(row[0]) for row in db.execute(query, params)]
 
-    def _put_workspace_operation(self, db, operation):
+    def _put_workspace_operation(self: "WorkspaceRuntime", db: sqlite3.Connection, operation: WorkspaceOperationRecord) -> None:
         self.put(db, "workspace_operations", operation)
 
-    def _update_workspace_operation(self, operation_id, **changes):
+    def _update_workspace_operation(self: "WorkspaceRuntime", operation_id: str, **changes: JsonValue) -> WorkspaceOperationRecord:
         with self.lock, self.db() as db:
             operation = self._workspace_operation(db, operation_id)
             if operation is None:
@@ -209,10 +352,10 @@ class WorkspaceMixin:
             self._put_workspace_operation(db, operation)
             return operation
 
-    def _workspace_provider_rejected(self, error):
+    def _workspace_provider_rejected(self: "WorkspaceRuntime", error: BaseException | str | None) -> bool:
         return isinstance(error, NativeRpcError)
 
-    def _finish_workspace_operation(self, operation_id, agent_id, *, result=None, error=None):
+    def _finish_workspace_operation(self: "WorkspaceRuntime", operation_id: str, agent_id: str, *, result: JsonObject=None, error: BaseException | str | None=None) -> None:
         with self.lock, self.db() as db:
             operation = self._workspace_operation(db, operation_id)
             if operation is not None:
@@ -235,7 +378,7 @@ class WorkspaceMixin:
                 # Finishing a fork must not restore an older running state.
                 self.put(db, "agents", agent)
 
-    def _require_workspace_recovery(self, operation_id, agent_id, error):
+    def _require_workspace_recovery(self: "WorkspaceRuntime", operation_id: str, agent_id: str, error: BaseException | str | None) -> None:
         message = "Workspace operation outcome is unknown. Inspect the workspace before retrying."
         try:
             with self.lock, self.db() as db:
@@ -268,7 +411,7 @@ class WorkspaceMixin:
             # agent marker already provide a durable hold if this write fails.
             pass
 
-    def _workspace_operation_busy(self, db, cwd, exclude_operation=None):
+    def _workspace_operation_busy(self: "WorkspaceRuntime", db: sqlite3.Connection, cwd: str | Path, exclude_operation: str | None=None) -> bool:
         return any(
             Path(agent["cwd"]).resolve() == Path(cwd).resolve()
             for operation in self._workspace_operations(db)
@@ -277,7 +420,7 @@ class WorkspaceMixin:
         )
 
     @staticmethod
-    def project_directory(value, require_existing=True):
+    def project_directory(value: object, require_existing: bool=True) -> str:
         if isinstance(value, Path):
             value = str(value)
         text_field(value, "a project path", 4096)
@@ -286,7 +429,7 @@ class WorkspaceMixin:
             raise ValueError("Select an existing project directory")
         return str(path)
 
-    def project_account(self, cwd, db=None):
+    def project_account(self: "WorkspaceRuntime", cwd: str | Path, db: sqlite3.Connection=None) -> str:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_account(cwd, db=connection)
@@ -297,7 +440,7 @@ class WorkspaceMixin:
             return max(matches, key=lambda p: len(Path(p["path"]).parts))["accountKey"]
         return self.accounts.default()
 
-    def project_worker_base(self, cwd, db=None):
+    def project_worker_base(self: "WorkspaceRuntime", cwd: str | Path, db: sqlite3.Connection=None) -> str | None:
         if db is None:
             with self.lock, self.db() as connection:
                 return self.project_worker_base(cwd, db=connection)
@@ -309,7 +452,7 @@ class WorkspaceMixin:
             return max(matches, key=lambda p: len(Path(p["path"]).parts))["workerBaseRef"]
         return None
 
-    def ensure_project(self, path, account_key, db):
+    def ensure_project(self: "WorkspaceRuntime", path: str | Path, account_key: str, db: sqlite3.Connection) -> ProjectRecord:
         """Register a chat project in its transaction; preserve an existing choice."""
         path = self.project_directory(path, require_existing=False)
         existing = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
@@ -321,7 +464,7 @@ class WorkspaceMixin:
         self.put(db, "projects", project)
         return project
 
-    def projects(self, data=None, db=None):
+    def projects(self: "WorkspaceRuntime", data: JsonObject=None, db: sqlite3.Connection=None) -> JsonObject:
         if data is None:
             if db is None:
                 with self.lock, self.db() as connection:
@@ -330,13 +473,13 @@ class WorkspaceMixin:
         action = data.get("action", "register")
         if action == "reorder":
             from codex_project_folders import reorder_sidebar
-            return reorder_sidebar(self, data)
+            return reorder_sidebar(self, data)  # type: ignore[arg-type]  # typed-narrowing: workspace host protocol supplies the project-folder runtime interface
         if action in ('rename', 'add_folder', 'rename_folder', 'remove_folder'):
             from codex_project_folders import organize_project
-            return organize_project(self, data)
+            return organize_project(self, data)  # type: ignore[arg-type]  # typed-narrowing: workspace host protocol supplies the project-folder runtime interface
         if action == "set_accounts":
             from codex_project_accounts import set_project_accounts
-            return set_project_accounts(self, data)
+            return set_project_accounts(self, data)  # type: ignore[arg-type]  # typed-narrowing: workspace host protocol supplies the project-account runtime interface
         if action == "set_worker_environment":
             from codex_worker_environment import set_project_default
             return set_project_default(self, data)
@@ -365,6 +508,8 @@ class WorkspaceMixin:
                     from codex_sync_entities import put as sync_entity_put
                     sync_entity_put(connection, "project", path, {}, deleted=True)
                     self.sync_agent_rooms(connection, self.project_room_ids(connection, path))
+                    from codex_peer_teams import sync_entities as sync_peer_team_entities
+                    sync_peer_team_entities(self, connection, {path})
                 return {"id": path, "removed": bool(removed)}
             existing = connection.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
             project = json.loads(existing[0]) if existing else None
@@ -400,14 +545,14 @@ class WorkspaceMixin:
             self.put(connection, "projects", project)
             return project
 
-    def workspace_path(self, agent_id, path):
+    def workspace_path(self: "WorkspaceRuntime", agent_id: str, path: str) -> Path:
         a = self.agent(agent_id)
         root = Path(a["cwd"]).resolve()
         supplied = Path(text_field(path, "a path", 4096)).expanduser()
         resolved = (supplied if supplied.is_absolute() else root / supplied).resolve()
         return resolved
 
-    def upload_asset(self, data):
+    def upload_asset(self: "WorkspaceRuntime", data: JsonObject) -> JsonObject:
         agent = self.checked_actor_in_own_db(data.get("agent"))
         name = Path(text_field(data.get("name"), "a filename", 255)).name
         if name in {".", ".."}:
@@ -463,15 +608,15 @@ class WorkspaceMixin:
             self.put(db, "assets", asset)
             return self.asset_view(asset)
 
-    def checked_actor_in_own_db(self, key, actor=None):
+    def checked_actor_in_own_db(self: "WorkspaceRuntime", key: str, actor: str | None=None) -> AgentRecord:
         with self.lock, self.db() as db:
             return self.checked_actor(db, key, actor)
 
     @staticmethod
-    def asset_view(asset):
+    def asset_view(asset: JsonObject) -> JsonObject:
         return {k: v for k, v in asset.items() if k != "path"}
 
-    def asset_record(self, key, db=None):
+    def asset_record(self: "WorkspaceRuntime", key: str, db: sqlite3.Connection | None = None) -> JsonObject:
         if db is None:
             with self.lock, self.db() as own:
                 return self.asset_record(key, own)
@@ -484,7 +629,7 @@ class WorkspaceMixin:
         self.checked_actor(db, asset["agent"])
         return asset
 
-    def message_inputs(self, agent_id, text, asset_ids):
+    def message_inputs(self: "WorkspaceRuntime", agent_id: str, text: str, asset_ids: Sequence[str]) -> JsonObject:
         inputs = [{"type": "text", "text": text}]
         if not isinstance(asset_ids, list) or len(asset_ids) > 8:
             raise ValueError("Attach up to eight files")
@@ -506,7 +651,7 @@ class WorkspaceMixin:
                 )
         return inputs
 
-    def file_info(self, agent_id=None, path=None, asset_id=None):
+    def file_info(self: "WorkspaceRuntime", agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None) -> JsonObject:
         if asset_id:
             asset = self.asset_record(asset_id)
             file = Path(asset["path"]).resolve()
@@ -525,8 +670,8 @@ class WorkspaceMixin:
         return {"path": str(file), "name": file.name, "mime": mime, "size": size}
 
     def file_content(
-        self, agent_id=None, path=None, asset_id=None, limit=20 * 1024 * 1024
-    ):
+        self: "WorkspaceRuntime", agent_id: str | None = None, path: str | Path | None = None, asset_id: str | None = None, limit: int=20 * 1024 * 1024
+    ) -> bytes:
         if asset_id:
             asset = self.asset_record(asset_id)
             file = Path(asset["path"])
@@ -546,7 +691,7 @@ class WorkspaceMixin:
             content = file.read_bytes()
         return content, mime, file.name
 
-    def _image_file_size(self, file, agent=None):
+    def _image_file_size(self, file: Path, agent: AgentRecord | None = None) -> int:
         from codex_workspace_images import exec_prefix
         script = "import os,sys; p=sys.argv[1]; assert os.path.isfile(p); print(os.stat(p).st_size)"
         result = subprocess.run([*(self.workspace_exec_prefix(agent) if agent else exec_prefix()), "python3", "-c", script, str(file)],
@@ -555,7 +700,7 @@ class WorkspaceMixin:
             raise ValueError("This file does not exist")
         return int(result.stdout.strip())
 
-    def _read_image_file(self, file, limit, agent=None):
+    def _read_image_file(self, file: Path, limit: int, agent: AgentRecord | None = None) -> bytes:
         from codex_workspace_images import exec_prefix
         script = ("import os,sys; p=sys.argv[1]; assert os.path.isfile(p); n=os.stat(p).st_size; "
                   "n > int(sys.argv[2]) and sys.exit(23); "
@@ -592,8 +737,8 @@ class WorkspaceMixin:
         return result.stdout
 
     @staticmethod
-    def reported_change_files(patch):
-        def header_path(value):
+    def reported_change_files(patch: str) -> list[str]:
+        def header_path(value):  # type: (str) -> str | None
             if value.startswith('"'):
                 if not re.fullmatch(r'"(?:[^"\\]|\\(?:[abfnrtv\\"]|[0-3][0-7]{2}))*"', value):
                     return None
@@ -636,7 +781,7 @@ class WorkspaceMixin:
                 previous = None
         return list(files.values())
 
-    def reported_changes(self, agent_id):
+    def reported_changes(self: "WorkspaceRuntime", agent_id: str) -> JsonObject:
         with self.lock, self.db() as db:
             self.checked_actor(db, agent_id)
             row = db.execute(
@@ -667,7 +812,7 @@ class WorkspaceMixin:
             )
             return result
 
-    def changes(self, agent_id, scope=None):
+    def changes(self: "WorkspaceRuntime", agent_id: str, scope: str | None=None) -> JsonObject:
         if scope == "chat":
             return self.reported_changes(agent_id)
         if scope is not None:
@@ -703,7 +848,7 @@ class WorkspaceMixin:
         except ValueError as error:
             return {"files": [], "patch": "", "git": False, "error": str(error)}
 
-    def snapshot_tree(self, a):
+    def snapshot_tree(self: "WorkspaceRuntime", a: AgentRecord) -> str:
         # An independent index preserves the user's staging area.
         with tempfile.TemporaryDirectory(
             prefix="checkpoint-", dir=self.root
@@ -796,7 +941,7 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, agent, "checkpoint", request[5])
         self.checkpoint_after_turn(request[0], request[5], operation_id)
 
-    def _settle_checkpoint(self, db, agent, operation_id, error=None):
+    def _settle_checkpoint(self: "WorkspaceRuntime", db: sqlite3.Connection, agent: AgentRecord, operation_id: str, error: BaseException | str | None=None) -> None:
         operation = self._workspace_operation(db, operation_id)
         if not operation or operation.get("kind") not in {"checkpoint", "capture"}:
             return
@@ -885,7 +1030,7 @@ class WorkspaceMixin:
             operation_id = self._reserve_checkpoint(db, a, "capture", turn_id)
         return self._capture_reserved_checkpoint(agent_id, label, turn_id, operation_id)
 
-    def capture_checkpoint(self, agent_id, label="Checkpoint", turn_id=None, tree=None):
+    def capture_checkpoint(self: "WorkspaceRuntime", agent_id: str, label: str="Checkpoint", turn_id: str | None=None, tree: str | None=None) -> CheckpointRecord:
         a = self.checked_actor_in_own_db(agent_id)
         if a.get("imageWorkspace"):
             raise ValueError("Studio Git checkpoints are unavailable for image workspaces")
@@ -956,7 +1101,7 @@ class WorkspaceMixin:
             self.put(db, "agents", current)
             return record
 
-    def _checkpoint_history_ids(self, db, checkpoint):
+    def _checkpoint_history_ids(self: "WorkspaceRuntime", db: sqlite3.Connection, checkpoint: CheckpointRecord) -> list[str]:
         ids = set()
         seen = set()
         current = checkpoint
@@ -990,7 +1135,7 @@ class WorkspaceMixin:
         return ids
 
     @staticmethod
-    def checkpoint_summary(checkpoint):
+    def checkpoint_summary(checkpoint: CheckpointRecord) -> JsonObject:
         return {k: v for k, v in checkpoint.items()
                 if k not in {"items", "historyDelta"}}
 
@@ -1007,7 +1152,7 @@ class WorkspaceMixin:
             # own reservation. Automatic capture must not fail the completed turn.
             return
 
-    def checkpoint_preview(self, key, checkpoint_id):
+    def checkpoint_preview(self: "WorkspaceRuntime", key: str, checkpoint_id: str) -> JsonObject:
         a = self.checked_actor_in_own_db(key)
         recovery_expected = None
         with self.lock, self.db() as db:
@@ -1044,7 +1189,7 @@ class WorkspaceMixin:
             "canRestore": can_restore,
         }
 
-    def restore_checkpoint(self, key, data):
+    def restore_checkpoint(self: "WorkspaceRuntime", key: str, data: JsonObject) -> JsonObject:
         with self.lock:
             guard = self.prepare_locks.setdefault(
                 "restore:" + key, __import__("threading").Lock()
@@ -1052,7 +1197,7 @@ class WorkspaceMixin:
         with guard:
             return self._restore_checkpoint_locked(key, data)
 
-    def _restore_checkpoint_locked(self, key, data):
+    def _restore_checkpoint_locked(self: "WorkspaceRuntime", key: str, data: JsonObject) -> JsonObject:
         operation_id = self._workspace_operation_id("restore", key, data)
         resume_operation = None
         files_already_restored = False
@@ -1309,7 +1454,7 @@ class WorkspaceMixin:
                 self._require_workspace_recovery(operation_id, key, error)
             raise
 
-    def assert_workspace_idle(self, a):
+    def assert_workspace_idle(self: "WorkspaceRuntime", a: AgentRecord) -> None:
         with self.db() as db:
             self._assert_workspace_idle(db, a)
 
@@ -1363,7 +1508,7 @@ class WorkspaceMixin:
         if any(row[1] in by_id and resolved[by_id[row[1]][1]] == cwd for row in tasks):
             raise ValueError("A command or tool is still active")
 
-    def branch_conversation(self, key, data):
+    def branch_conversation(self: "WorkspaceRuntime", key: str, data: JsonObject) -> JsonObject:
         with self.lock:
             guard = self.prepare_locks.setdefault(
                 "fork:" + key, __import__("threading").Lock()
@@ -1371,7 +1516,7 @@ class WorkspaceMixin:
         with guard:
             return self.branch_locked(key, data)
 
-    def branch_locked(self, key, data):
+    def branch_locked(self: "WorkspaceRuntime", key: str, data: JsonObject) -> JsonObject:
         if "before" in data and type(data["before"]) is not bool:
             raise ValueError("before must be a boolean")
         operation_id = self._workspace_operation_id("branch", key, data)
@@ -1556,7 +1701,7 @@ class WorkspaceMixin:
                     if json.loads(r["record"]).get("turnId") == fork_turn), default=float("-inf"))
                 assets = {}
 
-                def copy_assets(records):
+                def copy_assets(records):  # type: (list[JsonObject]) -> list[JsonObject]
                     copied = []
                     for view in records:
                         old_id = view["id"]
@@ -1638,7 +1783,7 @@ class WorkspaceMixin:
                     self._require_workspace_recovery(operation_id, key, error)
             raise
 
-    def profiles(self, data=None):
+    def profiles(self: "WorkspaceRuntime", data: JsonObject | None = None) -> Any:  # typed-suspect: shadows EfficiencyMixin.profiles with another response shape
         with self.lock, self.db() as db:
             if data is None:
                 return {"profiles": self.records(db, "profiles")}
@@ -1672,10 +1817,10 @@ class WorkspaceMixin:
             self.put(db, "profiles", profile)
             return profile
 
-    def skill_catalog(self, key):
+    def skill_catalog(self: "WorkspaceRuntime", key: str) -> JsonObject:
         """Read only the selected account/project's native skill inventory."""
         a = self.checked_actor_in_own_db(key)
-        result = {"skills": [], "errors": []}
+        result: JsonObject = {"skills": [], "errors": []}
         try:
             response = self.connect_agent(a).call(
                 "skills/list", {"cwds": [a["cwd"]], "forceReload": False},
@@ -1712,7 +1857,7 @@ class WorkspaceMixin:
             result["errors"].append(str(error))
         return result
 
-    def capabilities(self, key):
+    def capabilities(self: "WorkspaceRuntime", key: str) -> JsonObject:
         a = self.checked_actor_in_own_db(key)
         cache = self.capability_cache.get(key)
         if cache and time.time() - cache["at"] < 30:
@@ -1768,7 +1913,7 @@ class WorkspaceMixin:
         self.capability_cache[key] = result
         return result
 
-    def workspace_snapshot(self, key=None, *, view="full"):
+    def workspace_snapshot(self: "WorkspaceRuntime", key: str=None, *, view: str="full") -> JsonObject:
         if view not in {"full", "inbox"}:
             raise ValueError("Unknown workspace view")
         with self.read_db() as db:
@@ -1877,7 +2022,7 @@ class WorkspaceMixin:
                 "monitors": [m for m in monitors if m["agent"] in ids],
             }
 
-    def _workspace_records(self, db, table, ids, field):
+    def _workspace_records(self: "WorkspaceRuntime", db: sqlite3.Connection, table: str, ids: Iterable[str], field: str) -> list[JsonObject]:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1891,7 +2036,7 @@ class WorkspaceMixin:
             f"SELECT {field_sql} FROM runtime_{table} WHERE {clause}", tuple(ids))]
 
     @staticmethod
-    def _workspace_requests(db, ids):
+    def _workspace_requests(db: sqlite3.Connection, ids: Iterable[str]) -> list[JsonObject]:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1902,14 +2047,14 @@ class WorkspaceMixin:
             "OR json_extract(record,'$.deferred')='')", tuple(ids))]
 
     @staticmethod
-    def _workspace_work(db, root):
+    def _workspace_work(db: sqlite3.Connection, root: Path) -> list[JsonObject]:
         if root is None:
             return [json.loads(row[0]) for row in db.execute("SELECT record FROM runtime_work")]
         return [json.loads(row[0]) for row in db.execute(
             "SELECT record FROM runtime_work WHERE json_extract(record,'$.rootId')=?", (root,))]
 
     @staticmethod
-    def _workspace_rules(db, ids):
+    def _workspace_rules(db: sqlite3.Connection, ids: Iterable[str]) -> list[JsonObject]:
         if not ids:
             return []
         placeholders = ",".join("?" for _ in ids)
@@ -1917,7 +2062,7 @@ class WorkspaceMixin:
             "SELECT record FROM runtime_rules WHERE json_extract(record,'$.agent') IN (" + placeholders + ")",
             tuple(ids))]
 
-    def _workspace_complaints(self, db, lead_ids):
+    def _workspace_complaints(self: "WorkspaceRuntime", db: sqlite3.Connection, lead_ids: Iterable[str] | None) -> list[JsonObject]:
         if lead_ids is None:
             complaints = self.records(db, "complaints")
         elif not lead_ids:
@@ -1943,7 +2088,7 @@ class WorkspaceMixin:
                            "leadDeleted": bool(agents.get(c["leadId"], {}).get("deletedAt"))})
         return sorted(result, key=lambda c: (not c["needsResponse"], -c["updated"]))
 
-    def monitor_log(self, key):
+    def monitor_log(self: "WorkspaceRuntime", key: str) -> JsonObject:
         with self.lock, self.db() as db:
             row = db.execute(
                 "SELECT record FROM runtime_monitors WHERE id=?", (key,)
@@ -1972,7 +2117,7 @@ class WorkspaceMixin:
                 "truncated": m.get("bytes", 0) > (size if fallback is None else len(fallback)),
             }
 
-    def native_command_action(self, data):
+    def native_command_action(self: "WorkspaceRuntime", data: JsonObject) -> JsonObject:
         task = self.task_detail(data.get("id"))
         if (
             task.get("kind") != "command"
@@ -2008,7 +2153,7 @@ class WorkspaceMixin:
         )
         return self.send(a["id"], instruction)
 
-    def workspace_blockers(self, db, a):
+    def workspace_blockers(self: "WorkspaceRuntime", db: sqlite3.Connection, a: AgentRecord) -> list[dict[str, object]]:
         cwd = Path(a["cwd"]).resolve()
         blockers = []
         # Called under the runtime lock on every start. Decoding every agent
@@ -2029,11 +2174,11 @@ class WorkspaceMixin:
             blockers.append(blocker)
         return blockers
 
-    def assert_workspace_available(self, db, a):
+    def assert_workspace_available(self: "WorkspaceRuntime", db: sqlite3.Connection, a: AgentRecord) -> None:
         from codex_context_repair import assert_context_available
         assert_context_available(a)
         from codex_native_tools import account_reserved
-        if account_reserved(self, a.get("accountKey", "default")):
+        if account_reserved(self, a.get("accountKey", "default")):  # type: ignore[arg-type]  # typed-narrowing: workspace host protocol supplies the account reservation interface
             raise ValueError("Wait for the account tool catalog update")
         if safety_retry_active(a):
             raise ValueError('Wait for the model change before another workspace operation')
@@ -2044,10 +2189,10 @@ class WorkspaceMixin:
             from codex_workspace_delivery import WorkspaceBusyError
             raise WorkspaceBusyError(blockers)
 
-    def recent_tasks(self, db, root=None):
+    def recent_tasks(self: "WorkspaceRuntime", db: sqlite3.Connection, root: str | None = None) -> list[JsonObject]:
         from codex_sync_entities import project
         return [project("task", record) for record in task_records(db, root)]
 
-    def recent_monitors(self, db, root=None):
+    def recent_monitors(self: "WorkspaceRuntime", db: sqlite3.Connection, root: str | None = None) -> list[JsonObject]:
         from codex_sync_entities import project
         return [project("monitor", record) for record in monitor_records(db, root)]

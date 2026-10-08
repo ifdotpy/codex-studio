@@ -1,12 +1,13 @@
-// Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
-import { fileURLToPath } from "node:url";
 import {
   apiSchemaHandshakeSse,
   protocol3SseEvent,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   test,
   expect,
 } from "../playwright.mjs";
-
+// Real RxDB/Dexie in Chromium, with an isolated HTTP fixture and no runtime.
+import { fileURLToPath } from "node:url";
 test("Sync Browser", async ({
   browser: _testBrowser,
   context: _testContext,
@@ -60,14 +61,14 @@ test("Sync Browser", async ({
       sends = [],
       content = "first",
       draftPushes = [];
-    await page.route("**/api/state", (route) =>
-      route.fulfill({ json: { token: "fixture" } }),
-    );
     await page.route("**/api/session", (route) =>
       route.fulfill({ json: { token: "fixture" } }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId: "a".repeat(32) } }),
+      route.fulfill({
+        json: { workspaceId: "a".repeat(32) },
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      }),
     );
     await page.addInitScript(() => {
       window.entityStreams = [];
@@ -100,6 +101,10 @@ test("Sync Browser", async ({
             revision,
             reason: "initial",
             resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision,
+            })),
           }),
         ),
       });
@@ -144,22 +149,9 @@ test("Sync Browser", async ({
             initialHigh: revision,
           },
         });
-      route.fulfill({
-        json: {
-          workspaceId: "a".repeat(32),
-          documents:
-            after < revision
-              ? [
-                  {
-                    id: "state:chat",
-                    payload: JSON.stringify({ text: content }),
-                    seq: revision,
-                    _deleted: false,
-                  },
-                ]
-              : [],
-          checkpoint: { seq: Math.max(after, revision) },
-        },
+      return route.fulfill({
+        status: 400,
+        json: { error: "Invalid sync scope" },
       });
     });
     await page.route("**/api/sync/drafts", (route) => {
@@ -177,8 +169,7 @@ test("Sync Browser", async ({
     await page.evaluate(async () => {
       const client = await import("/src/sync/client.ts");
       window.values = [];
-      window.stopSync = await client.watchProjection(
-        "state",
+      window.stopSync = client.subscribeStateProjection(
         (value) => {
           if (value) window.values.push(value.threads[0]?.name);
         },
@@ -206,6 +197,10 @@ test("Sync Browser", async ({
             revision: seq,
             reason: "change",
             resources: stream.resources,
+            resourceVersions: stream.resources.map((resource) => ({
+              resource,
+              revision: seq,
+            })),
           }),
         }),
       );

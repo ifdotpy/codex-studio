@@ -1,10 +1,9 @@
+import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, spawnFixture as spawn } from "../playwright.mjs";
-
 test("Chat controls", async ({ page }) => {
   test.setTimeout(180_000);
   const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -30,8 +29,7 @@ test("Chat controls", async ({ page }) => {
     fixture.once("exit", () => reject(Error(log)));
   });
   const origin = `http://127.0.0.1:${port}`;
-  const state = () =>
-    fetch(`${origin}/api/state`).then((response) => response.json());
+  const state = () => readTestState(origin);
   await page.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
   const errors = [];
@@ -95,19 +93,19 @@ test("Chat controls", async ({ page }) => {
     await page.getByRole("menu").waitFor({ state: "visible" });
   };
   await openActions();
-  // The pin shows at once, before a slow snapshot arrives.
+  // The pin shows at once, before a slow entity pull arrives.
   const slowState = async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 3000));
     await route.continue().catch(() => {});
   };
-  await page.route("**/api/state*", slowState);
+  await page.route("**/api/sync/pull*", slowState);
   const pinnedAt = Date.now();
   await page.getByRole("menuitem", { name: "Pin", exact: true }).click();
   await page
     .locator(`[data-chat="${lead.id}"] .chat-pin`)
     .waitFor({ state: "visible", timeout: 1000 });
-  assert.ok(Date.now() - pinnedAt < 1000, "pin shows before the snapshot");
-  await page.unroute("**/api/state*", slowState);
+  assert.ok(Date.now() - pinnedAt < 1000, "pin shows before the entity pull");
+  await page.unroute("**/api/sync/pull*", slowState);
   await poll(
     async () =>
       (await state()).threads.find((agent) => agent.id === lead.id).pinned,

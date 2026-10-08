@@ -1,9 +1,8 @@
+import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-import { spawnFixture as spawn, test } from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -67,8 +66,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       });
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = async () =>
-      (await fetch(origin + "/api/state?view=chat")).json();
+    const snapshot = async () => readTestState(origin);
     const initial = await snapshot();
     const syncWorkspaceId = (
       await (await fetch(origin + "/api/sync/identity")).json()
@@ -124,8 +122,8 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           headers: {
             "Content-Type": "application/json",
             "X-Canvas-Token": initial.token,
-            ...(initial.workspaceId
-              ? { "X-Canvas-Workspace": initial.workspaceId }
+            ...(syncWorkspaceId
+              ? { "X-Canvas-Workspace": syncWorkspaceId }
               : {}),
           },
           body: JSON.stringify({
@@ -136,7 +134,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
           }),
         });
         assert.equal(response.status, 200);
-        assert.equal((await response.json()).concurrency, 8);
+        const competingUpdate = await response.json();
+        assert.equal(competingUpdate.concurrency, 8);
+        assert.ok(competingUpdate._syncEntities?.length);
       }
       if (loseNextReply) {
         loseNextReply = false;
@@ -387,9 +387,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         headers: {
           "Content-Type": "application/json",
           "X-Canvas-Token": initial.token,
-          ...(initial.workspaceId
-            ? { "X-Canvas-Workspace": initial.workspaceId }
-            : {}),
+          ...(syncWorkspaceId ? { "X-Canvas-Workspace": syncWorkspaceId } : {}),
         },
         body: JSON.stringify({
           id: lead.id,

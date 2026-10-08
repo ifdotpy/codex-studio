@@ -104,6 +104,20 @@ class Conversion(unittest.TestCase):
             self.assertEqual(self.rt.records(db, 'monitors')[0]['agent'], worker['id'])
             self.assertEqual(json.loads(db.execute("SELECT record FROM runtime_items WHERE agent=? AND json_extract(record,'$.text')=?", (self.a["id"], "The original report")).fetchone()[0])["text"], 'The original report')
 
+    def test_conversion_tombstones_private_room_with_deleted_member(self):
+        deleted = self.rt.create({'name': 'Deleted member', 'cwd': self.path, 'prompt': 'Unused'}, defer=True)
+        with self.rt.lock, self.rt.db() as db:
+            self.rt.put(db, 'rooms', {'id': 'unavailable-private', 'rootId': self.a['id'],
+                'kind': 'private', 'updated': 1, 'members': [deleted['id']]})
+        self.change(deleted['id'], deletedAt=1)
+        manage(self.rt, self.body)
+        with self.rt.db() as db:
+            row = db.execute(
+                "SELECT deleted FROM sync_entities WHERE collection='room' AND id='unavailable-private'"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(row[0], 1)
+
     def test_busy_descendants_commands_permissions_watches_and_transfer_records(self):
         self.change(self.a['id'], autoWake=True)
         worker = self.rt.create({'name': 'Child', 'prompt': 'Child', 'role': 'reviewer'}, parent=self.a['id'], defer=True)
@@ -157,6 +171,7 @@ class Conversion(unittest.TestCase):
             self.assertEqual(self.rt.records(db, 'complaints')[0]['leadId'], self.c['id'])
             payload = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='peerTeam' AND id=?", (self.team,)).fetchone()[0])['value']
             self.assertEqual(payload['members'], [self.b['id'], self.c['id']])
+            self.assertEqual(payload['revision'], 3)
 
 
     def test_retry_saved_identity_after_lost_response_and_changed_body(self):
@@ -173,7 +188,11 @@ class Conversion(unittest.TestCase):
     def test_saved_room_with_source_in_third_position_is_refreshed(self):
         with self.rt.db() as db:
             self.rt.put(db, 'rooms', {'id': 'long-room', 'kind': 'private', 'updated': 1,
-                'members': [self.b['id'], self.c['id'], self.a['id']], 'radio': {'active': True}})
+                'members': [self.b['id'], self.c['id'], self.a['id']], 'radio': {
+                    'teamId': 'radio-team', 'revision': 0, 'status': 'idle', 'speaker': None,
+                    'next': [], 'active': {'identity': [None, None, 1], 'eventId': 'radio-event',
+                        'agentId': self.b['id'], 'epoch': 0, 'threadId': 'thread', 'through': 0},
+                    'error': None}})
         with self.assertRaisesRegex(ValueError, 'shared chat exchange'):
             manage(self.rt, self.body)
         with self.rt.db() as db:

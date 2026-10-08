@@ -14,7 +14,36 @@ import threading
 import time
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, Protocol
+from collections.abc import Callable, Iterable, Iterator
+from typing import Callable, NotRequired, Protocol, TypedDict
+
+from codex_records import (ImageWorkspaceCollectResultRecord, ImageWorkspaceMount,
+                           ImageWorkspaceRemovalResultRecord, JsonObject, JsonValue)
+
+
+class WorkspaceBaseStaging(TypedDict):
+    root: NotRequired[Path]
+    token: str | int | None
+    versionPath: Path
+    image: NotRequired[Path]
+    mount: NotRequired[Path]
+    version: NotRequired[str]
+    refresh: NotRequired[bool]
+
+
+class WorkspaceMount(TypedDict):
+    mount: str
+    layer: NotRequired[str]
+    baseImage: NotRequired[str]
+    pid: NotRequired[int]
+
+
+class WorkspaceDelta(TypedDict):
+    token: str | int | None
+    changedPaths: list[str]
+    historyLost: bool
+    scanPaths: NotRequired[list[str]]
+    refreshBase: NotRequired[bool]
 
 
 class WorkspaceBackend(Protocol):
@@ -40,7 +69,7 @@ _BASE_MIN_FREE_ENV = 'CODEX_WORKSPACE_MIN_FREE_BYTES'
 _AGENT_MIN_FREE_ENV = 'CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES'
 _DEFAULT_BASE_MIN_FREE_BYTES = 20 * 1024**3
 _DEFAULT_AGENT_MIN_FREE_BYTES = 5 * 1024**3
-_backend_instance = None
+_backend_instance: WorkspaceBackend | None = None
 _backend_lock = threading.Lock()
 _build_lock = threading.Lock()
 _build_threads: dict[str, threading.Thread] = {}
@@ -57,7 +86,7 @@ def _backend() -> WorkspaceBackend:
     return Backend()
 
 
-def _get_backend():
+def _get_backend() -> WorkspaceBackend:
     global _backend_instance
     if _backend_instance is None:
         with _backend_lock:
@@ -746,14 +775,14 @@ def _safe_id(value) -> str:
     return value
 
 
-def _read_json(path: Path, default=None):
+def _read_json(path: Path, default: JsonObject | None = None) -> JsonObject | None:
     try:
         return json.loads(path.read_text())
     except (FileNotFoundError, json.JSONDecodeError, OSError):
         return default
 
 
-def _write_json(path: Path, value):
+def _write_json(path: Path, value: JsonObject) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(path.name + f'.{os.getpid()}.{threading.get_ident()}.tmp')
     with temp.open('w') as stream:
@@ -772,7 +801,7 @@ def _write_json(path: Path, value):
 
 
 @contextmanager
-def _file_lock(path: Path, *, blocking=True):
+def _file_lock(path: Path, *, blocking: bool = True) -> Iterator[None]:
     path.parent.mkdir(parents=True, exist_ok=True)
     fd = os.open(path, os.O_CREAT | os.O_RDWR, 0o600)
     try:
@@ -892,11 +921,11 @@ def _call_callback(callback, result):
         pass
 
 
-def _check_base_refresh(root: Path, key: str, expected_version: str):
+def _check_base_refresh(root: Path, key: str, expected_version: str) -> None:
     try:
         state = _read_json(_base_state_path(key), {}) or {}
         if (state.get('state') == 'ready' and state.get('version') == expected_version
-                and _get_backend().base_needs_refresh(root, state)):
+                and _get_backend().base_needs_refresh(root, state)):  # type: ignore[attr-defined]  # typed-narrowing: the preceding feature probe guards this optional backend hook
             _build_base(root, key, expected_version)
     except BaseException as exc:
         state = _read_json(_base_state_path(key), {}) or {}
@@ -1166,7 +1195,7 @@ def remove_workspace(agent_id, *, force=False) -> dict[str, Any]:
     return {'freedBytes': None, 'state': 'removed', 'unmount': unmount}
 
 
-def list_workspaces() -> list[dict[str, Any]]:
+def list_workspaces() -> list[JsonObject]:
     results = []
     for path in (_store() / 'agents').glob('*/agent.json'):
         value = _read_json(path, {})

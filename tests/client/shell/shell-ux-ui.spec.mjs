@@ -1,7 +1,12 @@
-import { test } from "../playwright.mjs";
+import {
+  readTestState,
+  stubEntityState,
+  readFixtureSyncContract,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production bundle, isolated backend, no model calls.
 import assert from "node:assert/strict";
-import { spawnFixture as spawn } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -33,7 +38,8 @@ test("Shell ux ui", async ({
       fixture.once("exit", () => reject(new Error(log)));
     });
     const origin = `http://127.0.0.1:${port}`;
-    const snapshot = await (await fetch(origin + "/api/state")).json();
+    const snapshot = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
     const page = runnerPage;
     await page.setViewportSize({ width: 1440, height: 960 });
     page.setDefaultTimeout(12000);
@@ -208,53 +214,32 @@ test("Shell ux ui", async ({
         await page.keyboard.press("Escape");
       }
     }
-    const compactPage = await testBrowser.newPage({
+    const compactContext = await testBrowser.newContext({
       viewport: { width: 860, height: 960 },
     });
-    let warningNoticesEnabled = false;
-    compactPage.on("pageerror", (error) => errors.push(error.message));
-    await compactPage.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
+    const compactPage = await compactContext.newPage();
+    const usageError = {
+      codexErrorInfo: "usageLimitExceeded",
+      message: "Usage limit reached",
+    };
+    const compactAgents = snapshot.threads.map((agent) =>
+      agent.name === "Release lead" ? { ...agent, error: usageError } : agent,
     );
-    await compactPage.route("**/api/state*", async (route) => {
-      const state = await route.fetch().then((response) => response.json());
-      const usageError = {
-        codexErrorInfo: "usageLimitExceeded",
-        message: "Usage limit reached",
-      };
-      const addError = (agent) =>
-        agent.name === "Release lead" ? { ...agent, error: usageError } : agent;
-      state.threads = state.threads.map(addError);
-      state.runtime.agents = state.runtime.agents.map(addError);
-      state.runtime.nativeNotices = warningNoticesEnabled
-        ? [
-            {
-              id: "fixture-current-account-warning",
-              accountKey: "default",
-              nativeNotice: "warning",
-              message: "Account configuration needs review",
-              details: {
-                code: "fixture_configuration",
-                files: ["first.toml", "second.toml"],
-                retryAllowed: false,
-              },
-            },
-            {
-              id: "fixture-other-account-warning",
-              accountKey: "other-account",
-              nativeNotice: "warning",
-              message: "Account configuration needs review",
-              details: {
-                code: "fixture_configuration",
-                files: ["first.toml", "second.toml"],
-                retryAllowed: false,
-              },
-            },
-          ]
-        : [];
-      if (state.nodes) state.nodes = [...state.threads, ...(state.chats || [])];
-      return route.fulfill({ json: state });
-    });
+    const compactSnapshot = {
+      ...snapshot,
+      threads: compactAgents,
+      runtime: {
+        ...snapshot.runtime,
+        agents: compactAgents,
+        nativeNotices: [],
+      },
+    };
+    compactPage.on("pageerror", (error) => errors.push(error.message));
+    const compactStub = await stubEntityState(
+      compactPage,
+      compactSnapshot,
+      syncContract,
+    );
     await compactPage.route("**/api/limits*", (route) =>
       route.fulfill({
         json: {
@@ -301,7 +286,37 @@ test("Shell ux ui", async ({
       0,
       "Account warning details are not duplicated in the workspace transcript",
     );
-    warningNoticesEnabled = true;
+    compactSnapshot.runtime.nativeNotices = [
+      {
+        id: "fixture-current-account-warning",
+        accountKey: "default",
+        nativeNotice: "warning",
+        message: "Account configuration needs review",
+        details: {
+          code: "fixture_configuration",
+          files: ["first.toml", "second.toml"],
+          retryAllowed: false,
+        },
+      },
+      {
+        id: "fixture-other-account-warning",
+        accountKey: "other-account",
+        nativeNotice: "warning",
+        message: "Account configuration needs review",
+        details: {
+          code: "fixture_configuration",
+          files: ["first.toml", "second.toml"],
+          retryAllowed: false,
+        },
+      },
+    ];
+    // This synthetic snapshot edit is not persisted through Runtime.db; use
+    // the fixture publisher to notify the page and test the promoted fields.
+    await compactStub.update(compactSnapshot, {
+      origin,
+      token: snapshot.token,
+      resources: [{ kind: "state" }],
+    });
     await compactPage.reload();
     await compactPage
       .locator(".chat-row")
@@ -548,11 +563,10 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     };
-    await firstUse.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await firstUse.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: emptyState }),
+    await stubEntityState(
+      firstUse,
+      emptyState,
+      await readFixtureSyncContract(origin),
     );
     await firstUse.route("**/api/directories*", (route) =>
       route.fulfill({
@@ -624,11 +638,10 @@ test("Shell ux ui", async ({
         monitors: [],
       },
     });
-    await branchPage.route("**/api/sync/identity", (route) =>
-      route.fulfill({ status: 404, json: { error: "Fixture without sync" } }),
-    );
-    await branchPage.route(/\/api\/state(?:\?.*)?$/, (route) =>
-      route.fulfill({ json: branchState() }),
+    await stubEntityState(
+      branchPage,
+      branchState(),
+      await readFixtureSyncContract(origin),
     );
     await branchPage.route("**/api/transcript/stream*", (route) =>
       route.fulfill({ status: 503, json: { error: "Use fixture polling" } }),
