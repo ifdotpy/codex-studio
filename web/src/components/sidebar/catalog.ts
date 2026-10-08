@@ -178,7 +178,11 @@ export function createSidebarCatalogSelector() {
     const sourceReordered = oldSurviving.some(
       (id, index) => id !== retainedSource[index],
     );
-    if (fullSort || sourceReordered) ids = [...nextById.keys()].sort(compare);
+    // Bound bulk inserts and timestamp changes. Repeated array insertion is
+    // useful for small deltas, but can copy a quadratic number of references.
+    const bulkChange = changedOrder.size > Math.max(32, nextById.size / 4);
+    if (fullSort || sourceReordered || bulkChange)
+      ids = [...nextById.keys()].sort(compare);
     else {
       ids = ids.filter((id) => nextById.has(id) && !changedOrder.has(id));
       for (const id of changedOrder) {

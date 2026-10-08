@@ -115,6 +115,25 @@ describe("incremental sidebar catalog", () => {
     );
     expect(counts["order-compare"]).toBeLessThan(12);
   });
+  it("sorts a bulk timestamp change once instead of inserting every row", () => {
+    let comparisons = 0;
+    vi.stubGlobal("window", {
+      __studioSidebarModelProbe: (work: string, count: number) => {
+        if (work === "order-compare") comparisons += count;
+      },
+    });
+    const select = createSidebarCatalogSelector();
+    const rows = Array.from({ length: 1000 }, (_, i) =>
+      agent(`a-${i}`, { updated: i }),
+    );
+    select(rows, overrides, teams, order);
+    comparisons = 0;
+    const next = rows.map((row, i) => ({ ...row, updated: 2000 - i }));
+    expect(
+      select(next, overrides, teams, order).ordered.map((row) => row.id),
+    ).toEqual(reference(next, order, teams));
+    expect(comparisons).toBeLessThan(3000);
+  });
   it("matches original ordering through inserts, removals, reorders and optimistic changes", () => {
     const select = createSidebarCatalogSelector();
     const peerTeams: PeerTeam[] = [
