@@ -521,7 +521,7 @@ export { browserExecutablePath };
 /** @typedef {Record<string, JsonValue>} JsonObject */
 /** @typedef {{ collection: string, id: string, value: JsonValue }} EntityEnvelope */
 
-/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
+/** @typedef {{ scope?: string, after?: number, limit?: number, fresh?: boolean, initialHigh?: number, reset?: boolean, floor?: number, maxSeq?: number, generation?: number, priorityId?: string, tombstones?: SyncEntity[], transcript?: TranscriptPageResponse, transcriptSeq?: number, drafts?: SyncEntity[], documents?: SyncEntity[] }} EntityPullFixtureOptions */
 
 /** @type {number} */
 const ENTITY_PAGE_SIZE = 500;
@@ -1243,7 +1243,7 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
     };
   }
   if (scope.startsWith("transcript:")) {
-    const high = 1;
+    const high = options.transcriptSeq ?? 1;
     const limit = Math.min(100, Math.max(1, options.limit ?? 100));
     /** @type {TranscriptPageResponse} */
     const transcript = options.transcript ?? {
