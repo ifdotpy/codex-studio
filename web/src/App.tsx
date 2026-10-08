@@ -947,17 +947,22 @@ export default function App() {
       accountKey,
       ...usageAccountKeys.split("\n").filter(Boolean),
     ]);
-    const stops = [...keys].map((key) =>
-      watchResourceReads(
+    const stops = [...keys].map((key) => {
+      let baseline = true;
+      return watchResourceReads(
         { kind: "limits", accountKey: key },
         async () => {
-          await reloadLimitsForRef.current(key, true);
+          if (baseline) {
+            baseline = false;
+            return;
+          }
+          await reloadLimitsForRef.current(key);
         },
         () => {
           // reloadLimitsFor stores errors in visible account state.
         },
-      ),
-    );
+      );
+    });
     return () => {
       for (const stop of stops) stop();
     };
