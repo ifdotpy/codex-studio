@@ -943,9 +943,13 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             if error:
                 failures.append((relative, error))
             indexed.remove(calibration)
-        workers = automatic_worker_count(runnable, profile)
+        plan = worker_plan(runnable, profile)
+        workers = plan["workers"]
+        print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
     elif workers is None:
-        workers = automatic_worker_count(runnable, profile)
+        plan = worker_plan(runnable, profile)
+        workers = plan["workers"]
+        print("Selected automatic worker plan: " + json.dumps(plan, sort_keys=True), flush=True)
 
     if TMP_ROOT_OVERRIDE:
         print(f"Scratch root: configured {TEST_TMP_ROOT}", flush=True)
