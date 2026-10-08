@@ -100,8 +100,8 @@ class ServerSuiteRunner(unittest.TestCase):
 
         self.assertEqual(len(commands), 1)
         self.assertEqual(
-            commands[0][-4:],
-            ["-B", "-m", "unittest", "studio_api.agents.test_router"],
+            commands[0][-5:],
+            ["-B", "-m", "unittest", "-v", "studio_api.agents.test_router"],
         )
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
@@ -109,7 +109,9 @@ class ServerSuiteRunner(unittest.TestCase):
 
         def execute(command, _cwd, _timeout, _environment):
             calls.append(command[-1])
-            return (1, None) if command[-1].endswith("failure.py") else (0, None)
+            if command[-1].endswith("failure.py"):
+                return 1, None, [], []
+            return 0, None, ["Expected.test_known_defect"], ["Unexpected.test_fixed_defect"]
 
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
@@ -120,6 +122,10 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(skipped, [("native.py", "native")])
         self.assertEqual(failures, [("failure.py", "exit 1")])
         self.assertEqual(len(calls), 2)
+        self.assertEqual(RUNNER.EXPECTED_FAILURES,
+                         ["success.py::Expected.test_known_defect"])
+        self.assertEqual(RUNNER.UNEXPECTED_SUCCESSES,
+                         ["success.py::Unexpected.test_fixed_defect"])
 
         empty, skipped_only, failures, _elapsed = RUNNER.run_suites(
             [("native.py", "native")], set(), 1, 1, root=ROOT, execute=execute, workers=1)
@@ -472,7 +478,7 @@ class ServerSuiteRunner(unittest.TestCase):
               mock.patch.object(RUNNER.os, "close"),
               mock.patch.object(RUNNER.select, "select", side_effect=ready_now)):
             result = RUNNER._run_process_with_group_supervisor(["suite.py"], ROOT, 1e100, {})
-        self.assertEqual(result, (0, None))
+        self.assertEqual(result, (0, None, [], []))
         self.assertEqual(intervals, [1.0])
 
     def test_deadline_kills_owned_process_group(self):
@@ -482,7 +488,7 @@ class ServerSuiteRunner(unittest.TestCase):
                      "while True:\n p.open('a').write('x')\n time.sleep(.01)\n")
             parent = ("import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
                       repr(child) + "]); time.sleep(10)")
-            returncode, error = RUNNER.run_process(
+            returncode, error, _expected, _unexpected = RUNNER.run_process(
                 [sys.executable, "-c", parent], ROOT, .2, os.environ.copy())
             self.assertIsNone(returncode)
             self.assertIn("timed out", error)
@@ -495,9 +501,21 @@ class ServerSuiteRunner(unittest.TestCase):
         command = [sys.executable, "-c",
                    "import sys; print('OSError: [Errno 122] Disk quota exceeded'); sys.exit(1)"]
         with contextlib.redirect_stdout(io.StringIO()):
-            returncode, error = RUNNER.run_process(command, ROOT, 5, os.environ.copy())
+            returncode, error, _expected, _unexpected = RUNNER.run_process(command, ROOT, 5, os.environ.copy())
         self.assertEqual(returncode, 1)
         self.assertEqual(error, "scratch exhausted (suite output reported ENOSPC or EDQUOT)")
+
+    def test_run_process_collects_expected_failures_and_unexpected_successes(self):
+        command = [sys.executable, "-c",
+                   "print('test_known (__main__.Suite.test_known) ... expected failure'); "
+                   "print('test_fixed (__main__.Suite.test_fixed) ... unexpected success')"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            returncode, error, expected, unexpected = RUNNER.run_process(
+                command, ROOT, 5, os.environ.copy())
+        self.assertEqual(returncode, 0)
+        self.assertIsNone(error)
+        self.assertEqual(expected, ["test_known (__main__.Suite.test_known)"])
+        self.assertEqual(unexpected, ["test_fixed (__main__.Suite.test_fixed)"])
 
     def test_successful_exit_kills_leftover_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-success-cleanup-") as temp:
@@ -507,7 +525,7 @@ class ServerSuiteRunner(unittest.TestCase):
             parent = ("import pathlib,subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," +
                       repr(child) + "]); p=pathlib.Path(" + repr(str(marker)) +
                       "); deadline=time.monotonic()+2\nwhile not p.exists() and time.monotonic()<deadline: time.sleep(.01)")
-            returncode, error = RUNNER.run_process(
+            returncode, error, _expected, _unexpected = RUNNER.run_process(
                 [sys.executable, "-c", parent], ROOT, 3, os.environ.copy())
             self.assertEqual(returncode, 0)
             self.assertIsNone(error)
@@ -540,7 +558,7 @@ class ServerSuiteRunner(unittest.TestCase):
             environment["PYTHONPATH"] = os.pathsep.join(
                 (temp, environment.get("PYTHONPATH", "")))
             with mock.patch.object(RUNNER, "_supports_waitid_nowait", return_value=False):
-                returncode, error = RUNNER.run_process(
+                returncode, error, _expected, _unexpected = RUNNER.run_process(
                     [sys.executable, "-c", parent], ROOT, 3, environment)
             self.assertEqual(returncode, 0)
             self.assertIsNone(error)

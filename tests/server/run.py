@@ -66,6 +66,9 @@ except ImportError:  # pragma: no cover - Windows
 
 ACTIVE_SUITE_LOCK = threading.Lock()
 ACTIVE_SUITE_INTERRUPTERS = set()
+SUITE_OUTCOME_LOCK = threading.Lock()
+EXPECTED_FAILURES = []
+UNEXPECTED_SUCCESSES = []
 
 NATIVE_SUITES = frozenset({
     "tests/account-transfer-native.py", "tests/agent-review-native.py",
@@ -304,13 +307,13 @@ def run_process(command, cwd, timeout, environment):
     with ACTIVE_SUITE_LOCK:
         ACTIVE_SUITE_INTERRUPTERS.add(interrupt_group)
 
-    relay_thread, scratch_errors = _relay_suite_output(process)
+    relay_thread, scratch_errors, outcomes = _relay_suite_output(process)
 
     def finish(returncode, error):
         relay_thread.join()
         if scratch_errors and (error is not None or returncode):
-            return returncode, "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
-        return returncode, error
+            error = "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
+        return returncode, error, outcomes["expected"], outcomes["unexpected"]
 
     try:
         if os.name == "nt":
@@ -351,6 +354,7 @@ def run_process(command, cwd, timeout, environment):
 def _relay_suite_output(process):
     """Stream output while spotting scratch exhaustion for infrastructure reports."""
     scratch_errors = []
+    outcomes = {"expected": [], "unexpected": []}
     markers = (b"enospc", b"edquot", b"no space left on device",
                b"disk quota exceeded", b"errno 28", b"errno 122")
 
@@ -363,6 +367,11 @@ def _relay_suite_output(process):
                 lowered = line.lower()
                 if any(marker in lowered for marker in markers):
                     scratch_errors.append(True)
+                decoded = line.decode(errors="replace").strip()
+                if " ... expected failure" in decoded:
+                    outcomes["expected"].append(decoded.split(" ... expected failure", 1)[0])
+                elif " ... unexpected success" in decoded:
+                    outcomes["unexpected"].append(decoded.split(" ... unexpected success", 1)[0])
                 try:
                     stream = sys.stdout
                     if hasattr(stream, "buffer"):
@@ -378,7 +387,7 @@ def _relay_suite_output(process):
 
     thread = threading.Thread(target=relay, name="server-suite-output", daemon=True)
     thread.start()
-    return thread, scratch_errors
+    return thread, scratch_errors, outcomes
 
 
 def _supports_waitid_nowait():
@@ -411,13 +420,13 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
         raise
     finally:
         os.close(write_fd)
-    relay_thread, scratch_errors = _relay_suite_output(process)
+    relay_thread, scratch_errors, outcomes = _relay_suite_output(process)
 
     def finish(returncode, error):
         relay_thread.join()
         if scratch_errors and (error is not None or returncode):
-            return returncode, "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
-        return returncode, error
+            error = "scratch exhausted (suite output reported ENOSPC or EDQUOT)"
+        return returncode, error, outcomes["expected"], outcomes["unexpected"]
 
     def terminate_group():
         try:
@@ -567,8 +576,12 @@ def _suite_command(relative, root):
         return ["node", str(root / relative)]
     if relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
         module_name = relative[len("scripts/"):-3].replace("/", ".")
-        return [sys.executable, "-B", "-m", "unittest", module_name]
-    return [sys.executable, "-B", str(root / relative)]
+        return [sys.executable, "-B", "-m", "unittest", "-v", module_name]
+    path = root / relative
+    command = [sys.executable, "-B", str(path)]
+    if is_unittest_suite(path):
+        command.append("-v")
+    return command
 
 
 def _suite_environment(root, temp_root):
@@ -961,6 +974,9 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     skipped = [(path, kind) for path, kind in entries
                if kind not in {"safe", "component"} and kind not in opted_in]
     failures = []
+    with SUITE_OUTCOME_LOCK:
+        EXPECTED_FAILURES.clear()
+        UNEXPECTED_SUCCESSES.clear()
     started = time.monotonic()
     if not runnable:
         return runnable, skipped, failures, time.monotonic() - started
@@ -987,7 +1003,14 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                     _suite_command(relative, root), root, deadline, environment,
                 )
                 scratch_bytes = _directory_size_bytes(temp_root)
-            returncode, error = result
+                if len(result) >= 4:
+                    returncode, error, expected, unexpected = result
+                else:
+                    returncode, error = result
+                    expected, unexpected = [], []
+                with SUITE_OUTCOME_LOCK:
+                    EXPECTED_FAILURES.extend(f"{relative}::{name}" for name in expected)
+                    UNEXPECTED_SUCCESSES.extend(f"{relative}::{name}" for name in unexpected)
         except OSError as error:
             return relative, f"could not start: {error}", time.monotonic() - suite_started, 0, scratch_bytes
         peak_rss = _measured_child_peak_rss_bytes()
@@ -1187,6 +1210,11 @@ def main():
         return 2
     print(f"Server suites: {len(runnable) - len(failures)} passed, {len(failures)} failed, "
           f"{len(skipped)} skipped (opt-in), {elapsed:.1f}s")
+    with SUITE_OUTCOME_LOCK:
+        expected = sorted(EXPECTED_FAILURES)
+        unexpected = sorted(UNEXPECTED_SUCCESSES)
+    print(f"Expected failures: {len(expected)}" + ("; " + ", ".join(expected) if expected else ""))
+    print(f"Unexpected successes: {len(unexpected)}" + ("; " + ", ".join(unexpected) if unexpected else ""))
     for path, reason in failures:
         print(f"FAIL {path}: {reason}")
     return 1 if failures else 0
