@@ -49,6 +49,8 @@ enable Funnel.
 2. Transfer the invitation through a private channel. The response contains
    `{invitation:{protocol:1,inviteId,token,serverId,label,origin,publicKey,tailscaleUser,expires},expires}`.
    The random secret expires after 15 minutes. The server stores its hash.
+   The server derives the same secret from its private key, invitation ID, and request ID.
+   Response receipts omit the secret and restore it for an exact retry.
 3. Generate an Ed25519 key pair on the client. Save the key, client ID, invitation,
    and stable request ID before the network request. A lost response must not
    cause a new client identity.
@@ -137,6 +139,11 @@ cursor, heartbeat, schema checks, and reconnect rules stay in use.
 or private key. The identity contains the server ID, label, origin, public key,
 and Tailscale user. The client list includes status and access audit times.
 
+`GET /api/multi-server/audit` returns the latest 100 audit records. Each record
+identifies the device, the actor, the action, and the server time. The database
+keeps a maximum of 10,000 audit records. The audit list contains no key or
+invitation secret.
+
 `POST /api/multi-server` also accepts:
 
 - `{action:"revoke",clientId,requestId}`
@@ -146,7 +153,9 @@ and Tailscale user. The client list includes status and access audit times.
 `local_server_id`, `servers()`, `paired_server(id)`, and
 `request(id,method,path,body,request_id,timeout=15)`.
 The request method signs exact JSON bytes, pins the target identity, rejects
-redirects, and bounds the response. The maximum orchestration request size is
+redirects, and bounds the response. A Node fetch process has one deadline for
+DNS, TLS, and the response body. The parent stops that process at the deadline.
+The maximum orchestration request size is
 256 KiB. The maximum response size is 1 MiB. A timeout leaves the operation
 outcome unknown until its durable receipt is recovered.
 
@@ -162,7 +171,9 @@ receives the request.
 ### Receipts and errors
 
 The server reserves a durable receipt before a remote mutation reaches its
-existing API handler. The receipt binds the client, request ID, method, exact
+existing API handler. The orchestration route uses its own durable operation
+receipt. It can recover a pending result without a second mutation.
+The receipt binds the client, request ID, method, exact
 target, and body hash. Concurrent duplicates cannot run the handler twice.
 Completed duplicates return the saved status and body. A different payload
 with the same ID returns a conflict. After a crash, an unfinished receipt

@@ -1905,6 +1905,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self._voice_store = VoiceStore(self)
             return self._voice_store
 
+    def paired_access(self):
+        with self.lock:
+            service = getattr(self, "_paired_access_service", None)
+            if service is None:
+                from codex_multi_server import MultiServerService
+                service = MultiServerService(self)
+                self._paired_access_service = service
+            return service
+
     @contextmanager
     def db(self, *, busy_timeout=None):
         local = self.__dict__.setdefault("_callback_db", threading.local())

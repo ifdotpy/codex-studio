@@ -13,6 +13,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 
 from studio_api.core_models import SessionResponse
 from studio_api.middleware import HttpTraceMiddleware, RequestBoundary
+from studio_api.multi_server.boundary import MultiServerBoundary
 from studio_api.models import ErrorResponse, JsonValue
 from studio_api.responses import error_response, install_error_response_docs
 
@@ -30,6 +31,7 @@ def create_app(context: ApiContext) -> FastAPI:
     app = FastAPI(title="Codex Studio API", version="1")
     app.state.api_context = context
     app.add_middleware(RequestBoundary, context=context)
+    app.add_middleware(MultiServerBoundary, context=context)
     # Trace wraps authorization and routing, matching the old handler's
     # begin-before-dispatch and finish-after-response coverage.
     app.add_middleware(HttpTraceMiddleware)
@@ -41,6 +43,7 @@ def create_app(context: ApiContext) -> FastAPI:
     from studio_api.agents.router import create_router as create_agents_router
     from studio_api.accounts.router import create_router as create_accounts_router
     from studio_api.federation.router import create_router as create_federation_router
+    from studio_api.multi_server.router import create_router as create_multi_server_router
     from studio_api.history.router import create_router as create_history_router
     from studio_api.insights.router import create_router as create_insights_router
     from studio_api.io.router import create_router as create_io_router
@@ -59,6 +62,7 @@ def create_app(context: ApiContext) -> FastAPI:
         create_history_router,
         create_voice_router,
         create_federation_router,
+        create_multi_server_router,
         create_system_router,
     ):
         app.include_router(create_router(context))

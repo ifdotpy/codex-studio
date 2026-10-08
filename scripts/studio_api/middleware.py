@@ -320,6 +320,9 @@ class RequestBoundary:
         await self.app(scope, replay_receive, send)
 
     def _trusted(self, scope: Scope, headers: HeaderView, *, write: bool, federation: bool) -> bool:
+        if isinstance(scope.get("studio_principal"), dict):
+            # Only MultiServerBoundary sets this scope value after verification.
+            return True
         extensions = scope.get("extensions", {})
         unix_transport = bool(extensions.get("studio.unix_socket"))
         if federation and unix_transport:
