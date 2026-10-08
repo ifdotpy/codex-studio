@@ -9,6 +9,7 @@ $stateDir = Join-Path $installRoot 'state'
 $origin = 'https://kukuka-win.tailf00fa0.ts.net:8443'
 $taskName = 'Codex Studio Native Server'
 $runnerPath = Join-Path $installRoot 'start-windows-server.ps1'
+$managerPath = Join-Path $installRoot 'manage-windows-server.ps1'
 $entrypointPath = Join-Path $installRoot 'codex_windows_server.py'
 $sourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
 $python = (Resolve-Path -LiteralPath $Python).Path
@@ -45,6 +46,7 @@ if ($https8443 -and $https8443 -ne 'http://127.0.0.1:4630') {
 
 New-Item -ItemType Directory -Force -Path $installRoot, $stateDir | Out-Null
 Copy-Item -Force -LiteralPath (Join-Path $PSScriptRoot 'start-windows-server.ps1') -Destination $runnerPath
+Copy-Item -Force -LiteralPath (Join-Path $PSScriptRoot 'manage-windows-server.ps1') -Destination $managerPath
 Copy-Item -Force -LiteralPath (Join-Path $PSScriptRoot 'codex_windows_server.py') -Destination $entrypointPath
 $config = [ordered]@{
     sourceRoot = $sourceRoot

@@ -712,8 +712,10 @@ def main():
     # Prepare the watchdog before signals can request shutdown. A daemon still
     # runs while Python waits for non-daemon threads after main returns.
     threading.Thread(target=shutdown.watch, name="backend-shutdown", daemon=True).start()
-    previous_handlers = {number: signal.getsignal(number)
-                         for number in (signal.SIGTERM, signal.SIGINT)}
+    signal_numbers = [signal.SIGTERM, signal.SIGINT]
+    if hasattr(signal, "SIGBREAK"):
+        signal_numbers.append(signal.SIGBREAK)
+    previous_handlers = {number: signal.getsignal(number) for number in signal_numbers}
     for number in previous_handlers:
         signal.signal(number, shutdown.terminate)
     runtime = None

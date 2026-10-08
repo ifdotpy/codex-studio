@@ -194,13 +194,82 @@ class WindowsServerContract(unittest.TestCase):
                 first_pid = _wait_until(lambda: _port_owner(port))
                 self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
                 lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
-                os.kill(first_pid, signal.SIGTERM)
+                stop = subprocess.run(
+                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                     "--state", str(state), "--request-action", "stop-backend"],
+                    cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(stop.returncode, 0, stop.stderr)
+                stop_id = json.loads(stop.stdout)["requestId"]
+                stopped_path = state / f"windows-server-control-{stop_id}.json"
+                _wait_until(lambda: stopped_path.exists())
+                self.assertEqual(json.loads(stopped_path.read_text(encoding="utf-8"))["result"],
+                                 "backend-stopped")
+                _wait_until(lambda: _port_owner(port) is None)
+                exit_events = []
+                for line in (root / "entrypoint.log").read_text(encoding="utf-8", errors="replace").splitlines():
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if event.get("event") == "backend_exit":
+                        exit_events.append(event)
+                self.assertTrue(exit_events, "The entrypoint did not record backend exit")
+                self.assertEqual(exit_events[-1]["returnCode"], 0,
+                                 "The backend did not exit through its graceful signal handler")
+                from codex_process_supervisor import status
+                self.assertEqual(status(state)["stateDir"], str(state.resolve()))
+                request = subprocess.run(
+                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                     "--state", str(state), "--request-action", "restart-backend"],
+                    cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(request.returncode, 0, request.stderr)
+                request_id = json.loads(request.stdout)["requestId"]
                 second_pid = _wait_until(lambda: _new_port_owner(port, first_pid))
+                result_path = state / f"windows-server-control-{request_id}.json"
+                _wait_until(lambda: result_path.exists())
+                self.assertEqual(json.loads(result_path.read_text(encoding="utf-8"))["result"],
+                                 "backend-restarted")
                 next_lease = json.loads((state / "supervisor.lock").read_text(encoding="utf-8"))
                 self.assertNotEqual(first_pid, second_pid)
                 self.assertEqual(next_lease, lease)
-                from codex_process_supervisor import status
                 self.assertEqual(status(state)["stateDir"], str(state.resolve()))
+            finally:
+                if process.poll() is None:
+                    _stop_entrypoint_tree(process)
+                log.close()
+
+    def test_stop_all_control_action_stops_the_server_tree(self):
+        with tempfile.TemporaryDirectory(prefix="studio stop Ω ") as temporary:
+            root = Path(temporary)
+            state = root / "state"
+            port = 4632
+            if _port_owner(port):
+                self.skipTest("TCP port 4632 is already in use")
+            log = (root / "entrypoint.log").open("ab")
+            executable, environment = _base_python()
+            environment["CODEX_AGENTS_STATE_DIR"] = str(state)
+            process = subprocess.Popen(
+                [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                 "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
+                 "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443"],
+                cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+            )
+            try:
+                _wait_until(lambda: _port_owner(port))
+                request = subprocess.run(
+                    [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                     "--state", str(state), "--request-action", "stop-all"],
+                    cwd=ROOT, env=environment, capture_output=True, text=True, timeout=15,
+                )
+                self.assertEqual(request.returncode, 0, request.stderr)
+                request_id = json.loads(request.stdout)["requestId"]
+                self.assertEqual(process.wait(timeout=45), 0)
+                result_path = state / f"windows-server-control-{request_id}.json"
+                self.assertEqual(json.loads(result_path.read_text(encoding="utf-8"))["result"],
+                                 "stopped-all")
+                self.assertIsNone(_port_owner(port))
             finally:
                 if process.poll() is None:
                     _stop_entrypoint_tree(process)

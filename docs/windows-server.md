@@ -69,6 +69,11 @@ keeps native workers and reattaches them after each API restart. The task
 restarts the entrypoint after a failure. The API and supervisor use the same
 `%LOCALAPPDATA%\CodexStudio\state` directory.
 
+Use `manage-windows-server.ps1 -Action StopBackend` to stop only the API with
+the Windows console shutdown signal. The entrypoint and supervisor stay up;
+supervised workers stay attached. Use `-Action RestartBackend -SourceRoot
+`<path>`to stop the API, select a source tree, and start the API again. Use`-Action StopAll` only to stop the server tree and remove its logon task.
+
 Tailscale Serve keeps the WSL2 Studio server on HTTPS port 443, which proxies
 to `127.0.0.1:4720`. The native Windows server uses HTTPS port 8443, which
 proxies to `127.0.0.1:4630`. Its public origin is
