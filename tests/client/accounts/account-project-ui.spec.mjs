@@ -590,22 +590,33 @@ test("account project ui", async ({ browser: _browser }) => {
     agents[0].status = "running";
     agents[0].inFlight = true;
     await openProject("fixture");
-    const selection = dialog.getByLabel("Default account for new chats");
-    assert.equal(await selection.inputValue(), "work");
+    const selection = dialog.getByRole("group", {
+      name: "Default account for new chats",
+      exact: true,
+    });
+    const selectedAccount = () => selection.getAttribute("data-value");
+    const chooseProjectAccount = (key) =>
+      selection
+        .getByRole("button", {
+          name: `Select account ${key === "work" ? "Work" : key === "other" ? "Second workspace" : "Personal"}`,
+          exact: true,
+        })
+        .click();
+    assert.equal(await selectedAccount(), "work");
     await dialog
       .getByRole("checkbox", {
         name: "another.long.account@example.com",
         exact: true,
       })
       .check();
-    await selection.selectOption("other");
+    await chooseProjectAccount("other");
     conflict = true;
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
     await dialog.getByRole("alert").waitFor();
     assert.equal(
-      await selection.inputValue(),
+      await selectedAccount(),
       "other",
       "Conflict keeps selected account",
     );
@@ -650,7 +661,7 @@ test("account project ui", async ({ browser: _browser }) => {
     await dialog
       .getByRole("checkbox", { name: "work@example.com", exact: true })
       .check();
-    await selection.selectOption("work");
+    await chooseProjectAccount("work");
     await dialog
       .getByRole("button", { name: "Save accounts", exact: true })
       .click();
@@ -907,10 +918,7 @@ test("account project ui", async ({ browser: _browser }) => {
         .getByRole("button", { name: "Toggle conversations", exact: true })
         .click();
       await openProject("fixture");
-      assert.equal(
-        await selection.inputValue(),
-        width === 390 ? "other" : "work",
-      );
+      assert.equal(await selectedAccount(), width === 390 ? "other" : "work");
       await page.waitForFunction(
         (element) => getComputedStyle(element).opacity === "1",
         await dialog.elementHandle(),
@@ -931,7 +939,7 @@ test("account project ui", async ({ browser: _browser }) => {
           exact: true,
         })
         .check();
-      await selection.selectOption(width === 390 ? "work" : "other");
+      await chooseProjectAccount(width === 390 ? "work" : "other");
       await dialog
         .getByRole("button", { name: "Save accounts", exact: true })
         .click();
@@ -961,7 +969,7 @@ test("account project ui", async ({ browser: _browser }) => {
     });
     assert.equal(await deletedMembership.isChecked(), true);
     assert.equal(
-      await selection.inputValue(),
+      await selectedAccount(),
       "",
       "the deleted default requires an explicit replacement despite another linked account",
     );
@@ -972,9 +980,9 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(await saveAccounts.isDisabled(), true);
     await deletedMembership.click();
     await deletedMembership.waitFor({ state: "detached" });
-    assert.equal(await selection.inputValue(), "");
+    assert.equal(await selectedAccount(), "");
     assert.equal(await saveAccounts.isDisabled(), true);
-    await selection.selectOption("work");
+    await chooseProjectAccount("work");
     assert.equal(await saveAccounts.isDisabled(), false);
     await saveAccounts.click();
     await dialog.waitFor({ state: "hidden" });
