@@ -1,3 +1,4 @@
+import { Tooltip } from "@mantine/core";
 import { useEffect, useState } from "react";
 import { SettingsRow } from "./ui/primitives";
 import { get, type GetResult } from "../api";
@@ -8,9 +9,11 @@ type BrowserStatus = NonNullable<GetResult<"/api/desktop">["browser"]>;
 export default function BrowserAccessNotice({
   accountKey,
   active,
+  compact = false,
 }: {
   accountKey: string;
   active: boolean;
+  compact?: boolean;
 }) {
   const [status, setStatus] = useState<BrowserStatus | null>(null);
 
@@ -27,6 +30,21 @@ export default function BrowserAccessNotice({
     return () => controller.abort();
   }, [accountKey, active]);
 
+  if (compact)
+    return (
+      <SettingsRow label="Browser">
+        <Tooltip
+          label={
+            status?.reason ||
+            (status?.enabled
+              ? "Browser access is available."
+              : "Not available for this account.")
+          }
+        >
+          <span role="status">{status?.enabled ? "On" : "Off"}</span>
+        </Tooltip>
+      </SettingsRow>
+    );
   if (!active || !status || status.enabled) return null;
   return (
     <div className="browser-access-notice" role="status">
