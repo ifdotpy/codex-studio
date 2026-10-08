@@ -544,8 +544,22 @@ test("Ux Chat Ui", async ({
     await page.waitForFunction(
       () => document.querySelector("#message").value === "",
     );
+    const releasedAroundResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/transcript/page" &&
+        url.searchParams.get("around") === "item-3"
+      );
+    });
     holdAround = false;
     releaseAround();
+    await releasedAroundResponse;
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
     await page.waitForFunction(
       () =>
         document.querySelector('[data-message="item-13"]') &&
