@@ -21,6 +21,8 @@ export function getPlaywrightWorkerSelection(environment?: NodeJS.ProcessEnv): {
   measuredFixtureScratchBytes: number;
   measuredWorkerMemoryBytes: number;
   memorySafeToStart: boolean;
+  workerMemoryProfileRunId?: string;
+  workerMemoryProfileSamples: number;
   cached?: boolean;
 };
 export const measuredFixtureScratchBytes: number;
@@ -36,6 +38,13 @@ export function choosePlaywrightWorkerCount(input: {
   bound: "cpu-median" | "cpu-floor" | "memory" | "override";
   memorySafeToStart: boolean;
 };
+export function estimateWorkerMemoryBytes(input: {
+  profile?: {
+    processTreeP90PssBytes?: number;
+    workerCount?: number;
+  };
+  fallbackPssBytes: number;
+}): number;
 export function sampleCompetingRunnableProcesses(input?: {
   readProcStat?: () => string | undefined;
   pause?: (milliseconds: number) => void;

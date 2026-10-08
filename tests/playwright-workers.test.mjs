@@ -7,6 +7,7 @@ import test from "node:test";
 import {
   choosePlaywrightWorkerCount,
   completeWorkerMemoryRun,
+  estimateWorkerMemoryBytes,
   persistWorkerMemorySample,
   sampleCompetingRunnableProcesses,
   sampleProcessTreeMemory,
@@ -72,7 +73,7 @@ test("process-tree sampler sums worker, browser, and fixture descendants", () =>
   });
 });
 
-test("completed worker memory run becomes the persisted latest profile", () => {
+test("completed multi-worker run persists p90 process-tree memory profile", () => {
   const root = mkdtempSync(join(tmpdir(), "playwright-memory-profile-"));
   const environment = {
     XDG_STATE_HOME: root,
@@ -95,6 +96,14 @@ test("completed worker memory run becomes the persisted latest profile", () => {
       processTreePssBytes: 1_100_000_000,
       processTreeBreakdown: [{ name: "chrome", pssBytes: 700_000_000 }],
     });
+    for (let index = 0; index < 6; index += 1)
+      persistWorkerMemorySample({
+        environment,
+        runId: "run-1",
+        workerPid: 103 + index,
+        processTreePssBytes: 950_000_000 + index * 10_000_000,
+        processTreeBreakdown: [{ name: "node", pssBytes: 400_000_000 }],
+      });
     completeWorkerMemoryRun(environment);
     const profile = JSON.parse(
       readFileSync(
@@ -103,7 +112,15 @@ test("completed worker memory run becomes the persisted latest profile", () => {
       ),
     );
     assert.equal(profile.processTreePssBytes, 1_100_000_000);
-    assert.equal(profile.workerCount, 2);
+    assert.equal(profile.processTreeP90PssBytes, 1_100_000_000);
+    assert.equal(profile.workerCount, 8);
+    assert.deepEqual(
+      profile.processTreePssSamples,
+      [
+        900_000_000, 950_000_000, 960_000_000, 970_000_000, 980_000_000,
+        990_000_000, 1_000_000_000, 1_100_000_000,
+      ],
+    );
     assert.equal(profile.processTree, true);
     assert.deepEqual(profile.processTreeBreakdown, [
       { name: "chrome", pssBytes: 700_000_000 },
@@ -111,6 +128,27 @@ test("completed worker memory run becomes the persisted latest profile", () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("worker memory uses measured p90 plus reserve and conservative fallback", () => {
+  const measured = estimateWorkerMemoryBytes({
+    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 11 },
+    fallbackPssBytes: 2_150_000_000,
+  });
+  assert.equal(measured, 1_476_395_008);
+  const fallback = estimateWorkerMemoryBytes({
+    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 1 },
+    fallbackPssBytes: Math.ceil(2.1 * 1024 ** 3),
+  });
+  assert.equal(fallback, 2_684_354_560);
+  assert.equal(
+    choosePlaywrightWorkerCount({
+      cpuLimit: 32,
+      competingRunnable: 0,
+      memoryWorkers: Math.floor((12 * 1024 ** 3) / measured),
+    }).workers,
+    8,
+  );
 });
 
 test("CPU median determines workers when memory has room", () => {

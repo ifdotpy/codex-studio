@@ -5,20 +5,10 @@ import os from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-// Keep the current worker policy while process-tree measurements are gathered.
-const measuredWorkerPssBytes = 640 * 1024 * 1024;
+const defaultWorkerTreePssBytes = Math.ceil(2.1 * 1024 ** 3);
 const workerRuntimeReserveBytes = 384 * 1024 * 1024;
 export const measuredFixtureScratchBytes = 18 * 1024 * 1024;
-const measuredWorkerMemoryBytes =
-  Math.ceil(
-    (measuredWorkerPssBytes +
-      workerRuntimeReserveBytes +
-      measuredFixtureScratchBytes) /
-      (64 * 1024 * 1024),
-  ) *
-  64 *
-  1024 *
-  1024;
+const minimumWorkerMemoryProfileSamples = 8;
 const maximumMemoryFraction = 0.5;
 const minimumAvailableMemoryReserveBytes = 4 * 1024 * 1024 * 1024;
 const minimumCpuWorkerFraction = 0.25;
@@ -116,6 +106,25 @@ export function persistWorkerMemorySample({
   );
 }
 
+export function estimateWorkerMemoryBytes({ profile, fallbackPssBytes }) {
+  const pssBytes =
+    Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
+    profile.processTreeP90PssBytes > 0 &&
+    Number.isSafeInteger(profile.workerCount) &&
+    profile.workerCount >= minimumWorkerMemoryProfileSamples
+      ? profile.processTreeP90PssBytes
+      : fallbackPssBytes;
+  return (
+    Math.ceil(
+      (pssBytes + workerRuntimeReserveBytes + measuredFixtureScratchBytes) /
+        (64 * 1024 * 1024),
+    ) *
+    64 *
+    1024 *
+    1024
+  );
+}
+
 export function completeWorkerMemoryRun(environment = process.env) {
   let selection;
   try {
@@ -143,14 +152,19 @@ export function completeWorkerMemoryRun(environment = process.env) {
   } catch {
     return;
   }
-  if (!samples.length) return;
+  if (samples.length < minimumWorkerMemoryProfileSamples) return;
+  const orderedPssBytes = samples
+    .map((entry) => entry.processTreePssBytes)
+    .sort((left, right) => left - right);
+  const p90Index = Math.max(0, Math.ceil(orderedPssBytes.length * 0.9) - 1);
+  const p90PssBytes = orderedPssBytes[p90Index];
   const profile = {
     runId,
     completedAt: Date.now(),
     processTree: true,
-    processTreePssBytes: Math.max(
-      ...samples.map((entry) => entry.processTreePssBytes),
-    ),
+    processTreePssBytes: p90PssBytes,
+    processTreeP90PssBytes: p90PssBytes,
+    processTreePssSamples: orderedPssBytes,
     workerCount: samples.length,
     processTreeBreakdown: samples.reduce(
       (largest, entry) =>
@@ -335,6 +349,27 @@ function workerSelection(environment = process.env) {
     Math.floor(memoryAvailable * maximumMemoryFraction),
     Math.max(0, memoryAvailable - minimumAvailableMemoryReserveBytes),
   );
+  let memoryProfile;
+  try {
+    memoryProfile = JSON.parse(
+      readFileSync(
+        join(memoryStateDirectory(environment), "latest.json"),
+        "utf8",
+      ),
+    );
+  } catch {
+    // Use the conservative default until a multi-worker process-tree profile exists.
+  }
+  const measuredWorkerPssBytes =
+    Number.isSafeInteger(memoryProfile?.processTreeP90PssBytes) &&
+    Number.isSafeInteger(memoryProfile?.workerCount) &&
+    memoryProfile.workerCount >= minimumWorkerMemoryProfileSamples
+      ? memoryProfile.processTreeP90PssBytes
+      : defaultWorkerTreePssBytes;
+  const measuredWorkerMemoryBytes = estimateWorkerMemoryBytes({
+    profile: memoryProfile,
+    fallbackPssBytes: defaultWorkerTreePssBytes,
+  });
   const memoryLimit = Math.floor(memoryBudget / measuredWorkerMemoryBytes);
   const workerMemoryRunId = `${Date.now()}-${process.pid}-${randomUUID()}`;
   const decision = choosePlaywrightWorkerCount({
@@ -356,6 +391,8 @@ function workerSelection(environment = process.env) {
     maximumMemoryFraction,
     minimumCpuWorkerFraction,
     measuredWorkerPssBytes,
+    workerMemoryProfileRunId: memoryProfile?.runId,
+    workerMemoryProfileSamples: memoryProfile?.workerCount ?? 0,
     workerMemoryRunId,
     workerRuntimeReserveBytes,
     measuredFixtureScratchBytes,
