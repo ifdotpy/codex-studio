@@ -511,13 +511,7 @@ async function startSidebarOverlapSetup(page) {
           firstRequestState = "held";
           await responseGate;
         }
-        await route.fulfill({
-          response,
-          headers: {
-            ...response.headers(),
-            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
-          },
-        });
+        await route.fulfill({ response });
         if (isFirstRequest) firstResponseFulfilled();
       } catch (error) {
         if (isFirstRequest) {

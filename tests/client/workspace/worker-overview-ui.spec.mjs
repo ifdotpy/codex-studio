@@ -265,6 +265,9 @@ test("Worker Overview Ui", async ({
           error: workerStopError,
         });
         updateAgent(worker(7).id, { status: "failed", error: workerFailure });
+        updateAgent(worker(0).id, {
+          status: deferred ? "approval" : "running",
+        });
         const changedState = {
           ...initial,
           threads: changedAgents,
@@ -275,7 +278,7 @@ test("Worker Overview Ui", async ({
           fresh: true,
         });
         let seq = Math.max(data.maxSeq, fixtureEntitySeq);
-        for (const id of [worker(24).id, worker(7).id]) {
+        for (const id of [worker(24).id, worker(7).id, worker(0).id]) {
           const source = projected.documents.find(
             (document) => document.id === `entity:agent:${id}`,
           );
@@ -502,6 +505,7 @@ test("Worker Overview Ui", async ({
     assert.match(await card(0).innerText(), /Question deferred/);
     pending = false;
     deferred = false;
+    await refreshFromEntityPull();
     await page.reload();
     await selectLead();
     await expect

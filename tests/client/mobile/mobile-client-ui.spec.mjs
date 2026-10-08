@@ -447,6 +447,7 @@ async function setupMobile320Composer(testBrowser) {
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
+  let ownedContext;
   try {
     const port = await new Promise((resolve, reject) => {
       fixture.stdout.once("data", (chunk) =>
@@ -459,6 +460,7 @@ async function setupMobile320Composer(testBrowser) {
       isMobile: true,
       hasTouch: true,
     });
+    ownedContext = page.context();
     await stubSessionCost(page);
     await page.goto(`http://127.0.0.1:${port}`);
     await page.locator("#message").waitFor();
@@ -551,6 +553,7 @@ async function setupMobile320Composer(testBrowser) {
     return { page, managed };
   } catch (error) {
     console.error(log);
+    await ownedContext?.close();
     throw error;
   }
 }
@@ -606,9 +609,21 @@ test("Mobile composer 320px setup renders the settled action row", async ({
   }
 });
 
-test("Mobile composer fits a 320px viewport", async () => {
+test("Mobile composer fits a 320px viewport", async ({
+  browser: testBrowser,
+}) => {
   test.fixme(
     true,
     "Composer overflow is intermittent after the settled 320px action-row setup; see c3-shell-known-failures.md",
   );
+  const { page } = await setupMobile320Composer(testBrowser);
+  try {
+    const composer = await page.locator("#composer").boundingBox();
+    assert.ok(
+      composer && composer.x >= 0 && composer.x + composer.width <= 321,
+      `Composer is outside 320px viewport: ${JSON.stringify(composer)}`,
+    );
+  } finally {
+    await page.context().close();
+  }
 });
