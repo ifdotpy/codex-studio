@@ -3,11 +3,14 @@ import {
   entityPullFixtureForRequest,
   entityPullFixture,
   syncIdentityFixture,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -167,6 +170,7 @@ test("Messages loading", async () => {
         viewport: { width, height: 900 },
         serviceWorkers: "block",
       });
+      installApiSchemaFixtureHeaders(next);
       next.setDefaultTimeout(12000);
       next.on("pageerror", (error) => errors.push(error.message));
       const backendIdentity = await (
@@ -187,10 +191,11 @@ test("Messages loading", async () => {
         const requestUrl = route.request().url();
         const projection = entityPullFixtureForRequest(current, requestUrl);
         const parsedUrl = new URL(requestUrl);
+        const after = Number(parsedUrl.searchParams.get("after") || 0);
         if (
           parsedUrl.searchParams.get("scope") === "state:entities:v1" &&
           projection.documents.length === 0 &&
-          Number(parsedUrl.searchParams.get("after") || 0) >= projection.maxSeq
+          after >= projection.maxSeq
         ) {
           const initial = entityPullFixture(current, {
             scope: "state:entities:v1",
@@ -200,7 +205,7 @@ test("Messages loading", async () => {
             (document) => document.id === `entity:agent:${lead.id}`,
           );
           if (update) {
-            const seq = projection.maxSeq + 1;
+            const seq = Math.max(projection.maxSeq, after) + 1;
             projection.documents.push({ ...update, seq });
             projection.checkpoint.seq = seq;
             projection.maxSeq = seq;
@@ -337,7 +342,22 @@ test("Messages loading", async () => {
       if (row.id === lead.id) row.name = refreshedName;
     for (const row of state.runtime.agents)
       if (row.id === lead.id) row.name = refreshedName;
-    await page.evaluate(() => window.dispatchEvent(new Event("pageshow")));
+    const notification = await fetch(`${origin}/api/sync/notify`, {
+      method: "POST",
+      headers: apiSchemaHeaders({
+        "content-type": "application/json",
+        "X-Canvas-Token": state.token,
+      }),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "state" }],
+      }),
+    });
+    assert.equal(
+      notification.status,
+      200,
+      `state resource notification: ${await notification.text()}`,
+    );
     await page
       .locator("#conversation-title")
       .filter({ hasText: refreshedName })

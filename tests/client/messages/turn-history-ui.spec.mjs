@@ -1,5 +1,12 @@
 #!/usr/bin/env node
-import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
+import {
+  entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
+  readFixtureSyncContract,
+  readTestState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Production UI with isolated files and recorded transcript fixtures. No model calls.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -209,24 +216,54 @@ test("Turn History Ui", async ({
         console.error("Asset response:", response.status(), response.url());
     });
     page.setDefaultTimeout(12000);
+    installApiSchemaFixtureHeaders(page);
+    const syncContract = await readFixtureSyncContract(url);
+    let transcriptSeq = 1;
     let fileReads = 0;
     page.on("request", (r) => {
       if (new URL(r.url()).pathname === "/api/file") fileReads++;
     });
-    await page.route("**/api/transcript**", (route) => {
-      if (new URL(route.request().url()).searchParams.get("id") !== lead.id)
-        return route.continue();
-      return route.request().url().includes("/stream?")
-        ? route.fulfill({
-            contentType: "text/event-stream",
-            body: "data: " + JSON.stringify(transcript) + "\n\n",
-          })
-        : route.fulfill({ json: transcript });
-    });
-    // This fixture supplies transcript records through the HTTP stream fallback.
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({ json: syncContract.identity }),
     );
+    await page.route("**/api/sync/protocol", (route) =>
+      route.fulfill({ json: syncContract.protocol }),
+    );
+    await page.route("**/api/sync/stream?*", (route) => route.continue());
+    await page.route("**/api/sync/pull?*", (route) => {
+      const requestUrl = route.request().url();
+      const parsedUrl = new URL(requestUrl);
+      const scope = parsedUrl.searchParams.get("scope") || "state:entities:v1";
+      if (scope === `transcript:${lead.id}`) {
+        const after = Number(parsedUrl.searchParams.get("after") || 0);
+        const documents =
+          after < transcriptSeq
+            ? [
+                {
+                  id: scope,
+                  seq: transcriptSeq,
+                  payload: JSON.stringify(transcript),
+                  _deleted: false,
+                },
+              ]
+            : [];
+        return route.fulfill({
+          json: {
+            workspaceId: syncContract.identity.workspaceId,
+            generation: 1,
+            documents,
+            checkpoint: { seq: Math.max(after, transcriptSeq) },
+            maxSeq: transcriptSeq,
+          },
+        });
+      }
+      return route.fulfill({
+        json: {
+          workspaceId: syncContract.identity.workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl),
+        },
+      });
+    });
     await page.goto(url);
     await page
       .locator("[data-chat]")
@@ -396,6 +433,7 @@ test("Turn History Ui", async ({
     assert.equal(await activeWork.getAttribute("open"), null);
     items.find((entry) => entry.id === "empty-live").text =
       "The first text delta is visible.";
+    transcriptSeq++;
     await page.reload();
     await page
       .locator("[data-chat]")

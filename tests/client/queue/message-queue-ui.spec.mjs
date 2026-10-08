@@ -100,6 +100,16 @@ test("message-queue-ui", async ({ browser }) => {
       }
       throw Error(label + "\n" + log);
     };
+    const waitForQueueMutationToSettle = (label) =>
+      wait(
+        async () =>
+          page.evaluate(() =>
+            Object.keys(localStorage)
+              .filter((key) => key.startsWith("studio-queue-change:"))
+              .every((key) => localStorage.getItem(key) === null),
+          ),
+        label,
+      );
     // Fault injection must observe fetches after reload, including in WebKit.
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
@@ -226,12 +236,14 @@ test("message-queue-ui", async ({ browser }) => {
       async () => (await queue()).items[0].text === "Revised first input",
       "Edit persists",
     );
+    await waitForQueueMutationToSettle("Edit acknowledgement completes");
     assert.equal((await queue()).items[0].assets[0].id, asset);
     await button("Move queued message 3 up").click();
     await wait(
       async () => (await queue()).items[1].text === "Third input",
       "Reorder persists",
     );
+    await waitForQueueMutationToSettle("Reorder acknowledgement completes");
     const order = (await queue()).items.map((item) => item.id);
     await page.reload();
     await panel.waitFor();
