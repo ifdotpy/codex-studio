@@ -351,6 +351,7 @@ export default function App() {
       if (next.theme !== colorScheme) setColorScheme(next.theme);
       try {
         localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
           window.parent.postMessage(
             { kind: "studio-server-preferences", preferences: next },
@@ -1984,7 +1985,7 @@ export default function App() {
         projectAccount={(path) => {
           setSidebar(false);
           setModal({
-            title: "Project account",
+            title: "Project settings",
             body: (
               <ProjectAccount
                 path={path}
@@ -2665,215 +2666,318 @@ export default function App() {
             </Tabs.Panel>
             <Tabs.Panel value="appearance" pt="md">
               <div className="studio-appearance-groups">
-                <section className="settings-group" aria-label="Theme">
-                  <h2>Theme</h2>
-                  <SettingsRow label="Color scheme">
-                    <NativeSelect
-                      aria-label="Studio theme"
-                      value={studioPreferences.theme}
-                      data={[
-                        { value: "auto", label: "System" },
-                        { value: "light", label: "Light" },
-                        { value: "dark", label: "Dark" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          theme: event.currentTarget
-                            .value as StudioPreferences["theme"],
-                        })
-                      }
-                    />
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Fonts">
-                  <h2>Fonts</h2>
-                  <SettingsRow label="Text style">
-                    <NativeSelect
-                      aria-label="Studio text style"
-                      value={studioPreferences.typography}
-                      data={[
-                        {
-                          value: "original",
-                          label: "Default text",
-                        },
-                        { value: "custom", label: "Custom text" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          typography: event.currentTarget
-                            .value as StudioPreferences["typography"],
-                        })
-                      }
-                    />
-                    <small>
-                      Select Custom text to change the font and text sizes.
-                    </small>
-                  </SettingsRow>
-                  <SettingsRow label="Font family">
-                    <NativeSelect
-                      aria-label="Studio font family"
-                      disabled={studioPreferences.typography === "original"}
-                      value={studioPreferences.fontFamily}
-                      data={Object.entries(fontFamilies).map(
-                        ([value, font]) => ({ value, label: font.label }),
-                      )}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          fontFamily: event.currentTarget
-                            .value as StudioPreferences["fontFamily"],
-                        })
-                      }
-                    />
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Sidebar text{" "}
-                        <output>{studioPreferences.sidebarFontSize}px</output>
-                      </span>
-                    }
+                <SettingsRow label="Theme">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio theme"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Sidebar font size"
-                        disabled={studioPreferences.typography === "original"}
-                        min={12}
-                        max={24}
-                        step={1}
-                        value={studioPreferences.sidebarFontSize}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            sidebarFontSize: value,
-                          })
-                        }
-                      />
-                    </div>
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Main text{" "}
-                        <output>{studioPreferences.mainFontSize}px</output>
-                      </span>
-                    }
+                    {(
+                      [
+                        ["auto", "System"],
+                        ["light", "Light"],
+                        ["dark", "Dark"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-theme"
+                          value={value}
+                          checked={studioPreferences.theme === value}
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              theme: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <SettingsRow label="Text size">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio text size"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Main font size"
-                        disabled={studioPreferences.typography === "original"}
-                        min={12}
-                        max={24}
-                        step={1}
-                        value={studioPreferences.mainFontSize}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            mainFontSize: value,
-                          })
-                        }
-                      />
-                    </div>
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Chat layout">
-                  <h2>Chat layout</h2>
-                  <SettingsRow label="Width">
-                    <NativeSelect
-                      aria-label="Chat width layout"
-                      value={studioPreferences.contentLayout}
-                      data={[
-                        { value: "original", label: "Default width" },
-                        { value: "custom", label: "Custom width" },
-                      ]}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          contentLayout: event.currentTarget
-                            .value as StudioPreferences["contentLayout"],
-                        })
-                      }
-                    />
-                    <small>Select Custom width to change the chat width.</small>
-                  </SettingsRow>
-                  <SettingsRow
-                    label={
-                      <span className="studio-range-label">
-                        Custom width{" "}
-                        <output>{studioPreferences.contentWidth}%</output>
-                      </span>
-                    }
+                    {(
+                      [
+                        [12, "S"],
+                        [14, "M"],
+                        [16, "L"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-text-size"
+                          value={value}
+                          checked={
+                            studioPreferences.typography === "custom" &&
+                            studioPreferences.sidebarFontSize === value &&
+                            studioPreferences.mainFontSize === value
+                          }
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              typography: "custom",
+                              sidebarFontSize: value,
+                              mainFontSize: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <SettingsRow label="Chat width">
+                  <div
+                    className="studio-appearance-segments"
+                    role="radiogroup"
+                    aria-label="Studio chat width"
                   >
-                    <div className="studio-range-field">
-                      <Slider
-                        thumbLabel="Transcript width"
-                        disabled={
-                          studioPreferences.contentLayout === "original"
+                    {(
+                      [
+                        [60, "Narrow"],
+                        [80, "Wide"],
+                        [100, "Full"],
+                      ] as const
+                    ).map(([value, label]) => (
+                      <label key={value}>
+                        <input
+                          type="radio"
+                          name="studio-chat-width"
+                          value={value}
+                          checked={
+                            studioPreferences.contentLayout === "custom" &&
+                            studioPreferences.contentWidth === value
+                          }
+                          onChange={() =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              contentLayout: "custom",
+                              contentWidth: value,
+                            })
+                          }
+                        />
+                        <span>{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </SettingsRow>
+                <details className="studio-appearance-more">
+                  <summary>More</summary>
+                  <div className="studio-appearance-more-content">
+                    <section className="settings-group" aria-label="Fonts">
+                      <h2>Fonts</h2>
+                      <SettingsRow label="Text style">
+                        <NativeSelect
+                          aria-label="Studio text style"
+                          value={studioPreferences.typography}
+                          data={[
+                            {
+                              value: "original",
+                              label: "Default text",
+                            },
+                            { value: "custom", label: "Custom text" },
+                          ]}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              typography: event.currentTarget
+                                .value as StudioPreferences["typography"],
+                            })
+                          }
+                        />
+                        <small>
+                          Select Custom text to change the font and text sizes.
+                        </small>
+                      </SettingsRow>
+                      <SettingsRow label="Font family">
+                        <NativeSelect
+                          aria-label="Studio font family"
+                          disabled={studioPreferences.typography === "original"}
+                          value={studioPreferences.fontFamily}
+                          data={Object.entries(fontFamilies).map(
+                            ([value, font]) => ({ value, label: font.label }),
+                          )}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              fontFamily: event.currentTarget
+                                .value as StudioPreferences["fontFamily"],
+                            })
+                          }
+                        />
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Sidebar text{" "}
+                            <output>
+                              {studioPreferences.sidebarFontSize}px
+                            </output>
+                          </span>
                         }
-                        min={60}
-                        max={100}
-                        step={1}
-                        value={studioPreferences.contentWidth}
-                        onChange={(value) =>
-                          updateStudioPreferences({
-                            ...studioPreferences,
-                            contentWidth: value,
-                          })
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Sidebar font size"
+                            disabled={
+                              studioPreferences.typography === "original"
+                            }
+                            min={12}
+                            max={24}
+                            step={1}
+                            value={studioPreferences.sidebarFontSize}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                sidebarFontSize: value,
+                              })
+                            }
+                          />
+                        </div>
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Main text{" "}
+                            <output>{studioPreferences.mainFontSize}px</output>
+                          </span>
                         }
-                      />
-                      <small>
-                        Applies to messages, progress, and composer. Narrow
-                        screens use the full available width.
-                      </small>
-                    </div>
-                  </SettingsRow>
-                </section>
-                <section className="settings-group" aria-label="Messages">
-                  <h2>Messages</h2>
-                  <label className="settings-field studio-preference-toggle">
-                    <span className="settings-label">Show message avatars</span>
-                    <input
-                      aria-label="Show message avatars"
-                      type="checkbox"
-                      checked={studioPreferences.showMessageAvatars}
-                      onChange={(event) =>
-                        updateStudioPreferences({
-                          ...studioPreferences,
-                          showMessageAvatars: event.currentTarget.checked,
-                        })
-                      }
-                    />
-                  </label>
-                </section>
-                <section className="settings-group" aria-label="Maintenance">
-                  <h2>Maintenance</h2>
-                  <Button
-                    loading={removingAllSending}
-                    onClick={async () => {
-                      if (removingAllSending) return;
-                      setRemovingAllSending(true);
-                      try {
-                        const count = await removeAllSendingMessages(
-                          { stateDir: data.stateDir, workspaceId },
-                          data,
-                          outgoingMessages,
-                        );
-                        notify(
-                          `Removed ${count} sending messages from this device. Work already sent continues.`,
-                        );
-                      } catch (error) {
-                        notify(errorText(error));
-                      } finally {
-                        setRemovingAllSending(false);
-                      }
-                    }}
-                  >
-                    Remove all sending messages
-                  </Button>
-                </section>
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Main font size"
+                            disabled={
+                              studioPreferences.typography === "original"
+                            }
+                            min={12}
+                            max={24}
+                            step={1}
+                            value={studioPreferences.mainFontSize}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                mainFontSize: value,
+                              })
+                            }
+                          />
+                        </div>
+                      </SettingsRow>
+                    </section>
+                    <section
+                      className="settings-group"
+                      aria-label="Chat layout"
+                    >
+                      <h2>Chat layout</h2>
+                      <SettingsRow label="Width">
+                        <NativeSelect
+                          aria-label="Chat width layout"
+                          value={studioPreferences.contentLayout}
+                          data={[
+                            { value: "original", label: "Default width" },
+                            { value: "custom", label: "Custom width" },
+                          ]}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              contentLayout: event.currentTarget
+                                .value as StudioPreferences["contentLayout"],
+                            })
+                          }
+                        />
+                        <small>
+                          Select Custom width to change the chat width.
+                        </small>
+                      </SettingsRow>
+                      <SettingsRow
+                        label={
+                          <span className="studio-range-label">
+                            Custom width{" "}
+                            <output>{studioPreferences.contentWidth}%</output>
+                          </span>
+                        }
+                      >
+                        <div className="studio-range-field">
+                          <Slider
+                            thumbLabel="Transcript width"
+                            disabled={
+                              studioPreferences.contentLayout === "original"
+                            }
+                            min={60}
+                            max={100}
+                            step={1}
+                            value={studioPreferences.contentWidth}
+                            onChange={(value) =>
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                contentWidth: value,
+                              })
+                            }
+                          />
+                          <small>
+                            Applies to messages, progress, and composer. Narrow
+                            screens use the full available width.
+                          </small>
+                        </div>
+                      </SettingsRow>
+                    </section>
+                    <section className="settings-group" aria-label="Messages">
+                      <h2>Messages</h2>
+                      <label className="settings-field studio-preference-toggle">
+                        <span className="settings-label">
+                          Show message avatars
+                        </span>
+                        <input
+                          aria-label="Show message avatars"
+                          type="checkbox"
+                          checked={studioPreferences.showMessageAvatars}
+                          onChange={(event) =>
+                            updateStudioPreferences({
+                              ...studioPreferences,
+                              showMessageAvatars: event.currentTarget.checked,
+                            })
+                          }
+                        />
+                      </label>
+                    </section>
+                    <section
+                      className="settings-group"
+                      aria-label="Maintenance"
+                    >
+                      <h2>Maintenance</h2>
+                      <Button
+                        loading={removingAllSending}
+                        onClick={async () => {
+                          if (removingAllSending) return;
+                          setRemovingAllSending(true);
+                          try {
+                            const count = await removeAllSendingMessages(
+                              { stateDir: data.stateDir, workspaceId },
+                              data,
+                              outgoingMessages,
+                            );
+                            notify(
+                              `Removed ${count} sending messages from this device. Work already sent continues.`,
+                            );
+                          } catch (error) {
+                            notify(errorText(error));
+                          } finally {
+                            setRemovingAllSending(false);
+                          }
+                        }}
+                      >
+                        Remove all sending messages
+                      </Button>
+                    </section>
+                  </div>
+                </details>
               </div>
             </Tabs.Panel>
             <Tabs.Panel value="federation" pt="md">
@@ -3136,6 +3240,9 @@ export default function App() {
         opened={!!modal}
         onClose={() => setModal(null)}
         title={modal?.title}
+        size={
+          modal?.title === "Project settings" ? modalSizes.settings : undefined
+        }
       >
         <div className="picker">{modal?.body}</div>
       </Modal>

@@ -160,13 +160,31 @@ test("studio settings browser ui", async ({
     const settingsTabs = settings.getByRole("tab");
     assert.deepEqual(
       (await settingsTabs.allTextContents()).map((label) => label.trim()),
-      ["Accounts", "Appearance", "Federation", "Hotkeys"],
+      [
+        "Accounts",
+        "Appearance",
+        "Federation",
+        "Servers",
+        "Linux VM",
+        "Hotkeys",
+      ],
       "Studio settings exposes account, appearance, federation, and hotkey tabs",
     );
     await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
     await settings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
+    assert.equal(
+      await settings.locator(".studio-appearance-more").getAttribute("open"),
+      null,
+    );
+    assert.equal(
+      await settings
+        .getByLabel("Studio font family", { exact: true })
+        .isVisible(),
+      false,
+    );
+    await settings.locator(".studio-appearance-more summary").click();
     assert.equal(Math.round((await settings.boundingBox()).width), 720);
     const tabBounds = await settings.getByRole("tablist").boundingBox();
     const appearancePanel = settings.getByRole("tabpanel", {
@@ -216,6 +234,41 @@ test("studio settings browser ui", async ({
         },
       )
       .waitFor();
+    const textSize = settings.getByRole("radiogroup", {
+      name: "Studio text size",
+      exact: true,
+    });
+    for (const [label, value] of [
+      ["S", 12],
+      ["L", 16],
+      ["M", 14],
+    ]) {
+      await textSize.getByRole("radio", { name: label, exact: true }).check();
+      const preferences = await page.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key)),
+        storageKey,
+      );
+      assert.equal(preferences.typography, "custom");
+      assert.equal(preferences.sidebarFontSize, value);
+      assert.equal(preferences.mainFontSize, value);
+    }
+    const chatWidth = settings.getByRole("radiogroup", {
+      name: "Studio chat width",
+      exact: true,
+    });
+    for (const [label, value] of [
+      ["Narrow", 60],
+      ["Wide", 80],
+      ["Full", 100],
+    ]) {
+      await chatWidth.getByRole("radio", { name: label, exact: true }).check();
+      const preferences = await page.evaluate(
+        (key) => JSON.parse(localStorage.getItem(key)),
+        storageKey,
+      );
+      assert.equal(preferences.contentLayout, "custom");
+      assert.equal(preferences.contentWidth, value);
+    }
     await avatarToggle.check();
     assert.equal(await avatarToggle.isChecked(), true);
     assert.equal(
@@ -321,18 +374,28 @@ test("studio settings browser ui", async ({
 
     const theme = settings.getByLabel("Studio theme", { exact: true });
     await page.emulateMedia({ colorScheme: "dark" });
-    await theme.selectOption("auto");
+    await theme.getByRole("radio", { name: "System", exact: true }).check();
     await page.waitForFunction(
       () => document.documentElement.dataset.mantineColorScheme === "dark",
     );
-    await theme.selectOption("light");
+    await theme.getByRole("radio", { name: "Light", exact: true }).check();
     await page.waitForFunction(
       () => document.documentElement.dataset.mantineColorScheme === "light",
     );
-    await theme.selectOption("dark");
+    await theme.getByRole("radio", { name: "Dark", exact: true }).check();
     await page.waitForFunction(
       () => document.documentElement.dataset.mantineColorScheme === "dark",
     );
+    await page.emulateMedia({ colorScheme: "light" });
+    await theme.getByRole("radio", { name: "System", exact: true }).check();
+    await page.waitForFunction(
+      () => document.documentElement.dataset.mantineColorScheme === "light",
+    );
+    await page.emulateMedia({ colorScheme: "dark" });
+    await page.waitForFunction(
+      () => document.documentElement.dataset.mantineColorScheme === "dark",
+    );
+    await theme.getByRole("radio", { name: "Dark", exact: true }).check();
     await settleLayout();
     await page.screenshot({
       path: join(evidence, "settings-max-font-1440x960.png"),
@@ -421,6 +484,7 @@ test("studio settings browser ui", async ({
       await dialog
         .getByRole("tab", { name: "Appearance", exact: true })
         .click();
+      await dialog.locator(".studio-appearance-more summary").click();
       const slider = dialog.getByRole("slider", { name: "Transcript width" });
       await slider.press(edge);
       const expected = edge === "Home" ? "60" : "100";
@@ -525,7 +589,14 @@ test("studio settings browser ui", async ({
       (await reloadedSettings.getByRole("tab").allTextContents()).map((label) =>
         label.trim(),
       ),
-      ["Accounts", "Appearance", "Federation", "Hotkeys"],
+      [
+        "Accounts",
+        "Appearance",
+        "Federation",
+        "Servers",
+        "Linux VM",
+        "Hotkeys",
+      ],
     );
     assert.equal(
       await reloadedSettings.getByRole("alert").count(),
@@ -535,6 +606,7 @@ test("studio settings browser ui", async ({
     await reloadedSettings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
+    await reloadedSettings.locator(".studio-appearance-more summary").click();
     assert.equal(
       await reloadedSettings
         .getByLabel("Show message avatars", { exact: true })
@@ -671,6 +743,7 @@ test("studio settings browser ui", async ({
     await noChatSettings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
+    await noChatSettings.locator(".studio-appearance-more summary").click();
     await noChatSettings.getByLabel("Studio theme", { exact: true }).waitFor();
     await emptyPage.setViewportSize({ width: 390, height: 844 });
     const mobileTabs = await Promise.all(
@@ -706,7 +779,8 @@ test("studio settings browser ui", async ({
     );
     assert.equal(
       await noChatSettings
-        .getByLabel("Studio theme", { exact: true })
+        .getByRole("radiogroup", { name: "Studio theme", exact: true })
+        .locator("input:checked")
         .inputValue(),
       "light",
       "Legacy browser preferences keep their saved theme during migration",
@@ -731,6 +805,9 @@ test("studio settings browser ui", async ({
     });
     await persistedLegacySettings
       .getByRole("tab", { name: "Appearance", exact: true })
+      .click();
+    await persistedLegacySettings
+      .locator(".studio-appearance-more summary")
       .click();
     assert.equal(
       await persistedLegacySettings

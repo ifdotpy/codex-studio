@@ -121,10 +121,11 @@ const answerKey = (scope: string, request: RequestDto) =>
     request.id,
     request.method,
     requestQuestions(request).map(
-      ({ id, question, isSecret, multiSelect, options }) => ({
+      ({ id, question, isSecret, isOther, multiSelect, options }) => ({
         id,
         question,
         isSecret,
+        isOther,
         multiSelect,
         options,
       }),
@@ -250,22 +251,24 @@ function AnswerForm({
       <div className="request-answer-actions">
         <Button
           type="button"
+          aria-label="Close reply"
           variant="subtle"
           disabled={sending}
           onClick={() => {
             close();
           }}
         >
-          Close reply
+          Answer later
         </Button>
         <Button
           type="submit"
+          aria-label="Send answer"
           variant="filled"
           color="indigo"
           disabled={sending || !ready}
           loading={sending}
         >
-          Send answer
+          Send
         </Button>
       </div>
     </form>
@@ -436,7 +439,9 @@ function RequestCard({
             <strong>
               {agents.find((a) => a.id === r.agent)?.name || "Codex"}
             </strong>
-            <span className="request-status">
+            <span
+              className={`request-status${question ? " request-status-hidden" : ""}`}
+            >
               {r.deferred
                 ? asynchronous
                   ? "Deferred · Agent can continue"
@@ -519,14 +524,16 @@ function RequestCard({
             </p>
           ) : question ? (
             <>
-              <Button
-                variant="subtle"
-                disabled={sending}
-                aria-label={r.deferred ? "Restore" : "Defer"}
-                onClick={() => void defer()}
-              >
-                {r.deferred ? "Restore" : "Answer later"}
-              </Button>
+              {!open && (
+                <Button
+                  variant="subtle"
+                  disabled={sending}
+                  aria-label={r.deferred ? "Restore" : "Defer"}
+                  onClick={() => void defer()}
+                >
+                  {r.deferred ? "Restore" : "Answer later"}
+                </Button>
+              )}
               <Button
                 ref={trigger}
                 data-answer={r.id}
@@ -622,9 +629,6 @@ export default function Requests({
             <summary>
               Later <span>{deferred.length}</span>
             </summary>
-            <p className="request-deferred-note">
-              These questions remain open.
-            </p>
             {deferred.map((r) => (
               <RequestCard
                 key={answerKey(props.scope, r)}

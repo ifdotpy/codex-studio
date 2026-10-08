@@ -581,8 +581,9 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
     await remoteFrame
-      .getByLabel("Studio theme", { exact: true })
-      .selectOption("dark");
+      .getByRole("radiogroup", { name: "Studio theme", exact: true })
+      .getByRole("radio", { name: "Dark", exact: true })
+      .check();
     await remoteFrame
       .getByRole("dialog")
       .filter({
