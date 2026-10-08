@@ -5,9 +5,9 @@ import fcntl
 import json
 import os
 from pathlib import Path
-import shlex
 import signal
 import subprocess
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -35,20 +35,26 @@ def identity(port, state, timeout=5):
     return data
 
 
+def backend_process_arguments(pid, resources):
+    """Reuse the packaged native process reader without parsing display text."""
+    scripts = (Path(resources) / "scripts").resolve()
+    sys.path.insert(0, str(scripts))
+    try:
+        import codex_process_supervisor
+        if Path(codex_process_supervisor.__file__).resolve() != scripts / "codex_process_supervisor.py":
+            raise RuntimeError("The packaged process reader is unavailable.")
+        return codex_process_supervisor.process_launch_command(pid)
+    finally:
+        sys.path.remove(str(scripts))
+
+
 def verify_backend_process(data, config):
     """Prove the reported PID is the packaged backend listening on this port."""
     pid = data["pid"]
     script = (Path(config["resources"]) / "scripts/codex-canvas").resolve()
     try:
-        command = subprocess.check_output(
-            ["/bin/ps", "-p", str(pid), "-o", "command="],
-            text=True, stderr=subprocess.DEVNULL, timeout=2,
-        ).strip()
-    except (OSError, subprocess.SubprocessError) as error:
-        raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
-    try:
-        arguments = shlex.split(command)
-    except ValueError as error:
+        arguments = backend_process_arguments(pid, config["resources"])
+    except (OSError, ValueError, RuntimeError, ImportError) as error:
         raise RuntimeError(f"Cannot verify fallback backend PID {pid}") from error
     if str(script) not in arguments:
         raise RuntimeError("The reported backend PID is not the packaged Codex Canvas process.")
