@@ -1,4 +1,9 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  installApiSchemaFixtureHeaders,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
@@ -35,6 +40,36 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
   );
   let browser,
     log = "";
+  const fixtureWaiters = new Map();
+  let fixtureOutput = "";
+  proc.stdout.on("data", (chunk) => {
+    fixtureOutput += String(chunk);
+    const lines = fixtureOutput.split("\n");
+    fixtureOutput = lines.pop() || "";
+    for (const line of lines) {
+      try {
+        const response = JSON.parse(line);
+        fixtureWaiters.get(response.id)?.(response);
+        fixtureWaiters.delete(response.id);
+      } catch {
+        // The first fixture line is its dynamically assigned port.
+      }
+    }
+  });
+  const fixtureRequest = (method, params) => {
+    const id = `prompt-navigation-${method}-${Date.now()}-${Math.random()}`;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        fixtureWaiters.delete(id);
+        reject(new Error(`fixture request timed out: ${method}: ${log}`));
+      }, 5000);
+      fixtureWaiters.set(id, (response) => {
+        clearTimeout(timeout);
+        resolve(response);
+      });
+      proc.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  };
   proc.stderr.on("data", (d) => (log += d));
   try {
     const port = await new Promise((resolve, reject) => {
@@ -46,10 +81,12 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 1440, height: 960 },
     });
+    installApiSchemaFixtureHeaders(page);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     page.setDefaultTimeout(12000);
     const state = await readTestState(url);
+    const syncIdentity = await (await fetch(url + "/api/sync/identity")).json();
     const lead = state.runtime.agents.find((a) => a.name === "Release lead");
     const original = await (
       await fetch(url + "/api/transcript?id=" + lead.id)
@@ -83,6 +120,7 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       truncated: true,
       nextCursor: "prompt-0",
     };
+    let transcriptSeq = 1;
     let pauseRecall = false;
     let releaseRecall;
     let recallStarted;
@@ -155,10 +193,32 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
         });
       await route.fulfill({ json: transcript });
     });
-    // This suite verifies the native transcript transport without optional sync.
-    await page.route("**/api/sync/identity", (r) =>
-      r.fulfill({ status: 404, json: { error: "Unsupported sync" } }),
-    );
+    await page.route("**/api/sync/pull**", async (route) => {
+      const requestUrl = route.request().url();
+      const scope = new URL(requestUrl).searchParams.get("scope") ?? "";
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const after = Number(new URL(requestUrl).searchParams.get("after") || 0);
+      const documents =
+        after < transcriptSeq
+          ? [
+              {
+                id: scope,
+                seq: transcriptSeq,
+                payload: JSON.stringify(transcript),
+                _deleted: false,
+              },
+            ]
+          : [];
+      await route.fulfill({
+        json: {
+          generation: 1,
+          documents,
+          checkpoint: { seq: documents.length ? transcriptSeq : after },
+          workspaceId: syncIdentity.workspaceId,
+        },
+      });
+    });
+    // Keep the real entity projection online; transcript history remains fixture-controlled.
     await page.goto(url);
     const openCompactHeaderTools = async () => {
       const menu = page.locator(
@@ -396,6 +456,13 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       truncated: true,
       nextCursor: "prompt-0",
     });
+    transcriptSeq++;
+    const updateReply = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: update.id,
+      text: update.text,
+    });
+    assert.equal(updateReply.ok, true);
     await page.locator('[data-message="later-answer"]').waitFor();
     assert.equal(
       await page.locator('[data-message="prompt-0"]').count(),
@@ -613,6 +680,13 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       order: [restored.id],
       historyVersion: "restored-version",
     });
+    transcriptSeq++;
+    const restoredReply = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: restored.id,
+      text: restored.text,
+    });
+    assert.equal(restoredReply.ok, true);
     await page.locator('[data-message="restored-answer"]').waitFor();
     assert.equal(
       await page.locator('[data-message="prompt-0"]').count(),
@@ -631,6 +705,13 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       truncated: false,
       nextCursor: null,
     });
+    transcriptSeq++;
+    const replacementReply = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: replacement.id,
+      text: replacement.text,
+    });
+    assert.equal(replacementReply.ok, true);
     await page.locator('[data-message="replacement-answer"]').waitFor();
     assert.equal(
       await page.locator('[data-message="restored-answer"]').count(),
@@ -638,6 +719,22 @@ test("prompt navigation ui", async ({ browser: _browser }) => {
       "A full authoritative snapshot still removes obsolete records",
     );
     Object.assign(transcript, { truncated: true, nextCursor: "prompt-0" });
+    transcriptSeq++;
+    const historyPull = page.waitForResponse((response) => {
+      const pullUrl = new URL(response.url());
+      return (
+        pullUrl.pathname === "/api/sync/pull" &&
+        pullUrl.searchParams.get("scope") === `transcript:${lead.id}` &&
+        pullUrl.searchParams.get("after") === String(transcriptSeq - 1)
+      );
+    });
+    const historyReply = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: "prompt-history-available",
+      text: "Prompt history remains available",
+    });
+    assert.equal(historyReply.ok, true);
+    assert.equal((await historyPull).status(), 200);
     await page.setViewportSize({ width: 1440, height: 960 });
     await page.reload();
     await page
