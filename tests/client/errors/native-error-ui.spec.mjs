@@ -12,6 +12,8 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("native error ui", async ({ page: runnerPage }) => {
+  // After replacing the fixed dialog delay, repeats took 17.0–18.1s solo and
+  // 21.7–23.0s under the requested loaded run, leaving 7s below the default bound.
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -203,7 +205,15 @@ test("native error ui", async ({ page: runnerPage }) => {
       .getByRole("dialog")
       .getByText("Codex offers gpt-5.6-sol.", { exact: false })
       .waitFor();
-    await page.waitForTimeout(250); // Let the dialog enter before the visual capture.
+    await page.waitForFunction(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      return (
+        dialog &&
+        dialog
+          .getAnimations({ subtree: true })
+          .every((animation) => animation.playState === "finished")
+      );
+    });
     await page
       .getByRole("dialog")
       .getByRole("button", { name: "Keep waiting", exact: true })
