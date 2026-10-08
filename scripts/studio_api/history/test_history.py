@@ -10,7 +10,15 @@ import threading
 from types import ModuleType
 import unittest
 from contextlib import contextmanager
-from typing import TYPE_CHECKING, Callable, Iterator, cast
+from typing import (
+    TYPE_CHECKING,
+    Callable,
+    Iterator,
+    Literal,
+    NotRequired,
+    TypedDict,
+    cast,
+)
 from unittest.mock import patch
 
 from fastapi import APIRouter, FastAPI, Request
@@ -34,7 +42,19 @@ from studio_api.history.models import (
     TranscriptPageResponse,
     TranscriptRecord,
 )
-from studio_api.models import ErrorResponse, ResponseModel
+from studio_api.models import ErrorResponse, JsonValue, ResponseModel
+
+
+class NativeNoticeFixture(TypedDict):
+    nativeNotice: Literal["info", "warning", "error"]
+    previousError: NotRequired[JsonValue]
+    nativeError: NotRequired[JsonValue]
+    nativeHook: NotRequired[dict[str, JsonValue]]
+    nativeHookQuiet: NotRequired[bool]
+    nativeReview: NotRequired[dict[str, JsonValue]]
+    details: NotRequired[JsonValue]
+    accountWide: NotRequired[bool]
+
 
 if TYPE_CHECKING:
     from codex_canvas import Canvas
@@ -470,7 +490,7 @@ class HistoryRouteTests(unittest.TestCase):
         from codex_native_errors import notice
 
         produce_notice = cast(Callable[..., None], notice)
-        notices = [
+        notices: list[NativeNoticeFixture] = [
             {"nativeNotice": "warning", "previousError": "Server restarted during a turn."},
             {"nativeNotice": "error", "nativeError": {"message": "Disconnected", "code": -32000}},
             {"nativeNotice": "info", "nativeHook": {"id": "hook-1", "status": "completed", "entries": []},
