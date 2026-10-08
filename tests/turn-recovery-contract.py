@@ -232,26 +232,29 @@ class TurnRecoveryContract(unittest.TestCase):
                                        (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
 
     def test_old_unknown_start_becomes_a_hold_and_late_reply_still_binds(self):
-        a = self.lose_start_receipt()
-        self.server.native['turns'] = []
-        with self.runtime.lock, self.runtime.db() as db:
-            current = self.runtime.agent(self.key, db)
-            current['startAttempt']['created'] = time.time() - 700
-            self.runtime.put(db, 'agents', current)
-        result = self.runtime.reconcile_turn(self.key)
-        self.assertEqual(result['status'], 'held')
-        current = self.runtime.agent(self.key)
-        self.assertEqual((current['status'], current['inFlight']), ('interrupted', False))
-        self.assertEqual(current['startOutcomeHold']['stage'], 'held')
-        self.assertIn('Start outcome unknown', current['error'])
-        self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
-        with self.runtime.db() as db:
-            self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
-                                       (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
-        self.runtime.start_accepted(self.key, current['startAttempt'], {'turn': {'id': self.turn}})
-        current = self.runtime.agent(self.key)
-        self.assertEqual((current['status'], current['inFlight'], current['error']), ('running', True, None))
-        self.assertNotIn('startOutcomeHold', current)
+        # This test owns the reconciliation sequence; the periodic scheduler
+        # must not race the explicit hold and late-receipt assertions below.
+        with patch.object(self.runtime, 'queue_turn_recovery'):
+            a = self.lose_start_receipt()
+            self.server.native['turns'] = []
+            with self.runtime.lock, self.runtime.db() as db:
+                current = self.runtime.agent(self.key, db)
+                current['startAttempt']['created'] = time.time() - 700
+                self.runtime.put(db, 'agents', current)
+            result = self.runtime.reconcile_turn(self.key)
+            self.assertEqual(result['status'], 'held')
+            current = self.runtime.agent(self.key)
+            self.assertEqual((current['status'], current['inFlight']), ('interrupted', False))
+            self.assertEqual(current['startOutcomeHold']['stage'], 'held')
+            self.assertIn('Start outcome unknown', current['error'])
+            self.assertEqual(self.runtime.reconcile_turn(self.key)['status'], 'unconfirmed')
+            with self.runtime.db() as db:
+                self.assertEqual(db.execute('SELECT status FROM runtime_events WHERE id=?',
+                                           (a['startAttempt']['events'][0],)).fetchone()[0], 'uncertain')
+            self.runtime.start_accepted(self.key, current['startAttempt'], {'turn': {'id': self.turn}})
+            current = self.runtime.agent(self.key)
+            self.assertEqual((current['status'], current['inFlight'], current['error']), ('running', True, None))
+            self.assertNotIn('startOutcomeHold', current)
 
     def test_old_unknown_start_waits_for_callback_backlog(self):
         self.lose_start_receipt()

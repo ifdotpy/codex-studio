@@ -170,19 +170,6 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                               'WHERE agent=? AND method=?',
                               (agent_id, 'item/agentMessage/delta')).fetchone()[0]
 
-    def observe_analytics_commit(self, runtime):
-        committed = threading.Event()
-        original = runtime.analytics_db
-
-        @contextmanager
-        def observed(*, busy_timeout=None):
-            with original(busy_timeout=busy_timeout) as db:
-                yield db
-            committed.set()
-
-        runtime.analytics_db = observed
-        return committed, original
-
     def synthetic(self, *, lookup_busy=0, commit_busy=0, failure=None):
         delivered, lookups, commits = [], [], []
         state = {'cursor': 0}
@@ -281,7 +268,6 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             writer.execute('BEGIN IMMEDIATE')
             self.addCleanup(writer.close)
             failed_commit = threading.Event()
-            analytics_committed, original_analytics_db = self.observe_analytics_commit(runtime)
             delivered, commits, errors = [], [], []
 
             def notify(message):
@@ -330,9 +316,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     row = db.execute('SELECT record FROM runtime_items WHERE id=?',
                                      (agent['id'] + ':response',)).fetchone()
                     self.assertEqual(json.loads(row[0])['text'], 'ab')
-                self.assertTrue(analytics_committed.wait(30),
-                                'The committed stream analytics transaction must finish before its count is read')
-                runtime.analytics_db = original_analytics_db
+                analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
+                self.assertIsNotNone(analytics_idle)
+                self.assertTrue(analytics_idle.wait(30),
+                                'The committed stream analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?',
@@ -460,7 +447,6 @@ class SupervisorPersistenceRetry(unittest.TestCase):
             runtime, agent, fixture, delivered = self.runtime_fixture(directory)
             writer = sqlite3.connect(runtime.db_path)
             original_db = runtime.db
-            analytics_committed, original_analytics_db = self.observe_analytics_commit(runtime)
             contention = threading.Event()
             busy_codes = []
 
@@ -504,9 +490,10 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                     row = db.execute('SELECT record FROM runtime_agents WHERE id=?',
                                      (agent['id'],)).fetchone()
                     self.assertEqual(json.loads(row[0])['events'], 1)
-                self.assertTrue(analytics_committed.wait(30),
-                                'The committed lifecycle analytics transaction must finish before its count is read')
-                runtime.analytics_db = original_analytics_db
+                analytics_idle = runtime.__dict__.get('_analytics_capture_idle')
+                self.assertIsNotNone(analytics_idle)
+                self.assertTrue(analytics_idle.wait(30),
+                                'The committed lifecycle analytics queue must drain before its count is read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?', (agent['id'], 'item/started')).fetchone()[0]
