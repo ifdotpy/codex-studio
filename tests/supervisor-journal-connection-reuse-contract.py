@@ -100,6 +100,7 @@ def workload(journal_type, directory, count):
         journal = server.journal = journal_type(directory)
         child = supervisor.Child.__new__(supervisor.Child)
         child.handle = "account:private-journal"
+        child.generation = 1
         child.lock = threading.RLock()
         child.append_lock = threading.Lock()
         child.output = threading.Condition(child.lock)
