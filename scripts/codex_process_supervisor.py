@@ -7,7 +7,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
+from codex_private_paths import ensure_private_dir
 import hashlib
 import json
 import os
@@ -198,6 +199,38 @@ def process_start_time(pid):
     if type(pid) is not int or pid < 1:
         return None
     import sys
+    if os.name == "nt":
+        import ctypes
+        from ctypes import wintypes
+
+        class FileTime(ctypes.Structure):
+            _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        open_process = kernel32.OpenProcess
+        open_process.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+        open_process.restype = wintypes.HANDLE
+        get_times = kernel32.GetProcessTimes
+        get_times.argtypes = [wintypes.HANDLE, ctypes.POINTER(FileTime), ctypes.POINTER(FileTime), ctypes.POINTER(FileTime), ctypes.POINTER(FileTime)]
+        get_times.restype = wintypes.BOOL
+        close_handle = kernel32.CloseHandle
+        handle = open_process(0x1000, False, pid)
+        if not handle:
+            if ctypes.get_last_error() in (87, 1168):
+                return None
+            raise RuntimeError(f"Cannot verify process identity for PID {pid}")
+        try:
+            created, exited, kernel, user = FileTime(), FileTime(), FileTime(), FileTime()
+            if not get_times(handle, ctypes.byref(created), ctypes.byref(exited), ctypes.byref(kernel), ctypes.byref(user)):
+                if ctypes.get_last_error() in (87, 1168):
+                    return None
+                raise RuntimeError(f"Cannot verify process identity for PID {pid}")
+            ticks = (created.high << 32) | created.low
+            if exited.high or exited.low:
+                return None
+            return f"{ticks // 10_000_000}.{(ticks // 10) % 1_000_000:06d}"
+        finally:
+            close_handle(handle)
     if sys.platform == "darwin":
         import ctypes
 
@@ -432,8 +465,7 @@ class Child:
 
 class Supervisor:
     def __init__(self, root):
-        self.root = Path(root).resolve()
-        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self.root = ensure_private_dir(Path(root).resolve())
         self.socket_path = self.root / "supervisor.sock"
         self.journal = None
         self.children = {}
@@ -709,7 +741,7 @@ class Supervisor:
         announced_wait = False
         while True:
             try:
-                fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(self.lease, LOCK_EX | LOCK_NB)
             except OSError as error:
                 if not wait_for_lease:
                     raise RuntimeError("Another supervisor owns this state directory") from error
@@ -742,7 +774,7 @@ class Supervisor:
                     if not announced_wait:
                         print(f"supervisor waiting for owner {old_pid}", file=sys.stderr, flush=True)
                         announced_wait = True
-                    fcntl.flock(self.lease, fcntl.LOCK_UN)
+                    flock(self.lease, LOCK_UN)
                     time.sleep(.1)
                     continue
             self.journal = Journal(self.root)

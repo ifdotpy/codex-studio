@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import hashlib
-import fcntl
+from codex_file_lock import flock, LOCK_EX
 import json
 import os
 from pathlib import Path
 import platform
+import queue
 import re
 import selectors
 import shutil
@@ -15,6 +16,9 @@ import struct
 import subprocess
 import tempfile
 import time
+import threading
+
+from codex_executables import command as executable_command, which as find_executable
 
 CHATGPT_CODEX = Path('/Applications/ChatGPT.app/Contents/Resources/codex')
 APPROVAL_REVISION = 2
@@ -45,16 +49,27 @@ def version_key(version):
 def file_identity(path):
     resolved = Path(path).expanduser().resolve(strict=True)
     info = resolved.stat()
-    if not stat.S_ISREG(info.st_mode) or not os.access(resolved, os.X_OK):
+    executable = os.access(resolved, os.X_OK)
+    if os.name == 'nt':
+        executable = resolved.suffix.casefold() in {'.exe', '.com', '.cmd', '.bat'}
+    if not stat.S_ISREG(info.st_mode) or not executable:
         raise ValueError('Native candidate is not an executable file')
     return {'path': str(resolved), 'size': info.st_size, 'mtimeNs': info.st_mtime_ns,
             'device': info.st_dev, 'inode': info.st_ino}
 
 
+def native_binary_name():
+    return 'codex.exe' if os.name == 'nt' else 'codex'
+
+
+def required_companions():
+    return ('codex-code-mode-host.exe',) if os.name == 'nt' else REQUIRED_COMPANIONS
+
+
 def companion_identities(path):
     directory = Path(path).expanduser().resolve(strict=True).parent
     companions = {}
-    for name in REQUIRED_COMPANIONS:
+    for name in required_companions():
         try:
             identity = file_identity(directory / name)
         except (OSError, ValueError):
@@ -71,10 +86,16 @@ def bundle_digest(hashes):
 
 def _environment(home):
     # A clean HOME also prevents project/global config and keychain auth fallback.
-    env = {key: os.environ[key] for key in ('PATH', 'SYSTEMROOT', 'LANG', 'LC_ALL', 'TMPDIR')
+    env = {key: os.environ[key] for key in (
+        'PATH', 'SYSTEMROOT', 'WINDIR', 'USERPROFILE', 'TEMP', 'TMP', 'COMSPEC',
+        'PATHEXT', 'LANG', 'LC_ALL', 'TMPDIR'
+    )
            if key in os.environ}
     env.update(HOME=str(home), CODEX_HOME=str(home), XDG_CONFIG_HOME=str(home),
                XDG_DATA_HOME=str(home), XDG_CACHE_HOME=str(home))
+    if os.name == 'nt':
+        env.update(USERPROFILE=str(home), APPDATA=str(Path(home) / 'AppData' / 'Roaming'),
+                   LOCALAPPDATA=str(Path(home) / 'AppData' / 'Local'))
     return env
 
 
@@ -94,6 +115,7 @@ def _reap(proc):
 
 
 def _run(command, home, timeout=15, *, input_bytes=None):
+    command = executable_command(command[0], command[1:])
     proc = subprocess.Popen(command, cwd=home, env=_environment(home),
                             stdin=subprocess.PIPE if input_bytes is not None else subprocess.DEVNULL,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -101,6 +123,16 @@ def _run(command, home, timeout=15, *, input_bytes=None):
     total = 0
     deadline = time.monotonic() + timeout
     try:
+        if os.name == 'nt':
+            try:
+                stdout, stderr = proc.communicate(input=input_bytes, timeout=timeout)
+            except subprocess.TimeoutExpired as error:
+                raise TimeoutError('Native validation command timed out') from error
+            if len(stdout) + len(stderr) > MAX_OUTPUT:
+                raise ValueError('Native validation output exceeded the size limit')
+            if proc.returncode != 0:
+                raise RuntimeError('Native validation command failed')
+            return stdout
         if input_bytes is not None:
             os.set_blocking(proc.stdin.fileno(), False)
             if os.write(proc.stdin.fileno(), input_bytes) != len(input_bytes):
@@ -145,7 +177,19 @@ def _version(path, home):
 def native_candidate(path):
     """Resolve an npm launcher to its platform bundle without executing JS."""
     path = Path(path).expanduser().resolve()
-    if path.name != 'codex.js' or path.parent.name != 'bin':
+    if os.name == 'nt' and path.name.casefold() == 'codex.cmd':
+        candidates = []
+        for directory in (path.parent, *path.parent.parents):
+            candidates.extend((
+                directory / 'node_modules' / '@openai' / 'codex' / 'bin' / 'codex.js',
+                directory / '@openai' / 'codex' / 'bin' / 'codex.js',
+            ))
+        for candidate in candidates:
+            if candidate.is_file():
+                return native_candidate(candidate)
+        raise ValueError('Codex npm command shim has no package launcher')
+    allowed_names = {'codex.js'} | ({'codex.cmd'} if os.name == 'nt' else set())
+    if path.name.casefold() not in allowed_names or path.parent.name.casefold() != 'bin':
         return path
     package = path.parent.parent
     metadata = package / 'package.json'
@@ -157,7 +201,8 @@ def native_candidate(path):
     architecture = {'arm64': 'arm64', 'aarch64': 'arm64',
                     'x86_64': 'x64', 'AMD64': 'x64'}.get(platform.machine())
     system = {'Darwin': ('darwin', 'apple-darwin'),
-              'Linux': ('linux', 'unknown-linux-musl')}.get(platform.system())
+              'Linux': ('linux', 'unknown-linux-musl'),
+              'Windows': ('win32', 'pc-windows-msvc')}.get(platform.system())
     if not architecture or not system:
         raise ValueError('Codex npm launcher has an unsupported native platform')
     package_name = 'codex-' + system[0] + '-' + architecture
@@ -170,7 +215,7 @@ def native_candidate(path):
         if (dependency / 'package.json').is_file():
             vendor = dependency / 'vendor'
             break
-    binary = vendor / triple / 'bin' / 'codex'
+    binary = vendor / triple / 'bin' / native_binary_name()
     if not binary.is_file():
         raise ValueError('Codex npm platform package has no native executable')
     return binary.resolve()
@@ -182,9 +227,13 @@ def discover_candidates(*, env=None):
     paths = []
     if env.get('CODEX_BIN'):
         explicit = env['CODEX_BIN']
-        paths.append(shutil.which(explicit, path=env.get('PATH', '')) or explicit)
-    paths.extend(str(Path(entry or '.') / 'codex') for entry in env.get('PATH', '').split(os.pathsep)
-                 if (Path(entry or '.') / 'codex').exists())
+        paths.append(find_executable(explicit, environment=env) or explicit)
+    candidate = find_executable('codex', environment=env)
+    if candidate:
+        paths.append(candidate)
+    if os.name != 'nt':
+        paths.extend(str(Path(entry or '.') / 'codex') for entry in env.get('PATH', '').split(os.pathsep)
+                     if (Path(entry or '.') / 'codex').exists())
     if CHATGPT_CODEX.exists():
         paths.append(str(CHATGPT_CODEX))
     rows, seen = [], set()
@@ -246,7 +295,87 @@ def _schema_check(directory):
     return {'methods': list(REQUIRED_METHODS), 'daybreak': True}
 
 
+def _smoke_windows(path, home, timeout):
+    command = [str(path), 'app-server', '--listen', 'stdio://',
+               '-c', 'cli_auth_credentials_store="file"']
+    proc = subprocess.Popen(command, cwd=home, env=_environment(home), stdin=subprocess.PIPE,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    events = queue.Queue()
+    deadline = time.monotonic() + timeout
+    buffer = bytearray()
+    total = 0
+
+    def drain(pipe, is_stdout):
+        while True:
+            chunk = pipe.read1(65536)
+            events.put((is_stdout, chunk))
+            if not chunk:
+                return
+
+    threading.Thread(target=drain, args=(proc.stdout, True), daemon=True).start()
+    threading.Thread(target=drain, args=(proc.stderr, False), daemon=True).start()
+
+    def send(frame):
+        proc.stdin.write(json.dumps(frame).encode() + b'\n')
+        proc.stdin.flush()
+
+    def request(number, method, params):
+        nonlocal total
+        send({'id': number, 'method': method, 'params': params})
+        while True:
+            while b'\n' in buffer:
+                line, _, tail = buffer.partition(b'\n')
+                buffer[:] = tail
+                try:
+                    frame = json.loads(line)
+                except (ValueError, UnicodeError):
+                    raise ValueError('Native smoke returned invalid JSON') from None
+                if not isinstance(frame, dict):
+                    raise ValueError('Native smoke returned an invalid frame')
+                if 'method' in frame:
+                    if 'id' in frame:
+                        raise RuntimeError('Native smoke requested an unsupported action')
+                    continue
+                if frame.get('id') != number or 'error' in frame or 'result' not in frame:
+                    raise RuntimeError(f'Native {method} smoke failed')
+                return frame['result']
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError('Native protocol smoke timed out')
+            try:
+                is_stdout, chunk = events.get(timeout=min(remaining, .25))
+            except queue.Empty:
+                continue
+            if not chunk:
+                if is_stdout:
+                    raise RuntimeError('Native smoke closed its output')
+                continue
+            total += len(chunk)
+            if total > MAX_OUTPUT:
+                raise ValueError('Native smoke output exceeded the size limit')
+            if is_stdout:
+                buffer.extend(chunk)
+
+    try:
+        initialize = request(1, 'initialize', {'clientInfo': {'name': 'codex_studio_update',
+                             'version': '1.0.0'}, 'capabilities': {'experimentalApi': True}})
+        if not isinstance(initialize, dict) or not isinstance(initialize.get('userAgent'), str):
+            raise ValueError('Native initialize returned an invalid result')
+        send({'method': 'initialized'})
+        config = request(2, 'config/read', {'includeLayers': False})
+        if not isinstance(config, dict) or not isinstance(config.get('config'), dict):
+            raise ValueError('Native config/read returned an invalid result')
+        loaded = request(3, 'thread/loaded/list', {})
+        if not isinstance(loaded, dict) or loaded.get('data') != []:
+            raise ValueError('Native isolated smoke contains unexpected loaded threads')
+        return ['initialize', 'config/read', 'thread/loaded/list']
+    finally:
+        _reap(proc)
+
+
 def _smoke(path, home, timeout=20):
+    if os.name == 'nt':
+        return _smoke_windows(path, home, timeout)
     command = [str(path), 'app-server', '--listen', 'stdio://',
                '-c', 'cli_auth_credentials_store="file"']
     proc = subprocess.Popen(command, cwd=home, env=_environment(home), stdin=subprocess.PIPE,
@@ -358,21 +487,22 @@ def approve_candidate(path, root):
         staging = Path(staging)
         bundle = staging / 'bundle'
         bundle.mkdir()
-        binary = bundle / 'codex'
+        binary = bundle / native_binary_name()
         shutil.copy2(source, binary)
         for name, companion in companions.items():
             shutil.copy2(companion['path'], bundle / name)
         current = {**file_identity(source), 'companions': companion_identities(source)}
         if current != identity:
             raise RuntimeError('Native candidate changed during its snapshot')
-        hashes = {name: _digest(bundle / name) for name in ('codex', *REQUIRED_COMPANIONS)}
-        digest = hashes['codex']
+        names = (native_binary_name(), *required_companions())
+        hashes = {name: _digest(bundle / name) for name in names}
+        digest = hashes[native_binary_name()]
         bundle_sha = bundle_digest(hashes)
         home = staging / 'home'
         home.mkdir()
         version = _version(binary, home)
         companion_checks = {}
-        for name in REQUIRED_COMPANIONS:
+        for name in required_companions():
             help_text = _run([str(bundle / name), '--help'], home).decode('utf-8', errors='replace')
             if f'Usage: {name}' not in help_text or '--listen' not in help_text:
                 raise ValueError(f'Native companion {name} failed its help smoke')
@@ -385,12 +515,12 @@ def approve_candidate(path, root):
         for name, expected in hashes.items():
             if _digest(bundle / name) != expected:
                 raise RuntimeError('Native executable bundle changed during validation')
-        target = builds / bundle_sha / 'codex'
+        target = builds / bundle_sha / native_binary_name()
         # The lock protects concurrent publishers; rename exposes the complete
         # directory at once. An existing directory, including a partial one,
         # must pass every check and is never replaced or repaired in place.
         with (builds.parent / 'publication.lock').open('a') as publication:
-            fcntl.flock(publication, fcntl.LOCK_EX)
+            flock(publication, LOCK_EX)
             if os.path.lexists(target.parent):
                 if target.parent.is_symlink() or not target.parent.is_dir():
                     raise RuntimeError('Approved native bundle has an unexpected path')

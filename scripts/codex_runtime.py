@@ -10,7 +10,7 @@ import copy
 import concurrent.futures
 from dataclasses import dataclass
 from contextlib import contextmanager
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 import json
 import math
 import os
@@ -26,6 +26,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Literal, overload
 
 from codex_accounts import AccountStore
+from codex_private_paths import ensure_private_dir
 from codex_account_transfer import transfer_store
 from codex_catalog import runtime_catalog
 from codex_daybreak import resolve_program, turn_program, turn_params
@@ -626,9 +627,34 @@ class AppServer:
                 self.proc.stdin.flush()
                 self.transcript_capture.record("out", value)
                 return
-            os.set_blocking(fd, False)
             remaining = memoryview(text.encode("utf-8"))
             try:
+                if os.name == "nt":
+                    completed = threading.Event()
+                    failure = []
+
+                    def write_pipe():
+                        try:
+                            view = remaining
+                            while view:
+                                count = os.write(fd, view)
+                                if count <= 0:
+                                    raise BrokenPipeError("Native input pipe closed")
+                                view = view[count:]
+                        except OSError as error:
+                            failure.append(error)
+                        finally:
+                            completed.set()
+
+                    threading.Thread(target=write_pipe, daemon=True).start()
+                    left = deadline - time.monotonic()
+                    if left <= 0 or not completed.wait(left):
+                        raise TimeoutError("Native input pipe did not drain")
+                    if failure:
+                        raise failure[0]
+                    self.transcript_capture.record("out", value)
+                    return
+                os.set_blocking(fd, False)
                 while remaining:
                     left = deadline - time.monotonic()
                     if left <= 0 or not select.select([], [fd], [], left)[1]:
@@ -1484,8 +1510,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def __init__(self, root, server_factory=AppServer):
         startup_memory_mark("runtime-init-start")
         self.started_at = time.time()
-        self.root = Path(root)
-        self.root.mkdir(parents=True, exist_ok=True)
+        self.root = ensure_private_dir(root)
         self.db_path = self.root / "canvas.sqlite3"
         self.analytics_db_path = self.root / "analytics.sqlite3"
         self.lock = runtime_lock()
@@ -1526,7 +1551,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.recovery_pool = concurrent.futures.ThreadPoolExecutor(max_workers=2, thread_name_prefix="studio-recover")
         self.lease = (self.root / "runtime.lock").open("a+")
         try:
-            fcntl.flock(self.lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flock(self.lease, LOCK_EX | LOCK_NB)
         except OSError:
             self.lease.close()
             self.pool.shutdown(wait=False)
@@ -1537,7 +1562,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         try:
             self.accounts = AccountStore(self.root)
         except Exception:
-            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            flock(self.lease, LOCK_UN)
             self.lease.close()
             self.pool.shutdown(wait=False)
             self.tool_pool.shutdown(wait=False)
@@ -1881,7 +1906,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     errors.append(error)
         if not self.lease.closed:
             try:
-                fcntl.flock(self.lease, fcntl.LOCK_UN)
+                flock(self.lease, LOCK_UN)
             except BaseException as error:
                 errors.append(error)
             try:
@@ -1904,7 +1929,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         with self.lock:
             if self.lease.closed:
                 return
-            fcntl.flock(self.lease, fcntl.LOCK_UN)
+            flock(self.lease, LOCK_UN)
             self.lease.close()
 
     def multi_server(self):
@@ -10989,5 +11014,5 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.close_analytics_captures()
         self._shutdown_writers_drained = True
         self._close_wal_keeper()
-        fcntl.flock(self.lease, fcntl.LOCK_UN)
+        flock(self.lease, LOCK_UN)
         self.lease.close()
