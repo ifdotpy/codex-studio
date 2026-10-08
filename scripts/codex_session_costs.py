@@ -13,6 +13,7 @@ import time
 from codex_sqlite import connect as sqlite_connect
 from codex_claude_costs import parse_claude_usage
 from codex_pricing import price_usage
+from codex_cost_usage import UsageIndex, source_state as cost_source_state
 
 
 def provider_for(model):
@@ -221,7 +222,7 @@ class SessionCostReader:
             if os.path.exists(temporary):
                 os.unlink(temporary)
 
-    def _load_persisted(self, root, usage_state, pricing_signature, agent_signature, claude_signature):
+    def _load_persisted(self, root, usage_state, pricing_signature, agent_signature, claude_signature, cost_state=None):
         path = self._cache_path(root)
         try:
             saved = json.loads(path.read_text())
@@ -234,7 +235,8 @@ class SessionCostReader:
             if (not isinstance(source, dict) or source.get("usage") != usage_state
                     or source.get("pricingSignature") != pricing_signature
                     or source.get("agentsSignature") != agent_signature
-                    or source.get("claudeSignature") != claude_signature):
+                    or source.get("claudeSignature") != claude_signature
+                    or source.get("costProjection") != cost_state):
                 return None
             try:
                 os.utime(path, None)
@@ -379,6 +381,7 @@ class SessionCostReader:
                 raise ValueError("Unknown chat")
             root = json.loads(row["record"]).get("rootId") or agent_id
             usage_state = self._usage_state(db, root)
+            cost_state = cost_source_state(db, root)
             agents = self._root_agents(db, agent_id, root)
         finally:
             db.rollback()  # End the explicit read snapshot before instrumented close.
@@ -387,7 +390,7 @@ class SessionCostReader:
         agent_signature = self._agent_signature(agents)
         if not wait:
             return self._display_snapshot(agent_id, root, usage_state, pricing_signature,
-                                          agent_signature)
+                                          agent_signature, cost_state)
         claude_agents = self._claude_agents(agents)
         claude_signature = self._claude_signature(claude_agents)
         with self.lock:
@@ -396,7 +399,7 @@ class SessionCostReader:
                 self.cache.move_to_end(root)
         if not cached:
             cached = self._load_persisted(root, usage_state, pricing_signature,
-                                          agent_signature, claude_signature)
+                                          agent_signature, claude_signature, cost_state)
             if cached:
                 with self.lock:
                     self.cache[root] = cached
@@ -409,7 +412,8 @@ class SessionCostReader:
             valid = (source.get("usage") == usage_state
                      and source.get("pricingSignature") == pricing_signature
                      and source.get("agentsSignature") == agent_signature
-                     and source.get("claudeSignature") == claude_signature)
+                     and source.get("claudeSignature") == claude_signature
+                     and source.get("costProjection") == cost_state)
             changed = not valid
             started = self._start_refresh(agent_id, root, min_interval=10) if changed else False
             with self.lock:
@@ -418,7 +422,7 @@ class SessionCostReader:
         result = self._compute_shared(agent_id, root)
         return {**result, "cacheAgeSeconds": 0, "refreshing": False}
 
-    def _display_snapshot(self, agent_id, root, usage_state, pricing_signature, agent_signature):
+    def _display_snapshot(self, agent_id, root, usage_state, pricing_signature, agent_signature, cost_state=None):
         # Claude log discovery and parsing run in the worker, outside HTTP requests.
         with self.lock:
             cached = self.cache.get(root)
@@ -430,7 +434,8 @@ class SessionCostReader:
             cached_at, result, source = cached
             changed = (source.get("usage") != usage_state
                        or source.get("pricingSignature") != pricing_signature
-                       or source.get("agentsSignature") != agent_signature)
+                       or source.get("agentsSignature") != agent_signature
+                       or source.get("costProjection") != cost_state)
             due = checked is None or self.clock() - checked >= 10
             if changed or due:
                 self._start_refresh(agent_id, root, min_interval=10)
@@ -559,6 +564,24 @@ class SessionCostReader:
         return rows
 
     def _cost_usage_groups(self, db, root):
+        state = cost_source_state(db, root)
+        if state is not None:
+            receipts = [tuple(row) for row in db.execute("SELECT * FROM session_cost_claude_messages")]
+            db.commit()
+            directory = self.state_root / "session-cost-usage"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            path = directory / ("usage-v1-" + hashlib.sha256(root.encode("utf-8")).hexdigest() + ".sqlite3")
+            index = UsageIndex(path)
+            try:
+                index.cursor = index.refresh(db, root, state, receipts, capture=lambda: {
+                    "usage": self._usage_state(db, root), "generation": self._global_usage_generation(db)})
+                self.__dict__["last_usage_capture_rows"] = index.applied_rows
+                os.utime(path, None)
+                UsageIndex.prune(directory, self.CACHE_ROOTS)
+                return index
+            except BaseException:
+                index.close()
+                raise
         # Store only the selected token object and response value. The outer
         # projection reuses them without parsing the full record again.
         extract = "jsonb_extract" if sqlite3.sqlite_version_info >= (3, 45, 0) else "json_extract"
@@ -673,6 +696,7 @@ class SessionCostReader:
             for preparation in range(2):
                 db.execute("BEGIN")
                 usage_state = self._usage_state(db, root)
+                cost_state = cost_source_state(db, root)
                 agents = self._root_agents(db, agent_id, root)
                 agents_signature = self._agent_signature(agents)
                 db.commit()
@@ -697,11 +721,13 @@ class SessionCostReader:
                 cache_source = {"usage": usage_state, "pricingSignature": catalog_signature,
                                 "agentsSignature": agents_signature,
                                 "claudeSignature": self._claude_signature(claude_agents)}
+                if cost_state is not None:
+                    cache_source["costProjection"] = cost_state
                 with self.lock:
                     cached = self.cache.get(root)
                 if not cached:
                     cached = self._load_persisted(root, usage_state, catalog_signature,
-                                                  agents_signature, cache_source["claudeSignature"])
+                                                  agents_signature, cache_source["claudeSignature"], cost_state)
                 if cached and "claudeUsageSignature" in cached[2]:
                     cache_source["claudeUsageSignature"] = cached[2]["claudeUsageSignature"]
                 cached_matches = bool(cached and cached[2] == cache_source)
@@ -736,6 +762,7 @@ class SessionCostReader:
                     db.commit()
                 db.execute("BEGIN")
                 if (self._usage_state(db, root) != usage_state
+                        or cost_source_state(db, root) != cost_state
                         or self._agent_signature(self._root_agents(db, agent_id, root)) != agents_signature):
                     db.rollback()
                     continue
@@ -757,6 +784,16 @@ class SessionCostReader:
                     raise
                 db.commit()
                 groups = ()
+            if isinstance(groups, UsageIndex):
+                try:
+                    db.execute("BEGIN")
+                    if self._agent_signature(self._root_agents(db, agent_id, root)) != agents_signature:
+                        raise RuntimeError("The chat team changed during cost capture; retry later")
+                except BaseException:
+                    groups.close()
+                    raise
+                finally:
+                    db.rollback()
             for model, account_key, input_tokens, cached_tokens, write_tokens, output_tokens, input_uncached, count in groups:
                 if model == "<synthetic>":
                     # Claude Code records local notices under this name with zero usage.
@@ -783,6 +820,9 @@ class SessionCostReader:
                 model_totals[model] = model_totals.get(model, 0.0) + cost * count
                 provider_totals[provider] = provider_totals.get(provider, 0.0) + cost * count
                 tier_used |= tier
+            if isinstance(groups, UsageIndex):
+                generation = groups.capture["generation"]
+                cache_source.update({key: value for key, value in groups.capture.items() if key != "generation"})
             for record in claude_messages.values():
                 model = record["model"]
                 if model == "<synthetic>":

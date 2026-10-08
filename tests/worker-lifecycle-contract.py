@@ -133,6 +133,42 @@ class LifecycleContract(unittest.TestCase):
         self.assertEqual(failed['reason']['message'], 'Native failure')
         self.assertEqual(failed['next_step'], 'recover')
 
+    def test_policy_refusal_releases_work_and_sends_structured_child_result(self):
+        lead = self.lead()
+        self.agent_update(lead, status='completed', autoWake=True)
+        worker = self.start(self.worker(lead), 'Do the assigned task')
+        task = self.work(lead, 'Recoverable task', owner=worker['id'])
+        error = {'message': 'Do not forward this native text', 'codexErrorInfo': 'cyberPolicy'}
+        self.runtime.server.notify({'method': 'error', 'params': {
+            'threadId': worker['threadId'], 'turnId': worker['turnId'],
+            'error': error, 'willRetry': True}})
+        self.assertTrue(self.runtime.agent(worker['id'])['inFlight'])
+        self.runtime.server.notify({'method': 'turn/completed', 'params': {
+            'threadId': worker['threadId'],
+            'turn': {'id': worker['turnId'], 'status': 'interrupted', 'error': None}}})
+        stopped = self.runtime.agent(worker['id'])
+        self.assertEqual(stopped['status'], 'failed')
+        self.assertFalse(stopped['inFlight'])
+        self.assertTrue(stopped['nativeFailureHold'])
+        with self.runtime.db() as db:
+            work = next(row for row in self.runtime.records(db, 'work') if row['id'] == task['id'])
+        self.assertIsNone(work['owner'])
+        self.assertEqual(work['status'], 'ready')
+        payload = json.loads(self.events(lead, 'child_result')[-1]['text'])
+        self.assertEqual(payload['reason'], {
+            'kind': 'policy_refusal',
+            'message': 'Codex refused this turn under its cybersecurity policy.',
+            'next_steps': [
+                'Start a new chat with a narrower or rephrased task, or use another provider or model.'
+            ],
+        })
+        self.assertEqual(payload['released_task_ids'], [task['id']])
+        self.assertEqual(payload['next_step'], 'reassign')
+        self.assertNotIn(error['message'], json.dumps(payload))
+        starts = [method for method, _ in self.runtime.server.calls if method == 'turn/start']
+        self.runtime.dispatch()
+        self.assertEqual([method for method, _ in self.runtime.server.calls if method == 'turn/start'], starts)
+
     def test_stop_reports_submitted_assignment(self):
         lead = self.lead()
         self.agent_update(lead, status='completed', autoWake=True)

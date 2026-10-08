@@ -9,6 +9,7 @@ import {
   rmSync,
   statSync,
   realpathSync,
+  symlinkSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -251,6 +252,160 @@ test("a resource policy update preserves the registered recovery process", async
     rmSync(data.root, { recursive: true, force: true });
   }
 });
+
+test.each([false, true])(
+  "Python selection change preserves recovery unless explicitly configured (%s)",
+  async (explicit) => {
+    const data = fixture();
+    const calls = [];
+    try {
+      const initial = await configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => {},
+      });
+      const saved = JSON.parse(readFileSync(initial.config, "utf8"));
+      const nextDirectory = path.join(data.root, "another Python");
+      mkdirSync(nextDirectory);
+      const nextPython = path.join(nextDirectory, "python3");
+      symlinkSync(saved.python, nextPython);
+      await configureRecovery({
+        ...data,
+        env: {
+          ...data.env,
+          PATH: `${nextDirectory}${path.delimiter}${data.env.PATH}`,
+          ...(explicit ? { CODEX_AGENTS_PYTHON: nextPython } : {}),
+        },
+        enabled: true,
+        run: async (_file, args) => {
+          calls.push(args[0]);
+          return { stdout: "pid = 4242\n" };
+        },
+      });
+      const updated = JSON.parse(readFileSync(initial.config, "utf8"));
+      assert.equal(updated.python, nextPython);
+      assert.equal(
+        readFileSync(initial.plist, "utf8").includes(nextPython),
+        true,
+      );
+      assert.deepEqual(
+        calls,
+        explicit
+          ? ["print", "bootout", "bootstrap", "print"]
+          : ["print", "print"],
+      );
+    } finally {
+      rmSync(data.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([false, true])(
+  "a lost bootstrap response preserves registration or restores the previous service (%s)",
+  async (applied) => {
+    const data = fixture();
+    const calls = [];
+    let registered = true;
+    let bootstraps = 0;
+    try {
+      const initial = await configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => {},
+      });
+      const previousPlist = readFileSync(initial.plist, "utf8");
+      const replacement = path.join(data.root, "recover_backend-v2.py");
+      writeFileSync(replacement, "fixture v2");
+      const update = configureRecovery({
+        ...data,
+        supervisor: replacement,
+        enabled: true,
+        run: async (_file, args) => {
+          calls.push(args[0]);
+          if (args[0] === "print" && !registered)
+            throw Object.assign(new Error("service is absent"), { code: 113 });
+          if (args[0] === "bootout") registered = false;
+          if (args[0] === "bootstrap") {
+            bootstraps += 1;
+            registered = applied || bootstraps > 1;
+            if (bootstraps === 1)
+              throw Object.assign(new Error("Bootstrap failed: 5"), {
+                code: 5,
+              });
+          }
+          return { stdout: "pid = 4242\n" };
+        },
+      });
+      if (applied) {
+        await update;
+        assert.equal(bootstraps, 1);
+        assert.equal(
+          readFileSync(initial.plist, "utf8").includes(replacement),
+          true,
+        );
+      } else {
+        await assert.rejects(update, /previous recovery service was restored/);
+        assert.equal(bootstraps, 2);
+        assert.equal(readFileSync(initial.plist, "utf8"), previousPlist);
+      }
+      assert.equal(registered, true);
+      assert.equal(calls.filter((action) => action === "bootout").length, 1);
+    } finally {
+      rmSync(data.root, { recursive: true, force: true });
+    }
+  },
+);
+
+test.each([false, true])(
+  "recovery does not retry an unknown registration and reports a failed restore (%s)",
+  async (absent) => {
+    const data = fixture();
+    let bootedOut = false;
+    let bootstraps = 0;
+    try {
+      const initial = await configureRecovery({
+        ...data,
+        enabled: true,
+        run: async () => {},
+      });
+      const previousPlist = readFileSync(initial.plist, "utf8");
+      const replacement = path.join(data.root, "recover_backend-v2.py");
+      writeFileSync(replacement, "fixture v2");
+      await assert.rejects(
+        configureRecovery({
+          ...data,
+          supervisor: replacement,
+          enabled: true,
+          run: async (_file, args) => {
+            if (args[0] === "print" && bootedOut)
+              throw Object.assign(new Error("registration is unknown"), {
+                code: absent ? 113 : 1,
+              });
+            if (args[0] === "bootout") bootedOut = true;
+            if (args[0] === "bootstrap") {
+              bootstraps += 1;
+              throw Object.assign(new Error("Bootstrap failed: 5"), {
+                code: 5,
+              });
+            }
+            return { stdout: "pid = 4242\n" };
+          },
+        }),
+        absent ? /Cannot update or restore/ : /Bootstrap failed: 5/,
+      );
+      assert.equal(bootstraps, absent ? 2 : 1);
+      if (absent)
+        assert.equal(readFileSync(initial.plist, "utf8"), previousPlist);
+      else
+        assert.equal(
+          readFileSync(initial.plist, "utf8").includes(replacement),
+          true,
+        );
+    } finally {
+      rmSync(data.root, { recursive: true, force: true });
+    }
+  },
+);
 
 test("recovery rewrite refuses to stop its legacy supervisor while handles are live", async () => {
   const data = fixture();

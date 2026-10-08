@@ -1,3 +1,23 @@
+import { createContext, type ReactNode } from "react";
+import { useWorkerModels, type WorkerModelInfo } from "./WorkerModelPicker";
+
+export const TeamModelCatalog = createContext<WorkerModelInfo[]>([]);
+
+export function TeamModels({
+  accountKey,
+  children,
+}: {
+  accountKey: string;
+  children: ReactNode;
+}) {
+  const catalog = useWorkerModels(accountKey, true, true);
+  return (
+    <TeamModelCatalog.Provider value={catalog.models}>
+      {children}
+    </TeamModelCatalog.Provider>
+  );
+}
+
 import type { Agent, Snapshot } from "../../types";
 
 type Request = NonNullable<Snapshot["runtime"]>["requests"][number];

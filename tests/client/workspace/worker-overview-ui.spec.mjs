@@ -160,6 +160,8 @@ test("Worker Overview Ui", async ({
           if (agent.id === worker(1).id)
             Object.assign(agent, {
               name: longName,
+              model: "gpt-6-astra",
+              effort: "high",
               overview: { task, result: "" },
             });
           if (agent.id === worker(25).id)
@@ -302,6 +304,21 @@ test("Worker Overview Ui", async ({
       team
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
+    assert.equal(
+      await card(1).locator(".worker-model-summary").innerText(),
+      "Astra 6 · High",
+    );
+    assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("aria-label"),
+      "Failed",
+    );
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("title"),
+      "Failed",
+    );
+    assert.equal(await card(7).locator(".worker-state svg").count(), 1);
+    assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     const refreshFromEntityPull = async () => {
       fixtureRefreshStage++;
       await page.evaluate(() => {

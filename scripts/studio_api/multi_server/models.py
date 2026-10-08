@@ -41,10 +41,12 @@ class AccessClient(ContractModel):
     origin: str | None
     publicKey: str
     tailscaleUser: str
-    status: Literal["paired", "revoked"]
+    status: Literal["paired", "revoked", "discovered", "unreachable"]
     created: float
     lastAccess: float | None
     revoked: float | None
+    lastSeen: float | None = None
+    autoPair: bool | None = None
 
 
 class InviteSummary(ContractModel):
@@ -54,19 +56,29 @@ class InviteSummary(ContractModel):
     status: Literal["open", "used"]
 
 
+class AccessSettings(ContractModel):
+    autoPair: bool
+
+
+class DiscoveryIdentity(ServerIdentity, ResponseModel):
+    protocol: Literal[1]
+    autoPair: bool
+
+
 class AccessSnapshot(ResponseModel):
     protocol: Literal[1]
     identity: ServerIdentity
     clients: list[AccessClient]
     servers: list[AccessClient]
     invites: list[InviteSummary]
+    settings: AccessSettings
 
 
 class AccessAudit(ContractModel):
     sequence: int
     clientId: str
     actorId: str
-    action: Literal["create_invite", "pair", "revoke", "accept_invite"]
+    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings"]
     created: float
 
 
@@ -92,7 +104,39 @@ class AcceptInvite(ContractModel):
     invitation: AccessInvitation
 
 
-ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite, Field(discriminator="action")]
+class DiscoverServers(ContractModel):
+    action: Literal["discover"]
+    requestId: str = Field(min_length=1, max_length=128)
+
+
+class UiInvite(ContractModel):
+    action: Literal["ui_invite"]
+    serverId: str = Field(min_length=1, max_length=128)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
+class SetAccessSettings(ContractModel):
+    action: Literal["settings"]
+    autoPair: bool
+    requestId: str | None = Field(default=None, min_length=1, max_length=128)
+
+
+class UnrevokeServer(ContractModel):
+    action: Literal["unrevoke"]
+    clientId: str = Field(min_length=1, max_length=128)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
+class AutoPairRequest(ContractModel):
+    protocol: Literal[1]
+    serverId: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=80)
+    origin: str = Field(max_length=512)
+    publicKey: str = Field(max_length=4096)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
+ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer, Field(discriminator="action")]
 
 
 class DevicePairRequest(ContractModel):

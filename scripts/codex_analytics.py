@@ -280,6 +280,8 @@ class AnalyticsMixin:
           CREATE INDEX IF NOT EXISTS analytics_items_team ON analytics_items(root,at);
           CREATE INDEX IF NOT EXISTS analytics_items_tool ON analytics_items(name,at);
             ''')
+            from codex_cost_usage import install as install_cost_usage
+            install_cost_usage(analytics_db)
             analytics_db.execute('INSERT OR IGNORE INTO analytics_meta VALUES (?,?)', ('trackingSince', str(time.time())))
             for a in self.records(db, 'agents'):
                 self.analytics_agent(analytics_db, a)

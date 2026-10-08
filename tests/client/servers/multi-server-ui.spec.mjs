@@ -76,10 +76,14 @@ test("one UI routes overlapping chats to two and three signed servers without re
     );
     await page.goto(local.origin);
     await page.locator("#message").waitFor();
+    await expect(page.locator(".server-manager-launch")).toHaveCount(0);
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
-    await page.getByRole("tab", { name: "Server access", exact: true }).click();
+    await page.getByRole("tab", { name: "Servers", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Add with an invitation", exact: true })
+      .click();
     const access = page.getByRole("region", {
       name: "Server access",
       exact: true,
@@ -107,8 +111,11 @@ test("one UI routes overlapping chats to two and three signed servers without re
       .getByRole("button", { name: "Close", exact: true })
       .click();
     const pair = async (server) => {
-      const dialog = page.getByRole("dialog", { name: "Studio servers" });
+      const dialog = page.getByRole("dialog", { name: "Studio settings" });
       await expect(dialog).toBeVisible();
+      await dialog
+        .getByRole("button", { name: "Add with an invitation", exact: true })
+        .click();
       await dialog.getByLabel("Server address").fill(server.invitation.origin);
       await dialog
         .getByLabel("Pairing invitation")
@@ -123,9 +130,15 @@ test("one UI routes overlapping chats to two and three signed servers without re
       ).toContainText(`${server.invitation.label} chat`);
       await dialog.getByRole("button", { name: "Close", exact: true }).click();
     };
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
-    const firstPair = page.getByRole("dialog", { name: "Studio servers" });
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    await page.getByRole("tab", { name: "Servers", exact: true }).click();
+    const firstPair = page.getByRole("dialog", { name: "Studio settings" });
     await expect(firstPair).toBeVisible();
+    await firstPair
+      .getByRole("button", { name: "Add with an invitation", exact: true })
+      .click();
     await firstPair.getByLabel("Server address").fill(remote.invitation.origin);
     await firstPair
       .getByLabel("Pairing invitation")
@@ -137,7 +150,10 @@ test("one UI routes overlapping chats to two and three signed servers without re
       "Pair response lost in fixture",
     );
     await page.reload();
-    await page.getByRole("button", { name: "Servers", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Studio settings", exact: true })
+      .click();
+    await page.getByRole("tab", { name: "Servers", exact: true }).click();
     await pair(remote);
     expect(remote.pairs).toHaveLength(2);
     expect(remote.pairs[0]).toBe(remote.pairs[1]);
@@ -188,16 +204,248 @@ test("one UI routes overlapping chats to two and three signed servers without re
     };
     await page.clock.install();
     for (const count of [2, 3]) {
-      if (count === 3) {
-        await page.getByRole("button", { name: "Manage", exact: true }).click();
-        await pair(third);
-      }
+      if (count === 3) local.discoverPeer(third);
       const start = Date.now();
-      await page.reload();
+      const concurrent = count === 3 ? await context.newPage() : null;
+      await Promise.all([page.reload(), concurrent?.goto(local.origin)]);
       await expect(
         page.locator(".server-sidebar [data-chat='overlap']"),
       ).toHaveCount(count);
+      if (concurrent) {
+        await expect(
+          concurrent.locator(".server-sidebar [data-chat='overlap']"),
+        ).toHaveCount(count);
+        await concurrent.close();
+      }
       const startupMs = Date.now() - start;
+      if (count === 3) {
+        expect(third.pairs).toHaveLength(1);
+        expect(
+          local.accessRequests.filter(
+            (row) => row.action === "ui_invite" && row.serverId === "third",
+          ),
+        ).toHaveLength(1);
+        await page
+          .getByRole("button", { name: "Studio settings", exact: true })
+          .click();
+        const settings = page.getByRole("dialog", { name: "Studio settings" });
+        await expect(
+          settings.getByRole("tab", { name: "Servers", exact: true }),
+        ).toHaveAttribute("aria-selected", "true");
+        await expect(settings.locator("[data-settings-server]")).toHaveCount(3);
+        expect(
+          await settings
+            .locator("[data-settings-server]")
+            .first()
+            .getAttribute("data-settings-server"),
+        ).toBe("local");
+        local.staleSettingsReceipts(true);
+        await settings
+          .getByRole("switch", { name: "Pair servers automatically" })
+          .click();
+        await expect(
+          settings.getByRole("switch", { name: "Pair servers automatically" }),
+        ).not.toBeChecked();
+        expect(
+          local.accessRequests.some(
+            (row) => row.action === "settings" && row.autoPair === false,
+          ),
+        ).toBe(true);
+        local.staleSettingsReceipts(false);
+        await settings
+          .getByRole("button", { name: "Find servers now", exact: true })
+          .click();
+        await expect
+          .poll(
+            () =>
+              local.accessRequests.filter((row) => row.action === "discover")
+                .length,
+          )
+          .toBe(1);
+        await expect(
+          settings.getByRole("button", {
+            name: "Find servers now",
+            exact: true,
+          }),
+        ).toBeEnabled();
+        const thirdRow = settings.locator("[data-settings-server=third]");
+        await thirdRow
+          .getByRole("button", { name: "Remove from this UI", exact: true })
+          .click();
+        await expect(
+          page.locator(".server-sidebar [data-chat='overlap']"),
+        ).toHaveCount(2);
+        await page.reload();
+        await expect(
+          page.locator(".server-sidebar [data-chat='overlap']"),
+        ).toHaveCount(2);
+        await page
+          .getByRole("button", { name: "Studio settings", exact: true })
+          .click();
+        await expect(
+          settings
+            .locator("[data-settings-server=third]")
+            .getByRole("button", { name: "Add to this UI", exact: true }),
+        ).toBeVisible();
+        expect(third.pairs).toHaveLength(1);
+        await settings
+          .locator("[data-settings-server=third]")
+          .getByRole("button", { name: "Add to this UI", exact: true })
+          .click();
+        await expect(
+          page.locator(".server-sidebar [data-chat='overlap']"),
+        ).toHaveCount(3);
+        expect(third.pairs).toHaveLength(2);
+        local.discoverPeer(
+          {
+            invitation: {
+              ...third.invitation,
+              serverId: "discovered",
+              origin: "https://discovered.tailnet.ts.net",
+              label: "New computer",
+            },
+          },
+          "discovered",
+        );
+        local.discoverPeer(
+          {
+            invitation: {
+              ...third.invitation,
+              serverId: "unreachable",
+              origin: "https://unreachable.tailnet.ts.net",
+              label: "Offline computer",
+            },
+          },
+          "unreachable",
+        );
+        local.discoverPeer(
+          {
+            invitation: {
+              ...third.invitation,
+              serverId: "revoked",
+              origin: "https://revoked.tailnet.ts.net",
+              label: "Revoked computer",
+            },
+          },
+          "revoked",
+        );
+        await settings
+          .getByRole("button", { name: "Find servers now", exact: true })
+          .click();
+        await expect(settings.locator("[data-settings-server]")).toHaveCount(6);
+        await expect(
+          settings.locator("[data-settings-server=discovered]"),
+        ).toContainText("Discovered");
+        await expect(
+          settings.locator("[data-settings-server=unreachable]"),
+        ).toContainText("Unreachable");
+        await expect(
+          settings.locator("[data-settings-server=revoked]"),
+        ).toContainText("Revoked");
+        await expect(
+          settings
+            .locator("[data-settings-server=revoked]")
+            .getByRole("button", { name: "Add to this UI", exact: true }),
+        ).toHaveCount(0);
+        await settings
+          .locator("[data-settings-server=third]")
+          .getByRole("button", { name: "Revoke", exact: true })
+          .click();
+        const confirmation = page.getByRole("dialog", {
+          name: "Revoke server access",
+          exact: true,
+        });
+        await expect(confirmation).toBeVisible();
+        expect(
+          local.accessRequests.some(
+            (row) => row.action === "revoke" && row.clientId === "third",
+          ),
+        ).toBe(false);
+        await confirmation
+          .getByRole("button", { name: "Revoke", exact: true })
+          .click();
+        await expect(
+          settings.locator("[data-settings-server=third]"),
+        ).toContainText("Revoked");
+        await settings
+          .locator("[data-settings-server=third]")
+          .getByRole("button", { name: "Allow again", exact: true })
+          .click();
+        await expect(
+          settings
+            .locator("[data-settings-server=third]")
+            .getByRole("button", { name: "Allow again", exact: true }),
+        ).toHaveCount(0);
+        expect(
+          local.accessRequests.some(
+            (row) => row.action === "unrevoke" && row.clientId === "third",
+          ),
+        ).toBe(true);
+        await expect(
+          settings
+            .locator("[data-settings-server=third]")
+            .getByRole("button", { name: "Revoke", exact: true }),
+        ).toHaveCount(0);
+        local.discoverPeer(third);
+        await settings
+          .getByRole("button", { name: "Find servers now", exact: true })
+          .click();
+        await expect(
+          settings
+            .locator("[data-settings-server=third]")
+            .getByRole("button", { name: "Revoke", exact: true }),
+        ).toBeVisible();
+        await expect(settings.getByLabel("Server address")).toHaveCount(0);
+        await expect(settings.getByText("Old UI", { exact: true })).toHaveCount(
+          0,
+        );
+        expect(
+          await settings
+            .locator("[data-settings-server]")
+            .evaluateAll((rows) =>
+              rows.map((row) => row.dataset.settingsServer),
+            ),
+        ).toEqual([
+          "local",
+          "remote",
+          "third",
+          "discovered",
+          "unreachable",
+          "revoked",
+        ]);
+
+        expect(third.pairs).toHaveLength(2);
+        await page.setViewportSize({ width: 1280, height: 1000 });
+        await page.emulateMedia({ colorScheme: "light" });
+        await settings.screenshot({
+          path: testInfo.outputPath("servers-settings-light.png"),
+        });
+        await page.emulateMedia({ colorScheme: "dark" });
+        await expect(page.locator("html")).toHaveAttribute(
+          "data-mantine-color-scheme",
+          "dark",
+        );
+        await settings.screenshot({
+          path: testInfo.outputPath("servers-settings-dark.png"),
+        });
+        await page.emulateMedia({ colorScheme: "light" });
+        await page.setViewportSize({ width: 390, height: 844 });
+        await expect(
+          settings.getByRole("switch", { name: "Pair servers automatically" }),
+        ).toBeInViewport();
+        expect(
+          await page.evaluate(
+            () => document.documentElement.scrollWidth <= window.innerWidth,
+          ),
+        ).toBe(true);
+        await page.screenshot({
+          path: testInfo.outputPath("servers-settings-mobile.png"),
+        });
+        await page.setViewportSize({ width: 1280, height: 720 });
+        await settings
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
+      }
       await page.locator('[data-server="local"] .server-chat').click();
       await page
         .frameLocator('iframe[title="Studio on This computer"]')
@@ -426,6 +674,54 @@ test("one UI routes overlapping chats to two and three signed servers without re
     expect(frameSecurity.parentBlocked).toBe(true);
     expect(frameSecurity.siblingBlocked).toBe(true);
     expect(frameSecurity.blocked).toContain("Invalid server frame owner");
+    for (const frame of [
+      remoteWindow,
+      page
+        .frames()
+        .find(
+          (frame) =>
+            new URL(frame.url()).searchParams.get("studio-server") === "local",
+        ),
+    ]) {
+      const denied = await frame.evaluate(async () => {
+        const id = new URLSearchParams(location.search).get("studio-server");
+        const url =
+          id === "local"
+            ? new URLSearchParams(location.search).get("studio-parent")
+            : "https://remote.tailnet.ts.net";
+        const correlation = crypto.randomUUID();
+        return new Promise((resolve) => {
+          const receive = (event) => {
+            if (
+              event.data?.kind === "studio-server-transport-result" &&
+              event.data.correlation === correlation
+            ) {
+              removeEventListener("message", receive);
+              resolve(event.data.error);
+            }
+          };
+          addEventListener("message", receive);
+          parent.postMessage(
+            {
+              kind: "studio-server-transport",
+              correlation,
+              value: {
+                action: "request",
+                serverId: id,
+                streamId: correlation,
+                url: url + "/api/multi-server",
+                method: "POST",
+                body: new TextEncoder().encode(
+                  '{"action":"unrevoke","clientId":"revoked","requestId":"frame-attack"}',
+                ).buffer,
+              },
+            },
+            new URLSearchParams(location.search).get("studio-parent"),
+          );
+        });
+      });
+      expect(denied).toBe("Use the workspace shell for server management.");
+    }
     const exportHeaders = await remoteWindow.evaluate(async () => {
       const correlation = crypto.randomUUID();
       return new Promise((resolve) => {
@@ -557,7 +853,7 @@ test("phone HTTPS Serve route opens the normal App and its local session", async
     await page.goto("https://phone.tailnet.ts.net/");
     await expect(page.locator("#message")).toBeVisible();
     await expect(
-      page.getByRole("dialog", { name: "Studio servers" }),
+      page.getByRole("dialog", { name: "Studio settings" }),
     ).toHaveCount(0);
     await expect(page.locator("iframe")).toHaveCount(0);
     const sent = await page.evaluate(async () => {

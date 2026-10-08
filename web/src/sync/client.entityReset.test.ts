@@ -91,6 +91,7 @@ describe("entity pull reset wiring", () => {
     const workspaceId = "c".repeat(32);
     mocks.syncGet.mockResolvedValue({ workspaceId });
     const projections = {
+      database: { name: `studio-entity-projection-${workspaceId}` },
       storageInstance: {},
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
@@ -122,6 +123,7 @@ describe("entity pull reset wiring", () => {
     mocks.cachedWorkspace = workspaceId;
     mocks.syncGet.mockRejectedValue(new Error("schema mismatch"));
     const projections = {
+      database: { name: `studio-entity-projection-${workspaceId}` },
       storageInstance: {},
       $: { subscribe: vi.fn(() => ({ unsubscribe: vi.fn() })) },
     };
@@ -193,6 +195,7 @@ describe("entity pull reset wiring", () => {
     };
     const subscription = { unsubscribe: vi.fn() };
     const projections = {
+      database: { name: `studio-entity-projection-${workspaceId}` },
       storageInstance,
       $: { subscribe: vi.fn(() => subscription) },
       find: vi.fn(() => ({

@@ -8,6 +8,9 @@ import math
 from pydantic import ValidationError
 
 from studio_api.sync.resources.models import (
+    EntityChangeBatch,
+    MAX_ENTITY_CHANGE_BYTES,
+    MAX_ENTITY_CHANGE_DOCUMENTS,
     ResourceChangeEvent,
     ResourceHeartbeatEvent,
     ResourceRef,
@@ -17,6 +20,43 @@ from studio_api.sync.resources.models import (
 
 
 class ResourceContractTests(unittest.TestCase):
+    def test_entity_batch_exports_bounded_documents_and_rejects_false_ranges(self) -> None:
+        document = {"id": "entity:project:p", "seq": 2, "payload": "{}", "_deleted": False}
+        valid = {"after": 1, "through": 2, "documents": [document]}
+        parsed = EntityChangeBatch.model_validate(valid)
+        self.assertEqual(parsed.model_dump(by_alias=True), valid)
+        invalid_batches = (
+            {**valid, "after": 2},
+            {**valid, "after": -1},
+            {**valid, "through": 9_007_199_254_740_992},
+            {**valid, "documents": [{**document, "seq": 1}]},
+            {**valid, "documents": [{**document, "seq": 3}]},
+            {**valid, "documents": [document, document]},
+            {**valid, "documents": [{**document, "payload": "x" * MAX_ENTITY_CHANGE_BYTES}]},
+            {**valid, "documents": [document] * (MAX_ENTITY_CHANGE_DOCUMENTS + 1)},
+        )
+        for value in invalid_batches:
+            with self.subTest(value=str(value)[:80]), self.assertRaises(ValidationError):
+                EntityChangeBatch.model_validate(value)
+        schema = EntityChangeBatch.model_json_schema()
+        self.assertEqual(schema["properties"]["documents"]["maxItems"], MAX_ENTITY_CHANGE_DOCUMENTS)
+
+        event = {
+            "protocol": 3, "workspaceId": "w", "epoch": "e", "revision": 1,
+            "reason": "change", "resources": [{"kind": "state"}],
+            "resourceVersions": [{"revision": 2, "entityChanges": valid}],
+        }
+        ResourceChangeEvent.model_validate(event)
+        for invalid in (
+            {**event, "reason": "initial"},
+            {**event, "resources": [{"kind": "accounts"}]},
+            {**event, "resources": []},
+            {**event, "resourceVersions": [{"revision": 3, "entityChanges": valid}]},
+            {**event, "resourceVersions": [{"revision": 2, "entityChanges": valid, "entitySequenceReset": True}]},
+        ):
+            with self.subTest(event=invalid), self.assertRaises(ValidationError):
+                ResourceChangeEvent.model_validate(invalid)
+
     def test_resource_ref_is_a_closed_discriminated_union(self) -> None:
         parsed = ResourceRef.model_validate({"kind": "panel", "agentId": "agent-a"})
         self.assertEqual(parsed.model_dump(), {"kind": "panel", "agentId": "agent-a"})

@@ -27,7 +27,7 @@ try {
     if (new URL(request.url()).pathname.startsWith("/api/"))
       apiRequests.push(request.url());
   });
-  await page.getByRole("dialog", { name: "Studio servers" }).waitFor();
+  await page.getByRole("dialog", { name: "Studio settings" }).waitFor();
   assert.match(page.url(), /\?studio-ui-only=1$/);
   assert.equal(
     await desktop.evaluate(({ BrowserWindow }) =>

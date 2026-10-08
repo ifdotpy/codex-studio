@@ -108,27 +108,6 @@
   padding: 0;
   overflow: hidden;
 }
-.account-limits-tabs {
-  margin: -2px 0 12px;
-}
-.account-limits-tabs [role="tablist"] {
-  flex-wrap: nowrap;
-  overflow-x: auto;
-}
-.account-limits-tabs [role="tab"] {
-  min-width: 0;
-  max-width: 100%;
-  flex: 1 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  white-space: normal;
-  overflow-wrap: anywhere;
-}
-.account-limits-tabs [role="tab"] small {
-  color: var(--muted);
-  font-size: 10px;
-}
 .account-limits-panel {
   font-size: 12px;
   padding: 18px;
@@ -491,4 +470,95 @@
 }
 .usage-footer .account-limits-group {
   flex-shrink: 1;
+}
+
+/* Local selection shows account details without changing the chat account. */
+.account-limits-tiles [role="tablist"] {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  border: 0;
+}
+.account-limits-tiles .setup-account {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 2px;
+  min-width: 0;
+  height: 56px;
+  padding: 8px 9px 12px;
+  border: 1px solid transparent;
+  color: var(--text);
+}
+.account-limits-tiles .setup-account[data-selected] {
+  border-color: light-dark(#b3b6c0, #686b76);
+  background: light-dark(#e8eaf0, #303138);
+}
+.account-limits-tile-name {
+  line-height: 1.4;
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  text-align: left;
+}
+.account-limits-current {
+  color: var(--muted);
+  font-size: 12px;
+}
+.account-limits-selected-name {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+  margin: 14px 0 9px;
+  overflow-wrap: anywhere;
+}
+.account-limits-selected-name small {
+  color: var(--muted);
+}
+.account-limit-window {
+  line-height: 1.3;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+}
+.account-limit-value > strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.account-limit-value > span,
+.account-limit-value small,
+.account-limit-reset,
+.account-limit-group > header > span {
+  font-size: 12px;
+}
+.account-limit-reset {
+  flex-wrap: wrap;
+  gap: 2px 8px;
+}
+.account-limit-windows {
+  gap: 8px;
+}
+.account-cost-values strong {
+  font-size: 12px;
+  font-weight: 500;
+}
+.account-cost-values {
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.usage-footer .account-limits-group .account-limits-toggle {
+  flex-shrink: 0;
+}
+.usage-footer .account-limits-group {
+  flex: 0 0 auto;
+}
+@media (max-width: 600px) {
+  .account-limits-summary .account-limits-warning {
+    display: none;
+  }
 }

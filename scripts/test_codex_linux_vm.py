@@ -312,7 +312,7 @@ class ClientTests(unittest.TestCase):
         (cache / 'bad.pyc').write_text('cache')
         scripts = self.directory / 'scripts'
         scripts.mkdir()
-        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py']:
+        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
             (scripts / name).write_text('# runtime')
         bridge = scripts / 'claude_bridge'
         bridge.mkdir()
@@ -320,7 +320,7 @@ class ClientTests(unittest.TestCase):
         config = vm._cloud_config(guest, '1.2.3', '4.5.6')
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 9)
+        self.assertEqual(len(paths), 11)
         self.assertNotIn('credentials', json.dumps(config))
 
 

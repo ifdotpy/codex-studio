@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import NotRequired, TypedDict
 
+from codex_cache_paths import cache_dir
+
 ACTIVE = {"starting", "running", "waiting", "capacity-retry"}
 
 
@@ -27,6 +29,10 @@ def state_dir() -> Path:
     configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
     if configured:
         return outside_claude(Path(configured))
+    if os.name == "nt":
+        appdata = os.environ.get("LOCALAPPDATA")
+        if appdata:
+            return outside_claude(Path(appdata) / "CodexStudio" / "state")
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return outside_claude(base / "codex-agents")
 

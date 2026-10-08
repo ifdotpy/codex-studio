@@ -121,7 +121,12 @@ def _cleanup_image_workspace(rt: "Runtime", agent_id: str) -> dict[str, "Any"]:
 
 def _completed_native_turn(a: "AgentRecord") -> bool:
     attempt = a.get('startAttempt') or {}
-    return (bool(a.get('lastCompletedTurn')) and a.get('lastCompletedTurn') == attempt.get('turnId')
+    turn_id = a.get('lastCompletedTurn')
+    completed_without_attempt = (
+        not a.get('startAttempt')
+        and a.get('lastCompletedTurnStatus') in {'completed', 'failed', 'interrupted'}
+    )
+    return (bool(turn_id) and (turn_id == attempt.get('turnId') or completed_without_attempt)
             and a.get('turnId') is None and not a.get('inFlight') and _finished(a))
 
 
@@ -1060,7 +1065,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             else:
                 if (not isinstance(native, dict) or native.get('id') != observed[1]
                         or not isinstance(native.get('status'), dict)
-                        or native['status'].get('type') not in {'idle', 'notLoaded'}):
+                        or native['status'].get('type') not in {'idle', 'notLoaded', 'systemError'}):
                     return {'status': 'blocked', 'agent': _brief(target),
                             'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
     with rt.lock, rt.db() as db:

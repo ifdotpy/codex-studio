@@ -2,15 +2,23 @@
 
 import os
 from pathlib import Path
-import pwd
 import re
 import shlex
 import shutil
 import sys
 
+if os.name != "nt":
+    import pwd
+
 
 def default_shell():
     """Match Codex shell_detect: passwd first, then platform fallbacks."""
+    if os.name == "nt":
+        for name in ("pwsh", "powershell"):
+            path = shutil.which(name)
+            if path:
+                return path
+        raise ValueError("No supported PowerShell is available for the command")
     try:
         preferred = Path(pwd.getpwuid(os.getuid()).pw_shell)
     except KeyError:
