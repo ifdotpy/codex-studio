@@ -1,4 +1,4 @@
-import { test } from "../playwright.mjs";
+import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -32,7 +32,7 @@ test("Ux request recovery browser", async ({
   const accounts={accounts:[{id:'ready',label:'Ready account',status:'ready'},{id:'expired',label:'Expired account',status:'signedOut'}],defaultAccountKey:'ready'};
   window.selected=[];window.saves=0;window.failRefresh=mode==='confirmed';
   const saved=async()=>{window.saves++;if(window.failRefresh){window.failRefresh=false;throw Error('Snapshot unavailable');}};
-  function AccountsFixture(){const state=useAccounts('/fixture');return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[{id:'ready',label:'New account',status:'ready'}],defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
+  function AccountsFixture(){const state=useAccounts('/fixture');React.useEffect(()=>{void state.refresh()},[state.refresh]);return <><button onClick={()=>state.refresh()}>Refresh accounts</button><button onClick={()=>state.setData({accounts:[{id:'ready',label:'New account',status:'ready'}],defaultAccountKey:'ready'})}>Use saved accounts</button><output>{state.data.accounts.map(a=>a.label).join(',')}</output></>;}
   let body=mode==='picker'?<Picker initialPath='/project' onSelect={async path=>window.selected.push(path)}/>:
   mode==='claude'||mode==='deadline'?<ClaudeSettings agent={agent}/>:
   mode.startsWith('accounts')?<AccountsFixture/>:
@@ -93,6 +93,7 @@ test("Ux request recovery browser", async ({
       const page = await runnerContext.newPage();
       await page.setViewportSize({ width: 390, height: 844 });
       page.setDefaultTimeout(3000);
+      installApiSchemaFixtureHeaders(page);
       const writes = [],
         errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
@@ -154,6 +155,7 @@ test("Ux request recovery browser", async ({
             },
           });
         }
+        if (request.method() !== "POST") return route.fulfill({ json: {} });
         writes.push(request.postDataJSON());
         if (mode === "project-deadline" && writes.length === 1) return;
         if (mode === "rejected" && writes.length === 1)
@@ -172,7 +174,7 @@ test("Ux request recovery browser", async ({
         await page.goto(`${server.resolvedUrls.local[0]}?case=${mode}`);
         if (mode === "picker") {
           const use = page.getByRole("button", {
-            name: "Use this folder",
+            name: "Add project",
             exact: true,
           });
           await page.waitForFunction(
@@ -184,7 +186,9 @@ test("Ux request recovery browser", async ({
             false,
             "A typed path must not select the old directory",
           );
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () => !document.querySelector(".directory-footer button")?.disabled,
           );
@@ -193,7 +197,9 @@ test("Ux request recovery browser", async ({
             "/other",
           ]);
           await page.getByLabel("Folder path").fill("~/work");
-          await page.getByRole("button", { name: "Go", exact: true }).click();
+          await page
+            .getByRole("button", { name: "Open path", exact: true })
+            .click();
           await page.waitForFunction(
             () =>
               document.querySelector(".directory-location")?.textContent ===
@@ -290,8 +296,9 @@ test("Ux request recovery browser", async ({
             false,
           );
           await page
-            .getByLabel("Default account for new chats")
-            .selectOption("ready");
+            .getByRole("group", { name: "Default account for new chats" })
+            .getByRole("button", { name: "Select account Ready account" })
+            .click();
           assert.equal(
             await page
               .getByRole("button", { name: "Save accounts", exact: true })
@@ -336,19 +343,27 @@ test("Ux request recovery browser", async ({
             results.push({ mode, passed: true });
             continue;
           }
-          assert.equal(
-            await page
-              .getByLabel(
-                name
-                  ? "Folder name"
-                  : mode === "move"
-                    ? "Move to folder"
-                    : "Default account for new chats",
-              )
-              .isEnabled(),
-            false,
-            "Unconfirmed requests must retain their exact data",
-          );
+          if (name || mode === "move") {
+            assert.equal(
+              await page
+                .getByLabel(name ? "Folder name" : "Move to folder")
+                .isEnabled(),
+              false,
+              "Unconfirmed requests must retain their exact data",
+            );
+          } else {
+            const defaultAccount = page.getByRole("group", {
+              name: "Default account for new chats",
+            });
+            assert.equal(
+              await defaultAccount.getAttribute("aria-disabled"),
+              "true",
+            );
+            assert.equal(
+              await defaultAccount.getAttribute("data-value"),
+              "ready",
+            );
+          }
           await page
             .getByRole("button", {
               name:
