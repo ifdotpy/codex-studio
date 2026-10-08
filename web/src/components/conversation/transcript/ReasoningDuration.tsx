@@ -43,6 +43,7 @@ export default function ReasoningDuration({ item }: { item: Message }) {
       ref={visualRef}
       className="reasoning-duration"
       data-message={item.id}
+      data-source-message={item.sourceId}
       data-running={running}
     >
       <Icon size={14} aria-hidden="true" />
