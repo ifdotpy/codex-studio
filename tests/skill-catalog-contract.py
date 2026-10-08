@@ -40,6 +40,9 @@ class Inventory(WorkspaceMixin):
         self.account = key
         return self
 
+    def connect_agent(self, actor):
+        return self.connect(actor["accountKey"])
+
     def call(self, method, params, timeout):
         self.calls.append((self.account, method, params, timeout))
         if self.entered:

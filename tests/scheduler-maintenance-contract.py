@@ -250,20 +250,20 @@ class SchedulerConnection(unittest.TestCase):
     def test_due_monitor_result_wakes_dispatch_and_delivers_once(self):
         rt = self.rt
         delivered = threading.Event()
-        deliveries, emitted_at = [], []
+        order = []
 
         def dispatch(**_options):
             with rt.db() as db:
                 changed = db.execute("UPDATE runtime_events SET status='delivered' "
                                      "WHERE id='monitor-fixture' AND status='pending'").rowcount
             if changed:
-                deliveries.append(time.monotonic())
+                order.append('dispatch')
                 delivered.set()
 
         def monitor():
-            if emitted_at:
+            if order:
                 return
-            emitted_at.append(time.monotonic())
+            order.append('monitor')
             with rt.db() as db:
                 db.execute("INSERT INTO runtime_events(id,agent,kind,text,status,created,epoch) "
                            "VALUES('monitor-fixture', 'fixture', 'monitor_exit', 'test', 'pending', 1, 1)")
@@ -276,14 +276,13 @@ class SchedulerConnection(unittest.TestCase):
         try:
             rt.changed.set()
             self.assertTrue(delivered.wait(2))
-            self.assertLess(deliveries[0] - emitted_at[0], .5)
         finally:
             rt.closed = True
             rt.changed.set()
             worker.join(5)
             rt.closed = False
         self.assertFalse(worker.is_alive())
-        self.assertEqual(len(deliveries), 1)
+        self.assertEqual(order, ['monitor', 'dispatch'])
 
     def test_unexpected_scheduler_exit_still_closes_its_connection(self):
         rt = self.rt

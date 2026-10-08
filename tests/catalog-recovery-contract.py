@@ -51,8 +51,9 @@ class CatalogCacheContract(unittest.TestCase):
         self.server = MetadataServer()
         self.current = True
 
-    def read(self, account="a", server=None, connection="one"):
-        return self.cache.read(account, server or self.server, connection, lambda: self.current)
+    def read(self, account="a", server=None, connection="one", *, retry=False):
+        return self.cache.read(account, server or self.server, connection, lambda: self.current,
+                               retry=retry)
 
     def warm(self):
         with self.assertRaises(CatalogPending):
@@ -189,13 +190,13 @@ class CatalogCacheContract(unittest.TestCase):
             self.read()
         self.current = True
         with self.assertRaises(CatalogPending):
-            self.read()
+            self.read(retry=True)
         self.server.requests[1].set_result({"data": ["not a model"]})
         with self.assertRaises(CatalogPending):
-            self.read()
+            self.read(retry=True)
         self.assertEqual(len(self.server.requests), 3)
         self.server.requests[2].set_result(CATALOG)
-        self.assertEqual(self.read(), CATALOG)
+        self.assertEqual(self.read(retry=True), CATALOG)
 
     def test_submission_unknown_uses_retained_native_future(self):
         from codex_runtime import SubmissionUnknown

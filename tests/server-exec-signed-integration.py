@@ -368,7 +368,7 @@ class Commands(unittest.TestCase):
                     ('time.sleep(60)' if mode != 'normal' else ''))
                 response = self.start([sys.executable, '-c', parent], 'escaped-' + mode,
                                       timeout=1 if mode == 'timeout' else 120)
-                eventually(marker.exists)
+                eventually(lambda: marker.exists() and marker.read_text().strip())
                 pid = int(marker.read_text())
                 began = process_start_time(pid)
                 def clean(pid=pid, began=began):
