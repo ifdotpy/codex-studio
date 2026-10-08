@@ -382,10 +382,10 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.deepEqual(stateRequests, []);
     await page.getByRole("button", { name: "Studio settings" }).click();
     await page
-      .getByRole("button", { name: /Personal.*personal@example\.com/ })
+      .getByRole("button", { name: "Edit name for personal@example.com" })
       .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    const picker = page.locator(".account-picker");
+    const picker = page.getByRole("group", { name: "Account", exact: true });
     const settings = page.getByRole("dialog", {
       name: "Chat settings",
       exact: true,
@@ -402,30 +402,36 @@ test("account project ui", async ({ browser: _browser }) => {
         await settings.waitFor({ state: "hidden" });
       }
     };
+    await page.locator('[data-chat="empty"]').click();
     await openSettings();
     await picker.waitFor();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".account-picker")
-        ?.textContent.includes("personal@example.com"),
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
+          .value === "default",
     );
     const choose = async (email) => {
       await openSettings();
-      await picker.click();
-      await page.getByRole("menuitem").filter({ hasText: email }).click();
+      await picker
+        .getByRole("button", {
+          name: `Select account ${email === "work@example.com" ? "Work" : email === "personal@example.com" ? "Personal" : "Second workspace"}`,
+          exact: true,
+        })
+        .click();
     };
     await choose("work@example.com");
+    assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
     await page.reload();
     await page.getByRole("button", { name: "Studio settings" }).click();
     await page.getByText("work@example.com", { exact: true }).waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
-    await page.locator('[data-chat="started"]').click();
+    await page.locator('[data-chat="empty"]').click();
     await openSettings();
     await picker.waitFor();
-    await page.waitForFunction(() =>
-      document
-        .querySelector(".account-picker")
-        ?.textContent.includes("work@example.com"),
+    await page.waitForFunction(
+      () =>
+        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
+          .value === "work",
     );
     assert.equal(agents.find((a) => a.id === "empty").cwd, "/tmp/fixture");
     assert.equal(
