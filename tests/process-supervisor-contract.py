@@ -1550,6 +1550,59 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
+    def test_claude_reattach_keeps_verified_node_after_automatic_discovery_changes(self):
+        original_command = [process_supervisor.process_launch_command(os.getpid())[0], str(self.binary)]
+        replacement = self.root / 'different-node'
+        replacement.write_text('#!/bin/sh\ntouch "' + str(self.root / 'wrong-node-started') + '"\n')
+        replacement.chmod(0o700)
+
+        def connect(command, env):
+            with patch('codex_claude.transport', return_value=(command, env)):
+                server = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
+                                   provider='claude', supervisor_handle='account:claude-fixture')
+            self.servers.append(server)
+            return server
+
+        first = connect(original_command, dict(os.environ))
+        signature = process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')
+        pid = signature['pid']
+        first.close()
+        second = connect([str(replacement), *original_command[1:]],
+                         dict(os.environ, PATH='/usr/bin:/bin', LC_ALL='C'))
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')['pid'], pid)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:claude-fixture')['signature'], signature['signature'])
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+        second.close()
+        for key in ('STUDIO_NODE_BIN', 'STUDIO_CLAUDE_ACCOUNT', 'STUDIO_CLAUDE_OPTIONS',
+                    'CLAUDE_CONFIG_DIR'):
+            with self.subTest(key=key), self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+                connect([str(replacement), *original_command[1:]],
+                        dict(os.environ, **{key: 'changed-setting'}))
+        with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
+            connect([str(replacement), str(self.binary), 'changed-bridge-argument'], dict(os.environ))
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+        retained_launch = process_supervisor.retained_native_launch
+
+        def exit_after_proof(*args):
+            retained = retained_launch(*args)
+            os.kill(pid, signal.SIGTERM)
+            wait_for(lambda: process_supervisor.process_start_time(pid) is None)
+            return retained
+
+        with patch.object(process_supervisor, 'retained_native_launch', side_effect=exit_after_proof):
+            with self.assertRaisesRegex(RuntimeError, 'Cannot verify the retained supervisor child'):
+                connect([str(replacement), *original_command[1:]], dict(os.environ))
+        self.assertFalse((self.root / 'wrong-node-started').exists())
+
     def test_backend_diagnostics_do_not_change_native_launch(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())

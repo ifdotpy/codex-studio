@@ -501,6 +501,10 @@ class AppServer:
                 if process_factory is not None:
                     self.proc = process_factory(self.log.write)
                 else:
+                    if provider == "claude" and supervisor_expected is None:
+                        from codex_claude import retained_transport
+                        command, supervisor_expected = retained_transport(
+                            supervisor_root or root, supervisor_handle, command, env)
                     self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
                                        stderr_sink=self.log.write, expected=supervisor_expected)
             except Exception:
@@ -1964,10 +1968,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         db = getattr(local, "connection", None) if reusable else None
         if db is None:
             db = sqlite_connect(self.db_path, timeout=15, site="Runtime.db")
-            db.row_factory = sqlite3.Row
-            # Retain compatibility for internal callers that execute analytics
-            # SQL on the runtime connection; normal writers use analytics_db().
-            db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+            try:
+                db.row_factory = sqlite3.Row
+                # Retain compatibility for internal callers that execute analytics
+                # SQL on the runtime connection; normal writers use analytics_db().
+                db.execute("ATTACH DATABASE ? AS analytics", (str(self.analytics_db_path),))
+            except BaseException:
+                db.close()
+                raise
             if reusable:
                 local.connection = db
         sqlite_assert_clean(db, "Runtime.db reuse")
@@ -1978,11 +1986,32 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # and runtime_events triggers.
         from codex_sync_entities import register_functions, ensure_tables, install_bypass_triggers
         register_functions(db)
-        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
-            ensure_tables(db)
-        if (db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone()
-                and not db.execute("SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
-            install_bypass_triggers(db)
+        schema_state = None
+        if getattr(local, "scheduler", False):
+            schema_version = db.execute("PRAGMA main.schema_version").fetchone()[0]
+            schema_state = getattr(db, "_studio_runtime_schema", None)
+            if schema_state is not None and schema_state[:3] != (
+                    schema_version, ensure_tables, install_bypass_triggers):
+                schema_state = None
+        if schema_state is None:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='sync_entities'").fetchone():
+                ensure_tables(db)
+            has_events = bool(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_events'").fetchone())
+            has_items = bool(db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runtime_items'").fetchone())
+            if (has_events and not db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='trigger' AND name='sync_entity_event_INSERT'").fetchone()):
+                install_bypass_triggers(db)
+            if getattr(local, "scheduler", False):
+                db._studio_runtime_schema = (
+                    db.execute("PRAGMA main.schema_version").fetchone()[0],
+                    ensure_tables, install_bypass_triggers, has_events, has_items)
+                # Replacing a main table also removes its TEMP triggers.
+                db.__dict__.pop("_studio_resource_event_trigger_version", None)
+                db.__dict__.pop("_studio_resource_item_trigger_version", None)
+        else:
+            has_events, has_items = schema_state[3:]
         db.create_function("sync_invalidate_agent", 1, self.mark_agent_records_changed)
         if reusable:
             local.depth = 1
@@ -1992,9 +2021,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         resource_changes[db] = {}
         resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
         resource_overflow[db] = False
-        if db.execute(
-            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_events'"
-        ).fetchone():
+        if has_events:
             def stage_event_resource(agent_id):
                 if isinstance(agent_id, str) and agent_id:
                     self._stage_event_resources(db, agent_id)
@@ -2043,9 +2070,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     END;
                 """)
                 db._studio_resource_event_trigger_version = 1
-        if db.execute(
-            "SELECT 1 FROM main.sqlite_master WHERE type='table' AND name='runtime_items'"
-        ).fetchone():
+        if has_items:
             db.create_function(
                 "studio_stage_item_transcript",
                 1,
@@ -6040,52 +6065,81 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def schedule(self):
         first_tick = True
-        last_dispatch = 0.0
-        while not self.closed:
-            woke = self.changed.wait(1)
-            self.changed.clear()
-            if self.closed:
-                break
-            try:
-                self._retry_dirty_workspace_refresh()
-                self._publish_committed_resource_changes()
+        deadlines = dict.fromkeys(("dispatch", "cross_server", "monitors", "rules", "capacity",
+                                   "usage_resume", "archive", "monitor_results", "runtime"), 0.0)
+        phase_errors = {}
+        local = self.__dict__.setdefault("_callback_db", threading.local())
+        local.reuse = True
+        local.scheduler = True
+        try:
+            while not self.closed:
+                timeout = 1 if first_tick else min(1, max(0, min(deadlines.values()) - time.monotonic()))
+                woke = self.changed.wait(timeout)
+                self.changed.clear()
+                if self.closed:
+                    break
                 service = self.__dict__.get('_cross_server_service')
-                if service:
-                    service.tick()
-                self.monitors_tick()
-                self.rules_tick()
-                self.capacity_tick()
-                self.usage_resume_tick()
-                now = time.monotonic()
-                if woke or now - last_dispatch >= 5:
-                    self.dispatch()
-                    last_dispatch = now
-                else:
-                    # Check archive deadlines on each scheduler tick.
-                    self.accepted_archive_tick()
+                phases = (
+                    ("workspace", 0, self._retry_dirty_workspace_refresh),
+                    ("resources", 0, self._publish_committed_resource_changes),
+                    ("dispatch", 5, lambda: self.dispatch(maintenance=False)),
+                    ("cross_server", 1, lambda: service.tick() if service else None),
+                    ("monitors", 1, self.monitors_tick),
+                    ("rules", 1, self.rules_tick),
+                    ("capacity", 1, self.capacity_tick),
+                    ("usage_resume", 1, self.usage_resume_tick),
+                    ("archive", 1, self.accepted_archive_tick),
+                    ("monitor_results", 1, self.retry_monitor_results),
+                    ("runtime", 5, self.runtime_maintenance_tick),
+                )
+                for name, interval, run in phases:
+                    if self.closed:
+                        break
+                    if (interval and time.monotonic() < deadlines[name]
+                            and not (name == "dispatch" and woke)):
+                        continue
+                    try:
+                        run()
+                    except Exception as error:
+                        phase_errors[name] = {"at": time.time(), "error": str(error)}
+                        try:
+                            with (self.root / "runtime-errors.log").open("a") as log:
+                                log.write(f"{phase_errors[name]['at']}: {error}\n")
+                        except OSError:
+                            # A full diagnostic disk must not stop committed work.
+                            pass
+                    else:
+                        phase_errors.pop(name, None)
+                    finally:
+                        if interval:
+                            # Completion-based deadlines avoid catch-up loops after slow phases.
+                            deadlines[name] = time.monotonic() + interval
+                self.scheduler_error = next(iter(phase_errors.values()), None)
                 if first_tick:
                     startup_memory_mark("scheduler-first-tick")
                     first_tick = False
-            except Exception as error:
-                self.scheduler_error = {"at": time.time(), "error": str(error)}
-                try:
-                    with (self.root / "runtime-errors.log").open("a") as log:
-                        log.write(f"{self.scheduler_error['at']}: {error}\n")
-                except OSError:
-                    # Logging can fail with the same full disk as the operation.
-                    # Keep the scheduler alive so committed work can resume.
-                    pass
-            else:
-                self.scheduler_error = None
+        finally:
+            connection = getattr(local, "connection", None)
+            try:
+                if connection is not None:
+                    try:
+                        sqlite_assert_clean(connection, "Runtime.scheduler close")
+                    finally:
+                        connection.close()
+            finally:
+                local.connection = None
+                local.depth = 0
+                local.reuse = False
+                local.scheduler = False
 
-    def dispatch(self, agent_id=None):
+    def dispatch(self, agent_id=None, *, maintenance=True):
         if self.closed:
             return
         if agent_id is None:
-            return self.dispatch_all()
+            return self.dispatch_all(maintenance=maintenance)
         return self.dispatch_candidates(agent_id)
 
-    def dispatch_all(self):
+    def runtime_maintenance_tick(self):
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
@@ -6097,10 +6151,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         from codex_native_release import tick as native_release_tick
         native_release_tick(self)
         self.analytics_history_ensure_running()
-        self.accepted_archive_tick()
-        self.retry_monitor_results()
         from codex_session_names import session_names
         session_names(self).tick()
+
+    def dispatch_all(self, *, maintenance=True):
+        if maintenance:
+            self.runtime_maintenance_tick()
+            self.accepted_archive_tick()
+            self.retry_monitor_results()
         from codex_team_isolation import cancel_pending
         decoded = []
         pending_notices = []
