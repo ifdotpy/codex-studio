@@ -41,6 +41,8 @@ test("limits-ui", async ({ page: fixturePage }) => {
   );
   let selectedChat = lead;
   const now = Date.now() / 1000;
+  let limitsRevision = 0;
+  const nextLimitsAt = () => now + 1 + ++limitsRevision;
   const primary = {
     usedPercent: 42,
     windowDurationMins: 300,
@@ -207,11 +209,44 @@ test("limits-ui", async ({ page: fixturePage }) => {
       exact: true,
     });
   const load = async () => {
+    const cachedLimitsHydration = page.waitForResponse(
+      (response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/limits" &&
+          url.searchParams.get("cached") === "1" &&
+          (url.searchParams.get("account_key") || "default") === selectedAccount
+        );
+      },
+      { timeout: 30_000 },
+    );
     await page.goto(origin);
+    const cachedLimitsResponse = await cachedLimitsHydration;
+    assert.equal(cachedLimitsResponse.status(), 200);
     if (page.viewportSize().width <= 600)
       await page.locator("#sidebar-toggle").click();
     await page.locator(`[data-chat="${selectedChat.id}"]`).click();
     await toggle().waitFor();
+  };
+  const setFixtureAccount = async (accountKey) => {
+    selectedAccount = accountKey;
+    fixture.stdin.write(
+      JSON.stringify({
+        method: "fixture/account-key",
+        agent: leadAgent.id,
+        accountKey,
+      }) + "\n",
+    );
+    await page.waitForFunction(
+      async ({ agentId, accountKey }) => {
+        const state = await window.__readTestState();
+        return (
+          state.runtime.agents.find((agent) => agent.id === agentId)
+            ?.accountKey === accountKey
+        );
+      },
+      { agentId: leadAgent.id, accountKey },
+    );
   };
   await page.clock.install();
   await load();
@@ -328,34 +363,19 @@ test("limits-ui", async ({ page: fixturePage }) => {
     await details().innerText(),
     /All local chats|All accounts/,
   );
-  selectedAccount = "claude-local";
-  fixture.stdin.write(
-    JSON.stringify({
-      method: "fixture/account-key",
-      agent: leadAgent.id,
-      accountKey: selectedAccount,
-    }) + "\n",
-  );
+  await setFixtureAccount("claude-local");
   await load();
   await toggle().click();
   await details().waitFor();
   await details().getByText("$24.50", { exact: true }).waitFor();
   assert.match(await details().innerText(), /\$2\.50/);
-  selectedAccount = "default";
-  fixture.stdin.write(
-    JSON.stringify({
-      method: "fixture/account-key",
-      agent: leadAgent.id,
-      accountKey: selectedAccount,
-    }) + "\n",
+  await setFixtureAccount("default");
+  if ((await toggle().getAttribute("aria-expanded")) !== "true")
+    await toggle().click();
+  await details().waitFor();
+  await expect(details().locator(".account-limits-heading p")).toHaveText(
+    "Fixture",
   );
-  const defaultAccountTab = details().getByRole("tab", {
-    name: "Fixture account limits",
-    exact: true,
-  });
-  await defaultAccountTab.waitFor();
-  await defaultAccountTab.click();
-  await expect(defaultAccountTab).toHaveAttribute("aria-selected", "true");
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
@@ -371,7 +391,9 @@ test("limits-ui", async ({ page: fixturePage }) => {
         .opacity === "1",
   );
   failLimits = true;
-  const beforeQuotaFailure = await page.locator("#usage-footer").boundingBox();
+  const usageFooter = page.locator("#usage-footer");
+  await usageFooter.waitFor({ state: "visible" });
+  const beforeQuotaFailure = await usageFooter.boundingBox();
   const failedQuotaRefresh = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -393,7 +415,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
   );
   assert.equal(await details().getByRole("progressbar").count(), 2);
   assert.deepEqual(
-    await page.locator("#usage-footer").boundingBox(),
+    await usageFooter.boundingBox(),
     beforeQuotaFailure,
     "refresh error cannot add a footer row",
   );
@@ -466,11 +488,18 @@ test("limits-ui", async ({ page: fixturePage }) => {
     status: "available",
     expiresAt: now + 86400,
   };
-  limits.data.accountId = "test-account";
-  limits.data.rateLimitResetCredits = {
-    availableCount: 3,
-    credits: [resetCredit],
+  const setResetCredits = (availableCount, credits) => {
+    limits = {
+      ...limits,
+      at: nextLimitsAt(),
+      data: {
+        ...limits.data,
+        accountId: "test-account",
+        rateLimitResetCredits: { availableCount, credits },
+      },
+    };
   };
+  setResetCredits(3, [resetCredit]);
   let resetOutcome = "uncertain";
   const resetRequests = [];
   let releaseReset;
@@ -482,10 +511,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         releaseReset = resolve;
       });
     if (resetOutcome === "reset") {
-      limits.data.rateLimitResetCredits = {
-        availableCount: 2,
-        credits: [{ ...resetCredit, status: "redeemed" }],
-      };
+      setResetCredits(2, [{ ...resetCredit, status: "redeemed" }]);
     }
     await route.fulfill({
       json: {
@@ -497,7 +523,36 @@ test("limits-ui", async ({ page: fixturePage }) => {
       },
     });
   });
-  await load();
+  const loadWithResetCredits = async () => {
+    const resetCreditsHydration = page.waitForResponse(
+      (response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/limits" &&
+          url.searchParams.get("cached") === "1" &&
+          url.searchParams.get("account_key") === "default"
+        );
+      },
+      { timeout: 30_000 },
+    );
+    await load();
+    const resetCreditsResponse = await resetCreditsHydration;
+    assert.equal(resetCreditsResponse.status(), 200);
+    const hydratedLimits = await resetCreditsResponse.json();
+    assert.equal(
+      hydratedLimits.data.rateLimitResetCredits.availableCount,
+      limits.data.rateLimitResetCredits.availableCount,
+      "cached /api/limits hydration carries the current fixture reset credits",
+    );
+    assert.deepEqual(
+      hydratedLimits.data.rateLimitResetCredits.credits.map(
+        (credit) => credit.id,
+      ),
+      limits.data.rateLimitResetCredits.credits.map((credit) => credit.id),
+      "cached /api/limits hydration carries the current fixture credit rows",
+    );
+  };
+  await loadWithResetCredits();
   await toggle().click();
   await details().getByText("3 available", { exact: true }).waitFor();
   const resetPanel = () =>
@@ -568,11 +623,8 @@ test("limits-ui", async ({ page: fixturePage }) => {
   holdReset = false;
   for (const outcome of ["nothingToReset", "noCredit", "alreadyRedeemed"]) {
     resetOutcome = outcome;
-    limits.data.rateLimitResetCredits = {
-      availableCount: 3,
-      credits: [resetCredit],
-    };
-    await load();
+    setResetCredits(3, [resetCredit]);
+    await loadWithResetCredits();
     await toggle().click();
     await resetPanel()
       .getByRole("button", { name: "Apply reset", exact: true })
@@ -593,15 +645,12 @@ test("limits-ui", async ({ page: fixturePage }) => {
     assert.doesNotMatch(await resetPanel().innerText(), /Reset applied/);
   }
   resetOutcome = "reset";
-  limits.data.rateLimitResetCredits = {
-    availableCount: 3,
-    credits: [
-      resetCredit,
-      { ...resetCredit, id: "credit-two" },
-      { ...resetCredit, id: "credit-three" },
-    ],
-  };
-  await load();
+  setResetCredits(3, [
+    resetCredit,
+    { ...resetCredit, id: "credit-two" },
+    { ...resetCredit, id: "credit-three" },
+  ]);
+  await loadWithResetCredits();
   await toggle().click();
   await resetPanel()
     .getByRole("button", { name: "Apply reset", exact: true })
@@ -641,7 +690,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         },
       },
     },
-    at: now + 1,
+    at: nextLimitsAt(),
   };
   await load();
   assert.match(await toggle().innerText(), /Low allowance/);
@@ -664,7 +713,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         another: { limitName: "Another model", secondary },
       },
     },
-    at: now + 2,
+    at: nextLimitsAt(),
   };
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
@@ -682,7 +731,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         credits: {},
       },
     },
-    at: now + 3,
+    at: nextLimitsAt(),
   };
   await load();
   assert.match(await toggle().innerText(), /Low allowance/);
@@ -709,7 +758,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         secondary: { ...secondary, usedPercent: 100 },
       },
     },
-    at: now + 4,
+    at: nextLimitsAt(),
     error: "Account connection failed",
   };
   await load();
@@ -739,7 +788,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
       unknownModels: ["unknown-astra"],
     },
   };
-  limits = { data: null, at: now + 5 };
+  limits = { data: null, at: nextLimitsAt() };
   await load();
   assert.equal((await toggle().innerText()).trim(), "Limits");
   await toggle().click();
@@ -764,7 +813,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
         credits: { unlimited: true },
       },
     },
-    at: now + 6,
+    at: nextLimitsAt(),
   };
   await page.setViewportSize({ width: 780, height: 844 });
   await load();
@@ -868,7 +917,7 @@ test("limits-ui", async ({ page: fixturePage }) => {
       codexErrorInfo: kind,
     };
     limits = {
-      at: Date.now() / 1000,
+      at: nextLimitsAt(),
       data: {
         rateLimits: { rateLimitReachedType: reached, primary, secondary },
       },
