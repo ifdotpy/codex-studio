@@ -136,13 +136,20 @@ test("Worker Overview Ui", async ({
       }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
-      const response = await route.fetch();
+      // Read the fixture directly: Playwright's route.fetch APIResponse can be
+      // disposed while concurrent pulls are in flight under parallel load.
+      const response = await fetch(route.request().url());
       const data = await response.json();
+      const responseHeaders = Object.fromEntries(response.headers.entries());
       const pullUrl = new URL(route.request().url());
       const isEntityPull =
         pullUrl.searchParams.get("scope") === "state:entities:v1";
       if (isEntityPull && data.reset === true) {
-        await route.fulfill({ response, json: data });
+        await route.fulfill({
+          status: response.status,
+          headers: responseHeaders,
+          json: data,
+        });
         return;
       }
       for (const document of data.documents ?? []) {
@@ -258,6 +265,9 @@ test("Worker Overview Ui", async ({
           error: workerStopError,
         });
         updateAgent(worker(7).id, { status: "failed", error: workerFailure });
+        updateAgent(worker(0).id, {
+          status: deferred ? "approval" : "running",
+        });
         const changedState = {
           ...initial,
           threads: changedAgents,
@@ -268,7 +278,7 @@ test("Worker Overview Ui", async ({
           fresh: true,
         });
         let seq = Math.max(data.maxSeq, fixtureEntitySeq);
-        for (const id of [worker(24).id, worker(7).id]) {
+        for (const id of [worker(24).id, worker(7).id, worker(0).id]) {
           const source = projected.documents.find(
             (document) => document.id === `entity:agent:${id}`,
           );
@@ -280,7 +290,11 @@ test("Worker Overview Ui", async ({
         data.maxSeq = seq;
         fixtureEntitySeq = seq;
       }
-      await route.fulfill({ response, json: data });
+      await route.fulfill({
+        status: response.status,
+        headers: responseHeaders,
+        json: data,
+      });
     });
     await page.goto(origin);
     const selectLead = () =>
@@ -491,10 +505,16 @@ test("Worker Overview Ui", async ({
     assert.match(await card(0).innerText(), /Question deferred/);
     pending = false;
     deferred = false;
+    await refreshFromEntityPull();
     await page.reload();
     await selectLead();
-    assert.equal(await count("answer"), 0, "answered requests stop counting");
-    assert.equal(await count("working"), 7);
+    await expect
+      .poll(async () => ({
+        answer: await count("answer"),
+        working: await count("working"),
+      }))
+      .toEqual({ answer: 0, working: 7 });
+    await expect(card(0)).toContainText("Working");
     await page
       .locator("[data-chat]")
       .filter({ hasText: "Other project" })
