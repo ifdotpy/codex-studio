@@ -28,7 +28,9 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("remove message button remains reachable by pointer", async ({ page }) => {
-  test.fail("The Quote action intercepts the Remove message pointer click.");
+  test.fail(
+    "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
+  );
   test.setTimeout(120_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
