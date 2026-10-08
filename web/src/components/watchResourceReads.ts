@@ -2,6 +2,7 @@ import type { components } from "../generated/api";
 import { watchResourceChanges } from "../sync/resourceEvents";
 import { onResume } from "../sync/resume";
 import { readRetryDelay, retryableReadError } from "../sync/readRetry";
+import type { ResourceVersion } from "../sync/resourceEvents";
 
 type ResourceRef = components["schemas"]["ResourceRef"];
 type ResourceReadWatcher = (() => void) & { refresh: () => void };
@@ -13,13 +14,14 @@ type ResourceReadWatcher = (() => void) & { refresh: () => void };
  */
 export function watchResourceReads(
   resources: ResourceRef | readonly ResourceRef[],
-  read: () => Promise<void>,
+  read: (version?: ResourceVersion) => Promise<void>,
   failed: (error: unknown) => void,
 ): ResourceReadWatcher {
   const refs = Array.isArray(resources) ? resources : [resources];
   let active = true;
   let reading = false;
   let dirty = false;
+  let dirtyVersion: ResourceVersion | undefined;
   let scheduled = false;
   let retryCount = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -32,8 +34,9 @@ export function watchResourceReads(
     retryTimer = undefined;
   };
 
-  const refresh = () => {
+  const refresh = (version?: ResourceVersion) => {
     dirty = true;
+    if (version) dirtyVersion = version;
     if (
       !active ||
       reading ||
@@ -51,8 +54,10 @@ export function watchResourceReads(
         try {
           while (active && dirty && canRead()) {
             dirty = false;
+            const version = dirtyVersion;
+            dirtyVersion = undefined;
             try {
-              await read();
+              await read(version);
               retryCount = 0;
             } catch (error) {
               if (!active) break;
