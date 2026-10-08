@@ -219,6 +219,21 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         reads = [];
       let unknownAvailable = true;
       page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        const NativeEventSource = window.EventSource;
+        window.studioTestSources = [];
+        window.studioLastResourceEvent = null;
+        window.EventSource = class extends NativeEventSource {
+          constructor(...args) {
+            super(...args);
+            window.studioTestSources.push(this);
+            this.studioLastResourceEvent = null;
+            this.addEventListener("resources", (message) => {
+              this.studioLastResourceEvent = JSON.parse(message.data);
+            });
+          }
+        };
+      });
       await page.route("**/api/accounts", (route) =>
         route.fulfill({ json: { defaultAccountKey: "default", accounts } }),
       );
@@ -365,7 +380,93 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
             reads.some((read) => read.key === account.id && read.cached),
           ),
       );
-      assert.ok(reads.every((read) => read.key === "default" || read.cached));
+      assert.equal(reads.length, 7, JSON.stringify(reads));
+      assert.ok(
+        reads.every((read) => read.cached),
+        JSON.stringify(reads),
+      );
+      assert.equal(
+        new Set(reads.map((read) => read.key)).size,
+        7,
+        JSON.stringify(reads),
+      );
+      const defaultHydration = reads.find(
+        (read) => read.key === "default" && read.cached,
+      );
+      assert.ok(Date.now() / 1000 - defaultHydration.at < 60);
+      await page.waitForFunction(() =>
+        window.studioTestSources?.some(
+          (source) =>
+            new URL(source.url).pathname === "/api/sync/stream" &&
+            source.readyState === EventSource.OPEN &&
+            source.studioLastResourceEvent,
+        ),
+      );
+      await page.evaluate((eventNumber) => {
+        const source = window.studioTestSources.find(
+          (item) =>
+            new URL(item.url).pathname === "/api/sync/stream" &&
+            item.readyState === EventSource.OPEN,
+        );
+        const previous = source.studioLastResourceEvent;
+        const resource = { kind: "limits", accountKey: "default" };
+        const revision = previous.revision + eventNumber;
+        source.dispatchEvent(
+          new MessageEvent("resources", {
+            data: JSON.stringify({
+              ...previous,
+              revision,
+              reason: "change",
+              resources: [resource],
+              resourceVersions: [{ resource, revision }],
+            }),
+          }),
+        );
+      }, 1);
+      await page.waitForTimeout(250);
+      const freshReadsBeforeSecondEvent = reads.filter(
+        (read) => read.key === "default" && !read.cached,
+      ).length;
+      await page.evaluate(() => {
+        const source = window.studioTestSources.find(
+          (item) =>
+            new URL(item.url).pathname === "/api/sync/stream" &&
+            item.readyState === EventSource.OPEN,
+        );
+        const previous = source.studioLastResourceEvent;
+        const resource = { kind: "limits", accountKey: "default" };
+        const revision = previous.revision + 1;
+        source.dispatchEvent(
+          new MessageEvent("resources", {
+            data: JSON.stringify({
+              ...previous,
+              revision,
+              reason: "change",
+              resources: [resource],
+              resourceVersions: [{ resource, revision }],
+            }),
+          }),
+        );
+      });
+      await expect
+        .poll(
+          () =>
+            reads.filter((read) => read.key === "default" && !read.cached)
+              .length,
+        )
+        .toBe(freshReadsBeforeSecondEvent + 1);
+      const defaultDot = page.locator(
+        '.account-limits-dot-target[data-account-key="default"]',
+      );
+      await defaultDot.click();
+      const defaultLimits = page.getByRole("region", {
+        name: "Account limits details",
+        exact: true,
+      });
+      await defaultLimits.waitFor();
+      assert.match(await defaultLimits.innerText(), /90%\s+left/);
+      await page.keyboard.press("Escape");
+      await defaultLimits.waitFor({ state: "hidden" });
       // The dots share the footer row with Limits; the footer stays one row.
       const row = await page.evaluate(() => {
         const box = (selector) =>
