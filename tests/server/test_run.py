@@ -319,6 +319,16 @@ class ServerSuiteRunner(unittest.TestCase):
             memory_limited = RUNNER.automatic_worker_count(entries, profile)
         self.assertEqual(memory_limited, 1)
 
+    def test_worker_plan_empty_selection_with_override_has_no_workers(self):
+        with (mock.patch.object(RUNNER, "available_cpu_count", return_value=8),
+              mock.patch.object(RUNNER, "available_memory_bytes", return_value=16 * 1024**3),
+              mock.patch.object(RUNNER, "sample_runnable_other_process_count",
+                                side_effect=AssertionError("empty plans do not sample load"))):
+            plan = RUNNER.worker_plan([], {"maxSuiteRssBytes": 1024}, override=3)
+        self.assertEqual(plan["workers"], 0)
+        self.assertEqual(plan["limitingBound"], "suites")
+        self.assertEqual(plan["runnableSuites"], 0)
+
     def test_show_jobs_subtracts_mocked_runnable_load(self):
         entries = [(f"suite-{index}.py", "safe") for index in range(40)]
         plans = []

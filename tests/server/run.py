@@ -931,6 +931,24 @@ def automatic_worker_count(entries, profile=None, override=None):
 def worker_plan(entries, profile=None, override=None, sample_seconds=5.0):
     profile = _load_profile() if profile is None else profile
     cpu_limit = available_cpu_count()
+    if not entries:
+        memory = available_memory_bytes()
+        return {
+            "workers": 0,
+            "limitingBound": "suites",
+            "availableCpus": cpu_limit,
+            "cpuFloor": max(1, math.ceil(cpu_limit / 4)),
+            "unclampedCpuCount": cpu_limit,
+            "cpuLimit": cpu_limit,
+            "otherRunnableProcesses": 0,
+            "availableMemoryBytes": memory,
+            "memoryBudgetBytes": min(memory // 2, max(0, memory - MEMORY_RESERVE_BYTES)),
+            "memoryReserveBytes": MEMORY_RESERVE_BYTES,
+            "measuredPeakSuiteRssBytes": int(profile.get("maxSuiteRssBytes", 0) or 0),
+            "memoryWorkerSlots": 0,
+            "estimatedSuiteSeconds": 0,
+            "runnableSuites": 0,
+        }
     other_runnable = (0 if override is not None else
                       sample_runnable_other_process_count(window_seconds=sample_seconds))
     cpu_floor = max(1, math.ceil(cpu_limit / 4))
