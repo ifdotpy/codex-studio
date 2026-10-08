@@ -66,6 +66,7 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   let activeHash = oldHash;
   let pendingEntitySequence;
   let pendingChangeEventResolve;
+  let statePullCountAtChangeEvent;
   let allowPendingChangeEvent = false;
   let newPageStateCheckpoint;
   let firstPullFails = false;
@@ -118,6 +119,8 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       });
       let body = "";
       let workspaceId;
+      let injectedEntitySequence;
+      let resolveChangeEvent;
       if (initialResources.length > 0) {
         const identity = await fetch(new URL("/api/sync/identity", requestUrl));
         ({ workspaceId } = await identity.json());
@@ -156,15 +159,22 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
             },
           ],
         });
-        pendingChangeEventResolve?.(pendingEntitySequence);
+        injectedEntitySequence = pendingEntitySequence;
+        resolveChangeEvent = pendingChangeEventResolve;
+        statePullCountAtChangeEvent = statePulls.filter(
+          (pull) => pull.page === route.request().frame().page(),
+        ).length;
         pendingChangeEventResolve = undefined;
         pendingEntitySequence = undefined;
       }
-      return route.fulfill({
+      const response = await route.fulfill({
         status: 200,
         headers: { "content-type": "text/event-stream" },
         body: apiSchemaHandshakeSse(body, { hash: activeHash }),
       });
+      if (injectedEntitySequence !== undefined)
+        resolveChangeEvent?.(injectedEntitySequence);
+      return response;
     }
     if (
       requestUrl.pathname === "/api/sync/pull" &&
@@ -513,9 +523,6 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       mutationEntity.seq > newPageStateCheckpoint,
       `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint}`,
     );
-    const pullsBeforeMutationEvent = statePulls.filter(
-      (pull) => pull.page === newPage,
-    ).length;
     pendingEntitySequence = mutationEntity.seq;
     allowPendingChangeEvent = false;
     const changeEventInjected = new Promise((resolve) => {
@@ -541,26 +548,40 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       newPageStateCheckpoint,
       `the reloaded projection cache resumes at checkpoint ${newPageStateCheckpoint}; got after=${reloadPullAfter}`,
     );
+    assert.ok(Number.isSafeInteger(statePullCountAtChangeEvent));
+    await expect
+      .poll(
+        () =>
+          statePulls.filter((pull) => pull.page === newPage).length -
+          statePullCountAtChangeEvent,
+        {
+          message: "the delivered change resource event starts a state pull",
+        },
+      )
+      .toBeGreaterThan(0);
+    const eventTriggeredPulls = statePulls
+      .filter((pull) => pull.page === newPage)
+      .slice(statePullCountAtChangeEvent);
+    assert.ok(
+      eventTriggeredPulls.length > 0,
+      "the change event is followed by a recorded state pull",
+    );
+    assert.equal(
+      eventTriggeredPulls[0].after,
+      String(newPageStateCheckpoint),
+      "the event-triggered state pull resumes at the persisted checkpoint",
+    );
     await expect
       .poll(() => statePulls.filter((pull) => pull.page === newPage).length, {
         message: "the route records the retained-checkpoint pull",
       })
-      .toBeGreaterThan(pullsBeforeMutationEvent);
-    const checkpointPulls = statePulls.filter((pull) => pull.page === newPage);
+      .toBeGreaterThan(statePullCountAtChangeEvent);
     assert.ok(
-      checkpointPulls.length > pullsBeforeMutationEvent,
-      "the change resource event triggers a retained-checkpoint pull",
-    );
-    assert.ok(
-      checkpointPulls.some((pull) => Number(pull.after) > 0),
+      eventTriggeredPulls.some((pull) => Number(pull.after) > 0),
       "the valid tab pulls the fixture change from its retained checkpoint",
     );
     assert.equal(
-      Number(
-        checkpointPulls
-          .slice(pullsBeforeMutationEvent)
-          .find((pull) => Number(pull.after) > 0)?.after,
-      ),
+      Number(eventTriggeredPulls.find((pull) => Number(pull.after) > 0)?.after),
       newPageStateCheckpoint,
       "the first post-reload incremental pull starts at the successful reset checkpoint",
     );
