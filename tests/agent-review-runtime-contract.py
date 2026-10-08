@@ -132,6 +132,8 @@ class ReviewRuntimeContract(unittest.TestCase):
     def dispatch_review(self, value):
         self.rt.dispatch()
         f.f.eventually(lambda: bool(self.server.reviews))
+        # The per-agent executor introduced in 28d90c39 persists the accepted
+        # review request before the child start receipt, so waiting is valid.
         f.f.eventually(lambda: self.rt.agent(value['agentId'])['status'] in
                        {'running', 'completed', 'starting', 'waiting'})
         entry = self.server.reviews[-1]

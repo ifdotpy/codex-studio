@@ -214,6 +214,9 @@ class Radio(unittest.TestCase):
             observe_item(self.runtime, db, a, 'early', 'assistant', 'early commentary', {'turnId': turn})
             self.assertEqual(db.execute("SELECT text FROM runtime_chat_messages WHERE sender=?", (a,)).fetchone()[0], 'early commentary')
         state = self.answer(a, turn)
+        # Per-agent delivery can leave the question awaiting its receipt after
+        # the early item is observed; 28d90c39 moved this work off the shared
+        # dispatch path, so waiting is the intended intermediate state here.
         self.assertEqual(state['status'], 'waiting')
         self.assertEqual(state['active']['eventId'], active_id)
         self.assertEqual(state['next'], [next(key for key in self.room()['members'] if key != a)])
