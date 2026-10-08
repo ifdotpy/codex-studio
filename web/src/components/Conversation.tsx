@@ -41,7 +41,11 @@ import {
 import { get, post, errorText } from "../api";
 import SafetyBuffering from "./conversation/transcript/SafetyBuffering";
 import { currentCapacityRetry } from "../capacityRetry";
-import { nativeErrorKind, nativeThreadError } from "../nativeErrors";
+import {
+  isCyberPolicyRefusal,
+  nativeErrorKind,
+  nativeThreadError,
+} from "../nativeErrors";
 import { useMessages, transcriptMessages } from "../hooks";
 import DraftVersions from "./DraftVersions";
 import type { DraftVersion } from "../sync/drafts";
@@ -1710,6 +1714,15 @@ export default function Conversation(p: {
                 error={messageQueue.error}
               />
             </>
+          )}
+          {agent && isCyberPolicyRefusal(agent.error) && (
+            <div className="native-policy-composer-warning" role="note">
+              <strong>Before you continue</strong>
+              <span>
+                Continuing this chat sends the same history and can be refused
+                again.
+              </span>
+            </div>
           )}
           <PromptComposer
             session={p.id || "new"}

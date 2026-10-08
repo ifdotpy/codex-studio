@@ -543,6 +543,7 @@ class AgentEntityDto(ContractModel):
     sharedRoomId: str | None = None
     model: str | None = None
     provider: AgentProvider | None = None
+    cyberAccessProgram: str | None = None
     # Reasoning effort levels come from the selected model's capability catalog.
     effort: str | None = None
     fastMode: bool | None = None

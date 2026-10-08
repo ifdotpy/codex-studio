@@ -1060,7 +1060,7 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             else:
                 if (not isinstance(native, dict) or native.get('id') != observed[1]
                         or not isinstance(native.get('status'), dict)
-                        or native['status'].get('type') not in {'idle', 'notLoaded'}):
+                        or native['status'].get('type') not in {'idle', 'notLoaded', 'systemError'}):
                     return {'status': 'blocked', 'agent': _brief(target),
                             'blockers': [{'kind': 'native_state_unconfirmed', 'count': 1, 'ids': [target['id']]}]}
     with rt.lock, rt.db() as db:

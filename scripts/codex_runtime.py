@@ -7069,9 +7069,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if (a.get("isLead") or not a.get("parentId") or a.get("deletedAt")
                 or a.get("agentArchive")):
             return None
+        released_task_ids = []
+        from codex_native_errors import is_policy_refusal, policy_refusal_reason
+        policy_reason = policy_refusal_reason(reason) if is_policy_refusal(reason) else None
         if status == "failed" and hasattr(self, "release_failed_work"):
             # Task release and the terminal lead event share this transaction.
-            self.release_failed_work(db, self.release_work_agents(db), force=True)
+            if policy_reason:
+                released_task_ids = self.release_failed_work(db, [a], force=True)
+            else:
+                self.release_failed_work(db, self.release_work_agents(db), force=True)
         task_rows = db.execute(
             "SELECT id,record FROM runtime_work WHERE json_extract(record,'$.owner')=? "
             "AND json_extract(record,'$.rootId')=? "
@@ -7102,15 +7108,18 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         activity = a.get("activity") or {}
         last_activity = (activity.get("at") or a.get("lastEvent") or a.get("lastUpdated")
                          or a.get("created"))
-        reason_text = reason if isinstance(reason, str) else json.dumps(reason, ensure_ascii=False)
+        reason_text = policy_reason['message'] if policy_reason else (
+            reason if isinstance(reason, str) else json.dumps(reason, ensure_ascii=False))
         payload = {
             "agent_id": a["id"], "name": a["name"], "status": status,
-            "reason": reason, "result": reason_text, "last_activity": last_activity,
+            "reason": policy_reason or reason, "result": reason_text, "last_activity": last_activity,
             "task_id": task_id, "tasks": assignments, "result_submitted": result_submitted,
-            "next_step": "send" if status == "paused" else "recover",
+            "next_step": ("reassign" if policy_reason else "send" if status == "paused" else "recover"),
             "requested_by_lead": bool(requested_by_lead),
             "cwd": a["cwd"], "branch": a.get("branch"),
         }
+        if policy_reason:
+            payload["released_task_ids"] = released_task_ids
         workspace = self.image_workspace_summary(a)
         if workspace:
             payload["workspace"] = workspace
@@ -7659,7 +7668,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 a["contextUsage"] = {"tokens": used, "window": window, "at": time.time()}
             elif method == "turn/completed":
                 turn = p.get("turn", {})
-                from codex_native_errors import error_kind
+                from codex_native_errors import error_kind, is_policy_refusal
+                policy_error = turn.get("error")
+                previous_error = a.get("nativeTurnError") or {}
+                if not policy_error and previous_error.get("turnId") == turn.get("id"):
+                    policy_error = previous_error.get("error")
+                if is_policy_refusal(policy_error):
+                    turn["error"] = policy_error
+                    turn["status"] = "failed"
                 if turn.get("status") == "interrupted" and error_kind(turn.get("error")) == "tooManyDenials":
                     turn["status"] = "failed"
                 if a["turnId"] and a["turnId"] != turn.get("id"):
@@ -7673,7 +7689,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
                         refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                         notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
-                               "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
+                               "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
+                               cyberAccessProgram=a.get("cyberAccessProgram"))
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
                     db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
                                "WHERE agent=? AND json_extract(record,'$.turnId')=?",
@@ -7715,7 +7732,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     turn["error"] = turn.get("error") or {"message": "Codex ended this turn with an error."}
                     refresh_native_limits(self, db, a, turn["error"], turn.get("id"), account_key, connection_id)
                     notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
-                           "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"])
+                           "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
+                           cyberAccessProgram=a.get("cyberAccessProgram"))
                 db.execute("INSERT INTO runtime_completed_turns VALUES (?)", (completion,))
                 # Preserve the terminal outcome with the messages. Failed and interrupted
                 # work must never acquire a successful summary label in chat history.
