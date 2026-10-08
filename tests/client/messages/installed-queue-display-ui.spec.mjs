@@ -110,14 +110,15 @@ test("installed queue display ui", async ({ browser: _browser }) => {
       fetch(`${origin}/api/queue?agent=${lead.id}`).then((response) =>
         response.json(),
       );
-    assert.equal(
-      await page.locator(".message-queue").count(),
-      0,
-      "No duplicate queue panel",
-    );
     const queuedItem = (text) =>
       page.locator(".message-queue-item").filter({ hasText: text });
     await queuedItem("First queued instruction").waitFor();
+    await queuedItem("Second queued instruction").waitFor();
+    assert.equal(
+      await page.locator(".message-queue").count(),
+      1,
+      "The installed queue is shown in one panel",
+    );
     assert.equal(
       await page.getByText("First queued instruction", { exact: true }).count(),
       1,
