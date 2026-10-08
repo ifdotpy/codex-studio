@@ -93,12 +93,7 @@ test("Search messages focuses its query input when opened", async ({
     if (fixture.exitCode === null) fixture.kill();
   }
 });
-test("Conversation toggle remains in view after responsive settings", async ({
-  page,
-}) => {
-  test.fail(
-    "After responsive settings and dialogs, the workspace shifts left at 320px",
-  );
+async function open320Workspace(page) {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-header-width-"));
   const fixture = spawn(
@@ -110,181 +105,88 @@ test("Conversation toggle remains in view after responsive settings", async ({
   fixture.stderr.on("data", (chunk) => {
     log += chunk;
   });
+  const stop = () => {
+    if (fixture.exitCode === null) fixture.kill();
+  };
   try {
     const port = await new Promise((resolve, reject) => {
-      fixture.stdout.once("data", (chunk) =>
-        resolve(Number(String(chunk).trim())),
+      const timer = setTimeout(
+        () => reject(Error("Fixture startup timed out: " + log)),
+        10_000,
       );
-      fixture.once("exit", () => reject(new Error(log)));
+      fixture.stdout.once("data", (chunk) => {
+        clearTimeout(timer);
+        resolve(Number(String(chunk).trim()));
+      });
+      fixture.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Fixture exited"));
+      });
     });
-    const snapshot = await readTestState(`http://127.0.0.1:${port}`);
-    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.setViewportSize({ width: 320, height: 960 });
     await page.goto(`http://127.0.0.1:${port}`);
     await page.locator("#message").waitFor();
-    if (
-      (await page.locator("#sidebar-toggle").getAttribute("aria-expanded")) ===
-      "false"
-    )
-      await page.locator("#sidebar-toggle").click();
-    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
-    await page
-      .getByRole("button", { name: "Close conversations", exact: true })
-      .click();
-    await page.locator("#sidebar").waitFor({ state: "hidden" });
-    await page.reload();
-    await page.locator("#message").waitFor();
-    await page.locator("#sidebar-toggle").click();
-    await page.locator("#sidebar").waitFor();
-    await page.locator("#team-toggle").click();
-    await page.locator("#team").waitFor();
-    await page.locator("#team-close").click();
-    await page.locator("#team").waitFor({ state: "hidden" });
-    await page
-      .getByRole("button", { name: "Search chats", exact: true })
-      .click();
-    const searchDialog = page.getByRole("dialog", {
-      name: "Search messages",
+    const header = page.locator(".simple-workspace-header");
+    await header.waitFor({ state: "visible" });
+    const toggle = page.getByRole("button", {
+      name: "Toggle conversations",
       exact: true,
     });
-    await searchDialog.waitFor();
-    await searchDialog
-      .getByLabel("Search all conversations")
-      .fill("Review the release");
-    await searchDialog
-      .getByRole("button", { name: "Search", exact: true })
-      .click();
-    await searchDialog
-      .getByRole("button", { name: /Review the release/ })
-      .first()
-      .click();
-    const searchSource = page.getByRole("dialog", {
-      name: "Search source",
-      exact: true,
+    await toggle.waitFor({ state: "visible" });
+    await page.locator("#root").evaluate((root) => {
+      root.scrollLeft = root.scrollWidth;
     });
-    await searchSource
-      .getByText("Review the release", { exact: false })
-      .waitFor();
-    await searchSource
-      .getByRole("button", { name: "Open chat", exact: true })
-      .click();
-    await searchDialog.waitFor({ state: "hidden" });
-    await page.keyboard.press("Control+k");
-    await searchDialog.waitFor();
-    await page.keyboard.press("Escape");
-    const other = snapshot.threads.find(
-      (item) => item.name === "Other project",
-    );
-    await page.evaluate(
-      (agentId) =>
-        window.dispatchEvent(
-          new CustomEvent("studio-navigate", {
-            detail: { agentId, section: "messages" },
-          }),
-        ),
-      other.id,
-    );
     await page.waitForFunction(
-      () =>
-        document.querySelector("#conversation-title").textContent ===
-        "Other project",
+      () => document.querySelector("#root").scrollLeft > 0,
     );
-    await page.getByRole("button", { name: "Messages" }).click();
-    await page.getByRole("dialog", { name: "Messages", exact: true }).waitFor();
-    await page.keyboard.press("Escape");
-    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
-    for (const width of [1440, 390, 320]) {
-      await page.setViewportSize({ width, height: 960 });
-      for (const scheme of ["light", "dark"]) {
-        await page
-          .getByRole("button", { name: "Studio settings", exact: true })
-          .click();
-        const dialog = page.getByTestId("studio-settings");
-        await dialog.waitFor({ state: "visible" });
-        await dialog
-          .getByRole("tab", { name: "Appearance", exact: true })
-          .click();
-        await dialog
-          .getByLabel("Studio theme", { exact: true })
-          .selectOption(scheme);
-        await page.waitForFunction(
-          (expected) =>
-            document.documentElement.dataset.mantineColorScheme === expected,
-          scheme,
-        );
-        await page.keyboard.press("Escape");
-        await dialog.waitFor({ state: "hidden" });
-      }
-      if (width === 320) {
-        const toggle = page.getByRole("button", {
-          name: "Toggle conversations",
-          exact: true,
-        });
-        console.log(
-          "repro-toggle-ancestors",
-          JSON.stringify(
-            await toggle.evaluate((node) => {
-              const result = [];
-              for (
-                let current = node;
-                current;
-                current = current.parentElement
-              ) {
-                const rect = current.getBoundingClientRect();
-                const style = getComputedStyle(current);
-                result.push({
-                  tag: current.tagName,
-                  id: current.id,
-                  className: String(current.className).slice(0, 120),
-                  left: rect.left,
-                  width: rect.width,
-                  minWidth: style.minWidth,
-                  transform: style.transform,
-                  translate: style.translate,
-                  position: style.position,
-                  cssLeft: style.left,
-                  marginLeft: style.marginLeft,
-                  offsetLeft: current.offsetLeft,
-                });
-              }
-              const root = document.querySelector("#root");
-              const composerActions = root.querySelector(
-                ".composer-submit-actions",
-              );
-              const actionsBounds = composerActions?.getBoundingClientRect();
-              return {
-                rootScrollLeft: root.scrollLeft,
-                rootScrollWidth: root.scrollWidth,
-                ancestors: result,
-                composerActions: actionsBounds && {
-                  left: actionsBounds.left + root.scrollLeft,
-                  width: actionsBounds.width,
-                },
-              };
-            }),
-          ),
-        );
-        const bounds = await toggle.boundingBox();
-        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 321);
-      }
-      if (width < 761) {
-        if (
-          (await page
-            .locator("#sidebar-toggle")
-            .getAttribute("aria-expanded")) === "false"
+    return { fixture, stop, header, toggle };
+  } catch (error) {
+    stop();
+    throw error;
+  }
+}
+
+test("320px workspace setup keeps other header controls in view", async ({
+  page,
+}) => {
+  const { stop, header } = await open320Workspace(page);
+  try {
+    await expect(header).toBeVisible();
+    const controls = await header.locator("button").evaluateAll((buttons) =>
+      buttons
+        .filter(
+          (button) =>
+            button.getAttribute("aria-label") !== "Toggle conversations",
         )
-          await page.locator("#sidebar-toggle").click();
-        await page
-          .getByRole("button", { name: "Add project", exact: true })
-          .click();
-        await page
-          .getByRole("dialog", { name: "Add project", exact: true })
-          .waitFor();
-        await page.keyboard.press("Escape");
-        await page.keyboard.press("Escape");
-      }
-    }
+        .map((button) => {
+          const { left, right } = button.getBoundingClientRect();
+          return {
+            label: button.getAttribute("aria-label") || button.textContent,
+            left,
+            right,
+          };
+        }),
+    );
+    assert.ok(controls.length > 0, "The workspace header has other controls");
+    assert.ok(
+      controls.every((control) => control.left >= 0 && control.right <= 321),
+      JSON.stringify(controls),
+    );
   } finally {
-    if (fixture.exitCode === null) fixture.kill();
+    stop();
+  }
+});
+
+test("Conversation toggle remains in view at 320px", async ({ page }) => {
+  const { stop, toggle } = await open320Workspace(page);
+  try {
+    test.fail(
+      "At 320px the workspace shift places Toggle conversations outside the viewport",
+    );
+    const bounds = await toggle.boundingBox();
+    assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320);
+  } finally {
+    stop();
   }
 });
 test("Shell ux ui", async ({
