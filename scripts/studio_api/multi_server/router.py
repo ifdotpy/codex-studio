@@ -13,7 +13,8 @@ from codex_multi_server import AccessError, MultiServerService
 from studio_api.multi_server.models import (
     AccessAuditResponse, AccessSnapshot, AcceptInvite, CreateInvite, DevicePairRequest,
     DevicePairResponse, InvitationResponse, ManagementRequest, RevokeClient,
-    ServerOperationRequest, ServerOperationResponse,
+    ServerOperationRequest, ServerOperationResponse, DiscoveryIdentity, AutoPairRequest,
+    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer,
 )
 from studio_api.models import ErrorResponse
 
@@ -69,6 +70,16 @@ def create_router(context: ApiContext) -> APIRouter:
             service = service_for(context)
             principal = request.scope.get("studio_principal") or {}
             actor = principal.get("clientId", "local")
+            if isinstance(body, (DiscoverServers, UiInvite)):
+                if principal or any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")):
+                    raise AccessError(403, "local_session_required", "This action requires the local server session")
+                if isinstance(body, DiscoverServers):
+                    return service.discovery().discover()
+                return service.ui_invite(body.serverId, body.requestId)
+            if isinstance(body, SetAccessSettings):
+                return service.discovery().settings(body.autoPair, actor)
+            if isinstance(body, UnrevokeServer):
+                return service.discovery().unrevoke(body.clientId, body.requestId, actor)
             if isinstance(body, CreateInvite):
                 return service.create_invite(body.model_dump(exclude_unset=True), actor)
             if isinstance(body, RevokeClient):
@@ -77,6 +88,16 @@ def create_router(context: ApiContext) -> APIRouter:
                 return service.accept_invite(body.invitation.model_dump(), body.requestId, actor)
             raise AccessError(400, "invalid_action", "The server access action is invalid")
         return await dispatch(request, action)
+
+    @router.get("/api/multi-server/v1/identity", response_model=DiscoveryIdentity, responses=ERRORS)
+    async def discovery_identity(request: Request) -> Response:
+        if not request.scope.get("studio_discovery_owner"):
+            return context.send(request, ErrorResponse(error="The identity endpoint requires owner proof through Serve", code="serve_required"), status=403)
+        return await dispatch(request, lambda: service_for(context).discovery().identity())
+
+    @router.post("/api/multi-server/v1/auto-pair", response_model=DevicePairResponse, responses=ERRORS)
+    async def auto_pair(request: Request, body: AutoPairRequest) -> Response:
+        return await dispatch(request, lambda: service_for(context).discovery().accept(request.scope.get("studio_principal") or {}, body.model_dump()))
 
     @router.post("/api/multi-server/v1/pair", response_model=DevicePairResponse, responses=ERRORS)
     async def pair(request: Request, body: DevicePairRequest) -> Response:
