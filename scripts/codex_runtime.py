@@ -500,6 +500,10 @@ class AppServer:
                 if process_factory is not None:
                     self.proc = process_factory(self.log.write)
                 else:
+                    if provider == "claude" and supervisor_expected is None:
+                        from codex_claude import retained_transport
+                        command, supervisor_expected = retained_transport(
+                            supervisor_root or root, supervisor_handle, command, env)
                     self.proc = attach(supervisor_root or root, supervisor_handle, command, env,
                                        stderr_sink=self.log.write, expected=supervisor_expected)
             except Exception:
