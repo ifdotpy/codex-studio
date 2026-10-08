@@ -229,7 +229,8 @@ def create_router(context: ApiContext) -> APIRouter:
             ids = _RECEIPT_IDS_ADAPTER.validate_json(query.ids)
         except ValidationError:
             raise ValueError("Invalid receipt ID list") from None
-        return context.send(request, _runtime(context).user_delivery_receipts(query.agent, ids))
+        result = _runtime(context).user_delivery_receipts(query.agent, ids)
+        return context.send(request, {**result, "workspaceId": context.workspace_id()})
 
     @router.get("/api/changes", response_model=ChangesResponse, responses={400: {"model": ErrorResponse}})
     def changes(request: Request, documented: ChangesQuery = Depends()) -> Response:

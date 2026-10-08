@@ -5075,11 +5075,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("BEGIN")
             self.checked_actor(db, agent_id)
             rows = db.execute(
-                "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' "
-                "AND id IN (" + ",".join("?" for _ in identities) + ")",
+                "SELECT e.id,e.status,e.error,EXISTS (SELECT 1 FROM runtime_items i "
+                "WHERE i.agent=e.agent AND i.id=COALESCE(json_extract(m.record,'$.transcriptItemId'),e.agent||':'||e.id) "
+                "AND ((i.id=e.agent||':'||e.id AND json_extract(i.record,'$.role')='user' "
+                "AND json_type(i.record,'$.inputs') IS NULL) OR EXISTS ("
+                "SELECT 1 FROM json_each(i.record,'$.inputs') input "
+                "WHERE json_extract(input.value,'$.id')=e.id AND json_extract(input.value,'$.kind')='user'))) "
+                "AS materialized FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
+                "WHERE e.agent=? AND e.kind='user' "
+                "AND e.id IN (" + ",".join("?" for _ in identities) + ")",
                 (agent_id, *identities),
             ).fetchall() if identities else []
-            return {"agent": agent_id, "items": [dict(row) for row in rows]}
+            return {"agent": agent_id, "items": [
+                {**dict(row), "materialized": bool(row["materialized"])} for row in rows]}
 
     def retire_legacy_steer(self, db, a):
         """Keep old submitted steer receipts uncertain during the delivery upgrade."""

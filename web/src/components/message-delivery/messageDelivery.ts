@@ -116,6 +116,16 @@ export function outgoingTranscript(
         observed.push(entry.id);
       continue;
     }
+    // An input outside the loaded page can replace its local card only after
+    // the server confirms both delivery and the exact saved transcript input.
+    if (
+      entry.status === "accepted" &&
+      entry.receipt?.status === "delivered" &&
+      entry.receipt.materialized === true
+    ) {
+      observed.push(entry.id);
+      continue;
+    }
     extra.push({
       id: `${entry.body.room}:${entry.id}`,
       clientMessageId: entry.id,

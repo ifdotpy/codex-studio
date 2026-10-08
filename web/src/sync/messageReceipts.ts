@@ -9,7 +9,10 @@ export function checkedMessageReceipts(
   value: MessageReceiptResponse,
   room: string,
   ids: string[],
+  workspaceId?: string,
 ): MessageReceipt[] {
+  if (workspaceId && value.workspaceId !== workspaceId)
+    throw new Error("The delivery receipts belong to another workspace.");
   const requested = new Set(ids);
   if (value.agent !== room)
     throw new Error("The delivery receipts belong to another chat.");
