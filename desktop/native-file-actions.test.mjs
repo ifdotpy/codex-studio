@@ -109,7 +109,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
         { name: "x", data },
         { sender: {}, senderFrame: mainFrame },
       ),
-      /restricted/,
+      /restricted|Invalid server frame owner/,
     );
     await assert.rejects(
       invoke(
@@ -117,7 +117,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
         { name: "x", data },
         { sender: contents, senderFrame: { url: origin + "/" } },
       ),
-      /restricted/,
+      /restricted|Invalid server frame owner/,
     );
     await assert.rejects(
       invoke("saveFile", { name: "x", data: { byteLength: 3 } }),
@@ -155,7 +155,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     navigateOnWrite = true;
     await assert.rejects(
       invoke("saveFile", { name: "report.txt", data }),
-      /restricted/,
+      /restricted|Invalid server frame owner/,
     );
     assert.equal(await fs.readFile(output, "utf8"), "old");
     assert.deepEqual(
@@ -234,7 +234,7 @@ test("main and preload enforce safe native file action boundaries", async () => 
     const pending = invoke("fileAction", { action: "open", target });
     mainFrame.url = "https://elsewhere.test/";
     resume();
-    await assert.rejects(pending, /restricted/);
+    await assert.rejects(pending, /restricted|Invalid server frame owner/);
     mainFrame.url = origin + "/";
     fetchGate = null;
 
@@ -296,7 +296,9 @@ test("main and preload enforce safe native file action boundaries", async () => 
         },
         ipcRenderer: ipc,
       }),
-      process: { isMainFrame: true, platform: "darwin" },
+      process: { isMainFrame: true, platform: "darwin", argv: [] },
+      URLSearchParams,
+      location: { search: "" },
       performance: { now: () => 20 },
       window: {
         addEventListener: (name, listener) => {

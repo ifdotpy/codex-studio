@@ -1,3 +1,5 @@
+import { serverStorageName } from "../servers/environment";
+import { serverLocalStorage as localStorage } from "../servers/storage";
 // Synchronous writes close the gap between an input event and page teardown.
 // Keep the in-memory value when storage fails, and tell the caller to show it.
 export function writeLocalDraft(key: string, value: unknown): string | null {
@@ -18,7 +20,10 @@ export async function updateLocalDraft<T>(
   update: (current: T) => T,
 ): Promise<T> {
   const db = await new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open("codex-studio-draft-writes", 1);
+    const request = indexedDB.open(
+      serverStorageName("codex-studio-draft-writes"),
+      1,
+    );
     request.onupgradeneeded = () => request.result.createObjectStore("writes");
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error);

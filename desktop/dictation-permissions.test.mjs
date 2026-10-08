@@ -29,6 +29,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
         return Promise.resolve();
       },
       on() {},
+      once() {},
       quit() {},
       isPackaged: false,
     },
@@ -83,33 +84,40 @@ test("main and preload require a trusted local microphone gesture", async () => 
         ? electron
         : name === "./backend.cjs"
           ? { ensureBackend: async () => ({ origin }) }
-          : name === "./recovery.cjs"
+          : name === "./ui-host.cjs"
             ? {
-                configureRecovery: async () => ({ enabled: false }),
-                recoveryPreference: () => false,
-                supervisorPreference: () => false,
-                recoveryStatusLabel: () => "Recovery unavailable",
-                trackDesktopRecovery: () => ({ windowClosing() {} }),
+                startUiHost: async () => ({
+                  origin: "http://127.0.0.1:46300",
+                  close: async () => {},
+                }),
               }
-            : name === "./window-state.cjs"
+            : name === "./recovery.cjs"
               ? {
-                  loadWindowState: () => ({
-                    bounds: {},
-                    minWidth: 800,
-                    minHeight: 600,
-                  }),
-                  trackWindowState: () => ({ restore() {} }),
+                  configureRecovery: async () => ({ enabled: false }),
+                  recoveryPreference: () => false,
+                  supervisorPreference: () => false,
+                  recoveryStatusLabel: () => "Recovery unavailable",
+                  trackDesktopRecovery: () => ({ windowClosing() {} }),
                 }
-              : name === "./renderer-recovery.cjs"
+              : name === "./window-state.cjs"
                 ? {
-                    createRendererRecovery: () => ({
-                      handleNavigation(event) {
-                        event.preventDefault();
-                      },
-                      reload: async () => {},
+                    loadWindowState: () => ({
+                      bounds: {},
+                      minWidth: 800,
+                      minHeight: 600,
                     }),
+                    trackWindowState: () => ({ restore() {} }),
                   }
-                : require(name),
+                : name === "./renderer-recovery.cjs"
+                  ? {
+                      createRendererRecovery: () => ({
+                        handleNavigation(event) {
+                          event.preventDefault();
+                        },
+                        reload: async () => {},
+                      }),
+                    }
+                  : require(name),
     module: { exports: {} },
     process: { argv: [], env: {}, platform: "darwin" },
     console: { log: ready, error: console.error },
@@ -154,7 +162,7 @@ test("main and preload require a trusted local microphone gesture", async () => 
       { ...event, senderFrame: { url: origin + "/" } },
       { method: "requestMicrophone" },
     ),
-    /main frame/,
+    /Invalid server frame owner/,
   );
   assert.equal(asked, 0);
   await context.module.exports.nativeAction(event, {
@@ -207,7 +215,9 @@ test("main and preload require a trusted local microphone gesture", async () => 
           },
         },
       }),
-      process: { isMainFrame: true, platform: "darwin" },
+      process: { isMainFrame: true, platform: "darwin", argv: [] },
+      URLSearchParams,
+      location: { search: "" },
       performance: { now: () => 100 },
       window: {
         addEventListener(name, handler) {

@@ -29,7 +29,10 @@ test("desktop native settings, notification and speech boundaries work with fixt
         super();
         window = this;
         this.webContents = Object.assign(new EventEmitter(), {
-          mainFrame: { url: "http://localhost:1234/" },
+          mainFrame: {
+            url: "http://localhost:1234/",
+            send: (...args) => window.webContents.send(...args),
+          },
           session: {
             setPermissionRequestHandler() {},
             setPermissionCheckHandler() {},
@@ -82,6 +85,7 @@ test("desktop native settings, notification and speech boundaries work with fixt
       whenReady: () => Promise.resolve(),
       setActivationPolicy() {},
       on() {},
+      once() {},
       exit() {
         throw Error("startup failed");
       },
@@ -126,19 +130,29 @@ test("desktop native settings, notification and speech boundaries work with fixt
                   availableBackendBuild: "installed",
                 }),
               }
-            : name === "./speech.cjs"
-              ? require("./speech.cjs")
-              : name === "./recovery.cjs"
-                ? require("./recovery.cjs")
-                : name.startsWith("./")
-                  ? require(join(desktop, name.slice(2)))
-                  : require(name),
+            : name === "./ui-host.cjs"
+              ? {
+                  startUiHost: async () => ({
+                    origin: "http://127.0.0.1:1235",
+                    close: async () => {},
+                  }),
+                }
+              : name === "./speech.cjs"
+                ? require("./speech.cjs")
+                : name === "./recovery.cjs"
+                  ? require("./recovery.cjs")
+                  : name.startsWith("./")
+                    ? require(join(desktop, name.slice(2)))
+                    : require(name),
       process: { argv: ["--hidden"], env: {}, platform: "darwin" },
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
       AbortController,
+      URL,
       setTimeout,
       clearTimeout,
+      setInterval,
+      clearInterval,
       console: { log: ready, error: console.error },
     });
     await started;
@@ -160,6 +174,112 @@ test("desktop native settings, notification and speech boundaries work with fixt
   try {
     let f = await fixture();
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, false);
+    const serverFrame = {
+      url: `http://${require("./frame-owner.cjs").serverFrameHost("local")}:1235/?studio-server=local&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+      parent: f.event.senderFrame,
+    };
+    f.event.senderFrame.frames = [serverFrame];
+    const serverEvent = { sender: f.event.sender, senderFrame: serverFrame };
+    assert.equal(
+      (
+        await f.handler(serverEvent, {
+          method: "serverNativeAction",
+          value: { serverId: "local", method: "getBackendUpdate" },
+        })
+      ).updateRequired,
+      false,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverNativeAction",
+        value: { serverId: "other", method: "getBackendUpdate" },
+      }),
+      /Invalid server frame owner/,
+    );
+    await assert.rejects(
+      f.invoke("serverNativeAction", {
+        serverId: "local",
+        method: "getBackendUpdate",
+      }),
+      /Invalid server frame owner/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverNativeAction",
+        value: { serverId: "local", method: "notify" },
+      }),
+      /Unknown server native action/,
+    );
+    for (const url of [
+      "/api/session",
+      "/api/sync/pull",
+      "/api/ui-summary?server=B",
+      "/api/ui-summary#B",
+      "/api/ui-summary/",
+    ]) {
+      await assert.rejects(
+        f.invoke("serverCredentialAction", {
+          action: "summary",
+          serverId: "remote",
+          credentialId: "missing",
+          url: "https://remote.tailnet.ts.net" + url,
+          method: "GET",
+        }),
+        /Invalid shell summary request/,
+      );
+    }
+    await assert.rejects(
+      f.invoke("serverCredentialAction", {
+        action: "summary",
+        serverId: "remote",
+        url: "https://remote.tailnet.ts.net/api/ui-summary",
+        method: "POST",
+      }),
+      /Invalid shell summary request/,
+    );
+    await assert.rejects(
+      f.invoke("serverCredentialAction", {
+        action: "summary",
+        serverId: "remote",
+        credentialId: "missing",
+        url: "https://remote.tailnet.ts.net/api/ui-summary",
+        method: "GET",
+      }),
+      /server key is unavailable/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: {
+          action: "summary",
+          serverId: "remote",
+          url: "https://remote.tailnet.ts.net/api/ui-summary",
+          method: "GET",
+        },
+      }),
+      /Invalid shell summary request/,
+    );
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: { action: "request", serverId: "other" },
+      }),
+      /Invalid server frame owner/,
+    );
+    await assert.rejects(
+      f.handler(
+        {
+          sender: f.event.sender,
+          senderFrame: {
+            url: "http://localhost:1234/?studio-server=local",
+            parent: f.event.senderFrame,
+          },
+        },
+        { method: "getBackendUpdate" },
+      ),
+      /Invalid server frame owner/,
+    );
+
     f.setBackendBuild("old");
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
     f.setBackendBuild("installed");
@@ -212,7 +332,9 @@ test("desktop native settings, notification and speech boundaries work with fixt
     });
     const listeners = {};
     vm.runInNewContext(preload, {
-      process: { isMainFrame: true, platform: "darwin" },
+      process: { isMainFrame: true, platform: "darwin", argv: [] },
+      URLSearchParams,
+      location: { search: "" },
       window: {
         addEventListener: (name, cb) => {
           listeners[name] = cb;
@@ -330,6 +452,74 @@ test("desktop native settings, notification and speech boundaries work with fixt
       }),
       /Transcribe/,
     );
+    for (const action of ["release", "navigate", "destroy"]) {
+      const remoteFrame = {
+        url: `http://${require("./frame-owner.cjs").serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+        parent: f.event.senderFrame,
+        processId: 12,
+        routingId: 34,
+        send: (...args) => f.event.sender.send(...args),
+        destroyed: false,
+        isDestroyed() {
+          return this.destroyed;
+        },
+      };
+      f.event.senderFrame.frames = [remoteFrame];
+      const remoteEvent = { sender: f.event.sender, senderFrame: remoteFrame };
+      const remoteInvoke = (method, value) =>
+        f.handler(remoteEvent, { method, value });
+      const remotePermit = await remoteInvoke("prepareTranscription");
+      const progressReady = new Promise((resolve) =>
+        f.event.sender.once("sent", resolve),
+      );
+      const listenerBaseline = f.event.sender.listenerCount(
+        "did-start-navigation",
+      );
+      const remoteActive = remoteInvoke("transcribeAudio", {
+        id: "remote-recording",
+        audio: data,
+        locale: "en-US",
+        permit: remotePermit,
+      });
+      const aborted = assert.rejects(remoteActive, /canceled/);
+      await progressReady;
+      assert.equal(
+        f.event.sender.listenerCount("did-start-navigation"),
+        listenerBaseline + 1,
+      );
+      if (action === "release") await f.invoke("releaseServerView", "remote");
+      if (action === "navigate")
+        f.event.sender.emit("did-start-navigation", {
+          isMainFrame: false,
+          frame: remoteFrame,
+        });
+      if (action === "destroy") remoteFrame.destroyed = true;
+      let deadline;
+      try {
+        await Promise.race([
+          aborted,
+          new Promise((_, reject) => {
+            deadline = setTimeout(
+              () =>
+                reject(
+                  new Error(`Frame ${action} did not abort transcription`),
+                ),
+              2000,
+            );
+          }),
+        ]);
+        assert.equal(
+          f.event.sender.listenerCount("did-start-navigation"),
+          listenerBaseline,
+        );
+      } finally {
+        clearTimeout(deadline);
+        remoteFrame.destroyed = false;
+        await remoteInvoke("cancelTranscription", "remote-recording");
+        await aborted;
+      }
+      assert.equal(f.event.sender.listenerCount("destroyed"), 0);
+    }
     const controller = new AbortController();
     await assert.rejects(
       transcribe({ audio: data, locale: "en-US" }, helper, {

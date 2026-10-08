@@ -12,17 +12,20 @@ export function isProjectionDatabaseClosedError(error: unknown) {
 export function entityProjectionDatabaseName(
   workspaceId: string,
   schemaHash: string,
+  serverSuffix = "",
 ) {
-  return `${ENTITY_PROJECTION_DATABASE_PREFIX}${workspaceId}-${schemaHash}`;
+  return `${ENTITY_PROJECTION_DATABASE_PREFIX}${workspaceId}${serverSuffix}-${schemaHash}`;
 }
 
 /** Schedule best-effort cleanup without making it part of database startup. */
 export function deleteOtherEntityProjectionDatabases(
   workspaceId: string,
   currentSchemaHash: string,
+  serverSuffix = "",
 ) {
   if (!/^[a-f0-9]{32}$/.test(workspaceId)) return;
   if (!/^[a-f0-9]{64}$/.test(currentSchemaHash)) return;
+  if (!/^[a-z0-9]*$/.test(serverSuffix)) return;
   if (typeof indexedDB === "undefined") return;
   try {
     const databaseNames = indexedDB.databases;
@@ -30,7 +33,7 @@ export function deleteOtherEntityProjectionDatabases(
     void Promise.resolve(databaseNames.call(indexedDB))
       .then((databases) => {
         const storagePrefix = `rxdb-dexie-${ENTITY_PROJECTION_DATABASE_PREFIX}`;
-        const currentWorkspacePrefix = `${storagePrefix}${workspaceId}-`;
+        const currentWorkspacePrefix = `${storagePrefix}${workspaceId}${serverSuffix}-`;
         for (const { name } of databases) {
           if (!name?.startsWith(currentWorkspacePrefix)) continue;
           const suffix = name.slice(currentWorkspacePrefix.length);

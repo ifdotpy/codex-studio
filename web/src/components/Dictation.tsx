@@ -1,3 +1,4 @@
+import { useServerActivity } from "../servers/activity";
 import { localTime } from "../local-time";
 import ErrorDescription from "./ErrorDescription";
 import { errorDetails } from "../errorPresentation";
@@ -75,6 +76,7 @@ function NativeDictation({
     queue = useRef(Promise.resolve());
   const durable = useRef<Recording | null>(null);
   const storageFailed = useRef(false);
+  useServerActivity(recording || !!busy || storageFailed.current);
   const scope = useRef(chatId);
   scope.current = chatId;
   const load = async () => {
