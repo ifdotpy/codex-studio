@@ -43,7 +43,7 @@ vi.mock("./resourceEvents", () => ({
 }));
 vi.mock("./resume", () => ({ onResume: vi.fn(() => () => {}) }));
 
-async function setup() {
+async function setup({ ready = true } = {}) {
   const workspaceId = "e".repeat(32);
   mocks.pulls = undefined;
   mocks.pullResponse = undefined;
@@ -60,7 +60,12 @@ async function setup() {
     ],
     [
       "state:entities:ready",
-      { id: "state:entities:ready", payload: "ready", seq: 1, _deleted: false },
+      {
+        id: "state:entities:ready",
+        payload: ready ? "ready" : "pending",
+        seq: 1,
+        _deleted: false,
+      },
     ],
     [
       "state:entities:initial",
@@ -524,7 +529,13 @@ describe("entity pull dispatch gate", () => {
 
   it("makes a direct refresh pull after a failed refresh even when a retained sequence is covered", async () => {
     const pulls: number[] = [];
-    const { client, storageInstance, stop, waitForFailure } = await setup();
+    // Exercise retry before the first usable projection, with an explicit marker
+    // instead of relying on a mock query that never emits its cached result.
+    const { client, rows, storageInstance, stop, waitForFailure } = await setup(
+      {
+        ready: false,
+      },
+    );
     mocks.pulls = pulls;
     mocks.pullResponse = async (after) => {
       if (pulls.length === 1) throw new TypeError("simulated read failure");
@@ -574,6 +585,10 @@ describe("entity pull dispatch gate", () => {
       );
 
       const beforeDirectRefresh = pulls.length;
+      rows.set("state:entities:ready", {
+        ...rows.get("state:entities:ready"),
+        payload: "ready",
+      });
       await client.refreshProjection();
       expect(pulls).toHaveLength(beforeDirectRefresh + 1);
       expect(pulls).toEqual([100, 100, 100]);

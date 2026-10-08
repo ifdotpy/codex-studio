@@ -3,13 +3,10 @@ import { createRxDatabase, addRxPlugin } from "rxdb";
 import { getRxStorageDexie } from "rxdb/plugins/storage-dexie";
 import { RxDBLeaderElectionPlugin } from "rxdb/plugins/leader-election";
 import { replicateRxCollection } from "rxdb/plugins/replication";
-import type { RxCollection, RxDocument, RxDocumentData } from "rxdb";
+import type { RxCollection, RxDocumentData } from "rxdb";
 import { draftConflictHandler } from "./conflicts";
-import {
-  applyEntityRows,
-  emptyEntityProjection,
-  type EntityRow,
-} from "./entityProjection";
+import { applyEntityRows, emptyEntityProjection } from "./entityProjection";
+import { observeEntityProjection } from "./entityProjectionObserver";
 import {
   syncGet,
   syncPost,
@@ -1291,55 +1288,25 @@ async function watchStateProjection(
 ) {
   const { db, state, release } = await acquireProjection("state");
   state.listeners.add(fail);
-  const projection = emptyEntityProjection();
-  let ready = false;
-  let entitiesLoaded = false;
-  let latestRows: EntityRow[] = [];
-  // RxDB caches immutable document versions. Keep one JSON view per version
-  // without retaining removed documents in a strong cache.
-  const documentRows = new WeakMap<object, SyncDocument>();
-  let published: ReturnType<typeof applyEntityRows>;
-  const publishCurrent = () => {
-    if (!ready || !entitiesLoaded) return;
-    const next = applyEntityRows(projection, latestRows, true);
-    if (next && next !== published) {
-      published = next;
-      accept(next);
-    }
-  };
-  const publish = (documents: RxDocument<SyncDocument>[]) => {
-    entitiesLoaded = true;
-    latestRows = documents.map((document) => {
-      let row = documentRows.get(document);
-      if (!row) {
-        row = document.toJSON();
-        documentRows.set(document, row);
-      }
-      return row;
-    });
-    publishCurrent();
-  };
-  const entities = db.projections
-    .find({ selector: { id: { $gte: "entity:", $lt: "entity;" } } })
-    .$.subscribe(publish);
-  const marker = db.projections
-    .findOne("state:entities:ready")
-    .$.subscribe((document) => {
-      const row = document?.toJSON();
-      ready = row?.payload === "ready" && !row?._deleted;
-      publishCurrent();
-    });
-  // Start the first incomplete projection pull as soon as the stream has been
-  // subscribed, without waiting for its baseline frame. A completed local
-  // cache already supplies content and needs no speculative pull.
-  const [complete] = await db.projections.storageInstance.findDocumentsById(
-    ["state:entities:complete"],
-    true,
-  );
-  if (!complete || complete._deleted) void state.refresh().catch(() => {});
+  let stopEntities: (() => void) | undefined;
+  try {
+    stopEntities = await observeEntityProjection(db.projections, accept, fail);
+    // Start the first incomplete projection pull as soon as the stream has been
+    // subscribed, without waiting for its baseline frame. A completed local
+    // cache already supplies content and needs no speculative pull.
+    const [complete] = await db.projections.storageInstance.findDocumentsById(
+      ["state:entities:complete"],
+      true,
+    );
+    if (!complete || complete._deleted) void state.refresh().catch(() => {});
+  } catch (error) {
+    stopEntities?.();
+    state.listeners.delete(fail);
+    await release();
+    throw error;
+  }
   return () => {
-    entities.unsubscribe();
-    marker.unsubscribe();
+    stopEntities?.();
     state.listeners.delete(fail);
     void release();
   };
