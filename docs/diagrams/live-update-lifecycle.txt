@@ -1,0 +1,36 @@
+     +-------------------------------------------+
+     |                                           |
+     |         Prepare temporary patch           |
+     |         outside repository                |
+     |                                           |
+     +-------------------------------------------+
+                |
+     install release sources
+                |
+                v
+    +---------------------------------------------------+
+    |                                                   |
+    |           Copy exact sources and                  |
+    |           publish manifest under lock             |
+    |                                                   |
+    +---------------------------------------------------+
+                |
+updater checks every two seconds
+                |
+                v
+  +----------------------------------------------------------------+
+  |                                                                |
+  |               Backend validates and applies;                   |
+  |               receipt records result and scope                 |
+  |                                                                |
+  +----------------------------------------------------------------+
+                |
+   verify receipt and behavior
+                |
+                v
++---------------------------------------------------------------------+
+|                                                                     |
+|                Verify scope, retire both files                      |
+|                Current source remains authoritative                 |
+|                                                                     |
++---------------------------------------------------------------------+

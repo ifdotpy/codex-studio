@@ -17,7 +17,10 @@ spec = importlib.util.spec_from_file_location('turn_scope_fixture',
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 import codex_runtime
-from codex_turn_scope_index_update import SQL as TURN_INDEX_SQL
+
+TURN_INDEX_SQL = """CREATE INDEX runtime_item_turn_scope ON runtime_items(
+    agent, json_extract(record, '$.turnId'), created
+)"""
 
 
 class TurnCompletionScope(unittest.TestCase):
