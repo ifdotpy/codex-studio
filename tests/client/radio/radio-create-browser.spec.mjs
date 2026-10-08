@@ -4,15 +4,40 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { modelValue } from "../../model-picker.mjs";
-import { test, expect } from "../playwright.mjs";
+import {
+  handleEntitySyncFixtureRequest,
+  test,
+  expect,
+} from "../playwright.mjs";
 
-test("radio create browser", async ({ page: runnerPage }) => {
-  const root = resolve(import.meta.dirname, "../../../web");
+async function createRadioFixtureServer(root, cacheDir) {
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
-  const cacheDir = await mkdtemp(join(tmpdir(), "studio-radio-create-"));
   const entry = join(root, "radio-create-fixture.tsx");
-  const server = await createServer({
+  const workspaceId = "b".repeat(32);
+  const syncSnapshot = {
+    stateDir: "create-test",
+    chats: [],
+    edges: [],
+    runtime: {
+      agents: [],
+      projects: [],
+      rooms: [],
+      complaints: [],
+      requests: [],
+      monitors: [],
+      tasks: [],
+      events: [],
+      peerTeams: [],
+      rules: [],
+      work: [],
+      nativeNotices: [],
+      sidebarOrder: [],
+      rateLimits: [],
+      rateLimitsByAccount: {},
+    },
+  };
+  return createServer({
     configFile: false,
     root,
     cacheDir,
@@ -21,6 +46,19 @@ test("radio create browser", async ({ page: runnerPage }) => {
       {
         name: "fixture",
         configureServer(s) {
+          s.middlewares.stack.unshift({
+            route: "",
+            handle(req, res, next) {
+              if (
+                handleEntitySyncFixtureRequest(req, res, {
+                  snapshot: syncSnapshot,
+                  workspaceId,
+                })
+              )
+                return;
+              next();
+            },
+          });
           s.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -36,14 +74,20 @@ test("radio create browser", async ({ page: runnerPage }) => {
           return `
   import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal} from '@mantine/core';import '@mantine/core/styles.css';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';import Sidebar from '/src/components/Sidebar.tsx';import '/src/style.css';import '/src/appearance.css';import '/src/workspace-layout.css';import {theme} from '/src/theme.ts';
   const accounts={defaultAccountKey:'codex',accounts:[{id:'codex',label:'Personal',email:'personal@example.com',provider:'codex',status:'ready'},{id:'claude',label:'Work',email:'work@example.com',provider:'claude',status:'ready'}]};
-  const initial={stateDir:'create-test',threads:[],runtime:{projects:[{id:'p',path:'/p',name:'Project'}],rooms:[],requests:[],peerTeamsVersion:1,peerTeams:[]}};
+  const initial={stateDir:'create-test',threads:[],runtime:{projects:[{id:'p',path:'/p',name:'Project'},{id:'ordinary',path:'/ordinary',name:'Ordinary'}],rooms:[],requests:[],peerTeamsVersion:1,peerTeams:[]}};
   function Fixture(){const[data,setData]=useState(initial);const[show,setShow]=useState({path:'/p'});const[opened,open]=useState(null);window.fixture=data;window.opened=opened;window.reopen=()=>setShow({path:'/p'});
   const refresh=async()=>{if(window.failRefresh)throw Error('Snapshot unavailable');const result=await fetch('/snapshot');setData(await result.json());};
-  return <MantineProvider theme={theme} defaultColorScheme="dark"><Sidebar data={data} opened={opened} open={open} newChat={()=>window.ordinary=true} newSharedChat={path=>setShow({path})} addProject={()=>{}} changeProject={()=>{}} projectAccount={()=>{}} creating={false} rename={async()=>{}} remove={()=>{}} mobile={false} onSearch={()=>{}} close={()=>{}} refresh={refresh} indicators={new Map()} markUnread={()=>{}} markingRead={new Set()}/><Modal opened={!!show} title="New shared chat" onClose={()=>setShow(null)} size="md">{show && <SharedChatCreate data={data} accounts={accounts} initialPath={show.path} refresh={refresh} created={id=>{open(id);setShow(null);}}/>}</Modal></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  return <MantineProvider theme={theme} defaultColorScheme="dark"><Sidebar data={data} opened={opened} open={open} newChat={()=>window.ordinary=true} newSharedChat={path=>setShow({path})} addProject={()=>{}} changeProject={()=>{}} projectAccount={()=>{}} creating={false} rename={async()=>{}} remove={()=>{}} mobile={window.innerWidth < 760} onSearch={()=>{}} close={()=>{}} refresh={refresh} indicators={new Map()} markUnread={()=>{}} markingRead={new Set()}/><Modal opened={!!show} title="New shared chat" onClose={()=>setShow(null)} size="md">{show && <SharedChatCreate data={data} accounts={accounts} initialPath={show.path} refresh={refresh} created={id=>{open(id);setShow(null);}}/>}</Modal></MantineProvider>};createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
   });
+}
+
+test("radio create browser", async ({ page: runnerPage }) => {
+  const root = resolve(import.meta.dirname, "../../../web");
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-radio-create-"));
+  const server = await createRadioFixtureServer(root, cacheDir);
   try {
     await server.listen();
     const page = runnerPage;
@@ -133,7 +177,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
     state = await page.evaluate(() => window.fixture);
     const form = page.getByRole("form", { name: "Create shared chat" });
     const create = form.getByRole("button", {
-      name: "Create shared chat",
+      name: "Create",
       exact: true,
     });
     await page.waitForFunction(
@@ -198,18 +242,37 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.evaluate(() => (window.failRefresh = false));
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await form.waitFor({ state: "detached" });
+    await page.locator(".mantine-Modal-overlay").waitFor({ state: "hidden" });
     assert.equal(requests.length, posted);
-    await page
-      .getByRole("button", { name: "Options for project Project" })
-      .click();
-    await page.getByRole("menuitem", { name: "New shared chat" }).click();
-    assert.equal(
-      await form.getByLabel("Project", { exact: true }).inputValue(),
-      "/p",
-    );
+    for (const width of [1100, 1440]) {
+      await page.setViewportSize({ width, height: 950 });
+      for (const [name, path] of [
+        ["Ordinary", "/ordinary"],
+        ["Project", "/p"],
+      ]) {
+        const action = page.getByRole("button", {
+          name: `Options for project ${name}`,
+        });
+        const heading = page
+          .locator(".project-tree-heading")
+          .filter({ has: action });
+        await heading.hover();
+        await action.click();
+        await page.getByRole("menuitem", { name: "New shared chat" }).click();
+        assert.equal(
+          await form.getByLabel("Project", { exact: true }).inputValue(),
+          path,
+        );
+        await page.keyboard.press("Escape");
+        await form.waitFor({ state: "detached" });
+        await page
+          .locator(".mantine-Modal-overlay")
+          .waitFor({ state: "hidden" });
+      }
+    }
     expect(errors).toEqual([]);
     console.log(
-      "PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh, one sidebar row, ordinary chat and project entry.",
+      "PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh and ordinary chat.",
     );
   } finally {
     await server.close();
