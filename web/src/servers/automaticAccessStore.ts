@@ -2,16 +2,64 @@ import type {
   AutomaticAccessAttempt,
   AutomaticAccessStore,
 } from "./automaticUiAccess";
-// Short-lived invitations stay in the shell's origin, beside its pair drafts.
+// Attempt identities contain no invitation secret. Keys and pair bodies stay in
+// the existing browser credential store or desktop safeStorage.
+export function attemptMetadata(
+  value: AutomaticAccessAttempt,
+): AutomaticAccessAttempt {
+  const invitation = value.invitation;
+  return {
+    localServerId: value.localServerId,
+    serverId: value.serverId,
+    origin: value.origin,
+    generation: value.generation,
+    inviteRequestId: value.inviteRequestId,
+    pairRequestId: value.pairRequestId,
+    ...(value.pairStarted ? { pairStarted: true } : {}),
+    ...(invitation
+      ? {
+          invitation: {
+            protocol: invitation.protocol,
+            inviteId: invitation.inviteId,
+            serverId: invitation.serverId,
+            label: invitation.label,
+            origin: invitation.origin,
+            publicKey: invitation.publicKey,
+            tailscaleUser: invitation.tailscaleUser,
+            expires: invitation.expires,
+          },
+        }
+      : {}),
+  };
+}
 export function automaticAccessStore(): AutomaticAccessStore {
   async function access<T>(
     mode: IDBTransactionMode,
     operation: (store: IDBObjectStore) => IDBRequest<T>,
   ): Promise<T> {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("studio-automatic-ui-access-v1", 1);
-      request.onupgradeneeded = () =>
-        request.result.createObjectStore("attempts");
+      const request = indexedDB.open("studio-automatic-ui-access-v1", 2);
+      request.onupgradeneeded = (event) => {
+        if (event.oldVersion === 0)
+          request.result.createObjectStore("attempts");
+        else {
+          const cursor = request
+            .transaction!.objectStore("attempts")
+            .openCursor();
+          cursor.onsuccess = () => {
+            const entry = cursor.result;
+            if (!entry) return;
+            // Old attempts might have started pairing. Preserve their identity.
+            entry.update(
+              attemptMetadata({
+                ...entry.value,
+                pairStarted: !!entry.value.invitation,
+              }),
+            );
+            entry.continue();
+          };
+        }
+      };
       request.onsuccess = () => resolve(request.result);
       request.onerror = () => reject(request.error);
     });
@@ -42,7 +90,9 @@ export function automaticAccessStore(): AutomaticAccessStore {
         store.get(key),
       )) ?? null,
     save: async (key, value) => {
-      await access("readwrite", (store) => store.put(value, key));
+      await access("readwrite", (store) =>
+        store.put(attemptMetadata(value), key),
+      );
     },
     remove: async (key) => {
       await access("readwrite", (store) => store.delete(key));

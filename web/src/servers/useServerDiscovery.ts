@@ -1,3 +1,4 @@
+import { ServerManagementRequests } from "./managementRequests";
 import { useEffect, useRef, useState } from "react";
 import { errorText, refreshSession, serverAccess } from "../api";
 import { discoverySnapshot, type DiscoverySnapshot } from "./discoveryModel";
@@ -26,6 +27,12 @@ export function useServerDiscovery(
   const controller = useRef<AutomaticUiAccess | null>(null);
   if (!controller.current)
     controller.current = new AutomaticUiAccess(automaticAccessStore(), {
+      current: async () => {
+        const value = await serverAccess("GET");
+        if (!("identity" in value))
+          throw new Error("The server discovery response is invalid.");
+        return discoverySnapshot(value);
+      },
       existing: readServers,
       lock: async (key, run) => {
         if (!navigator.locks)
@@ -51,7 +58,27 @@ export function useServerDiscovery(
         return value.invitation;
       },
     });
-  const pending = useRef<ServerAccessRequest | null>(null);
+  const [pending, setPending] = useState<ServerAccessRequest | null>(null);
+  const busyRef = useRef(false);
+  const management = new ServerManagementRequests(
+    location.origin,
+    localStorage,
+    async (name, work) => {
+      if (!navigator.locks)
+        throw new Error(
+          "Server settings need a browser with Web Locks support.",
+        );
+      await navigator.locks.request(name, work);
+    },
+    async (body) => {
+      await refreshSession();
+      await serverAccess(
+        "POST",
+        body,
+        body.action === "discover" ? 105000 : 15000,
+      );
+    },
+  );
   const loading = useRef<Promise<void> | null>(null);
   const apply = async (state: ServerAccessState) => {
     const next = discoverySnapshot(state);
@@ -59,7 +86,10 @@ export function useServerDiscovery(
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());
-    if (next) await controller.current!.reconcile(next);
+    if (next)
+      void controller.current!.reconcile(next).catch((failure) => {
+        if (active.current) setError(errorText(failure));
+      });
   };
   const load = () => {
     if (loading.current) return loading.current;
@@ -106,55 +136,39 @@ export function useServerDiscovery(
     };
   }, [enabled]);
   const run = async (request: ServerAccessRequest) => {
-    if (!enabled || busy) return;
-    if (
-      pending.current &&
-      JSON.stringify({ ...pending.current, requestId: "" }) !==
-        JSON.stringify({ ...request, requestId: "" })
-    ) {
-      setError(
-        "Retry the saved discovery request before you start another request.",
-      );
-      return;
-    }
-    const key = "studio-server-discovery-pending-v1";
-    const body = pending.current || request;
-    try {
-      localStorage.setItem(key, JSON.stringify(body));
-      pending.current = body;
-    } catch {
-      setError("The request could not be saved. No server setting changed.");
-      return;
-    }
+    if (!enabled || busyRef.current) return;
+    busyRef.current = true;
     setBusy(true);
     setError("");
     try {
-      await refreshSession();
-      await serverAccess(
-        "POST",
-        body,
-        body.action === "discover" ? 105000 : 15000,
-      );
-      pending.current = null;
-      localStorage.removeItem(key);
+      await management.run(request);
       // A retry receipt contains the original snapshot. Read the current state.
       if (loading.current) await loading.current;
       await load();
     } catch (failure) {
       setError(errorText(failure));
     } finally {
+      try {
+        setPending(management.pending()[0] || null);
+      } catch (failure) {
+        setError(errorText(failure));
+      }
+      busyRef.current = false;
       setBusy(false);
     }
   };
   useEffect(() => {
     if (!enabled) return;
-    try {
-      pending.current = JSON.parse(
-        localStorage.getItem("studio-server-discovery-pending-v1") || "null",
-      );
-    } catch (failure) {
-      setError(errorText(failure));
-    }
+    const update = () => {
+      try {
+        setPending(management.pending()[0] || null);
+      } catch (failure) {
+        setError(errorText(failure));
+      }
+    };
+    update();
+    window.addEventListener("storage", update);
+    return () => window.removeEventListener("storage", update);
   }, [enabled]);
   return {
     snapshot,
@@ -175,6 +189,7 @@ export function useServerDiscovery(
       },
     },
     revoke: (id: string) => {
+      controller.current?.cancel(id);
       void run({
         action: "revoke",
         clientId: id,
@@ -188,9 +203,9 @@ export function useServerDiscovery(
         requestId: crypto.randomUUID(),
       });
     },
-    retry: pending.current
+    retry: pending
       ? () => {
-          void run(pending.current!);
+          void run(pending);
         }
       : undefined,
     addAgain: (id: string) => {

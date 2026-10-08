@@ -358,6 +358,19 @@ async function nativeAction(event, request) {
           if (stream.serverId === value.serverId) stream.controller.abort();
         return serverCredentials.forget(value.serverId);
       }
+      if (value.action === "request") {
+        const path = decodeURIComponent(new URL(value.url).pathname).replace(
+          /\/+$/,
+          "",
+        );
+        if (
+          (value.method === "POST" &&
+            (path === "/api/multi-server" ||
+              path.startsWith("/api/multi-server/"))) ||
+          path.startsWith("/api/multi-server/v1/")
+        )
+          throw new Error("Use the workspace shell for server management.");
+      }
       const id = string(value.streamId, 128);
       if (value.action === "cancel") {
         const stream = serverStreams.get(id);

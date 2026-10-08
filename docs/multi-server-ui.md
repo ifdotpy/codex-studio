@@ -35,10 +35,22 @@ Revoked servers cannot gain automatic UI access.
 Server frames can open the Settings section but cannot perform its management actions.
 
 The shell saves both request identities before it requests an invitation.
-It saves the invitation before it calls the credential adapter.
+Its attempt store contains invitation metadata, without the token.
+On recovery, `ui_invite` returns the same invitation through its stable request identity.
+Client keys and pair bodies remain in the existing credential stores.
+The browser credential store uses IndexedDB. Desktop credentials use native safeStorage.
+The store upgrade removes tokens from previous automatic attempts.
 Saved attempts use the local server ID and peer credential generation.
 A lost response keeps the same invitation, client key, client ID, body, and request identity.
+An expired invitation gets a new attempt only when pairing has not started.
+An unknown pair result keeps its identity even after invitation expiry.
 Web Locks serialize automatic access across browser tabs.
+Management actions use another shared lock and separate request records.
+An uncertain request blocks a different management action until its result is known.
+A response removes only its own request record.
+The shell reads the current peer snapshot before pairing and before adding UI access.
+Revoke cancels automatic access for that peer's current credential generation.
+Frames cannot send management writes or use pairing routes through either transport bridge.
 A failed server attempt backs off for up to five minutes.
 Other servers can still gain access.
 

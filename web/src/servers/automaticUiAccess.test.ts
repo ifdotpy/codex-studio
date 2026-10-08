@@ -41,8 +41,14 @@ function setup() {
   const records = new Map<string, AutomaticAccessAttempt>();
   const existing: (typeof server)[] = [];
   const adapter = {
-    invite: vi.fn(async () => invitation),
-    pair: vi.fn(async () => server),
+    current: vi.fn(async () => snapshot),
+    invite: vi.fn(
+      async (_peer: DiscoverySnapshot["servers"][number], _requestId: string) =>
+        invitation,
+    ),
+    pair: vi.fn(
+      async (_origin: string, _code: string, _requestId: string) => server,
+    ),
     existing: () => existing,
     excluded: vi.fn(() => false),
     add: vi.fn((value: typeof server) => existing.push(value)),
@@ -60,7 +66,7 @@ function setup() {
     records,
     adapter,
     store,
-    controller: new AutomaticUiAccess(store, adapter),
+    controller: new AutomaticUiAccess(store, adapter, () => 100000),
     existing,
   };
 }
@@ -68,7 +74,7 @@ it("adds a paired server once after saving both identities and its invitation", 
   const s = setup();
   await s.controller.reconcile(snapshot);
   expect(s.adapter.invite).toHaveBeenCalledOnce();
-  expect(s.store.save).toHaveBeenCalledTimes(2);
+  expect(s.store.save).toHaveBeenCalledTimes(3);
   expect(s.store.save.mock.invocationCallOrder[0]).toBeLessThan(
     s.adapter.invite.mock.invocationCallOrder[0],
   );
@@ -86,7 +92,9 @@ it("retries a lost invitation response with the same saved request identity afte
   await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
     "Response lost",
   );
-  await new AutomaticUiAccess(s.store, s.adapter).reconcile(snapshot);
+  await new AutomaticUiAccess(s.store, s.adapter, () => 100000).reconcile(
+    snapshot,
+  );
   expect(s.adapter.invite.mock.calls[0]).toEqual(
     s.adapter.invite.mock.calls[1],
   );
@@ -98,8 +106,13 @@ it("retries lost pairing with the same invitation and pair identity after reload
   await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
     "Pair response lost",
   );
-  await new AutomaticUiAccess(s.store, s.adapter).reconcile(snapshot);
-  expect(s.adapter.invite).toHaveBeenCalledOnce();
+  await new AutomaticUiAccess(s.store, s.adapter, () => 100000).reconcile(
+    snapshot,
+  );
+  expect(s.adapter.invite).toHaveBeenCalledTimes(2);
+  expect(s.adapter.invite.mock.calls[0]).toEqual(
+    s.adapter.invite.mock.calls[1],
+  );
   expect(s.adapter.pair.mock.calls[0]).toEqual(s.adapter.pair.mock.calls[1]);
   expect(s.existing).toEqual([server]);
 });
@@ -196,4 +209,126 @@ it("does not register UI access after its controller stops", async () => {
   finish(server);
   await active;
   expect(s.adapter.add).not.toHaveBeenCalled();
+});
+
+it("stores no invitation token after an unknown pair result", async () => {
+  const s = setup();
+  s.adapter.pair.mockRejectedValue(new TypeError("Pair response lost"));
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "Pair response lost",
+  );
+  expect(JSON.stringify([...s.records.values()])).not.toContain('"token"');
+  expect(JSON.stringify([...s.records.values()])).not.toContain("secret");
+});
+it("renews an expired invitation that never started pairing", async () => {
+  const s = setup();
+  const key = JSON.stringify([
+    "home",
+    "remote",
+    invitation.origin,
+    "generation1",
+  ]);
+  s.records.set(key, {
+    localServerId: "home",
+    serverId: "remote",
+    origin: invitation.origin,
+    generation: "generation1",
+    inviteRequestId: "expired-invite-request",
+    pairRequestId: "expired-pair-request",
+    invitation: { ...invitation, expires: 90 },
+  });
+  await s.controller.reconcile(snapshot);
+  expect(s.adapter.invite).toHaveBeenCalledOnce();
+  expect(s.adapter.invite.mock.calls[0][1]).not.toBe("expired-invite-request");
+  expect(s.adapter.pair.mock.calls[0][2]).not.toBe("expired-pair-request");
+});
+it("reads authoritative peer state before pairing and before registration", async () => {
+  const s = setup();
+  const current = vi.fn(async () => ({
+    ...snapshot,
+    servers: [
+      { ...snapshot.servers[0], status: "revoked" as const, paired: false },
+    ],
+  }));
+  await new AutomaticUiAccess(
+    s.store,
+    { ...s.adapter, current },
+    () => 100000,
+  ).reconcile(snapshot);
+  expect(s.adapter.pair).not.toHaveBeenCalled();
+  expect(s.adapter.add).not.toHaveBeenCalled();
+});
+
+it("does not add a peer revoked while pairing was in flight", async () => {
+  const s = setup();
+  s.adapter.current.mockResolvedValueOnce(snapshot).mockResolvedValueOnce({
+    ...snapshot,
+    servers: [{ ...snapshot.servers[0], status: "revoked", paired: false }],
+  });
+  await s.controller.reconcile(snapshot);
+  expect(s.adapter.pair).toHaveBeenCalledOnce();
+  expect(s.adapter.add).not.toHaveBeenCalled();
+});
+it("cancels a held invitation immediately when this UI revokes the peer", async () => {
+  const s = setup();
+  let finish!: (value: typeof invitation) => void;
+  s.adapter.invite.mockImplementationOnce(
+    () =>
+      new Promise((resolve) => {
+        finish = resolve;
+      }),
+  );
+  const active = s.controller.reconcile(snapshot);
+  await vi.waitFor(() => expect(s.adapter.invite).toHaveBeenCalledOnce());
+  s.controller.cancel("remote");
+  finish(invitation);
+  await active;
+  expect(s.adapter.pair).not.toHaveBeenCalled();
+  expect(s.adapter.add).not.toHaveBeenCalled();
+});
+it("keeps the same identity when an uncertain pair outlives its invitation", async () => {
+  const s = setup();
+  s.adapter.pair.mockRejectedValueOnce(new TypeError("Pair response lost"));
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "Pair response lost",
+  );
+  await new AutomaticUiAccess(s.store, s.adapter, () => 2000000).reconcile(
+    snapshot,
+  );
+  expect(s.adapter.invite.mock.calls[0]).toEqual(
+    s.adapter.invite.mock.calls[1],
+  );
+  expect(s.adapter.pair.mock.calls[0]).toEqual(s.adapter.pair.mock.calls[1]);
+});
+
+it("does not mark pairing as uncertain when its final peer check fails before the send", async () => {
+  const s = setup();
+  s.adapter.current.mockRejectedValueOnce(new TypeError("Home server offline"));
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "Home server offline",
+  );
+  expect(s.adapter.pair).not.toHaveBeenCalled();
+  expect([...s.records.values()][0].pairStarted).toBe(false);
+});
+
+it("renews an invitation that expires during its final peer check without sending a pair", async () => {
+  const s = setup();
+  let time = 100000;
+  s.adapter.current.mockImplementationOnce(async () => {
+    time = 1100000;
+    return snapshot;
+  });
+  await expect(
+    new AutomaticUiAccess(s.store, s.adapter, () => time).reconcile(snapshot),
+  ).rejects.toThrow("expired before pairing");
+  expect(s.adapter.pair).not.toHaveBeenCalled();
+  expect(s.records.size).toBe(0);
+  s.adapter.invite.mockResolvedValueOnce({ ...invitation, expires: 2000 });
+  await new AutomaticUiAccess(s.store, s.adapter, () => time).reconcile(
+    snapshot,
+  );
+  expect(s.adapter.invite.mock.calls[0][1]).not.toBe(
+    s.adapter.invite.mock.calls[1][1],
+  );
+  expect(s.adapter.pair).toHaveBeenCalledOnce();
 });

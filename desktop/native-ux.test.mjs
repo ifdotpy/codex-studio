@@ -148,6 +148,12 @@ test("desktop native settings, notification and speech boundaries work with fixt
       __dirname: join(folder, "desktop"),
       module: { exports: {} },
       AbortController,
+      fetch: async () => ({
+        status: 200,
+        statusText: "OK",
+        headers: new Map(),
+        arrayBuffer: async () => new ArrayBuffer(0),
+      }),
       URL,
       setTimeout,
       clearTimeout,
@@ -278,6 +284,56 @@ test("desktop native settings, notification and speech boundaries work with fixt
         { method: "getBackendUpdate" },
       ),
       /Invalid server frame owner/,
+    );
+
+    const remoteManagementFrame = {
+      url: `http://${require("./frame-owner.cjs").serverFrameHost("remote")}:1235/?studio-server=remote&studio-parent=http%3A%2F%2Flocalhost%3A1234`,
+      parent: f.event.senderFrame,
+    };
+    f.event.senderFrame.frames.push(remoteManagementFrame);
+    for (const [owner, origin, frame] of [
+      ["local", "http://localhost:1234", serverFrame],
+      ["remote", "https://remote.tailnet.ts.net", remoteManagementFrame],
+    ]) {
+      for (const path of [
+        "/api/multi-server",
+        "/api/multi-server/",
+        "/api/multi%2dserver",
+        "/api/multi-server/v1/pair",
+        "/api/multi-server/v1/auto-pair",
+      ]) {
+        await assert.rejects(
+          f.handler(
+            { sender: f.event.sender, senderFrame: frame },
+            {
+              method: "serverCredentialAction",
+              value: {
+                action: "request",
+                serverId: owner,
+                streamId: "management",
+                url: origin + path,
+                method: "POST",
+              },
+            },
+          ),
+          /Use the workspace shell for server management/,
+        );
+      }
+    }
+    assert.equal(
+      (
+        await f.handler(serverEvent, {
+          method: "serverCredentialAction",
+          value: {
+            action: "request",
+            serverId: "local",
+            streamId: "ordinary",
+            url: "http://localhost:1234/api/messages",
+            method: "POST",
+          },
+        })
+      ).status,
+      200,
     );
 
     f.setBackendBuild("old");

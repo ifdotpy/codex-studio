@@ -674,6 +674,54 @@ test("one UI routes overlapping chats to two and three signed servers without re
     expect(frameSecurity.parentBlocked).toBe(true);
     expect(frameSecurity.siblingBlocked).toBe(true);
     expect(frameSecurity.blocked).toContain("Invalid server frame owner");
+    for (const frame of [
+      remoteWindow,
+      page
+        .frames()
+        .find(
+          (frame) =>
+            new URL(frame.url()).searchParams.get("studio-server") === "local",
+        ),
+    ]) {
+      const denied = await frame.evaluate(async () => {
+        const id = new URLSearchParams(location.search).get("studio-server");
+        const url =
+          id === "local"
+            ? new URLSearchParams(location.search).get("studio-parent")
+            : "https://remote.tailnet.ts.net";
+        const correlation = crypto.randomUUID();
+        return new Promise((resolve) => {
+          const receive = (event) => {
+            if (
+              event.data?.kind === "studio-server-transport-result" &&
+              event.data.correlation === correlation
+            ) {
+              removeEventListener("message", receive);
+              resolve(event.data.error);
+            }
+          };
+          addEventListener("message", receive);
+          parent.postMessage(
+            {
+              kind: "studio-server-transport",
+              correlation,
+              value: {
+                action: "request",
+                serverId: id,
+                streamId: correlation,
+                url: url + "/api/multi-server",
+                method: "POST",
+                body: new TextEncoder().encode(
+                  '{"action":"unrevoke","clientId":"revoked","requestId":"frame-attack"}',
+                ).buffer,
+              },
+            },
+            new URLSearchParams(location.search).get("studio-parent"),
+          );
+        });
+      });
+      expect(denied).toBe("Use the workspace shell for server management.");
+    }
     const exportHeaders = await remoteWindow.evaluate(async () => {
       const correlation = crypto.randomUUID();
       return new Promise((resolve) => {

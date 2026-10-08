@@ -9,7 +9,8 @@ export type AutomaticAccessAttempt = {
   generation: string;
   inviteRequestId: string;
   pairRequestId: string;
-  invitation?: PairInvitation;
+  invitation?: Omit<PairInvitation, "token">;
+  pairStarted?: boolean;
 };
 export interface AutomaticAccessStore {
   read(key: string): Promise<AutomaticAccessAttempt | null>;
@@ -19,6 +20,7 @@ export interface AutomaticAccessStore {
 export interface AutomaticAccessAdapter {
   invite(server: DiscoveredServer, requestId: string): Promise<PairInvitation>;
   pair(origin: string, code: string, requestId: string): Promise<StudioServer>;
+  current(): Promise<DiscoverySnapshot | null>;
   existing(): StudioServer[];
   add(server: StudioServer): void;
   excluded(serverId: string): boolean;
@@ -27,6 +29,7 @@ export interface AutomaticAccessAdapter {
 export class AutomaticUiAccess {
   private running: Promise<void> | null = null;
   private latest: DiscoverySnapshot | null = null;
+  private cancelled = new Map<string, string>();
   private failures = new Map<
     string,
     { retryAt: number; delay: number; serverId: string; error: string }
@@ -48,6 +51,10 @@ export class AutomaticUiAccess {
     for (const [key, value] of this.failures)
       if (value.serverId === serverId) this.failures.delete(key);
   }
+  cancel(serverId: string) {
+    const peer = this.latest?.servers.find((row) => row.id === serverId);
+    if (peer) this.cancelled.set(serverId, peer.generation);
+  }
   stop() {
     this.latest = null;
   }
@@ -59,9 +66,17 @@ export class AutomaticUiAccess {
       row?.origin === peer.origin &&
       row.generation === peer.generation &&
       !this.adapter.excluded(peer.id) &&
+      this.cancelled.get(peer.id) !== peer.generation &&
       row.paired &&
       row.status !== "revoked"
     );
+  }
+  private async currentlyEligible(home: string, peer: DiscoveredServer) {
+    if (!this.eligible(home, peer)) return false;
+    const current = await this.adapter.current();
+    if (!this.latest) return false;
+    this.latest = current;
+    return this.eligible(home, peer);
   }
   private async run(snapshot: DiscoverySnapshot) {
     const errors: string[] = [];
@@ -98,6 +113,14 @@ export class AutomaticUiAccess {
             return;
           }
           let attempt = await this.store.read(key);
+          if (
+            attempt?.invitation &&
+            !attempt.pairStarted &&
+            attempt.invitation.expires <= this.now() / 1000
+          ) {
+            await this.store.remove(key);
+            attempt = null;
+          }
           if (!attempt) {
             attempt = {
               localServerId: snapshot.localServerId,
@@ -118,30 +141,72 @@ export class AutomaticUiAccess {
             throw new Error(
               "The saved access request belongs to another server.",
             );
-          if (!attempt.invitation) {
-            const invitation = await this.adapter.invite(
-              peer,
-              attempt.inviteRequestId,
+          // Recover the same secret from the server. Only metadata enters this store.
+          const checked = parseInvitation(
+            JSON.stringify(
+              await this.adapter.invite(peer, attempt.inviteRequestId),
+            ),
+            peer.origin,
+          );
+          if (
+            checked.serverId !== peer.id ||
+            checked.publicKey !== peer.publicKey ||
+            !Number.isFinite(checked.expires)
+          )
+            throw new Error("The invitation belongs to another server.");
+          if (
+            attempt.invitation &&
+            (attempt.invitation.inviteId !== checked.inviteId ||
+              attempt.invitation.publicKey !== checked.publicKey ||
+              attempt.invitation.expires !== checked.expires)
+          )
+            throw new Error("The invitation does not match its saved attempt.");
+          if (!attempt.pairStarted && checked.expires <= this.now() / 1000) {
+            await this.store.remove(key);
+            throw new Error(
+              "The invitation expired before pairing. Retry with a new invitation.",
             );
-            const checked = parseInvitation(
-              JSON.stringify(invitation),
-              peer.origin,
-            );
-            if (
-              checked.serverId !== peer.id ||
-              checked.publicKey !== peer.publicKey
-            )
-              throw new Error("The invitation belongs to another server.");
-            attempt = { ...attempt, invitation: checked };
-            await this.store.save(key, attempt);
           }
+          const { token: _token, ...metadata } = checked;
+          attempt = { ...attempt, invitation: metadata };
+          await this.store.save(key, attempt);
           if (!this.eligible(snapshot.localServerId, peer)) return;
+          const previouslyStarted = !!attempt.pairStarted;
+          attempt = { ...attempt, pairStarted: true };
+          await this.store.save(key, attempt);
+          let allowed: boolean;
+          try {
+            allowed = await this.currentlyEligible(
+              snapshot.localServerId,
+              peer,
+            );
+          } catch (error) {
+            await this.store.save(key, {
+              ...attempt,
+              pairStarted: previouslyStarted,
+            });
+            throw error;
+          }
+          if (!allowed) {
+            await this.store.save(key, {
+              ...attempt,
+              pairStarted: previouslyStarted,
+            });
+            return;
+          }
+          if (!previouslyStarted && checked.expires <= this.now() / 1000) {
+            await this.store.remove(key);
+            throw new Error(
+              "The invitation expired before pairing. Retry with a new invitation.",
+            );
+          }
           const server = await this.adapter.pair(
             peer.origin,
-            JSON.stringify(attempt.invitation),
+            JSON.stringify(checked),
             attempt.pairRequestId,
           );
-          if (!this.eligible(snapshot.localServerId, peer)) return;
+          if (!(await this.currentlyEligible(snapshot.localServerId, peer)))
+            return;
           if (server.id !== peer.id || server.origin !== peer.origin)
             throw new Error("The paired UI belongs to another server.");
           this.adapter.add(server);
