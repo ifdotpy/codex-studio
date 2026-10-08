@@ -156,6 +156,8 @@ function isLeadCreateRequest(value: Json): value is LeadCreateRequest {
   );
 }
 import Sidebar from "./components/Sidebar";
+import { createAppCatalogSelector } from "./components/sidebar/catalog";
+const emptyAgents: Agent[] = [];
 import {
   unreadResult,
   chatIndicators,
@@ -650,31 +652,26 @@ export default function App() {
     });
     return response;
   };
-  const agents = data?.threads || [],
-    leads = agents.filter(
-      (a) => a.source === "managed" && a.isLead && !a.sharedRoomId,
-    ),
-    agent = agents.find((a) => a.id === opened),
-    room = data?.runtime?.rooms?.find((r) => r.id === opened),
-    legacy = data?.chats.find((c) => c.id === opened),
-    roomRoots = room ? roomLeadIds(room, agents) : [],
-    lead = room?.radio
-      ? undefined
-      : agents.find(
-          (a) =>
-            a.id ===
-            (agent?.rootId ||
-              (agent?.isLead ? agent.id : undefined) ||
-              (roomContext && roomRoots.includes(roomContext)
-                ? roomContext
-                : roomRoots[0])),
-        ),
-    team = useRetainedArray(
-      lead
-        ? agents.filter((a) => a.id === lead.id || a.rootId === lead.id)
-        : [],
-    ),
-    workers = useRetainedArray(team.filter((a) => !a.isLead));
+  const appCatalogSelector = useMemo(createAppCatalogSelector, []);
+  const agents = data?.threads || emptyAgents;
+  const catalog = appCatalogSelector(agents);
+  const leads = catalog.leads;
+  const agent = catalog.byId.get(opened || "");
+  const room = data?.runtime?.rooms?.find((r) => r.id === opened);
+  const legacy = data?.chats.find((c) => c.id === opened);
+  const roomRoots = room ? roomLeadIds(room, agents) : [];
+  const lead = room?.radio
+    ? undefined
+    : catalog.byId.get(
+        agent?.rootId ||
+          (agent?.isLead ? agent.id : undefined) ||
+          (roomContext && roomRoots.includes(roomContext)
+            ? roomContext
+            : roomRoots[0]) ||
+          "",
+      );
+  const team = (lead && catalog.team(lead.id)) || emptyAgents;
+  const workers = (lead && catalog.workers(lead.id)) || emptyAgents;
   useTeamTokenRateStream(
     lead?.id,
     Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
@@ -688,14 +685,19 @@ export default function App() {
   );
   const activities = useMemo(
     () => (data ? chatActivities(data) : new Map()),
-    [data],
+    [data?.threads, data?.runtime?.tasks, data?.runtime?.monitors],
   );
   const indicators = useMemo(
     () =>
       data
         ? chatIndicators(data, readState.readStateFor, activities)
         : new Map(),
-    [data, readState.readStateFor, activities],
+    [
+      data?.threads,
+      data?.runtime?.requests,
+      readState.readStateFor,
+      activities,
+    ],
   );
   useEffect(() => {
     setWorkerQuery("");
