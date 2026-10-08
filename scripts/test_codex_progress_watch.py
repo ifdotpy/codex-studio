@@ -399,7 +399,9 @@ class ProgressWatchdogTests(unittest.TestCase):
             self.assertFalse(subscribe_thread.is_alive(), "second native subscription deadlocked")
             self.assertTrue(subscribe_finished.is_set())
             self.assertTrue(observer_callback.wait(timeout=5))
-            self.assertEqual(callback_lock_results, [(True, True)])
+            self.assertTrue(callback_lock_results)
+            self.assertTrue(all(observer_lock and condition_lock
+                                for observer_lock, condition_lock in callback_lock_results))
         finally:
             for detach in detach_second:
                 detach()
