@@ -25,6 +25,7 @@ from typing import Any, ContextManager, Protocol, TYPE_CHECKING, cast
 import uuid
 
 from codex_multi_server_crypto import CryptoProcess
+from codex_executables import tailscale as resolve_tailscale, command as executable_command
 from codex_remote import RemoteAccess, validate_origin
 
 if TYPE_CHECKING:
@@ -123,14 +124,14 @@ def request_bytes(method: str, target: str, server_id: str, client_id: str,
 
 
 def _tailscale_json(*arguments: str) -> dict[str, Any]:
-    executable = shutil.which("tailscale")
+    executable = resolve_tailscale()
     bundled = Path("/Applications/Tailscale.app/Contents/MacOS/Tailscale")
     if not executable and bundled.is_file():
         executable = str(bundled)
     if not executable:
         raise AccessError(503, "identity_unavailable", "The Tailscale identity is unavailable")
     try:
-        result = subprocess.run([executable, *arguments], capture_output=True, timeout=5, check=True)
+        result = subprocess.run(executable_command(executable, list(arguments)), capture_output=True, timeout=5, check=True)
         if len(result.stdout) > MAX_RESPONSE_BYTES:
             raise ValueError
         value = json.loads(result.stdout)

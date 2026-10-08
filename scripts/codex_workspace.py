@@ -1,4 +1,6 @@
 """Workspace files, checkpoints, conversation forks, and capability discovery."""
+from __future__ import annotations
+
 from collections.abc import Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import AbstractContextManager

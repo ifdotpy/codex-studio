@@ -5,6 +5,7 @@ import glob
 import json
 import os
 from pathlib import Path
+import platform
 from typing import NotRequired, TypedDict
 
 ACTIVE = {"starting", "running", "waiting", "capacity-retry"}
@@ -27,8 +28,26 @@ def state_dir() -> Path:
     configured = os.environ.get("CODEX_AGENTS_STATE_DIR")
     if configured:
         return outside_claude(Path(configured))
+    if os.name == "nt":
+        base = os.environ.get("LOCALAPPDATA")
+        if base:
+            return outside_claude(Path(base) / "CodexStudio" / "state")
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local" / "state")
     return outside_claude(base / "codex-agents")
+
+def cache_dir(environment=None, system=None) -> Path:
+    values = os.environ if environment is None else environment
+    system = platform.system() if system is None else system
+    configured = values.get("CODEX_AGENTS_CACHE_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    if values.get("XDG_CACHE_HOME"):
+        return Path(values["XDG_CACHE_HOME"]).expanduser()
+    if system == "Windows" and values.get("LOCALAPPDATA"):
+        return Path(values["LOCALAPPDATA"]) / "CodexStudio" / "cache"
+    if system == "Darwin":
+        return Path.home() / "Library" / "Caches"
+    return Path.home() / ".cache"
 
 def codex_home() -> Path:
     return outside_claude(Path(os.environ.get("CODEX_HOME") or Path.home() / ".codex"))

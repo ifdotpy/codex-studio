@@ -1,6 +1,6 @@
 """Store current renderer measurements beside the agent's progress file."""
 import argparse
-import fcntl
+from codex_file_lock import flock, LOCK_EX, LOCK_NB
 import hashlib
 import json
 import math
@@ -140,7 +140,7 @@ def record_layout(runtime, body):
             if not stat.S_ISREG(os.fstat(lock).st_mode):
                 raise ValueError("Progress layout lock must be a regular file")
             try:
-                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                flock(lock, LOCK_EX | LOCK_NB)
             except BlockingIOError as error:
                 raise LayoutConflict("Another layout measurement is being saved. Retry") from error
             current = read_progress(runtime.root, agent_id)

@@ -1,4 +1,6 @@
 """Move managed identities at native idle boundaries, without replaying model input."""
+from __future__ import annotations
+
 import concurrent.futures
 import copy
 import hashlib

@@ -1,4 +1,6 @@
 """Durable question history. Deferral changes presentation, never tool permission."""
+from __future__ import annotations
+
 import hashlib
 import json
 import time
