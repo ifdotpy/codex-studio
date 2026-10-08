@@ -751,6 +751,23 @@ export default function Accounts({
       {!managerOnly &&
         renderPicker &&
         renderPicker(selectAccount, !!pending || (pinned && !owner))}
+      {!managerOnly && renderPicker && teamTransfer?.status === "pending" && (
+        <AccountTransferStatus
+          transfer={teamTransfer}
+          targetLabel={transferTarget?.email || transferTarget?.label}
+          pending={!!pending}
+          onAction={(kind) => {
+            const requestId = teamTransfer.id;
+            if (typeof requestId !== "string") return;
+            void action(`${kind}-transfer`, () =>
+              post("/api/agents/account-transfer", {
+                action: kind,
+                request_id: requestId,
+              }),
+            );
+          }}
+        />
+      )}
       {!managerOnly && !renderPicker && (
         <Menu
           position="bottom-end"

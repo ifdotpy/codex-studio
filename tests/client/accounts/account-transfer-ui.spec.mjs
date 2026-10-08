@@ -455,6 +455,50 @@ test("Account Transfer Ui", async ({
     );
     assert.equal(agents[0].accountKey, "default");
     agents[0].accountTransfer = {
+      id: "blocked-lead-transfer",
+      scope: "team",
+      status: "pending",
+      targetAccountKey: "work",
+      canRetry: true,
+      blocked: [
+        {
+          id: "started",
+          name: "Started conversation",
+          reason: "Source rollout is missing",
+        },
+      ],
+    };
+    await page.reload();
+    await page.locator('[data-chat="started"]').click();
+    await page
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    await page
+      .getByText("Started conversation blocked: Source rollout is missing", {
+        exact: true,
+      })
+      .waitFor();
+    const retryResponse = page.waitForResponse(
+      (response) =>
+        response.url().endsWith("/api/agents/account-transfer") &&
+        response.request().method() === "POST" &&
+        response.request().postDataJSON()?.action === "retry" &&
+        response.request().postDataJSON()?.request_id ===
+          "blocked-lead-transfer",
+    );
+    await page.getByRole("button", { name: "Retry", exact: true }).click();
+    await retryResponse;
+    assert.ok(
+      bodies.some(
+        (b) =>
+          b.path === "/api/agents/account-transfer" &&
+          b.body.action === "retry" &&
+          b.body.request_id === "blocked-lead-transfer",
+      ),
+      "chat settings explicitly retries the saved team transfer receipt",
+    );
+    await page.keyboard.press("Escape");
+    agents[0].accountTransfer = {
       id: "saved-request",
       status: "pending",
       targetAccountKey: "work",

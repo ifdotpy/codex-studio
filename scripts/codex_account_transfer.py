@@ -782,7 +782,8 @@ class AccountTransfers:
                         else:
                             reusable_settings = True
                 if reusable_settings:
-                    if member.get('sourceEmptyProof') and not self.archive_source_current(key, aid):
+                    if ((member.get('sourceEmptyProof') or member.get('archiveSourceThread') is not None)
+                            and not self.archive_source_current(key, aid)):
                         raise RuntimeError('The source changed after history export; the saved fork will not be adopted')
                     return self.commit_lazy(key, aid, saved_result, background=background)
                 catalog = rt.catalog(op['targetAccountKey'])
@@ -798,7 +799,8 @@ class AccountTransfers:
                                   pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
                     self.save(db, op)
                     db.commit()
-                if member.get('sourceEmptyProof') and not self.archive_source_current(key, aid):
+                if ((member.get('sourceEmptyProof') or member.get('archiveSourceThread') is not None)
+                        and not self.archive_source_current(key, aid)):
                     raise RuntimeError('The source changed after history export; the saved fork will not be adopted')
                 return self.commit_lazy(key, aid, saved_result, background=background)
             except Exception as error:
@@ -832,16 +834,9 @@ class AccountTransfers:
             native = None
             source_empty_proof = None
             if source:
-                try:
-                    native = source.call('thread/read', {'threadId': source_thread, 'includeTurns': False}, timeout=10)['thread']
-                except Exception as error:
-                    with rt.lock, rt.db() as db:
-                        current = rt.agent(aid, db)
-                        source_empty_proof = (self.native_empty_transfer_proof(
-                            db, current, source_thread, error, source_account_key=source_key)
-                            if portable else None)
-                    if source_empty_proof is None:
-                        raise
+                native, source_empty_proof = self.read_transfer_source(
+                    source, aid, source_thread, portable, source_account_key=source_key)
+                if source_empty_proof is not None:
                     with rt.lock, rt.db() as db:
                         op = self.get(db, key)
                         current = rt.agent(aid, db)
@@ -849,7 +844,6 @@ class AccountTransfers:
                             raise ValueError('The lazy source thread changed after empty proof')
                         op['members'][aid]['sourceEmptyProof'] = copy.deepcopy(source_empty_proof)
                         self.save(db, op)
-                    native = {'id':source_thread, 'status':{'type':'notLoaded'}}
                 else:
                     if member.get('sourceEmptyProof'):
                         from codex_portable_history import has_checked_empty_source_archive
@@ -864,7 +858,7 @@ class AccountTransfers:
                 if self.wait_for_native_queue(key, aid, source, source_thread):
                     raise ValueError('Source native thread has queued input; the saved input remains queued')
                 if source_empty_proof:
-                    jobs = source.call('thread/backgroundTerminals/list', {'threadId':source_thread}, timeout=10)
+                    jobs = self.empty_source_background_jobs(source, source_thread)
                     if not isinstance(jobs.get('data'), list):
                         raise ValueError('Codex returned an invalid native background command page')
                     if jobs['data'] or jobs.get('nextCursor'):
@@ -1087,10 +1081,56 @@ class AccountTransfers:
         return agent
 
     @staticmethod
-    def missing_rollout_error(error: str | "JsonObject" | None, thread_id: str) -> bool:
+    def missing_source_rollout_message(thread_id: str) -> str:
+        return f'invalid paginated history lineage for {thread_id}: missing source rollout'
+
+    @classmethod
+    def missing_rollout_error(cls, error: str | "JsonObject" | None, thread_id: str) -> bool:
         message = str(error or '')
         return (f'no rollout found for thread id {thread_id}' in message
-                or f'invalid paginated history lineage for {thread_id}: missing source rollout' in message)
+                or cls.missing_source_rollout_message(thread_id) in message)
+
+    def read_transfer_source(self, source: "AppServer", aid: str, thread_id: str, portable: bool,
+                             source_account_key: str | None=None) -> "tuple[JsonObject, JsonObject | None]":
+        """Read the source thread and prove whether a prior transfer left it empty.
+
+        Native can return the metadata of a thread that has no rollout while its
+        paginated history stays unreadable. A successful read therefore does
+        not skip the empty-source proof.
+        """
+        rt = self.rt
+        read_error = None
+        native = None
+        try:
+            native = source.call('thread/read', {'threadId': thread_id, 'includeTurns': False}, timeout=10)['thread']
+        except Exception as error:
+            read_error = error
+        proof = None
+        if portable:
+            with rt.lock, rt.db() as db:
+                proof = self.native_empty_transfer_proof(
+                    db, rt.agent(aid, db), thread_id,
+                    read_error or self.missing_source_rollout_message(thread_id),
+                    source_account_key=source_account_key)
+        if read_error is not None:
+            if proof is None:
+                raise read_error
+            native = {'id':thread_id, 'status':{'type':'notLoaded'}}
+        return native, proof
+
+    @staticmethod
+    def empty_source_background_jobs(source: "AppServer", thread_id: str) -> "JsonObject":
+        """List background commands of a checked-empty source thread.
+
+        Native keeps background commands only for a loaded thread and reports
+        an unloaded one as not found, so that exact answer means none exist.
+        """
+        try:
+            return source.call('thread/backgroundTerminals/list', {'threadId':thread_id}, timeout=10)
+        except Exception as error:
+            if f'thread not found: {thread_id}' not in str(error):
+                raise
+            return {'data':[], 'nextCursor':None}
 
     @staticmethod
     def _thread_has_completed_turn(db: "sqlite3.Connection", agent: "AgentRecord", thread_id: str) -> bool:
@@ -1171,13 +1211,42 @@ class AccountTransfers:
         member = (op.get('members') or {}).get(agent['id']) or {}
         result = member.get('result') or {}
         if (op.get('status') != 'completed' or op.get('targetAccountKey') != source_account
-                or member.get('phase') != 'completed' or member.get('sourceThreadId') is not None
+                or member.get('phase') != 'completed'
                 or member.get('nativeMethod') != 'thread/start'
                 or result.get('thread', {}).get('id') != thread_id):
             return None
+        source_thread = member.get('sourceThreadId')
+        if source_thread is not None:
+            # A newly started target thread can have an imported transcript.
+            # Require the exact immutable archive on both the completed receipt
+            # and its account-history entry, with matching source provenance.
+            archive = member.get('portableHistory')
+            if (not isinstance(archive, dict) or entry.get('portableHistory') != archive
+                    or archive.get('transferId') != transfer_id):
+                return None
+            archive_source = archive.get('source')
+            archive_counts = archive.get('counts')
+            if (not isinstance(archive_source, dict)
+                    or archive_source.get('agentId') != agent['id']
+                    or archive_source.get('accountKey') != member.get('sourceAccountKey')
+                    or archive_source.get('threadId') != source_thread
+                    or not isinstance(archive_counts, dict)
+                    or not (archive_counts.get('native_thread')
+                            or archive_counts.get('native_unmaterialized'))
+                    or entry.get('accountKey') != member.get('sourceAccountKey')
+                    or entry.get('threadId') != source_thread):
+                return None
+        # Check native state first: it is cheap, and every later move of a
+        # materialized imported thread stops here without hashing the archive.
         native = self.source_history_missing(self.rt.accounts.home(source_account), thread_id)
         if not native:
             return None
+        if source_thread is not None:
+            try:
+                from codex_portable_history import _validate
+                _validate(self.rt, archive)
+            except Exception:
+                return None
         return {'threadId':thread_id, 'transferId':transfer_id, 'origin':'completed_empty_thread_start',
                 'nativeHistory':native}
 
@@ -1475,7 +1544,7 @@ class AccountTransfers:
                     return False
                 current_proof = self.native_empty_transfer_proof(
                     db, agent, thread_id,
-                    'invalid paginated history lineage for ' + thread_id + ': missing source rollout',
+                    self.missing_source_rollout_message(thread_id),
                     source_account_key=source_key)
                 if current_proof != empty_proof:
                     proof_changed = True
@@ -1491,8 +1560,22 @@ class AccountTransfers:
             return False
         if empty_proof:
             assert empty_connection is not None
+            # The proof reads durable rows only. A turn that started after it
+            # may not have written any yet, so the native status must agree.
+            try:
+                status = empty_connection.call('thread/read', {'threadId':thread_id, 'includeTurns':False},
+                                               timeout=10)['thread'].get('status', {}).get('type')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+                status = 'notLoaded'
+            if status not in {'idle', 'notLoaded', 'systemError'}:
+                self.invalidate_archive(
+                    key, aid, 'The source changed after its checked-empty archive. '
+                    'Cancel this transfer and start a new one.')
+                return False
             queue = empty_connection.call('thread/queue/list', {'threadId':thread_id}, timeout=10)
-            jobs = empty_connection.call('thread/backgroundTerminals/list', {'threadId':thread_id}, timeout=10)
+            jobs = self.empty_source_background_jobs(empty_connection, thread_id)
             queues_empty = (isinstance(queue, dict) and isinstance(queue.get('data'), list)
                             and not queue['data'] and not queue.get('nextCursor'))
             jobs_empty = (isinstance(jobs, dict) and isinstance(jobs.get('data'), list)
@@ -1592,15 +1675,8 @@ class AccountTransfers:
             source_empty_proof = None
             if a.get('threadId'):
                 source = rt.connect(a.get('accountKey', 'default'))
-                try:
-                    native = source.call('thread/read', {'threadId': a['threadId'], 'includeTurns': False}, timeout=10)['thread']
-                except Exception as error:
-                    with rt.lock, rt.db() as db:
-                        current = rt.agent(aid, db)
-                        source_empty_proof = (self.native_empty_transfer_proof(
-                            db, current, a['threadId'], error) if portable else None)
-                    if source_empty_proof is None:
-                        raise
+                native, source_empty_proof = self.read_transfer_source(source, aid, a['threadId'], portable)
+                if source_empty_proof is not None:
                     # A prior exact thread/start receipt proves the source began
                     # empty. Native SQLite independently proves it still has no
                     # rollout or paginated turns/items. Retain the real source ID
@@ -1611,7 +1687,6 @@ class AccountTransfers:
                         self.assert_source(current_op['members'][aid], current)
                         current_op['members'][aid]['sourceEmptyProof'] = copy.deepcopy(source_empty_proof)
                         self.save(db, current_op)
-                    native = {'id':a['threadId'], 'status':{'type':'notLoaded'}}
                 else:
                     if m.get('sourceEmptyProof'):
                         from codex_portable_history import has_checked_empty_source_archive
@@ -1631,7 +1706,7 @@ class AccountTransfers:
                 if self.wait_for_native_queue(key, aid, source, a['threadId']):
                     return
                 if source_empty_proof:
-                    jobs = source.call('thread/backgroundTerminals/list', {'threadId':a['threadId']}, timeout=10)
+                    jobs = self.empty_source_background_jobs(source, a['threadId'])
                     if not isinstance(jobs.get('data'), list):
                         raise ValueError('Codex returned an invalid native background command page')
                     if jobs['data'] or jobs.get('nextCursor'):
@@ -1707,8 +1782,8 @@ class AccountTransfers:
                 self.assert_source(op['members'][aid], current)
                 self.assert_settings(op['members'][aid], current)
                 if source_empty_proof:
-                    refreshed = self.native_empty_transfer_proof(db, current, a['threadId'],
-                                                                 'invalid paginated history lineage for ' + a['threadId'] + ': missing source rollout')
+                    refreshed = self.native_empty_transfer_proof(
+                        db, current, a['threadId'], self.missing_source_rollout_message(a['threadId']))
                     if refreshed != source_empty_proof or op['members'][aid].get('sourceEmptyProof') != source_empty_proof:
                         raise ValueError('The native empty source proof changed before transfer submission')
                 if self.local_blocker(db, current):
