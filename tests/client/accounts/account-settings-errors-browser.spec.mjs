@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -51,6 +52,7 @@ test("Account settings errors", async () => {
   };
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-account-errors-"));
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

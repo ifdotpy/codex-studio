@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -19,6 +20,7 @@ test("Native runtime status", async ({ context }) => {
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-native-runtime-ui-"));
   const entry = join(root, "native-runtime-fixture.tsx");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

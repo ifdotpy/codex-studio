@@ -1,4 +1,5 @@
 // Exercise the Codex 0.159 write_stdin_approval request through the real card and answer API.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -45,6 +46,7 @@ const request={id:'request-159',agent:'lead',method:'item/commandExecution/reque
 createRoot(document.getElementById('root')).render(React.createElement(MantineProvider,null,React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh:async()=>{},notify:()=>{}})));
 `;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),

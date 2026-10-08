@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 // Isolated real React and IndexedDB. Audio capture and native speech are mocks.
 import assert from "node:assert/strict";
@@ -15,6 +16,7 @@ test("Dictation ui", async ({
   const { createServer } = await import(require.resolve("vite"));
   const root = resolve(import.meta.dirname, "../../../web");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     server: { host: "127.0.0.1", port: 0 },

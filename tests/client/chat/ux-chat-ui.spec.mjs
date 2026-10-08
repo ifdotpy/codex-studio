@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
+  FIXTURE_OPTIMIZE_DEPS,
   apiSchemaHandshakeSse,
   readApiSchemaHash,
   syncProtocolFixture,
@@ -74,6 +75,7 @@ test("Ux Chat Ui", async ({
       root: webRoot,
       logLevel: "error",
       server: { middlewareMode: true, hmr: false },
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       resolve: {
         dedupe: ["react", "react-dom"],
         alias: [

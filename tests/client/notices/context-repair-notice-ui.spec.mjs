@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 // Render the actual banner: ordinary monitor waits are quiet, failures stay visible.
 import assert from "node:assert/strict";
@@ -34,6 +35,7 @@ test("Context repair notice ui", async ({
   }
   createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: join(repo, "web"),

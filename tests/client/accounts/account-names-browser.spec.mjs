@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { createRequire } from "node:module";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -70,8 +71,9 @@ async function fixture(page, mode) {
     cacheDir: join(evidence, "cache"),
     server: { host: "127.0.0.1", port: 0 },
     optimizeDeps: {
-      noDiscovery: false,
+      noDiscovery: true,
       include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
         "react",
         "react/jsx-runtime",
         "react/jsx-dev-runtime",

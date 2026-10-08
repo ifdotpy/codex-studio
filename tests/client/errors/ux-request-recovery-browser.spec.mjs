@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   apiSchemaHandshakeSse,
   installApiSchemaFixtureHeaders,
@@ -48,6 +49,7 @@ test("Ux request recovery browser", async ({
   createRoot(document.getElementById('root')).render(<MantineProvider>{body}</MantineProvider>);
   `;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: join(root, "web"),

@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -14,6 +15,7 @@ async function runDeadlineChecks(name, engine, executablePath) {
   // Browser request deadlines still expire after mobile JavaScript suspension.
   const { createServer } = await import(require.resolve("vite"));
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(repo, "web"),
     server: { host: "127.0.0.1", port: 0 },

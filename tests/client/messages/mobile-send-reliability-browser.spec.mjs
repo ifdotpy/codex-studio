@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   legacySnapshotRoute,
   installApiSchemaFixtureHeaders,
@@ -67,7 +68,10 @@ test("Mobile Send Reliability Browser", async ({
     ],
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),
-    optimizeDeps: { include: ["react", "react-dom/client"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react", "react-dom/client"],
+    },
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();

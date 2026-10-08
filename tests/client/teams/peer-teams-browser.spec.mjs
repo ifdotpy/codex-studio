@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -16,6 +17,7 @@ test("Peer teams browser", async ({
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-peer-teams-"));
   const entry = join(root, "peer-teams-fixture.tsx");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

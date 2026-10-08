@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   API_SCHEMA_HASH_HEADER,
   handleEntitySyncFixtureRequest,
@@ -44,6 +45,7 @@ test("Radio browser", async ({
     },
   };
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

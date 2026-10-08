@@ -1,4 +1,5 @@
 // Real outbox and API calls against a local fixture. No native model requests.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -24,7 +25,10 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),
-    optimizeDeps: { include: ["react"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react"],
+    },
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();

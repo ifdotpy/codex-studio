@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { handleEntitySyncFixtureRequest, test } from "../playwright.mjs";
 // Structured diagnostic fixtures through real React components. No live API writes.
 import assert from "node:assert/strict";
@@ -84,6 +85,7 @@ test("Structured operational errors ui", async ({
     workspaceId: "0123456789abcdef0123456789abcdef",
   };
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),

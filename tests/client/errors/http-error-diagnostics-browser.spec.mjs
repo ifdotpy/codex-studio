@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -17,6 +18,7 @@ test("Http error diagnostics browser", async ({
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "studio-http-errors-"));
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),

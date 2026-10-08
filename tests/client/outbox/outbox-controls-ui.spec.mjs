@@ -1,4 +1,5 @@
 // Full React client and shared RxDB, isolated server. No live agent requests.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -55,6 +56,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     const target = `http://127.0.0.1:${port}`;
     const identity = await (await fetch(target + "/api/sync/identity")).json();
     server = await createServer({
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
       root: join(repo, "web"),
       cacheDir: join(evidence, "vite"),

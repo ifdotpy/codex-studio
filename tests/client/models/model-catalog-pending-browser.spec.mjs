@@ -1,5 +1,6 @@
 // Actual catalog hook and API error handling. No backend or native model calls.
 
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -59,7 +60,13 @@ test("Model Catalog Pending Browser", async ({
     root: join(root, "web"),
     cacheDir: temporary,
     optimizeDeps: {
-      include: ["react", "react-dom/client", "react/jsx-dev-runtime"],
+      noDiscovery: true,
+      include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
+        "react",
+        "react-dom/client",
+        "react/jsx-dev-runtime",
+      ],
     },
     plugins: [
       {

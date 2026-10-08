@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
@@ -25,6 +26,7 @@ test("Complaint ownership", async ({ browser: testBrowser }) => {
   window.setTarget=(value)=>{target=value;render()};
   `;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(repo, "web"),
     server: { host: "127.0.0.1", port: 0 },

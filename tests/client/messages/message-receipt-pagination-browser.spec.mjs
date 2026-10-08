@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
@@ -208,7 +209,10 @@ test("Message receipt pagination browser", async ({
       configFile: false,
       root: join(repo, "web"),
       cacheDir: join(temporary, "vite"),
-      optimizeDeps: { include: ["rxdb", "rxjs"] },
+      optimizeDeps: {
+        noDiscovery: true,
+        include: [...FIXTURE_OPTIMIZE_DEPS.include, "rxdb", "rxjs"],
+      },
       server: {
         host: "127.0.0.1",
         port: 0,

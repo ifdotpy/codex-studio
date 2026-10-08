@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -84,6 +85,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
   }
   createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: join(repo, "web"),

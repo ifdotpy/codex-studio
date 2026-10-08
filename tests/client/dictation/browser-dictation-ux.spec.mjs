@@ -1,4 +1,5 @@
 // Real React and storage, simulated browser speech. No audio or service requests.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
@@ -13,6 +14,7 @@ test("browser dictation ux", async ({ page: runnerPage }) => {
   if(location.search.includes('unsupported')){window.SpeechRecognition=undefined;window.webkitSpeechRecognition=undefined;}
   function App(){const[draft,setDraft]=useState(''),[chat,setChat]=useState('a');return <MantineProvider><button onClick={()=>setChat(chat==='a'?'b':'a')}>Switch chat</button><textarea aria-label='Draft' value={draft} readOnly/><Dictation key={chat} chatId={chat} onInsert={setDraft}/></MantineProvider>}createRoot(document.getElementById('root')).render(<App/>);`;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     server: { host: "127.0.0.1", port: 0 },

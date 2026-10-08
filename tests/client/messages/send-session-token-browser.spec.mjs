@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
 // Real RxDB and send callers with controlled session and claim delays.
 import assert from "node:assert/strict";
@@ -22,7 +23,10 @@ test("Send session token browser", async ({
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),
-    optimizeDeps: { include: ["react"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react"],
+    },
     server: { host: "127.0.0.1", port: 0, hmr: false },
   });
   await server.listen();

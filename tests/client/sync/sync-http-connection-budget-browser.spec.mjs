@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
@@ -50,7 +51,9 @@ test("Sync http connection budget browser", async ({
     root: join(root, "web"),
     cacheDir: cache,
     optimizeDeps: {
+      noDiscovery: true,
       include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
         "react",
         "react-dom/client",
         "react/jsx-dev-runtime",

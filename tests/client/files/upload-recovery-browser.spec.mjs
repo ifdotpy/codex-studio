@@ -1,4 +1,5 @@
 // Real File blobs, IndexedDB transactions, recovery hooks, and composer input.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -18,7 +19,10 @@ test("upload recovery browser", async ({ browser }) => {
     configFile: false,
     root: join(repo, "web"),
     cacheDir: cache,
-    optimizeDeps: { include: ["react", "react-dom/client"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react", "react-dom/client"],
+    },
     server: { host: "127.0.0.1", port: 0, hmr: false },
     plugins: [
       {
@@ -495,7 +499,10 @@ async function setupAttachmentWriters(browser) {
     configFile: false,
     root: join(repo, "web"),
     cacheDir: cache,
-    optimizeDeps: { include: ["react", "react-dom/client"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react", "react-dom/client"],
+    },
     server: { host: "127.0.0.1", port: 0, hmr: false },
     plugins: [
       {

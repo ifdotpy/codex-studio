@@ -1,4 +1,5 @@
 // Current activity lifecycle through the real component. HTTP calls use fixtures.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -49,6 +50,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
  })));
 `;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),

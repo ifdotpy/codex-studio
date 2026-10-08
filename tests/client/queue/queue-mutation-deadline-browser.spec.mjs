@@ -1,4 +1,5 @@
 // Real queue callers, local HTTP receipts, and no native model requests.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -23,7 +24,10 @@ test("queue-mutation-deadline-browser @performance", async ({
     configFile: false,
     root: join(root, "web"),
     cacheDir: join(temporary, "vite"),
-    optimizeDeps: { include: ["react", "react-dom/client"] },
+    optimizeDeps: {
+      noDiscovery: true,
+      include: [...FIXTURE_OPTIMIZE_DEPS.include, "react", "react-dom/client"],
+    },
     plugins: [
       {
         name: "queue-deadline-harness",

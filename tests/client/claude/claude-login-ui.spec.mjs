@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,6 +20,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-login-ui-"));
   const entry = join(root, "claude-login-fixture.tsx");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

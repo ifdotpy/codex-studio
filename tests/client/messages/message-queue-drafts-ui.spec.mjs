@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Actual queue component, isolated browser storage, no backend or model service.
 
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { createServer } from "node:http";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -74,6 +75,7 @@ createRoot(document.getElementById("root")!).render(<App />);
         .at(-1)}/entry.tsx"></script>`,
     );
     vite = await createViteServer({
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
       root: join(repo, "web"),
       logLevel: "error",

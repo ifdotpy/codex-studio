@@ -1,4 +1,5 @@
 // Actual TerminalDock input callbacks and HTTP, with an isolated xterm fixture.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -51,7 +52,9 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     root: join(root, "web"),
     cacheDir: temporary,
     optimizeDeps: {
+      noDiscovery: true,
       include: [
+        ...FIXTURE_OPTIMIZE_DEPS.include,
         "react",
         "react-dom/client",
         "react/jsx-dev-runtime",

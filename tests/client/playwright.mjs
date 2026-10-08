@@ -66,6 +66,21 @@ const generatedApiSchema = readFileSync(
   "utf8",
 );
 
+export const FIXTURE_OPTIMIZE_DEPS = {
+  noDiscovery: true,
+  include: [
+    "dexie",
+    "react",
+    "react/jsx-runtime",
+    "react/jsx-dev-runtime",
+    "react-dom/client",
+    "react-dom",
+    "@mantine/core",
+    "@mantine/hooks",
+    "lucide-react",
+  ],
+};
+
 export const API_SCHEMA_HASH_HEADER = readGeneratedString(
   "API_SCHEMA_HASH_HEADER",
 );

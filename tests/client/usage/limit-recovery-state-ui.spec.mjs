@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Current quota recovery and immutable history through real React components.
 
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -69,6 +70,7 @@ function Fixture(){
 }
 createRoot(document.getElementById('root')).render(<Fixture/>);`;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: join(repo, "web"),

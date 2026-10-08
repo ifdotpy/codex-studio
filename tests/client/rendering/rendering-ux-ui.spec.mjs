@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 // Isolated component browser checks. No server state or live model requests.
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { writeFile, rm } from "node:fs/promises";
@@ -47,6 +48,10 @@ test("rendering ux ui", async ({ page: runnerPage }) => {
       `<html><body><div id="root"></div><script type="module" src="/${name}.tsx"></script></body></html>`,
     );
     server = await createServer({
+      optimizeDeps: {
+        ...FIXTURE_OPTIMIZE_DEPS,
+        include: [...FIXTURE_OPTIMIZE_DEPS.include, "mermaid"],
+      },
       root: join(root, "web"),
       configFile: false,
       server: { host: "127.0.0.1", port: 0 },

@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -81,6 +82,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-settings-auth-"));
   const entry = join(root, "claude-settings-auth-fixture.tsx");
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     root,
     cacheDir,

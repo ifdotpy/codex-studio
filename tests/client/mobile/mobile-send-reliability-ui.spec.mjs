@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import {
   readTestState,
   test,
@@ -43,6 +44,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     });
     const target = `http://127.0.0.1:${port}`;
     server = await createServer({
+      optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
       configFile: false,
       root: join(root, "web"),
       cacheDir: join(temporary, "vite"),

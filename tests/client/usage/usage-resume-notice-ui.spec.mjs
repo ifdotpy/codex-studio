@@ -1,3 +1,4 @@
+import { FIXTURE_OPTIMIZE_DEPS } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -33,6 +34,7 @@ test("Usage resume notice", async ({ context: testContext }) => {
     accountKey:'work',at:${dueAt - 30},data:{rateLimits:{primary:{usedPercent:100,resetsAt:${dueAt}}}}
   }}/><NativeError agent={authAgent}/></></MantineProvider>);`;
   const server = await createServer({
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     configFile: false,
     cacheDir: cache,
     root: join(repo, "web"),
