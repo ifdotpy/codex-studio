@@ -332,7 +332,8 @@ export async function reconcileOutboxReceipts(
     if (!doc) continue;
     await doc.incrementalModify((record: any) => {
       const value = JSON.parse(record.payload);
-      if (value.body.room !== room) return record;
+      if (value.body.room !== room || value.displayPending === false)
+        return record;
       const next = receiptOutgoing(value, receipt);
       const payload = JSON.stringify(
         next.status === "accepted" &&
