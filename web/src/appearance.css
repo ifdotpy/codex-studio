@@ -828,3 +828,9 @@
   overflow-wrap: anywhere;
   text-align: left;
 }
+/* Keep the chevron apart from the role chip text. */
+.chat-settings-rows
+  .execution-menu
+  .mantine-Button-section[data-position="right"] {
+  margin-left: 8px;
+}
