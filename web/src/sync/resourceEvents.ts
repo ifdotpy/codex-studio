@@ -286,15 +286,6 @@ function rememberResourceVersion(resource: ResourceRef, version: Version) {
   return true;
 }
 
-function sameResourceVersion(left: Version, right: Version) {
-  return (
-    left.epoch === right.epoch &&
-    left.revision === right.revision &&
-    left.entitySequence === right.entitySequence &&
-    left.entitySequenceReset === right.entitySequenceReset
-  );
-}
-
 export function acknowledgeEntitySequences(
   sequences: number[],
   incomingWorkspaceId?: string,
@@ -1181,26 +1172,15 @@ export function watchResourceChanges(
   callback: (version?: ResourceVersion) => void,
 ): () => void {
   const key = resourceKey(resource);
-  let lastNotifiedVersion: Version | undefined;
-  const subscriptionListener: Listener = (version) => {
-    if (
-      version &&
-      lastNotifiedVersion &&
-      sameResourceVersion(lastNotifiedVersion, version)
-    )
-      return;
-    if (version) lastNotifiedVersion = { ...version };
-    callback(version);
-  };
   if (coordinatorIdleStopTimer !== undefined)
     clearTimeout(coordinatorIdleStopTimer);
   coordinatorIdleStopTimer = undefined;
   let listeners = subscribers.get(key);
   if (!listeners) subscribers.set(key, (listeners = new Set()));
   resourceRefs.set(key, resource);
-  listeners.add(subscriptionListener);
+  listeners.add(callback);
   const known = resourceValues.get(key);
-  if (known) subscriptionListener(known);
+  if (known) callback(known);
   startCoordinator();
   // A first local listener may attach after another tab already added this
   // resource to the shared stream union. Ask the owner for its baseline even
@@ -1210,7 +1190,7 @@ export function watchResourceChanges(
   return () => {
     if (stopped) return;
     stopped = true;
-    listeners?.delete(subscriptionListener);
+    listeners?.delete(callback);
     if (!listeners?.size) {
       subscribers.delete(key);
       resourceRefs.delete(key);

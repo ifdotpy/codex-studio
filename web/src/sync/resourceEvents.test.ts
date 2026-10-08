@@ -310,9 +310,7 @@ describe("shared resource event transport", () => {
     const transport = await import("./resourceEvents");
     const state = { kind: "state" } as const;
     const onChange = vi.fn();
-    const onSecondChange = vi.fn();
     const stop = transport.watchResourceChanges(state, onChange);
-    const stopSecond = transport.watchResourceChanges(state, onSecondChange);
     await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const stream = Source.instances[0]!;
     stream.emit("resources", {
@@ -325,7 +323,6 @@ describe("shared resource event transport", () => {
       resourceVersions: [{ revision: 8 }],
     });
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(1));
-    await vi.waitFor(() => expect(onSecondChange).toHaveBeenCalledTimes(1));
 
     stream.emit("resources", {
       protocol: 3,
@@ -338,19 +335,12 @@ describe("shared resource event transport", () => {
     });
 
     await vi.waitFor(() => expect(onChange).toHaveBeenCalledTimes(2));
-    await vi.waitFor(() => expect(onSecondChange).toHaveBeenCalledTimes(2));
     expect(onChange).toHaveBeenLastCalledWith({
       epoch: "epoch-one",
       revision: 8,
       entitySequenceReset: true,
     });
-    expect(onSecondChange).toHaveBeenLastCalledWith({
-      epoch: "epoch-one",
-      revision: 8,
-      entitySequenceReset: true,
-    });
     stop();
-    stopSecond();
   });
 
   it("rechecks peer subscriptions before the coordinator idle stop", async () => {
@@ -1831,9 +1821,9 @@ describe("shared resource event transport", () => {
     stop();
   });
 
-  it("notifies each baseline version once when a watcher joins during flush", async () => {
-    vi.useFakeTimers();
+  it("reconciles an unchanged owner baseline once after reconnect", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
+    vi.useFakeTimers();
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
       removeEventListener: vi.fn(),
@@ -1849,32 +1839,20 @@ describe("shared resource event transport", () => {
         request: (
           _name: string,
           _options: unknown,
-          callback: (lock: null) => Promise<void>,
-        ) => Promise.resolve().then(() => callback(null)),
+          callback: (lock: {}) => Promise<void>,
+        ) => Promise.resolve().then(() => callback({})),
       },
     });
     vi.stubGlobal("location", { origin: "http://studio.test" });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-follower" });
+    vi.stubGlobal("crypto", { randomUUID: () => "tab-owner" });
     vi.stubGlobal("EventSource", Source);
     vi.stubGlobal("BroadcastChannel", Channel);
 
     const transport = await import("./resourceEvents");
     const local = { kind: "panel", agentId: "resume-panel" } as const;
-    const beforeBaseline = vi.fn();
-    const stop = transport.watchResourceChanges(local, beforeBaseline);
-    await vi.waitFor(() => expect(Channel.instances).toHaveLength(1));
-    expect(Source.instances).toHaveLength(0);
-    const followerChannel = Channel.instances[0]!;
-    const send = (event: unknown) =>
-      followerChannel.onmessage?.({
-        data: {
-          kind: "resource-event",
-          workspaceId,
-          tabId: "tab-owner",
-          apiSchemaHash: API_SCHEMA_HASH,
-          event,
-        },
-      } as MessageEvent);
+    const onChange = vi.fn();
+    const stop = transport.watchResourceChanges(local, onChange);
+    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
     const initial = {
       protocol: 3,
       workspaceId,
@@ -1884,111 +1862,39 @@ describe("shared resource event transport", () => {
       resources: [local],
       resourceVersions: [{ resource: local, revision: 7 }],
     };
-    send(initial);
-    expect(beforeBaseline).not.toHaveBeenCalled();
-
-    const afterBaseline = vi.fn();
-    const stopAfterBaseline = transport.watchResourceChanges(
-      local,
-      afterBaseline,
-    );
-    expect(afterBaseline).toHaveBeenCalledTimes(1);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(beforeBaseline).toHaveBeenCalledTimes(1);
-    expect(afterBaseline).toHaveBeenCalledTimes(1);
-
-    send({
-      ...initial,
-      revision: 8,
-      reason: "reconnect",
-    });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(beforeBaseline).toHaveBeenCalledTimes(1);
-    expect(afterBaseline).toHaveBeenCalledTimes(1);
-
-    const changed = {
-      ...initial,
-      revision: 9,
-      reason: "change",
-      resourceVersions: [{ resource: local, revision: 8 }],
-    };
-    send(changed);
-    await vi.advanceTimersByTimeAsync(20);
-    expect(beforeBaseline).toHaveBeenCalledTimes(2);
-    expect(afterBaseline).toHaveBeenCalledTimes(2);
-
-    stopAfterBaseline();
-    const stopAfterReregister = transport.watchResourceChanges(
-      local,
-      afterBaseline,
-    );
-    expect(afterBaseline).toHaveBeenCalledTimes(3);
-    send({
-      ...initial,
-      revision: 10,
-      reason: "reconnect",
-      resourceVersions: [{ resource: local, revision: 8 }],
-    });
-    await vi.advanceTimersByTimeAsync(20);
-    expect(afterBaseline).toHaveBeenCalledTimes(3);
-
-    stopAfterReregister();
-    stop();
-  });
-
-  it("notifies once when the server epoch changes at the same revision", async () => {
-    vi.useFakeTimers();
-    syncDatabase.mockResolvedValue({ workspaceId });
-    vi.stubGlobal("window", {
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("document", {
-      hidden: false,
-      addEventListener: vi.fn(),
-      removeEventListener: vi.fn(),
-    });
-    vi.stubGlobal("navigator", { onLine: true });
-    vi.stubGlobal("location", { origin: "http://studio.test" });
-    vi.stubGlobal("crypto", { randomUUID: () => "tab-one" });
-    vi.stubGlobal("EventSource", Source);
-
-    const transport = await import("./resourceEvents");
-    const resource = { kind: "costs" } as const;
-    const onChange = vi.fn();
-    const onSecondChange = vi.fn();
-    const stop = transport.watchResourceChanges(resource, onChange);
-    const stopSecond = transport.watchResourceChanges(resource, onSecondChange);
-    await vi.waitFor(() => expect(Source.instances).toHaveLength(1));
-    const firstEpoch = {
-      protocol: 3,
-      workspaceId,
-      epoch: "epoch-one",
-      revision: 7,
-      reason: "initial",
-      resources: [resource],
-      resourceVersions: [{ resource, revision: 7 }],
-    };
-    Source.instances[0]!.emit("resources", firstEpoch);
+    Source.instances[0]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(1);
-    expect(onSecondChange).toHaveBeenCalledTimes(1);
 
-    const reset = { ...firstEpoch, epoch: "epoch-two" };
-    Source.instances[0]!.emit("resources", reset);
+    Source.instances[0]!.onerror?.();
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(Source.instances).toHaveLength(2);
+    Source.instances[1]!.emit("resources", {
+      ...initial,
+      reason: "reconnect",
+    });
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(2);
-    expect(onSecondChange).toHaveBeenCalledTimes(2);
 
-    Source.instances[0]!.emit("resources", reset);
+    Source.instances[1]!.emit("resources", initial);
     await vi.advanceTimersByTimeAsync(20);
     expect(onChange).toHaveBeenCalledTimes(2);
-    expect(onSecondChange).toHaveBeenCalledTimes(2);
+
+    Channel.instances[0]!.onmessage?.({
+      data: {
+        kind: "resource-event",
+        workspaceId,
+        tabId: "tab-peer",
+        apiSchemaHash: API_SCHEMA_HASH,
+        event: initial,
+      },
+    } as MessageEvent);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(onChange).toHaveBeenCalledTimes(2);
     stop();
-    stopSecond();
   });
 
-  it("deduplicates unchanged follower baselines and forgets unsubscribed markers", async () => {
+  it("reconciles an unchanged follower baseline once and forgets unsubscribed markers", async () => {
     syncDatabase.mockResolvedValue({ workspaceId });
     vi.stubGlobal("window", {
       addEventListener: vi.fn(),
@@ -2055,16 +1961,17 @@ describe("shared resource event transport", () => {
     });
     send("status", "degraded");
     send("resource-event", { ...baseline, reason: "reconnect" });
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    expect(onA).toHaveBeenCalledTimes(1);
-    expect(onB).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => {
+      expect(onA).toHaveBeenCalledTimes(2);
+      expect(onB).toHaveBeenCalledTimes(2);
+    });
 
     send("resource-event", { ...baseline, reason: "reconnect" });
     send("leader-heartbeat", undefined);
     send("leader-heartbeat", undefined);
     await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(onA).toHaveBeenCalledTimes(1);
-    expect(onB).toHaveBeenCalledTimes(1);
+    expect(onA).toHaveBeenCalledTimes(2);
+    expect(onB).toHaveBeenCalledTimes(2);
     expect(Source.instances).toHaveLength(0);
 
     send("status", "degraded");
@@ -2073,8 +1980,7 @@ describe("shared resource event transport", () => {
     stopA = transport.watchResourceChanges(a, resumedA);
     expect(resumedA).toHaveBeenCalledTimes(1);
     send("resource-event", { ...baseline, reason: "reconnect" });
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    expect(onB).toHaveBeenCalledTimes(1);
+    await vi.waitFor(() => expect(onB).toHaveBeenCalledTimes(3));
     await new Promise((resolve) => setTimeout(resolve, 40));
     expect(resumedA).toHaveBeenCalledTimes(1);
     expect(Source.instances).toHaveLength(0);
@@ -2145,7 +2051,7 @@ describe("shared resource event transport", () => {
       reason: "reconnect",
     });
     await vi.advanceTimersByTimeAsync(20);
-    expect(onB).toHaveBeenCalledTimes(1);
+    expect(onB).toHaveBeenCalledTimes(2);
 
     const resumedA = vi.fn();
     stopA = transport.watchResourceChanges(a, resumedA);
