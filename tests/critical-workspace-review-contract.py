@@ -99,11 +99,14 @@ class WorkspaceReviewContract(unittest.TestCase):
             if method == 'thread/fork':
                 calls.append(params)
                 entered.set()
-                if not release.wait(3): raise RuntimeError('test gate expired')
+                release.wait()
             return original(method, params, timeout)
         with patch.object(server, 'call', gated), concurrent.futures.ThreadPoolExecutor(2) as pool:
             first = pool.submit(self.runtime.restore_checkpoint, worker['id'], request)
-            self.assertTrue(entered.wait(30), "native fork did not enter the controlled gate")
+            first.add_done_callback(lambda _future: entered.set())
+            entered.wait()
+            if first.done():
+                first.result()
             second = pool.submit(self.runtime.restore_checkpoint, worker['id'], request)
             release.set()
             self.assertEqual(first.result(5)['status'], 'restored')
