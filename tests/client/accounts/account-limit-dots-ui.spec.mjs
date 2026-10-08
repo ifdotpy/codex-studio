@@ -525,7 +525,7 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         .waitFor({ state: "hidden" });
       assert.match(
         await tooltip.innerText(),
-        /Codex low.*red@example.test.*Codex/s,
+        /red@example.test \(Codex\).*Codex weekly/s,
       );
       assert.match(
         await tooltip.innerText(),
@@ -544,17 +544,20 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         .getByRole("region", { name: "Account limits details", exact: true })
         .waitFor();
       assert.match(
-        await page.locator('[role="tab"][aria-selected="true"]').innerText(),
+        await page
+          .locator('[role="tab"][aria-selected="true"]')
+          .getAttribute("aria-label"),
         /red@example.test/,
       );
       assert.deepEqual(
-        (await tabs.allTextContents()).map(
-          (text) =>
-            accounts.find(
-              (account) => account.email && text.startsWith(account.email),
-            )?.id,
+        await tabs.evaluateAll((elements) =>
+          elements.map((element) => element.dataset.accountKey),
         ),
-        order,
+        order.filter(
+          (key) =>
+            accounts.find((account) => account.id === key)?.provider ===
+            "codex",
+        ),
       );
       // Escape belongs to the dropdown after its focus trap takes focus.
       await page.waitForFunction(() =>
@@ -581,15 +584,31 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
           .getByRole("region", { name: "Account limits details", exact: true })
           .waitFor();
         assert.equal(
-          await tabs.nth(order.indexOf(key)).getAttribute("aria-selected"),
+          await page
+            .locator(`[role="tab"][data-account-key="${key}"]`)
+            .getAttribute("aria-selected"),
           "true",
           `the ${key} dot selects its own tab`,
+        );
+        assert.deepEqual(
+          await tabs.evaluateAll((elements) =>
+            elements.map((element) => element.dataset.accountKey),
+          ),
+          order.filter(
+            (accountKey) =>
+              accounts.find((account) => account.id === accountKey)
+                ?.provider ===
+              accounts.find((account) => account.id === key)?.provider,
+          ),
+          "each provider retains its account order",
         );
         if (key === "unknown") {
           await target.locator('[data-color="green"]').waitFor();
         }
         assert.match(
-          await page.locator('[role="tab"][aria-selected="true"]').innerText(),
+          await page
+            .locator('[role="tab"][aria-selected="true"]')
+            .getAttribute("aria-label"),
           new RegExp(
             accounts
               .find((account) => account.id === key)
