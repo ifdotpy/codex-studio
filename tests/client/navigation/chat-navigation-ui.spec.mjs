@@ -270,6 +270,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   assert.equal(await page.locator("#message").inputValue(), "Keep my draft");
   await openChatActions();
   await page.locator("#tasks-toggle").click();
+  await background.waitFor();
   assert.equal(
     await background.getByLabel("Command", { exact: true }).count(),
     0,
@@ -284,6 +285,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   await page.getByRole("menu").waitFor({ state: "hidden" });
   await page.keyboard.press("Escape");
   await page.locator(".tasks-drawer").waitFor({ state: "hidden" });
+  await background.waitFor({ state: "hidden" });
   for (const width of [1440, 768, 390, 320]) {
     await page.setViewportSize({ width, height: 960 });
     await openChatActions();

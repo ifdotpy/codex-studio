@@ -59,6 +59,11 @@ test("Chat controls", async ({ page }) => {
       name: "Actions for Other project",
       exact: true,
     });
+  const actionMenu = () =>
+    page.getByRole("menu", {
+      name: "Actions for Other project",
+      exact: true,
+    });
   const openActions = async () => {
     await row().hover();
     try {
@@ -103,7 +108,8 @@ test("Chat controls", async ({ page }) => {
           .querySelector('button[aria-label="Actions for Other project"]')
           ?.getAttribute("aria-expanded") === "true",
     );
-    await page.getByRole("menu").waitFor({ state: "visible" });
+    // Project list options is a second menu since product commit 10aebff1.
+    await actionMenu().waitFor({ state: "visible" });
   };
   await openActions();
   // The pin shows at once, before a slow entity pull arrives.
@@ -164,7 +170,7 @@ test("Chat controls", async ({ page }) => {
   try {
     await archiveAction.waitFor({ state: "visible" });
   } catch (error) {
-    const menuText = await page.getByRole("menu").allTextContents();
+    const menuText = await actionMenu().allTextContents();
     const thread = (await state()).threads.find((item) => item.id === lead.id);
     throw Error(
       `Archive action missing: ${JSON.stringify({ menuText, archived: thread?.archived, cwd: thread?.cwd, inFlight: thread?.inFlight })}. ${error}`,
