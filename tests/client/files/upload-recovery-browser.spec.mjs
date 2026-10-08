@@ -606,10 +606,6 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
 }) => {
   const writers = await setupAttachmentWriters(browser);
   try {
-    test.fail(
-      true,
-      "Known localDraft race in chat-known-failures.md; this expected failure should become unexpected-pass when the owner fixes localDraft.",
-    );
     const lost = [];
     for (let pair = 0; pair < 20; pair++) {
       const ids = [`tab-a-${pair}`, `tab-b-${pair}`];
@@ -617,6 +613,10 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
         ids.map((id, index) =>
           writers.write(index ? writers.other : writers.page, id),
         ),
+      );
+      assert.ok(
+        writes.every(Boolean),
+        `both writes succeeded for pair ${pair}: ${JSON.stringify(writes)}`,
       );
       const snapshots = await Promise.all(
         [writers.page, writers.other].map((tab) => writers.read(tab)),
@@ -628,6 +628,10 @@ test("20 concurrent cross-tab attachment pairs lose no update", async ({
       )
         lost.push({ pair, writes, surviving });
     }
+    test.fail(
+      true,
+      "Known localDraft race in chat-known-failures.md; this expected failure should become unexpected-pass when the owner fixes localDraft.",
+    );
     assert.deepEqual(
       lost,
       [],

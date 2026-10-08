@@ -1123,8 +1123,11 @@ test("reload converges after an in-flight transcript pull", async ({
       "the held pull contains the updated transcript",
     );
 
+    const navigationCommitted = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+    });
     const navigation = page.reload();
-    await Promise.resolve();
+    await navigationCommitted;
     releaseHeldPull?.();
     await navigation;
     await page.locator(`[data-chat="${lead.id}"]`).click();
