@@ -296,6 +296,19 @@ documents the access-only environment option. Reported host refresh failures
 with a short status process also support keeping the host query open until
 its store write finishes ([Anthropic issue 95822](https://github.com/anthropics/claude-code/issues/95822)).
 
+Guest Git commits use the host global `user.name` and `user.email`.
+Studio writes these values to the guest studio user's `~/.gitconfig` before
+provider start and during the next credential refresh. The guest writes the
+file atomically with mode `0600`. The file contains only the two identity keys
+that are set on the host. If both host values are absent, Studio leaves the
+existing guest file unchanged.
+
+The transfer excludes credential helpers, includes, signing programs, and URL
+rewrites. Repository-local host identity settings do not cross this boundary.
+Studio quotes Git configuration values and rejects newlines and NUL characters.
+The host saves the transfer request ID before it sends the file. After a lost
+reply, it retries that exact request before it sends a newer identity.
+
 Custom Claude Keychain profiles use `Claude Code-credentials-` plus the first
 eight SHA256 hex characters of the selected `CLAUDE_CONFIG_DIR` string, without
 a trailing slash. The default profile uses `Claude Code-credentials`.
