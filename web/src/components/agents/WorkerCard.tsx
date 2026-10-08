@@ -6,8 +6,10 @@ import {
   UnstyledButton,
 } from "@mantine/core";
 import {
+  Check,
   ChevronRight,
   CircleAlert,
+  Clock,
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
@@ -212,29 +214,40 @@ export default function WorkerCard({
             <ProviderMark provider={provider} />
           </span>
           <span className="worker-text">
-            <strong>{agent.name}</strong>
-            {agent.environment === "linux" && <small>Linux VM</small>}
-            <span className="worker-model-summary" title={meta}>
-              {meta}
+            <span className="worker-name-line">
+              <strong>{agent.name}</strong>
+              <span
+                className={`worker-state worker-state-${agent.status || "waiting"}`}
+                role="img"
+                aria-label={statusDetail}
+                title={statusDetail}
+              >
+                {agent.status === "failed" ||
+                indicator?.kind === "error" ||
+                awaitingAnswer ? (
+                  <CircleAlert size={14} aria-hidden="true" />
+                ) : agent.status === "completed" ? (
+                  <Check size={14} aria-hidden="true" />
+                ) : ["running", "starting"].includes(agent.status || "") ? (
+                  <Loader size={13} color="gray" aria-hidden="true" />
+                ) : (
+                  <Clock size={14} aria-hidden="true" />
+                )}
+              </span>
             </span>
-            <span
-              className={`worker-meta worker-state-${agent.status || "waiting"}`}
-            >
+            <span className="worker-status-accessible">
               <ChatStatus
                 status={indicator}
                 provider={agent.provider ?? undefined}
                 model={agent.model ?? undefined}
               />
-              {!["working", "answer", "error"].includes(
-                indicator?.kind || "",
-              ) &&
-                ["running", "starting"].includes(agent.status || "") && (
-                  <Loader size={12} color="gray" aria-hidden="true" />
-                )}
-              {agent.status === "failed" && indicator?.kind !== "error" && (
-                <CircleAlert size={13} aria-hidden="true" />
-              )}
-              <small title={statusDetail}>{statusText}</small>
+              <small>{statusText}</small>
+            </span>
+            {agent.environment === "linux" && <small>Linux VM</small>}
+            <span className="worker-meta">
+              <span className="worker-model-summary" title={meta}>
+                {meta}
+              </span>
               <TokenRate agent={agent} variant="worker" />
             </span>
             {Boolean(agent.error) && (

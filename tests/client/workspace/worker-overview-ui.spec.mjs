@@ -438,7 +438,15 @@ test("Worker Overview Ui", async ({
       "Astra 6 · High",
     );
     assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
-    assert.match(await card(7).locator(".worker-meta").innerText(), /Failed/);
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("aria-label"),
+      "Failed",
+    );
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("title"),
+      "Failed",
+    );
+    assert.equal(await card(7).locator(".worker-state svg").count(), 1);
     assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     // The orchestrator sidebar does not repeat a worker's task text.
     assert.equal(await card(1).getByText(task).count(), 0);

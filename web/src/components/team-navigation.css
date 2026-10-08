@@ -341,3 +341,39 @@
 #team .worker-state-failed .chat-status-error {
   color: inherit;
 }
+
+#team .worker-name-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+#team .worker-name-line strong {
+  flex: 1;
+  min-width: 0;
+}
+#team .worker-state {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--muted);
+}
+#team .worker-state-failed {
+  color: var(--mantine-color-red-text);
+}
+#team .worker-status-accessible {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+#team .worker-meta {
+  margin-top: 2px;
+}
+#team .worker-model-summary {
+  flex: 1;
+  margin-top: 0;
+}
