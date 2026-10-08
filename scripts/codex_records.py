@@ -1696,6 +1696,7 @@ class AccountTransferMemberRecord(TypedDict):
     targetConnection: NotRequired[str]
     nativeParams: NotRequired[JsonObject]
     sourceHistoryMissing: NotRequired[JsonValue]
+    sourceEmptyProof: NotRequired[JsonObject]
     emptyThreadRecovery: NotRequired[JsonObject]
     phaseAtReservation: NotRequired[str]
     reason: NotRequired[str]

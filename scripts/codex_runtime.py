@@ -1836,6 +1836,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
             self.resume_read_only_image_bases()
+            with self.read_db() as db:
+                commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()
+            if commands_saved:
+                self.multi_server().commands()
         except BaseException as error:
             self._cleanup_failed_initialization(error)
             raise
@@ -8532,6 +8536,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     request_outcome = "not_applied"
                     raise ValueError("Unknown orchestration tool")
                 result = {"success": True, "contentItems": [{"type": "inputText", "text": json.dumps(value, ensure_ascii=False)}]}
+                output_expires = None
+                if name in {"orchestration_servers", "orchestration_read"}:
+                    from codex_server_exec import output_expiry
+                    output_expires = output_expiry(value)
+                    if output_expires is not None:
+                        result["serverOutputExpiresAt"] = output_expires
                 result = stamp_tool_result(result, time.time())
                 with self.lock, self.db() as db:
                     from codex_payloads import externalize_result, resolve_result
@@ -8540,6 +8550,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         "INSERT OR IGNORE INTO runtime_tool_results VALUES (?,?)",
                         (key, json.dumps(stored_result)),
                     )
+                    if output_expires is not None:
+                        db.execute("INSERT OR IGNORE INTO runtime_server_output_tools VALUES (?,?)", (key, output_expires))
                     result = resolve_result(self.root, db.execute(
                         "SELECT result FROM runtime_tool_results WHERE id=?", (key,)
                     ).fetchone()[0])
@@ -10930,6 +10942,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         federation = getattr(self, "_federation_service", None)  # type: ignore[call-arg]  # typed-update
         if federation:
             federation.close()
+        commands = self.__dict__.get('_cross_server_service')
+        if commands:
+            commands.close()
         access = getattr(self, "_paired_access_service", None)
         if access:
             access.close()
