@@ -1983,7 +1983,7 @@ export default function App() {
         projectAccount={(path) => {
           setSidebar(false);
           setModal({
-            title: "Project account",
+            title: "Project settings",
             body: (
               <ProjectAccount
                 path={path}
@@ -3238,6 +3238,9 @@ export default function App() {
         opened={!!modal}
         onClose={() => setModal(null)}
         title={modal?.title}
+        size={
+          modal?.title === "Project settings" ? modalSizes.settings : undefined
+        }
       >
         <div className="picker">{modal?.body}</div>
       </Modal>
