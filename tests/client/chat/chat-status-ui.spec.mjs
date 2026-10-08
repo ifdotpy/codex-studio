@@ -182,6 +182,7 @@ test("chat-status-ui", async ({ browser }) => {
     const fixtureDocuments = new Map(
       updateEntitySyncFixture(state).map((document) => [document.id, document]),
     );
+    let fixtureTranscriptSeq = 1;
     let fixtureMaxSeq = Math.max(
       0,
       ...[...fixtureDocuments.values()].map((document) => document.seq),
@@ -194,6 +195,7 @@ test("chat-status-ui", async ({ browser }) => {
     };
     const refreshFixtureEntities = () => {
       const changed = updateEntitySyncFixture(state);
+      fixtureTranscriptSeq++;
       rememberFixtureDocuments(changed);
     };
     await page.route("**/api/sync/identity", (route) =>
@@ -231,6 +233,7 @@ test("chat-status-ui", async ({ browser }) => {
       const projection = entityPullFixtureForRequest(state, url, {
         ...(fixtureMaxSeq ? { maxSeq: fixtureMaxSeq } : {}),
         documents: [...fixtureDocuments.values()],
+        transcriptSeq: fixtureTranscriptSeq,
         ...(transcript ? { transcript } : {}),
       });
       if (typeof projection.maxSeq === "number")
