@@ -106,6 +106,14 @@ try {
     }),
   );
 } finally {
-  if (desktop) await desktop.close();
+  if (desktop) {
+    const watchdog = setTimeout(() => desktop.process().kill("SIGKILL"), 5000);
+    watchdog.unref();
+    try {
+      await desktop.close();
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
   await rm(folder, { recursive: true, force: true });
 }

@@ -55,21 +55,22 @@ function createServerCredentials({
       );
   }
   async function read() {
-    secure();
+    let encrypted;
     try {
-      return JSON.parse(
-        safeStorage.decryptString(
-          Buffer.from(await fs.readFile(filename, "utf8"), "base64"),
-        ),
-      );
+      encrypted = await fs.readFile(filename, "utf8");
     } catch (error) {
       if (error.code === "ENOENT") return { drafts: {}, servers: {} };
       throw error;
     }
+    secure();
+    return JSON.parse(
+      safeStorage.decryptString(Buffer.from(encrypted, "base64")),
+    );
   }
   function change(update) {
     const work = writing.then(async () => {
       const state = await read();
+      secure();
       const result = await update(state);
       await fs.mkdir(profile, { recursive: true, mode: 0o700 });
       const temporary = filename + "." + crypto.randomUUID() + ".tmp";

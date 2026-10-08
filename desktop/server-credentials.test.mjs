@@ -130,8 +130,47 @@ test("pairing fails when the OS key store is unavailable or uses plaintext", asy
       profile: "/unused",
       safeStorage: store,
     });
-    await expect(adapter.owns("any")).rejects.toThrow(
-      "Secure key storage is unavailable",
-    );
+    await expect(
+      adapter.pair({
+        origin: "https://computer.tailnet.ts.net",
+        requestId: "pair",
+        invitation: {
+          protocol: 1,
+          inviteId: "invite",
+          token: "token",
+          serverId: "server",
+          publicKey: "public",
+          origin: "https://computer.tailnet.ts.net",
+        },
+      }),
+    ).rejects.toThrow("Secure key storage is unavailable");
+  }
+});
+
+test("an unpaired profile never reads the system key store", async () => {
+  const folder = await mkdtemp(path.join(tmpdir(), "studio-unpaired-"));
+  let calls = 0;
+  const adapter = createServerCredentials({
+    profile: folder,
+    safeStorage: {
+      isEncryptionAvailable() {
+        calls++;
+        throw new Error("Unexpected key-store access");
+      },
+    },
+  });
+  try {
+    expect(await adapter.owns("missing")).toBe(false);
+    await expect(
+      adapter.request({
+        serverId: "missing",
+        credentialId: "missing",
+        url: "https://computer.tailnet.ts.net/api/session",
+        requestId: "read",
+      }),
+    ).rejects.toThrow("The server key is unavailable");
+    expect(calls).toBe(0);
+  } finally {
+    await rm(folder, { recursive: true, force: true });
   }
 });
