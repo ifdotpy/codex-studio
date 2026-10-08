@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest import mock
@@ -44,6 +45,10 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories["tests/workspace-native-turn.py"], "native")
         self.assertEqual(categories["tests/workspace-protocol.py"], "native")
         self.assertEqual(categories["tests/tool-parity.py"], "native")
+        self.assertEqual(categories["tests/linux-vm-auth-native.py"], "vm")
+        self.assertEqual(categories["tests/linux-vm-studio-native.py"], "vm")
+        self.assertEqual(categories["tests/linux-vm-runtime-contract.py"], "safe")
+        self.assertIn("vm", RUNNER.OPT_IN)
         self.assertEqual(categories["tests/time-awareness.py"], "safe")
         source_roots = (ROOT / "tests", ROOT / "scripts" / "benchmarks")
         for source_root in source_roots:
@@ -97,17 +102,227 @@ class ServerSuiteRunner(unittest.TestCase):
         with contextlib.redirect_stdout(output):
             runnable, skipped, failures, _elapsed = RUNNER.run_suites(
                 [("failure.py", "safe"), ("native.py", "native"), ("success.py", "safe")],
-                set(), 1, 1, root=Path("/tmp"), execute=execute)
+                set(), 1, 1, root=ROOT, execute=execute)
         self.assertEqual(len(runnable), 2)
         self.assertEqual(skipped, [("native.py", "native")])
         self.assertEqual(failures, [("failure.py", "exit 1")])
         self.assertEqual(len(calls), 2)
 
         empty, skipped_only, failures, _elapsed = RUNNER.run_suites(
-            [("native.py", "native")], set(), 1, 1, root=Path("/tmp"), execute=execute)
+            [("native.py", "native")], set(), 1, 1, root=ROOT, execute=execute)
         self.assertEqual(empty, [])
         self.assertEqual(skipped_only, [("native.py", "native")])
         self.assertEqual(failures, [])
+
+    def test_parallel_suites_receive_distinct_short_runtime_directories(self):
+        barrier = threading.Barrier(2)
+        lock = threading.Lock()
+        active = 0
+        peak_active = 0
+        environments = []
+
+        def execute(_command, _cwd, _timeout, environment):
+            nonlocal active, peak_active
+            with lock:
+                environments.append(environment)
+                active += 1
+                peak_active = max(peak_active, active)
+            barrier.wait(timeout=10)
+            with lock:
+                active -= 1
+            return 0, None
+
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_save_profile")):
+            runnable, skipped, failures, _elapsed = RUNNER.run_suites(
+                [("first.py", "safe"), ("second.py", "safe")],
+                set(), 1, 1, execute=execute, workers=2,
+            )
+
+        self.assertEqual(len(runnable), 2)
+        self.assertEqual(skipped, [])
+        self.assertEqual(failures, [])
+        self.assertEqual(peak_active, 2)
+        self.assertEqual(len({environment["TMPDIR"] for environment in environments}), 2)
+        for variable in ("HOME", "USERPROFILE", "XDG_CACHE_HOME", "XDG_STATE_HOME", "XDG_DATA_HOME", "XDG_CONFIG_HOME",
+                         "CODEX_HOME", "CLAUDE_CONFIG_DIR", "CODEX_WORKSPACE_STORE"):
+            self.assertEqual(len({environment[variable] for environment in environments}), 2)
+        for environment in environments:
+            self.assertEqual(Path(environment["CODEX_WORKSPACE_STORE"]).parent,
+                             Path(environment["TMPDIR"]))
+            self.assertEqual(Path(environment["XDG_CACHE_HOME"]).parent,
+                             Path(environment["TMPDIR"]))
+            self.assertEqual(Path(environment["HOME"]).parent, Path(environment["TMPDIR"]))
+            self.assertEqual(environment["USERPROFILE"], environment["HOME"])
+
+    def test_measured_longest_suites_run_first(self):
+        executed = []
+
+        def execute(command, _cwd, _timeout, _environment):
+            executed.append(Path(command[-1]).name)
+            return 0, None
+
+        profile = {
+            "maxSuiteRssBytes": 100,
+            "suiteSeconds": {"fast.py": 1.0, "slow.py": 9.0},
+        }
+        with (contextlib.redirect_stdout(io.StringIO()),
+              mock.patch.object(RUNNER, "_load_profile", return_value=profile),
+              mock.patch.object(RUNNER, "_save_profile")):
+            runnable, skipped, failures, _elapsed = RUNNER.run_suites(
+                [("fast.py", "safe"), ("slow.py", "safe")], set(), 1, 1,
+                execute=execute, workers=1,
+            )
+
+        self.assertEqual(runnable, [("fast.py", "safe"), ("slow.py", "safe")])
+        self.assertEqual(skipped, [])
+        self.assertEqual(failures, [])
+        self.assertEqual(executed, ["slow.py", "fast.py"])
+
+    def test_automatic_worker_count_tracks_cpu_affinity_and_measured_memory(self):
+        profile = {
+            "maxSuiteRssBytes": 100,
+            "suiteSeconds": {"slow.py": 721},
+        }
+        entries = [("slow.py", "safe")] * 80
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "runnable_other_process_count", return_value=0)):
+            unconstrained = RUNNER.automatic_worker_count(entries, profile)
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=2),
+              mock.patch.object(RUNNER, "runnable_other_process_count", return_value=0)):
+            restricted = RUNNER.automatic_worker_count(entries, profile)
+        self.assertEqual(unconstrained, 6)
+        self.assertEqual(restricted, 2)
+
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=600),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "runnable_other_process_count", return_value=0)):
+            suite_limited = RUNNER.automatic_worker_count(entries[:3], profile)
+        self.assertEqual(suite_limited, 3)
+
+        with (mock.patch.object(RUNNER, "available_memory_bytes", return_value=0),
+              mock.patch.object(RUNNER, "available_cpu_count", return_value=16),
+              mock.patch.object(RUNNER, "runnable_other_process_count", return_value=0)):
+            memory_limited = RUNNER.automatic_worker_count(entries, profile)
+        self.assertEqual(memory_limited, 1)
+
+    def test_show_jobs_subtracts_mocked_runnable_load(self):
+        entries = [(f"suite-{index}.py", "safe") for index in range(40)]
+        plans = []
+        for other_runnable in (0, 24):
+            output = io.StringIO()
+            with (mock.patch.object(RUNNER.sys, "argv", ["run.py", "--show-jobs"]),
+                  mock.patch.object(RUNNER, "inventory", return_value=entries),
+                  mock.patch.object(RUNNER, "_load_profile", return_value={"maxSuiteRssBytes": 100}),
+                  mock.patch.object(RUNNER, "available_cpu_count", return_value=32),
+                  mock.patch.object(RUNNER, "available_memory_bytes", return_value=3200),
+                  mock.patch.object(RUNNER, "runnable_other_process_count", return_value=other_runnable),
+                  contextlib.redirect_stdout(output)):
+                self.assertEqual(RUNNER.main(), 0)
+            plan_line = next(line for line in output.getvalue().splitlines()
+                             if line.startswith("Worker plan: "))
+            plans.append(json.loads(plan_line.removeprefix("Worker plan: ")))
+        self.assertEqual(plans[0]["workers"], 32)
+        self.assertEqual(plans[0]["otherRunnableProcesses"], 0)
+        self.assertEqual(plans[1]["workers"], 8)
+        self.assertEqual(plans[1]["otherRunnableProcesses"], 24)
+
+    def test_tmpfs_scratch_root_requires_capacity_for_all_workers_and_cleans_up(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-tmpfs-") as temp:
+            mount = Path(temp)
+            with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
+                  mock.patch.object(RUNNER, "_tmpfs_mounts", return_value=iter([mount])),
+                  mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True),
+                  mock.patch.object(RUNNER.shutil, "disk_usage",
+                                    return_value=type("Usage", (), {"free": 599})())):
+                self.assertIsNone(RUNNER._memory_scratch_root(600, 100))
+
+            with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
+                  mock.patch.object(RUNNER, "_tmpfs_mounts", return_value=iter([mount])),
+                  mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True) as probe,
+                  mock.patch.object(RUNNER.shutil, "disk_usage",
+                                    return_value=type("Usage", (), {"free": 600})())):
+                owned = RUNNER._memory_scratch_root(600, 100)
+            self.assertIsNotNone(owned)
+            self.assertEqual(owned.parent, mount)
+            self.assertLessEqual(len(os.fsencode(owned)), 200)
+            probe.assert_called_once_with(owned, RUNNER.SCRATCH_PROBE_MIN_BYTES)
+            RUNNER.shutil.rmtree(owned)
+            self.assertFalse(owned.exists())
+
+    def test_scratch_capacity_probe_fsyncs_and_removes_its_file(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-capacity-") as temp:
+            root = Path(temp)
+            with mock.patch.object(RUNNER.os, "fsync", wraps=os.fsync) as fsync:
+                self.assertTrue(RUNNER._probe_scratch_capacity(root, 1024))
+            fsync.assert_called_once()
+            self.assertEqual(list(root.iterdir()), [])
+
+    def test_tmpfs_mount_discovery_ignores_read_only_and_long_mounts(self):
+        mountinfo = (
+            "21 1 0:1 / /dev/shm rw,nosuid - tmpfs tmpfs rw,size=1g\n"
+            "22 1 0:5 / /tmp rw,nosuid - tmpfs tmpfs rw,size=1g\n"
+            "23 1 0:2 / /mnt/readonly ro,nosuid - tmpfs tmpfs ro,size=1g\n"
+            "24 1 0:3 / /" + "x" * 60 + " rw - tmpfs tmpfs rw,size=1g\n"
+            "25 1 0:4 / /home rw - ext4 /dev/sda rw\n"
+        )
+        with (mock.patch.object(RUNNER.sys, "platform", "linux"),
+              mock.patch.object(Path, "read_text", return_value=mountinfo)):
+            self.assertEqual(list(RUNNER._tmpfs_mounts()), [Path("/tmp"), Path("/dev/shm")])
+
+    def test_available_cpu_count_observes_cgroup_quota(self):
+        original_read_text = Path.read_text
+        original_exists = Path.exists
+
+        def read_text(path, *args, **kwargs):
+            if path == Path("/proc/self/cgroup"):
+                return "0::/test/container"
+            if path == Path("/sys/fs/cgroup/cpu.max"):
+                return "200000 100000"
+            if path in (Path("/sys/fs/cgroup/cpu/cpu.cfs_quota_us"),
+                        Path("/sys/fs/cgroup/cpu/cpu.cfs_period_us")):
+                raise OSError("not a cgroup v1 host")
+            return original_read_text(path, *args, **kwargs)
+
+        def exists(path):
+            if path == Path("/sys/fs/cgroup/cpu.max"):
+                return True
+            return original_exists(path)
+
+        with (mock.patch.object(RUNNER.os, "process_cpu_count", return_value=16, create=True),
+              mock.patch.object(Path, "read_text", read_text),
+              mock.patch.object(Path, "exists", exists)):
+            self.assertEqual(RUNNER.available_cpu_count(), 2)
+
+    def test_cgroup_parent_limits_apply_when_stricter_than_child(self):
+        contents = {
+            Path("/proc/self/cgroup"): "0::/test/container",
+            Path("/sys/fs/cgroup/test/container/cpu.max"): "400000 100000",
+            Path("/sys/fs/cgroup/test/cpu.max"): "200000 100000",
+            Path("/sys/fs/cgroup/cpu.max"): "max 100000",
+            Path("/sys/fs/cgroup/test/container/memory.max"): "1000",
+            Path("/sys/fs/cgroup/test/container/memory.current"): "100",
+            Path("/sys/fs/cgroup/test/memory.max"): "600",
+            Path("/sys/fs/cgroup/test/memory.current"): "100",
+            Path("/sys/fs/cgroup/memory.max"): "max",
+            Path("/proc/meminfo"): "MemAvailable: 1000000 kB\n",
+        }
+
+        def read_text(path, *args, **kwargs):
+            if path in contents:
+                return contents[path]
+            raise OSError(f"unexpected read: {path}")
+
+        def exists(path):
+            return path in contents
+
+        with (mock.patch.object(RUNNER.os, "process_cpu_count", return_value=16, create=True),
+              mock.patch.object(Path, "read_text", read_text),
+              mock.patch.object(Path, "exists", exists)):
+            self.assertEqual(RUNNER.available_cpu_count(), 2)
+            self.assertEqual(RUNNER.available_memory_bytes(), 500)
 
     def test_timeout_deadlines_must_be_positive_and_finite(self):
         parser = __import__("argparse").ArgumentParser()
@@ -157,6 +372,14 @@ class ServerSuiteRunner(unittest.TestCase):
             size = marker.stat().st_size
             time.sleep(.08)
             self.assertEqual(marker.stat().st_size, size, "grandchild continued after timeout")
+
+    def test_run_process_reports_scratch_exhaustion_as_infrastructure_error(self):
+        command = [sys.executable, "-c",
+                   "import sys; print('OSError: [Errno 122] Disk quota exceeded'); sys.exit(1)"]
+        with contextlib.redirect_stdout(io.StringIO()):
+            returncode, error = RUNNER.run_process(command, ROOT, 5, os.environ.copy())
+        self.assertEqual(returncode, 1)
+        self.assertEqual(error, "scratch exhausted (suite output reported ENOSPC or EDQUOT)")
 
     def test_successful_exit_kills_leftover_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-success-cleanup-") as temp:
