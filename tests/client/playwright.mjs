@@ -989,11 +989,17 @@ function reconcileMutableEntityPullState(pullState, snapshot) {
     if (previous._deleted) continue;
     const next = nextById.get(id);
     if (!next) {
+      const previousEntity = JSON.parse(previous.payload);
       pullState.documents.set(
         id,
         generatedSyncEntity({
           ...previous,
           seq: ++pullState.maxSeq,
+          payload: JSON.stringify({
+            collection: previousEntity.collection,
+            id: previousEntity.id,
+            value: {},
+          }),
           _deleted: true,
         }),
       );
