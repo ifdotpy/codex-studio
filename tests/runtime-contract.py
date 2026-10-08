@@ -148,6 +148,39 @@ class FakeServer:
 
 
 class RuntimeContract(unittest.TestCase):
+    def track_delivery_starts(self):
+        """Track queued start callables; executor sentinels are not barriers."""
+        executor = self.runtime.delivery_executor()
+        original_submit = executor.submit
+        condition = threading.Condition()
+        counts = {'submitted': 0, 'completed': 0}
+
+        def submit(function, *args, **kwargs):
+            is_start = getattr(function, '__name__', None) == 'start' and bool(args)
+            if is_start:
+                with condition:
+                    counts['submitted'] += 1
+            future = original_submit(function, *args, **kwargs)
+            if is_start:
+                def completed(_future):
+                    with condition:
+                        counts['completed'] += 1
+                        condition.notify_all()
+                future.add_done_callback(completed)
+            return future
+
+        submit_patch = patch.object(executor, 'submit', side_effect=submit)
+        submit_patch.start()
+        self.addCleanup(submit_patch.stop)
+
+        def wait_until_balanced():
+            with condition:
+                return condition.wait_for(
+                    lambda: counts['submitted'] == counts['completed'], timeout=30
+                )
+
+        return wait_until_balanced
+
     def test_busy_input_uses_one_start_request_and_local_identity(self):
         lead = self.lead()
         original_turn = lead['turnId']
@@ -1214,6 +1247,7 @@ class RuntimeContract(unittest.TestCase):
         lead = self.lead()
         self.complete(lead)
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
+        starts_balanced = self.track_delivery_starts()
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
         eventually(lambda: bool(read_runtime_state(self.runtime)['monitors'][0]['tail']))
         scheduler_tick_finished = threading.Event()
@@ -1227,9 +1261,7 @@ class RuntimeContract(unittest.TestCase):
         with patch.object(self.runtime, 'dispatch', side_effect=dispatch_after_output):
             self.runtime.changed.set()
             self.assertTrue(scheduler_tick_finished.wait(3), 'scheduler tick after monitor output')
-        delivery_drained = threading.Event()
-        self.runtime.delivery_executor().submit(delivery_drained.set)
-        self.assertTrue(delivery_drained.wait(30), 'delivery executor did not drain after scheduler tick')
+        self.assertTrue(starts_balanced(), 'submitted delivery starts did not finish after scheduler tick')
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
@@ -1549,6 +1581,7 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len([e for e in self.snapshot()['events'] if e['kind'] == 'child_result']), 1)
 
     def test_timeout_does_not_retry_model_call(self):
+        starts_balanced = self.track_delivery_starts()
         start_error_persisted = threading.Event()
         dispatch_changed = threading.Condition()
         dispatch_count = [0]
@@ -1586,9 +1619,7 @@ class RuntimeContract(unittest.TestCase):
         with dispatch_changed:
             self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_send, timeout=30),
                             'scheduler did not finish a tick after queued input')
-        delivery_drained = threading.Event()
-        self.runtime.delivery_executor().submit(delivery_drained.set)
-        self.assertTrue(delivery_drained.wait(30), 'delivery executor did not drain after queued-input tick')
+        self.assertTrue(starts_balanced(), 'submitted delivery starts did not finish after queued-input tick')
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)
         self.assertEqual(sum(e['status'] == 'uncertain' for e in self.snapshot()['events']), 1)
 
