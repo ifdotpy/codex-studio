@@ -50,6 +50,7 @@ class SchedulerDiskContract(unittest.TestCase):
         rt.accepted_archive_tick = lambda: None
         rt.retry_monitor_results = lambda: None
         rt.runtime_maintenance_tick = lambda: None
+        rt.turn_item_links_tick = lambda: None
         rt.dispatch = dispatch
         clock = SimpleNamespace(monotonic=lambda: seen.count("wait") * 1.1,
                                 time=lambda: seen.count("wait") * 1.1)

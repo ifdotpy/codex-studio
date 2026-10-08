@@ -28,6 +28,7 @@ class SchedulerCadence(unittest.TestCase):
         runtime.accepted_archive_tick = lambda: None
         runtime.retry_monitor_results = lambda: None
         runtime.runtime_maintenance_tick = lambda: None
+        runtime.turn_item_links_tick = lambda: None
         runtime._retry_dirty_workspace_refresh = lambda: None
         runtime._publish_committed_resource_changes = lambda: None
         dispatched = []

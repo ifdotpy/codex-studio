@@ -1672,6 +1672,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE INDEX IF NOT EXISTS runtime_chat_room ON runtime_chat_messages(room, seq);
             """)
             self.install_scheduler_change_tracking(db)
+            from codex_turn_item_links import ensure_tables as ensure_turn_item_links
+            ensure_turn_item_links(db)
             from codex_execution import ensure_tables as ensure_execution_tables
             db.execute("BEGIN")
             ensure_execution_tables(db)
@@ -2928,12 +2930,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             records = cached.get("records") if isinstance(cached, dict) else None
             changes = None
             if key is not None and before is not None and isinstance(records, dict):
-                dependencies = frozenset(row for row in key[1] if row[0] != "agents")
-                previous_dependencies = frozenset(row for row in before[1] if row[0] != "agents")
+                membership = {"agents", "work", "transfers"}
+                dependencies = frozenset(row for row in key[1] if row[0] not in membership)
+                previous_dependencies = frozenset(row for row in before[1] if row[0] not in membership)
                 if dependencies == previous_dependencies:
                     generation = next(value for kind, value in key[1] if kind == "agents")
                     previous_generation = next(value for kind, value in before[1] if kind == "agents")
                     changes = self.scheduler_changed_ids(db, previous_generation, generation)
+                    if changes is not None:
+                        affected = set(changes)
+                        changed_dependencies = key[1] ^ before[1]
+                        affected.update(value for kind, value in changed_dependencies if kind == "work")
+                        roots = [value for kind, value in changed_dependencies if kind == "transfers"]
+                        # Root lookups use runtime_agent_root. Owner and transfer
+                        # membership share the same snapshot as agent changes.
+                        for offset in range(0, len(roots), 256):
+                            batch = roots[offset:offset + 256]
+                            affected.update(row[0] for row in db.execute(
+                                "SELECT id FROM runtime_agents WHERE json_extract(record,'$.rootId') IN (" +
+                                ",".join("?" * len(batch)) + ")", batch).fetchall())
+                        changes = list(affected)
             if changes is None:
                 rows = db.execute(query + " ORDER BY rowid").fetchall()
             else:
@@ -3372,9 +3388,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                              for key in ("deletedAt", "cwd", "isLead", "parentId", "rootId")):
                 from codex_peer_teams import sync_entities as sync_peer_team_entities
                 sync_peer_team_entities(self, db, {previous.get("cwd"), record.get("cwd")})
-        elif table == "work":
-            # Work ownership and status retain deleted owners in the scheduler roster.
-            self.__dict__.pop("_scheduler_agent_roster", None)
         if changed:
             from studio_api.sync.resources.models import (
                 ResourceRef, RoomResource, TaskResource, WorkspaceResource,
@@ -6070,7 +6083,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def schedule(self):
         first_tick = True
         deadlines = dict.fromkeys(("dispatch", "cross_server", "monitors", "rules", "capacity",
-                                   "usage_resume", "archive", "monitor_results", "runtime"), 0.0)
+                                   "usage_resume", "archive", "monitor_results", "runtime", "turn_items"), 0.0)
         phase_errors = {}
         local = self.__dict__.setdefault("_callback_db", threading.local())
         local.reuse = True
@@ -6095,6 +6108,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     ("archive", 1, self.accepted_archive_tick),
                     ("monitor_results", 1, self.retry_monitor_results),
                     ("runtime", 5, self.runtime_maintenance_tick),
+                    ("turn_items", .25, self.turn_item_links_tick),
                 )
                 for name, interval, run in phases:
                     if self.closed:
@@ -6142,6 +6156,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if agent_id is None:
             return self.dispatch_all(maintenance=maintenance)
         return self.dispatch_candidates(agent_id)
+
+    def turn_item_links_tick(self):
+        from codex_turn_item_links import backfill_batch as backfill_turn_item_links
+        with self.db() as db:
+            backfill_turn_item_links(db)
 
     def runtime_maintenance_tick(self):
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
@@ -7794,9 +7813,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
                                cyberAccessProgram=a.get("cyberAccessProgram"))
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
-                    db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                               "WHERE agent=? AND json_extract(record,'$.turnId')=?",
-                               (turn.get("status") or "ended", a["id"], turn.get("id")))
+                    from codex_turn_item_links import update_turn_status
+                    update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended")
                     for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? "
                                           "AND json_extract(record,'$.status')='running' "
                                           "AND json_extract(record,'$.turnId')=?",
@@ -7844,9 +7862,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 attempt = a.get("startAttempt") or {}
                 since = (attempt["created"] - 60 if attempt.get("created")
                          and attempt.get("turnId") == turn.get("id") else 0)
-                db.execute("UPDATE runtime_items SET record=json_set(record,'$.turnStatus',?) "
-                           "WHERE agent=? AND json_extract(record,'$.turnId')=? AND created>=?",
-                           (turn.get("status") or "ended", a["id"], turn.get("id"), since))
+                from codex_turn_item_links import update_turn_status
+                update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended", since=since)
                 for row in db.execute("SELECT record FROM runtime_tasks WHERE json_extract(record,'$.agent')=? AND json_extract(record,'$.status')='running'", (a["id"],)).fetchall():
                     task = json.loads(row[0])
                     if task.get("turnId") == a.get("turnId") and not (task["kind"] == "command" and task.get("processId")):

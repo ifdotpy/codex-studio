@@ -100,6 +100,7 @@ async function setup({ ready = true } = {}) {
   };
   const subscription = { unsubscribe: vi.fn() };
   const projections = {
+    database: { name: `studio-entity-projection-${workspaceId}` },
     storageInstance,
     $: { subscribe: vi.fn(() => subscription) },
     find: vi.fn(() => ({

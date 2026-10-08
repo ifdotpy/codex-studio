@@ -3,6 +3,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING, Protocol, cast
+
+if TYPE_CHECKING:
+    import ctypes
+
+
+class _WindowsCtypes(Protocol):
+    def WinDLL(self, name: str, *, use_last_error: bool) -> ctypes.CDLL: ...
+    def WinError(self, code: int) -> OSError: ...
+    def get_last_error(self) -> int: ...
 
 
 def protect(path: str | Path, *, directory: bool = False) -> None:
@@ -15,8 +25,9 @@ def protect(path: str | Path, *, directory: bool = False) -> None:
     import ctypes
     from ctypes import wintypes
 
-    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    windows = cast(_WindowsCtypes, ctypes)
+    advapi32 = windows.WinDLL("advapi32", use_last_error=True)
+    kernel32 = windows.WinDLL("kernel32", use_last_error=True)
     kernel32.GetCurrentProcess.restype = wintypes.HANDLE
     kernel32.LocalFree.argtypes = [wintypes.HANDLE]
     kernel32.LocalFree.restype = wintypes.HANDLE
@@ -47,24 +58,24 @@ def protect(path: str | Path, *, directory: bool = False) -> None:
     advapi32.SetNamedSecurityInfoW.restype = wintypes.DWORD
     token = wintypes.HANDLE()
     if not advapi32.OpenProcessToken(kernel32.GetCurrentProcess(), 0x0008, ctypes.byref(token)):
-        raise ctypes.WinError(ctypes.get_last_error())
+        raise windows.WinError(windows.get_last_error())
     try:
         needed = wintypes.DWORD()
         advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
         buffer = ctypes.create_string_buffer(needed.value)
         if not advapi32.GetTokenInformation(token, 1, buffer, needed, ctypes.byref(needed)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise windows.WinError(windows.get_last_error())
         sid_pointer = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
         sid_text = wintypes.LPWSTR()
         if not advapi32.ConvertSidToStringSidW(sid_pointer, ctypes.byref(sid_text)):
-            raise ctypes.WinError(ctypes.get_last_error())
+            raise windows.WinError(windows.get_last_error())
         try:
             ace = "(A;OICI;FA;;;{})".format(sid_text.value) if directory else "(A;;FA;;;{})".format(sid_text.value)
             descriptor = wintypes.LPVOID()
             if not advapi32.ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 "D:P" + ace, 1, ctypes.byref(descriptor), None
             ):
-                raise ctypes.WinError(ctypes.get_last_error())
+                raise windows.WinError(windows.get_last_error())
             try:
                 present = wintypes.BOOL()
                 defaulted = wintypes.BOOL()
@@ -72,13 +83,13 @@ def protect(path: str | Path, *, directory: bool = False) -> None:
                 if not advapi32.GetSecurityDescriptorDacl(
                     descriptor, ctypes.byref(present), ctypes.byref(dacl), ctypes.byref(defaulted)
                 ) or not present.value:
-                    raise ctypes.WinError(ctypes.get_last_error())
+                    raise windows.WinError(windows.get_last_error())
                 result = advapi32.SetNamedSecurityInfoW(
                     str(target), 1, 0x00000004 | 0x80000000,
                     None, None, dacl, None
                 )
                 if result:
-                    raise ctypes.WinError(result)
+                    raise windows.WinError(result)
             finally:
                 kernel32.LocalFree(descriptor)
         finally:

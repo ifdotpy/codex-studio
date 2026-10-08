@@ -1,10 +1,13 @@
 """Resolve the shared user cache root without importing application state."""
+from __future__ import annotations
+
 import os
 from pathlib import Path
 import platform
+from typing import Mapping
 
 
-def cache_dir(environment=None, system=None):
+def cache_dir(environment: Mapping[str, str] | None = None, system: str | None = None) -> Path:
     """Return the configured user cache root with the platform precedence."""
     values = os.environ if environment is None else environment
     current_system = platform.system() if system is None else system

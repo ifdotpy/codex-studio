@@ -49,6 +49,10 @@ import {
 import { DRAFT_SYNC_TIMING_MS } from "./draftSyncTiming.mjs";
 import { API_SCHEMA_HASH } from "../generated/apiSchema";
 import {
+  canSerializeEntityProjectionWrites,
+  withEntityProjectionWrite,
+} from "./entityProjectionWrites";
+import {
   deleteOtherEntityProjectionDatabases,
   entityProjectionDatabaseName,
 } from "./entityCacheStorage";
@@ -235,119 +239,224 @@ export function syncDatabase() {
   }));
 }
 
-if (typeof window !== "undefined")
-  registerSyncEntityPersister(
-    async (
-      targetWorkspaceId,
-      documents,
-      syncEntitiesAfter,
-      isPersistenceCurrent,
-    ) => {
-      const { db, workspaceId } = await syncDatabase();
-      if (targetWorkspaceId && targetWorkspaceId !== workspaceId) return;
+async function persistEntityDocuments(
+  targetWorkspaceId: string,
+  documents: SyncDocument[],
+  syncEntitiesAfter: number | null | undefined,
+  isPersistenceCurrent: () => boolean,
+  streamEpoch?: string,
+) {
+  const { db } = await syncDatabase();
+  try {
+    await withEntityProjectionWrite(db.projections.database.name, async () => {
       const checkpoint = getEntitySequenceCheckpoint(
         "state:entities:v1",
         API_SCHEMA_HASH,
       );
-      const resetVersion = checkpoint.resetVersion;
-      const entities = documents.filter((document) =>
-        document.id.startsWith("entity:"),
-      );
-      let checkpointAdvanced = false;
-      let checkpointBefore = 0;
-      let checkpointAfter = 0;
-      let checkpointAcknowledged = false;
-      try {
-        for (const document of entities)
-          await persistProjection(db.projections, document);
-        if (isPersistenceCurrent() && entities.length > 0) {
-          const [persistedCheckpoint, readyMarker] =
-            await db.projections.storageInstance.findDocumentsById(
-              ["state:entities:checkpoint", "state:entities:ready"],
-              true,
-            );
-          checkpointBefore = persistedCheckpoint?.seq ?? 0;
-          checkpointAfter = checkpointBefore;
-          if (
-            readyMarker?.payload !== "resetting" &&
-            checkpoint.canUseDurableCheckpoint &&
-            checkpoint.resetVersion === resetVersion &&
-            checkpointBefore > checkpoint.value
-          ) {
-            // Another tab can durably advance the shared projection row while
-            // this tab's in-memory checkpoint remains behind. Reconcile that
-            // durable shadow before evaluating this response's contiguous
-            // checkpoint, while retaining the projection reset fence.
-            checkpoint.assignWithinEpoch(checkpointBefore);
-          }
-          const highestSequence = Math.max(
-            ...entities.map((document) => document.seq),
+      if (streamEpoch) {
+        if (!isPersistenceCurrent()) return;
+        checkpoint.observeEpoch(streamEpoch);
+        const [durable, ready] =
+          await db.projections.storageInstance.findDocumentsById(
+            ["state:entities:checkpoint", "state:entities:ready"],
+            true,
           );
-          if (
-            typeof syncEntitiesAfter === "number" &&
-            isPersistenceCurrent() &&
-            readyMarker?.payload !== "resetting"
-          ) {
-            checkpointAdvanced = await checkpoint.advanceIfContiguous(
-              syncEntitiesAfter,
-              highestSequence,
-              resetVersion,
-              checkpointBefore,
-              async () => {
-                if (!isPersistenceCurrent())
-                  throw new Error("Mutation persistence is no longer current");
-                await persistProjection(db.projections, {
-                  id: "state:entities:checkpoint",
-                  payload: persistedCheckpoint?.payload ?? "{}",
-                  seq: highestSequence,
-                });
-              },
-            );
-            if (checkpointAdvanced) {
-              checkpoint.markDurableCheckpointValid();
-              checkpointAfter = highestSequence;
-            }
-          }
-          const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
-            checkpointAfter,
-            highestSequence,
-            isPersistenceCurrent(),
-            checkpointAdvanced || checkpointBefore >= highestSequence,
-          );
-          if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
-            // The exact envelope can suppress a later matching frame only after
-            // either this response advanced the checkpoint or it was already
-            // covered by a completed pull.
-            acknowledgeEntitySequences(
-              entities.map((document) => document.seq),
-              targetWorkspaceId,
-            );
-            checkpointAcknowledged = true;
-          }
-        }
-      } catch (error) {
-        await refreshProjection().catch(() => {});
-        throw error;
+        if (
+          !isPersistenceCurrent() ||
+          !checkpoint.canUseDurableCheckpoint ||
+          ready?.payload !== "ready" ||
+          typeof syncEntitiesAfter !== "number"
+        )
+          return;
+        checkpoint.assignWithinEpoch(durable?.seq ?? 0);
+        // Covered intervals can contain rows deleted by a later reset. Never
+        // insert their old data over the reset's zero-sequence tombstones.
+        const through = Math.max(...documents.map((document) => document.seq));
+        if (
+          through <= checkpoint.value ||
+          syncEntitiesAfter > checkpoint.value ||
+          syncEntitiesAfter > (durable?.seq ?? 0)
+        )
+          return;
       }
-      const probe = (
-        window as Window & {
-          __studioSyncEntityPersisterProbe?: (
-            value: SyncEntityPersisterProbe,
-          ) => void;
-        }
-      ).__studioSyncEntityPersisterProbe;
-      if (probe !== undefined)
-        probe({
-          sequences: entities.map((document) => document.seq),
-          checkpoint: checkpointAfter,
-          advanced: checkpointAdvanced,
-          acknowledged: checkpointAcknowledged,
-          checkpointBefore,
-          syncEntitiesAfter,
-          at: performance.timeOrigin + performance.now(),
-        });
-    },
+      const resetVersion = checkpoint.resetVersion;
+      await persistEntityDocumentsUnlocked(
+        targetWorkspaceId,
+        documents,
+        syncEntitiesAfter,
+        () =>
+          isPersistenceCurrent() && checkpoint.resetVersion === resetVersion,
+      );
+    });
+  } catch (error) {
+    await refreshProjection().catch(() => {});
+    throw error;
+  }
+}
+
+async function persistEntityDocumentsUnlocked(
+  targetWorkspaceId: string,
+  documents: SyncDocument[],
+  syncEntitiesAfter: number | null | undefined,
+  isPersistenceCurrent: () => boolean,
+) {
+  const { db, workspaceId } = await syncDatabase();
+  if (
+    !isPersistenceCurrent() ||
+    (targetWorkspaceId && targetWorkspaceId !== workspaceId)
+  )
+    return;
+  const checkpoint = getEntitySequenceCheckpoint(
+    "state:entities:v1",
+    API_SCHEMA_HASH,
   );
+  const resetVersion = checkpoint.resetVersion;
+  const entities = documents.filter((document) =>
+    document.id.startsWith("entity:"),
+  );
+  let checkpointAdvanced = false;
+  let checkpointBefore = 0;
+  let checkpointAfter = 0;
+  let checkpointAcknowledged = false;
+  await persistProjectionBatch(db.projections, entities, isPersistenceCurrent);
+  if (isPersistenceCurrent() && entities.length > 0) {
+    const [persistedCheckpoint, readyMarker] =
+      await db.projections.storageInstance.findDocumentsById(
+        ["state:entities:checkpoint", "state:entities:ready"],
+        true,
+      );
+    checkpointBefore = persistedCheckpoint?.seq ?? 0;
+    checkpointAfter = checkpointBefore;
+    if (
+      readyMarker?.payload !== "resetting" &&
+      checkpoint.canUseDurableCheckpoint &&
+      checkpoint.resetVersion === resetVersion &&
+      checkpointBefore > checkpoint.value
+    ) {
+      // Another tab can durably advance the shared projection row while
+      // this tab's in-memory checkpoint remains behind. Reconcile that
+      // durable shadow before evaluating this response's contiguous
+      // checkpoint, while retaining the projection reset fence.
+      checkpoint.assignWithinEpoch(checkpointBefore);
+    }
+    const highestSequence = Math.max(
+      ...entities.map((document) => document.seq),
+    );
+    if (
+      typeof syncEntitiesAfter === "number" &&
+      isPersistenceCurrent() &&
+      readyMarker?.payload !== "resetting"
+    ) {
+      checkpointAdvanced = await checkpoint.advanceIfContiguous(
+        syncEntitiesAfter,
+        highestSequence,
+        resetVersion,
+        checkpointBefore,
+        async () => {
+          if (!isPersistenceCurrent())
+            throw new Error("Mutation persistence is no longer current");
+          await persistProjection(db.projections, {
+            id: "state:entities:checkpoint",
+            payload: persistedCheckpoint?.payload ?? "{}",
+            seq: highestSequence,
+          });
+        },
+      );
+      if (checkpointAdvanced) {
+        checkpoint.markDurableCheckpointValid();
+        checkpointAfter = highestSequence;
+      }
+    }
+    const checkpointAlreadyCoversRows = canAcknowledgeEntitySequenceBatch(
+      checkpointAfter,
+      highestSequence,
+      isPersistenceCurrent(),
+      checkpointAdvanced || checkpointBefore >= highestSequence,
+    );
+    if (isPersistenceCurrent() && checkpointAlreadyCoversRows) {
+      // The exact envelope can suppress a later matching frame only after
+      // either this response advanced the checkpoint or it was already
+      // covered by a completed pull.
+      acknowledgeEntitySequences(
+        entities.map((document) => document.seq),
+        targetWorkspaceId,
+      );
+      checkpointAcknowledged = true;
+    }
+  }
+  const probe = (
+    window as Window & {
+      __studioSyncEntityPersisterProbe?: (
+        value: SyncEntityPersisterProbe,
+      ) => void;
+    }
+  ).__studioSyncEntityPersisterProbe;
+  if (probe !== undefined)
+    probe({
+      sequences: entities.map((document) => document.seq),
+      checkpoint: checkpointAfter,
+      advanced: checkpointAdvanced,
+      acknowledged: checkpointAcknowledged,
+      checkpointBefore,
+      syncEntitiesAfter,
+      at: performance.timeOrigin + performance.now(),
+    });
+}
+
+if (typeof window !== "undefined")
+  registerSyncEntityPersister(persistEntityDocuments);
+
+export async function persistResourceEntityChanges(
+  event: import("./resourceEvents").ResourceChangeEvent,
+  isCurrent: () => boolean,
+) {
+  // Older browsers keep the existing pull path. Tab-local serialization cannot
+  // protect a shared projection from another tab's reset.
+  if (!canSerializeEntityProjectionWrites()) return;
+  const { workspaceId } = await syncDatabase();
+  if (!isCurrent() || workspaceId !== event.workspaceId) return;
+  for (const [index, entry] of event.resourceVersions.entries()) {
+    if (!isCurrent()) return;
+    const resource = entry.resource ?? event.resources[index];
+    const changes = entry.entityChanges;
+    if (resource?.kind !== "state" || !changes || entry.entitySequenceReset)
+      continue;
+    if (
+      !Number.isSafeInteger(changes.after) ||
+      changes.after < 0 ||
+      !Number.isSafeInteger(changes.through) ||
+      changes.through <= changes.after ||
+      changes.through !== entry.revision ||
+      !Array.isArray(changes.documents) ||
+      !changes.documents.length ||
+      changes.documents.length > 512 ||
+      changes.documents.some(
+        (row) =>
+          typeof row.id !== "string" ||
+          !row.id.startsWith("entity:") ||
+          typeof row.payload !== "string" ||
+          !Number.isSafeInteger(row.seq) ||
+          row.seq <= changes.after ||
+          row.seq > changes.through ||
+          typeof row._deleted !== "boolean",
+      ) ||
+      Math.max(...changes.documents.map((row) => row.seq)) !==
+        changes.through ||
+      changes.documents.reduce(
+        (size, row) => size + row.payload.length + row.id.length,
+        0,
+      ) > 262144
+    )
+      throw new TypeError("Invalid stream entity batch");
+    await persistEntityDocuments(
+      workspaceId,
+      changes.documents,
+      changes.after,
+      isCurrent,
+      event.epoch,
+    );
+  }
+}
 
 async function pull(
   scope: string,
@@ -443,9 +552,11 @@ export async function persistProjection(
 async function persistProjectionBatch(
   collection: RxCollection<SyncDocument>,
   documents: SyncDocument[],
+  isCurrent: () => boolean = () => true,
 ) {
   const pending = new Map(documents.map((row) => [row.id, row]));
   while (pending.size) {
+    if (!isCurrent()) return;
     const existing = await collection.storageInstance.findDocumentsById(
       [...pending.keys()],
       true,
@@ -468,6 +579,7 @@ async function persistProjectionBatch(
       writes.push({ previous, document });
     }
     if (!writes.length) return;
+    if (!isCurrent()) return;
     const result = await collection.storageInstance.bulkWrite(
       writes,
       "studio-projection-pull",
@@ -493,6 +605,13 @@ async function writeProjectionRows(
     throw new Error("Could not reset the local entity projection safely.");
 }
 async function resetEntityProjection(collection: RxCollection<SyncDocument>) {
+  return withEntityProjectionWrite(collection.database.name, () =>
+    resetEntityProjectionUnlocked(collection),
+  );
+}
+async function resetEntityProjectionUnlocked(
+  collection: RxCollection<SyncDocument>,
+) {
   const markerId = "state:entities:ready";
   const found = await collection.storageInstance.findDocumentsById(
     [
@@ -1019,18 +1138,6 @@ async function acquireProjection(
               );
             if (remoteScope === "state:entities:v1" && result.maxSeq == null)
               throw new Error("The server omitted the sync sequence limit.");
-            if (
-              remoteScope === "state:entities:v1" &&
-              initialHigh !== undefined
-            )
-              await persistProjection(db.projections, {
-                id: "state:entities:initial",
-                payload: "{}",
-                seq: requiredSyncNumber(
-                  result.initialHigh,
-                  "initial checkpoint",
-                ),
-              });
             const entityBatch: SyncDocument[] = [];
             for (const document of result.documents) {
               if (
@@ -1105,25 +1212,57 @@ async function acquireProjection(
               });
             }
             if (remoteScope === "state:entities:v1") {
-              await persistProjectionBatch(db.projections, entityBatch);
-              if (!latestEntitySequence.isSameResetVersion(pullResetVersion)) {
+              const applied = await withEntityProjectionWrite(
+                db.projections.database.name,
+                async () => {
+                  const isCurrent = () =>
+                    latestEntitySequence.isSameResetVersion(pullResetVersion);
+                  if (!isCurrent()) return false;
+                  if (initialHigh !== undefined) {
+                    await persistProjection(db.projections, {
+                      id: "state:entities:initial",
+                      payload: "{}",
+                      seq: requiredSyncNumber(
+                        result.initialHigh,
+                        "initial checkpoint",
+                      ),
+                    });
+                    if (!isCurrent()) return false;
+                  }
+                  await persistProjectionBatch(
+                    db.projections,
+                    entityBatch,
+                    isCurrent,
+                  );
+                  if (!isCurrent()) return false;
+                  await persistProjection(db.projections, {
+                    id: checkpointId,
+                    payload: JSON.stringify({
+                      initialHigh: result.initialHigh,
+                    }),
+                    seq: Math.max(
+                      latestEntitySequence.value,
+                      result.checkpoint.seq,
+                    ),
+                  });
+                  if (!isCurrent()) return false;
+                  latestEntitySequence.assignWithinEpoch(result.checkpoint.seq);
+                  latestEntitySequence.markDurableCheckpointValid();
+                  if (!readyPublished) {
+                    await persistProjection(db.projections, {
+                      id: "state:entities:ready",
+                      payload: "ready",
+                      seq: 1,
+                    });
+                    if (!isCurrent()) return false;
+                    readyPublished = true;
+                  }
+                  return true;
+                },
+              );
+              if (!applied) {
                 more = true;
                 continue;
-              }
-              latestEntitySequence.assignWithinEpoch(result.checkpoint.seq);
-              await persistProjection(db.projections, {
-                id: checkpointId,
-                payload: JSON.stringify({ initialHigh: result.initialHigh }),
-                seq: latestEntitySequence.value,
-              });
-              latestEntitySequence.markDurableCheckpointValid();
-              if (!readyPublished) {
-                await persistProjection(db.projections, {
-                  id: "state:entities:ready",
-                  payload: "ready",
-                  seq: 1,
-                });
-                readyPublished = true;
               }
               initialHigh = requiredSyncNumber(
                 result.initialHigh,
@@ -1141,16 +1280,28 @@ async function acquireProjection(
           report(null);
         } while (invalidated && !stopped);
         if (!stopped && remoteScope === "state:entities:v1") {
-          await persistProjection(db.projections, {
-            id: "state:entities:complete",
-            payload: "complete",
-            seq: Date.now(),
-          });
-          await persistProjection(db.projections, {
-            id: "state:entities:ready",
-            payload: "ready",
-            seq: resetReadySeq ?? 1,
-          });
+          const completedResetVersion = latestEntitySequence.resetVersion;
+          await withEntityProjectionWrite(
+            db.projections.database.name,
+            async () => {
+              const isCurrent = () =>
+                !stopped &&
+                !invalidated &&
+                latestEntitySequence.isSameResetVersion(completedResetVersion);
+              if (!isCurrent()) return;
+              await persistProjection(db.projections, {
+                id: "state:entities:complete",
+                payload: "complete",
+                seq: Date.now(),
+              });
+              if (!isCurrent()) return;
+              await persistProjection(db.projections, {
+                id: "state:entities:ready",
+                payload: "ready",
+                seq: resetReadySeq ?? 1,
+              });
+            },
+          );
         }
       })()
         .catch((error) => {

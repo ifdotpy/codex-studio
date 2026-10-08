@@ -5908,6 +5908,18 @@ export interface components {
       target?: string | null;
     };
     /**
+     * EntityChangeBatch
+     * @description Complete state changes in one durable (after, through] interval.
+     */
+    EntityChangeBatch: {
+      /** After */
+      after: number;
+      /** Documents */
+      documents: components["schemas"]["SyncEntity"][];
+      /** Through */
+      through: number;
+    };
+    /**
      * ErrorResponse
      * @description Existing API error shape plus explicitly documented optional metadata.
      */
@@ -9063,7 +9075,7 @@ export interface components {
     };
     /**
      * ResourceChangeEvent
-     * @description Named `resources` SSE payload. A change invalidates the listed refs.
+     * @description Named `resources` SSE payload with optional bounded state data.
      */
     ResourceChangeEvent: {
       /** Epoch */
@@ -9157,6 +9169,7 @@ export interface components {
      * @description Per-resource revision; StateResource uses the entity sequence.
      */
     ResourceRevisionEntry: {
+      entityChanges?: components["schemas"]["EntityChangeBatch"] | null;
       /** Entitysequencereset */
       entitySequenceReset?: boolean | null;
       /** Entitysequences */
