@@ -228,7 +228,7 @@ class RequestBoundary:
             return
 
         if method not in {"POST", "PUT", "PATCH"}:
-            await self.app(scope, receive, send)
+            await self._dispatch(scope, receive, send)
             return
 
         limit = _request_limit(path)
@@ -317,7 +317,13 @@ class RequestBoundary:
             delivered = True
             return {"type": "http.request", "body": bytes(body), "more_body": False}
 
-        await self.app(scope, replay_receive, send)
+        await self._dispatch(scope, replay_receive, send)
+
+    async def _dispatch(self, scope: Scope, receive: Receive, send: Send) -> None:
+        gate = scope.get("studio_access_reserve")
+        if gate is not None and not await gate():
+            return
+        await self.app(scope, receive, send)
 
     def _trusted(self, scope: Scope, headers: HeaderView, *, write: bool, federation: bool) -> bool:
         if isinstance(scope.get("studio_principal"), dict):

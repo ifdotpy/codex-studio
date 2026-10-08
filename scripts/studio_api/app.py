@@ -107,6 +107,7 @@ def create_app(context: ApiContext) -> FastAPI:
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(request: Request, error: RequestValidationError) -> Response:
+        request.scope["studio_prehandler_failure"] = True
         problems: list[JsonValue] = [
             {"location": [str(part) for part in row.get("loc", ())], "message": str(row.get("msg", "Invalid request"))}
             for row in error.errors()
@@ -126,6 +127,7 @@ def create_app(context: ApiContext) -> FastAPI:
 
     @app.exception_handler(ResponseValidationError)
     async def response_error(request: Request, error: ResponseValidationError) -> Response:
+        request.scope["studio_outcome_unknown"] = True
         logging.getLogger(__name__).error(
             "Response contract failure for %s %s: %s",
             request.method, request.url.path, str(error.errors())[:4000],
@@ -137,6 +139,8 @@ def create_app(context: ApiContext) -> FastAPI:
     @app.exception_handler(OSError)
     @app.exception_handler(sqlite3.Error)
     async def service_error(request: Request, error: Exception) -> Response:
+        if isinstance(error, (RuntimeError, OSError, sqlite3.Error)):
+            request.scope["studio_outcome_unknown"] = True
         return error_response(context, request, str(error), 400)
 
     install_error_response_docs(app)

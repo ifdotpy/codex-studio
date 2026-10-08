@@ -38,6 +38,9 @@ Tailscale network and works with all of them from one UI.
 This contract gives a paired device full owner access. Peer room federation keeps
 its separate keys, permissions, and protocol. The server listener stays on
 loopback. Remote requests require the configured Tailscale Serve HTTPS origin.
+Signed device access is additive. Existing same-origin phone access keeps its
+Serve session and `X-Canvas-Token` flow. Partial signature headers fail and cannot
+fall back to that flow.
 Tests use separate state directories and ports. Tests never change Serve or
 enable Funnel.
 
@@ -83,7 +86,7 @@ the target's local session token.
 
 ### Authenticate every HTTP request
 
-All remote API requests, including reads, require these headers:
+All paired API requests, including reads, require these headers:
 
 | Header                | Value                                    |
 | --------------------- | ---------------------------------------- |
@@ -121,7 +124,8 @@ the signed request ID. Do not send `X-Canvas-Token` to another server.
 The HTTP response uses Tailscale HTTPS. The client pins the pairing identity
 and rejects redirects. Cross-origin resource sharing (CORS) permits requests
 without cookies. An unsigned preflight returns only CORS policy. It gives no
-API access. A remote unsigned read cannot obtain a local session token.
+API access. An unsigned request from another origin cannot obtain a session token.
+The existing same-origin phone can obtain its session token as before.
 
 ### Authenticate the sync stream
 
@@ -131,6 +135,8 @@ or invitation secret belongs in a URL. Reconnect with the existing sync cursor,
 a fresh nonce, and a new request ID. The server checks revocation during the
 stream. It closes the stream when the client is revoked. The existing sync
 cursor, heartbeat, schema checks, and reconnect rules stay in use.
+The stream also closes if the configured Serve origin changes or remote access
+is disabled.
 
 ### Management and server transport
 
@@ -158,6 +164,10 @@ DNS, TLS, and the response body. The parent stops that process at the deadline.
 The maximum orchestration request size is
 256 KiB. The maximum response size is 1 MiB. A timeout leaves the operation
 outcome unknown until its durable receipt is recovered.
+Response identity fields must match the stored peer ID and public key. Identity
+checks have a 30-second cache, limited to 256 addresses. An identity error clears
+the cache. One persistent crypto process signs and verifies requests. Each crypto
+operation has an 8-second deadline. A failed process closes and can restart.
 
 `Runtime.multi_server()` owns cross-server orchestration. The signed
 `POST /api/servers/orchestration` route requires a server client. It calls
@@ -179,6 +189,20 @@ Completed duplicates return the saved status and body. A different payload
 with the same ID returns a conflict. After a crash, an unfinished receipt
 stays unknown. It must not authorize a second mutation. Existing operation
 receipts remain the source of truth for recovery of the actual effect.
+Schema and workspace checks run before receipt reservation. Pre-handler failures
+and failed pairing do not keep a receipt. Transient responses are not completed
+receipts. An invitation acceptance retry repeats its durable outbound request.
+An uncertain general mutation stays unknown and cannot run again.
+
+Completed inbound response bodies expire after seven days. Their compact records
+keep the fingerprint and completed outcome. An old exact retry returns HTTP 410
+with code `receipt_expired`; it cannot run the operation again. Other outbound
+response caches expire after 24 hours and retain compact fingerprints. Orchestration
+requests use the orchestration service's outbox and skip the generic outbound cache.
+Prune runs at service start and each database write. Expired nonces are deleted.
+Used, expired, missing, or invalid invitations fail before nonce or receipt storage.
+The global pairing limit is 128 attempts per minute. Unpaired nonces have a global
+limit of 1,280 across restarts.
 
 Authentication fails before API dispatch. Errors identify invalid credentials,
 clock difference, replay, owner identity, revocation, request conflict, an

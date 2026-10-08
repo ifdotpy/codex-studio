@@ -21,7 +21,7 @@ if TYPE_CHECKING:
     from studio_api.context import ApiContext
 
 ERRORS: dict[int | str, dict[str, Any]] = {
-    status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 413, 429, 502, 503, 504)
+    status: {"model": ErrorResponse} for status in (400, 401, 403, 404, 409, 410, 413, 429, 502, 503, 504)
 }
 
 

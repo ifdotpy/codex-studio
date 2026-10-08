@@ -10734,6 +10734,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         federation = getattr(self, "_federation_service", None)  # type: ignore[call-arg]  # typed-update
         if federation:
             federation.close()
+        access = getattr(self, "_paired_access_service", None)
+        if access:
+            access.close()
         with self.lock:
             if self.closed:
                 return

@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 import json
+import io
 from pathlib import Path
 import secrets
+import runpy
 import sqlite3
+import sys
 import tempfile
 import threading
 import time
@@ -96,6 +99,7 @@ class AccessTests(unittest.TestCase):
         self.directory = tempfile.TemporaryDirectory(prefix="studio-access-test-")
         self.addCleanup(self.directory.cleanup)
         self.runtime = FixtureRuntime(Path(self.directory.name))
+        self.addCleanup(lambda: self.runtime.service.close())
         self.context = ApiContext(cast(Any, FixtureCanvas(self.runtime)), token="local-token",
                                   remote=RemoteAccess(self.runtime.root, self.origin), server_port=8765)
         self.context.api_schema_hash = "access-schema"
@@ -111,6 +115,8 @@ class AccessTests(unittest.TestCase):
             with self.runtime.db() as db:
                 db.execute("INSERT INTO effects(body) VALUES(?)", (body.decode(),))
                 count = db.execute("SELECT count(*) FROM effects").fetchone()[0]
+            if json.loads(body).get("failAfterEffect"):
+                raise RuntimeError("The result was lost after the effect")
             return JSONResponse({"count": count})
 
         # Insert the fixture routes before the production static catch-all.
@@ -170,10 +176,10 @@ class AccessTests(unittest.TestCase):
     def test_local_access_and_unsigned_remote_denial(self) -> None:
         self.assertEqual(self.client.get("/api/session").json()["token"], "local-token")
         for path in ("/api/session", "/api/probe", "/api/sync/identity", "/api/multi-server"):
-            response = self.client.get(path, headers=self.proxy())
+            response = self.client.get(path, headers={**self.proxy(), "X-Studio-Client": "unpaired"})
             self.assertEqual(response.status_code, 401, path)
             self.assertEqual(response.json()["code"], "invalid_credentials")
-        response = self.client.post("/api/probe", json={}, headers={**self.proxy(), "X-Canvas-Token": "local-token"})
+        response = self.client.post("/api/probe", json={}, headers={**self.proxy(), "X-Canvas-Token": "local-token", "X-Studio-Client": "unpaired"})
         self.assertEqual(response.status_code, 401)
         self.assertEqual(self.effects(), 0)
         self.assertEqual(self.client.post(PAIR_PATH, json=self.pair_body(), headers={"X-Canvas-Token": "local-token"}).status_code, 403)
@@ -367,6 +373,7 @@ class AccessTests(unittest.TestCase):
         invitation = self.invitation()
         with tempfile.TemporaryDirectory(prefix="studio-access-peer-") as peer_dir:
             peer = FixtureRuntime(Path(peer_dir))
+            self.addCleanup(lambda: peer.service.close())
             peer.service.public_origin = "https://peer.example.ts.net"
             wire_calls: list[dict[str, str]] = []
             lose_response = False
@@ -401,11 +408,8 @@ class AccessTests(unittest.TestCase):
                 self.assertNotEqual(wire_calls[-1]["X-Studio-Nonce"], wire_calls[-2]["X-Studio-Nonce"])
                 call_count = len(wire_calls)
                 peer.service.request(invitation["serverId"], "POST", "/api/servers/orchestration", envelope, "native-op-1")
-                self.assertEqual(len(wire_calls), call_count)
-                with self.assertRaises(AccessError) as conflict:
-                    peer.service.request(invitation["serverId"], "POST", "/api/servers/orchestration",
-                                         {**envelope, "payload": {"changed": True}}, "native-op-1")
-                self.assertEqual(conflict.exception.code, "request_conflict")
+                self.assertEqual(len(wire_calls), call_count + 1)
+                self.assertEqual(len(self.runtime.calls), 1)
                 peer.service.revoke(invitation["serverId"])
                 with self.assertRaises(AccessError) as revoked:
                     peer.service.request(invitation["serverId"], "GET", "/api/probe", None, "revoked-server")
@@ -440,12 +444,12 @@ class AccessTests(unittest.TestCase):
         raw = b'{"request_id":"different-id"}'
         mismatch = self.client.post("/api/probe", content=raw, headers=self.signed("POST", "/api/probe", raw, "signed-id"))
         self.assertEqual(mismatch.json()["code"], "request_conflict")
-        with patch("codex_multi_server._crypto", side_effect=RuntimeError("private error")):
+        with patch.object(self.runtime.service.crypto, "call", side_effect=RuntimeError("private error")):
             # Build the proof before the verifier fails.
             verification = self.client.get("/api/probe", headers=headers)
             self.assertEqual(verification.json()["code"], "server_mismatch")
         signed = self.signed("GET", "/api/probe", request_id="crypto-check")
-        with patch("codex_multi_server._crypto", side_effect=RuntimeError("private error")):
+        with patch.object(self.runtime.service.crypto, "call", side_effect=RuntimeError("private error")):
             unavailable = self.client.get("/api/probe", headers=signed)
         self.assertEqual(unavailable.json()["code"], "crypto_unavailable")
         self.assertNotIn("private error", unavailable.text)
@@ -457,7 +461,233 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(self.effects(), 0)
 
 
+    def test_review_mobile_probe_and_token_session_remain_supported(self) -> None:
+        self.context.canvas.runtime = None
+        desktop = self.client.get("/api/desktop", headers=self.proxy())
+        self.assertEqual(desktop.status_code, 200, desktop.text)
+        self.assertEqual(desktop.json()["publicOrigin"], self.origin)
+        self.assertEqual(desktop.json()["mobileProtocol"], 1)
+        session = self.client.get("/api/session", headers={**self.proxy(), "Origin": self.origin})
+        self.assertEqual(session.json()["token"], "local-token")
+        wrote = self.client.post("/api/probe", json={"value": 1},
+                                 headers={**self.proxy(), "Origin": self.origin, "X-Canvas-Token": "local-token"})
+        self.assertEqual(wrote.status_code, 200, wrote.text)
+        refused = self.client.post("/api/probe", json={}, headers={**self.proxy(), "Origin": "https://evil.example"})
+        self.assertEqual(refused.status_code, 403)
+
+    def test_review_cors_exposes_remote_export_headers(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        response = self.client.get("/api/probe", headers=self.signed("GET", "/api/probe"))
+        exposed = {header.strip().lower() for header in response.headers["Access-Control-Expose-Headers"].split(",")}
+        self.assertIn("content-disposition", exposed)
+        self.assertIn("x-log-truncated", exposed)
+
+    def test_review_mobile_setup_and_https_probe_use_only_disposable_state(self) -> None:
+        self.context.canvas.runtime = None
+        entrypoint = Path(__file__).resolve().parents[2] / "codex-mobile.py"
+        namespace = runpy.run_path(str(entrypoint), run_name="mobile_setup_fixture")
+
+        def urlopen(url: str, **kwargs: object) -> io.BytesIO:
+            remote = url.startswith("https://")
+            result = self.client.get("/api/desktop", headers=self.proxy() if remote else {})
+            self.assertEqual(result.status_code, 200, result.text)
+            return io.BytesIO(result.content)
+
+        status = {"BackendState": "Running", "Self": {"DNSName": "server.example.ts.net."}}
+        with patch.object(sys, "argv", ["codex-mobile.py", "--port", "8765"]), \
+             patch("shutil.which", return_value="/fixture/tailscale"), \
+             patch("subprocess.check_output", side_effect=[json.dumps(status), "{}"]) as read, \
+             patch("subprocess.run") as configure, \
+             patch("urllib.request.urlopen", side_effect=urlopen), patch("builtins.print"):
+            namespace["main"]()
+        configure.assert_called_once_with(["/fixture/tailscale", "serve", "--bg", "--https=443", "http://127.0.0.1:8765"],
+                                          check=True, timeout=60)
+        self.assertEqual(read.call_count, 2)
+        self.assertEqual(json.loads((self.runtime.root / "remote-access.json").read_text()), {"enabled": True, "origin": self.origin})
+
+    def test_review_schema_rejection_can_retry_with_the_current_schema(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        raw = b'{"requestId":"schema-retry"}'
+        headers = self.signed("POST", "/api/probe", raw, "schema-retry")
+        headers["X-Studio-API-Schema"] = "obsolete"
+        self.assertEqual(self.client.post("/api/probe", content=raw, headers=headers).status_code, 426)
+        headers = self.signed("POST", "/api/probe", raw, "schema-retry")
+        headers["X-Studio-API-Schema"] = "access-schema"
+        self.assertEqual(self.client.post("/api/probe", content=raw, headers=headers).status_code, 200)
+        self.assertEqual(self.effects(), 1)
+
+    def test_review_workspace_rejection_can_retry_with_the_current_workspace(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        raw = b'{"requestId":"workspace-retry"}'
+        with patch.object(self.context, "workspace_id", return_value="workspace-current"):
+            headers = self.signed("POST", "/api/probe", raw, "workspace-retry")
+            headers["X-Canvas-Workspace"] = "workspace-old"
+            self.assertEqual(self.client.post("/api/probe", content=raw, headers=headers).status_code, 409)
+            headers = self.signed("POST", "/api/probe", raw, "workspace-retry")
+            headers["X-Canvas-Workspace"] = "workspace-current"
+            self.assertEqual(self.client.post("/api/probe", content=raw, headers=headers).status_code, 200)
+        self.assertEqual(self.effects(), 1)
+
+    def test_review_nested_timeout_retries_the_same_outbound_pairing(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        invitation = {**self.invitation("target-invite"), "serverId": "peer-id", "origin": "https://peer.example.ts.net"}
+        result = {"protocol": 1, "serverId": "peer-id", "origin": invitation["origin"], "label": "Peer",
+                  "publicKey": invitation["publicKey"], "tailscaleUser": "owner@example.com",
+                  "clientId": self.runtime.service.local_server_id, "paired": True}
+        reply = {"status": 200, "url": invitation["origin"] + PAIR_PATH,
+                 "body": base64.b64encode(json.dumps(result).encode()).decode()}
+        raw = json.dumps({"action": "accept_invite", "invitation": invitation, "requestId": "nested-retry"}).encode()
+        with patch("codex_multi_server._exchange", side_effect=[AccessError(504, "remote_timeout", "Timed out"), reply]) as transport:
+            first = self.client.post("/api/multi-server", content=raw,
+                                     headers=self.signed("POST", "/api/multi-server", raw, "nested-retry"))
+            self.assertEqual(first.status_code, 504, first.text)
+            second = self.client.post("/api/multi-server", content=raw,
+                                      headers=self.signed("POST", "/api/multi-server", raw, "nested-retry"))
+            self.assertEqual(second.status_code, 200, second.text)
+            self.assertEqual(transport.call_count, 2)
+
+    def test_review_unknown_failed_mutation_is_not_repeated(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        raw = b'{"requestId":"lost-effect","failAfterEffect":true}'
+        first = self.client.post("/api/probe", content=raw,
+                                 headers=self.signed("POST", "/api/probe", raw, "lost-effect"))
+        self.assertEqual(first.status_code, 503)
+        retry = self.client.post("/api/probe", content=raw,
+                                 headers=self.signed("POST", "/api/probe", raw, "lost-effect"))
+        self.assertEqual(retry.json()["code"], "outcome_unknown")
+        self.assertEqual(self.effects(), 1)
+
+    def test_review_failed_pairing_has_no_durable_receipt(self) -> None:
+        body = self.pair_body()
+        body["label"] = ""
+        self.assertEqual(self.pair(body).status_code, 400)
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_receipts").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_nonces").fetchone()[0], 0)
+
+    def test_review_response_identity_must_match_the_registered_peer(self) -> None:
+        invitation = self.invitation()
+        with self.runtime.db() as db:
+            db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", ("peer-id", json.dumps({
+                "id": "peer-id", "clientId": "peer-id", "serverId": "peer-id", "kind": "server", "status": "paired",
+                "origin": self.origin, "publicKey": invitation["publicKey"]})))
+        for index, identity in enumerate(({"serverId": "wrong-id"}, {"publicKey": self.keys["publicKey"]})):
+            reply = {"status": 200, "url": self.origin + "/api/probe", "body": base64.b64encode(json.dumps(identity).encode()).decode()}
+            with patch("codex_multi_server._exchange", return_value=reply):
+                with self.assertRaises(AccessError) as refused:
+                    self.runtime.service.request("peer-id", "GET", "/api/probe", None, f"pin-{index}")
+                self.assertEqual(refused.exception.code, "server_mismatch")
+
+    def test_review_invalid_invitations_create_no_durable_attempt_state(self) -> None:
+        invitation = self.invitation()
+        invalid = {**invitation, "inviteId": "missing-invite"}
+        body = self.pair_body(invalid)
+        self.assertEqual(self.pair(body).status_code, 403)
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_nonces").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_receipts").fetchone()[0], 0)
+
+    def test_review_identity_checks_use_a_short_cache(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        with patch("codex_multi_server._owner_login", return_value="owner@example.com") as owner, \
+             patch("codex_multi_server._peer_login", return_value="owner@example.com") as peer:
+            for index in range(4):
+                self.assertEqual(self.client.get("/api/probe", headers=self.signed("GET", "/api/probe", request_id=f"cache-{index}")).status_code, 200)
+            self.assertLessEqual(owner.call_count, 1)
+            self.assertLessEqual(peer.call_count, 1)
+
+    def test_review_orchestration_responses_are_not_persisted_in_the_generic_cache(self) -> None:
+        invitation = self.invitation()
+        body = {"requestId": "chunk-read", "action": "chunk", "payload": {"exportId": "export", "offset": 0}}
+        reply = {"status": 200, "url": self.origin + "/api/servers/orchestration",
+                 "body": base64.b64encode(json.dumps({"outcome": "applied", "value": {"data": "BINARY-DATA"}}).encode()).decode()}
+        with patch("codex_multi_server._exchange", return_value=reply) as transport:
+            for _ in range(2):
+                self.runtime.service._request(self.origin, invitation["serverId"], "POST", "/api/servers/orchestration", body, "chunk-read", 15)
+            self.assertEqual(transport.call_count, 2)
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_outbound").fetchone()[0], 0)
+
+    def test_review_identity_cache_expires_and_clears_after_an_error(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        self.runtime.service.identity_cache.clear()
+        with patch("codex_multi_server.IDENTITY_CACHE_SECONDS", 0), \
+             patch("codex_multi_server._owner_login", side_effect=AccessError(503, "identity_unavailable", "Unavailable")):
+            failed = self.client.get("/api/probe", headers=self.signed("GET", "/api/probe", request_id="cache-expired"))
+            self.assertEqual(failed.status_code, 503)
+            self.assertEqual(self.runtime.service.identity_cache, {})
+        with patch("codex_multi_server._owner_login", return_value="owner@example.com") as owner:
+            retried = self.client.get("/api/probe", headers=self.signed("GET", "/api/probe", request_id="cache-expired"))
+            self.assertEqual(retried.status_code, 200)
+            self.assertEqual(owner.call_count, 1)
+
+    def test_review_global_pairing_limit_has_no_durable_invalid_rows(self) -> None:
+        body = self.pair_body({**self.invitation(), "inviteId": "missing"})
+        raw = json.dumps(body).encode()
+        headers = self.signed("POST", PAIR_PATH, raw, "pair-1")
+        for _ in range(129):
+            response = self.client.post(PAIR_PATH, content=raw, headers=headers)
+        self.assertEqual(response.status_code, 429)
+        self.assertEqual(response.json()["code"], "pairing_limit")
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_nonces").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_receipts").fetchone()[0], 0)
+
+    def test_review_old_receipts_compact_and_nonces_expire(self) -> None:
+        self.invitation()
+        service = self.runtime.service
+        old = time.time() - 8 * 86400
+        raw = b'{"requestId":"old-op"}'
+        service.reserve("old-client", "old-op", "POST", "/api/probe", raw)
+        service.complete("old-client", "old-op", 200, [], b'{"large":"response"}')
+        with self.runtime.db() as db:
+            db.execute("UPDATE runtime_access_receipts SET record=json_set(record,'$.completed',?)", (old,))
+            db.execute("INSERT INTO runtime_access_nonces VALUES('old-client','old-nonce',?)", (int(old),))
+            db.execute("INSERT INTO runtime_access_outbound VALUES('peer','old-out','hash',?)", (json.dumps({
+                "outcome": "complete", "value": {"large": "response"}, "completed": old}),))
+        service.create_invite({"requestId": "maintenance"})
+        with service.runtime.read_db() as db:
+            inbound = json.loads(db.execute("SELECT record FROM runtime_access_receipts").fetchone()[0])
+            outbound = json.loads(db.execute("SELECT record FROM runtime_access_outbound").fetchone()[0])
+            self.assertNotIn("body", inbound)
+            self.assertNotIn("value", outbound)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_nonces").fetchone()[0], 0)
+            self.assertLess(len(json.dumps(inbound)), 150)
+            self.assertLess(len(json.dumps(outbound)), 150)
+        with self.assertRaises(AccessError) as expired:
+            service.reserve("old-client", "old-op", "POST", "/api/probe", raw)
+        self.assertEqual(expired.exception.code, "receipt_expired")
+        with self.assertRaises(AccessError) as conflict:
+            service.reserve("old-client", "old-op", "POST", "/api/probe", b'{"changed":true}')
+        self.assertEqual(conflict.exception.code, "request_conflict")
+
+    def test_review_retained_response_bytes_stay_bounded_by_age(self) -> None:
+        self.invitation()
+        old = time.time() - 8 * 86400
+        large = json.dumps({"completed": old, "status": 200, "headers": [], "body": base64.b64encode(b"x" * 4096).decode()})
+        with self.runtime.db() as db:
+            db.executemany("INSERT INTO runtime_access_receipts VALUES(?,?,?,'old','complete',?)",
+                           [("old-client", f"old-{index}", f"hash-{index}", large) for index in range(300)])
+            db.execute("INSERT INTO runtime_access_receipts VALUES('old-client','uncertain','hash','old','pending','{}')")
+            before = db.execute("SELECT sum(length(record)) FROM runtime_access_receipts").fetchone()[0]
+        self.runtime.service.create_invite({"requestId": "compact-old"})
+        with self.runtime.read_db() as db:
+            after = db.execute("SELECT sum(length(record)) FROM runtime_access_receipts").fetchone()[0]
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_receipts WHERE status='tombstone'").fetchone()[0], 300)
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_receipts WHERE status='complete'").fetchone()[0], 0)
+            self.assertEqual(db.execute("SELECT status FROM runtime_access_receipts WHERE request_id='uncertain'").fetchone()[0], "pending")
+        self.assertLess(after, before / 20)
+
     def test_active_stream_closes_after_revocation(self) -> None:
+        self._assert_stream_closes(lambda: self.runtime.service.revoke("client-1"))
+
+    def test_review_disabling_remote_access_closes_the_stream(self) -> None:
+        self._assert_stream_closes(lambda: setattr(self.context.remote, "override", None))
+
+    def test_review_changing_the_remote_origin_closes_the_stream(self) -> None:
+        self._assert_stream_closes(lambda: setattr(self.context.remote, "override", "https://new.example.ts.net"))
+
+    def _assert_stream_closes(self, change: Callable[[], object]) -> None:
         self.assertEqual(self.pair().status_code, 200)
         target = "/api/sync/stream"
         signed = self.signed("GET", target)
@@ -484,7 +714,7 @@ class AccessTests(unittest.TestCase):
             boundary = MultiServerBoundary(stream_app, self.context)
             request = asyncio.create_task(boundary(scope, receive, send))
             await asyncio.wait_for(started.wait(), 5)
-            self.runtime.service.revoke("client-1")
+            change()
             await asyncio.wait_for(request, 3)
 
         with patch("studio_api.multi_server.boundary.STREAM_RECHECK_SECONDS", 0.01):

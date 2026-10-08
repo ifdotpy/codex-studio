@@ -9,12 +9,14 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from pydantic import ValidationError
 
 from codex_multi_server import AccessError, MAX_RESPONSE_BYTES, SIGNATURE_HEADERS
 from studio_api.middleware import (
     FEDERATION_PATHS, HeaderView, REQUEST_READ_TIMEOUT_SECONDS, _request_limit,
 )
 from studio_api.multi_server.router import service_for
+from studio_api.multi_server.models import DevicePairRequest
 from studio_api.schema import API_SCHEMA_HASH_HEADER, API_SCHEMA_MISMATCH_HEADER
 
 if TYPE_CHECKING:
@@ -22,7 +24,7 @@ if TYPE_CHECKING:
 
 CORS_HEADERS = [
     (b"access-control-allow-origin", b"*"),
-    (b"access-control-expose-headers", f"X-Studio-Server, {API_SCHEMA_HASH_HEADER}, {API_SCHEMA_MISMATCH_HEADER}, ETag".encode()),
+    (b"access-control-expose-headers", f"X-Studio-Server, {API_SCHEMA_HASH_HEADER}, {API_SCHEMA_MISMATCH_HEADER}, ETag, Content-Disposition, X-Log-Truncated".encode()),
 ]
 CORS_REQUEST_HEADERS = (
     "content-type", "accept", "x-canvas-workspace", API_SCHEMA_HASH_HEADER.lower(),
@@ -142,6 +144,12 @@ class MultiServerBoundary:
         if method not in {"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"}:
             await _failure(cors_send, AccessError(405, "method_refused", "The HTTP method is not supported"))
             return
+        # The established mobile flow remains behind its exact Serve origin,
+        # browser-origin checks and local session token. Partial device proof
+        # cannot fall back to that flow.
+        if not any(headers.get(name) is not None for name in SIGNATURE_HEADERS):
+            await self.app(scope, receive, send)
+            return
         service = None
         reserved = False
         principal: dict[str, Any] = {}
@@ -153,6 +161,11 @@ class MultiServerBoundary:
             query = scope.get("query_string", b"")
             if query:
                 target += "?" + query.decode("ascii")
+            if method == "POST" and target == "/api/multi-server/v1/pair":
+                try:
+                    DevicePairRequest.model_validate_json(raw)
+                except ValidationError:
+                    raise AccessError(400, "invalid_pairing", "The pairing request is invalid") from None
             service = await asyncio.to_thread(service_for, self.context)
             principal = await asyncio.to_thread(service.authenticate, headers, method, target, raw)
             scope["studio_principal"] = principal
@@ -169,15 +182,6 @@ class MultiServerBoundary:
                 for name in ("requestId", "request_id"):
                     if name in decoded and decoded[name] != principal["requestId"]:
                         raise AccessError(409, "request_conflict", "The operation ID does not match its signature")
-            if generic_receipt:
-                saved = await asyncio.to_thread(service.reserve, principal["clientId"], principal["requestId"], method, target, raw)
-                if saved is not None:
-                    saved_headers = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in saved["headers"]]
-                    saved_headers.append((b"x-studio-server", principal["targetServerId"].encode()))
-                    await cors_send({"type": "http.response.start", "status": saved["status"], "headers": saved_headers})
-                    await cors_send({"type": "http.response.body", "body": base64.b64decode(saved["body"])})
-                    return
-                reserved = True
             sent_body = False
 
             async def replay_receive() -> Message:
@@ -191,6 +195,24 @@ class MultiServerBoundary:
                 if message["type"] == "http.response.start":
                     message = {**message, "headers": [*message.get("headers", []), (b"x-studio-server", principal["targetServerId"].encode())]}
                 await cors_send(message)
+
+            receipt_replayed = False
+
+            async def reserve_before_dispatch() -> bool:
+                nonlocal reserved, receipt_replayed
+                assert service is not None
+                saved = await asyncio.to_thread(service.reserve, principal["clientId"], principal["requestId"], method, target, raw)
+                if saved is not None:
+                    receipt_replayed = True
+                    saved_headers = [(name.encode("latin-1"), value.encode("latin-1")) for name, value in saved["headers"]]
+                    await identified_send({"type": "http.response.start", "status": saved["status"], "headers": saved_headers})
+                    await identified_send({"type": "http.response.body", "body": base64.b64decode(saved["body"])})
+                    return False
+                reserved = True
+                return True
+
+            if generic_receipt:
+                scope["studio_access_reserve"] = reserve_before_dispatch
 
             if path == "/api/sync/stream":
                 assert service is not None
@@ -206,7 +228,7 @@ class MultiServerBoundary:
                     while True:
                         await asyncio.sleep(STREAM_RECHECK_SECONDS)
                         try:
-                            allowed = await asyncio.to_thread(service.allowed, principal["clientId"])
+                            allowed = (await asyncio.to_thread(service.allowed, principal["clientId"])) and self.context.remote.origin() == origin
                         except (OSError, RuntimeError, sqlite3.Error):
                             return
                         if not allowed:
@@ -244,11 +266,27 @@ class MultiServerBoundary:
                             raise AccessError(502, "outcome_unknown", "The response exceeds 1 MiB. Recover the existing operation receipt")
 
                 await self.app(scope, replay_receive, save_send)
+                if receipt_replayed:
+                    return
                 if start is None:
                     raise AccessError(502, "outcome_unknown", "The operation response is missing. Recover its existing receipt")
                 response_headers = start.get("headers", [])
-                await asyncio.to_thread(service.complete, principal["clientId"], principal["requestId"], start["status"], response_headers,
-                                        bytes(response_body), redact_invite=path == "/api/multi-server" and decoded.get("action") == "create_invite")
+                transient = start["status"] >= 500 or start["status"] in {401, 403, 408, 425, 426, 429}
+                prehandler_failure = bool(scope.get("studio_prehandler_failure")) or scope.get("endpoint") is None
+                failed_pair = path == "/api/multi-server/v1/pair" and start["status"] >= 400
+                if reserved and scope.get("studio_outcome_unknown") and not failed_pair:
+                    await _failure(identified_send, AccessError(503, "outcome_unknown", "The operation outcome is unknown. Keep the request ID"))
+                    return
+                if reserved and (prehandler_failure or failed_pair):
+                    await asyncio.to_thread(service.retry, principal["clientId"], principal["requestId"], discard=True)
+                elif reserved and transient:
+                    # An accept operation repeats only its durable outbound
+                    # request. An arbitrary failed mutation remains unknown.
+                    if (path == "/api/multi-server" and decoded.get("action") == "accept_invite") or start["status"] in {401, 403}:
+                        await asyncio.to_thread(service.retry, principal["clientId"], principal["requestId"])
+                elif reserved:
+                    await asyncio.to_thread(service.complete, principal["clientId"], principal["requestId"], start["status"], response_headers,
+                                            bytes(response_body), redact_invite=path == "/api/multi-server" and decoded.get("action") == "create_invite")
                 await identified_send(start)
                 await identified_send({"type": "http.response.body", "body": bytes(response_body)})
             else:
