@@ -21,7 +21,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("draft idle poll browser", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(30_000);
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -48,6 +48,7 @@ test("draft idle poll browser", async ({ browser: _browser }) => {
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     browser = _browser;
     const page = await browser.newPage();
+    await page.clock.install();
     const requests = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
@@ -56,7 +57,7 @@ test("draft idle poll browser", async ({ browser: _browser }) => {
     });
     await page.goto(origin);
     await page.locator("#message").waitFor();
-    await page.waitForTimeout(1500);
+    await page.clock.runFor(1500);
     requests.length = 0;
     for (let index = 0; index < 12; index++) {
       fixture.stdin.write(
@@ -68,9 +69,9 @@ test("draft idle poll browser", async ({ browser: _browser }) => {
           },
         }) + "\n",
       );
-      await page.waitForTimeout(500);
+      await page.clock.runFor(500);
     }
-    await page.waitForTimeout(1500);
+    await page.clock.runFor(1500);
     const draftPulls = requests.filter(
       (path) => new URL(path, origin).searchParams.get("scope") === "drafts",
     ).length;

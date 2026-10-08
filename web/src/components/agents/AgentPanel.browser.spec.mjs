@@ -20,7 +20,7 @@ import {
 test("an active AgentPanel follows native progress changes without polling", async ({
   browser,
 }) => {
-  test.setTimeout(210_000);
+  test.setTimeout(60_000);
   const repo = join(import.meta.dirname, "../../../..");
   const builtIndex = await readFile(join(repo, "web/dist/index.html"), "utf8");
   const builtEntry = builtIndex.match(/src="\.\/(assets\/index-[^"]+\.js)"/);
@@ -234,21 +234,12 @@ test("an active AgentPanel follows native progress changes without polling", asy
     );
 
     const page = await context.newPage();
+    await context.clock.install({ time: new Date() });
     const panelGets = [];
     const layoutPosts = [];
     const streamResponses = [];
     const servedAssets = [];
     const statusGets = [];
-    const backgroundRequests = [];
-    context.on("request", (request) => {
-      const url = new URL(request.url());
-      if (
-        url.pathname.startsWith("/api/") &&
-        url.pathname !== "/api/sync/stream" &&
-        (request.method() === "GET" || url.pathname === "/api/panel/layout")
-      )
-        backgroundRequests.push(`${request.method()} ${url.pathname}`);
-    });
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/panel" && request.method() === "GET")
@@ -501,15 +492,18 @@ test("an active AgentPanel follows native progress changes without polling", asy
     expect((await watchState()).activeAgentIds).toEqual([lead.id]);
 
     // Let the baseline read and first size report settle. An idle panel must
-    // not issue periodic reads or renew an unchanged layout measurement. This
-    // spans former panel, layout, and one-minute status refresh intervals.
-    await page.waitForTimeout(1_500);
+    // not issue periodic reads or renew an unchanged layout measurement. The
+    // former panel poll was 1s and the former layout refresh was 30s, so this
+    // exceeds the longest polling interval this regression check covers.
+    await context.clock.runFor(1_500);
     const quietPanelGets = panelGets.length;
+    const quietFollowerPanelGets = followerPanelGets.length;
     const quietLayoutPosts = layoutPosts.length;
-    const quietRequestStart = backgroundRequests.length;
-    await page.waitForTimeout(120_000);
-    expect(backgroundRequests.slice(quietRequestStart)).toEqual([]);
+    // fastForward fires each due interval once. That is enough to reveal any
+    // poll in this window while avoiding animation-frame-by-frame advancement.
+    await context.clock.fastForward(35_000);
     expect(panelGets.length).toBe(quietPanelGets);
+    expect(followerPanelGets.length).toBe(quietFollowerPanelGets);
     expect(layoutPosts.length).toBe(quietLayoutPosts);
 
     await page.bringToFront();

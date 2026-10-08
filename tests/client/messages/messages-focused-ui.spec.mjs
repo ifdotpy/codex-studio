@@ -67,6 +67,7 @@ test("messages focused ui", async ({ browser: _browser }) => {
     );
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    await page.clock.install();
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -206,7 +207,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
     await youRow.click();
     for (const width of [1280, 390, 320]) {
       await page.setViewportSize({ width, height: 900 });
-      await page.waitForTimeout(500);
+      await page.clock.runFor(500);
       if (!(await drawer.isVisible())) {
         if (await page.locator("#messages-toggle").isVisible())
           await page.locator("#messages-toggle").click();
@@ -236,15 +237,12 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
           .locator(".unified-message-scroll")
           .evaluate((el) => el.scrollWidth <= el.clientWidth + 1),
       );
-      await page.screenshot({
-        path: join(root, `messages-${width}.png`),
-        animations: "disabled",
-      });
     }
     // Slow reads must not change the layout when the server data is unchanged.
     const stable = await browser.newPage({
       viewport: { width: 1280, height: 900 },
     });
+    await stable.clock.install();
     stable.on("pageerror", (error) => errors.push(error.message));
     const quietState = structuredClone(state);
     quietState.runtime.requests = [];
@@ -296,7 +294,7 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
         },
       );
     });
-    await stable.waitForTimeout(5500);
+    await stable.clock.fastForward(5500);
     assert.equal(
       reads,
       0,
@@ -339,22 +337,27 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       "snapshot updates replace the empty state",
     );
     assert.equal(reads, 0);
-    await stable.screenshot({
-      path: join(root, "messages-stable-1280.png"),
-      animations: "disabled",
-    });
     await stableDrawer.locator(".mantine-Drawer-close").click();
     let planError = false;
     let planReads = 0,
       concurrentPlans = 0,
       maxPlans = 0;
+    let releaseFirstPlan;
+    let markFirstPlanStarted;
+    const firstPlanStarted = new Promise((resolve) => {
+      markFirstPlanStarted = resolve;
+    });
+    const firstPlanResponse = new Promise((resolve) => {
+      releaseFirstPlan = resolve;
+    });
     await stable.route("**/api/plan?*", async (route) => {
       planReads++;
       concurrentPlans++;
       maxPlans = Math.max(maxPlans, concurrentPlans);
-      await new Promise((resolve) =>
-        setTimeout(resolve, planReads === 1 ? 6500 : 400),
-      );
+      if (planReads === 1) {
+        markFirstPlanStarted();
+        await firstPlanResponse;
+      }
       await route.fulfill(
         planError
           ? { status: 503, json: { error: "Plan read unavailable" } }
@@ -369,6 +372,11 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       exact: true,
     });
     await workDrawer.waitFor();
+    await firstPlanStarted;
+    const secondPlanResponse = stable.waitForResponse((response) =>
+      response.url().includes("/api/plan?"),
+    );
+    await workDrawer.getByRole("button", { name: "Refresh workspace" }).click();
     const noPlan = workDrawer.getByText("This agent has not reported a plan.", {
       exact: true,
     });
@@ -377,13 +385,19 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       0,
       "initial load does not claim no plan",
     );
-    await noPlan.waitFor({ timeout: 9000 });
+    releaseFirstPlan();
+    await noPlan.waitFor({ timeout: 3_000 });
+    await secondPlanResponse;
+    assert.equal(
+      planReads,
+      2,
+      "a pending refresh is served after the first read",
+    );
     assert.equal(
       maxPlans,
       1,
       "slow reads coalesce instead of overlapping or losing results",
     );
-    await stable.waitForTimeout(500);
     const planNode = await noPlan.elementHandle();
     for (const fail of [false, true]) {
       planError = fail;
@@ -393,14 +407,14 @@ print(json.dumps([dict(r) for r in c.execute("select * from runtime_events where
       await workDrawer
         .getByRole("button", { name: "Refresh workspace" })
         .click();
-      await stable.waitForTimeout(100);
+      await stable.clock.runFor(100);
       assert.ok(
         await planNode.evaluate((el) => el.isConnected),
         "empty plan survives an in-flight refresh",
       );
       await planResponse;
       if (fail) await workDrawer.getByRole("alert").waitFor();
-      await stable.waitForTimeout(100);
+      await stable.clock.runFor(100);
       assert.ok(
         await planNode.evaluate((el) => el.isConnected),
         "last settled empty plan survives refresh failure",

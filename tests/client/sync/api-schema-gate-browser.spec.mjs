@@ -56,6 +56,7 @@ test("cold response mismatch shows the gate and update reload reaches rebuild te
     await route.fulfill({ response, headers });
   });
   try {
+    await page.clock.install();
     await page.goto(url);
     await expect(
       page.locator('[data-modal-content="true"]').filter({
@@ -65,7 +66,7 @@ test("cold response mismatch shows the gate and update reload reaches rebuild te
     ).toBeVisible({ timeout: 5_000 });
     await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
     const quietCount = apiRequests;
-    await page.waitForTimeout(8_000);
+    await page.clock.fastForward(8_000);
     assert.equal(apiRequests, quietCount, "API requests stop after mismatch");
 
     const reload = page.waitForEvent("load");
@@ -107,6 +108,7 @@ test("cold stream handshake mismatch shows the gate when startup responses have 
   page.on("request", (request) => {
     if (new URL(request.url()).pathname.startsWith("/api/")) apiRequests++;
   });
+  await page.clock.install();
   await page.goto(url);
   await expect(
     page.locator('[data-modal-content="true"]').filter({
@@ -117,7 +119,7 @@ test("cold stream handshake mismatch shows the gate when startup responses have 
   assert.ok(streams > 0, "the stream handshake caused the mismatch gate");
   await expect(page.getByRole("button", { name: "Update" })).toBeVisible();
   const quietCount = apiRequests;
-  await page.waitForTimeout(8_000);
+  await page.clock.fastForward(8_000);
   assert.equal(
     apiRequests,
     quietCount,
@@ -348,6 +350,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       );
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
+    await page.clock.install();
     await page.goto(`http://127.0.0.1:${port}`);
     await expect(page.getByRole("alertdialog")).toHaveCount(0);
     await page.evaluate(async () => {
@@ -422,7 +425,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     const settledRequests = totalRequests;
     const settledSyncRequests = syncRequests.length;
     const settledMutations = mutationRequests;
-    await page.waitForTimeout(8_000);
+    await page.clock.fastForward(8_000);
     assert.equal(
       totalRequests,
       settledRequests,
@@ -728,6 +731,7 @@ test("a stream mismatch keeps the transcript and draft while stopping every requ
       );
       fixture.once("exit", () => reject(new Error(fixtureLog)));
     });
+    await page.clock.install();
     await page.goto(`http://127.0.0.1:${port}`);
     await page.evaluate(async () => {
       await navigator.serviceWorker?.ready;
@@ -775,7 +779,7 @@ test("a stream mismatch keeps the transcript and draft while stopping every requ
       page.getByRole("button", { name: "Send message" }),
     ).toBeDisabled();
     const settledRequests = totalRequests;
-    await page.waitForTimeout(8_000);
+    await page.clock.fastForward(8_000);
     assert.equal(
       totalRequests,
       settledRequests,

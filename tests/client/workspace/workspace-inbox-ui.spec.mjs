@@ -77,6 +77,7 @@ test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
         },
       }),
     );
+    await page.clock.install();
     await page.goto(origin);
     await page
       .getByRole("button", { name: "Account limits", exact: true })
@@ -87,7 +88,7 @@ test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
     });
     await details.getByText("Estimated API cost", { exact: true }).waitFor();
     await details.getByText("$12.50", { exact: true }).waitFor();
-    await page.waitForTimeout(11000);
+    await page.clock.fastForward(11000);
     assert.equal(
       requests.length,
       0,
@@ -98,9 +99,6 @@ test("workspace-inbox-ui", async ({ browser: fixtureBrowser }) => {
       /server did not respond in time/,
     );
     expect(errors).toEqual([]);
-    await page.screenshot({
-      path: join(evidence, "limits-with-pending-inbox.png"),
-    });
     console.log(
       JSON.stringify({
         passed: true,

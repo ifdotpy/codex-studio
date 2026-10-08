@@ -12,7 +12,7 @@ test("Draft sync ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-draft-sync-"));
   const fixture = spawn(
@@ -123,7 +123,7 @@ test("Draft sync ui", async ({
           )
         )
           return;
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await desktop.clock.runFor(100);
       }
       throw new Error("The draft did not reach the server: " + text);
     };
@@ -136,6 +136,8 @@ test("Draft sync ui", async ({
       isMobile: true,
       hasTouch: true,
     });
+    await desktop.clock.install();
+    await phone.clock.install();
     const errors = [];
     for (const page of [desktop, phone])
       page.on("pageerror", (error) => errors.push(error.message));
@@ -162,12 +164,13 @@ test("Draft sync ui", async ({
       "The aggregate map must remain byte-identical",
     );
     await desktop.locator("#message").fill("Draft from desktop");
-    const waitText = (page, text) =>
-      page.waitForFunction(
-        (text) => document.querySelector("#message")?.value === text,
-        text,
-        { timeout: 15000 },
-      );
+    const waitText = async (page, text) => {
+      for (let attempt = 0; attempt < 150; attempt++) {
+        if ((await page.locator("#message").inputValue()) === text) return;
+        await page.clock.runFor(100);
+      }
+      throw new Error(`Draft did not converge to ${JSON.stringify(text)}`);
+    };
     await phone.goto(origin);
     await phone.getByRole("button", { name: "Toggle conversations" }).click();
     await phone
@@ -177,7 +180,7 @@ test("Draft sync ui", async ({
     await waitText(phone, "Draft from desktop");
     await phone.locator("#message").fill("Continue on phone");
     await untilDraftSaved("Continue on phone");
-    await desktop.waitForTimeout(3500);
+    await desktop.clock.fastForward(3500);
     assert.equal(
       await desktop.locator("#message").inputValue(),
       "Draft from desktop",
@@ -224,10 +227,10 @@ test("Draft sync ui", async ({
     const draftPullRequestTimes = [];
     const draftPullCompletedTimes = [];
     let nextPullGate;
+    const browserNow = () => desktop.evaluate(() => Date.now());
     const remoteProbeId = "remote-pull-probe:remote-pull-probe-session";
     const pushedDraftIds = [];
     const pushedDraftRows = [];
-    const pushFailureTimes = [];
     await desktop.route("**/api/sync/pull?*", async (route) => {
       if (new URL(route.request().url()).searchParams.get("scope") !== "drafts")
         return route.continue();
@@ -261,7 +264,6 @@ test("Draft sync ui", async ({
       pushedDraftRows.push(...rows);
       if (failPush) {
         pushFailures++;
-        pushFailureTimes.push(Date.now());
         return route.abort("failed");
       }
       successfulDraftPosts++;
@@ -270,7 +272,7 @@ test("Draft sync ui", async ({
     const until = async (condition, label) => {
       for (let i = 0; i < 160; i++) {
         if (await condition()) return;
-        await desktop.waitForTimeout(100);
+        await desktop.clock.runFor(100);
       }
       throw new Error(label);
     };
@@ -325,7 +327,7 @@ test("Draft sync ui", async ({
         if (!(await status.isVisible()))
           throw new Error(`draft sync notice disappeared during ${label}`);
         if ((await status.innerText()) === expected) return;
-        await desktop.waitForTimeout(10);
+        await desktop.clock.runFor(10);
       }
       throw new Error(`draft sync notice did not update during ${label}`);
     };
@@ -348,7 +350,7 @@ test("Draft sync ui", async ({
     // Draft pulls are event-driven; resume supplies the next retry trigger.
     await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
     await until(() => successfulPulls > previousPulls, "empty pull recovered");
-    await desktop.waitForTimeout(8500);
+    await desktop.clock.fastForward(8500);
     assert.equal(
       await status.count(),
       0,
@@ -362,7 +364,7 @@ test("Draft sync ui", async ({
       text: "probe",
       updated: Date.now(),
     });
-    await status.waitFor({ timeout: 18000 });
+    await until(() => status.isVisible(), "draft sync pause notice appears");
     assert.equal(
       await status.innerText(),
       "Draft sync paused. Resumes when reconnected or drafts change.",
@@ -429,7 +431,7 @@ test("Draft sync ui", async ({
     // below covers bursts while restart throttling is active.
     const pullsAfterRecovery = draftPullRequests;
     const pushesAfterRecovery = pushFailures;
-    await desktop.waitForTimeout(30_000);
+    await desktop.clock.fastForward(30_000);
     assert.equal(
       draftPullRequests,
       pullsAfterRecovery,
@@ -456,13 +458,12 @@ test("Draft sync ui", async ({
       }),
     );
 
-    const stormStartedAt = Date.now();
+    const stormStartedAt = await browserNow();
     const stormPullsAtStart = draftPullRequests;
     const stormCreationsAtStart = await desktop.evaluate(
       () => window.__draftReplicationCreations,
     );
     const stormPushesAtStart = pushFailures;
-    const stormFailureTimesAtStart = pushFailureTimes.length;
     const pushProbeUpdate = async (text) => {
       const previous = (await documents()).find(
         (document) => document.id === remoteProbeId,
@@ -473,20 +474,21 @@ test("Draft sync ui", async ({
         previous,
       );
     };
-    for (let index = 0; index < 60; index++) {
+    // Each invalidation carries a distinct remote winner; the final write
+    // must make it through the replacement sequence without stale overwrite.
+    const stormChanges = 60;
+    const latestStormValue = `restart trigger ${stormChanges - 1}`;
+    for (let index = 0; index < stormChanges; index++) {
       await pushProbeUpdate(`restart trigger ${index}`);
       await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
-      await desktop.waitForTimeout(100);
+      await desktop.clock.fastForward(100);
     }
-    const stormDuration = Date.now() - stormStartedAt;
+    const stormDuration = (await browserNow()) - stormStartedAt;
     const stormPulls = draftPullRequests - stormPullsAtStart;
     const stormRestarts =
       (await desktop.evaluate(() => window.__draftReplicationCreations)) -
       stormCreationsAtStart;
     const stormPushFailures = pushFailures - stormPushesAtStart;
-    const stormPushOffsets = pushFailureTimes
-      .slice(stormFailureTimesAtStart)
-      .map((time) => time - stormStartedAt);
     const maxRestartsAtMinimumInterval =
       Math.floor(stormDuration / draftTiming.restartMinInterval) + 1;
     const minExpectedRestarts = Math.max(
@@ -512,14 +514,14 @@ test("Draft sync ui", async ({
     );
     await until(async () => {
       const local = await localDraft(remoteProbeId);
-      return local && JSON.parse(local.payload).text === "restart trigger 59";
-    }, "the last remote draft written during the storm is pulled");
+      return local && JSON.parse(local.payload).text === latestStormValue;
+    }, `the 60th remote draft (${latestStormValue}) written during the storm is pulled`);
     const baseRetryAttempts =
       Math.floor(stormDuration / draftTiming.pushRetry) + 1;
     const maxPushAttempts = baseRetryAttempts + stormRestarts;
     assert.ok(
       stormPushFailures <= maxPushAttempts,
-      `100 ms invalidations made ${stormPushFailures} failed pushes at offsets ${JSON.stringify(stormPushOffsets)} in ${stormDuration} ms; the ${baseRetryAttempts} base retry slots plus ${stormRestarts} restart attempts allow ${maxPushAttempts}`,
+      `100 ms invalidations made ${stormPushFailures} failed pushes in ${stormDuration} ms; the ${baseRetryAttempts} base retry slots plus ${stormRestarts} restart attempts allow ${maxPushAttempts}`,
     );
     console.log(
       "Draft restart storm requests:",
@@ -527,7 +529,6 @@ test("Draft sync ui", async ({
         stormDuration,
         stormPulls,
         stormPushFailures,
-        stormPushOffsets,
       }),
     );
     // Queue several events while a replacement is starting, then let its first
@@ -559,7 +560,7 @@ test("Draft sync ui", async ({
       () => successfulDraftPosts > postsBeforeRestore,
       "the retained composer draft is pushed after recovery",
     );
-    await desktop.waitForTimeout(
+    await desktop.clock.fastForward(
       draftTiming.pushRetry + draftTiming.pushQuietWait + 200,
     );
     failPush = true;
@@ -583,18 +584,18 @@ test("Draft sync ui", async ({
       "trigger A starts exactly one pull",
     );
     const pullAIndex = draftPullRequestTimes.length - 1;
+    const pullAStartedAt = await browserNow();
     await until(
       () => draftPullCompletedTimes.length > pullAIndex,
       "trigger A pull completes",
     );
-    const pullAStartedAt = draftPullRequestTimes[pullAIndex];
-    const pullACompletedAt = draftPullCompletedTimes[pullAIndex];
+    const pullACompletedAt = await browserNow();
 
     // Trigger B arrives 500 ms after A's pull completes. The restart interval
     // retains it and runs one replacement at the next allowed time.
     await pushProbeUpdate("Latest remote draft after deferred trigger B");
-    await desktop.waitForTimeout(500);
-    const triggerBDispatchedAt = Date.now();
+    await desktop.clock.fastForward(500);
+    const triggerBDispatchedAt = await browserNow();
     assert.ok(
       triggerBDispatchedAt - pullACompletedAt >= 500 &&
         triggerBDispatchedAt - pullACompletedAt <= 1_000,
@@ -607,7 +608,7 @@ test("Draft sync ui", async ({
       "trigger B is deferred until the restart interval",
     );
     const pullBIndex = draftPullRequestTimes.length - 1;
-    const pullBStartedAt = draftPullRequestTimes[pullBIndex];
+    const pullBStartedAt = await browserNow();
     assert.ok(
       pullBStartedAt >=
         pullAStartedAt + draftTiming.restartMinInterval - restartRequestSkewMs,
@@ -630,7 +631,7 @@ test("Draft sync ui", async ({
       () => draftPullCompletedTimes.length > pullBIndex,
       "trigger B pull completes",
     );
-    await desktop.waitForTimeout(
+    await desktop.clock.fastForward(
       draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
     );
     assert.equal(
@@ -657,7 +658,7 @@ test("Draft sync ui", async ({
     const pullsBeforeInFlightA = draftPullRequests;
     await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
     await heldPullStarted;
-    const inFlightAStartedAt = draftPullRequestTimes.at(-1);
+    const inFlightAStartedAt = await browserNow();
     assert.equal(
       draftPullRequests - pullsBeforeInFlightA,
       1,
@@ -668,14 +669,14 @@ test("Draft sync ui", async ({
     await desktop.evaluate(() => window.dispatchEvent(new Event("online")));
     // onResume debounces lifecycle events by 50 ms; leave A held long enough
     // for B's callback to queue its deferred restart before releasing A.
-    await desktop.waitForTimeout(100);
+    await desktop.clock.fastForward(100);
     releaseHeldPull();
     await until(
       () => draftPullRequests > inFlightPullCountBeforeB,
       "trigger B during A's restart gets one deferred pull",
     );
     const inFlightBIndex = draftPullRequestTimes.length - 1;
-    const inFlightBStartedAt = draftPullRequestTimes[inFlightBIndex];
+    const inFlightBStartedAt = await browserNow();
     assert.ok(
       inFlightBStartedAt >=
         inFlightAStartedAt +
@@ -702,7 +703,7 @@ test("Draft sync ui", async ({
       () => draftPullCompletedTimes.length > inFlightBIndex,
       "in-flight trigger B pull completes",
     );
-    await desktop.waitForTimeout(
+    await desktop.clock.fastForward(
       draftTiming.pushRetry + draftTiming.pushQuietWait + 100,
     );
     assert.equal(
@@ -760,8 +761,7 @@ test("Draft sync ui", async ({
       Math.abs(before.y - after.y) < 1,
       "Conflict preview must not shrink the chat",
     );
-    await phone.waitForTimeout(250);
-    await phone.screenshot({ path: join(state, "draft-versions.png") });
+    await phone.clock.fastForward(250);
     await phone
       .getByRole("button", { name: "Dismiss", exact: true })
       .first()
@@ -775,7 +775,7 @@ test("Draft sync ui", async ({
     );
     await phone.reload();
     await waitText(phone, "Current draft");
-    await phone.waitForTimeout(3500);
+    await phone.clock.fastForward(3500);
     assert.equal(
       await phone.getByRole("button", { name: /^Other drafts/ }).count(),
       0,

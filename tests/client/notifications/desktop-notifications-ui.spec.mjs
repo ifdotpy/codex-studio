@@ -86,6 +86,7 @@ test("Desktop Notifications Ui", async ({
     };
     page = testPage;
     await page.setViewportSize({ width: 1280, height: 900 });
+    await page.clock.install();
     page.setDefaultTimeout(12000);
     await page.addInitScript(
       ({ stateDir, id }) => {
@@ -146,9 +147,9 @@ test("Desktop Notifications Ui", async ({
       });
       const deadline = Date.now() + 12000;
       while (reads <= before && Date.now() < deadline)
-        await page.waitForTimeout(100);
+        await page.clock.runFor(100);
       assert.ok(reads > before, "a new entity pull arrived");
-      await page.waitForTimeout(250);
+      await page.clock.runFor(250);
     };
     assert.equal(
       await page.evaluate(() => window.alerts.length),
@@ -235,9 +236,6 @@ test("Desktop Notifications Ui", async ({
       .getByRole("dialog")
       .getByText("Which release scope?", { exact: true })
       .waitFor();
-    await page.screenshot({
-      path: join(evidence, "notification-question.png"),
-    });
     await page.evaluate(() => {
       window.fakeFocus = false;
       window.deniedErrors = [];
