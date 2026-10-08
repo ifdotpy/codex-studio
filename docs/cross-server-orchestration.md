@@ -56,10 +56,14 @@ fsmonitor, and the pager. Other commands fail before execution.
 The commands disable signature programs, external diffs, textconv, lazy object
 fetch, and external Git transports. Local fetch rejects URL rewrites that match
 the bundle path. Only the local file transport is permitted for fetch.
-Before each command, Git reads the effective content driver names, including
-config includes. The command disables all listed filters and diff drivers.
-An unreadable driver list prevents the command. Alternate-ref programs,
-credential helpers, SSH programs, pack hooks, and automatic maintenance are disabled.
+Before each command, Git reads the effective config keys. The read includes
+repository config includes and worktree scope. An explicit allowlist permits
+data keys. Known helper keys receive safe overrides. All other keys cause a
+refusal that names the key. Config include paths and URL rewrites cause refusal.
+Overrides use `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, and `GIT_CONFIG_VALUE_n`.
+The command never puts a config key into `-c key=value` text.
+An unreadable config list prevents the command. Alternate-ref programs,
+credential helpers, SSH programs, filters, and automatic maintenance are disabled.
 
 Fetch uses a Git bundle through the paired channel. The server keeps the
 export for the original request. Each chunk and the complete bundle have a
@@ -83,7 +87,11 @@ repeat native model input. Source servers queue child results, messages, task
 submissions, and stops until the destination returns. A late state or result
 cannot reopen a stopped home team. A monotonic sequence rejects old snapshots.
 Transport errors affect one envelope. Retry delays increase from 5 seconds to
-300 seconds. Completed queue and inbox rows expire after 7 days. Compact identity
+300 seconds. After eight unknown input receipts or transport errors, the home
+server closes that input with a terminal unknown receipt. It sends the lead a
+notice with the request identity and `outcome unknown, inspect the worker`.
+The home server never retries that input. Later input for the worker can then proceed.
+Completed queue and inbox rows expire after 7 days. Compact identity
 and fingerprint records prevent expired requests from executing again.
 
 An unfinished inbound receipt stays unknown unless an exact committed effect
