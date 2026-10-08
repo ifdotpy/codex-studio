@@ -22,7 +22,7 @@ test("Worker model", async () => {
   )("playwright-core");
   const root = await mkdtemp(join(tmpdir(), "codex-worker-model-ui-"));
   const proc = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -189,10 +189,19 @@ test("Worker model", async () => {
         !document.querySelector("#model").disabled &&
         document.querySelector("#model").dataset.value === "test-model",
     );
+    await page.waitForFunction(async (id) => {
+      const snapshot = await window.__readTestState();
+      const selected = snapshot.runtime.agents.find((agent) => agent.id === id);
+      return selected?.model === "test-model";
+    }, worker.id);
     const state = await readTestState(url);
+    const selectedWorker = state.runtime.agents.find(
+      (agent) => agent.id === worker.id,
+    );
     assert.equal(
-      state.runtime.agents.find((agent) => agent.id === worker.id).model,
+      selectedWorker.model,
       "test-model",
+      "An idle worker's selected model is persisted immediately",
     );
     await selectModel(selector, "ui-only");
     await page
