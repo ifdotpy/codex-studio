@@ -21,11 +21,14 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
     {
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(evidence, "board") },
     },
   );
   let log = "";
+  let output = "";
+  const fixtureReplies = new Map();
+  const fixtureWaiters = new Map();
   fixture.stderr.on("data", (data) => (log += data));
   const waitFor = async (condition, label) => {
     for (let index = 0; index < 120; index++) {
@@ -38,12 +41,54 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     fixture.stdout.once("data", (data) => resolve(Number(String(data).trim())));
     fixture.once("exit", () => reject(Error(log)));
   });
+  fixture.stdout.on("data", (chunk) => {
+    output += String(chunk);
+    const lines = output.split("\n");
+    output = lines.pop() || "";
+    for (const line of lines) {
+      try {
+        const reply = JSON.parse(line);
+        const waiter = fixtureWaiters.get(reply.id);
+        if (waiter) {
+          clearTimeout(waiter.timeout);
+          fixtureWaiters.delete(reply.id);
+          waiter.resolve(reply);
+        } else if (reply.id) fixtureReplies.set(reply.id, reply);
+      } catch {}
+    }
+  });
+  const fixtureCommand = (id, params) => {
+    const reply = fixtureReplies.has(id)
+      ? Promise.resolve(fixtureReplies.get(id))
+      : new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
+            fixtureWaiters.delete(id);
+            reject(new Error(`Fixture command ${id} timed out: ${log}`));
+          }, 8000);
+          fixtureWaiters.set(id, { resolve, reject, timeout });
+        });
+    fixture.stdin.write(
+      `${JSON.stringify({ id, method: "fixture/entity-change", params })}\n`,
+    );
+    return reply;
+  };
   const origin = `http://127.0.0.1:${port}`;
   const initial = await readTestState(origin);
   const lead = initial.threads.find((agent) => agent.name === "Release lead");
   const worker = initial.threads.find(
     (agent) => agent.rootId === lead.id && agent.name === "Worker 00",
   );
+  const seededWorker = await fixtureCommand("snapshot-revision-0", {
+    operation: "rename",
+    agent: worker.id,
+    name: "Worker revision 0",
+  });
+  assert.equal(
+    seededWorker.ok,
+    true,
+    "fixture commits the initial worker name",
+  );
+  assert.ok(Number.isSafeInteger(seededWorker.seq));
   const page = fixturePage;
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
@@ -55,92 +100,25 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     holdNext = false,
     oldRequest,
     currentFailure = false,
-    pendingAnswer,
-    answered = false,
-    stateSeq = 1,
-    answerTombstone;
-  const snapshot = () => {
-    const data = structuredClone(initial);
-    if (answered) data.runtime.requests = [];
-    for (const list of [data.threads, data.runtime.agents])
-      for (const agent of list)
-        if (agent.id === worker.id) {
-          agent.name = `Worker revision ${revision}`;
-          agent.status = ["queued", "running", "failed"][revision];
-        }
-    return data;
-  };
-  const entityCollections = [
-    "requests",
-    "tasks",
-    "monitors",
-    "complaints",
-    "userTasks",
-    "projects",
-    "peerTeams",
-    "rooms",
-  ];
-  const entityCount = (data) =>
-    data.threads.length +
-    entityCollections.reduce(
-      (count, collection) => count + (data.runtime[collection]?.length ?? 0),
-      0,
-    );
-  const identity = await (await fetch(`${origin}/api/sync/identity`)).json();
+    pendingAnswer;
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.get("scope") !== "state:entities:v1")
       return route.fallback();
-    const after = Number(url.searchParams.get("after") || 0);
-    const data = snapshot();
-    const rows = new Map();
-    const sequenceBase = stateSeq * 1000;
-    let sequence = sequenceBase;
-    const add = (collection, values) => {
-      for (const value of values || [])
-        rows.set(`${collection}:${value.id}`, {
-          id: `entity:${collection}:${value.id}`,
-          seq: sequence++,
-          _deleted: false,
-          payload: JSON.stringify({ collection, id: value.id, value }),
-        });
-    };
-    add("agent", data.threads);
-    for (const collection of entityCollections) {
-      const collectionName = {
-        requests: "request",
-        tasks: "task",
-        monitors: "monitor",
-        complaints: "complaint",
-        userTasks: "task",
-        projects: "project",
-        peerTeams: "peerTeam",
-        rooms: "room",
-      }[collection];
-      add(collectionName, data.runtime[collection]);
-    }
-    // The answer response delivers its tombstone immediately, as the real
-    // /api/answer route does. Keep that sequence in the pull cursor, without
-    // delivering the same deletion again from a later pull.
-    const checkpoint = Math.max(sequence - 1, answerTombstone?.seq ?? 0);
-    const documents = after < checkpoint ? [...rows.values()] : [];
-    entityPulls.push({ after, checkpoint, documents });
-    await route.fulfill({
-      json: {
-        ...identity,
-        documents,
-        checkpoint: { seq: Math.max(after, checkpoint) },
-        initialHigh: checkpoint,
-        maxSeq: checkpoint,
-      },
+    const response = await route.fetch();
+    const body = await response.json();
+    entityPulls.push({
+      url: `${url.pathname}${url.search}`,
+      checkpoint: body.checkpoint?.seq,
+      documents: body.documents ?? [],
     });
+    await route.fulfill({ response, json: body });
   });
   await page.route("**/api/session", async (route) => {
-    const data = snapshot();
     requests.push({ revision, held: holdNext, failure: currentFailure });
     if (holdNext) {
       holdNext = false;
-      oldRequest = { route, data };
+      oldRequest = { route, revision };
       return;
     }
     await route.fulfill(
@@ -149,13 +127,41 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
         : { json: { token: initial.token } },
     );
   });
-  await page.route("**/api/messages", (route) =>
-    route.fulfill({
+  await page.route("**/api/messages", async (route) => {
+    const fixtureId = `snapshot-revision-${revision}`;
+    const committed = await fixtureCommand(fixtureId, {
+      operation: "rename",
+      agent: worker.id,
+      name: `Worker revision ${revision}`,
+      status: ["queued", "running", "failed"][revision],
+    });
+    assert.equal(committed.ok, true, "fixture commits the worker entity");
+    assert.ok(
+      Number.isSafeInteger(committed.seq),
+      "commit has a real sequence",
+    );
+    return route.fulfill({
       json: { id: route.request().postDataJSON().id, status: "sent" },
-    }),
-  );
+    });
+  });
   await page.route("**/api/answer", async (route) => {
     pendingAnswer = route;
+  });
+  await page.addInitScript(() => {
+    const NativeEventSource = window.EventSource;
+    window.__snapshotOrderResourceFrames = [];
+    window.EventSource = new Proxy(NativeEventSource, {
+      construct(Target, args) {
+        const stream = new Target(...args);
+        stream.addEventListener("resources", (event) => {
+          window.__snapshotOrderResourceFrames.push({
+            at: performance.timeOrigin + performance.now(),
+            frame: JSON.parse(event.data),
+          });
+        });
+        return stream;
+      },
+    });
   });
   await page.goto(origin);
   await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -196,8 +202,6 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
       Math.abs(before[key] - during[key]) <= 1,
       `Loading label ${key} stays stable`,
     );
-  answered = true;
-  stateSeq++;
   const requestId = pendingAnswer.request().postDataJSON().id;
   const serverAnswer = await pendingAnswer.fetch();
   const answerResponse = await serverAnswer.json();
@@ -214,27 +218,17 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     serverTombstone.payload,
     JSON.stringify({ collection: "request", id: requestId, value: {} }),
   );
-  const answerData = snapshot();
-  const answerSequence = stateSeq * 1000 + entityCount(answerData);
-  answerTombstone = {
-    ...serverTombstone,
-    seq: answerSequence,
-  };
-  answerResponse._syncEntities = answerResponse._syncEntities.map((document) =>
-    document.id === answerTombstone.id ? answerTombstone : document,
-  );
   await pendingAnswer.fulfill({ response: serverAnswer, json: answerResponse });
   await card.waitFor({ state: "hidden" });
-  assert.equal(answerTombstone.seq, answerSequence);
   assert.ok(
     answerResponse._syncEntities.some(
-      (document) => document.id === answerTombstone.id && document._deleted,
+      (document) => document.id === serverTombstone.id && document._deleted,
     ),
   );
   assert.equal(
     entityPulls.some((pull) =>
       pull.documents.some(
-        (document) => document.id === answerTombstone.id && document._deleted,
+        (document) => document.id === serverTombstone.id && document._deleted,
       ),
     ),
     false,
@@ -248,16 +242,74 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     await waitFor(() => oldRequest, "Background snapshot poll is held");
     const oldRevision = revision;
     revision++;
-    stateSeq++;
     const newerSession = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname === "/api/session" && response.ok(),
     );
     await page.locator("#message").fill(`Snapshot refresh ${revision}`);
     await page.locator("#send").click();
-    await workerButton
-      .getByText(`Worker revision ${revision}`, { exact: true })
-      .waitFor();
+    try {
+      await workerButton
+        .getByText(`Worker revision ${revision}`, { exact: true })
+        .waitFor();
+    } catch (error) {
+      const resourceFrames = await page.evaluate(
+        () => window.__snapshotOrderResourceFrames,
+      );
+      const workerPulls = entityPulls.map((pull) => ({
+        url: pull.url,
+        checkpoint: pull.checkpoint,
+        workerRows: pull.documents.flatMap((document) => {
+          if (document.id !== `entity:agent:${worker.id}`) return [];
+          const envelope = JSON.parse(document.payload);
+          return [
+            {
+              seq: document.seq,
+              deleted: document._deleted,
+              name: envelope.value.name,
+              status: envelope.value.status,
+            },
+          ];
+        }),
+      }));
+      console.error(
+        "SNAPSHOT_ORDER_SYNC",
+        JSON.stringify({ revision, resourceFrames, workerPulls }),
+      );
+      throw error;
+    }
+    await waitFor(
+      () =>
+        entityPulls.some((pull) =>
+          pull.documents.some((document) => {
+            if (document.id !== `entity:agent:${worker.id}`) return false;
+            return (
+              JSON.parse(document.payload).value.name ===
+              `Worker revision ${revision}`
+            );
+          }),
+        ),
+      "A real entity pull returns the committed worker revision",
+    );
+    const workerRows = entityPulls.flatMap((pull) =>
+      pull.documents.flatMap((document) => {
+        if (document.id !== `entity:agent:${worker.id}`) return [];
+        const value = JSON.parse(document.payload).value;
+        return [{ seq: document.seq, name: value.name }];
+      }),
+    );
+    const initialWorkerSequence = workerRows.find(
+      (row) => row.name === "Worker revision 0",
+    )?.seq;
+    const committedWorkerSequence = workerRows.findLast(
+      (row) => row.name === `Worker revision ${revision}`,
+    )?.seq;
+    assert.ok(
+      Number.isSafeInteger(initialWorkerSequence) &&
+        Number.isSafeInteger(committedWorkerSequence) &&
+        committedWorkerSequence > initialWorkerSequence,
+      "The fixture write advances the real worker entity sequence",
+    );
     await newerSession;
     await waitFor(
       () =>
@@ -273,14 +325,14 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     );
     const freshNode = await workerButton.elementHandle();
     assert.equal(
-      oldRequest.data.threads.find((agent) => agent.id === worker.id).name,
-      `Worker revision ${oldRevision}`,
-      "Held response contains the previous snapshot",
+      oldRequest.revision,
+      oldRevision,
+      "Held credential request started before the worker entity changed",
     );
     await oldRequest.route.fulfill(
       oldFailure
         ? { status: 503, json: { error: "Obsolete snapshot failure" } }
-        : { json: { token: oldRequest.data.token } },
+        : { json: { token: initial.token } },
     );
     // Two paints settle the response before the next scheduled 1.6s poll can hide a regression.
     await page.waitForTimeout(150);

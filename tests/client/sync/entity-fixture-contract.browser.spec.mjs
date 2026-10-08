@@ -439,9 +439,21 @@ test("shared entity stub converges on one matching stream", async ({
     await page.addInitScript(() => {
       const NativeEventSource = window.EventSource;
       window.__entityFixtureResourceEvents = [];
+      window.__entityFixtureStreams = [];
       window.EventSource = new Proxy(NativeEventSource, {
         construct(Target, args) {
           const stream = new Target(...args);
+          const record = {
+            url: String(args[0]),
+            closeCalls: 0,
+            stream,
+          };
+          window.__entityFixtureStreams.push(record);
+          const close = stream.close.bind(stream);
+          stream.close = () => {
+            record.closeCalls++;
+            close();
+          };
           stream.addEventListener("resources", (event) => {
             window.__entityFixtureResourceEvents.push(JSON.parse(event.data));
           });
@@ -490,6 +502,15 @@ test("shared entity stub converges on one matching stream", async ({
     const repeatedStreamUrls = settledStreamUrls.filter(
       (url, index) => settledStreamUrls.indexOf(url) !== index,
     );
+    const streamLifecycle = await page.evaluate(() =>
+      window.__entityFixtureStreams.map(({ url, closeCalls, stream }) => ({
+        url,
+        closeCalls,
+        readyState: stream.readyState,
+        open: stream.readyState === EventSource.OPEN,
+      })),
+    );
+    const openStreams = streamLifecycle.filter(({ open }) => open);
     const entityPulls = pullScopes.filter(
       (scope) => scope === "state:entities:v1",
     ).length;
@@ -504,13 +525,30 @@ test("shared entity stub converges on one matching stream", async ({
         initialStreamConnections,
         streamConnections,
         repeatedStreamUrls,
+        streamLifecycle: streamLifecycle.map(
+          ({ url, closeCalls, readyState }) => ({
+            resources: new URL(url, origin).searchParams.get("resources"),
+            closeCalls,
+            readyState,
+          }),
+        ),
+        openStreamCount: openStreams.length,
         streamStatuses,
         snapshotReads,
       }),
     );
     assert.ok(entityPulls > 0, "page receives entity pulls");
     assert.ok(initialStreamConnections > 0, "page opens the matching stream");
-    assert.equal(streamConnections, 0, "settled stream remains connected");
+    assert.equal(
+      openStreams.length,
+      1,
+      "resource union changes leave exactly one stream open",
+    );
+    assert.equal(
+      streamLifecycle.filter(({ closeCalls }) => closeCalls > 0).length,
+      streamLifecycle.length - 1,
+      "replaced resource-union streams are closed",
+    );
     assert.deepEqual(repeatedStreamUrls, [], "stream queries do not reconnect");
     assert.ok(streamStatuses.every((status) => status === 200));
     assert.equal(

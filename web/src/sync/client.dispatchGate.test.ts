@@ -229,6 +229,66 @@ describe("entity pull dispatch gate", () => {
     });
   };
 
+  it("suppresses a same-epoch frame below the durable checkpoint", async () => {
+    const { entitySequence, rows, stop } = await setup();
+    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
+      "state:entities:v1",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.observeEpoch("server-epoch-a");
+    checkpoint.assign(2123);
+    rows.set("state:entities:checkpoint", {
+      id: "state:entities:checkpoint",
+      payload: "{}",
+      seq: 2123,
+      _deleted: false,
+    });
+    const pulls: number[] = [];
+    mocks.pulls = pulls;
+    mocks.invalidate?.({ epoch: "server-epoch-a", entitySequence: 2001 });
+
+    await Promise.resolve();
+    expect(checkpoint.value).toBe(2123);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(2123);
+    expect(pulls).toEqual([]);
+    stop();
+  });
+
+  it("pulls from a reset baseline when the server epoch changes", async () => {
+    const { entitySequence, rows, stop, workspaceId } = await setup();
+    const checkpoint = entitySequence.getEntitySequenceCheckpoint(
+      "state:entities:v1",
+      API_SCHEMA_HASH,
+    );
+    checkpoint.observeEpoch("server-epoch-a");
+    checkpoint.assign(2123);
+    rows.set("state:entities:checkpoint", {
+      id: "state:entities:checkpoint",
+      payload: "{}",
+      seq: 2123,
+      _deleted: false,
+    });
+    const pulls: number[] = [];
+    mocks.pulls = pulls;
+    mocks.pullResponse = (after) =>
+      after > 5
+        ? { workspaceId, reset: true, floor: 0, maxSeq: 5 }
+        : {
+            workspaceId,
+            documents: [],
+            checkpoint: { seq: 5 },
+            maxSeq: 5,
+            initialHigh: 5,
+          };
+    mocks.invalidate?.({ epoch: "server-epoch-b", entitySequence: 5 });
+
+    await vi.waitFor(() => expect(pulls).toHaveLength(2));
+    expect(pulls).toEqual([2123, 0]);
+    expect(checkpoint.value).toBe(5);
+    expect(rows.get("state:entities:checkpoint")?.seq).toBe(5);
+    stop();
+  });
+
   it("runs a real post through the held persister and gates the real pull loop", async () => {
     const { api, entitySequence, rows, storageInstance, stop, workspaceId } =
       await setup();

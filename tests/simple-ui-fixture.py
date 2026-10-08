@@ -266,6 +266,11 @@ def fixture_events():
                 with c.runtime.lock, c.runtime.db() as db:
                     agent = c.runtime.agent(params['agent'], db)
                     agent['name'] = params['name']
+                    if params.get('status') is not None:
+                        agent['status'] = params['status']
+                        active = params['status'] in {'starting', 'running', 'approval'}
+                        agent['inFlight'] = active
+                        agent['turnId'] = 'fixture-turn' if active else None
                     c.runtime.put(db, 'agents', agent)
                 collection, entity_id, deleted = 'agent', params['agent'], False
             elif operation == 'project':
