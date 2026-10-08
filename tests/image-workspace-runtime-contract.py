@@ -6,6 +6,7 @@ isolate_supervisor_environment()
 import copy
 import concurrent.futures
 import importlib.util
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -22,18 +23,25 @@ spec.loader.exec_module(fixture)
 
 
 class ImageWorkspaceRuntime(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_template_temp = tempfile.TemporaryDirectory(prefix='image-workspace-repo-template-')
+        cls.addClassCleanup(cls.repo_template_temp.cleanup)
+        cls.repo_template = Path(cls.repo_template_temp.name) / 'repo'
+        (cls.repo_template / 'project').mkdir(parents=True)
+        subprocess.run(['git', 'init', '-q', str(cls.repo_template)], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.name', 'Fixture'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'config', 'user.email', 'fixture@example.test'], check=True)
+        (cls.repo_template / 'project' / 'tracked.txt').write_text('base\n')
+        subprocess.run(['git', '-C', str(cls.repo_template), 'add', '.'], check=True)
+        subprocess.run(['git', '-C', str(cls.repo_template), 'commit', '-qm', 'base'], check=True)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='image-workspace-runtime-')
         self.root = Path(self.temp.name)
         self.repo = self.root / 'repo'
-        (self.repo / 'project').mkdir(parents=True)
+        shutil.copytree(self.repo_template, self.repo)
         self.repo = self.repo.resolve()
-        subprocess.run(['git', 'init', '-q', str(self.repo)], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'config', 'user.name', 'Fixture'], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'config', 'user.email', 'fixture@example.test'], check=True)
-        (self.repo / 'project' / 'tracked.txt').write_text('base\n')
-        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
-        subprocess.run(['git', '-C', str(self.repo), 'commit', '-qm', 'base'], check=True)
         self.rt = fixture.ControlledRuntime(self.root / 'state', fixture.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(fixture.CATALOG)
         self.lead = self.rt.new_lead({'cwd': str(self.repo)})

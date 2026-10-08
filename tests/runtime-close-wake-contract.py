@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 """Runtime shutdown wakes migration workers paused for disk space."""
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 import tempfile
 import threading
 import time

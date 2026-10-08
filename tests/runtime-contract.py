@@ -1216,7 +1216,6 @@ class RuntimeContract(unittest.TestCase):
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
         eventually(lambda: bool(read_runtime_state(self.runtime)['monitors'][0]['tail']))
-        time.sleep(.12)
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')

@@ -135,7 +135,11 @@ class TransferContract(f.AccountContracts):
             entity = json.loads(db.execute(
                 "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
                 (self.lead_agent['id'],)).fetchone()[0])['value']
-        self.assertEqual(entity['accountTransferId'], op['id'])
+        phase = op['members'][self.lead_agent['id']]['phase']
+        if phase == 'blocked':
+            self.assertNotIn('accountTransferId', entity)
+        else:
+            self.assertEqual(entity['accountTransferId'], op['id'])
         return op
 
     def tick(self):

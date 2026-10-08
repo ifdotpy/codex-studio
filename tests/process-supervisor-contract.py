@@ -130,6 +130,13 @@ def wait_for(fn, timeout=5):
     raise AssertionError('timed out waiting for private process fixture')
 
 
+def quiet_runtime_schedule(runtime):
+    """Keep unrelated follow-up events queued while a recovery test finishes."""
+    while not runtime.closed:
+        runtime.changed.wait(.05)
+        runtime.changed.clear()
+
+
 class StdoutPersistenceContract(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='supervisor-storage-')
@@ -609,7 +616,8 @@ class ProcessSupervisorContract(unittest.TestCase):
             return original_restore(runtime, *args)
         def construct():
             try:
-                with patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
+                with patch('codex_runtime.Runtime.schedule', quiet_runtime_schedule), \
+                        patch('codex_native_runtime.executable_for', return_value={'path': str(self.binary)}):
                     result.append(Runtime(self.root, AppServer))
             except Exception as error:
                 errors.append(error)
@@ -659,6 +667,9 @@ class ProcessSupervisorContract(unittest.TestCase):
             notices = db.execute("SELECT id,text FROM runtime_events WHERE id='monitor:native-monitor'").fetchall()
         self.assertEqual(len(notices), 1)
         self.assertEqual(json.loads(notices[0]['text'])['status'], 'lost')
+        with second.db() as db:
+            notice_status = db.execute("SELECT status FROM runtime_events WHERE id='monitor:native-monitor'").fetchone()[0]
+        self.assertEqual(notice_status, 'pending')
         wait_for(lambda: self._stored_runtime_item(second, agent['id'], 'long-item') is not None)
         partial = self._stored_runtime_item(second, agent['id'], 'long-item')
         self.assertEqual(partial['text'], 'buffered-')
@@ -677,9 +688,15 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(json.loads(item_rows[0][0])['text'], 'buffered-final-answer')
         self.assertEqual(completed, 1)
         self.assertEqual(restart_errors, 0)
-        # This monitor was never submitted, so it cannot hold the completed turn.
-        self.assertEqual(second.agent(agent['id'])['status'], 'completed')
-        self.assertNotIn('Server restarted during a turn', second.agent(agent['id']).get('error') or '')
+        # The missing monitor Future creates its own follow-up notice. Keep the
+        # scheduler quiet above so the notice cannot start a second model turn
+        # while this assertion checks the recovered turn's terminal state.
+        current = second.agent(agent['id'])
+        self.assertEqual(current['lastCompletedTurn'], 'long-turn')
+        self.assertEqual(current['lastCompletedTurnStatus'], 'completed')
+        self.assertFalse(current['inFlight'])
+        self.assertEqual(current['status'], 'queued')
+        self.assertNotIn('Server restarted during a turn', current.get('error') or '')
         operations = [json.loads(line)['method'] for line in
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('longTurn'), 1)
@@ -977,7 +994,7 @@ class ProcessSupervisorContract(unittest.TestCase):
 
     def test_adjacent_deltas_keep_each_journal_receipt(self):
         server = self.server()
-        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: None)
+        runtime = Runtime(self.root/'runtime', server_factory=lambda *args: server)
         self.addCleanup(runtime.close)
         agent = runtime.create({'name': 'Burst', 'cwd': str(self.root), 'prompt': ''}, draft=True, defer=True)
         with runtime.lock, runtime.db() as db:
@@ -1338,7 +1355,10 @@ class ProcessSupervisorContract(unittest.TestCase):
         with patch.dict(os.environ, {'CODEX_HOME': str(self.root/'different-account')}):
             with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
                 self.server()
-        with patch.object(process_supervisor, 'process_start_time', return_value='different start'):
+        # Same launch signature takes the fast path. Change the account path
+        # again so the legacy environment verification reaches the PID check.
+        with patch.dict(os.environ, {'CODEX_HOME': str(self.root/'different-account')}), \
+                patch.object(process_supervisor, 'process_start_matches', return_value=False):
             with self.assertRaisesRegex(RuntimeError, 'Cannot verify'):
                 self.server()
         os.environ['CODEX_AGENTS_BACKEND_ID'] = 'another-backend-' + str(uuid.uuid4())

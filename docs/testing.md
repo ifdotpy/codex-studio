@@ -36,6 +36,21 @@ production build. Browser checks build the renderer before exercising it.
 use the server runner's `--help` for filtering and optional categories.
 `test:server` also runs the colocated JavaScript bridge tests. To filter Python
 contracts, use `npm run test:server:python -- --filter <name>`.
+The Python server runner sizes its process pool as the minimum of CPUs available
+to the process, available memory divided by measured peak suite RSS, and the
+runnable suite count. Measured suite durations order the longest suites first.
+The checked-in [timing seed](../tests/server/timing-baseline.json) comes from
+the exact base run; by default, successful runs update a local profile under
+the short test cache root. On Linux, the runner uses a writable tmpfs scratch
+mount when its free capacity covers the measured per-suite footprint for the
+selected worker count, then falls back to the short cache root. Set
+`CODEX_SERVER_TEST_TMP_ROOT` to choose a scratch root explicitly. See the [runner](../tests/server/run.py)
+for the resource and scratch-root formulas.
+Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
+`CODEX_SERVER_TEST_JOBS` to override it manually.
+Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
+directories under the selected scratch root, so parallel suites do not share
+mutable test state.
 
 For a focused client check, forward a file filter to Vitest or Playwright:
 

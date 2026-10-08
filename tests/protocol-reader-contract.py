@@ -5,6 +5,7 @@ isolate_supervisor_environment()
 
 
 import json
+import os
 from pathlib import Path
 import queue
 import subprocess
@@ -32,6 +33,7 @@ class Pipe:
 
 class Process:
     def __init__(self, *args, **kwargs):
+        self.pid = os.getpid()
         self.stdout = Pipe()
         self.stdin = self
         self.exited = threading.Event()
@@ -93,7 +95,9 @@ class ReaderContract(unittest.TestCase):
             self.records.append(message["method"])
             self.assertIsInstance(message["_studioReceivedAt"], float)
 
-        with patch("codex_runtime.subprocess.Popen", Process), patch.object(AppServer, "CALLBACK_QUEUE_LIMIT", limit), patch.object(AppServer, "CLOCK_QUEUE_LIMIT", clock_limit):
+        with patch("codex_runtime.subprocess.Popen", Process), patch(
+            "codex_runtime.provider_process_command", side_effect=lambda command: command
+        ), patch.object(AppServer, "CALLBACK_QUEUE_LIMIT", limit), patch.object(AppServer, "CLOCK_QUEUE_LIMIT", clock_limit):
             self.server = AppServer(self.root, notification,
                 lambda message: self.records.append(message["method"]),
                 lambda: self.records.append("died"))

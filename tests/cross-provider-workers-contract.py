@@ -39,6 +39,10 @@ class CrossProviderWorkers(unittest.TestCase):
             copy.deepcopy(self.rt.accounts.data["accounts"][key]) if key == "claude-fixture"
             else original_get(key))
         self.account_patch.start()
+        original_refresh = self.rt.accounts.refresh
+        self.refresh_patch = patch.object(self.rt.accounts, "refresh", side_effect=lambda key:
+            None if key == "claude-fixture" else original_refresh(key))
+        self.refresh_patch.start()
         self.catalog_calls = []
         def catalog(account="default"):
             self.catalog_calls.append(account)
@@ -58,6 +62,7 @@ class CrossProviderWorkers(unittest.TestCase):
 
     def tearDown(self):
         self.rt.close()
+        self.refresh_patch.stop()
         self.account_patch.stop()
         self.env.stop()
         self.tmp.cleanup()
@@ -250,7 +255,7 @@ class CrossProviderWorkers(unittest.TestCase):
                          ("default", "gpt-6-sol", "xhigh"))
 
     def test_codex_result_wakes_claude_and_both_can_send_messages(self):
-        result = self.spawn([{"name": "Worker", "prompt": "Review fixture", "role": "reviewer"}])
+        result = self.spawn([{"name": "Worker", "prompt": "Review fixture", "role": "implementer"}])
         self.assertTrue(result["success"], result)
         child = self.workers()[0]
         self.rt.dispatch()

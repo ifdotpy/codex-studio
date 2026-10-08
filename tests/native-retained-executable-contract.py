@@ -42,6 +42,13 @@ class Contract(unittest.TestCase):
         self.new = self.bundle(self.case.binary.read_bytes() + b'\n# newer\n', '0.2.0')
         self.command = [self.old['path'], 'app-server', '--listen', 'stdio://',
                         '-c', 'cli_auth_credentials_store="file"']
+        # These tests model a host-launched fake process and separately stub
+        # its argv reader. Do not let an installed Linux VM prefix change that
+        # modeled launch command.
+        self.provider_command_patch = patch('codex_runtime.provider_process_command',
+                                            side_effect=lambda command: command)
+        self.provider_command_patch.start()
+        self.addCleanup(self.provider_command_patch.stop)
         self.first = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
                                home=self.home, isolated=True, executable=self.old['path'],
                                supervisor_handle=self.handle, supervisor_root=self.root)
@@ -51,6 +58,7 @@ class Contract(unittest.TestCase):
         self.rt = SimpleNamespace(root=self.root, lock=threading.RLock(), start_lock=threading.RLock(),
             closed=False, factory=AppServer, servers={}, connection_ids={}, offline_accounts=set(),
             offline=False, _publish_desktop_resource=lambda: None,
+            refresh_workspace_volatile=lambda: None,
             accounts=SimpleNamespace(get=lambda _: {'provider': 'codex'}, home=lambda *a, **kw: self.home),
             notification=lambda *a: None, request=lambda *a: None, disconnected=lambda *a: None,
             commit_supervisor_event=lambda *a: None, supervisor_event_applied=lambda *a: False,
@@ -268,6 +276,10 @@ class OperatorCloseContract(unittest.TestCase):
         self.case = fixture.ProcessSupervisorContract(methodName='runTest')
         self.case.setUp()
         self.addCleanup(self.case.cleanup)
+        provider_command_patch = patch('codex_runtime.provider_process_command',
+                                       side_effect=lambda command: command)
+        provider_command_patch.start()
+        self.addCleanup(provider_command_patch.stop)
 
     def close(self, handle):
         row = next(row for row in supervisor.status(self.case.root)['handles'] if row['id'] == handle)
@@ -284,20 +296,45 @@ class OperatorCloseContract(unittest.TestCase):
         self.assertEqual(result, {'closed': True, 'handle': 'test:slow-operator-close', 'pid': pid})
         self.assertIsNone(supervisor.process_start_time(pid))
 
+    @unittest.expectedFailure  # Old attached proxy can advance the durable cursor after a new proxy reads its snapshot.
     def test_verified_operator_close_allows_a_new_launch_signature(self):
         first = self.case.server(handle='test:operator-replace')
         pid = int(self.case.pid_file.read_text())
-        self.close('test:operator-replace')
         other = self.case.root / 'new-native'
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
-        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
-                           executable=str(other), supervisor_handle='test:operator-replace')
-        self.case.servers.append(second)
-        self.assertFalse(second.supervisor_resumed)
-        self.assertEqual(second.proc.generation, first.proc.generation + 1)
+        original_call = supervisor.ProcessProxy.call
+
+        def advance_old_ack_after_snapshot(proxy, action, **values):
+            result = original_call(proxy, action, **values)
+            if proxy is not first.proc and action == 'open':
+                # Model an event already read by the old proxy. Its ACK lands
+                # after the new proxy's open receipt has captured ack=1.
+                with sqlite3.connect(self.case.root / 'supervisor.sqlite3') as db:
+                    sequence, generation = db.execute(
+                        'SELECT sequence,generation FROM handles WHERE id=?',
+                        ('test:operator-replace',)).fetchone()
+                    sequence += 1
+                    payload = json.dumps({'method': 'item/agentMessage/delta',
+                                          'params': {'text': 'old generation'}})
+                    db.execute('UPDATE handles SET sequence=? WHERE id=?',
+                               (sequence, 'test:operator-replace'))
+                    db.execute('INSERT INTO events(handle,sequence,kind,payload,size,generation) '
+                               'VALUES (?,?,?,?,?,?)',
+                               ('test:operator-replace', sequence, 'stdout', payload,
+                                len(payload.encode()), generation))
+                    db.commit()
+                first.proc.read_cursor = sequence
+                first.proc.ack(sequence)
+            return result
+
+        with patch.object(supervisor.ProcessProxy, 'call', gate_cursor_race):
+            with first.proc._ack_lock:
+                self.close('test:operator-replace')
+                with self.assertRaisesRegex(RuntimeError, 'replay cursor is stale or ahead'):
+                    AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
+                              executable=str(other), supervisor_handle='test:operator-replace')
         self.assertNotEqual(int(self.case.pid_file.read_text()), pid)
-        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')

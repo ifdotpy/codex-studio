@@ -8,6 +8,7 @@ import copy
 import importlib.util
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 import sys
@@ -79,12 +80,20 @@ class ReviewServer(f.AccountServer):
 
 
 class ReviewRuntimeContract(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.repo_template_temp = tempfile.TemporaryDirectory(prefix='studio-review-repo-template-')
+        cls.addClassCleanup(cls.repo_template_temp.cleanup)
+        cls.repo_template = Path(cls.repo_template_temp.name) / 'repo'
+        cls.repo_template.mkdir()
+        subprocess.run(['git', 'init', '-q', str(cls.repo_template)], check=True)
+
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='studio-review-test-')
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         # Native review reads git history; the reviewer folder must be a repository.
-        subprocess.run(['git', 'init', '-q', str(self.root)], check=True)
+        shutil.copytree(self.repo_template / '.git', self.root / '.git')
         self.env = patch.dict(os.environ, {'CODEX_HOME': str(self.root / 'home')})
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -123,7 +132,8 @@ class ReviewRuntimeContract(unittest.TestCase):
     def dispatch_review(self, value):
         self.rt.dispatch()
         f.f.eventually(lambda: bool(self.server.reviews))
-        f.f.eventually(lambda: self.rt.agent(value['agentId'])['status'] in {'running', 'completed', 'starting'})
+        f.f.eventually(lambda: self.rt.agent(value['agentId'])['status'] in
+                       {'running', 'completed', 'starting', 'waiting'})
         entry = self.server.reviews[-1]
         if self.server.mode == 'lost':
             self.assertTrue(entry['registered'].wait(3))

@@ -55,6 +55,15 @@ class SpawnRequestRecovery(unittest.TestCase):
     def request(self, action='get', request_id='batch-1'):
         return self.runtime.request_action(self.actor['id'], {'action': action, 'request_id': request_id})
 
+    @staticmethod
+    def operation_result(result):
+        """Remove the model-facing policy attachment, not operation content."""
+        return {**result, 'contentItems': [
+            item for item in result.get('contentItems', [])
+            if not (item.get('type') == 'inputText' and item.get('text', '').startswith((
+                '[Studio subagent concurrency, revision ',
+                '[Time awareness] Tool result finalized at ')))]}
+
     def test_stopped_and_old_turn_calls_are_proved_not_applied(self):
         for call, change, text in [
                 ('stopped-read', {'autoWake': False}, 'Agent is stopped or unknown'),
@@ -102,7 +111,8 @@ class SpawnRequestRecovery(unittest.TestCase):
         self.assertFalse(self.response('changed')['success'])
         self.assertIn('different content', self.response('changed')['contentItems'][0]['text'])
         self.assertEqual(len(self.children()), 2)
-        self.assertEqual(self.request()['result'], original)
+        self.assertEqual(self.operation_result(self.request()['result']),
+                         self.operation_result(original))
 
     def test_replayed_spawn_keeps_the_original_resolved_base_commit(self):
         repo = Path(self.tmp.name) / 'base-repo'

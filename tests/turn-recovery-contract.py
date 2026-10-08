@@ -106,9 +106,12 @@ class TurnRecoveryContract(unittest.TestCase):
         return a
 
     def test_unknown_start_receipt_recovers_completion_without_resubmission(self):
-        a = self.lose_start_receipt()
-        before = sum(method == 'turn/start' for method, _ in self.server.calls)
-        result = self.runtime.reconcile_turn(self.key)
+        # This test owns the explicit reconciliation call. Keep the periodic
+        # scheduler from racing it after the fixture ages the start receipt.
+        with patch.object(self.runtime, 'queue_turn_recovery'):
+            a = self.lose_start_receipt()
+            before = sum(method == 'turn/start' for method, _ in self.server.calls)
+            result = self.runtime.reconcile_turn(self.key)
         self.assertEqual(result['status'], 'reconciled')
         current = self.runtime.agent(self.key)
         self.assertEqual(current['status'], 'completed')

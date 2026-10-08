@@ -21,7 +21,7 @@ from unittest.mock import patch
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from studio_api.testing import read_runtime_state
-from codex_runtime import AppServer, Runtime
+from codex_runtime import AppServer, PreparationPending, Runtime
 
 def load(name):
     spec = importlib.util.spec_from_file_location(name.replace('-', '_'), Path(__file__).with_name(name + '.py'))
@@ -35,6 +35,17 @@ class CriticalRuntimeContract(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.runtime = Runtime(Path(self.temp.name), fixture.FakeServer)
         self.server = self.runtime.connect()
+
+    def prepare_worker(self, worker):
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(worker['id'], db)
+            current['autoWake'] = True
+            self.runtime.put(db, 'agents', current)
+        try:
+            return self.runtime.prepare(worker)
+        except PreparationPending as pending:
+            pending.future.result(timeout=30)
+            return self.runtime.prepare(self.runtime.agent(worker['id']))
 
     def tearDown(self):
         self.runtime.close()
@@ -102,6 +113,8 @@ class CriticalRuntimeContract(unittest.TestCase):
         server.lock = threading.RLock()
         server.write_lock = threading.RLock()
         server.closed, server.transport_error = False, None
+        from codex_provider_transcript import TranscriptCapture
+        server.transcript_capture = TranscriptCapture('codex')
         stdin = os.fdopen(write_fd, 'w', encoding='utf8')
         server.proc = types.SimpleNamespace(stdin=stdin, poll=lambda: None)
         result = []
@@ -198,6 +211,7 @@ class CriticalRuntimeContract(unittest.TestCase):
         git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Base')
         lead = self.runtime.create({'name': 'Lead', 'cwd': str(repo), 'prompt': 'Task'}, draft=True)
         worker = self.runtime.create({'name': 'Worker', 'prompt': 'Task', 'role': 'implementer'}, lead['id'], defer=True)
+        self.activate_worker(worker)
         original = self.runtime.put
         def fail_metadata(db, table, record):
             if table == 'agents' and record['id'] == worker['id'] and record.get('worktreeReady'):
@@ -205,15 +219,24 @@ class CriticalRuntimeContract(unittest.TestCase):
             return original(db, table, record)
         with patch.object(self.runtime, 'put', fail_metadata):
             with self.assertRaises(sqlite3.OperationalError):
-                self.runtime.prepare(worker)
+                try:
+                    self.runtime.prepare(worker)
+                except PreparationPending as pending:
+                    pending.future.result(timeout=30)
         directory = repo / '.worktrees' / 'codex-agents' / worker['id']
         self.assertTrue(directory.is_dir())
         (directory / 'preserve.txt').write_text('unsaved worker change')
-        recovered = self.runtime.prepare(self.runtime.agent(worker['id']))
+        recovered = self.prepare_worker(self.runtime.agent(worker['id']))
         self.assertTrue(recovered['worktreeReady'])
         self.assertEqual(Path(recovered['cwd']).resolve(), directory.resolve())
         self.assertEqual((directory / 'preserve.txt').read_text(), 'unsaved worker change')
         self.assertEqual(git('worktree', 'list', '--porcelain').count('worktree '), 2)
+
+    def activate_worker(self, worker):
+        with self.runtime.lock, self.runtime.db() as db:
+            current = self.runtime.agent(worker['id'], db)
+            current['autoWake'] = True
+            self.runtime.put(db, 'agents', current)
 
     def test_worker_checkout_runs_post_checkout_hook(self):
         repo = Path(self.temp.name) / 'hook-project'
@@ -235,7 +258,8 @@ class CriticalRuntimeContract(unittest.TestCase):
         lead = self.runtime.create({'name': 'Lead', 'cwd': str(repo), 'prompt': 'Task'}, draft=True)
         worker = self.runtime.create({'name': 'Worker', 'prompt': 'Task', 'role': 'implementer'},
                                      lead['id'], defer=True)
-        prepared = self.runtime.prepare(worker)
+        self.activate_worker(worker)
+        prepared = self.prepare_worker(worker)
         self.assertTrue(log.is_file())
         self.assertTrue(log.read_text().strip().endswith(' 1'))
         with self.runtime.db() as db:
@@ -253,11 +277,12 @@ class CriticalRuntimeContract(unittest.TestCase):
         git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'Base')
         lead = self.runtime.create({'name': 'Lead', 'cwd': str(repo), 'prompt': 'Task'}, draft=True)
         worker = self.runtime.create({'name': 'Worker', 'prompt': 'Task', 'role': 'implementer'}, lead['id'], defer=True)
+        self.activate_worker(worker)
         directory = repo / '.worktrees' / 'codex-agents' / worker['id']
         git('worktree', 'add', '-b', 'unrelated-user-branch', str(directory), 'HEAD')
         (directory / 'preserve.txt').write_text('user content')
         with self.assertRaisesRegex(ValueError, 'identity differs'):
-            self.runtime.prepare(worker)
+            self.prepare_worker(worker)
         self.assertFalse(self.runtime.agent(worker['id'])['worktreeReady'])
         self.assertEqual((directory / 'preserve.txt').read_text(), 'user content')
 

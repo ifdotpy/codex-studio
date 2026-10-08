@@ -463,7 +463,10 @@ def _available_to_other_thread(lock: _TimedLock) -> bool:
 
 class AccountsRouterTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.cache = Path.home() / ".cache" / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
+        cache_home = Path(os.environ.get(
+            "XDG_CACHE_HOME", Path.home() / ".cache" / "cs" / "st" / "cache",
+        ))
+        self.cache = cache_home / "codex-studio-fastapi" / "tests-tmp" / ("accounts-" + str(uuid4()))
         self.cache.mkdir(parents=True)
         self.tmp = tempfile.TemporaryDirectory(dir=self.cache)
         self.root = Path(self.tmp.name)

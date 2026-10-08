@@ -208,12 +208,18 @@ class Radio(unittest.TestCase):
     def test_observed_turn_before_ack_mirrors_but_does_not_advance(self):
         self.action('send', text='question')
         a, turn = self.start()
+        active_id = self.room()['radio']['active']['eventId']
         with self.runtime.db() as db:
             db.execute("UPDATE runtime_events SET status='dispatching',turn_id=NULL")
             observe_item(self.runtime, db, a, 'early', 'assistant', 'early commentary', {'turnId': turn})
             self.assertEqual(db.execute("SELECT text FROM runtime_chat_messages WHERE sender=?", (a,)).fetchone()[0], 'early commentary')
-        self.answer(a, turn)
-        self.assertEqual(self.room()['radio']['status'], 'blocked')
+        state = self.answer(a, turn)
+        self.assertEqual(state['status'], 'waiting')
+        self.assertEqual(state['active']['eventId'], active_id)
+        self.assertEqual(state['next'], [next(key for key in self.room()['members'] if key != a)])
+        with self.runtime.db() as db:
+            event = db.execute('SELECT status,turn_id FROM runtime_events WHERE id=?', (active_id,)).fetchone()
+            self.assertEqual((event['status'], event['turn_id']), ('dispatching', None))
 
     def test_stop_after_membership_revocation_interrupts_original_turn(self):
         self.action('send', text='question')
