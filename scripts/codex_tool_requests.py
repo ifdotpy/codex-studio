@@ -253,7 +253,8 @@ class RequestMixin:
         if row is None:
             return None
         from codex_payloads import resolve_result, state_root
-        return resolve_result(state_root(self), row[0])
+        from codex_server_exec import expire_tool_output
+        return expire_tool_output(resolve_result(state_root(self), row[0]))
 
     def transcript_tool_result(self: "RequestRuntime", db: "sqlite3.Connection", actor: "AgentRecord", item: "JsonObject") -> None:
         """Recover a missing native completion from the exact durable receipt."""
@@ -562,6 +563,9 @@ class RequestMixin:
                     record["result"] = _cancel_result(record, "Cancelled before execution")
                 self.put(db, "tool_requests", record)
             result = {k: v for k, v in record.items() if k != "signature"}
+            if isinstance(result.get("result"), dict):
+                from codex_server_exec import expire_tool_output
+                result["result"] = expire_tool_output(result["result"])
             if action == "get" and record.get("outcome") not in {"applied", "not_applied"} and "operationResult" not in record:
                 result.update(operation_receipt_evidence(db, record["id"]) or {})
             if action == "get" and record.get("agentIds"):

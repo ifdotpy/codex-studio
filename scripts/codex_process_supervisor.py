@@ -646,6 +646,24 @@ class Supervisor:
         if child is None:
             raise RuntimeError("Unknown supervisor handle")
         action = request.get("action")
+        if action == "retireCommand":
+            if not handle.startswith('server-command:'):
+                raise ValueError('Only completed server command handles can be retired')
+            with self.lock, child.lock, self.journal.lock, self.journal.db() as db:
+                row = db.execute('SELECT generation,sequence,acknowledged FROM handles WHERE id=?', (handle,)).fetchone()
+                if (not row or row['generation'] != request.get('generation')
+                        or child.process.poll() is None or child.reader.is_alive() or child.stderr.is_alive()
+                        or row['sequence'] != row['acknowledged']):
+                    raise RuntimeError('The command adapter is not ready for retirement')
+                for stream in (child.process.stdin, child.process.stdout, child.process.stderr):
+                    if stream is not None:
+                        stream.close()
+                for table in ('events', 'operations', 'child_identities', 'degraded_handles'):
+                    db.execute('DELETE FROM ' + table + ' WHERE handle=?', (handle,))
+                db.execute('DELETE FROM handles WHERE id=?', (handle,))
+                db.commit()
+                self.children.pop(handle, None)
+            return {'retired': True}
         if action == "write":
             return child.write(request["operationId"], request.get("nativeId"), request["message"])
         if action == "operationStatus":
@@ -1441,6 +1459,38 @@ def status(root):
     if not result or result.get("protocol") != PROTOCOL or result.get("stateDir") != str(root):
         raise RuntimeError("Supervisor health identity is incompatible")
     return result
+
+
+def retire_command(root, handle, *, persisted=False):
+    """Retire one completed command without opening or killing a process."""
+    saved = supervisor_launch_snapshot(root, handle)
+    if saved is None:
+        return
+    client = _connect(Path(root) / 'supervisor.sock', timeout=3)
+    reader = client.makefile('r', encoding='utf-8')
+    try:
+        _send(client, {'protocol': PROTOCOL, 'stateDir': str(Path(root).resolve()),
+                      'backendId': os.environ.setdefault('CODEX_AGENTS_BACKEND_ID', str(uuid.uuid4()))})
+        hello = _recv(client, reader)
+        if hello.get('error'):
+            raise RuntimeError('Supervisor retirement connection was refused')
+        if persisted:
+            # A detached adapter can complete before reattachment. The backend
+            # has saved its final snapshot, so older metadata frames need no
+            # replay. Use the existing ACK fence before releasing this handle.
+            _send(client, {'requestId': 0, 'action': 'ack', 'handle': handle,
+                          'sequence': saved['sequence']})
+            acknowledged = _recv(client, reader)
+            if acknowledged.get('error'):
+                raise RuntimeError('Supervisor final command acknowledgement was refused')
+        _send(client, {'requestId': 1, 'action': 'retireCommand', 'handle': handle,
+                      'generation': saved['generation']})
+        result = _recv(client, reader)
+        if result.get('error'):
+            raise RuntimeError('Supervisor command retirement was refused')
+    finally:
+        reader.close()
+        client.close()
 
 
 def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature):
