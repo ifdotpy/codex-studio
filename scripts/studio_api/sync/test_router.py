@@ -542,6 +542,63 @@ class SyncRouterTests(unittest.TestCase):
         self.assertNotIn("work-private", response.text)
         self.assertNotIn("tombstone-private", response.text)
 
+    def test_entity_pull_tombstones_skip_dto_validation_and_strip_stale_values(self) -> None:
+        context = ContextStub()
+        temporary = tempfile.TemporaryDirectory(prefix="sync-router-tombstone-")
+        self.addCleanup(temporary.cleanup)
+        database = Path(temporary.name) / "sync.sqlite"
+
+        @contextmanager
+        def connect():
+            db = sqlite3.connect(database, timeout=10)
+            try:
+                yield db
+            finally:
+                db.close()
+
+        store = SyncStore(connect, context.runtime.transcript)
+        initial = store.pull("state:entities:v1", fresh=True)
+        with connect() as db:
+            put(db, "agent", "deleted-agent", {}, deleted=True)
+            put(db, "task", "deleted-task", {}, deleted=True)
+            db.commit()
+        context.store = store
+
+        with self.assertNoLogs("studio_api.sync.router", level="WARNING"):
+            response = make_client(context).get(
+                f"/api/sync/pull?scope=state:entities:v1&after={initial['checkpoint']['seq']}"
+            )
+        self.assertEqual(response.status_code, 200)
+        documents = {row["id"]: row for row in response.json()["documents"]}
+        for collection, key in (("agent", "deleted-agent"), ("task", "deleted-task")):
+            row = documents[f"entity:{collection}:{key}"]
+            self.assertTrue(row["_deleted"])
+            self.assertEqual(
+                json.loads(row["payload"]),
+                {"collection": collection, "id": key, "value": {}},
+            )
+
+    def test_entity_pull_tombstone_never_returns_stored_private_fields(self) -> None:
+        context = ContextStub()
+        payload = json.dumps({
+            "collection": "task", "id": "deleted-task",
+            "value": {"id": "deleted-task", "secret": "private-tombstone-data"},
+        })
+        projection = {"workspaceId": "workspace-a", "documents": [
+            {"id": "entity:task:deleted-task", "seq": 2, "_deleted": True, "payload": payload},
+        ], "checkpoint": {"seq": 2}, "maxSeq": 2}
+        with patch.object(context.store, "pull", return_value=projection), \
+                self.assertNoLogs("studio_api.sync.router", level="WARNING"):
+            response = make_client(context).get("/api/sync/pull?scope=state:entities:v1")
+        self.assertEqual(response.status_code, 200)
+        row = response.json()["documents"][0]
+        self.assertTrue(row["_deleted"])
+        self.assertEqual(
+            json.loads(row["payload"]),
+            {"collection": "task", "id": "deleted-task", "value": {}},
+        )
+        self.assertNotIn("private-tombstone-data", response.text)
+
     def test_entity_pull_fails_open_and_logs_invalid_public_data(self) -> None:
         context = ContextStub()
         payload = json.dumps({"collection": "agent", "id": "a", "value": {

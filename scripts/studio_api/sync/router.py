@@ -216,6 +216,7 @@ def create_router(context: ApiContext) -> APIRouter:
             from codex_sync_entities import (
                 _report_bad_entity,
                 response_entity_payload_fail_open,
+                validate_stored_entity_payload,
             )
 
             valid_documents: list[dict[str, object]] = []
@@ -226,6 +227,30 @@ def create_router(context: ApiContext) -> APIRouter:
                     _report_bad_entity("response", row_id, TypeError("payload is not a string"))
                     continue
                 was_deleted = bool(document.get("_deleted"))
+                if was_deleted:
+                    try:
+                        envelope = json.loads(payload)
+                        if not isinstance(envelope, dict):
+                            raise ValueError("invalid entity envelope")
+                        collection = envelope.get("collection")
+                        entity_id = envelope.get("id")
+                        if not isinstance(collection, str) or not isinstance(entity_id, str):
+                            raise ValueError("invalid entity envelope")
+                        validate_stored_entity_payload(payload, collection, entity_id, True)
+                    except (ValueError, TypeError) as error:
+                        _report_bad_entity("response", row_id, error)
+                        continue
+                    # Tombstones carry no DTO value. Never validate or expose
+                    # any stale fields that may remain in a deleted row.
+                    document["payload"] = json.dumps(
+                        {"collection": collection, "id": entity_id, "value": {}},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    )
+                    document["_deleted"] = True
+                    valid_documents.append(document)
+                    continue
                 try:
                     # SyncStore rejects unreadable envelopes. For readable rows,
                     # strip DTO extras but deliver other mismatches so one stale
