@@ -440,6 +440,8 @@ async function startSidebarOverlapSetup(page) {
   let log = "";
   let releaseFirst;
   let firstResponse;
+  let firstResponseFulfilled;
+  let firstResponseFailed;
   proc.stderr.on("data", (data) => (log += data));
   const stop = () => {
     releaseFirst?.();
@@ -491,28 +493,37 @@ async function startSidebarOverlapSetup(page) {
       releaseFirst = resolve;
     });
     let firstReachedServer;
-    const firstRequest = new Promise((resolve) => {
+    let firstRequestFailed;
+    const firstRequest = new Promise((resolve, reject) => {
       firstReachedServer = resolve;
+      firstRequestFailed = reject;
     });
+    firstRequest.catch(() => {});
+    firstResponse = new Promise((resolve, reject) => {
+      firstResponseFulfilled = resolve;
+      firstResponseFailed = reject;
+    });
+    firstResponse.catch(() => {});
     await page.route("**/api/projects", async (route) => {
       const body = route.request().postDataJSON();
       if (body.action !== "reorder" || body.migration) return route.continue();
       bodies.push(body);
-      const response = await route.fetch();
-      if (bodies.length === 1) {
-        firstReachedServer();
-        await responseGate;
+      const isFirstRequest = bodies.length === 1;
+      try {
+        const response = await route.fetch();
+        if (isFirstRequest) {
+          firstReachedServer();
+          await responseGate;
+        }
+        await route.fulfill({ response });
+        if (isFirstRequest) firstResponseFulfilled();
+      } catch (error) {
+        if (isFirstRequest) {
+          firstRequestFailed(error);
+          firstResponseFailed(error);
+        }
+        throw error;
       }
-      await route.fulfill({ response });
-    });
-    firstResponse = page.waitForResponse((response) => {
-      const request = response.request();
-      return (
-        new URL(response.url()).pathname === "/api/projects" &&
-        request.method() === "POST" &&
-        request.postDataJSON()?.action === "reorder" &&
-        !request.postDataJSON()?.migration
-      );
     });
     await team.press(`Alt+${direction}`);
     await firstRequest;
