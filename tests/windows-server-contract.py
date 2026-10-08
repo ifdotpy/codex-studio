@@ -156,7 +156,6 @@ class WindowsServerContract(unittest.TestCase):
                  "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443"],
                 cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,
             )
-            self.addCleanup(log.close)
             try:
                 first_pid = _wait_until(lambda: _port_owner(port))
                 self.assertIn("codex_windows_backend.py", _process_commandline(first_pid))
@@ -171,6 +170,7 @@ class WindowsServerContract(unittest.TestCase):
             finally:
                 if process.poll() is None:
                     _stop_entrypoint_tree(process)
+                log.close()
 
     def test_worktree_handles_spaces_unicode_and_fixture_commit(self):
         with tempfile.TemporaryDirectory(prefix="studio git Ω ") as temporary:
