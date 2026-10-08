@@ -39,7 +39,11 @@ Its attempt store contains invitation metadata, without the token.
 On recovery, `ui_invite` returns the same invitation through its stable request identity.
 Client keys and pair bodies remain in the existing credential stores.
 The browser credential store uses IndexedDB. Desktop credentials use native safeStorage.
-The store upgrade removes tokens from previous automatic attempts.
+Startup upgrades the attempt store before it checks any peer state.
+The upgrade removes legacy tokens even for revoked, excluded, or registered peers.
+It checks the existing credential store for each old pair identity.
+Only a saved credential draft or pair receipt marks a legacy pair as started.
+If that check fails, the token is already removed and automatic access waits.
 Saved attempts use the local server ID and peer credential generation.
 A lost response keeps the same invitation, client key, client ID, body, and request identity.
 An expired invitation gets a new attempt only when pairing has not started.
@@ -49,7 +53,9 @@ Management actions use another shared lock and separate request records.
 An uncertain request blocks a different management action until its result is known.
 A response removes only its own request record.
 The shell reads the current peer snapshot before pairing and before adding UI access.
-Revoke cancels automatic access for that peer's current credential generation.
+Revoke cancels automatic access after the management lock accepts the request for dispatch.
+A blocked request does not cancel access.
+**Add to this UI** clears a local cancellation and retries the normal access flow.
 Frames cannot send management writes or use pairing routes through either transport bridge.
 A failed server attempt backs off for up to five minutes.
 Other servers can still gain access.

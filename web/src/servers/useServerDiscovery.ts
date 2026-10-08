@@ -24,9 +24,28 @@ export function useServerDiscovery(
   const addRef = useRef(add);
   addRef.current = add;
   const active = useRef(false);
+  const attempts = useRef<ReturnType<typeof automaticAccessStore> | null>(null);
+  if (!attempts.current)
+    attempts.current = automaticAccessStore((attempt) =>
+      serverCredentialAdapter().hasPairAttempt({
+        requestId: attempt.pairRequestId,
+        serverId: attempt.serverId,
+        origin: attempt.origin,
+        inviteId: attempt.invitation?.inviteId,
+      }),
+    );
+  useEffect(() => {
+    let mounted = true;
+    void attempts.current!.initialize().catch((failure) => {
+      if (mounted) setError(errorText(failure));
+    });
+    return () => {
+      mounted = false;
+    };
+  }, []);
   const controller = useRef<AutomaticUiAccess | null>(null);
   if (!controller.current)
-    controller.current = new AutomaticUiAccess(automaticAccessStore(), {
+    controller.current = new AutomaticUiAccess(attempts.current, {
       current: async () => {
         const value = await serverAccess("GET");
         if (!("identity" in value))
@@ -72,6 +91,7 @@ export function useServerDiscovery(
     },
     async (body) => {
       await refreshSession();
+      if (body.action === "revoke") controller.current?.cancel(body.clientId);
       await serverAccess(
         "POST",
         body,
@@ -94,6 +114,7 @@ export function useServerDiscovery(
   const load = () => {
     if (loading.current) return loading.current;
     loading.current = (async () => {
+      await attempts.current!.initialize();
       const value = await serverAccess("GET");
       if (!("identity" in value))
         throw new Error("The server discovery response is invalid.");
@@ -189,7 +210,6 @@ export function useServerDiscovery(
       },
     },
     revoke: (id: string) => {
-      controller.current?.cancel(id);
       void run({
         action: "revoke",
         clientId: id,

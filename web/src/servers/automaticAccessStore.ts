@@ -16,6 +16,7 @@ export function attemptMetadata(
     inviteRequestId: value.inviteRequestId,
     pairRequestId: value.pairRequestId,
     ...(value.pairStarted ? { pairStarted: true } : {}),
+    ...(value.needsPairCheck ? { needsPairCheck: true as const } : {}),
     ...(invitation
       ? {
           invitation: {
@@ -32,13 +33,15 @@ export function attemptMetadata(
       : {}),
   };
 }
-export function automaticAccessStore(): AutomaticAccessStore {
-  async function access<T>(
+export function automaticAccessStore(
+  hasPairAttempt: (attempt: AutomaticAccessAttempt) => Promise<boolean>,
+): AutomaticAccessStore & { initialize(): Promise<void> } {
+  async function rawAccess<T>(
     mode: IDBTransactionMode,
     operation: (store: IDBObjectStore) => IDBRequest<T>,
   ): Promise<T> {
     const db = await new Promise<IDBDatabase>((resolve, reject) => {
-      const request = indexedDB.open("studio-automatic-ui-access-v1", 2);
+      const request = indexedDB.open("studio-automatic-ui-access-v1", 3);
       request.onupgradeneeded = (event) => {
         if (event.oldVersion === 0)
           request.result.createObjectStore("attempts");
@@ -49,11 +52,12 @@ export function automaticAccessStore(): AutomaticAccessStore {
           cursor.onsuccess = () => {
             const entry = cursor.result;
             if (!entry) return;
-            // Old attempts might have started pairing. Preserve their identity.
+            // Strip secrets before any asynchronous credential lookup.
             entry.update(
               attemptMetadata({
                 ...entry.value,
-                pairStarted: !!entry.value.invitation,
+                pairStarted: false,
+                needsPairCheck: true,
               }),
             );
             entry.continue();
@@ -84,7 +88,53 @@ export function automaticAccessStore(): AutomaticAccessStore {
       };
     });
   }
+  let initializing: Promise<void> | null = null;
+  const initialize = async (): Promise<void> => {
+    if (!initializing) {
+      const migrate = async () => {
+        const keys = await rawAccess("readonly", (store) => store.getAllKeys());
+        for (const key of keys) {
+          const attempt = await rawAccess<AutomaticAccessAttempt | undefined>(
+            "readonly",
+            (store) => store.get(key),
+          );
+          if (!attempt?.needsPairCheck) continue;
+          const started = await hasPairAttempt(attempt);
+          await rawAccess("readwrite", (store) =>
+            store.put(
+              attemptMetadata({
+                ...attempt,
+                pairStarted: started,
+                needsPairCheck: undefined,
+              }),
+              key,
+            ),
+          );
+        }
+      };
+      initializing = (async () => {
+        if (navigator.locks)
+          await navigator.locks.request(
+            "studio-automatic-ui-migration-v3",
+            migrate,
+          );
+        else await migrate();
+      })().catch((error) => {
+        initializing = null;
+        throw error;
+      });
+    }
+    await initializing;
+  };
+  async function access<T>(
+    mode: IDBTransactionMode,
+    operation: (store: IDBObjectStore) => IDBRequest<T>,
+  ) {
+    await initialize();
+    return rawAccess(mode, operation);
+  }
   return {
+    initialize,
     read: async (key) =>
       (await access<AutomaticAccessAttempt | undefined>("readonly", (store) =>
         store.get(key),

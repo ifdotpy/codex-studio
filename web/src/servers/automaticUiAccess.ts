@@ -11,6 +11,7 @@ export type AutomaticAccessAttempt = {
   pairRequestId: string;
   invitation?: Omit<PairInvitation, "token">;
   pairStarted?: boolean;
+  needsPairCheck?: true;
 };
 export interface AutomaticAccessStore {
   read(key: string): Promise<AutomaticAccessAttempt | null>;
@@ -48,6 +49,7 @@ export class AutomaticUiAccess {
     return this.running;
   }
   retry(serverId: string) {
+    this.cancelled.delete(serverId);
     for (const [key, value] of this.failures)
       if (value.serverId === serverId) this.failures.delete(key);
   }

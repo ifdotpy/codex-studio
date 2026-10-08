@@ -293,9 +293,14 @@ async function nativeAction(event, request) {
       const value = request.value;
       if (
         !value ||
-        !["pair", "request", "summary", "cancel", "forget"].includes(
-          value.action,
-        )
+        ![
+          "pair",
+          "request",
+          "summary",
+          "cancel",
+          "forget",
+          "pairAttempt",
+        ].includes(value.action)
       )
         throw new Error("Invalid server credential action.");
       if (
@@ -305,8 +310,18 @@ async function nativeAction(event, request) {
           (value.frameOwner && value.frameOwner !== owner))
       )
         throw new Error("Invalid server frame owner.");
-      if (owner && ["pair", "forget"].includes(value.action))
+      if (owner && ["pair", "forget", "pairAttempt"].includes(value.action))
         throw new Error("Use the server manager.");
+      if (value.action === "pairAttempt") {
+        if (owner || value.frameOwner)
+          throw new Error("Use the server manager.");
+        return serverCredentials.hasPairAttempt({
+          origin: value.origin,
+          serverId: string(value.serverId, 128),
+          requestId: string(value.requestId, 128),
+          inviteId: value.inviteId ? string(value.inviteId, 128) : undefined,
+        });
+      }
       if (value.action === "summary") {
         if (
           owner ||

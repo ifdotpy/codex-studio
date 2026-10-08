@@ -336,6 +336,27 @@ test("desktop native settings, notification and speech boundaries work with fixt
       200,
     );
 
+    await assert.rejects(
+      f.handler(serverEvent, {
+        method: "serverCredentialAction",
+        value: {
+          action: "pairAttempt",
+          serverId: "local",
+          requestId: "probe",
+          origin: "https://remote.tailnet.ts.net",
+        },
+      }),
+      /Use the server manager/,
+    );
+    assert.equal(
+      await f.invoke("serverCredentialAction", {
+        action: "pairAttempt",
+        serverId: "remote",
+        requestId: "missing",
+        origin: "https://remote.tailnet.ts.net",
+      }),
+      false,
+    );
     f.setBackendBuild("old");
     assert.equal((await f.invoke("getBackendUpdate")).updateRequired, true);
     f.setBackendBuild("installed");

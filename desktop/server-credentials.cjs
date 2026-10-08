@@ -131,6 +131,21 @@ function createServerCredentials({
     );
   }
   return {
+    async hasPairAttempt({ origin, serverId, requestId, inviteId }) {
+      origin = serveOrigin(origin);
+      const state = await read();
+      const draft = state.drafts[requestId];
+      if (!draft) return false;
+      if (
+        draft.origin !== origin ||
+        draft.serverId !== serverId ||
+        (inviteId && draft.inviteId !== inviteId)
+      )
+        throw new Error(
+          "The saved credential belongs to another pairing attempt.",
+        );
+      return !!(draft.body || draft.receipt);
+    },
     async pair({ origin, invitation: input, requestId }) {
       origin = serveOrigin(origin);
       const invitation = input.invitation || input;

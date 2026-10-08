@@ -3,7 +3,14 @@ import { viewServer, type StudioServer } from "./registry";
 
 // Pairing owns credentials and signing. This boundary never puts a credential
 // in a URL, snapshot, project row, or navigation message.
+export type PairAttemptIdentity = {
+  requestId: string;
+  serverId: string;
+  origin: string;
+  inviteId?: string;
+};
 export interface ServerCredentialAdapter {
+  hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean>;
   pair(origin: string, code: string, requestId: string): Promise<StudioServer>;
   fetch(server: StudioServer, request: Request): Promise<Response>;
   forget(server: StudioServer): Promise<void>;
