@@ -411,14 +411,22 @@ class EntityCommitPublisherTests(unittest.IsolatedAsyncioTestCase):
         def publish(
             root: str,
             database_path: Path,
-            due_at: float,
-            deadline: float,
-            sequence: int,
-            entity_sequences: set[int],
-            reset: bool,
+            _due_at: float,
+            _deadline: float,
+            explicit_sequence: int,
+            explicit_sequences: set[int],
+            explicit_reset: bool,
         ) -> None:
             publication_times.append(clock[0])
-            original_publish(root, database_path, due_at, deadline, sequence, entity_sequences, reset)
+            original_publish(
+                root,
+                database_path,
+                _due_at,
+                _deadline,
+                explicit_sequence,
+                explicit_sequences,
+                explicit_reset,
+            )
 
         scheduler._publish = publish  # type: ignore[method-assign]
         resources_hub._entity_publication_scheduler = scheduler
