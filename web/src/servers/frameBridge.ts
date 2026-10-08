@@ -9,6 +9,7 @@ import { serverViewId, serverParentOrigin } from "./environment";
 import {
   isServerCommand,
   navigationSnapshot,
+  type ServerAccount,
   type ServerCommand,
 } from "./navigation";
 import type { Snapshot } from "../types";
@@ -19,6 +20,7 @@ export function useServerFrame(
   error: string,
   run: (command: ServerCommand) => void,
   unread: Set<string>,
+  accounts: ServerAccount[],
 ) {
   const handler = useRef(run);
   handler.current = run;
@@ -110,4 +112,22 @@ export function useServerFrame(
       serverParentOrigin,
     );
   }, [data, opened, error, [...unread].join(":")]);
+  useEffect(() => {
+    if (!serverViewId || window.parent === window) return;
+    const safeAccounts = accounts.map((account) => ({
+      provider: account.provider,
+      email: account.email,
+      plan: account.plan,
+      status: account.status,
+      label: account.label,
+    }));
+    window.parent.postMessage(
+      {
+        kind: "studio-server-accounts",
+        serverId: serverViewId,
+        accounts: safeAccounts,
+      },
+      serverParentOrigin,
+    );
+  }, [accounts]);
 }

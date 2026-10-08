@@ -75,7 +75,10 @@ class AccountService(Protocol):
 
     def reconnect(self, key: str) -> JsonValue: ...
 
-    def start_login(self, runtime: RuntimePort, request_id: str, account_key: str | None = None) -> JsonValue: ...
+    def start_login(
+        self, runtime: RuntimePort, request_id: str, account_key: str | None = None,
+        email: str | None = None, label: str | None = None,
+    ) -> JsonValue: ...
 
 
 class RuntimePort(Protocol):
@@ -344,7 +347,9 @@ def create_router(context: ApiContext) -> APIRouter:
     def account_login(request: Request, body: Annotated[LoginRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
-        result = _codex_login_response(runtime.accounts.start_login(runtime, body.request_id, body.account_key))
+        result = _codex_login_response(runtime.accounts.start_login(
+            runtime, body.request_id, body.account_key, body.email, body.label,
+        ))
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 

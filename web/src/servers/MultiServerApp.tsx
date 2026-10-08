@@ -11,7 +11,7 @@ import {
   useMantineColorScheme,
   Tabs,
 } from "@mantine/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
 import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
@@ -28,6 +28,8 @@ import {
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 import ServerManager from "./ServerManager";
+import ServerAccountsPanel from "./ServerAccountsPanel";
+import type { ServerAccount } from "./navigation";
 import {
   studioPreferencesStorageKey,
   parseStudioPreferences,
@@ -50,7 +52,10 @@ export default function MultiServerApp() {
     }
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
-  const servers = uiOnly ? paired : [localServer(), ...paired];
+  const servers = useMemo(
+    () => (uiOnly ? paired : [localServer(), ...paired]),
+    [paired],
+  );
   const [selected, setSelected] = useState(
     () =>
       localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
@@ -59,6 +64,7 @@ export default function MultiServerApp() {
     ? selected
     : servers[0]?.id || "";
   const [manager, setManager] = useState(uiOnly && !paired.length);
+  const [managerTab, setManagerTab] = useState("servers");
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -69,6 +75,9 @@ export default function MultiServerApp() {
   const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
     {},
   );
+  const [accountsByServer, setAccountsByServer] = useState<
+    Record<string, ServerAccount[]>
+  >({});
   const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -318,6 +327,34 @@ export default function MultiServerApp() {
     };
   }, [unloaded, paired]);
   useEffect(() => {
+    if (!manager || managerTab !== "servers") return;
+    const controllers = new Set<AbortController>();
+    let stopped = false;
+    for (const server of servers) {
+      const controller = new AbortController();
+      controllers.add(controller);
+      void fetchServerSummary(server, controller.signal)
+        .then((value) => {
+          if (stopped || controller.signal.aborted) return;
+          setNavigation((old) => ({
+            ...old,
+            [server.id]: { ...old[server.id], ...value },
+          }));
+          setStatus((old) => ({ ...old, [server.id]: "live" }));
+          setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
+        })
+        .catch(() => {
+          if (!stopped)
+            setStatus((old) => ({ ...old, [server.id]: "offline" }));
+        })
+        .finally(() => controllers.delete(controller));
+    }
+    return () => {
+      stopped = true;
+      controllers.forEach((controller) => controller.abort());
+    };
+  }, [manager, managerTab, servers]);
+  useEffect(() => {
     const stored = (event: StorageEvent) => {
       if (event.key === SERVER_REGISTRY_KEY || event.key === null)
         setPaired(load());
@@ -442,6 +479,32 @@ export default function MultiServerApp() {
         state.ready = value.ready;
         if (value.ready) readyFrames.current.add(id);
         applyNavigationRef.current(id, value);
+      } else if (event.data.kind === "studio-server-accounts") {
+        if (
+          !Array.isArray(event.data.accounts) ||
+          event.data.accounts.length > 500
+        )
+          return;
+        const accounts: ServerAccount[] = [];
+        for (const row of event.data.accounts) {
+          if (
+            !row ||
+            (row.provider !== "codex" && row.provider !== "claude") ||
+            (row.email !== null && typeof row.email !== "string") ||
+            (row.plan !== null && typeof row.plan !== "string") ||
+            typeof row.status !== "string" ||
+            typeof row.label !== "string"
+          )
+            return;
+          accounts.push({
+            provider: row.provider,
+            email: row.email,
+            plan: row.plan,
+            status: row.status,
+            label: row.label,
+          });
+        }
+        setAccountsByServer((old) => ({ ...old, [id]: accounts }));
       } else if (
         event.data.kind === "studio-server-status" &&
         [
@@ -481,6 +544,11 @@ export default function MultiServerApp() {
   const remove = (server: StudioServer) => {
     writeServers(readServers().filter((row) => row.id !== server.id));
     pending.current.delete(server.id);
+    setAccountsByServer((old) => {
+      const next = { ...old };
+      delete next[server.id];
+      return next;
+    });
   };
   const management = (
     <ServerManager
@@ -494,6 +562,8 @@ export default function MultiServerApp() {
       }
       statuses={status}
       lastSeen={lastSeen}
+      navigation={navigation}
+      accountsByServer={accountsByServer}
     />
   );
   const settings = (
@@ -506,15 +576,26 @@ export default function MultiServerApp() {
     >
       <div className="studio-settings-panel" data-testid="studio-settings">
         <Tabs
-          value="servers"
+          value={managerTab}
           className="studio-settings-tabs"
           onChange={(tab) => {
-            if (!isStudioSettingsTab(tab) || tab === "servers") return;
+            if (!isStudioSettingsTab(tab)) return;
+            setManagerTab(tab);
+            if (tab === "accounts" || tab === "servers") return;
             setManager(false);
             send(current, { action: "settings", tab });
           }}
         >
-          <StudioSettingsTabs serversOnly={!servers.length} />
+          <StudioSettingsTabs />
+          <Tabs.Panel value="accounts" pt="md">
+            <ServerAccountsPanel
+              servers={servers}
+              accountsByServer={accountsByServer}
+              statuses={status}
+              startAccount={(id, command) => send(id, command)}
+              accountAction={(id, command) => send(id, command)}
+            />
+          </Tabs.Panel>
           <Tabs.Panel value="servers" pt="md">
             {management}
           </Tabs.Panel>

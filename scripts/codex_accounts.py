@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import threading
 import uuid
@@ -558,7 +559,7 @@ class AccountStore:
         with self.lock:
             pending = {request: receipt["accountKey"]
                        for request, receipt in self.data.setdefault("logins", {}).items()
-                       if receipt.get("status") not in {"ready", "duplicate", "cancelled"}}
+                       if receipt.get("status") not in {"ready", "duplicate", "cancelled", "error"}}
         for key in dict.fromkeys(pending.values()):
             self.refresh(key)
         with self.lock:
@@ -587,6 +588,19 @@ class AccountStore:
                     continue
                 if row.get("status") != "ready":
                     continue
+                expected_email = receipt.get("emailHint")
+                actual_email = row.get("email")
+                if expected_email and actual_email and actual_email.casefold() != expected_email.casefold():
+                    receipt.update(
+                        status="error",
+                        email=actual_email,
+                        error=f"A different account signed in. Expected {expected_email}.",
+                    )
+                    home = Path(row.get("home", "")).resolve()
+                    if home.parent == self.root.resolve() and home.name == "login-" + request:
+                        shutil.rmtree(home, ignore_errors=True)
+                    self.data["accounts"].pop(key, None)
+                    continue
                 duplicate = next((other for other, value in self.data["accounts"].items()
                                   if other != key and not value.get("duplicateOf")
                                   and value.get("status") == "ready" and row.get("accountId")
@@ -600,12 +614,14 @@ class AccountStore:
                     self.data["accounts"][duplicate].pop("deleted", None)
                     self.data["accounts"][key].update(status="duplicate", duplicateOf=duplicate)
                 else:
-                    self.data["accounts"][key]["label"] = row.get("email") or "Codex account"
+                    self.data["accounts"][key]["label"] = (
+                        receipt.get("requestedLabel") or row.get("email") or "Codex account"
+                    )
             if json.dumps(self.data, sort_keys=True) != before:
                 self._save()
             return [dict(r) for r in self.data["logins"].values()]
 
-    def start_login(self, runtime, request, account_key=None):
+    def start_login(self, runtime, request, account_key=None, email=None, label=None):
         try:
             request = str(uuid.UUID(request))
         except (ValueError, TypeError, AttributeError):
@@ -615,7 +631,9 @@ class AccountStore:
         with self.lock:
             previous = self.data["logins"].get(request)
             if previous:
-                if previous.get("reauthAccountKey") != account_key:
+                if (previous.get("reauthAccountKey") != account_key
+                        or previous.get("emailHint") != email
+                        or previous.get("requestedLabel") != label):
                     raise ValueError("This sign-in request belongs to a different account")
                 return dict(previous)
             if account_key is not None:
@@ -628,10 +646,16 @@ class AccountStore:
                 key = account_key
             else:
                 key = self._login_profile(request)
+                if label:
+                    self.data["accounts"][key]["label"] = label
             self.data["logins"][request] = {
                 "requestId": request, "accountKey": key,
                 "status": "starting", "createdAt": time.time(),
             }
+            if account_key is None:
+                self.data["logins"][request].update(
+                    emailHint=email, requestedLabel=label,
+                )
             if account_key is not None:
                 self.data["logins"][request].update(reauthAccountKey=key, expectedAccountId=row["accountId"], email=row.get("email"))
             self._save()

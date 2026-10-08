@@ -412,6 +412,7 @@ class LoginManager:
                             error = 'Claude sign-in failed. Check the code or start a new sign-in request.'
                         self._finish(job, 'error', error)
                     elif job.get('emailHint') and actual_email.casefold() != job['emailHint'].casefold():
+                        job['receipt']['email'] = actual_email
                         self._finish(job, 'error', 'A different Claude account signed in. Use ' + job['emailHint'] + '.')
                     elif not isinstance(metadata.get('plan'), str) or not metadata['plan'].strip():
                         self._finish(job, 'error', 'Claude did not confirm the subscription plan. Start a new sign-in request.')

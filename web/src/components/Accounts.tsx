@@ -10,7 +10,7 @@ import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { watchResourceReads } from "./watchResourceReads";
 import { accountLimits } from "../usage/accountUsage";
-import { Button, Menu, Modal, TextInput } from "@mantine/core";
+import { Button, Group, Menu, Modal, Stack, TextInput } from "@mantine/core";
 import {
   Check,
   ChevronDown,
@@ -35,6 +35,8 @@ import type { Agent } from "../types";
 import "./accounts.css";
 import AccountSignIn from "./AccountSignIn";
 import AccountManagerHost from "./AccountManagerHost";
+import AccountAddDialog, { type AddAccountIntent } from "./AccountAddDialog";
+import type { ServerCommand } from "../servers/navigation";
 import { readBuckets, formatPercent } from "./Usage";
 
 const DELETE_REQUESTS_KEY = "codex-studio-account-delete-requests-v1";
@@ -595,6 +597,9 @@ export default function Accounts({
   onModalOpenChange,
   managerOnly = false,
   renderPicker,
+  externalCommand,
+  onExternalCommandHandled,
+  dialogsOnly = false,
 }: {
   state: ReturnType<typeof useAccounts>;
   agent?: Agent;
@@ -608,6 +613,12 @@ export default function Accounts({
   ) => ReactNode;
   changeAccount?: (key: string) => Promise<void>;
   onError: (message: string) => void;
+  externalCommand?: Extract<
+    ServerCommand,
+    { action: "account-sign-in" | "account-action" }
+  > | null;
+  onExternalCommandHandled?: () => void;
+  dialogsOnly?: boolean;
 }) {
   const [opened, setOpened] = useState(false);
   const [menuOpened, setMenuOpened] = useState(false);
@@ -629,9 +640,17 @@ export default function Accounts({
   );
   const [deleteChoice, setDeleteChoice] = useState<Account | null>(null);
   const [deleteRequestId, setDeleteRequestId] = useState("");
+  const [addOpen, setAddOpen] = useState(false);
+  const [addIntent, setAddIntent] = useState<AddAccountIntent | null>(null);
+  const [externalServerLabel, setExternalServerLabel] = useState("");
+  const [renameChoice, setRenameChoice] = useState<Account | null>(null);
+  const [renameLabel, setRenameLabel] = useState("");
+  const handledCommand = useRef<ServerCommand | null>(null);
   const actionLock = useRef(false);
   const childModalOpen =
     (!managerOnly && opened) ||
+    addOpen ||
+    !!renameChoice ||
     !!transferChoice ||
     !!disconnectChoice ||
     !!deleteChoice ||
@@ -640,7 +659,12 @@ export default function Accounts({
   useEffect(() => {
     onModalOpenChange?.(
       managerOnly
-        ? !!disconnectChoice || !!deleteChoice || !!claudeLogin || !!codexLogin
+        ? !!addOpen ||
+            !!renameChoice ||
+            !!disconnectChoice ||
+            !!deleteChoice ||
+            !!claudeLogin ||
+            !!codexLogin
         : childModalOpen,
     );
     return () => onModalOpenChange?.(false);
@@ -651,6 +675,8 @@ export default function Accounts({
     deleteChoice,
     claudeLogin,
     codexLogin,
+    addOpen,
+    renameChoice,
     onModalOpenChange,
   ]);
   const accounts = state.data.accounts || [];
@@ -698,6 +724,76 @@ export default function Accounts({
       setPending("");
     }
   };
+  useEffect(() => {
+    if (!externalCommand || handledCommand.current === externalCommand) return;
+    const command = externalCommand;
+    handledCommand.current = command;
+    setExternalServerLabel(
+      command.action === "account-sign-in" ? command.serverLabel : "",
+    );
+    if (command.action === "account-sign-in" && command.forceAdd) {
+      setAddIntent({
+        provider: command.provider,
+        email: command.email,
+        label: command.label,
+        serverLabel: command.serverLabel,
+      });
+      setAddOpen(true);
+      onExternalCommandHandled?.();
+      return;
+    }
+    void state.refresh().then((fresh) => {
+      const current =
+        fresh || (command.action === "account-sign-in" ? state.data : null);
+      if (!current) {
+        setError("Cannot load accounts from this server.");
+        onExternalCommandHandled?.();
+        return;
+      }
+      const account = current.accounts.find(
+        (candidate) =>
+          (candidate.provider === "claude" ? "claude" : "codex") ===
+            command.provider &&
+          (command.email
+            ? candidate.email?.toLocaleLowerCase() ===
+              command.email.toLocaleLowerCase()
+            : candidate.label === command.label),
+      );
+      if (command.action === "account-sign-in") {
+        if (account && !command.forceAdd) {
+          if (account.provider === "claude") setClaudeLogin(account);
+          else setCodexLogin(account);
+        } else {
+          setAddIntent({
+            provider: command.provider,
+            email: command.email,
+            label: command.label,
+            serverLabel: command.serverLabel,
+          });
+          setAddOpen(true);
+        }
+      } else if (!account) {
+        setError("This account is no longer saved on this server.");
+      } else if (command.operation === "rename") {
+        setRenameChoice(account);
+        setRenameLabel(account.label);
+      } else if (command.operation === "default") {
+        void action(`default:${account.id}`, async () => {
+          state.setData(
+            await post("/api/accounts/default", { account_key: account.id }),
+          );
+        });
+      } else if (command.operation === "disconnect") {
+        setDisconnectChoice(account);
+      } else {
+        const requestId = crypto.randomUUID();
+        setDeleteRequestId(requestId);
+        saveDeleteRequest(state.scope, account.id, requestId);
+        setDeleteChoice(account);
+      }
+      onExternalCommandHandled?.();
+    });
+  }, [externalCommand]);
   const selectAccount = (key: string) => {
     const account = accounts.find((candidate) => candidate.id === key);
     if (
@@ -736,6 +832,7 @@ export default function Accounts({
         <CodexSignIn
           account={codexLogin}
           state={state}
+          serverLabel={externalServerLabel || undefined}
           onClose={() => setCodexLogin(null)}
         />
       )}
@@ -744,6 +841,7 @@ export default function Accounts({
           key={claudeLogin.id}
           account={claudeLogin}
           scope={state.scope}
+          serverLabel={externalServerLabel || undefined}
           onClose={() => setClaudeLogin(null)}
           onReady={state.refresh}
         />
@@ -873,8 +971,8 @@ export default function Accounts({
             <Menu.Item
               leftSection={<Plus size={14} />}
               onClick={() => {
-                setAdding(true);
-                setOpened(true);
+                setAddIntent(null);
+                setAddOpen(true);
               }}
             >
               Add account
@@ -897,325 +995,385 @@ export default function Accounts({
           </Menu.Dropdown>
         </Menu>
       )}
-      <AccountManagerHost
-        inline={managerOnly}
-        opened={opened}
-        onClose={() => setOpened(false)}
-        title={adding ? "Add account" : "Accounts"}
-        closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
-      >
-        {adding ? (
-          <>
-            <div className="accounts-add-header">
-              <h3>Add account</h3>
-              <Button variant="subtle" onClick={() => setAdding(false)}>
-                Back to accounts
-              </Button>
+      {!dialogsOnly && (
+        <AccountManagerHost
+          inline={managerOnly}
+          opened={opened}
+          onClose={() => setOpened(false)}
+          title="Accounts"
+          closeBlocked={!!disconnectChoice || !!deleteChoice || !!claudeLogin}
+        >
+          {adding ? (
+            <>
+              <div className="accounts-add-header">
+                <h3>Add account</h3>
+                <Button variant="subtle" onClick={() => setAdding(false)}>
+                  Back to accounts
+                </Button>
+              </div>
+              <AccountSignIn state={state} />
+            </>
+          ) : (
+            <div className="accounts-setup">
+              {managerOnly && <h3>Accounts</h3>}
+              {!accounts.length && (
+                <p className="accounts-intro">
+                  No accounts found. Sign in or find profiles on this computer.
+                </p>
+              )}
+              <div className="accounts-actions">
+                <Button
+                  variant="filled"
+                  color="indigo"
+                  onClick={() => {
+                    setAddIntent(null);
+                    setAddOpen(true);
+                  }}
+                  leftSection={<Plus size={14} />}
+                >
+                  Add account
+                </Button>
+                <Button
+                  variant="default"
+                  leftSection={<RefreshCw size={14} />}
+                  loading={pending === "discover"}
+                  disabled={!!pending}
+                  onClick={() =>
+                    void action("discover", async () => {
+                      state.setData(await post("/api/accounts/discover", {}));
+                    })
+                  }
+                >
+                  Find existing accounts
+                </Button>
+              </div>
             </div>
-            <AccountSignIn state={state} />
-          </>
-        ) : (
-          <div className="accounts-setup">
-            {managerOnly && <h3>Accounts</h3>}
-            {!accounts.length && (
+          )}
+          {!adding && (
+            <>
               <p className="accounts-intro">
-                No accounts found. Sign in or find profiles on this computer.
+                New chats use the application default unless the project has its
+                own default. Existing chats keep their account.
               </p>
-            )}
-            <div className="accounts-actions">
-              <Button
-                variant="filled"
-                color="indigo"
-                onClick={() => setAdding(true)}
-                leftSection={<Plus size={14} />}
-              >
-                Add account
-              </Button>
-              <Button
-                variant="default"
-                leftSection={<RefreshCw size={14} />}
-                loading={pending === "discover"}
-                disabled={!!pending}
-                onClick={() =>
-                  void action("discover", async () => {
-                    state.setData(await post("/api/accounts/discover", {}));
-                  })
-                }
-              >
-                Find existing accounts
-              </Button>
-            </div>
-          </div>
-        )}
-        {!adding && (
-          <>
-            <p className="accounts-intro">
-              New chats use the application default unless the project has its
-              own default. Existing chats keep their account.
-            </p>
-            <div className="accounts-list" aria-label="Saved accounts">
-              {(["codex", "claude"] as const).map((provider) => {
-                const providerAccounts = accounts.filter(
-                  (account) => (account.provider || "codex") === provider,
-                );
-                return providerAccounts.length ? (
-                  <section
-                    className="accounts-provider"
-                    key={provider}
-                    aria-label={`${provider === "claude" ? "Claude" : "Codex"} accounts`}
-                  >
-                    <h3>
-                      <ProviderMark provider={provider} />
-                      {provider === "claude" ? "Claude" : "Codex"}
-                    </h3>
-                    <div className="accounts-grid">
-                      {providerAccounts.map((account) => (
-                        <section
-                          className="account-row"
-                          key={account.id}
-                          data-account={account.id}
-                          aria-label={account.email || account.label}
-                        >
-                          <div className="account-card-heading">
-                            <AccountNameEditor
-                              account={account}
-                              onSaved={state.setData}
-                              disabled={!!pending}
-                            />
-                            <Menu position="bottom-end" withinPortal>
-                              <Menu.Target>
-                                <ActionButton
-                                  actionRole="quiet"
-                                  className="account-card-menu"
-                                  loading={pending === `default:${account.id}`}
-                                  aria-label={`Actions for ${account.email || account.label}`}
-                                >
-                                  <Ellipsis size={18} />
-                                </ActionButton>
-                              </Menu.Target>
-                              <Menu.Dropdown>
-                                {account.id !==
-                                  state.data.defaultAccountKey && (
-                                  <Menu.Item
-                                    disabled={
-                                      !!pending ||
-                                      account.status !== "ready" ||
-                                      !!account.disconnected
+              <div className="accounts-list" aria-label="Saved accounts">
+                {(["codex", "claude"] as const).map((provider) => {
+                  const providerAccounts = accounts.filter(
+                    (account) => (account.provider || "codex") === provider,
+                  );
+                  return providerAccounts.length ? (
+                    <section
+                      className="accounts-provider"
+                      key={provider}
+                      aria-label={`${provider === "claude" ? "Claude" : "Codex"} accounts`}
+                    >
+                      <h3>
+                        <ProviderMark provider={provider} />
+                        {provider === "claude" ? "Claude" : "Codex"}
+                      </h3>
+                      <div className="accounts-grid">
+                        {providerAccounts.map((account) => (
+                          <section
+                            className="account-row"
+                            key={account.id}
+                            data-account={account.id}
+                            aria-label={account.email || account.label}
+                          >
+                            <div className="account-card-heading">
+                              <AccountNameEditor
+                                account={account}
+                                onSaved={state.setData}
+                                disabled={!!pending}
+                              />
+                              <Menu position="bottom-end" withinPortal>
+                                <Menu.Target>
+                                  <ActionButton
+                                    actionRole="quiet"
+                                    className="account-card-menu"
+                                    loading={
+                                      pending === `default:${account.id}`
                                     }
-                                    aria-label={`Use ${account.email || account.label} by default`}
-                                    onClick={() =>
-                                      void action(
-                                        `default:${account.id}`,
-                                        async () => {
-                                          state.setData(
-                                            await post(
-                                              "/api/accounts/default",
-                                              {
-                                                account_key: account.id,
-                                              },
-                                            ),
-                                          );
-                                        },
-                                      )
-                                    }
+                                    aria-label={`Actions for ${account.email || account.label}`}
                                   >
-                                    Set application default
-                                  </Menu.Item>
-                                )}
-                                {account.provider === "claude" && (
-                                  <>
+                                    <Ellipsis size={18} />
+                                  </ActionButton>
+                                </Menu.Target>
+                                <Menu.Dropdown>
+                                  {account.id !==
+                                    state.data.defaultAccountKey && (
                                     <Menu.Item
-                                      onClick={() => setClaudeLogin(account)}
-                                    >
-                                      Sign in again
-                                    </Menu.Item>
-                                  </>
-                                )}
-                                {account.provider !== "claude" &&
-                                  account.accountId && (
-                                    <Menu.Item
-                                      onClick={() => setCodexLogin(account)}
-                                    >
-                                      Sign in again
-                                    </Menu.Item>
-                                  )}
-                                {(state.data.supportsDisconnect ||
-                                  state.data.supportsDelete) && (
-                                  <Menu.Divider />
-                                )}
-                                {state.data.supportsDisconnect && (
-                                  <Menu.Item
-                                    color={
-                                      account.disconnected ? "gray" : "red"
-                                    }
-                                    className={
-                                      account.disconnected
-                                        ? undefined
-                                        : "account-destructive-action"
-                                    }
-                                    disabled={!!pending}
-                                    onClick={() => {
-                                      if (account.disconnected)
+                                      disabled={
+                                        !!pending ||
+                                        account.status !== "ready" ||
+                                        !!account.disconnected
+                                      }
+                                      aria-label={`Use ${account.email || account.label} by default`}
+                                      onClick={() =>
                                         void action(
-                                          `reconnect:${account.id}`,
+                                          `default:${account.id}`,
                                           async () => {
                                             state.setData(
                                               await post(
-                                                "/api/accounts/reconnect",
+                                                "/api/accounts/default",
                                                 {
                                                   account_key: account.id,
                                                 },
                                               ),
                                             );
                                           },
-                                        );
-                                      else setDisconnectChoice(account);
-                                    }}
-                                  >
-                                    {account.disconnected
-                                      ? "Reconnect account"
-                                      : "Disconnect account"}
-                                  </Menu.Item>
-                                )}
-                                {state.data.supportsDelete && (
-                                  <Menu.Item
-                                    color="red"
-                                    className="account-destructive-action"
-                                    disabled={!!pending}
-                                    onClick={() => {
-                                      const requestId =
-                                        storedDeleteRequest(
+                                        )
+                                      }
+                                    >
+                                      Set application default
+                                    </Menu.Item>
+                                  )}
+                                  {account.provider === "claude" && (
+                                    <>
+                                      <Menu.Item
+                                        onClick={() => setClaudeLogin(account)}
+                                      >
+                                        Sign in again
+                                      </Menu.Item>
+                                    </>
+                                  )}
+                                  {account.provider !== "claude" &&
+                                    account.accountId && (
+                                      <Menu.Item
+                                        onClick={() => setCodexLogin(account)}
+                                      >
+                                        Sign in again
+                                      </Menu.Item>
+                                    )}
+                                  {(state.data.supportsDisconnect ||
+                                    state.data.supportsDelete) && (
+                                    <Menu.Divider />
+                                  )}
+                                  {state.data.supportsDisconnect && (
+                                    <Menu.Item
+                                      color={
+                                        account.disconnected ? "gray" : "red"
+                                      }
+                                      className={
+                                        account.disconnected
+                                          ? undefined
+                                          : "account-destructive-action"
+                                      }
+                                      disabled={!!pending}
+                                      onClick={() => {
+                                        if (account.disconnected)
+                                          void action(
+                                            `reconnect:${account.id}`,
+                                            async () => {
+                                              state.setData(
+                                                await post(
+                                                  "/api/accounts/reconnect",
+                                                  {
+                                                    account_key: account.id,
+                                                  },
+                                                ),
+                                              );
+                                            },
+                                          );
+                                        else setDisconnectChoice(account);
+                                      }}
+                                    >
+                                      {account.disconnected
+                                        ? "Reconnect account"
+                                        : "Disconnect account"}
+                                    </Menu.Item>
+                                  )}
+                                  {state.data.supportsDelete && (
+                                    <Menu.Item
+                                      color="red"
+                                      className="account-destructive-action"
+                                      disabled={!!pending}
+                                      onClick={() => {
+                                        const requestId =
+                                          storedDeleteRequest(
+                                            state.scope,
+                                            account.id,
+                                          ) || crypto.randomUUID();
+                                        saveDeleteRequest(
                                           state.scope,
                                           account.id,
-                                        ) || crypto.randomUUID();
-                                      saveDeleteRequest(
-                                        state.scope,
-                                        account.id,
-                                        requestId,
-                                      );
-                                      setDeleteRequestId(requestId);
-                                      setDeleteChoice(account);
-                                    }}
-                                  >
-                                    Delete account
-                                  </Menu.Item>
-                                )}
-                              </Menu.Dropdown>
-                            </Menu>
-                          </div>
-                          {account.email && (
-                            <small className="account-email">
-                              {account.email}
-                            </small>
-                          )}
-                          <div className="account-card-status">
-                            <span
-                              className="account-status"
-                              data-status={
-                                account.error || account.status === "error"
-                                  ? "error"
+                                          requestId,
+                                        );
+                                        setDeleteRequestId(requestId);
+                                        setDeleteChoice(account);
+                                      }}
+                                    >
+                                      Delete account
+                                    </Menu.Item>
+                                  )}
+                                </Menu.Dropdown>
+                              </Menu>
+                            </div>
+                            {account.email && (
+                              <small className="account-email">
+                                {account.email}
+                              </small>
+                            )}
+                            <div className="account-card-status">
+                              <span
+                                className="account-status"
+                                data-status={
+                                  account.error || account.status === "error"
+                                    ? "error"
+                                    : account.status === "ready"
+                                      ? "ready"
+                                      : "signedOut"
+                                }
+                              >
+                                {account.error || account.status === "error"
+                                  ? "Error"
                                   : account.status === "ready"
-                                    ? "ready"
-                                    : "signedOut"
-                              }
-                            >
-                              {account.error || account.status === "error"
-                                ? "Error"
-                                : account.status === "ready"
-                                  ? "Signed in"
-                                  : "Sign in needed"}
-                            </span>
-                            {account.plan && (
-                              <span className="account-plan">
-                                {account.plan}
+                                    ? "Signed in"
+                                    : "Sign in needed"}
                               </span>
+                              {account.plan && (
+                                <span className="account-plan">
+                                  {account.plan}
+                                </span>
+                              )}
+                              {account.id === state.data.defaultAccountKey && (
+                                <span className="account-default">
+                                  <Check size={12} /> Application default
+                                </span>
+                              )}
+                            </div>
+                            {Boolean(account.error) && (
+                              <ErrorDescription
+                                className="account-action-error"
+                                value={account.error}
+                              />
                             )}
-                            {account.id === state.data.defaultAccountKey && (
-                              <span className="account-default">
-                                <Check size={12} /> Application default
-                              </span>
+                            {account.authenticationRecovery && (
+                              <p role="alert">
+                                {account.authenticationRecovery}
+                              </p>
                             )}
-                          </div>
-                          {Boolean(account.error) && (
-                            <ErrorDescription
-                              className="account-action-error"
-                              value={account.error}
-                            />
-                          )}
-                          {account.authenticationRecovery && (
-                            <p role="alert">{account.authenticationRecovery}</p>
-                          )}
-                          {account.disconnected && (
-                            <p>Hidden from new chats.</p>
-                          )}
-                          {!account.disconnected && (
-                            <AccountCapacity
-                              card
-                              account={account}
-                              opened={managerOnly || opened}
-                            />
-                          )}
-                          {account.provider === "claude" && (
-                            <ClaudeProfile
-                              account={account}
-                              onSaved={state.setData}
-                            />
-                          )}
-                        </section>
-                      ))}
-                    </div>
-                  </section>
-                ) : null;
-              })}
-            </div>
-            <NativeRuntimeStatus
-              opened={managerOnly || opened}
-              accounts={accounts}
-            />
-          </>
-        )}
-        {adding && <ClaudeProfile onSaved={state.setData} />}
-        {adding && (
-          <details className="account-register">
-            <summary>Add a Codex home directory</summary>
-            <form
-              onSubmit={(e) => {
-                e.preventDefault();
-                void action("register", async () => {
-                  state.setData(
-                    await post("/api/accounts/register", {
-                      home: home.trim(),
-                    }),
-                  );
-                  setHome("");
-                });
-              }}
-            >
-              <TextInput
-                label="Codex home"
-                description="Enter the path to the existing .codex directory for this account."
-                placeholder="/path/to/.codex"
-                value={home}
-                onChange={(e) => setHome(e.target.value)}
-                autoComplete="off"
+                            {account.disconnected && (
+                              <p>Hidden from new chats.</p>
+                            )}
+                            {!account.disconnected && (
+                              <AccountCapacity
+                                card
+                                account={account}
+                                opened={managerOnly || opened}
+                              />
+                            )}
+                            {account.provider === "claude" && (
+                              <ClaudeProfile
+                                account={account}
+                                onSaved={state.setData}
+                              />
+                            )}
+                          </section>
+                        ))}
+                      </div>
+                    </section>
+                  ) : null;
+                })}
+              </div>
+              <NativeRuntimeStatus
+                opened={managerOnly || opened}
+                accounts={accounts}
               />
+            </>
+          )}
+          {adding && <ClaudeProfile onSaved={state.setData} />}
+          {adding && (
+            <details className="account-register">
+              <summary>Add a Codex home directory</summary>
+              <form
+                onSubmit={(e) => {
+                  e.preventDefault();
+                  void action("register", async () => {
+                    state.setData(
+                      await post("/api/accounts/register", {
+                        home: home.trim(),
+                      }),
+                    );
+                    setHome("");
+                  });
+                }}
+              >
+                <TextInput
+                  label="Codex home"
+                  description="Enter the path to the existing .codex directory for this account."
+                  placeholder="/path/to/.codex"
+                  value={home}
+                  onChange={(e) => setHome(e.target.value)}
+                  autoComplete="off"
+                />
+                <Button
+                  type="submit"
+                  size="compact-sm"
+                  disabled={!home.trim() || !!pending}
+                  loading={pending === "register"}
+                >
+                  Add profile
+                </Button>
+              </form>
+            </details>
+          )}
+          {(error || state.error) && (
+            <p className="account-action-error" role="alert">
+              {error || state.error}
+            </p>
+          )}
+        </AccountManagerHost>
+      )}
+      <AccountAddDialog
+        opened={addOpen}
+        intent={addIntent}
+        state={state}
+        onClose={() => setAddOpen(false)}
+      />
+      <Modal
+        opened={!!renameChoice}
+        onClose={() => setRenameChoice(null)}
+        title={`Rename ${renameChoice?.email || renameChoice?.label || "account"}`}
+        centered
+      >
+        <form
+          onSubmit={(event) => {
+            event.preventDefault();
+            if (!renameChoice) return;
+            void action(`rename:${renameChoice.id}`, async () => {
+              state.setData(
+                await post("/api/accounts/name", {
+                  account_key: renameChoice.id,
+                  label: renameLabel,
+                  request_id: crypto.randomUUID(),
+                }),
+              );
+              setRenameChoice(null);
+            });
+          }}
+        >
+          <Stack gap="sm">
+            <TextInput
+              label="Name"
+              value={renameLabel}
+              maxLength={32}
+              onChange={(event) => setRenameLabel(event.currentTarget.value)}
+            />
+            <Group justify="flex-end">
+              <Button variant="default" onClick={() => setRenameChoice(null)}>
+                Cancel
+              </Button>
               <Button
                 type="submit"
-                size="compact-sm"
-                disabled={!home.trim() || !!pending}
-                loading={pending === "register"}
+                color="indigo"
+                disabled={!renameLabel.trim() || !!pending}
+                loading={pending === `rename:${renameChoice?.id}`}
               >
-                Add profile
+                Save
               </Button>
-            </form>
-          </details>
-        )}
-        {(error || state.error) && (
-          <p className="account-action-error" role="alert">
-            {error || state.error}
-          </p>
-        )}
-      </AccountManagerHost>
+            </Group>
+          </Stack>
+        </form>
+      </Modal>
       <AccountTransferConfirmation
         opened={!!transferChoice}
         target={transferChoice?.target || null}

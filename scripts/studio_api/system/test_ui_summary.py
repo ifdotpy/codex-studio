@@ -67,5 +67,8 @@ class UiSummaryTests(unittest.TestCase):
                 response = client.get("/api/ui-summary")
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response.json()["busy"])
-                self.assertEqual(set(response.json()), {"ready", "busy", "projects", "chats", "alerts"})
+                self.assertEqual(set(response.json()), {
+                    "ready", "busy", "system", "agentsRunning", "projects", "chats", "alerts",
+                })
+                self.assertEqual(response.json()["agentsRunning"], 1)
                 self.assertEqual(client.post("/api/ui-summary", json={}).status_code, 405)

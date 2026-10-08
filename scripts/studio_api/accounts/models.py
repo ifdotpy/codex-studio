@@ -71,6 +71,7 @@ class CodexLoginReceipt(ContractModel):
     verificationUrl: str | None = None
     userCode: str | None = None
     error: str | None = None
+    email: str | None = None
     resolvedAccountKey: str | None = None
     createdAt: float | None = None
     reauthAccountKey: str | None = None
@@ -344,6 +345,18 @@ class AccountNameRequest(RequiredAccountKeyRequest):
 class LoginRequest(ContractModel):
     request_id: RequestUUID
     account_key: str | None = None
+    email: str | None = Field(default=None, max_length=320)
+    label: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("email", "label")
+    @classmethod
+    def _strip_login_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value cannot be blank")
+        return cleaned
 
 
 class ClaudeStartRequest(ContractModel):

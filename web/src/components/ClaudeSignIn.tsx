@@ -31,11 +31,13 @@ export default function ClaudeSignIn({
   scope,
   onClose,
   onReady,
+  serverLabel,
 }: {
   account: Account;
   scope?: string;
   onClose: () => void;
   onReady: () => unknown;
+  serverLabel?: string;
 }) {
   const storageKey = `claude-sign-in:${scope || "local"}:${account.id}`;
   const [requestId, setRequestId] = useState(() =>
@@ -129,8 +131,14 @@ export default function ClaudeSignIn({
   const url = authUrl(receipt?.verificationUrl);
   const pending = !!requestId && active(receipt);
   return (
-    <Modal opened onClose={onClose} title="Sign in to Claude" centered>
+    <Modal
+      opened
+      onClose={onClose}
+      title={`Sign in to Claude · ${account.label}${serverLabel ? ` · ${serverLabel}` : ""}`}
+      centered
+    >
       <Stack gap="sm">
+        {serverLabel && <p>Server: {serverLabel}</p>}
         <p>
           Use your Claude subscription for{" "}
           <strong>{account.email || account.label}</strong>.

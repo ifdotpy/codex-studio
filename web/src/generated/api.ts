@@ -5279,6 +5279,8 @@ export interface components {
       accountKey: string;
       /** Createdat */
       createdAt?: number | null;
+      /** Email */
+      email?: string | null;
       /** Error */
       error?: string | null;
       /** Loginid */
@@ -6792,6 +6794,10 @@ export interface components {
     LoginRequest: {
       /** Account Key */
       account_key?: string | null;
+      /** Email */
+      email?: string | null;
+      /** Label */
+      label?: string | null;
       /** Request Id */
       request_id: string;
     };
@@ -12134,6 +12140,8 @@ export interface components {
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
+      /** Agentsrunning */
+      agentsRunning: number;
       /** Alerts */
       alerts: components["schemas"]["SummaryAlert"][];
       /** Busy */
@@ -12144,6 +12152,8 @@ export interface components {
       projects: components["schemas"]["SummaryProject"][];
       /** Ready */
       ready: boolean;
+      /** System */
+      system: string;
     };
     /** UnavailableAccount */
     UnavailableAccount: {

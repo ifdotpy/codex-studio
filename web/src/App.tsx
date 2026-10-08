@@ -13,6 +13,9 @@ import {
   serverParentOrigin,
 } from "./servers/environment";
 import { serverStorageEventKey } from "./servers/storage";
+import type { ServerCommand } from "./servers/navigation";
+import ServerAccountsPanel from "./servers/ServerAccountsPanel";
+import { localServer, viewServer } from "./servers/registry";
 import { serverLocalStorage as localStorage } from "./servers/storage";
 import SearchOverlay from "./components/shell/SearchOverlay";
 import { SettingsSection, SettingsRow } from "./components/ui/primitives";
@@ -298,6 +301,10 @@ export default function App() {
   const [accountModalOpen, setAccountModalOpen] = useState(false);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [codexLoginKey, setCodexLoginKey] = useState("");
+  const [serverAccountCommand, setServerAccountCommand] = useState<Extract<
+    ServerCommand,
+    { action: "account-sign-in" | "account-action" }
+  > | null>(null);
   const [mainSettingsOpen, setMainSettingsOpen] = useState(false);
   const [filePreview, setFilePreview] = useState<PreviewTarget | null>(null);
   const { colorScheme, setColorScheme } = useMantineColorScheme();
@@ -697,6 +704,27 @@ export default function App() {
       setCompletedOpen(true);
   }, [agent?.id, agent?.status]);
   const accounts = useAccounts(data?.stateDir);
+  useEffect(() => {
+    if (data?.stateDir) void accounts.refresh();
+  }, [accounts.refresh, data?.stateDir]);
+  const publicAccounts = useMemo(
+    () =>
+      accounts.data.accounts.map((account) => ({
+        provider:
+          account.provider === "claude"
+            ? ("claude" as const)
+            : ("codex" as const),
+        email: account.email || null,
+        plan: account.plan || null,
+        status: account.disconnected ? "signedOut" : account.status,
+        label: account.label,
+      })),
+    [accounts.data.accounts],
+  );
+  const accountServer = useMemo(
+    () => (serverViewId ? viewServer(serverViewId) : localServer()),
+    [],
+  );
   const accountKey =
     agent?.accountKey ||
     lead?.accountKey ||
@@ -1659,6 +1687,13 @@ export default function App() {
       else if (command.action === "settings") {
         setStudioSettingsTab(command.tab || "accounts");
         setStudioSettingsOpen(true);
+      } else if (
+        command.action === "account-sign-in" ||
+        command.action === "account-action"
+      ) {
+        setServerAccountCommand(command);
+        setStudioSettingsTab("accounts");
+        setStudioSettingsOpen(true);
       } else if (command.action === "focus") {
         window.focus();
         document.getElementById("message")?.focus();
@@ -1678,6 +1713,7 @@ export default function App() {
         .filter((agent) => unreadResult(agent, readState.readStateFor(agent)))
         .map((agent) => agent.id),
     ),
+    publicAccounts,
   );
   if (!data)
     return schemaMismatch ? (
@@ -2577,11 +2613,30 @@ export default function App() {
             <StudioSettingsTabs />
             <Tabs.Panel value="accounts" pt="md">
               <section className="settings-group" aria-label="Studio accounts">
+                <ServerAccountsPanel
+                  servers={[accountServer]}
+                  accountsByServer={{ [accountServer.id]: publicAccounts }}
+                  statuses={{ [accountServer.id]: "live" }}
+                  startAccount={(_id, command) =>
+                    setServerAccountCommand(command)
+                  }
+                  accountAction={(_id, command) =>
+                    setServerAccountCommand(command)
+                  }
+                  onDiscover={() => {
+                    void post("/api/accounts/discover", {})
+                      .then(accounts.setData)
+                      .catch((failure: unknown) => notify(errorText(failure)));
+                  }}
+                />
                 <Accounts
                   managerOnly
+                  dialogsOnly
                   onModalOpenChange={setAccountModalOpen}
                   state={accounts}
                   onError={notify}
+                  externalCommand={serverAccountCommand}
+                  onExternalCommandHandled={() => setServerAccountCommand(null)}
                 />
               </section>
             </Tabs.Panel>

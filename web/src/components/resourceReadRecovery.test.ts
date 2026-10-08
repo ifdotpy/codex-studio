@@ -31,6 +31,7 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...original,
     useCallback: (callback: unknown) => callback,
+    useMemo: (factory: () => unknown) => factory(),
     useEffect: (effect: () => void | (() => void)) => effects.push(effect),
     useRef: (value: unknown) =>
       refs[cursor.ref++] ?? (refs[cursor.ref - 1] = { current: value }),

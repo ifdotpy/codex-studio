@@ -57,7 +57,9 @@ export async function fetchServerSummary(
     !Array.isArray(value.projects) ||
     !Array.isArray(value.alerts) ||
     typeof value.ready !== "boolean" ||
-    typeof value.busy !== "boolean"
+    typeof value.busy !== "boolean" ||
+    typeof value.system !== "string" ||
+    typeof value.agentsRunning !== "number"
   )
     throw new Error("Invalid server summary.");
   return { ...value, opened: null, error: "" };

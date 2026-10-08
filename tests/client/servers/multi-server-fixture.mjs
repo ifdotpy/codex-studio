@@ -11,7 +11,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const workspaceId = "b".repeat(32);
-export async function fixture(label, signed = false) {
+export async function fixture(label, signed = false, accountRows = null) {
   const keys = crypto.generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey
     .export({ format: "pem", type: "spki" })
@@ -197,6 +197,8 @@ export async function fixture(label, signed = false) {
       json({
         ready: true,
         busy: !!agent.inFlight,
+        system: "Darwin",
+        agentsRunning: agent.inFlight ? 1 : 0,
         projects: [{ path: "/same/project", name: `${label} project` }],
         chats: [
           {
@@ -288,7 +290,7 @@ export async function fixture(label, signed = false) {
     }
     if (url.pathname === "/api/accounts") {
       json({
-        accounts: [
+        accounts: accountRows || [
           {
             id: "default",
             label: "Fixture",
