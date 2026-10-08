@@ -1,0 +1,486 @@
+"""Owner-server commands with durable start claims and bounded output."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import queue
+import sys
+import uuid
+import selectors
+import signal
+import subprocess
+import threading
+import time
+from typing import Any
+
+MAX_OUTPUT = 4 * 1024 * 1024
+READ_OUTPUT = 64 * 1024
+SYNC_SECONDS = 5
+
+
+def validate(payload: dict[str, Any]) -> dict[str, Any]:
+    cwd, command = payload.get('cwd'), payload.get('command')
+    if not isinstance(cwd, str) or '\0' in cwd or not Path(cwd).is_absolute():
+        raise ValueError('Supply an absolute cwd on the selected server')
+    if isinstance(command, str):
+        if not command or '\0' in command or len(command.encode()) > 128 * 1024:
+            raise ValueError('Supply a command of 1 to 128 KiB without NUL')
+    elif (not isinstance(command, list) or not 1 <= len(command) <= 256
+          or any(not isinstance(v, str) or '\0' in v for v in command)
+          or not command[0] or sum(len(v.encode()) for v in command) > 128 * 1024):
+        raise ValueError('Supply command argv of 1 to 256 strings, at most 128 KiB')
+    environment = payload.get('env', {})
+    if (not isinstance(environment, dict) or any(
+            not isinstance(k, str) or not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', k)
+            or not isinstance(v, str) or '\0' in v for k, v in environment.items())
+            or len(json.dumps(environment).encode()) > 128 * 1024):
+        raise ValueError('Supply env additions with valid names and string values, at most 128 KiB')
+    timeout, limit = payload.get('timeout', 120), payload.get('output_limit', 256 * 1024)
+    if type(timeout) is not int or not 1 <= timeout <= 1800:
+        raise ValueError('Supply timeout seconds from 1 to 1800')
+    if type(limit) is not int or not 2 <= limit <= MAX_OUTPUT:
+        raise ValueError('Supply output_limit bytes from 2 to 4194304')
+    return {**payload, 'cwd': cwd, 'command': command, 'env': environment,
+            'timeout': timeout, 'output_limit': limit}
+
+
+@dataclass
+class Buffer:
+    limit: int
+    head: bytearray = field(default_factory=bytearray)
+    tail: bytearray = field(default_factory=bytearray)
+    total: int = 0
+
+    def append(self, data: bytes) -> None:
+        self.total += len(data)
+        head_size = (self.limit + 1) // 2
+        take = min(len(data), head_size - len(self.head))
+        self.head.extend(data[:take])
+        self.tail.extend(data[take:])
+        tail_size = self.limit - head_size
+        if len(self.tail) > tail_size:
+            del self.tail[:len(self.tail) - tail_size]
+
+    def read(self, offset: int, limit: int) -> dict[str, Any]:
+        if offset < len(self.head):
+            start, data, gap = offset, self.head[offset:offset + limit], 0
+        else:
+            start = max(offset, self.total - len(self.tail))
+            data, gap = self.tail[start - (self.total - len(self.tail)):][:limit], start - offset
+        return {'offset': start, 'nextOffset': start + len(data), 'gapBytes': gap,
+                'text': bytes(data).decode('utf-8', errors='replace'), 'totalBytes': self.total,
+                'truncated': self.total > self.limit}
+
+
+def atomic_json(path: Path, value: dict[str, Any]) -> None:
+    temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
+    try:
+        fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        with os.fdopen(fd, 'w') as output:
+            json.dump(value, output, ensure_ascii=False)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def job_path(root: Path, key: str, suffix: str) -> Path:
+    return root / (hashlib.sha256(key.encode()).hexdigest() + suffix)
+
+
+class ServerExec:
+    """The backend attaches to command adapters, never directly to commands."""
+    def __init__(self, service: Any) -> None:
+        self.service, self.runtime = service, service.runtime
+        self.lock = threading.RLock()
+        self.active: dict[str, Any] = {}
+        self.threads: list[threading.Thread] = []
+        self.closed = False
+        self.folder = self.runtime.root / 'server-command-output'
+        self.folder.mkdir(mode=0o700, exist_ok=True)
+        with self.runtime.db() as db:
+            db.executescript('''
+                CREATE TABLE IF NOT EXISTS runtime_server_exec (
+                    id TEXT PRIMARY KEY, owner TEXT NOT NULL, actor TEXT NOT NULL,
+                    record TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS runtime_server_exec_audit (
+                    id TEXT PRIMARY KEY, actor TEXT NOT NULL, source_server TEXT NOT NULL,
+                    server TEXT NOT NULL, cwd TEXT NOT NULL, argv_hash TEXT NOT NULL,
+                    start REAL NOT NULL, end REAL, exit_code INTEGER, signal INTEGER);
+                CREATE TABLE IF NOT EXISTS runtime_server_exec_input (
+                    id TEXT PRIMARY KEY, handle TEXT NOT NULL);
+                CREATE INDEX IF NOT EXISTS runtime_server_exec_input_handle
+                    ON runtime_server_exec_input(handle);
+            ''')
+            rows = db.execute("SELECT * FROM runtime_server_exec WHERE json_extract(record,'$.status') IN ('starting','running','unknown')").fetchall()
+        for row in rows:
+            self._restore(row['owner'], row['actor'], row['id'])
+
+    def _record(self, principal: str, actor: str, key: str) -> dict[str, Any]:
+        with self.runtime.read_db() as db:
+            row = db.execute('SELECT * FROM runtime_server_exec WHERE id=?', (key,)).fetchone()
+        if not row or row['owner'] != principal or row['actor'] != actor:
+            raise PermissionError('The command handle belongs to another actor or server')
+        return json.loads(row['record'])  # type: ignore[no-any-return]
+
+    def _save(self, principal: str, actor: str, key: str, record: dict[str, Any]) -> None:
+        with self.runtime.db() as db:
+            previous = db.execute('SELECT record FROM runtime_server_exec WHERE id=?', (key,)).fetchone()
+            if (previous and json.loads(previous[0])['status'] not in {'starting', 'running'}
+                    and record['status'] in {'starting', 'running'}):
+                return
+            db.execute('UPDATE runtime_server_exec SET record=? WHERE id=?', (json.dumps(record), key))
+            if record['status'] not in {'starting', 'running'}:
+                db.execute('UPDATE runtime_server_exec_audit SET end=?,exit_code=?,signal=? WHERE id=?',
+                           (record.get('finishedAt'), record.get('exitCode'), record.get('signal'), key))
+        if record['status'] not in {'starting', 'running'}:
+            self.service.exec_completed(principal, actor, record)
+
+    def _snapshot(self, key: str) -> dict[str, Any] | None:
+        path = job_path(self.folder, key, '.output.json')
+        return json.loads(path.read_text()) if path.exists() else None
+
+    def _attach(self, principal: str, actor: str, key: str, config: dict[str, Any], *, restore: bool) -> Any:
+        from codex_process_supervisor import ProcessProxy, retained_native_launch
+        handle = 'server-command:' + hashlib.sha256(key.encode()).hexdigest()
+        command = config['adapter']
+        expected = retained_native_launch(self.runtime.root, handle, command, config['launchEnv'], str(self.folder)) if restore else None
+        if restore and expected is None:
+            raise RuntimeError('The retained command adapter is unavailable; outcome unknown')
+        proxy = ProcessProxy(self.runtime.root, handle, command, config['launchEnv'], str(self.folder),
+                             stderr_sink=lambda _text: None, expected=expected)
+        with self.lock:
+            if self.closed:
+                proxy.detach()
+                raise RuntimeError('The command backend is detached')
+            self.active[key] = proxy
+            thread = threading.Thread(target=self._watch, args=(principal, actor, key, proxy),
+                                      daemon=True, name='server-command-' + key[:8])
+            self.threads = [t for t in self.threads if t.is_alive()]
+            self.threads.append(thread)
+            thread.start()
+        return proxy
+
+    def _restore(self, principal: str, actor: str, key: str) -> None:
+        try:
+            snapshot = self._snapshot(key)
+            if snapshot and snapshot['record']['status'] not in {'starting', 'running'}:
+                self._save(principal, actor, key, snapshot['record'])
+                return
+            config = json.loads(job_path(self.folder, key, '.config.json').read_text())
+            self._attach(principal, actor, key, config, restore=True)
+        except Exception as error:
+            self.service._unknown_diagnostic(key, 'exec_restore', error)
+            # The adapter can finish between the snapshot read and the native
+            # proof. Reconcile that final file without opening another process.
+            try:
+                snapshot = self._snapshot(key)
+                if snapshot and snapshot['record']['status'] not in {'starting', 'running'}:
+                    self._save(principal, actor, key, snapshot['record'])
+                    return
+            except (OSError, ValueError):
+                pass
+            record = self._record(principal, actor, key)
+            record.update(status='unknown', finishedAt=record.get('finishedAt') or time.time(),
+                          error='Command outcome unknown; inspect the target server. The command was not run again.')
+            self._save(principal, actor, key, record)
+
+    def start(self, principal: str, payload: dict[str, Any], key: str) -> dict[str, Any]:
+        p = validate(payload)
+        actor = p.get('actor')
+        if not isinstance(actor, str) or not actor or len(actor) > 200:
+            raise ValueError('Supply the lead actor identity')
+        if not Path(p['cwd']).is_dir():
+            raise ValueError('The cwd is not an existing folder on this server')
+        from codex_process_supervisor import status, process_launch_command
+        try:
+            health = status(self.runtime.root)
+            if health.get('recovery', {}).get('blocked'):
+                raise RuntimeError('Supervisor recovery is blocked')
+        except Exception as error:
+            raise ValueError('The process supervisor is unavailable. No command was started.') from error
+        from codex_shell import monitor_command
+        argv = (monitor_command(None, p['command'], p['cwd'], config={
+            'shell_environment_policy': {'set': p['env']}})
+            if isinstance(p['command'], str) else p['command'])
+        record = {'handle': key, 'serverId': self.service.server_id, 'status': 'starting',
+                  'startedAt': time.time(), 'finishedAt': None, 'exitCode': None, 'signal': None,
+                  'duration': None, 'timedOut': False, 'outputLimit': p['output_limit']}
+        config_path = job_path(self.folder, key, '.config.json')
+        # macOS framework launchers replace argv[0] after exec. Launch the
+        # current interpreter's OS-reported executable directly so retained
+        # command and environment signatures remain exact across restart.
+        executable = process_launch_command(os.getpid())[0] if sys.platform == 'darwin' else sys.executable
+        config = {'payload': p, 'argv': argv, 'record': record, 'launchEnv': dict(os.environ),
+                  'adapter': [executable, '-B', str(Path(__file__).resolve()), '--child', str(config_path)]}
+        with self.lock:
+            if self.closed or self.runtime.closed:
+                raise ValueError('The command service is closed')
+            if len(self.active) >= 32:
+                raise ValueError('The server already has 32 command handles in progress')
+            atomic_json(config_path, config)
+            # The claim precedes supervisor open and the adapter's own Popen fence.
+            with self.runtime.db() as db:
+                db.execute('INSERT INTO runtime_server_exec VALUES(?,?,?,?)',
+                           (key, principal, actor, json.dumps(record)))
+                db.execute('INSERT INTO runtime_server_exec_audit VALUES(?,?,?,?,?,?,?,NULL,NULL,NULL)',
+                           (key, actor, principal, self.service.server_id, p['cwd'],
+                            hashlib.sha256(json.dumps(argv, ensure_ascii=False).encode()).hexdigest(), record['startedAt']))
+            self._attach(principal, actor, key, config, restore=False)
+        if p['timeout'] <= SYNC_SECONDS:
+            deadline = time.monotonic() + SYNC_SECONDS + 3
+            while time.monotonic() < deadline:
+                value = self.read(principal, {'actor': actor, 'handle': key})
+                if value['status'] not in {'starting', 'running'}:
+                    snapshot = self._snapshot(key)
+                    self._save(principal, actor, key, snapshot['record'] if snapshot else record)
+                    return value
+                time.sleep(.02)
+        return record
+
+    def _watch(self, principal: str, actor: str, key: str, proxy: Any) -> None:
+        try:
+            while not self.closed:
+                event = proxy.next_event()
+                if event is None:
+                    break
+                sequence, raw = event
+                frame = json.loads(raw)
+                if frame.get('method') == 'server_command/status':
+                    self._save(principal, actor, key, frame['params'])
+                proxy.ack(sequence)
+            if not self.closed:
+                snapshot = self._snapshot(key)
+                record = snapshot['record'] if snapshot else self._record(principal, actor, key)
+                if record['status'] in {'starting', 'running'}:
+                    record.update(status='unknown', finishedAt=time.time(),
+                                  error='The command adapter exited without a result; outcome unknown')
+                self._save(principal, actor, key, record)
+        except Exception as error:
+            if not self.closed:
+                self.service._unknown_diagnostic(key, 'exec', error)
+                record = self._record(principal, actor, key)
+                if record['status'] in {'starting', 'running'}:
+                    record.update(status='unknown', finishedAt=time.time(),
+                                  error='Command observation failed; inspect the target server. The command was not run again.')
+                    self._save(principal, actor, key, record)
+        finally:
+            proxy.detach()
+            with self.lock:
+                self.active.pop(key, None)
+
+    def read(self, principal: str, p: dict[str, Any]) -> dict[str, Any]:
+        key, actor = p.get('handle'), p.get('actor')
+        if not isinstance(key, str) or not isinstance(actor, str):
+            raise ValueError('Supply a command handle and actor')
+        record = self._record(principal, actor, key)
+        snapshot = self._snapshot(key)
+        if snapshot:
+            if record['status'] != 'unknown' or snapshot['record']['status'] not in {'starting', 'running'}:
+                record = snapshot['record']
+        result = dict(record)
+        for name in ('stdout', 'stderr'):
+            offset = p.get(name + '_offset', 0)
+            if type(offset) is not int or offset < 0:
+                raise ValueError('Supply nonnegative output byte offsets')
+            saved = snapshot.get(name, {}) if snapshot else {}
+            buffer = Buffer(saved.get('limit', 1))
+            buffer.head = bytearray.fromhex(saved.get('head', ''))
+            buffer.tail = bytearray.fromhex(saved.get('tail', ''))
+            buffer.total = saved.get('total', 0)
+            if offset > buffer.total:
+                raise ValueError('Output offset exceeds the retained output')
+            value = buffer.read(offset, READ_OUTPUT // 2)
+            result[name] = value['text']
+            result[name + 'Offset'] = value['offset']
+            result[name + 'NextOffset'] = value['nextOffset']
+            result[name + 'GapBytes'] = value['gapBytes']
+            result[name + 'Bytes'] = value['totalBytes']
+            result[name + 'Truncated'] = value['truncated']
+        return result
+
+    def control(self, principal: str, action: str, p: dict[str, Any], request_id: str) -> dict[str, Any]:
+        key, actor = p.get('handle'), p.get('actor')
+        if not isinstance(key, str) or not isinstance(actor, str):
+            raise ValueError('Supply a command handle and actor')
+        record = self._record(principal, actor, key)
+        if action == 'exec_input':
+            if 'input' not in p and p.get('close_stdin') is True:
+                p = {**p, 'input': ''}
+            if not isinstance(p.get('input'), str) or len(p['input'].encode()) > 64 * 1024:
+                raise ValueError('Supply input text of at most 64 KiB')
+            if 'close_stdin' in p and type(p['close_stdin']) is not bool:
+                raise ValueError('Supply a Boolean close_stdin value')
+        with self.lock:
+            proxy = self.active.get(key)
+            if proxy is None:
+                return {'handle': key, 'status': record['status'], 'accepted': False}
+            if action == 'exec_input':
+                # At most 32 frames can enter the bounded adapter queue. Never
+                # block its stdin reader, which would also block the supervisor
+                # journal and cancellation. The claim precedes pipe delivery.
+                with self.runtime.db() as db:
+                    count = db.execute('SELECT count(*) FROM runtime_server_exec_input WHERE handle=?', (key,)).fetchone()[0]
+                    if count >= 32:
+                        raise ValueError('The command has accepted 32 input requests. No more input can be sent.')
+                    db.execute('INSERT INTO runtime_server_exec_input VALUES(?,?)', (request_id, key))
+        proxy.send_write({'method': action, 'params': p}, operation_id='server-command-control:' + request_id)
+        return {'handle': key, 'accepted': True}
+
+    def close(self) -> None:
+        with self.lock:
+            self.closed = True
+            proxies, threads = list(self.active.values()), list(self.threads)
+        # Closing a backend never cancels the supervised command.
+        for proxy in proxies:
+            proxy.detach()
+        for thread in threads:
+            thread.join(timeout=12)
+            if thread.is_alive():
+                raise RuntimeError('Command observer did not detach; preserve state ownership')
+
+    def prune(self, now: float) -> None:
+        with self.lock, self.runtime.db() as db:
+            rows = db.execute("SELECT id FROM runtime_server_exec WHERE json_extract(record,'$.finishedAt')<?",
+                              (now - 7 * 86400,)).fetchall()
+            for row in rows:
+                if row['id'] in self.active:
+                    continue
+                for suffix in ('.config.json', '.output.json', '.started'):
+                    job_path(self.folder, row['id'], suffix).unlink(missing_ok=True)
+                db.execute('DELETE FROM runtime_server_exec_input WHERE handle=?', (row['id'],))
+                db.execute('DELETE FROM runtime_server_exec WHERE id=?', (row['id'],))
+            db.execute('DELETE FROM runtime_server_exec_audit WHERE end<?', (now - 90 * 86400,))
+
+
+def child(config_path: Path) -> None:
+    config = json.loads(config_path.read_text())
+    p, record = config['payload'], config['record']
+    key = record['handle']
+    folder = config_path.parent
+    output_path = job_path(folder, key, '.output.json')
+    stdout = Buffer((p['output_limit'] + 1) // 2)
+    stderr = Buffer(p['output_limit'] // 2)
+    controls: queue.Queue[dict[str, Any]] = queue.Queue(32)
+    shutdown = threading.Event()
+    cancel = threading.Event()
+    signal.signal(signal.SIGTERM, lambda _signum, _frame: shutdown.set())
+
+    def inputs() -> None:
+        for line in sys.stdin:
+            control = json.loads(line)
+            if control['method'] == 'exec_cancel':
+                cancel.set()
+            else:
+                controls.put(control)
+
+    def publish() -> None:
+        atomic_json(output_path, {'record': record, **{name: {
+            'limit': buffer.limit, 'head': buffer.head.hex(), 'tail': buffer.tail.hex(), 'total': buffer.total}
+            for name, buffer in (('stdout', stdout), ('stderr', stderr))}})
+        print(json.dumps({'method': 'server_command/status', 'params': record}), flush=True)
+
+    # The supervisor saves this initialization proof for safe reattachment.
+    print(json.dumps({'id': 1, 'result': {'serverCommand': key}}), flush=True)
+    began = time.monotonic()
+    process = None
+    try:
+        marker = job_path(folder, key, '.started')
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.fsync(fd)
+        os.close(fd)
+        directory = os.open(folder, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+        process = subprocess.Popen(config['argv'], cwd=p['cwd'], env={**config['launchEnv'], **p['env']},
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        os.set_blocking(process.stdin.fileno(), False)
+        record['status'] = 'running'
+        publish()
+        threading.Thread(target=inputs, daemon=True).start()
+        pending = bytearray()
+        close_input = False
+        cancelled = False
+        killed_at = None
+        last_publish = time.monotonic()
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ, stdout)
+            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            while selector.get_map() or process.poll() is None:
+                now = time.monotonic()
+                while len(pending) < 64 * 1024 and not controls.empty():
+                    control = controls.get_nowait()
+                    if control['method'] == 'exec_cancel':
+                        cancelled = True
+                    elif control['method'] == 'exec_input':
+                        pending.extend(control['params']['input'].encode())
+                        close_input |= control['params'].get('close_stdin', False)
+                cancelled |= shutdown.is_set() or cancel.is_set()
+                if killed_at is None and (cancelled or now >= began + p['timeout']):
+                    record['timedOut'] = not cancelled
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    killed_at = now
+                if killed_at is not None and now - killed_at > 2:
+                    break
+                if pending and not process.stdin.closed:
+                    try:
+                        count = os.write(process.stdin.fileno(), pending[:8192])
+                        del pending[:count]
+                    except BlockingIOError:
+                        pass
+                    except BrokenPipeError:
+                        pending.clear()
+                if close_input and not pending and not process.stdin.closed:
+                    process.stdin.close()
+                for selected, _ in selector.select(.05):
+                    data = os.read(selected.fd, 8192)
+                    if data:
+                        selected.data.append(data)
+                    else:
+                        selector.unregister(selected.fileobj)
+                if now - last_publish >= .5:
+                    publish()
+                    last_publish = now
+        code = process.wait(timeout=2)
+        record.update(status='cancelled' if cancelled else 'completed', exitCode=code if code >= 0 else None,
+                      signal=-code if code < 0 else None)
+    except FileExistsError:
+        record.update(status='unknown', error='A prior command start exists. The command was not run again.')
+    except OSError as error:
+        record.update(status='failed', error=os.strerror(error.errno) if error.errno else 'Command start failed')
+    except Exception:
+        record.update(status='unknown', error='Command outcome unknown; inspect the target server')
+    finally:
+        if process is not None:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait(timeout=2)
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
+        record.update(duration=time.monotonic() - began, finishedAt=time.time())
+        publish()
+
+
+if __name__ == '__main__':
+    if len(sys.argv) != 3 or sys.argv[1] != '--child':
+        raise SystemExit('This adapter is started by the process supervisor')
+    child(Path(sys.argv[2]))

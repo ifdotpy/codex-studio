@@ -1811,6 +1811,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 from codex_connection_recovery import start as start_connection_recovery
                 start_connection_recovery(self)
             self.resume_read_only_image_bases()
+            with self.read_db() as db:
+                commands_saved = db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone()
+            if commands_saved:
+                self.multi_server().commands()
         except BaseException as error:
             self._cleanup_failed_initialization(error)
             raise
@@ -10905,6 +10909,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         federation = getattr(self, "_federation_service", None)  # type: ignore[call-arg]  # typed-update
         if federation:
             federation.close()
+        commands = self.__dict__.get('_cross_server_service')
+        if commands:
+            commands.close()
         access = getattr(self, "_paired_access_service", None)
         if access:
             access.close()
