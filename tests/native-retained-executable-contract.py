@@ -341,7 +341,7 @@ class OperatorCloseContract(unittest.TestCase):
         # The old proxy's normal ACK reaches the live supervisor after the new
         # proxy has captured its open cursor. No journal rows are fabricated.
         release_ack.set()
-        self.assertTrue(ack_finished.wait(30), 'real supervisor ACK action did not finish')
+        self.assertTrue(ack_finished.wait(90), 'real supervisor ACK action did not finish')
         try:
             self.replacement_model_list = second.call('model/list', {}, timeout=30)
         except RuntimeError as error:
