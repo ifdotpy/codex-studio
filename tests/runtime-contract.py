@@ -1549,13 +1549,43 @@ class RuntimeContract(unittest.TestCase):
         self.assertEqual(len([e for e in self.snapshot()['events'] if e['kind'] == 'child_result']), 1)
 
     def test_timeout_does_not_retry_model_call(self):
+        start_error_persisted = threading.Event()
+        dispatch_changed = threading.Condition()
+        dispatch_count = [0]
+        original_start_error = self.runtime.start_error
+        original_dispatch = self.runtime.dispatch
+
+        def observe_start_error(agent_id, *args, **kwargs):
+            result = original_start_error(agent_id, *args, **kwargs)
+            if kwargs.get('unknown'):
+                start_error_persisted.set()
+            return result
+
+        def observe_dispatch(*args, **kwargs):
+            result = original_dispatch(*args, **kwargs)
+            with dispatch_changed:
+                dispatch_count[0] += 1
+                dispatch_changed.notify_all()
+            return result
+
+        self.runtime.start_error = observe_start_error
+        self.runtime.dispatch = observe_dispatch
         self.runtime.connect().fail_start = True
         a = self.runtime.create({'name': 'Lead', 'cwd': str(self.root), 'prompt': 'Finish'})
-        eventually(lambda: 'start result is unknown' in str(self.runtime.agent(a['id']).get('error')))
+        self.assertTrue(start_error_persisted.wait(30), 'unknown start outcome was not persisted')
         self.assertEqual(self.runtime.agent(a['id'])['status'], 'waiting')
         self.assertTrue(self.runtime.agent(a['id'])['inFlight'])
+        with dispatch_changed:
+            before_retry = dispatch_count[0]
+        self.runtime.changed.set()
+        with dispatch_changed:
+            self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_retry, timeout=30),
+                            'scheduler did not finish a tick after unknown start')
+            before_send = dispatch_count[0]
         self.runtime.send(a['id'], 'Additional work must wait')
-        time.sleep(.15)
+        with dispatch_changed:
+            self.assertTrue(dispatch_changed.wait_for(lambda: dispatch_count[0] > before_send, timeout=30),
+                            'scheduler did not finish a tick after queued input')
         self.assertEqual(sum(m == 'turn/start' for m,p in self.runtime.server.calls), 1)
         self.assertEqual(sum(e['status'] == 'uncertain' for e in self.snapshot()['events']), 1)
 
