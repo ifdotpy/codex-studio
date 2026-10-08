@@ -13,6 +13,36 @@ SCAN_LIMIT = 32 * 1024 * 1024
 
 def _open_rollout(home, relative):
     """Open a regular file without following any account-relative symlink."""
+    if os.name == 'nt':
+        # Windows does not provide dir_fd, O_DIRECTORY, or O_NOFOLLOW. The
+        # account directory is private, so validate every path component and
+        # the opened file identity before using the handle.
+        current = Path(home)
+        components = [current]
+        for part in relative.parts:
+            current = current / part
+            components.append(current)
+        for directory in components[:-1]:
+            info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, 'st_file_attributes', 0) & 0x400):
+                raise ValueError('The native rollout path contains a reparse point')
+        target = components[-1]
+        info = target.lstat()
+        if getattr(info, 'st_file_attributes', 0) & 0x400:
+            raise ValueError('The native rollout is a reparse point')
+        descriptor = os.open(target, os.O_RDONLY | getattr(os, 'O_BINARY', 0))
+        try:
+            opened = os.fstat(descriptor)
+            current_info = target.lstat()
+            if (not stat.S_ISREG(opened.st_mode)
+                    or getattr(current_info, 'st_file_attributes', 0) & 0x400
+                    or (opened.st_dev, opened.st_ino) != (current_info.st_dev, current_info.st_ino)):
+                raise ValueError('The native rollout is not a stable regular file')
+            return os.fdopen(descriptor, 'rb')
+        except BaseException:
+            os.close(descriptor)
+            raise
     flags = os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC
     directory = os.open(home, flags | os.O_DIRECTORY)
     try:
