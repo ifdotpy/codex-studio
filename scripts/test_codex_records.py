@@ -52,7 +52,8 @@ AGENT_FIELD_GROUPS = {
         connectionRecovery contextRepair contextRepairHistory cyberAccessProgram
         deliveredMode deliveredModeVersion disconnectRecovery emptyTransferRecovery events
         executionSettingsAccountKey imageWorkspaceCollect imageWorkspaceMount imageWorkspaceNoticeError
-        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceSnapshotCommit importedFrom
+        imageWorkspaceNoticeId imageWorkspaceNoticeSent imageWorkspaceNoticeText imageWorkspaceHandoffText
+        imageWorkspaceSnapshotCommit importedFrom
         lastBudgetWait lastCompletedTurnError lastContextRepairCheck
         lastContextRepairWait lastUpdated lastWorkspaceWait lazyAccountTransfer liveSteerAttempt
         liveSteerRejectedTurnId maxAgents maxAgentsExplicit nativeEffort nativeFailureHold nativeName

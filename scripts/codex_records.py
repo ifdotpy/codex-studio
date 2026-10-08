@@ -1278,6 +1278,7 @@ class AgentRecord(TypedDict):
     imageWorkspaceNoticeSent: NotRequired[str | None]
     imageWorkspaceNoticeText: NotRequired[str | None]
     imageWorkspaceNoticeError: NotRequired[str | None]
+    imageWorkspaceHandoffText: NotRequired[str | None]
     imageWorkspaceCollect: NotRequired[ImageWorkspaceCollectResultRecord]
     concurrency: NotRequired[int]
     maxAgents: NotRequired[int]
