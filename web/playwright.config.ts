@@ -7,6 +7,10 @@ import { getPlaywrightWorkerSelection } from "./playwright-workers.mjs";
 
 const workerSelection = getPlaywrightWorkerSelection();
 const workerLimit = workerSelection.workers;
+// MIMALLOC purge and bounded Vite discovery each roughly halved UX Chat worker PSS (2,165 -> 1,171 MiB).
+process.env.MIMALLOC_PURGE_DELAY ??= "0";
+process.env.MIMALLOC_ARENA_EAGER_COMMIT ??= "0";
+process.env.MIMALLOC_ALLOW_LARGE_OS_PAGES ??= "0";
 process.env.CODEX_PLAYWRIGHT_SELECTED_WORKERS = String(workerLimit);
 const playwrightScratch = choosePlaywrightScratchRoot(process.env, workerLimit);
 process.env.TMPDIR = playwrightScratch.root;

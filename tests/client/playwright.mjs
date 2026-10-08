@@ -403,6 +403,25 @@ const test = baseTest.extend({
       const results = await Promise.allSettled(
         [...scope.children].map(stopFixtureChild),
       );
+      try {
+        const tree = sampleProcessTreeMemory(process.pid);
+        const rollup = readFileSync("/proc/self/smaps_rollup", "utf8");
+        recordStage("worker_memory_after_test", {
+          workerPid: process.pid,
+          workerIndex: testInfo.workerIndex,
+          title: testInfo.titlePath.join(" › "),
+          file: testInfo.file,
+          rssBytes: Number(rollup.match(/^Rss:\s+(\d+) kB$/m)?.[1]) * 1024,
+          pssBytes: Number(rollup.match(/^Pss:\s+(\d+) kB$/m)?.[1]) * 1024,
+          processTreeRssBytes: tree.rssBytes,
+          processTreePssBytes: tree.pssBytes,
+          processTreeProcessCount: tree.processCount,
+          processTreeBreakdown: tree.processes,
+          nodeMemoryUsage: process.memoryUsage(),
+        });
+      } catch {
+        // Keep per-test telemetry optional on platforms without procfs.
+      }
       fixtureScopes.delete(testInfo);
       const cleanupFailures = [
         ...scope.errors,
