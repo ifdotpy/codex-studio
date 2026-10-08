@@ -236,6 +236,27 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertEqual(saved["maxSuiteScratchBytes"], 200)
             self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
 
+    def test_full_profile_refresh_decays_stale_aggregate_peaks(self):
+        with tempfile.TemporaryDirectory(prefix="server-profile-decay-") as directory:
+            profile_path = Path(directory) / "runner-profile.json"
+            profile_path.write_text(json.dumps({
+                "suiteSeconds": {"old.py": 2.0},
+                "maxSuiteRssBytes": 1000,
+                "maxSuiteScratchBytes": 2000,
+                "metricsStartedAt": 1.0,
+            }))
+            profile = {"suiteSeconds": {"new.py": 3.0},
+                       "maxSuiteRssBytes": 1000, "maxSuiteScratchBytes": 2000}
+            with (mock.patch.object(RUNNER, "PROFILE_PATH", profile_path),
+                  mock.patch.object(RUNNER, "TEST_TMP_ROOT", Path(directory))):
+                RUNNER._save_profile(profile, observed_metrics={
+                    "startedAt": 2.0, "peakRssBytes": 500, "peakScratchBytes": 1000,
+                })
+            saved = json.loads(profile_path.read_text())
+            self.assertEqual(saved["maxSuiteRssBytes"], 900)
+            self.assertEqual(saved["maxSuiteScratchBytes"], 1800)
+            self.assertEqual(saved["suiteSeconds"], {"old.py": 2.0, "new.py": 3.0})
+
     def test_concurrent_runner_claims_share_cpu_and_memory_budget(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-claims-") as temp:
             plans = [

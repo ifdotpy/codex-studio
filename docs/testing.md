@@ -52,8 +52,10 @@ Measured suite durations order the longest suites first. `--jobs` and
 which resource bound selected the count; use `--load-sample-seconds 0` or
 `CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a fast one-shot plan query.
 The checked-in [timing seed](../tests/server/timing-baseline.json) comes from
-the exact base run; by default, successful runs update a local profile under
-the short test cache root. On Linux, the runner uses a writable tmpfs scratch
+the exact base run; by default, successful runs update a repository-keyed local
+profile under the short test cache root. Complete runs refresh aggregate RSS
+and scratch peaks and decay prior peaks by 10% per run; filtered runs do not
+decay them. On Linux, the runner uses a writable tmpfs scratch
 mount when its free capacity covers the measured per-suite footprint for the
 selected worker count, then falls back to the short cache root. It checks the
 deepest known fixture Unix-socket paths before launching each suite and reports

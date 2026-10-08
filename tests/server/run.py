@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ctypes
 import fnmatch
+import hashlib
 import json
 import math
 import os
@@ -52,7 +53,8 @@ EXPENSIVE_TIMEOUT_SECONDS = 900
 TEST_TMP_ROOT = Path(os.environ.get(
     "CODEX_SERVER_TEST_TMP_ROOT", Path.home() / ".cache" / "cs" / "st",
 )).expanduser()
-PROFILE_PATH = TEST_TMP_ROOT / "runner-profile.json"
+REPOSITORY_KEY = hashlib.sha256(str(ROOT.resolve()).encode("utf-8")).hexdigest()[:12]
+PROFILE_PATH = TEST_TMP_ROOT / f"runner-profile-{REPOSITORY_KEY}.json"
 MEMORY_RESERVE_BYTES = 4 * 1024**3
 BASELINE_PATH = Path(__file__).with_name("timing-baseline.json")
 TMP_ROOT_OVERRIDE = os.environ.get("CODEX_SERVER_TEST_TMP_ROOT")
@@ -1125,20 +1127,38 @@ def _load_profile():
     return profile
 
 
-def _save_profile(profile):
+def _save_profile(profile, observed_metrics=None):
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
     with _profile_file_lock():
         merged = _read_profile_file(PROFILE_PATH)
+        previous_maximums = {
+            key: merged.get(key)
+            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes")
+        }
+        previous_metrics_started_at = float(merged.get("metricsStartedAt", 0) or 0)
         suites = dict(merged.get("suiteSeconds", {}))
         suites.update(profile.get("suiteSeconds", {}))
-        maximums = {
-            key: max(int(value) for value in (merged.get(key), profile.get(key)) if value is not None)
-            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes")
-            if merged.get(key) is not None or profile.get(key) is not None
-        }
         merged.update(profile)
         merged["suiteSeconds"] = suites
-        merged.update(maximums)
+        merged["metricsStartedAt"] = max(
+            previous_metrics_started_at,
+            float(profile.get("metricsStartedAt", 0) or 0),
+        )
+        if observed_metrics is not None:
+            current_started = float(observed_metrics.get("startedAt", 0) or 0)
+            if current_started >= previous_metrics_started_at:
+                for key, observed_key in (("maxSuiteRssBytes", "peakRssBytes"),
+                                          ("maxSuiteScratchBytes", "peakScratchBytes")):
+                    previous = int(previous_maximums.get(key, 0) or 0)
+                    observed = int(observed_metrics.get(observed_key, 0) or 0)
+                    merged[key] = max(observed, int(previous * 0.9))
+                merged["metricsStartedAt"] = current_started
+        else:
+            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes"):
+                values = [int(value) for value in (previous_maximums.get(key), profile.get(key))
+                          if value is not None]
+                if values:
+                    merged[key] = max(values)
         descriptor, temporary_name = tempfile.mkstemp(
             prefix=f".{PROFILE_PATH.name}.", suffix=".tmp", dir=PROFILE_PATH.parent,
         )
@@ -1250,13 +1270,19 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
         EXPECTED_FAILURES.clear()
         UNEXPECTED_SUCCESSES.clear()
     started = time.monotonic()
+    metrics_started_at = time.time()
     if not runnable:
         return runnable, skipped, failures, time.monotonic() - started
 
     profile = _load_profile()
     suite_seconds = dict(profile.get("suiteSeconds", {}))
     max_suite_rss = int(profile.get("maxSuiteRssBytes", 0) or 0)
+    observed_peak_rss = 0
+    observed_peak_scratch = 0
     save_measurements = execute is run_process
+    all_suites_selected = save_measurements and {path for path, _kind in entries} == {
+        path for path, _kind in inventory()
+    }
     suite_tmp_root = TEST_TMP_ROOT
     owned_tmp_root = None
     plan = None
@@ -1312,6 +1338,8 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             )
             suite_seconds[relative] = suite_elapsed
             max_suite_rss = max(max_suite_rss, peak_rss)
+            observed_peak_rss = max(observed_peak_rss, peak_rss)
+            observed_peak_scratch = max(observed_peak_scratch, scratch_bytes)
             profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss,
                             "maxSuiteScratchBytes": max(
                                 int(profile.get("maxSuiteScratchBytes", 0) or 0), scratch_bytes,
@@ -1401,6 +1429,8 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
             relative, error, suite_elapsed, peak_rss, scratch_bytes = future.result()
             suite_seconds[relative] = suite_elapsed
             max_suite_rss = max(max_suite_rss, peak_rss)
+            observed_peak_rss = max(observed_peak_rss, peak_rss)
+            observed_peak_scratch = max(observed_peak_scratch, scratch_bytes)
             profile["maxSuiteScratchBytes"] = max(
                 int(profile.get("maxSuiteScratchBytes", 0) or 0), scratch_bytes,
             )
@@ -1427,7 +1457,14 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     failures.sort(key=lambda failure: order[failure[0]])
     profile.update({"suiteSeconds": suite_seconds, "maxSuiteRssBytes": max_suite_rss})
     if save_measurements:
-        _save_profile(profile)
+        if all_suites_selected and observed_peak_rss:
+            _save_profile(profile, observed_metrics={
+                "startedAt": metrics_started_at,
+                "peakRssBytes": observed_peak_rss,
+                "peakScratchBytes": observed_peak_scratch,
+            })
+        else:
+            _save_profile(profile)
     return runnable, skipped, failures, time.monotonic() - started
 
 
