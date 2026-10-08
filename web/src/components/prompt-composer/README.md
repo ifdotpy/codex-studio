@@ -1,6 +1,6 @@
 # Prompt composer
 
-## What this owns
+## Change Contract
 
 `PromptComposer.tsx` owns the form subtree and the live text for one chat.
 `PromptInput.tsx` owns the textarea, autocomplete menu, keyboard handling, and
@@ -30,6 +30,16 @@ using an old render's text. The existing request ID is retained through retry;
 the draft clears only when the durable outbox owns the message and only if the
 user has not typed newer text. Changing chats changes the subscription, so each
 chat keeps its own draft.
+
+The prompt uses one fixed-height, scrollable textarea across browsers and screen sizes.
+Keyboard and language-picker viewport changes do not change the height of the focused input
+or force the page to scroll. Long desktop drafts also scroll inside the field. The
+viewport hook continues to keep the composer inside the visible screen. Mobile
+model and account information shares one row so it does not push the send
+controls and usage footer below the keyboard.
+`tests/client/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
+changes with Android and iPhone identities in Chromium and WebKit; it does not
+open a real operating-system language picker.
 
 The textarea remains controlled. Attachments, dictation, prompt recall, skill
 completion, selection and caret placement, Enter, Tab, Shift+Enter, and IME
@@ -75,6 +85,13 @@ not render while typing; it allows at most one incidental Conversation update
 to coincide with typing, while the focused 500-draft fixture remains strictly
 zero for parent/transcript renders. Neither browser fixture has a latency
 threshold.
+
+The mobile keyboard regression can also run independently:
+
+```sh
+npm --prefix web run test:browser -- mobile-keyboard-ui.spec.mjs
+BROWSER=webkit npm --prefix web run test:browser -- mobile-keyboard-ui.spec.mjs
+```
 
 ## Recorded measurements
 
