@@ -462,6 +462,137 @@ class Commands(unittest.TestCase):
             text += value['stdout']
         self.assertEqual(text, '€' * 30000)
 
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS marker proof')
+    def test_second_review_marker_cannot_prove_an_unrelated_process(self):
+        from codex_server_exec import Descendants
+        accepted = time.time()
+        foreign = subprocess.Popen([sys.executable, '-c', 'import time;time.sleep(60)'],
+                                   env={**os.environ, 'STUDIO_EXEC_ID': 'public-handle'})
+        def close_foreign():
+            if foreign.poll() is None:
+                foreign.kill()
+            foreign.wait(timeout=3)
+        self.addCleanup(close_foreign)
+        tree = Descendants('public-handle', accepted)
+        self.addCleanup(tree.close)
+        tree.marked_processes()
+        self.assertNotIn(foreign.pid, tree.known)
+        response = self.start([sys.executable, '-c', 'print("ok")'], timeout=3)
+        config = json.loads(job_path(self.b.state / 'server-command-output', response['value']['handle'], '.config.json').read_text())
+        secret = config['markerSecret']
+        self.assertGreaterEqual(len(bytes.fromhex(secret)), 16)
+        self.assertNotEqual(secret, response['value']['handle'])
+        self.assertNotIn(secret, json.dumps(response))
+        self.assertNotIn(secret, json.dumps(self.events(self.a, self.lead['id'], kind='monitor_exit')))
+
+    @unittest.skipUnless(sys.platform == 'darwin', 'macOS lost fork proof')
+    def test_second_review_markerless_double_fork_reports_unknown_cleanup(self):
+        marker = self.b.folder / 'markerless-child'
+        child = 'import os,time;from pathlib import Path;Path(' + repr(str(marker)) + ').write_text(str(os.getpid()));time.sleep(60)'
+        script = ('import os,time;'
+            '\nif os.fork()==0:\n'
+            ' if os.fork()==0:\n'
+            '  os.environ.pop("STUDIO_EXEC_ID",None);os.setsid();os.execvpe(' + repr(sys.executable) + ','
+                + repr([sys.executable, '-c', child]) + ',os.environ)\n'
+            ' os._exit(0)\n'
+            'time.sleep(.7)')
+        response = self.start([sys.executable, '-c', script], 'lost-double-fork', timeout=3)
+        eventually(marker.exists)
+        pid = int(marker.read_text())
+        began = process_start_time(pid)
+        def cleanup():
+            if began and process_start_matches(pid, began):
+                os.kill(pid, signal.SIGKILL)
+        self.addCleanup(cleanup)
+        value = response['value']
+        if process_start_time(pid) is not None:
+            self.assertGreater(value['cleanupUnknownForks'], 0, value)
+            self.assertEqual(value['status'], 'unknown')
+
+    def test_second_review_bootstrap_obeys_timeout_and_cancel(self):
+        startup = self.b.folder / 'startup'
+        startup.mkdir()
+        for mode in ('timeout', 'cancel'):
+            with self.subTest(mode=mode):
+                marker = self.b.folder / ('bootstrap-' + mode)
+                (startup / 'sitecustomize.py').write_text('import os,time\nfrom pathlib import Path\nPath(' + repr(str(marker)) + ').write_text(str(os.getpid()))\ntime.sleep(60)\n')
+                response = self.start(['true'], 'bootstrap-' + mode, timeout=1 if mode == 'timeout' else 120,
+                                      env={'PYTHONPATH': str(startup)})
+                eventually(marker.exists)
+                pid = int(marker.read_text())
+                began = process_start_time(pid)
+                def cleanup(pid=pid, began=began):
+                    if began and process_start_matches(pid, began):
+                        os.kill(pid, signal.SIGKILL)
+                self.addCleanup(cleanup)
+                if mode == 'cancel':
+                    self.call('exec_cancel', 'cancel-bootstrap', server=self.b.server_id, handle=response['value']['handle'])
+                deadline = time.monotonic() + 2
+                while process_start_time(pid) is not None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertIsNone(process_start_time(pid), mode)
+                value = self.finish(response['value']['handle'])
+                self.assertEqual(value['status'], 'cancelled' if mode == 'cancel' else 'completed')
+                self.assertEqual(value['timedOut'], mode == 'timeout')
+
+    def test_second_review_detached_completion_retires_the_unread_journal(self):
+        response = self.start([sys.executable, '-u', '-c', 'import time;print("before");time.sleep(1);print("after")'],
+                              'detached-completion', timeout=120)
+        handle = response['value']['handle']
+        manager = self.b.runtime.multi_server().commands()
+        manager.close()
+        output = job_path(manager.folder, handle, '.output.json')
+        eventually(lambda: output.exists() and json.loads(output.read_text())['record']['status'] == 'completed')
+        self.b.runtime.multi_server()._command_service = None
+        restored = self.b.runtime.multi_server().commands()
+        restored.prune(time.time())
+        import sqlite3
+        with sqlite3.connect(self.b.state / 'supervisor.sqlite3') as db:
+            self.assertEqual(db.execute('SELECT count(*) FROM handles').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM events').fetchone()[0], 0)
+            self.assertEqual(db.execute('SELECT count(*) FROM child_identities').fetchone()[0], 0)
+        self.assertEqual(self.read(handle)['stdout'], 'before\nafter\n')
+
+    def test_second_review_live_utf8_waits_for_the_remaining_bytes(self):
+        response = self.start([sys.executable, '-u', '-c',
+            'import os,sys;os.write(1,b"\\xe2");sys.stdin.readline();os.write(1,b"\\x82\\xac")'],
+            'live-utf8', timeout=120)
+        handle = response['value']['handle']
+        snapshot = job_path(self.b.state / 'server-command-output', handle, '.output.json')
+        eventually(lambda: snapshot.exists() and json.loads(snapshot.read_text())['stdout']['total'] == 1)
+        page = self.read(handle)
+        self.assertEqual(page['stdout'], '')
+        self.assertEqual(page['stdoutNextOffset'], 0)
+        self.call('exec_input', 'release-live-utf8', server=self.b.server_id, handle=handle, input='go\n')
+        value = self.finish(handle)
+        self.assertEqual(value['stdout'], '€')
+        self.assertEqual(value['stdoutNextOffset'], 3)
+
+    def test_second_review_private_marker_is_redacted_across_chunks(self):
+        from codex_server_exec import MarkerRedactor
+        private = 'fixture-private-marker'
+        redactor = MarkerRedactor(private)
+        output = redactor.feed(b'before fixture-private-')
+        output += redactor.feed(b'marker after', final=True)
+        self.assertEqual(output, b'before [private marker] after')
+        value = self.start([sys.executable, '-c', 'import os;print(os.environ["STUDIO_EXEC_ID"])'],
+                           'print-marker', timeout=3)['value']
+        self.assertEqual(value['stdout'], '[private marker]\n')
+        config = json.loads(job_path(self.b.state / 'server-command-output', value['handle'], '.config.json').read_text())
+        self.assertTrue(config['markerSecret'] not in json.dumps(value))
+
+    def test_second_review_linux_pidfd_pins_the_signal_target(self):
+        from codex_server_exec import Descendants
+        tree = Descendants('pidfd-fixture', time.time())
+        self.addCleanup(tree.close)
+        actions = []
+        with patch('sys.platform', 'linux'), patch('os.pidfd_open', create=True, side_effect=lambda pid: actions.append(('open', pid)) or 77), \
+                patch('codex_server_exec.descendant_matches', side_effect=lambda pid, birth: actions.append(('birth', pid, birth)) or True), \
+                patch('signal.pidfd_send_signal', create=True, side_effect=lambda fd, signum: actions.append(('signal', fd, signum))), \
+                patch('os.close', side_effect=lambda fd: actions.append(('close', fd))):
+            self.assertTrue(tree.signal_process(123, 'old-birth', signal.SIGSTOP))
+        self.assertEqual(actions, [('open', 123), ('birth', 123, 'old-birth'), ('signal', 77, signal.SIGSTOP), ('close', 77)])
+
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)

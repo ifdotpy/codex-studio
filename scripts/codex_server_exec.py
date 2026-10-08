@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import codecs
 import hashlib
+import secrets
 import json
 import os
 from pathlib import Path
@@ -90,7 +92,7 @@ class Buffer:
         if len(self.tail) > tail_size:
             del self.tail[:len(self.tail) - tail_size]
 
-    def read(self, offset: int, limit: int) -> dict[str, Any]:
+    def read(self, offset: int, limit: int, *, final: bool = True) -> dict[str, Any]:
         if self.total <= self.limit:
             start, data, gap = offset, (self.head + self.tail)[offset:offset + limit], 0
         elif offset < len(self.head):
@@ -105,19 +107,34 @@ class Buffer:
                 data = data[1:]
                 start += 1
                 gap += 1
-        raw = bytes(data)
-        try:
-            raw.decode('utf-8')
-        except UnicodeDecodeError as error:
-            if (error.reason == 'unexpected end of data' and error.end == len(raw)
-                    and start + len(raw) < self.total):
-                data = data[:error.start]
-                if not data and self.total > self.limit and offset < len(self.head):
-                    page = self.read(len(self.head), limit)
-                    return page | {'gapBytes': page['offset'] - offset}
+        decoder = codecs.getincrementaldecoder('utf-8')(errors='replace')
+        text = decoder.decode(bytes(data), final=final and start + len(data) == self.total)
+        pending = decoder.getstate()[0]
+        if pending:
+            data = data[:-len(pending)]
+            if not data and self.total > self.limit and offset < len(self.head):
+                page = self.read(len(self.head), limit, final=final)
+                return page | {'gapBytes': page['offset'] - offset}
         return {'offset': start, 'nextOffset': start + len(data), 'gapBytes': gap,
-                'text': bytes(data).decode('utf-8', errors='replace'), 'totalBytes': self.total,
+                'text': text, 'totalBytes': self.total,
                 'truncated': self.total > self.limit}
+
+
+class MarkerRedactor:
+    """Do not publish the private marker, even across stream chunks."""
+    def __init__(self, secret: str) -> None:
+        self.secret = secret.encode()
+        self.pending = b''
+
+    def feed(self, data: bytes, *, final: bool = False) -> bytes:
+        value = self.pending + data
+        size = 0
+        if not final:
+            for length in range(1, min(len(value), len(self.secret) - 1) + 1):
+                if value.endswith(self.secret[:length]):
+                    size = length
+        self.pending = value[-size:] if size else b''
+        return (value[:-size] if size else value).replace(self.secret, b'[private marker]')
 
 
 def atomic_json(path: Path, value: dict[str, Any]) -> None:
@@ -160,14 +177,17 @@ def descendant_matches(pid: int, began: str) -> bool:
 
 class Descendants:
     """Track fork ancestry, including children that create another session."""
-    def __init__(self, key: str, started_at: float) -> None:
+    def __init__(self, key: str, started_at: float, marker_secret: str | None = None) -> None:
         self.key, self.started_at = key, started_at
+        self.marker_secret = marker_secret or secrets.token_hex(32)
         self.known: dict[int, str] = {}
         self.kqueue: Any = None
         self.root = 0
         self.collected_at = 0.0
         self.stopped: set[int] = set()
         self.unproved: set[int] = set()
+        self.forks: dict[int, int] = {}
+        self.parents: dict[int, int] = {}
         if sys.platform.startswith('linux'):
             import ctypes
             # Orphans remain children of this adapter after their parent exits.
@@ -202,8 +222,8 @@ class Descendants:
         self.collected_at = now
         if self.kqueue is not None:
             for event in events:
-                if event.fflags & select.KQ_NOTE_FORK and process_start_time(event.ident) is None:
-                    self.unproved.add(event.ident)
+                if event.fflags & select.KQ_NOTE_FORK:
+                    self.forks[event.ident] = self.forks.get(event.ident, 0) + 1
             import ctypes
             pending = list(self.known)
             while pending:
@@ -230,6 +250,7 @@ class Descendants:
                             if pid not in current[:length // ctypes.sizeof(ctypes.c_int)] or not process_start_matches(pid, began):
                                 continue
                             self.known[pid] = began
+                            self.parents[pid] = parent
                             try:
                                 self.kqueue.control([select.kevent(pid, filter=select.KQ_FILTER_PROC,
                                     flags=select.KQ_EV_ADD | select.KQ_EV_ENABLE,
@@ -257,9 +278,37 @@ class Descendants:
                         and process_start_matches(parent, processes[parent][1]) and process_start_matches(pid, began)):
                     added.add(pid)
                     self.known[pid] = began
+                    self.parents[pid] = parent
             if not added:
                 break
             roots.update(added)
+
+    def unknown_forks(self) -> int:
+        unresolved = len(self.unproved)
+        for parent, count in self.forks.items():
+            stopped = 0
+            for pid, source in self.parents.items():
+                if source == parent and (pid in self.stopped or not descendant_matches(pid, self.known[pid])):
+                    stopped += 1
+            unresolved += max(0, count - stopped)
+        return unresolved
+
+    def signal_process(self, pid: int, began: str, signum: int) -> bool:
+        if sys.platform.startswith('linux'):
+            # Pin the PID before checking its birth. A reused PID cannot change
+            # the process addressed by this descriptor after the check.
+            fd = os.pidfd_open(pid)
+            try:
+                if not descendant_matches(pid, began):
+                    return False
+                signal.pidfd_send_signal(fd, signum)
+                return True
+            finally:
+                os.close(fd)
+        if descendant_matches(pid, began):
+            os.kill(pid, signum)
+            return True
+        return False
 
     def stop(self) -> int:
         process_start_matches = descendant_matches
@@ -277,24 +326,22 @@ class Descendants:
             if not alive:
                 return len(self.stopped - {self.root})
             # Stop forking before the second tree walk. Check the birth time
-            # immediately before each signal so a reused PID is never killed.
+            # immediately before each signal. Linux also pins the PID with pidfd.
             for pid, began in alive.items():
-                if process_start_matches(pid, began):
-                    try:
-                        os.kill(pid, signal.SIGSTOP)
-                    except ProcessLookupError:
-                        pass
+                try:
+                    self.signal_process(pid, began, signal.SIGSTOP)
+                except ProcessLookupError:
+                    pass
             try:
                 self.collect(force=True)
             except (OSError, RuntimeError, subprocess.SubprocessError):
                 self.unproved.add(0)
             for pid, began in self.known.items():
-                if process_start_matches(pid, began):
-                    try:
-                        os.kill(pid, signal.SIGKILL)
+                try:
+                    if self.signal_process(pid, began, signal.SIGKILL):
                         self.stopped.add(pid)
-                    except ProcessLookupError:
-                        pass
+                except ProcessLookupError:
+                    pass
             if time.monotonic() >= deadline:
                 raise RuntimeError('Command descendants remain after the cleanup deadline')
             time.sleep(.02)
@@ -308,7 +355,7 @@ class Descendants:
                 continue
             try:
                 environment = process_launch_environment(pid)
-                if environment.get('STUDIO_EXEC_ID') != self.key:
+                if environment.get('STUDIO_EXEC_ID') != self.marker_secret:
                     continue
                 began = process_start_time(pid)
                 if began and float(began) >= self.started_at and process_start_matches(pid, began):
@@ -356,7 +403,10 @@ class ServerExec:
     def _retire(self, key: str) -> None:
         from codex_process_supervisor import retire_command
         try:
-            retire_command(self.runtime.root, 'server-command:' + hashlib.sha256(key.encode()).hexdigest())
+            with self.runtime.read_db() as db:
+                saved = db.execute('SELECT record FROM runtime_server_exec WHERE id=?', (key,)).fetchone()
+            persisted = bool(saved and json.loads(saved[0])['status'] not in {'starting', 'running'})
+            retire_command(self.runtime.root, 'server-command:' + hashlib.sha256(key.encode()).hexdigest(), persisted=persisted)
         except Exception as error:
             self.service._unknown_diagnostic(key, 'exec_retirement', error)
 
@@ -459,6 +509,7 @@ class ServerExec:
         # command and environment signatures remain exact across restart.
         executable = process_launch_command(os.getpid())[0] if sys.platform == 'darwin' else sys.executable
         config = {'payload': p, 'argv': argv, 'record': record, 'launchEnv': dict(os.environ),
+                  'markerSecret': secrets.token_hex(32),
                   'adapter': [executable, '-B', str(Path(__file__).resolve()), '--child', str(config_path)]}
         with self.lock:
             if self.closed or self.runtime.closed:
@@ -541,7 +592,7 @@ class ServerExec:
             buffer.total = saved.get('total', 0)
             if offset > buffer.total:
                 raise ValueError('Output offset exceeds the retained output')
-            value = buffer.read(offset, READ_OUTPUT // 2)
+            value = buffer.read(offset, READ_OUTPUT // 2, final=bool(snapshot and snapshot['record'].get('finishedAt')))
             result[name] = value['text']
             result[name + 'Offset'] = value['offset']
             result[name + 'NextOffset'] = value['nextOffset']
@@ -639,7 +690,10 @@ def child(config_path: Path) -> None:
     print(json.dumps({'id': 1, 'result': {'serverCommand': key}}), flush=True)
     began = time.monotonic()
     process = None
-    tree = Descendants(key, record['startedAt'])
+    # Legacy adapters that used a public handle cannot use marker-only proof.
+    secret = config.get('markerSecret') or secrets.token_hex(32)
+    tree = Descendants(key, record['startedAt'], secret)
+    redactors = {name: MarkerRedactor(secret) for name in ('stdout', 'stderr')}
     try:
         marker = job_path(folder, key, '.started')
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -650,29 +704,46 @@ def child(config_path: Path) -> None:
             os.fsync(directory)
         finally:
             os.close(directory)
+        publish()
+        threading.Thread(target=inputs, daemon=True).start()
         process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--command', str(config_path)],
-            cwd=p['cwd'], env={**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': key},
+            cwd=p['cwd'], env={**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': secret},
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         # The bootstrap stops before exec. Register kernel fork tracking before
         # the command can create and orphan a child in another process group.
-        waited, state = os.waitpid(process.pid, os.WUNTRACED)
-        if waited != process.pid or not os.WIFSTOPPED(state):
-            raise RuntimeError('The command bootstrap did not stop before execution')
         tree.bind(process.pid)
+        last_publish = time.monotonic()
+        while True:
+            waited, state = os.waitpid(process.pid, os.WUNTRACED | os.WNOHANG)
+            if waited:
+                if not os.WIFSTOPPED(state):
+                    raise RuntimeError('The command bootstrap did not stop before execution')
+                break
+            cancelled = shutdown.is_set() or cancel.is_set()
+            now = time.monotonic()
+            if cancelled or now >= began + p['timeout']:
+                record.update(status='cancelled' if cancelled else 'completed',
+                              timedOut=not cancelled, signal=signal.SIGKILL)
+                tree.stop()
+                return
+            tree.collect()
+            if now - last_publish >= .5:
+                publish()
+                last_publish = now
+            time.sleep(.02)
         os.kill(process.pid, signal.SIGCONT)
         assert process.stdin is not None and process.stdout is not None and process.stderr is not None
         os.set_blocking(process.stdin.fileno(), False)
         record['status'] = 'running'
         publish()
-        threading.Thread(target=inputs, daemon=True).start()
         pending = bytearray()
         close_input = False
         cancelled = False
         killed_at = None
         last_publish = time.monotonic()
         with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ, stdout)
-            selector.register(process.stderr, selectors.EVENT_READ, stderr)
+            selector.register(process.stdout, selectors.EVENT_READ, (stdout, redactors['stdout']))
+            selector.register(process.stderr, selectors.EVENT_READ, (stderr, redactors['stderr']))
             while selector.get_map() or process.poll() is None:
                 tree.collect()
                 now = time.monotonic()
@@ -702,9 +773,9 @@ def child(config_path: Path) -> None:
                     process.stdin.close()
                 for selected, _ in selector.select(.05):
                     data = os.read(selected.fd, 8192)
-                    if data:
-                        selected.data.append(data)
-                    else:
+                    buffer, redactor = selected.data
+                    buffer.append(redactor.feed(data, final=not data))
+                    if not data:
                         selector.unregister(selected.fileobj)
                 if now - last_publish >= .5:
                     publish()
@@ -722,18 +793,18 @@ def child(config_path: Path) -> None:
         if process is not None:
             try:
                 record['stoppedDescendants'] = tree.stop()
-                record['cleanupUnknownForks'] = len(tree.unproved)
-                if tree.unproved:
+                record['cleanupUnknownForks'] = tree.unknown_forks()
+                if record['cleanupUnknownForks']:
                     record.update(status='unknown', error='A descendant fork lost its ancestry; inspect the target server')
             except Exception:
                 record.update(status='unknown', error='Descendant cleanup is incomplete; inspect the target server',
                               stoppedDescendants=len(tree.stopped - {tree.root}),
-                              cleanupUnknownForks=max(1, len(tree.unproved)))
+                              cleanupUnknownForks=max(1, tree.unknown_forks()))
             try:
                 process.wait(timeout=2)
             except subprocess.TimeoutExpired:
                 record.update(status='unknown', error='The command process still runs; inspect the target server',
-                              cleanupUnknownForks=max(1, len(tree.unproved)))
+                              cleanupUnknownForks=max(1, tree.unknown_forks()))
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
                     stream.close()
