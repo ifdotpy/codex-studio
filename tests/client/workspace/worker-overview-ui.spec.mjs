@@ -304,6 +304,21 @@ test("Worker Overview Ui", async ({
       team
         .locator(".worker-entry")
         .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
+    assert.equal(
+      await card(1).locator(".worker-model-summary").innerText(),
+      "Astra 6 · High",
+    );
+    assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("aria-label"),
+      "Failed",
+    );
+    assert.equal(
+      await card(7).locator(".worker-state").getAttribute("title"),
+      "Failed",
+    );
+    assert.equal(await card(7).locator(".worker-state svg").count(), 1);
+    assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     const refreshFromEntityPull = async () => {
       fixtureRefreshStage++;
       await page.evaluate(() => {
@@ -433,21 +448,6 @@ test("Worker Overview Ui", async ({
         1,
       );
     assert.match(await card(0).innerText(), /Needs your answer/);
-    assert.equal(
-      await card(1).locator(".worker-model-summary").innerText(),
-      "Astra 6 · High",
-    );
-    assert.equal(await card(1).locator(".worker-provider svg").count(), 1);
-    assert.equal(
-      await card(7).locator(".worker-state").getAttribute("aria-label"),
-      "Failed",
-    );
-    assert.equal(
-      await card(7).locator(".worker-state").getAttribute("title"),
-      "Failed",
-    );
-    assert.equal(await card(7).locator(".worker-state svg").count(), 1);
-    assert.equal(await card(7).locator(".chat-status-error svg").count(), 1);
     // The orchestrator sidebar does not repeat a worker's task text.
     assert.equal(await card(1).getByText(task).count(), 0);
     assert.doesNotMatch(await card(1).innerText(), /Task details unavailable/);
