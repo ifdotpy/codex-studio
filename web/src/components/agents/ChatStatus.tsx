@@ -2,6 +2,7 @@ import { CircleAlert } from "lucide-react";
 import type { ChatIndicator } from "../chat-status/chatStatusModel";
 import "./chat-status.css";
 import "./provider-activity.css";
+import { useVisualActivityRef } from "../../hooks/useVisualActivity";
 
 export default function ChatStatus({
   status,
@@ -12,6 +13,7 @@ export default function ChatStatus({
   provider?: string;
   model?: string;
 }) {
+  const visualRef = useVisualActivityRef<HTMLSpanElement>();
   if (!status || status.kind === "none" || status.kind === "paused")
     return null;
   const kind = status.kind;
@@ -21,6 +23,7 @@ export default function ChatStatus({
   const label = [status?.label, modelLabel].filter(Boolean).join(" · ");
   return (
     <span
+      ref={visualRef}
       className={`chat-status chat-status-${kind}`}
       data-chat-status={kind}
       data-agent-provider={provider || "codex"}

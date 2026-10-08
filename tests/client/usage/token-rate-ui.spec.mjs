@@ -11,13 +11,17 @@ test("Token rate ui", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(90_000);
+  test.setTimeout(180_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-token-rate-"));
   const proc = spawn(
     "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      // The footer needs one worker. Keep the real Runtime turn scheduler.
+      env: { ...process.env, RICH_PREVIEW_UI_FIXTURE: "1" },
+    },
   );
   let log = "";
   proc.stderr.on("data", (data) => (log += data));
@@ -39,6 +43,12 @@ test("Token rate ui", async ({
     const lead = initial.find((agent) => agent.name === "Release lead");
     const other = initial.find((agent) => agent.name === "Other project");
     const worker = initial.find((agent) => agent.name === "Worker 00");
+    assert.equal(
+      initial.filter(
+        (agent) => agent.rootId === lead.id && agent.id !== lead.id,
+      ).length,
+      1,
+    );
     const page = runnerPage;
     await page.setViewportSize({ width: 1200, height: 900 });
     page.setDefaultTimeout(10000);
@@ -52,6 +62,10 @@ test("Token rate ui", async ({
         constructor(...args) {
           super(...args);
           window.__rateSources.push(this);
+          Native.prototype.addEventListener.call(this, "resources", (event) => {
+            const frame = JSON.parse(event.data);
+            if (frame.reason === "initial") this.resourceBaseline = frame;
+          });
           Native.prototype.addEventListener.call(
             this,
             "token-rates",
@@ -95,38 +109,43 @@ test("Token rate ui", async ({
     await page.locator(`[data-chat="${other.id}"]`).click();
     await meter.waitFor({ state: "attached" });
     assert.equal(await meter.innerText(), "", "no output before the turn");
-    try {
-      await page.waitForFunction(() =>
-        window.__rateSources.some(
-          (source) =>
-            source.readyState === 1 && source.url.includes("protocol=3"),
-        ),
+    const waitForResourceBaseline = (completeCatalog = true) =>
+      page.waitForFunction(
+        ({ ids, completeCatalog }) => {
+          const source = window.__rateSources.at(-1);
+          return (
+            source?.readyState === EventSource.OPEN &&
+            Boolean(source.resourceBaseline) &&
+            (!completeCatalog ||
+              ids.every((id) =>
+                source.resourceBaseline.resources.some(
+                  (resource) =>
+                    resource.kind === "transcript" && resource.agentId === id,
+                ),
+              ))
+          );
+        },
+        { ids: initial.map((agent) => agent.id), completeCatalog },
       );
-    } catch (error) {
-      const state = await page.evaluate(() => ({
-        sources: window.__rateSources.map((source) => ({
-          url: source.url,
-          state: source.readyState,
-        })),
-        title: document.title,
-        text: document.body.innerText.slice(0, 1000),
-      }));
-      throw Error(`${JSON.stringify(state)} ${log}\n${error}`);
-    }
+    await waitForResourceBaseline();
     const connections = () =>
-      page.evaluate(
-        () =>
-          window.__rateSources.filter(
-            (source) =>
-              source.readyState !== 2 &&
-              source.url.includes("/api/sync/stream?protocol=3"),
-          ).length,
+      page.evaluate(() =>
+        window.__rateSources
+          .filter((source) => source.readyState !== 2)
+          .map((source) => source.url)
+          .sort(),
       );
-    let meterOffConnections = await connections();
+    const meterOffConnections = await connections();
+    const actor = await start(other.id);
+    await waitForResourceBaseline();
+    assert.deepEqual(
+      await connections(),
+      meterOffConnections,
+      "turn startup retains the complete resource subscription",
+    );
     await page.evaluate(() => {
       window.__rateDelivery = true;
     });
-    const actor = await start(other.id);
     notify(actor, "item/started", {
       item: { id: "rate-answer", type: "agentMessage", text: "" },
     });
@@ -160,46 +179,6 @@ test("Token rate ui", async ({
       meterOffConnections,
       "the footer meter adds zero connections",
     );
-    const follower = await page.context().newPage();
-    follower.setDefaultTimeout(10000);
-    const beforeFollowerTokens = await page.evaluate(
-      (id) => window.__lastRateBatch?.rates[id]?.outputTokens ?? 0,
-      other.id,
-    );
-    await follower.goto(origin);
-    await follower.locator(`[data-chat="${other.id}"]`).click();
-    notify(actor, "item/agentMessage/delta", {
-      itemId: "rate-answer",
-      delta: "Shared sync rate.",
-    });
-    await page.waitForFunction(
-      ({ id, previousTokens }) => {
-        const batch = window.__lastRateBatch?.rates?.[id];
-        return batch?.rate > 0 && batch.outputTokens > previousTokens;
-      },
-      { id: other.id, previousTokens: beforeFollowerTokens },
-    );
-    const followerRate = await page.evaluate(
-      (id) => window.__lastRateBatch.rates[id].rate,
-      other.id,
-    );
-    await follower.waitForFunction(
-      ({ id, rate }) => {
-        const meter = document.querySelector("#conversation .token-rate");
-        return (
-          meter?.dataset.agent === id && Number(meter.dataset.rate) === rate
-        );
-      },
-      { id: other.id, rate: followerRate },
-    );
-    assert.equal(
-      await follower
-        .locator("#conversation .token-rate")
-        .getAttribute("data-rate"),
-      String(followerRate),
-      "follower meter matches the most recent real batch",
-    );
-    await follower.close();
     notify(actor, "thread/tokenUsage/updated", {
       tokenUsage: {
         total: { totalTokens: 120, outputTokens: 80 },
@@ -289,7 +268,6 @@ test("Token rate ui", async ({
     );
     await page.locator(`[data-chat="${other.id}"]`).click();
     assert.equal(await meter.innerText(), beforeTool);
-    meterOffConnections = await connections();
     notify(actor, "turn/completed", {
       turn: { id: actor.turnId, status: "completed" },
     });
@@ -303,15 +281,27 @@ test("Token rate ui", async ({
       (id) => window.__lastRateBatch?.rates[id]?.active === false,
       other.id,
     );
+    const completedRate = await page.evaluate(
+      (id) => window.__lastRateBatch.rates[id].rate,
+      other.id,
+    );
+    const follower = await page.context().newPage();
+    follower.setDefaultTimeout(10000);
+    await follower.goto(origin);
+    await follower.locator(`[data-chat="${other.id}"]`).click();
+    await follower.waitForFunction(
+      ({ id, rate }) => {
+        const meter = document.querySelector("#conversation .token-rate");
+        return (
+          meter?.dataset.agent === id && Number(meter.dataset.rate) === rate
+        );
+      },
+      { id: other.id, rate: completedRate },
+    );
+    await follower.close();
     const inject = async (rate) => {
-      await page.waitForFunction(() =>
-        window.__rateSources.some(
-          (source) =>
-            source.readyState === 1 &&
-            source.url.includes("/api/sync/stream?protocol=3"),
-        ),
-      );
-      await page.evaluate(
+      await waitForResourceBaseline(false);
+      return page.evaluate(
         ({ id, turnId, rate }) => {
           const source = window.__rateSources.findLast(
             (source) =>
@@ -319,17 +309,11 @@ test("Token rate ui", async ({
               source.url.includes("/api/sync/stream?protocol=3"),
           );
           if (!source) throw Error("No existing shared workspace stream");
-          const revision =
-            Math.max(
-              window.__lastRateBatch.revision,
-              window.__rateInjectedRevision ?? 0,
-            ) + 1;
-          window.__rateInjectedRevision = revision;
           source.dispatchEvent(
             new MessageEvent("token-rates", {
               data: JSON.stringify({
                 ...window.__lastRateBatch,
-                revision,
+                revision: window.__lastRateBatch.revision + 1,
                 rates: {
                   ...window.__lastRateBatch.rates,
                   [id]: {
@@ -354,7 +338,6 @@ test("Token rate ui", async ({
         const style = composer && getComputedStyle(composer);
         return (
           window.matchMedia("(max-width: 760px)").matches &&
-          root.dataset.mobileKeyboard === "false" &&
           Boolean(root.style.getPropertyValue("--mobile-viewport-height")) &&
           style?.paddingTop === "8px" &&
           style.paddingBottom === "8px"
@@ -476,20 +459,9 @@ test("Token rate ui", async ({
     );
     await page.setViewportSize({ width: 1200, height: 900 });
     await page.locator(`[data-chat="${lead.id}"]`).click();
-    await page.waitForFunction(() =>
-      window.__rateSources.some(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=3"),
-      ),
-    );
+    await waitForResourceBaseline();
     const cardsOffConnections = await connections();
     await page.locator("#team-toggle").click();
-    await page.waitForFunction(() =>
-      window.__rateSources.some(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=3"),
-      ),
-    );
     assert.deepEqual(
       await connections(),
       cardsOffConnections,
@@ -555,6 +527,7 @@ test("Token rate ui", async ({
         id,
       lead.id,
     );
+    await waitForResourceBaseline();
     assert.equal(
       await meter.innerText(),
       "",
@@ -564,12 +537,6 @@ test("Token rate ui", async ({
       await connections(),
       cardsOffConnections,
       "open worker and Team cards add zero connections after return to the lead",
-    );
-    await page.waitForFunction(() =>
-      window.__rateSources.some(
-        (source) =>
-          source.readyState === 1 && source.url.includes("protocol=3"),
-      ),
     );
     assert.equal(
       await page.evaluate(

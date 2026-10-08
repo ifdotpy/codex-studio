@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { it as test } from "vitest";
+import { it as test, vi } from "vitest";
 import {
   formatTokenRate,
   getTokenRate,
@@ -13,6 +13,9 @@ import {
   watchTeamTokenRates,
   receiveWorkspaceTokenRates,
   clearWorkspaceTokenRates,
+  configureTokenRateStream,
+  receiveResourceTokenRates,
+  watchTokenRateInterest,
 } from "./tokenRate.ts";
 
 test("rate tween has a bounded duration and no overshoot", () => {
@@ -505,4 +508,70 @@ test("tween and display formatting honor user-visible boundaries", () => {
     useGrouping: false,
   }).format(1e16);
   assert.equal(formatTokenRate(1e16), runtimeLocaleCompact);
+});
+
+test("Team and footer interest publish each coordinator batch once and replay on reopen", () => {
+  const callbacks = new Set();
+  const footer = [];
+  const worker = [];
+  const teamId = "single-publisher-team";
+  const agentId = "single-publisher-worker";
+  vi.stubGlobal("window", {});
+  configureTokenRateStream((listener) => {
+    callbacks.add(listener);
+    return () => callbacks.delete(listener);
+  });
+  const stopFooter = subscribeTokenRate(agentId, (value) => footer.push(value));
+  const stopWorker = subscribeTokenRate(
+    workerRateKey(teamId, agentId),
+    (value) => worker.push(value),
+  );
+  let closeTeam;
+  let closeFooter;
+  try {
+    closeFooter = watchTokenRateInterest();
+    closeTeam = watchTeamTokenRates(teamId);
+    assert.equal(callbacks.size, 2);
+    const value = {
+      turnId: "one",
+      active: true,
+      estimated: false,
+      rate: 42,
+      outputTokens: 84,
+    };
+    const publish = (value, revision) => {
+      const event = {
+        protocol: 3,
+        workspaceId: "workspace",
+        epoch: "epoch",
+        revision,
+        rates: { [agentId]: value },
+        teams: { [teamId]: { [agentId]: value } },
+      };
+      // Match the coordinator: apply the batch, then notify its interest listeners.
+      receiveResourceTokenRates(event);
+      for (const callback of callbacks) callback(event);
+    };
+    publish(value, 1);
+    assert.deepEqual(footer, [null, value]);
+    assert.deepEqual(worker, [null, value]);
+    closeTeam();
+    closeTeam = undefined;
+    assert.equal(callbacks.size, 1);
+    const latest = { ...value, active: false, rate: 64 };
+    publish(latest, 2);
+    assert.deepEqual(footer, [null, value, latest]);
+    assert.deepEqual(worker, [null, value, null]);
+    closeTeam = watchTeamTokenRates(teamId);
+    assert.deepEqual(worker, [null, value, null, latest]);
+    assert.equal(callbacks.size, 2);
+  } finally {
+    closeTeam?.();
+    closeFooter?.();
+    stopFooter();
+    stopWorker();
+    assert.equal(callbacks.size, 0);
+    configureTokenRateStream(() => () => {});
+    vi.unstubAllGlobals();
+  }
 });

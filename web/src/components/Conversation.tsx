@@ -92,6 +92,7 @@ import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 import Requests from "./questions/Requests";
 import MessageDate from "./conversation/transcript/MessageDate";
 import TurnHistory from "./conversation/transcript/TurnHistory";
+import { revealHistoryMessage } from "./conversation/transcript/historyWindowModel";
 import { isEmptyAssistantMessage } from "./turnHistoryModel";
 import { Dictation } from "./Dictation";
 import RealtimeVoice from "./RealtimeVoice";
@@ -499,6 +500,7 @@ export default function Conversation(p: {
         navigationAttempt.current !== attempt
       )
         return;
+      revealHistoryMessage(root, id);
       const target: HTMLElement | undefined = Array.from(
         root.querySelectorAll<HTMLElement>("[data-message]"),
       ).find(
@@ -1330,6 +1332,8 @@ export default function Conversation(p: {
       <TurnHistory
         key={`${p.data.stateDir}:${p.id}`}
         items={transcriptItems}
+        scrollContainer={scroll}
+        rememberScroll={remember}
         agent={managed && !p.room ? agent : undefined}
         currentTurn={agent?.turnId || undefined}
         enabled={managed && !p.room}

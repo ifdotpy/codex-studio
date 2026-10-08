@@ -133,3 +133,16 @@
   border-radius: 4px;
   padding: 6px 8px;
 }
+
+.history-window-row {
+  display: flow-root;
+  min-width: 0;
+}
+.history-window-spacer {
+  pointer-events: none;
+  overflow-anchor: none;
+}
+
+.history-window-static {
+  display: contents;
+}

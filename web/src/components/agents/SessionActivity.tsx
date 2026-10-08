@@ -1,6 +1,7 @@
 import { ChevronRight, Clock3, Terminal, Users } from "lucide-react";
 import { useEffect, useState } from "react";
 import "./session-activity.css";
+import { useVisualActivity } from "../../hooks/useVisualActivity";
 
 export type SessionActivityItem = {
   id: string;
@@ -28,6 +29,7 @@ export default function SessionActivity({
   activities: SessionActivityItem[];
   onOpen: (activity: SessionActivityItem) => void;
 }) {
+  const [visualRef, visualActive] = useVisualActivity<HTMLElement>();
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now() / 1000);
   const timed = activities.some(
@@ -35,21 +37,11 @@ export default function SessionActivity({
       activity.created !== undefined && Number.isFinite(activity.created),
   );
   useEffect(() => {
-    if (!timed) return;
-    let timer: ReturnType<typeof setInterval> | undefined;
-    const resume = () => {
-      clearInterval(timer);
-      if (document.hidden) return;
-      setNow(Date.now() / 1000);
-      timer = setInterval(() => setNow(Date.now() / 1000), 30000);
-    };
-    resume();
-    document.addEventListener("visibilitychange", resume);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener("visibilitychange", resume);
-    };
-  }, [timed]);
+    if (!timed || !visualActive) return;
+    setNow(Date.now() / 1000);
+    const timer = setInterval(() => setNow(Date.now() / 1000), 30000);
+    return () => clearInterval(timer);
+  }, [timed, visualActive]);
   useEffect(() => {
     if (activities.length <= 1) setExpanded(false);
   }, [activities.length]);
@@ -57,6 +49,7 @@ export default function SessionActivity({
   const shown = expanded ? activities : activities.slice(0, 1);
   return (
     <section
+      ref={visualRef}
       className="session-activity"
       aria-label="Session activity"
       data-expanded={expanded}

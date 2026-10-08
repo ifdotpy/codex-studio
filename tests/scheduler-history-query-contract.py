@@ -71,13 +71,13 @@ class HistoryQueryContract(unittest.TestCase):
             runtime.add_owner()
             for index in range(200):
                 runtime.add_rule('history-' + str(index), 'removed-owner', status='paused', payload='x' * 16384)
-            runtime.add_rule('active')
+            runtime.add_rule('active', nextAt=0)
             runtime.add_rule('busy', inFlight=True)
             runtime.records = lambda *_args: self.fail('A tick must not load full rule history')
             runtime.rules_tick()
             self.assertEqual([(phase, key) for phase, key, _ in runtime.owner_loads],
                              [('read', 'owner'), ('writer', 'owner')])
-            self.assertEqual(runtime.pool.launched, [])
+            self.assertEqual([rule['id'] for rule in runtime.pool.launched], ['active'])
 
 
 if __name__ == '__main__':

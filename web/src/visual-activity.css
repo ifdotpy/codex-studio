@@ -1,0 +1,6 @@
+[data-visual-active="false"],
+[data-visual-active="false"] *,
+details:not([open]) > :not(summary),
+details:not([open]) > :not(summary) * {
+  animation-play-state: paused !important;
+}

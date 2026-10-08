@@ -7,6 +7,7 @@ const {
   cleanups,
   states,
   refs,
+  memos,
   cursor,
   watchers,
   get,
@@ -18,7 +19,11 @@ const {
   cleanups: [] as Array<() => void>,
   states: [] as Array<{ value: unknown }>,
   refs: [] as Array<{ current: unknown }>,
-  cursor: { state: 0, ref: 0 },
+  memos: [] as Array<{
+    value: unknown;
+    dependencies: readonly unknown[] | undefined;
+  }>,
+  cursor: { state: 0, ref: 0, memo: 0 },
   watchers: new Map<string, () => void>(),
   get: vi.fn(),
   post: vi.fn(),
@@ -31,6 +36,21 @@ vi.mock("react", async (importOriginal) => {
   return {
     ...original,
     useCallback: (callback: unknown) => callback,
+    useMemo: (compute: () => unknown, dependencies?: readonly unknown[]) => {
+      const index = cursor.memo++;
+      const previous = memos[index];
+      if (
+        !previous ||
+        !dependencies ||
+        !previous.dependencies ||
+        previous.dependencies.length !== dependencies.length ||
+        dependencies.some(
+          (value, i) => !Object.is(value, previous.dependencies![i]),
+        )
+      )
+        memos[index] = { value: compute(), dependencies };
+      return memos[index]!.value;
+    },
     useEffect: (effect: () => void | (() => void)) => effects.push(effect),
     useRef: (value: unknown) =>
       refs[cursor.ref++] ?? (refs[cursor.ref - 1] = { current: value }),
@@ -90,6 +110,7 @@ import { ApiError } from "../api";
 function mount(action: () => void) {
   cursor.state = 0;
   cursor.ref = 0;
+  cursor.memo = 0;
   action();
   for (const effect of effects.splice(0)) {
     const cleanup = effect();
@@ -113,8 +134,10 @@ describe("resource read callers", () => {
     effects.length = 0;
     states.length = 0;
     refs.length = 0;
+    memos.length = 0;
     cursor.state = 0;
     cursor.ref = 0;
+    cursor.memo = 0;
     watchers.clear();
     const storage = new Map<string, string>();
     vi.stubGlobal("localStorage", {
@@ -228,6 +251,7 @@ describe("resource read callers", () => {
     await vi.advanceTimersByTimeAsync(0);
     cursor.state = 0;
     cursor.ref = 0;
+    cursor.memo = 0;
     const queue = useMessageQueue(props);
     effects.length = 0; // This render keeps the already registered effects.
     let finish!: (value: unknown) => void;

@@ -267,5 +267,5 @@ export function useSidebarOrder(
       if (to) move(group, ids, id, to, after);
     },
   });
-  return { rank, bindings, dropBindings, announcement, announce };
+  return { order, rank, bindings, dropBindings, announcement, announce };
 }

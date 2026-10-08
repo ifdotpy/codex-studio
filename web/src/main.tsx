@@ -18,6 +18,7 @@ import "./style.css";
 import "./workspace-layout.css";
 import "./appearance.css";
 import "./studio-preferences.css";
+import "./visual-activity.css";
 
 const nativeCredentials = nativeCredentialBridge();
 setServerCredentialAdapter(
