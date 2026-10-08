@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import ctypes
-import hashlib
+import json
 import os
 from pathlib import Path
+import secrets
 import sys
 import threading
 import time
@@ -18,10 +19,13 @@ ERROR_NO_DATA = 232
 ERROR_BROKEN_PIPE = 109
 ERROR_FILE_NOT_FOUND = 2
 PIPE_REJECT_REMOTE_CLIENTS = 0x8
+FILE_FLAG_FIRST_PIPE_INSTANCE = 0x00080000
 PIPE_UNLIMITED_INSTANCES = 255
+PIPE_READ_TIMEOUT = 2
 JOB_OBJECT_QUERY = 0x0004
 JOB_OBJECT_TERMINATE = 0x0008
 JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
+JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x00002000
 CREATE_SUSPENDED = 0x00000004
 CREATE_NEW_PROCESS_GROUP = 0x00000200
 CTRL_BREAK_EVENT = 1
@@ -109,9 +113,91 @@ class _SecurityAttributes(ctypes.Structure):
     ]
 
 
-def pipe_endpoint(root):
-    identity = os.path.normcase(str(Path(root).resolve())).casefold().encode("utf-8")
-    return r"\\.\pipe\CodexStudioSupervisor-" + hashlib.sha256(identity).hexdigest()[:32]
+def pipe_identity(root, *, create=False):
+    path = Path(root) / "supervisor.pipe-id"
+    try:
+        identity = path.read_text(encoding="ascii").strip()
+    except FileNotFoundError:
+        if not create:
+            raise
+        from codex_private_paths import protect_temp_file
+
+        identity = secrets.token_hex(24)
+        temporary = path.with_name(path.name + ".tmp-" + secrets.token_hex(8))
+        try:
+            descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        except FileExistsError:
+            raise RuntimeError("Cannot create a unique supervisor pipe identity file")
+        try:
+            os.write(descriptor, (identity + "\n").encode("ascii"))
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        protect_temp_file(temporary)
+        try:
+            os.replace(temporary, path)
+        except FileExistsError:
+            temporary.unlink(missing_ok=True)
+            identity = path.read_text(encoding="ascii").strip()
+    if len(identity) != 48 or any(char not in "0123456789abcdef" for char in identity):
+        raise RuntimeError("Supervisor pipe identity file is invalid")
+    return identity
+
+
+def pipe_endpoint(root, identity):
+    return r"\\.\pipe\CodexStudioSupervisor-" + identity
+
+
+def _lease_identity(root):
+    value = json.loads((Path(root) / "supervisor.lock").read_text(encoding="utf-8"))
+    pid = value.get("pid")
+    if not isinstance(pid, int) or pid <= 0:
+        raise RuntimeError("Supervisor lease does not contain a valid process id")
+    return pid
+
+
+def _token_user_sid(token):
+    kernel32, advapi32 = _api()
+    needed = wintypes.DWORD()
+    advapi32.GetTokenInformation.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPVOID,
+        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD),
+    ]
+    advapi32.GetTokenInformation.restype = wintypes.BOOL
+    advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(needed))
+    buffer = ctypes.create_string_buffer(needed.value)
+    if not advapi32.GetTokenInformation(token, 1, buffer, needed, ctypes.byref(needed)):
+        raise _error()
+    sid = ctypes.cast(buffer, ctypes.POINTER(ctypes.c_void_p))[0]
+    return _sid_string(sid)
+
+
+def verify_pipe_server(handle, root):
+    kernel32, advapi32 = _api()
+    server_pid = wintypes.ULONG()
+    kernel32.GetNamedPipeServerProcessId.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.ULONG)]
+    kernel32.GetNamedPipeServerProcessId.restype = wintypes.BOOL
+    if not kernel32.GetNamedPipeServerProcessId(handle, ctypes.byref(server_pid)):
+        raise _error()
+    if server_pid.value != _lease_identity(root):
+        raise PermissionError("Named-pipe server PID does not match the supervisor lease")
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    process = kernel32.OpenProcess(0x1000, False, server_pid.value)
+    if not process:
+        raise _error()
+    token = wintypes.HANDLE()
+    try:
+        advapi32.OpenProcessToken.argtypes = [wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+        advapi32.OpenProcessToken.restype = wintypes.BOOL
+        if not advapi32.OpenProcessToken(process, 0x0008, ctypes.byref(token)):
+            raise _error()
+        if _token_user_sid(token) != current_user_sid():
+            raise PermissionError("Named-pipe server user does not match the current user")
+    finally:
+        if token:
+            kernel32.CloseHandle(token)
+        kernel32.CloseHandle(process)
 
 
 class NamedPipeReader:
@@ -224,7 +310,6 @@ class NamedPipeConnection:
 
 def connect_pipe(root, timeout=10):
     kernel32, _ = _api()
-    endpoint = pipe_endpoint(root)
     deadline = time.monotonic() + timeout
     kernel32.WaitNamedPipeW.argtypes = [wintypes.LPCWSTR, wintypes.DWORD]
     kernel32.WaitNamedPipeW.restype = wintypes.BOOL
@@ -234,8 +319,20 @@ def connect_pipe(root, timeout=10):
     ]
     kernel32.CreateFileW.restype = wintypes.HANDLE
     while True:
-        handle = kernel32.CreateFileW(endpoint, 0xC0000000, 0, None, 3, 0, None)
+        try:
+            endpoint = pipe_endpoint(root, pipe_identity(root))
+        except FileNotFoundError:
+            if time.monotonic() >= deadline:
+                raise TimeoutError("Supervisor pipe identity is not available")
+            time.sleep(0.05)
+            continue
+        handle = kernel32.CreateFileW(endpoint, 0xC0020000, 0, None, 3, 0, None)
         if handle != _INVALID_HANDLE:
+            try:
+                verify_pipe_server(handle, root)
+            except Exception:
+                kernel32.CloseHandle(handle)
+                raise
             connection = NamedPipeConnection(handle)
             connection.settimeout(timeout)
             return connection
@@ -277,7 +374,13 @@ def verify_pipe_client(handle):
     finally:
         if token:
             kernel32.CloseHandle(token)
-        advapi32.RevertToSelf()
+        _revert_to_self_or_exit(advapi32, kernel32, handle)
+
+
+def _revert_to_self_or_exit(advapi32, kernel32, handle):
+    if not advapi32.RevertToSelf():
+        kernel32.CloseHandle(handle)
+        os._exit(70)
 
 
 def create_pipe_server(endpoint, connection_handler):
@@ -297,19 +400,22 @@ def create_pipe_server(endpoint, connection_handler):
     kernel32.DisconnectNamedPipe.restype = wintypes.BOOL
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
     try:
+        first_instance = True
         while True:
             handle = kernel32.CreateNamedPipeW(
-                endpoint, 0x00000003,
+                endpoint, 0x00000003 | (FILE_FLAG_FIRST_PIPE_INSTANCE if first_instance else 0),
                 0x00000000 | PIPE_REJECT_REMOTE_CLIENTS,
                 PIPE_UNLIMITED_INSTANCES, 65536, 65536, 0, ctypes.byref(attributes),
             )
             if handle == _INVALID_HANDLE:
                 raise _error()
+            first_instance = False
             connected = kernel32.ConnectNamedPipe(handle, None)
             if not connected and ctypes.get_last_error() != ERROR_PIPE_CONNECTED:
                 kernel32.CloseHandle(handle)
                 continue
             connection = NamedPipeConnection(handle)
+            connection.settimeout(PIPE_READ_TIMEOUT)
             threading.Thread(
                 target=_dispatch_pipe_client,
                 args=(connection, connection_handler),
@@ -442,6 +548,7 @@ def create_job():
         raise _error()
     job = Job(handle, identity)
     limits = _ExtendedLimitInformation()
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
     kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
     kernel32.SetInformationJobObject.restype = wintypes.BOOL
     if not kernel32.SetInformationJobObject(
@@ -533,37 +640,17 @@ def graceful_stop(job, process, pid, creation_time, process_start_time, *,
 
 def graceful_stop_pid(job, pid, creation_time, process_start_time, *,
                       expected_job_identity, wait=1.5):
+    """Stop only a verified job; never signal a PID after closing its handle."""
     if job.identity != expected_job_identity:
         raise RuntimeError("Refusing to stop a process with changed Job Object identity")
     actual = process_start_time(pid)
+    if actual is not None and actual != creation_time:
+        raise RuntimeError("Refusing to stop a process with changed creation time")
     if actual == creation_time and membership_for_pid(job, pid) is not True:
         raise RuntimeError("Refusing to stop a process with unknown job membership")
-    if actual is None:
-        if job.active_processes() == 0:
-            return "terminated"
-        job.terminate()
-        return "killed" if job.wait_empty() else "termination-failed"
-    if actual != creation_time:
-        raise RuntimeError("Refusing to stop a process with changed creation time")
-    kernel32, _ = _api()
-    kernel32.GenerateConsoleCtrlEvent.argtypes = [wintypes.DWORD, wintypes.DWORD]
-    kernel32.GenerateConsoleCtrlEvent.restype = wintypes.BOOL
-    kernel32.GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, pid)
-    deadline = time.monotonic() + wait
-    while time.monotonic() < deadline and process_start_time(pid) == creation_time:
-        time.sleep(0.05)
-    actual = process_start_time(pid)
-    if actual is None:
-        if job.active_processes() == 0:
-            return "terminated"
-        job.terminate()
-        return "killed" if job.wait_empty() else "termination-failed"
-    if actual != creation_time or membership_for_pid(job, pid) is not True:
-        raise RuntimeError("Refusing Job Object termination after process identity changed")
+    if job.active_processes() == 0:
+        return "terminated"
     if job.identity != expected_job_identity:
         raise RuntimeError("Refusing Job Object termination after job identity changed")
     job.terminate()
-    deadline = time.monotonic() + 2
-    while time.monotonic() < deadline and process_start_time(pid) == creation_time:
-        time.sleep(0.05)
     return "killed" if job.wait_empty() else "termination-failed"

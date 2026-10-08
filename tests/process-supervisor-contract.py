@@ -131,6 +131,22 @@ def wait_for(fn, timeout=5):
 
 
 class ProcessProxyTailDeliveryContract(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "POSIX keeps legacy unbounded event frames")
+    def test_large_durable_stdout_event_keeps_legacy_frame_size(self):
+        sender, receiver = socket.socketpair()
+        stream = receiver.makefile("rb")
+        event = {"kind": "stdout", "payload": "x" * 1_100_000}
+        try:
+            writer = threading.Thread(target=process_supervisor._send, args=(sender, event))
+            writer.start()
+            self.assertEqual(process_supervisor._recv(receiver, stream), event)
+            writer.join(timeout=2)
+            self.assertFalse(writer.is_alive())
+        finally:
+            stream.close()
+            sender.close()
+            receiver.close()
+
     def test_process_exit_does_not_overtake_final_stdout_event(self):
         proxy = process_supervisor.ProcessProxy.__new__(process_supervisor.ProcessProxy)
         proxy.detached = False
