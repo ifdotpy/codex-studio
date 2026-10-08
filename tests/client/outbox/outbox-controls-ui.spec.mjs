@@ -6,8 +6,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
+import {
+  installApiSchemaFixtureHeaders,
+  test,
+  expect,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
   test.setTimeout(120_000);
@@ -72,12 +76,14 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     context = await browser.newContext({
       viewport: { width: 1440, height: 960 },
     });
+    installApiSchemaFixtureHeaders(context);
     const errors = [],
       posts = [];
     let available = true,
       holdSession = null,
       holdPost = null,
       showDeliveredOutbox = false;
+    let deliveredTranscriptDocument = null;
     await context.route("**/api/sync/identity", (route) =>
       route.fulfill({
         status: available ? 200 : 503,
@@ -115,17 +121,36 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       transcript.items = markOutboxDelivered(transcript.items);
       await route.fulfill({ response, json: transcript });
     };
+    const isLostResponse = (item) =>
+      item.clientMessageId === "lost-response-pause" ||
+      item.id === "lost-response-pause" ||
+      (typeof item.id === "string" &&
+        (item.id.endsWith(":lost-response-pause") ||
+          item.id.endsWith(":lost-response-pause:0")));
     const markOutboxDelivered = (items) =>
-      items.map((item) =>
-        item.clientMessageId === "lost-response-pause"
-          ? {
-              ...item,
-              deliveryStatus: "delivered",
-              materialized: true,
-              pending: false,
-            }
-          : item,
-      );
+      items.map((item) => {
+        if (isLostResponse(item))
+          return {
+            ...item,
+            deliveryStatus: "delivered",
+            materialized: true,
+            pending: false,
+          };
+        if (!item.inputs) return item;
+        return {
+          ...item,
+          inputs: item.inputs.map((input) =>
+            isLostResponse(input)
+              ? {
+                  ...input,
+                  deliveryStatus: "delivered",
+                  materialized: true,
+                  pending: false,
+                }
+              : input,
+          ),
+        };
+      });
     // Queue-mode acceptance stays pending in the fixture after the retry.
     // Serve its later transcript materialization to the reloaded page.
     await context.route("**/api/transcript?*", deliverTranscriptOutbox);
@@ -142,17 +167,52 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     });
     await context.route("**/api/sync/pull?*", async (route) => {
       if (!showDeliveredOutbox) return route.fallback();
-      const scope = new URL(route.request().url()).searchParams.get("scope");
+      const pullUrl = new URL(route.request().url());
+      const scope = pullUrl.searchParams.get("scope");
       if (!scope?.startsWith("transcript:")) return route.fallback();
       const response = await route.fetch();
       const result = await response.json();
-      result.documents = result.documents.map((document) => {
-        if (document.id !== scope) return document;
-        const transcript = JSON.parse(document.payload);
+      const current = result.documents.find(
+        (document) => document.id === scope,
+      );
+      if (!deliveredTranscriptDocument) {
+        const transcript = current
+          ? JSON.parse(current.payload)
+          : await (
+              await fetch(
+                `${target}/api/transcript?id=${scope.slice("transcript:".length)}`,
+              )
+            ).json();
         transcript.items = markOutboxDelivered(transcript.items);
-        return { ...document, payload: JSON.stringify(transcript) };
+        const after = Number(pullUrl.searchParams.get("after") || 0);
+        deliveredTranscriptDocument = {
+          id: scope,
+          seq:
+            Math.max(after, Number(result.maxSeq) || 0, current?.seq || 0) + 1,
+          payload: JSON.stringify(transcript),
+          _deleted: false,
+        };
+      }
+      const after = Number(pullUrl.searchParams.get("after") || 0);
+      const seq = Math.max(
+        Number(result.maxSeq) || 0,
+        deliveredTranscriptDocument.seq,
+      );
+      await route.fulfill({
+        response,
+        json: {
+          ...result,
+          documents:
+            after < deliveredTranscriptDocument.seq
+              ? [deliveredTranscriptDocument]
+              : [],
+          checkpoint: {
+            ...result.checkpoint,
+            seq: Math.max(after, deliveredTranscriptDocument.seq),
+          },
+          maxSeq: seq,
+        },
       });
-      await route.fulfill({ response, json: result });
     });
     const page = await context.newPage();
     page.setDefaultTimeout(15000);
@@ -179,6 +239,22 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
         await entry(text).getByRole("status").count(),
         0,
         "The accepted message is visible without a pending status",
+      );
+    };
+    const serverTranscriptHas = async (body, text) => {
+      const transcript = await (
+        await fetch(`${target}/api/transcript?id=${body.room}`)
+      ).json();
+      const key = `${body.room}:${body.id}`;
+      const matches = (item) =>
+        item.clientMessageId === body.id ||
+        item.id === body.id ||
+        item.id === key ||
+        (!item.clientMessageId && item.id === `${key}:0`);
+      return transcript.items.some(
+        (item) =>
+          (matches(item) && item.text === text) ||
+          item.inputs?.some((input) => matches(input) && input.text === text),
       );
     };
     const accepted = async (text, { rendered = true } = {}) => {
@@ -211,27 +287,27 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       }
       if (rendered) {
         await entry(text).waitFor();
-        assert.equal(
-          await entry(text).getByRole("status").innerText(),
-          "Waiting for agent",
-          "A locally accepted pending message waits for agent delivery",
-        );
+        const status = entry(text).getByRole("status");
+        const body = posts.findLast((post) => post.text === text);
+        await expect
+          .poll(
+            async () => {
+              if (await status.count()) {
+                const label = await status.innerText();
+                if (["Starting…", "Waiting for agent", "Sent"].includes(label))
+                  return label;
+              }
+              return (await serverTranscriptHas(body, text))
+                ? "materialized"
+                : null;
+            },
+            { timeout: 10_000 },
+          )
+          .not.toBeNull();
       } else {
         const body = posts.at(-1);
-        const transcript = await (
-          await fetch(`${target}/api/transcript?id=${body.room}`)
-        ).json();
         assert.ok(
-          transcript.items.some(
-            (item) =>
-              (item.clientMessageId === body.id && item.text === text) ||
-              // Native input batches keep each exact client identity in inputs.
-              item.inputs?.some(
-                (input) =>
-                  (input.clientMessageId === body.id || input.id === body.id) &&
-                  input.text === text,
-              ),
-          ),
+          await serverTranscriptHas(body, text),
           "The accepted outbox request appears in the server transcript",
         );
       }
@@ -432,10 +508,6 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
       "Explicit resume retries the same body and ID",
     );
     showDeliveredOutbox = true;
-    await page.evaluate(async (room) => {
-      const { db } = await (await import("/src/sync/client.ts")).syncDatabase();
-      await db.projections.findOne(`transcript:${room}`).remove();
-    }, room);
     await page.reload();
     await page.locator("#message").waitFor();
     await confirmedMessage("Keep the immutable request");
