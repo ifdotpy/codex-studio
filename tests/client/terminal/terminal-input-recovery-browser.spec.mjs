@@ -6,7 +6,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  handleEntitySyncFixtureRequest,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
@@ -18,6 +22,30 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   const temporary = await mkdtemp(
     join(tmpdir(), "studio-terminal-input-recovery-"),
   );
+  const workspaceId = "d".repeat(32);
+  const syncSnapshot = {
+    stateDir: "terminal-input-test",
+    chats: [],
+    edges: [],
+    runtime: {
+      agents: [],
+      projects: [],
+      rooms: [],
+      complaints: [],
+      requests: [],
+      monitors: [],
+      tasks: [],
+      events: [],
+      peerTeams: [],
+      rules: [],
+      work: [],
+      nativeNotices: [],
+      sidebarOrder: [],
+      rateLimits: [],
+      rateLimitsByAccount: {},
+    },
+  };
+  let notifyResources = () => {};
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),
@@ -35,6 +63,24 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
       {
         name: "terminal-input-harness",
         enforce: "pre",
+        configureServer(vite) {
+          vite.middlewares.stack.unshift({
+            route: "",
+            handle(request, response, next) {
+              if (
+                handleEntitySyncFixtureRequest(request, response, {
+                  snapshot: syncSnapshot,
+                  workspaceId,
+                  onStreamReady: (notify) => {
+                    notifyResources = notify;
+                  },
+                })
+              )
+                return;
+              next();
+            },
+          });
+        },
         resolveId(id) {
           if (id === "virtual:terminal-input") return "\0" + id;
           if (id === "@xterm/xterm") return "\0terminal-stub";
@@ -228,6 +274,10 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
     const reconnect = async (shell = "shell-a") => {
       const before = await count();
       failOutput.add(shell);
+      notifyResources([{ kind: "terminal", terminalId: shell }]);
+      await page
+        .getByRole("button", { name: "Reconnect", exact: true })
+        .waitFor();
       await page
         .getByRole("button", { name: "Reconnect", exact: true })
         .click();

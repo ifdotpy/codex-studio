@@ -1,13 +1,16 @@
 #!/usr/bin/env node
 import {
+  API_SCHEMA_HASH_HEADER,
   test,
   expect,
   spawnFixture as spawn,
+  readApiSchemaHash,
   readTestState,
   entityPullFixture,
 } from "../playwright.mjs";
 // Production renderer with an isolated fixture. No model calls or user state.
 
+import { randomUUID } from "node:crypto";
 import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -94,6 +97,11 @@ test("Worker Overview Ui", async ({
         .trim();
     const longName =
       "Review the continuation receipt across concurrent requests and uncertain responses";
+    const longExcerpt =
+      "The exact response receipt stays readable on a narrow card. " +
+      "This report preserves the full response details for review. "
+        .repeat(12)
+        .trim();
     let workerFailure = {
       additionalDetails: "The account quota is exhausted.",
       codexErrorInfo: "usageLimitExceeded",
@@ -106,6 +114,7 @@ test("Worker Overview Ui", async ({
     let deferred = false;
     let fixtureRefreshStage = 0;
     let appliedFixtureRefreshStage = 0;
+    let fixtureEntitySeq = 0;
     page = testPage;
     await page.setViewportSize({ width: 1440, height: 980 });
     page.setDefaultTimeout(10000);
@@ -132,6 +141,10 @@ test("Worker Overview Ui", async ({
       const pullUrl = new URL(route.request().url());
       const isEntityPull =
         pullUrl.searchParams.get("scope") === "state:entities:v1";
+      if (isEntityPull && data.reset === true) {
+        await route.fulfill({ response, json: data });
+        return;
+      }
       for (const document of data.documents ?? []) {
         if (document._deleted) continue;
         const entity = JSON.parse(document.payload);
@@ -160,7 +173,7 @@ test("Worker Overview Ui", async ({
           if (agent.id === worker(1).id)
             Object.assign(agent, {
               name: longName,
-              overview: { task, result: "" },
+              overview: { task, result: longExcerpt },
             });
           if (agent.id === worker(25).id)
             Object.assign(agent, {
@@ -240,7 +253,7 @@ test("Worker Overview Ui", async ({
             changedAgents[index] = { ...changedAgents[index], ...updates };
         };
         updateAgent(worker(24).id, {
-          status: "failed",
+          status: typeof workerStopError === "string" ? "paused" : "failed",
           autoWake: false,
           error: workerStopError,
         });
@@ -254,7 +267,7 @@ test("Worker Overview Ui", async ({
           scope: "state:entities:v1",
           fresh: true,
         });
-        let seq = data.maxSeq;
+        let seq = Math.max(data.maxSeq, fixtureEntitySeq);
         for (const id of [worker(24).id, worker(7).id]) {
           const source = projected.documents.find(
             (document) => document.id === `entity:agent:${id}`,
@@ -265,21 +278,9 @@ test("Worker Overview Ui", async ({
         }
         data.checkpoint.seq = seq;
         data.maxSeq = seq;
+        fixtureEntitySeq = seq;
       }
       await route.fulfill({ response, json: data });
-    });
-    await page.addInitScript(() => {
-      const NativeEventSource = window.EventSource;
-      window.EventSource = class extends NativeEventSource {
-        constructor(url, options) {
-          super(url, options);
-          if (!String(url).includes("/api/sync/stream")) return;
-          window.workerOverviewStream = this;
-          this.addEventListener("resources", (event) => {
-            window.workerOverviewResource = JSON.parse(event.data);
-          });
-        }
-      };
     });
     await page.goto(origin);
     const selectLead = () =>
@@ -304,21 +305,20 @@ test("Worker Overview Ui", async ({
         .filter({ has: page.locator(`[data-worker="${worker(n).id}"]`) });
     const refreshFromEntityPull = async () => {
       fixtureRefreshStage++;
-      await page.evaluate(() => {
-        const source = window.workerOverviewStream;
-        const current = window.workerOverviewResource;
-        if (!source || !current)
-          throw new Error("The real sync resource stream is not connected");
-        const next = {
-          ...current,
-          reason: "change",
-          revision: current.revision + 1,
-        };
-        window.workerOverviewResource = next;
-        source.dispatchEvent(
-          new MessageEvent("resources", { data: JSON.stringify(next) }),
-        );
+      const response = await fetch(origin + "/api/sync/notify", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Canvas-Token": initial.token,
+          Origin: origin,
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        },
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "state" }],
+        }),
       });
+      assert.equal(response.status, 200, await response.clone().text());
     };
     assert.equal(
       await page.locator("#conversation-title").innerText(),
@@ -473,9 +473,7 @@ test("Worker Overview Ui", async ({
         .count(),
       0,
     );
-    await page
-      .getByRole("button", { name: "Back to main agent", exact: true })
-      .click();
+    await page.locator("#back-lead").click();
     await search.fill("");
     deferred = true;
     await page.reload();

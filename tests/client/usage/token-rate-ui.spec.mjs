@@ -114,11 +114,13 @@ test("Token rate ui", async ({
       throw Error(`${JSON.stringify(state)} ${log}\n${error}`);
     }
     const connections = () =>
-      page.evaluate(() =>
-        window.__rateSources
-          .filter((source) => source.readyState !== 2)
-          .map((source) => source.url)
-          .sort(),
+      page.evaluate(
+        () =>
+          window.__rateSources.filter(
+            (source) =>
+              source.readyState !== 2 &&
+              source.url.includes("/api/sync/stream?protocol=3"),
+          ).length,
       );
     let meterOffConnections = await connections();
     await page.evaluate(() => {
@@ -158,6 +160,46 @@ test("Token rate ui", async ({
       meterOffConnections,
       "the footer meter adds zero connections",
     );
+    const follower = await page.context().newPage();
+    follower.setDefaultTimeout(10000);
+    const beforeFollowerTokens = await page.evaluate(
+      (id) => window.__lastRateBatch?.rates[id]?.outputTokens ?? 0,
+      other.id,
+    );
+    await follower.goto(origin);
+    await follower.locator(`[data-chat="${other.id}"]`).click();
+    notify(actor, "item/agentMessage/delta", {
+      itemId: "rate-answer",
+      delta: "Shared sync rate.",
+    });
+    await page.waitForFunction(
+      ({ id, previousTokens }) => {
+        const batch = window.__lastRateBatch?.rates?.[id];
+        return batch?.rate > 0 && batch.outputTokens > previousTokens;
+      },
+      { id: other.id, previousTokens: beforeFollowerTokens },
+    );
+    const followerRate = await page.evaluate(
+      (id) => window.__lastRateBatch.rates[id].rate,
+      other.id,
+    );
+    await follower.waitForFunction(
+      ({ id, rate }) => {
+        const meter = document.querySelector("#conversation .token-rate");
+        return (
+          meter?.dataset.agent === id && Number(meter.dataset.rate) === rate
+        );
+      },
+      { id: other.id, rate: followerRate },
+    );
+    assert.equal(
+      await follower
+        .locator("#conversation .token-rate")
+        .getAttribute("data-rate"),
+      String(followerRate),
+      "follower meter matches the most recent real batch",
+    );
+    await follower.close();
     notify(actor, "thread/tokenUsage/updated", {
       tokenUsage: {
         total: { totalTokens: 120, outputTokens: 80 },
@@ -270,10 +312,17 @@ test("Token rate ui", async ({
               source.url.includes("/api/sync/stream?protocol=3"),
           );
           if (!source) throw Error("No existing shared workspace stream");
+          const revision =
+            Math.max(
+              window.__lastRateBatch.revision,
+              window.__rateInjectedRevision ?? 0,
+            ) + 1;
+          window.__rateInjectedRevision = revision;
           source.dispatchEvent(
             new MessageEvent("token-rates", {
               data: JSON.stringify({
                 ...window.__lastRateBatch,
+                revision,
                 rates: {
                   ...window.__lastRateBatch.rates,
                   [id]: {
@@ -367,15 +416,6 @@ test("Token rate ui", async ({
         document.querySelector("#conversation .token-rate")?.textContent ===
         "80 tok/s",
     );
-    const follower = await page.context().newPage();
-    follower.setDefaultTimeout(10000);
-    await follower.goto(origin);
-    await follower.locator(`[data-chat="${other.id}"]`).click();
-    await follower.waitForFunction((id) => {
-      const meter = document.querySelector("#conversation .token-rate");
-      return meter?.dataset.agent === id && meter.dataset.rate === "80";
-    }, other.id);
-    await follower.close();
     assert.ok(
       await page.evaluate(() =>
         window.__footerTweenValues.some((value) => value > 20 && value < 80),

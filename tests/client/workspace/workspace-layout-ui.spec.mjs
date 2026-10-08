@@ -499,105 +499,117 @@ test("Workspace layout ui", async ({
   }
 });
 
+async function measureMobileWorkspaceComposerBody(page) {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = await mkdtemp(join(tmpdir(), "codex-workspace-composer-"));
+  const fixture = spawn(
+    "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    { cwd: repo, stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => (log += chunk));
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(Error(log || "Fixture exited early")));
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const initial = await readTestState(origin);
+    const fixtureAccounts = await (
+      await fetch(origin + "/api/accounts")
+    ).json();
+    const lead = initial.threads.find((agent) => agent.name === "Release lead");
+    assert.ok(lead, "fixture has a lead chat");
+    const longTitle =
+      "A very long conversation title that tests header compression at every supported viewport width";
+    const longProject =
+      "/Users/igor/Projects/a-super-long-project-name-for-layout-validation-with-many-words";
+    const longAccount =
+      "account-owner-with-a-very-long-email-address-for-layout@example.test";
+
+    await stubSessionCost(page);
+    await page.route("**/api/sync/pull?**", async (route) => {
+      const response = await route.fetch();
+      const data = await response.json();
+      const scope = new URL(route.request().url()).searchParams.get("scope");
+      if (scope === "state:entities:v1") {
+        for (const document of data.documents || []) {
+          const entity = JSON.parse(document.payload);
+          if (entity.collection !== "agent") continue;
+          if (entity.id === lead.id) {
+            entity.value.name = longTitle;
+            entity.value.cwd = longProject;
+          } else if (entity.value.rootId === lead.id) {
+            entity.value.cwd = longProject;
+          }
+          document.payload = JSON.stringify(entity);
+        }
+      }
+      await route.fulfill({ response, json: data });
+    });
+    await page.route("**/api/accounts", async (route) => {
+      const data = structuredClone(fixtureAccounts);
+      const account = data.accounts.find((item) => item.id === "default");
+      account.email = longAccount;
+      account.label = "Account owner with a very long label";
+      await route.fulfill({ json: data });
+    });
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(origin);
+    await page.locator("[data-chat]").filter({ hasText: longTitle }).click();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const composer = page.locator("#composer");
+    await composer.waitFor({ state: "visible" });
+    const contextRow = page.locator(".composer-context-row");
+    await contextRow.waitFor({ state: "visible" });
+    const bounds = await page.evaluate(() => {
+      const composer = document.querySelector("#composer");
+      const context = document.querySelector(".composer-context-row");
+      return {
+        composer: composer?.getBoundingClientRect().height ?? 0,
+        context: context?.getBoundingClientRect().height ?? 0,
+      };
+    });
+    const screenshot = test.info().outputPath("composer-390x844.png");
+    await page.screenshot({ path: screenshot, animations: "disabled" });
+    console.log(`Mobile composer screenshot: ${screenshot}`);
+    return {
+      body: bounds.composer - bounds.context,
+      total: bounds.composer,
+      context: bounds.context,
+    };
+  } finally {
+    if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
+    fixture.kill("SIGTERM");
+    if (fixture.exitCode === null && fixture.signalCode === null)
+      await new Promise((resolve) => fixture.once("exit", resolve));
+  }
+}
+
+test("mobile workspace composer setup reaches compact geometry", async ({
+  page,
+}) => {
+  const measured = await measureMobileWorkspaceComposerBody(page);
+  assert.ok(measured.total > measured.context);
+  assert.ok(measured.body > 0);
+});
+
 test(
-  "mobile workspace composer body exceeds its compact height budget",
+  "mobile workspace composer body fits its compact height budget",
   async ({ page }) => {
-    test.setTimeout(60_000);
+    const measured = await measureMobileWorkspaceComposerBody(page);
     test.fail(
       true,
-      "Suspected regression from f4f176f1; not bisected: 390x844 composer body measures 133.6px against the 110px cap.",
+      "At 390×844 composer body is 133.6px against the 110px budget; see misc-known-failures.md.",
     );
-    const repo = fileURLToPath(new URL("../../../", import.meta.url));
-    const root = await mkdtemp(join(tmpdir(), "codex-workspace-composer-"));
-    const fixture = spawn(
-      "python3",
-      ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
-      { cwd: repo, stdio: ["pipe", "pipe", "pipe"] },
+    assert.ok(
+      measured.body <= 110,
+      `390×844 composer body stays within 110px: ${measured.body}px`,
     );
-    let log = "";
-    fixture.stderr.on("data", (chunk) => (log += chunk));
-    try {
-      const port = await new Promise((resolve, reject) => {
-        fixture.stdout.once("data", (chunk) =>
-          resolve(Number(String(chunk).trim())),
-        );
-        fixture.once("exit", () =>
-          reject(Error(log || "Fixture exited early")),
-        );
-      });
-      const origin = `http://127.0.0.1:${port}`;
-      const initial = await readTestState(origin);
-      const fixtureAccounts = await (
-        await fetch(origin + "/api/accounts")
-      ).json();
-      const lead = initial.threads.find(
-        (agent) => agent.name === "Release lead",
-      );
-      assert.ok(lead, "fixture has a lead chat");
-      const longTitle =
-        "A very long conversation title that tests header compression at every supported viewport width";
-      const longProject =
-        "/Users/igor/Projects/a-super-long-project-name-for-layout-validation-with-many-words";
-      const longAccount =
-        "account-owner-with-a-very-long-email-address-for-layout@example.test";
-
-      await stubSessionCost(page);
-      await page.route("**/api/sync/pull?**", async (route) => {
-        const response = await route.fetch();
-        const data = await response.json();
-        const scope = new URL(route.request().url()).searchParams.get("scope");
-        if (scope === "state:entities:v1") {
-          for (const document of data.documents || []) {
-            const entity = JSON.parse(document.payload);
-            if (entity.collection !== "agent") continue;
-            if (entity.id === lead.id) {
-              entity.value.name = longTitle;
-              entity.value.cwd = longProject;
-            } else if (entity.value.rootId === lead.id) {
-              entity.value.cwd = longProject;
-            }
-            document.payload = JSON.stringify(entity);
-          }
-        }
-        await route.fulfill({ response, json: data });
-      });
-      await page.route("**/api/accounts", async (route) => {
-        const data = structuredClone(fixtureAccounts);
-        const account = data.accounts.find((item) => item.id === "default");
-        account.email = longAccount;
-        account.label = "Account owner with a very long label";
-        await route.fulfill({ json: data });
-      });
-
-      await page.setViewportSize({ width: 1440, height: 900 });
-      await page.goto(origin);
-      await page.locator("[data-chat]").filter({ hasText: longTitle }).click();
-      await page.setViewportSize({ width: 390, height: 844 });
-      const composer = page.locator("#composer");
-      await composer.waitFor({ state: "visible" });
-      const contextRow = page.locator(".composer-context-row");
-      await contextRow.waitFor({ state: "visible" });
-      const bounds = await page.evaluate(() => {
-        const composer = document.querySelector("#composer");
-        const context = document.querySelector(".composer-context-row");
-        return {
-          composer: composer?.getBoundingClientRect().height ?? 0,
-          context: context?.getBoundingClientRect().height ?? 0,
-        };
-      });
-      const screenshot = test.info().outputPath("composer-390x844.png");
-      await page.screenshot({ path: screenshot, animations: "disabled" });
-      console.log(`Mobile composer screenshot: ${screenshot}`);
-      assert.ok(
-        bounds.composer - bounds.context <= 110,
-        `390x844 composer body is ${bounds.composer - bounds.context}px; total ${bounds.composer}px, context row ${bounds.context}px`,
-      );
-    } finally {
-      if (!page.isClosed()) await page.unrouteAll({ behavior: "wait" });
-      fixture.kill("SIGTERM");
-      if (fixture.exitCode === null && fixture.signalCode === null)
-        await new Promise((resolve) => fixture.once("exit", resolve));
-    }
   },
   "f4f176f1 is suspected to have introduced a mobile composer-body height regression; not bisected",
 );

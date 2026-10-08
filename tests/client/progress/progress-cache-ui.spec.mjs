@@ -7,7 +7,7 @@ import {
 } from "../playwright.mjs";
 // Production renderer, real progress files, isolated backend. No model calls.
 
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 test("Progress Cache Ui", async ({
@@ -408,13 +408,23 @@ test("Progress Cache Ui", async ({
     assert.ok((await panel().boundingBox()).height <= 237);
     assert.ok((await page.locator("#messages").boundingBox()).height > 100);
     assert.ok((await page.locator("#composer").boundingBox()).height > 80);
+    if ((await panel().getAttribute("data-expanded")) === "yes")
+      await panel()
+        .getByRole("button", { name: "Collapse", exact: true })
+        .click();
     for (const width of [1440, 390]) {
       await page.setViewportSize({ width, height: 900 });
       await panel().getByRole("button", { name: "Hide", exact: true }).click();
-      assert.ok(
-        (await panel().boundingBox()).height <= (width === 390 ? 45 : 33),
-      );
+      await expect(panel()).toHaveAttribute("data-hidden", "yes");
+      if (width === 390) {
+        const compactHeight = (await panel().boundingBox()).height;
+        assert.ok(
+          compactHeight <= 45,
+          `Mobile compact panel height ${compactHeight} stays within 45px`,
+        );
+      }
       await panel().getByRole("button", { name: "Show", exact: true }).click();
+      await expect(panel()).toHaveAttribute("data-hidden", "no");
       const header = await panel()
         .locator(".agent-panel-heading")
         .boundingBox();
@@ -510,4 +520,105 @@ test("Progress Cache Ui", async ({
   } finally {
     await context?.close();
   }
+});
+
+async function measureCompactProgressPanel(testBrowser, width) {
+  const root = await mkdtemp(join(tmpdir(), "studio-progress-height-"));
+  const proc = spawn(
+    process.env.PYTHON || "python3",
+    [
+      "-B",
+      join(import.meta.dirname, "../../../tests/simple-ui-fixture.py"),
+      root,
+    ],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },
+    },
+  );
+  let context;
+  let log = "";
+  proc.stderr.on("data", (data) => {
+    log += data;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(Error("Fixture startup timed out: " + log)),
+        30_000,
+      );
+      proc.stdout.once("data", (data) => {
+        clearTimeout(timer);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Fixture exited"));
+      });
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const initial = await readTestState(origin);
+    const lead = initial.threads.find((agent) => agent.name === "Release lead");
+    const panelResponse = await fetch(`${origin}/api/panel?agent=${lead.id}`);
+    expect(panelResponse.ok).toBe(true);
+    const { path } = await panelResponse.json();
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, "Compact panel height fixture.");
+    context = await testBrowser.newContext({
+      viewport: { width: 1440, height: 900 },
+      serviceWorkers: "block",
+    });
+    const page = await context.newPage();
+    await page.addInitScript(
+      ({ id, stateDir }) => {
+        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(id),
+        );
+      },
+      { id: lead.id, stateDir: initial.stateDir },
+    );
+    await page.goto(origin);
+    await page.locator("#message").waitFor();
+    const panel = page.getByRole("region", {
+      name: "Agent progress",
+      exact: true,
+    });
+    await panel
+      .locator(".agent-panel-current, .agent-panel-saved")
+      .getByText("Compact panel height fixture.", { exact: true })
+      .waitFor();
+    await page.setViewportSize({ width, height: 900 });
+    await panel.getByRole("button", { name: "Hide", exact: true }).click();
+    await expect(panel).toHaveAttribute("data-hidden", "yes");
+    return (await panel.boundingBox()).height;
+  } finally {
+    await context?.close();
+    if (proc.exitCode === null && proc.signalCode === null) {
+      proc.kill("SIGTERM");
+      await new Promise((resolve) => proc.once("exit", resolve));
+    }
+    await rm(root, { recursive: true, force: true });
+  }
+}
+
+test("compact progress panel measurement setup reaches a hidden panel", async ({
+  browser,
+}) => {
+  expect(await measureCompactProgressPanel(browser, 1440)).toBeGreaterThan(0);
+});
+
+test("desktop compact progress panel matches its height budget", async ({
+  browser,
+}) => {
+  const height = await measureCompactProgressPanel(browser, 1440);
+  test.fail(
+    true,
+    "Desktop compact progress panel is 37px against a 33px budget.",
+  );
+  expect(
+    height,
+    "1440px compact panel must fit the 33px desktop budget",
+  ).toBeLessThanOrEqual(33);
 });

@@ -3,7 +3,14 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
-import { test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  syncIdentityFixture,
+  test,
+} from "../playwright.mjs";
+
+const syncWorkspaceId = "1234567890abcdef1234567890abcdef";
 
 test("claude login ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../../web");
@@ -42,6 +49,7 @@ test("claude login ui", async ({ page: runnerPage }) => {
     const page = runnerPage;
     const failures = [];
     page.on("pageerror", (e) => failures.push(e.message));
+    installApiSchemaFixtureHeaders(page);
     let receipt = null;
     let starts = [];
     let codes = [];
@@ -50,6 +58,35 @@ test("claude login ui", async ({ page: runnerPage }) => {
       const req = route.request();
       const url = new URL(req.url());
       const body = req.method() === "POST" ? req.postDataJSON() : {};
+      if (url.pathname === "/api/sync/identity")
+        return route.fulfill({ json: syncIdentityFixture(syncWorkspaceId) });
+      if (url.pathname === "/api/sync/pull")
+        return route.fulfill({
+          json: {
+            workspaceId: syncWorkspaceId,
+            generation: 1,
+            documents: [],
+            checkpoint: { seq: 0 },
+            maxSeq: 0,
+            initialHigh: 0,
+          },
+        });
+      if (url.pathname === "/api/sync/stream") {
+        const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+        return route.fulfill({
+          contentType: "text/event-stream",
+          body: apiSchemaHandshakeSse(
+            `event: resources\ndata: ${JSON.stringify({
+              protocol: 3,
+              workspaceId: syncWorkspaceId,
+              epoch: "claude-login-fixture",
+              revision: 1,
+              reason: "initial",
+              resources,
+            })}\n\n`,
+          ),
+        });
+      }
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
           starts.push(body.request_id);

@@ -1,5 +1,6 @@
 import {
   API_SCHEMA_HASH_HEADER,
+  handleEntitySyncFixtureRequest,
   readApiSchemaHash,
   test,
 } from "../playwright.mjs";
@@ -19,6 +20,29 @@ test("Radio browser", async ({
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-radio-"));
   const entry = join(root, "radio-fixture.tsx");
+  const workspaceId = "a".repeat(32);
+  const syncSnapshot = {
+    stateDir: "radio-test",
+    chats: [],
+    edges: [],
+    runtime: {
+      agents: [],
+      projects: [],
+      rooms: [],
+      complaints: [],
+      requests: [],
+      monitors: [],
+      tasks: [],
+      events: [],
+      peerTeams: [],
+      rules: [],
+      work: [],
+      nativeNotices: [],
+      sidebarOrder: [],
+      rateLimits: [],
+      rateLimitsByAccount: {},
+    },
+  };
   const server = await createServer({
     configFile: false,
     root,
@@ -28,6 +52,19 @@ test("Radio browser", async ({
       {
         name: "radio-fixture",
         configureServer(s) {
+          s.middlewares.stack.unshift({
+            route: "",
+            handle(req, res, next) {
+              if (
+                handleEntitySyncFixtureRequest(req, res, {
+                  snapshot: syncSnapshot,
+                  workspaceId,
+                })
+              )
+                return;
+              next();
+            },
+          });
           s.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(

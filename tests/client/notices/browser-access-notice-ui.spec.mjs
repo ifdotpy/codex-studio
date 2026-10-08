@@ -90,9 +90,9 @@ test("Browser access notice ui", async ({
     };
     await set({ accountKey: "disabled", active: true });
     await notice.waitFor();
-    await notice
-      .getByText(/Browser access is off: The Chrome plugin is disabled/)
-      .waitFor();
+    await notice.getByText("Browser access", { exact: true }).waitFor();
+    await notice.getByText("Off", { exact: true }).waitFor();
+    await notice.getByText("Details", { exact: true }).click();
     await notice.getByText(/Chrome plugin is disabled/).waitFor();
     await set({ accountKey: "default", active: true });
     await page.waitForFunction(

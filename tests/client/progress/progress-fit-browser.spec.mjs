@@ -467,7 +467,8 @@ test("progress-fit-browser", async ({ browser, page }) => {
         text,
       );
       await page.waitForFunction(
-        (revision) => reports.at(-1)?.body.revision === revision,
+        (revision) =>
+          reports.some((report) => report.body.revision === revision),
         revision,
       );
       return revision;

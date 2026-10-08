@@ -1,6 +1,10 @@
 import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   readTestState,
   entityPullFixtureForRequest,
+  syncIdentityFixture,
+  installApiSchemaFixtureHeaders,
   test,
   browserExecutablePath,
   spawnFixture as spawn,
@@ -70,8 +74,9 @@ test("Terminal dock", async () => {
       const url = new URL(req.url, "http://localhost");
       const name = url.pathname;
       if (name === "/api/sync/identity") {
+        res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
         res.setHeader("Content-Type", "application/json");
-        res.end(JSON.stringify({ workspaceId }));
+        res.end(JSON.stringify(syncIdentityFixture(workspaceId)));
         return;
       }
       if (name === "/api/sync/stream") {
@@ -83,6 +88,7 @@ test("Terminal dock", async () => {
           "Content-Type": "text/event-stream",
           "Cache-Control": "no-cache",
           Connection: "keep-alive",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
         });
         res.write(apiSchemaHandshakeSse());
         resourceStreams.add(stream);
@@ -206,6 +212,7 @@ test("Terminal dock", async () => {
       viewport: { width: 1440, height: 980 },
       permissions: ["clipboard-read", "clipboard-write"],
     });
+    installApiSchemaFixtureHeaders(page);
     const errors = [];
     page.on("pageerror", (error) => {
       errors.push(error.message);
@@ -299,7 +306,6 @@ test("Terminal dock", async () => {
           truncated: truncateOutput,
           status: shell?.status || "exited",
         };
-        truncateOutput = false;
       } else if (path === "/api/terminals/input") {
         assert.ok(body.request_id);
         if (uncertainInput) {
@@ -607,6 +613,7 @@ test("Terminal dock", async () => {
         "Earlier output exceeded the retained buffer. The latest output is shown.",
       )
       .waitFor();
+    truncateOutput = false;
     await dock.getByLabel("Find terminal", { exact: true }).fill("npm run dev");
     await dock.getByText("No matching sessions", { exact: true }).waitFor();
     assert.equal(await dock.locator(".terminal-session").count(), 0);
@@ -640,6 +647,7 @@ test("Terminal dock", async () => {
       ),
       "Mobile view must not overflow",
     );
+    await dock.waitFor({ state: "detached" });
     assert.equal(
       await dock.count(),
       0,
