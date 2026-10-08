@@ -7,68 +7,69 @@ from pathlib import Path
 import runpy
 import sys
 import unittest
+from typing import Any
 
-RESULT_FILE = None
+RESULT_FILE: str | None = None
 
 
 class StructuredTextTestResult(unittest.TextTestResult):
-    def _record(self, test, outcome):
+    def _record(self, test: Any, outcome: str) -> None:
         self._record_id(test.id(), outcome)
 
-    def addSuccess(self, test):
+    def addSuccess(self, test: Any) -> None:
         super().addSuccess(test)
         self._record(test, "passed")
 
-    def addFailure(self, test, err):
+    def addFailure(self, test: Any, err: Any) -> None:
         super().addFailure(test, err)
         self._record(test, "failed")
 
-    def addError(self, test, err):
+    def addError(self, test: Any, err: Any) -> None:
         super().addError(test, err)
         self._record(test, "error")
 
-    def addSkip(self, test, reason):
+    def addSkip(self, test: Any, reason: str) -> None:
         super().addSkip(test, reason)
         self._record(test, "skipped")
 
-    def addExpectedFailure(self, test, err):
+    def addExpectedFailure(self, test: Any, err: Any) -> None:
         super().addExpectedFailure(test, err)
         self._record(test, "expected_failure")
 
-    def addUnexpectedSuccess(self, test):
+    def addUnexpectedSuccess(self, test: Any) -> None:
         super().addUnexpectedSuccess(test)
         self._record(test, "unexpected_success")
 
-    def addSubTest(self, test, subtest, err):
+    def addSubTest(self, test: Any, subtest: Any, err: Any) -> None:
         super().addSubTest(test, subtest, err)
         if err is not None:
             outcome = "failed" if issubclass(err[0], test.failureException) else "error"
             self._record_id(f"{test.id()} {subtest}", outcome)
 
-    def _record_id(self, test_id, outcome):
+    def _record_id(self, test_id: str, outcome: str) -> None:
         if RESULT_FILE:
             with Path(RESULT_FILE).open("a", encoding="utf-8") as stream:
                 stream.write(json.dumps({"id": test_id, "outcome": outcome}) + "\n")
 
 
 class StructuredTextTestRunner(unittest.TextTestRunner):
-    resultclass = StructuredTextTestResult
+    resultclass: Any = StructuredTextTestResult
 
 
-def main():
+def main() -> None:
     global RESULT_FILE
     if len(sys.argv) < 3 or sys.argv[1] not in {"path", "module"}:
         raise SystemExit("usage: suite_entry.py path|module TARGET [unittest args]")
     kind, target, *arguments = sys.argv[1:]
     RESULT_FILE = os.environ.pop("CODEX_SERVER_TEST_RESULT_FILE", None)
-    unittest.TextTestRunner = StructuredTextTestRunner
-    original_main = unittest.main
+    setattr(unittest, "TextTestRunner", StructuredTextTestRunner)
+    original_main = getattr(unittest, "main")
 
-    def structured_main(*args, **kwargs):
+    def structured_main(*args: Any, **kwargs: Any) -> Any:
         kwargs.setdefault("testRunner", StructuredTextTestRunner)
         return original_main(*args, **kwargs)
 
-    unittest.main = structured_main
+    setattr(unittest, "main", structured_main)
     if kind == "path":
         sys.path[0] = str(Path(target).resolve().parent)
         sys.argv = [target, *arguments]
