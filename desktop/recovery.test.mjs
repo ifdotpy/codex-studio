@@ -262,6 +262,7 @@ test.each([false, true])(
       const initial = await configureRecovery({
         ...data,
         enabled: true,
+        restartEnvironment: { CODEX_BIN: "/usr/bin/true" },
         run: async () => {},
       });
       const saved = JSON.parse(readFileSync(initial.config, "utf8"));
@@ -284,6 +285,17 @@ test.each([false, true])(
       });
       const updated = JSON.parse(readFileSync(initial.config, "utf8"));
       assert.equal(updated.python, nextPython);
+      assert.equal(updated.environment.CODEX_HOME, undefined);
+      assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
+      assert.equal(updated.environment.PATH, saved.environment.PATH);
+      assert.equal(
+        updated.environment.CODEX_AGENTS_PYTHON,
+        explicit ? nextPython : undefined,
+      );
+      assert.equal(
+        updated.unsetEnvironment.includes("CODEX_AGENTS_PYTHON"),
+        !explicit,
+      );
       assert.equal(
         readFileSync(initial.plist, "utf8").includes(nextPython),
         true,
@@ -299,6 +311,43 @@ test.each([false, true])(
     }
   },
 );
+
+test("a verified backend Python selection overrides the attaching desktop", async () => {
+  const data = fixture();
+  try {
+    const initial = await configureRecovery({
+      ...data,
+      enabled: true,
+      run: async () => {},
+    });
+    const saved = JSON.parse(readFileSync(initial.config, "utf8"));
+    const nextDirectory = path.join(data.root, "another Python");
+    mkdirSync(nextDirectory);
+    const nextPython = path.join(nextDirectory, "python3");
+    symlinkSync(saved.python, nextPython);
+    await configureRecovery({
+      ...data,
+      env: {
+        ...data.env,
+        CODEX_AGENTS_PYTHON: nextPython,
+        PATH: `${nextDirectory}${path.delimiter}${data.env.PATH}`,
+      },
+      restartEnvironment: {
+        CODEX_BIN: "/usr/bin/true",
+        CODEX_AGENTS_PYTHON: saved.python,
+      },
+      enabled: true,
+      run: async () => {},
+    });
+    const updated = JSON.parse(readFileSync(initial.config, "utf8"));
+    assert.equal(updated.python, saved.python);
+    assert.equal(updated.environment.CODEX_AGENTS_PYTHON, saved.python);
+    assert.equal(updated.environment.CODEX_HOME, undefined);
+    assert.ok(updated.unsetEnvironment.includes("CODEX_HOME"));
+  } finally {
+    rmSync(data.root, { recursive: true, force: true });
+  }
+});
 
 test.each([false, true])(
   "a lost bootstrap response preserves registration or restores the previous service (%s)",

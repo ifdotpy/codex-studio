@@ -63,9 +63,11 @@ test("startup uses the verified backend environment before configuring recovery"
             ? backend
             : name === "./recovery.cjs"
               ? recovery
-              : name.startsWith("./")
-                ? {}
-                : require(name),
+              : name === "./install-mode.cjs"
+                ? { uiOnlyInstallation: () => false }
+                : name.startsWith("./")
+                  ? {}
+                  : require(name),
       process: {
         argv: [],
         platform: "darwin",

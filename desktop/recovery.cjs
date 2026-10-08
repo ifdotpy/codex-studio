@@ -293,9 +293,13 @@ async function configureRecovery({
     requestedSupervisorMode === undefined
       ? saved.supervisorEnabled === true
       : requestedSupervisorMode === "1";
+  // Python selection belongs to the launcher. Preserve the saved native environment.
+  if (!authoritative && env.CODEX_AGENTS_PYTHON !== undefined)
+    launchEnv.CODEX_AGENTS_PYTHON = env.CODEX_AGENTS_PYTHON;
+  const interpreterEnv = { ...launchEnv, PATH: env.PATH };
   const python =
-    enabled || supervisorEnabled ? executable("python3", launchEnv) : null;
-  const safetyPython = python || executable("python3", launchEnv);
+    enabled || supervisorEnabled ? executable("python3", interpreterEnv) : null;
+  const safetyPython = python || executable("python3", interpreterEnv);
   if (supervisorEnabled)
     await ensureSupervisorAgent({ files, python, resources, uid, run });
   if (!enabled) {
@@ -382,7 +386,7 @@ async function configureRecovery({
   // Save automatic interpreter and policy changes for the next registration.
   // The registered recovery process can keep its original interpreter.
   const retainedPythonPlist =
-    !launchEnv.CODEX_AGENTS_PYTHON &&
+    !interpreterEnv.CODEX_AGENTS_PYTHON &&
     typeof saved.python === "string" &&
     path.isAbsolute(saved.python)
       ? launchAgent({
