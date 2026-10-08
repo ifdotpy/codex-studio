@@ -1,4 +1,9 @@
-import { installApiSchemaFixtureHeaders, test } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  protocol3SseEvent,
+  test,
+} from "../playwright.mjs";
 // Real UI components with isolated HTTP responses. No model or user state.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -95,7 +100,9 @@ test("Ux request recovery browser", async ({
       page.setDefaultTimeout(3000);
       installApiSchemaFixtureHeaders(page);
       const writes = [],
-        errors = [];
+        errors = [],
+        unexpectedReads = [];
+      const workspaceId = "a".repeat(32);
       page.on("pageerror", (error) => errors.push(error.message));
       let reads = 0,
         releaseOld;
@@ -111,6 +118,46 @@ test("Ux request recovery browser", async ({
           path = url.pathname;
         if (path === "/api/models")
           return route.fulfill({ json: { data: [] } });
+        if (path === "/api/limits")
+          return route.fulfill({ json: { data: null } });
+        if (path === "/api/sync/identity")
+          return route.fulfill({
+            json: { workspaceId, syncProtocol: 2 },
+          });
+        if (path === "/api/sync/stream") {
+          const resources = JSON.parse(
+            url.searchParams.get("resources") || "[]",
+          );
+          return route.fulfill({
+            contentType: "text/event-stream",
+            body: apiSchemaHandshakeSse(
+              protocol3SseEvent("resources", {
+                epoch: "request-recovery-fixture",
+                protocol: 3,
+                reason: "initial",
+                resources,
+                resourceVersions: resources.map((resource) => ({
+                  resource,
+                  revision: 1,
+                })),
+                revision: 1,
+                workspaceId,
+              }),
+            ),
+          });
+        }
+        if (path === "/api/sync/pull") {
+          const after = Number(url.searchParams.get("after") || 0);
+          return route.fulfill({
+            json: {
+              workspaceId,
+              generation: 1,
+              documents: [],
+              maxSeq: after,
+              checkpoint: { seq: after },
+            },
+          });
+        }
         if (path === "/api/directories") {
           const typed = url.searchParams.get("path") || "/project";
           return route.fulfill({
@@ -155,7 +202,13 @@ test("Ux request recovery browser", async ({
             },
           });
         }
-        if (request.method() !== "POST") return route.fulfill({ json: {} });
+        if (request.method() !== "POST") {
+          unexpectedReads.push(path);
+          return route.fulfill({
+            status: 500,
+            json: { error: `Unexpected GET ${path}` },
+          });
+        }
         writes.push(request.postDataJSON());
         if (mode === "project-deadline" && writes.length === 1) return;
         if (mode === "rejected" && writes.length === 1)
@@ -381,6 +434,11 @@ test("Ux request recovery browser", async ({
           assert.equal(writes.length, mode === "confirmed" ? 1 : 2);
           if (writes.length === 2) assert.deepEqual(writes[0], writes[1]);
         }
+        assert.deepEqual(
+          unexpectedReads,
+          [],
+          "unknown GETs are fixture failures",
+        );
         assert.deepEqual(errors, []);
         results.push({ mode, passed: true });
       } catch (error) {

@@ -133,7 +133,6 @@ test("sync required browser", async ({ page: runnerPage }) => {
       route.fulfill({ json: [] }),
     );
     status = 200;
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await page.waitForFunction(() => window.state.drafts.error === "");
     assert.equal(
       await page.evaluate(() => window.state.drafts.drafts.lead),

@@ -34,7 +34,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "studio-tool-limit-"));
   const proc = spawn(
-    "python3",
+    process.env.PYTHON_BIN || "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -187,6 +187,11 @@ test("tool limit history ui", async ({ browser: _browser }) => {
     const syncContract = await readFixtureSyncContract(origin);
     await stubEntityState(page, state, syncContract);
     let transcriptSeq = 1;
+    let lastTranscriptMaxSeq = 0;
+    let resolveInitialTranscriptPull;
+    const initialTranscriptPull = new Promise((resolve) => {
+      resolveInitialTranscriptPull = resolve;
+    });
     await page.route("**/api/analytics?**", async (route) => {
       const params = new URL(route.request().url()).searchParams;
       assert.equal(params.get("view"), "turn-errors");
@@ -252,7 +257,10 @@ test("tool limit history ui", async ({ browser: _browser }) => {
               protocol: 3,
               reason: "initial",
               resources,
-              resourceVersions: [],
+              resourceVersions: resources.map((resource) => ({
+                resource,
+                revision: 1,
+              })),
               revision: 1,
               workspaceId: syncContract.identity.workspaceId,
             }) +
@@ -260,31 +268,37 @@ test("tool limit history ui", async ({ browser: _browser }) => {
         ),
       });
     });
-    await page.route("**/api/sync/pull?*", (route) => {
+    await page.route("**/api/sync/pull?*", async (route) => {
       const url = new URL(route.request().url());
       const scope = url.searchParams.get("scope");
       if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const after = Number(url.searchParams.get("after") || 0);
       const pull = entityPullFixture(state, {
         scope,
         after: 0,
         limit: Number(url.searchParams.get("limit") || 100),
         transcript,
       });
-      return route.fulfill({
+      const documents =
+        after < transcriptSeq
+          ? pull.documents.map((document, index) => ({
+              ...document,
+              seq: transcriptSeq + index,
+            }))
+          : [];
+      const maxSeq = documents.at(-1)?.seq ?? after;
+      lastTranscriptMaxSeq = Math.max(lastTranscriptMaxSeq, maxSeq);
+      await route.fulfill({
         headers: apiSchemaHeaders(),
         json: {
           workspaceId: syncContract.identity.workspaceId,
           ...pull,
-          documents:
-            Number(url.searchParams.get("after") || 0) < transcriptSeq
-              ? pull.documents.map((document) => ({
-                  ...document,
-                  seq: transcriptSeq,
-                }))
-              : [],
-          checkpoint: { seq: transcriptSeq },
+          documents,
+          maxSeq,
+          checkpoint: { seq: maxSeq },
         },
       });
+      if (documents.length > 0) resolveInitialTranscriptPull();
     });
     await page.route("**/api/transcript**", (r) =>
       new URL(r.request().url()).searchParams.get("id") !== lead.id
@@ -424,6 +438,8 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       );
     }
     failNextRead = true;
+    await initialTranscriptPull;
+    assert.ok(lastTranscriptMaxSeq > 0, "initial transcript sync completed");
     transcript.items = [
       {
         id: "retry-limit",
@@ -435,7 +451,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       },
     ];
     transcript.order = ["retry-limit"];
-    transcriptSeq++;
+    transcriptSeq = lastTranscriptMaxSeq + 1;
     transcript.agent.error = null;
     transcript.agent.lastCompletedTurn = null;
     await page.reload();

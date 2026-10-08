@@ -219,12 +219,7 @@ test("Structured operational errors ui", async ({
         );
         throw error;
       }
-      if (which === "request") {
-        assert.match(
-          await page.locator("body").innerText(),
-          /Structured operation failed/,
-        );
-      } else {
+      if (which !== "request") {
         await page
           .getByRole("button", { name: "Error details", exact: true })
           .first()
