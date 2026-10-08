@@ -83,7 +83,7 @@ class SchedulerCadence(unittest.TestCase):
                 release_changed.set()
                 self.assertTrue(dispatched_twice.wait(2))
                 self.assertEqual(len(dispatched), 2)
-                self.assertLess(dispatched[1] - woke_at, .5)
+                self.assertEqual(dispatched[1], woke_at)
             finally:
                 runtime.closed = True
                 release_changed.set()
