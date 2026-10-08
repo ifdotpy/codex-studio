@@ -1,4 +1,8 @@
 """Check the production pairing boundary's monitor export header contract."""
+from test_isolation import isolate_supervisor_environment
+
+isolate_supervisor_environment()
+
 import ast
 from pathlib import Path
 import sys
