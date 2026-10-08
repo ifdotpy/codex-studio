@@ -202,7 +202,9 @@ class WorkerTests(unittest.TestCase):
             with self.f.db() as db:
                 a = self.f.agent('agent', db)
                 error = json.loads(db.execute('SELECT record FROM analytics_turns').fetchone()[0])
-                return a.get('tokensUsed') == 100 and error['status'] == 'failed'
+                state = self.f.state()
+                return (a.get('tokensUsed') == 100 and error['status'] == 'failed'
+                        and state is not None and state['status'] == 'current')
         eventually(complete)
         with self.f.db() as db:
             self.assertIsNotNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='analytics_usage_migration'").fetchone())

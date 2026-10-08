@@ -463,8 +463,8 @@ class ReaderContract(unittest.TestCase):
             '_studioReceivedAt': time.time() - 2,
             'params': {'threadId': 'thread', 'text': 'private payload'}})
         done = threading.Event()
-        server.after_events(done.set)
-        self.assertTrue(done.wait(1))
+        threading.Thread(target=lambda: (server.tool_requests.join(), done.set()), daemon=True).start()
+        self.assertTrue(done.wait(30))
         log = (self.root / 'app-server.log').read_text()
         row = json.loads(next(line for line in log.splitlines() if 'callbackLatency' in line))
         self.assertGreaterEqual(row['queueDelayMs'], 2000)
