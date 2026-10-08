@@ -982,7 +982,10 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(archivedAccounts[0].id, "other");
     await deletion.getByRole("button", { name: "Close", exact: true }).click();
     await deletion.waitFor({ state: "hidden" });
-    await removalManager.getByRole("button", { name: "Close" }).click();
+    await page
+      .getByRole("dialog", { name: "Studio settings", exact: true })
+      .getByRole("button", { name: "Close", exact: true })
+      .click();
     await removalManager.waitFor({ state: "hidden" });
 
     await openProject("fixture");
