@@ -657,8 +657,10 @@ def _suite_command(relative, root):
 
 def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment = os.environ.copy()
-    environment["HOME"] = str(temp_root / "home")
-    environment["USERPROFILE"] = str(temp_root / "home")
+    isolated_home = temp_root / "home"
+    isolated_home.mkdir(parents=True, exist_ok=True)
+    environment["HOME"] = str(isolated_home)
+    environment["USERPROFILE"] = str(isolated_home)
     environment["TMPDIR"] = str(temp_root)
     environment["XDG_CACHE_HOME"] = str(temp_root / "cache")
     environment["XDG_STATE_HOME"] = str(temp_root / "state")
@@ -666,6 +668,22 @@ def _suite_environment(root, temp_root, audit_home=False, relative=None):
     environment["XDG_CONFIG_HOME"] = str(temp_root / "config")
     environment["CODEX_HOME"] = str(temp_root / "codex-home")
     environment["CODEX_AGENTS_PYTHON"] = sys.executable
+    # Prevent host Git settings and background index maintenance from changing
+    # fixture repositories while another suite copies or fingerprints them.
+    isolated_git_config = isolated_home / ".gitconfig"
+    isolated_git_config.touch(exist_ok=True)
+    environment["GIT_CONFIG_NOSYSTEM"] = "1"
+    environment["GIT_CONFIG_GLOBAL"] = str(isolated_git_config)
+    git_overrides = {
+        "gc.auto": "0",
+        "maintenance.auto": "false",
+        "core.fsmonitor": "false",
+        "core.untrackedCache": "false",
+    }
+    environment["GIT_CONFIG_COUNT"] = str(len(git_overrides))
+    for index, (key, value) in enumerate(git_overrides.items()):
+        environment[f"GIT_CONFIG_KEY_{index}"] = key
+        environment[f"GIT_CONFIG_VALUE_{index}"] = value
     # A host-local `codex` shim commonly resolves into ~/.codex/packages. Do
     # not let isolated tests discover or launch it. Keep unrelated PATH tools,
     # but remove entries whose codex executable resolves into protected state.

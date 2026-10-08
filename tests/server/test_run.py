@@ -32,6 +32,32 @@ def _save_profile_in_process(profile_path, profile, start_gate):
 
 
 class ServerSuiteRunner(unittest.TestCase):
+    def test_suite_children_disable_host_git_maintenance_and_refresh(self):
+        with tempfile.TemporaryDirectory(prefix="server-git-config-") as directory:
+            suite_root = Path(directory) / "suite"
+            suite_root.mkdir()
+            environment = RUNNER._suite_environment(ROOT, suite_root)
+
+            self.assertEqual(environment["GIT_CONFIG_NOSYSTEM"], "1")
+            global_config = Path(environment["GIT_CONFIG_GLOBAL"])
+            self.assertEqual(global_config, Path(environment["HOME"]) / ".gitconfig")
+            self.assertTrue(global_config.is_file())
+            self.assertEqual(global_config.stat().st_size, 0)
+            self.assertEqual(environment["GIT_CONFIG_COUNT"], "4")
+            for index, (key, value) in enumerate((
+                ("gc.auto", "0"),
+                ("maintenance.auto", "false"),
+                ("core.fsmonitor", "false"),
+                ("core.untrackedCache", "false"),
+            )):
+                self.assertEqual(environment[f"GIT_CONFIG_KEY_{index}"], key)
+                self.assertEqual(environment[f"GIT_CONFIG_VALUE_{index}"], value)
+                result = subprocess.run(
+                    ["git", "config", "--get", key], cwd=ROOT, env=environment,
+                    capture_output=True, text=True, check=True, timeout=5,
+                )
+                self.assertEqual(result.stdout.strip(), value)
+
     def test_resolved_codex_binary_is_scoped_to_pty_integration_suites(self):
         with tempfile.TemporaryDirectory(prefix="server-codex-bin-scope-") as directory:
             root = Path(directory)
@@ -444,7 +470,7 @@ class ServerSuiteRunner(unittest.TestCase):
             self.assertIn("open\t" + str(target), audit_log.read_text())
 
             safe_target = suite_root / "home" / "fixture"
-            safe_target.parent.mkdir()
+            safe_target.parent.mkdir(exist_ok=True)
             safe_result = subprocess.run(
                 [sys.executable, "-c", "from pathlib import Path; import sys; Path(sys.argv[1]).write_text('ok')",
                  str(safe_target)],
