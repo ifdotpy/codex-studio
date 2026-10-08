@@ -1046,6 +1046,34 @@ export function updateEntitySyncFixture(snapshot) {
 }
 
 /**
+ * Build a mutation response that both carries the changed entities to the
+ * current client and leaves the entity-pull fixture at the same state.
+ * Mutate the snapshot before calling this helper.
+ * @param {EntityFixtureState} snapshot
+ * @param {Record<string, unknown>} response
+ * @returns {Record<string, unknown>}
+ */
+export function entityMutationFixtureResponse(snapshot, response) {
+  return {
+    ...response,
+    _syncEntities: updateEntitySyncFixture(snapshot),
+  };
+}
+
+/** @param {import("@playwright/test").Page | import("@playwright/test").Locator} page @param {string} label */
+export function accountTileGroup(page, label) {
+  return page.getByRole("group", { name: label, exact: true });
+}
+
+/** @param {import("@playwright/test").Page | import("@playwright/test").Locator} page @param {string} label @param {string} accountName */
+export function accountTileButton(page, label, accountName) {
+  return accountTileGroup(page, label).getByRole("button", {
+    name: `Select account ${accountName}`,
+    exact: true,
+  });
+}
+
+/**
  * Serve the same sync routes from a small Node HTTP fixture backend.
  * @param {import("node:http").IncomingMessage} request
  * @param {import("node:http").ServerResponse} response
