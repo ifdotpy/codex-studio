@@ -644,8 +644,8 @@ p {
   font-size: 12px;
   box-shadow: 0 4px 20px #0003;
 }
-/* Keep the Latest button clear of the answer actions. */
-#conversation:has(.request-answer-form) .jump-slot {
+/* Keep the Latest button clear of pending request actions. */
+#conversation:has(.request-answer-form, #requests .request-card) .jump-slot {
   display: none;
 }
 

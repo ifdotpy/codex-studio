@@ -100,6 +100,32 @@ test("Questions Ux Ui", async ({
         .count(),
       1,
     );
+    await page.setViewportSize({ width: 390, height: 844 });
+    const approvalCard = page.locator('[data-request="permission-question"]');
+    for (const name of ["Decline", "Approve"]) {
+      const action = approvalCard.getByRole("button", { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
+      await action.click({ trial: true });
+      assert.equal(
+        await action.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return element.contains(
+            document.elementFromPoint(
+              rect.x + rect.width / 2,
+              rect.y + rect.height / 2,
+            ),
+          );
+        }),
+        true,
+        `${name} remains clear of Latest on 390px`,
+      );
+    }
+    assert.equal(
+      await page.locator(".jump-slot").isVisible(),
+      false,
+      "pending approval hides Latest before a form opens",
+    );
+    await page.setViewportSize({ width: 1440, height: 960 });
     await page.locator('[data-answer="blocking-question"]').click();
     const modal = page
       .locator('[data-request="blocking-question"]')
