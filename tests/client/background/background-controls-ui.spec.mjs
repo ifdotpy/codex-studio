@@ -128,6 +128,14 @@ test("Background controls", async ({ context }) => {
         value = { accounts: [], defaultAccountKey: "default" };
       else if (path === "/api/voice/records")
         value = { records: [], delivered: [], cursor: 0 };
+      else if (path === "/api/workspace/tasks")
+        value = {
+          tasks: [native],
+          cursor: { updated: native.created, id: native.id },
+          hasMore: false,
+          hasMoreChanges: false,
+          reset: false,
+        };
       else if (path === "/api/workspace")
         value = { tasks: [native], monitors: [monitor] };
       else if (path === "/api/task") value = native;

@@ -166,25 +166,19 @@ test("Daybreak settings", async ({ context }) => {
           window.refreshCount === window.calls.length &&
           window.calls.length > 0,
       );
+    const clearActivity = () =>
+      page.evaluate(() => {
+        window.calls = [];
+        window.refreshCount = 0;
+      });
 
-    const enable = async () => {
+    const enable = async (defaults = false) => {
+      const activeModel = model(defaults);
+      await activeModel.waitFor();
       if (!(await mode().count())) {
-        await selectModel(
-          model(
-            (await page
-              .getByRole("listbox", {
-                name: "Default subagent model",
-                exact: true,
-              })
-              .count()) > 0,
-          ),
-          "gpt-5.6-sol",
-        );
+        await selectModel(activeModel, "gpt-5.6-sol");
         await settled();
-        await page.evaluate(() => {
-          window.calls = [];
-          window.refreshCount = 0;
-        });
+        await clearActivity();
       }
       await mode().check();
     };
@@ -262,13 +256,17 @@ test("Daybreak settings", async ({ context }) => {
       false,
     );
     await reset({ agent: { model: "gpt-5.6-terra" } });
-    await enable();
+    // Terra supports Red mode. Wait for that setting to render before toggling:
+    // the generic enable helper can select the default model if called too early.
+    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
+    await mode().check();
     await settled();
     assert.equal(
       await modelValue(model()),
       "gpt-5.6-terra",
       "Red-only support keeps the selected model",
     );
+    await clearActivity();
     await selectModel(model(), "daybreak-only");
     await settled();
     assert.equal(
@@ -317,8 +315,9 @@ test("Daybreak settings", async ({ context }) => {
     );
 
     await reset({ agent: { status: "running" } });
+    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
     await page.evaluate(() => (window.fail = "network"));
-    await enable();
+    await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
@@ -352,8 +351,9 @@ test("Daybreak settings", async ({ context }) => {
     );
 
     await reset({ agent: { status: "running" } });
+    await page.getByRole("button", { name: "Daybreak", exact: true }).waitFor();
     await page.evaluate(() => (window.fail = "network"));
-    await enable();
+    await mode().check();
     await page
       .getByRole("button", { name: "Check settings save", exact: true })
       .waitFor();
@@ -409,7 +409,7 @@ test("Daybreak settings", async ({ context }) => {
         },
       },
     });
-    await enable();
+    await enable(true);
     await settled();
     assert.deepEqual(await page.evaluate(() => window.calls[0]), {
       id: "first",

@@ -153,7 +153,11 @@ for sender in [r for r in roster if r['name'] in {'Worker 38', 'Worker 39'}]:
             c.runtime.chat_message(sender['id'], recipient['id'], 'Review coordination', 'room-fixture:' + sender['id'] + recipient['id'])
 with c.runtime.lock, c.runtime.db() as db:
     a = c.runtime.agent(lead['id'], db)
-    a.update(compactions=2, contextUsage={'tokens':80000,'window':200000,'at':__import__('time').time()})
+    a['compactions'] = 2
+    if os.environ.get('MOBILE_KEYBOARD_CONTEXT_USAGE') == 'unknown':
+        a.pop('contextUsage', None)
+    else:
+        a['contextUsage'] = {'tokens':80000,'window':200000,'at':__import__('time').time()}
     c.runtime.put(db, 'agents', a)
 other = c.runtime.create({'name': 'Other project', 'cwd': str(c.root), 'prompt': 'Separate task'}, defer=True)
 if os.environ.get('QUESTIONS_UX_UI_FIXTURE'):
