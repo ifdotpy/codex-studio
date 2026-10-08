@@ -273,6 +273,16 @@ class Contract(unittest.TestCase):
 
 class OperatorCloseContract(unittest.TestCase):
     def setUp(self):
+        self.thread_exceptions = []
+        previous_thread_hook = threading.excepthook
+
+        def record_thread_exception(args):
+            self.thread_exceptions.append(args.exc_value)
+            previous_thread_hook(args)
+
+        threading.excepthook = record_thread_exception
+        self.addCleanup(setattr, threading, 'excepthook', previous_thread_hook)
+        self.addCleanup(self._assert_no_unexpected_thread_exceptions)
         self.case = fixture.ProcessSupervisorContract(methodName='runTest')
         self.case.setUp()
         self.addCleanup(self.case.cleanup)
@@ -284,6 +294,10 @@ class OperatorCloseContract(unittest.TestCase):
         self.replacement_transport_error = None
         if self._testMethodName == 'test_verified_operator_close_allows_a_new_launch_signature':
             self._prepare_verified_operator_close_replacement()
+
+    def _assert_no_unexpected_thread_exceptions(self):
+        self.assertEqual(self.thread_exceptions, [],
+                         'fixture background thread raised an uncaught exception')
 
     def close(self, handle):
         row = next(row for row in supervisor.status(self.case.root)['handles'] if row['id'] == handle)
@@ -366,7 +380,7 @@ class OperatorCloseContract(unittest.TestCase):
             replacement_opened.set()
             return proxy
 
-        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda _: None,
+        second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
                            executable=str(other), supervisor_handle=handle,
                            process_factory=open_replacement)
         self.case.servers.append(second)

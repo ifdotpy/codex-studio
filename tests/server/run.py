@@ -78,6 +78,7 @@ ACTIVE_SUITE_INTERRUPTERS = set()
 SUITE_OUTCOME_LOCK = threading.Lock()
 EXPECTED_FAILURES = []
 UNEXPECTED_SUCCESSES = []
+TEST_OUTCOME_COUNTS = {}
 HOME_AUDIT_BLOCKED_PATHS = []
 HOME_AUDIT_ALLOWED_EXECUTABLES = []
 HOME_AUDIT_CODEX_BIN_PASSTHROUGHS = []
@@ -277,7 +278,8 @@ def selected(entries, pattern):
 def run_process(command, cwd, timeout, environment):
     """Run one suite in its own process group and reap it on every exit path."""
     if os.name != "nt" and not _supports_waitid_nowait():
-        return _run_process_with_group_supervisor(command, cwd, timeout, environment)
+        result = _run_process_with_group_supervisor(command, cwd, timeout, environment)
+        return _with_structured_outcomes(result, environment)
     options = {"start_new_session": os.name != "nt"}
     job_handle = None
     if os.name == "nt":
@@ -345,7 +347,7 @@ def run_process(command, cwd, timeout, environment):
 
     def finish(returncode, error):
         relay_thread.join()
-        return returncode, error, outcomes["expected"], outcomes["unexpected"]
+        return _with_structured_outcomes((returncode, error, [], []), environment)
 
     try:
         if os.name == "nt":
@@ -384,22 +386,13 @@ def run_process(command, cwd, timeout, environment):
 
 
 def _relay_suite_output(process):
-    """Stream output and collect unittest expected-failure outcomes."""
-    outcomes = {"expected": [], "unexpected": []}
-
+    """Relay human-readable suite output; machine outcomes use a separate file."""
     def relay():
         output = getattr(process, "stdout", None)
         if output is None:
             return
         try:
             for line in iter(output.readline, b""):
-                decoded = line.decode(errors="replace").strip()
-                if " ... expected failure" in decoded:
-                    outcomes["expected"].append(_unittest_outcome_id(
-                        decoded.split(" ... expected failure", 1)[0]))
-                elif " ... unexpected success" in decoded:
-                    outcomes["unexpected"].append(_unittest_outcome_id(
-                        decoded.split(" ... unexpected success", 1)[0]))
                 try:
                     stream = sys.stdout
                     if hasattr(stream, "buffer"):
@@ -415,13 +408,53 @@ def _relay_suite_output(process):
 
     thread = threading.Thread(target=relay, name="server-suite-output", daemon=True)
     thread.start()
-    return thread, outcomes
+    return thread, None
 
 
-def _unittest_outcome_id(line):
-    marker = line.rfind("(")
-    identity = line[marker + 1:-1] if marker >= 0 and line.endswith(")") else line
-    return ".".join(identity.split(".")[-2:])
+def _parse_test_outcomes(records, human_output=""):
+    """Parse structured unittest records; display output is deliberately ignored."""
+    del human_output
+    outcomes = {"expected": [], "unexpected": []}
+    counts = {name: 0 for name in ("passed", "failed", "error", "skipped",
+                                   "expected_failure", "unexpected_success")}
+    for line_number, line in enumerate(records.splitlines(), start=1):
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid unittest outcome JSON on line {line_number}: {error}") from error
+        if not isinstance(record, dict) or not isinstance(record.get("id"), str):
+            raise ValueError(f"invalid unittest outcome record on line {line_number}")
+        outcome = record.get("outcome")
+        if outcome not in {"passed", "failed", "error", "skipped",
+                           "expected_failure", "unexpected_success"}:
+            raise ValueError(f"invalid unittest outcome on line {line_number}: {outcome!r}")
+        counts[outcome] += 1
+        identity = ".".join(record["id"].split(".")[-2:])
+        if outcome == "expected_failure":
+            outcomes["expected"].append(identity)
+        elif outcome == "unexpected_success":
+            outcomes["unexpected"].append(identity)
+    return outcomes["expected"], outcomes["unexpected"], counts
+
+
+def _with_structured_outcomes(result, environment):
+    returncode, error, _expected, _unexpected = result
+    outcome_file = environment.get("CODEX_SERVER_TEST_RESULT_FILE")
+    if not outcome_file:
+        return result
+    try:
+        records = Path(outcome_file).read_text(encoding="utf-8")
+        expected, unexpected, counts = _parse_test_outcomes(records)
+    except (OSError, ValueError) as outcome_error:
+        if error is None:
+            error = f"could not read structured unittest outcomes: {outcome_error}"
+        return returncode, error, [], []
+    with SUITE_OUTCOME_LOCK:
+        for name, count in counts.items():
+            TEST_OUTCOME_COUNTS[name] = TEST_OUTCOME_COUNTS.get(name, 0) + count
+    return returncode, error, expected, unexpected
 
 
 def _pinned_expected_failure_ids():
@@ -463,7 +496,7 @@ def _run_process_with_group_supervisor(command, cwd, timeout, environment):
 
     def finish(returncode, error):
         relay_thread.join()
-        return returncode, error, outcomes["expected"], outcomes["unexpected"]
+        return _with_structured_outcomes((returncode, error, [], []), environment)
 
     def terminate_group():
         try:
@@ -611,13 +644,14 @@ def _close_windows_job(job):
 def _suite_command(relative, root):
     if relative.endswith(".mjs"):
         return ["node", str(root / relative)]
+    entry = root / "tests/server/suite_entry.py"
     if relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
         module_name = relative[len("scripts/"):-3].replace("/", ".")
-        return [sys.executable, "-B", "-m", "unittest", "-v", module_name]
+        return [sys.executable, "-B", str(entry), "module", module_name, "-v"]
     path = root / relative
-    command = [sys.executable, "-B", str(path)]
     if is_unittest_suite(path):
-        command.append("-v")
+        return [sys.executable, "-B", str(entry), "path", str(path), "-v"]
+    command = [sys.executable, "-B", str(path)]
     return command
 
 
@@ -1244,6 +1278,7 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
     with SUITE_OUTCOME_LOCK:
         EXPECTED_FAILURES.clear()
         UNEXPECTED_SUCCESSES.clear()
+        TEST_OUTCOME_COUNTS.clear()
         HOME_AUDIT_BLOCKED_PATHS.clear()
         HOME_AUDIT_ALLOWED_EXECUTABLES.clear()
         HOME_AUDIT_CODEX_BIN_PASSTHROUGHS.clear()
@@ -1277,6 +1312,11 @@ def run_suites(entries, opted_in, timeout, expensive_timeout, root=ROOT,
                     (temp_root / name).mkdir()
                 environment = _suite_environment(root, temp_root, audit_home=audit_home,
                                                  relative=relative)
+                if not relative.endswith(".mjs") and (
+                        relative.startswith("scripts/studio_api/")
+                        or is_unittest_suite(root / relative)):
+                    environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(
+                        temp_root / "unittest-outcomes.jsonl")
                 result = execute(
                     _suite_command(relative, root), root, deadline, environment,
                 )
@@ -1526,6 +1566,9 @@ def main():
         unexpected = sorted(UNEXPECTED_SUCCESSES)
     print(f"Expected failures: {len(expected)}" + ("; " + ", ".join(expected) if expected else ""))
     print(f"Unexpected successes: {len(unexpected)}" + ("; " + ", ".join(unexpected) if unexpected else ""))
+    with SUITE_OUTCOME_LOCK:
+        outcome_counts = dict(TEST_OUTCOME_COUNTS)
+    print("Test outcomes: " + json.dumps(outcome_counts, sort_keys=True))
     if args.audit_home:
         with SUITE_OUTCOME_LOCK:
             blocked = sorted(HOME_AUDIT_BLOCKED_PATHS)

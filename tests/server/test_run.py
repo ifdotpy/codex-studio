@@ -134,10 +134,8 @@ class ServerSuiteRunner(unittest.TestCase):
             )
 
         self.assertEqual(len(commands), 1)
-        self.assertEqual(
-            commands[0][-5:],
-            ["-B", "-m", "unittest", "-v", "studio_api.agents.test_router"],
-        )
+        self.assertTrue(commands[0][-4].endswith("suite_entry.py"))
+        self.assertEqual(commands[0][-3:], ["module", "studio_api.agents.test_router", "-v"])
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):
         calls = []
@@ -877,16 +875,44 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertIsNone(error)
 
     def test_run_process_collects_expected_failures_and_unexpected_successes(self):
-        command = [sys.executable, "-c",
-                   "print('test_known (__main__.Suite.test_known) ... expected failure'); "
-                   "print('test_fixed (__main__.Suite.test_fixed) ... unexpected success')"]
-        with contextlib.redirect_stdout(io.StringIO()):
-            returncode, error, expected, unexpected = RUNNER.run_process(
-                command, ROOT, 5, os.environ.copy())
+        with tempfile.TemporaryDirectory(prefix="server-runner-results-") as temp:
+            result_file = Path(temp) / "outcomes.jsonl"
+            environment = os.environ.copy()
+            environment["CODEX_SERVER_TEST_RESULT_FILE"] = str(result_file)
+            child = (
+                "import json,os; "
+                "print('stderr/stdout interleaving: expected failure'); "
+                "f=open(os.environ['CODEX_SERVER_TEST_RESULT_FILE'],'w'); "
+                "f.write(json.dumps({'id':'__main__.Suite.test_known','outcome':'expected_failure'})+'\\n'); "
+                "f.write(json.dumps({'id':'__main__.Suite.test_fixed','outcome':'unexpected_success'})+'\\n'); "
+                "f.close()"
+            )
+            with contextlib.redirect_stdout(io.StringIO()):
+                returncode, error, expected, unexpected = RUNNER.run_process(
+                    [sys.executable, "-c", child], ROOT, 5, environment)
         self.assertEqual(returncode, 0)
         self.assertIsNone(error)
         self.assertEqual(expected, ["Suite.test_known"])
         self.assertEqual(unexpected, ["Suite.test_fixed"])
+
+    def test_interleaved_human_output_cannot_change_structured_outcomes(self):
+        records = "\n".join((
+            json.dumps({"id": "pkg.Suite.test_ok", "outcome": "passed"}),
+            json.dumps({"id": "pkg.Suite.test_failed", "outcome": "failed"}),
+            json.dumps({"id": "pkg.Suite.test_error", "outcome": "error"}),
+            json.dumps({"id": "pkg.Suite.test_skipped", "outcome": "skipped"}),
+            json.dumps({"id": "pkg.Suite.test_known", "outcome": "expected_failure"}),
+            json.dumps({"id": "pkg.Suite.test_fixed", "outcome": "unexpected_success"}),
+        ))
+        expected = (["Suite.test_known"], ["Suite.test_fixed"], {
+            "passed": 1, "failed": 1, "error": 1, "skipped": 1,
+            "expected_failure": 1, "unexpected_success": 1,
+        })
+        self.assertEqual(RUNNER._parse_test_outcomes(records), expected)
+        for human_output in (
+                "test_known ... ok\\nuncaught thread traceback ... expected failure",
+                "garbage test_fixed ... skipped\\nrandom stderr output"):
+            self.assertEqual(RUNNER._parse_test_outcomes(records, human_output), expected)
 
     def test_successful_exit_kills_leftover_owned_process_group(self):
         with tempfile.TemporaryDirectory(prefix="server-runner-success-cleanup-") as temp:
