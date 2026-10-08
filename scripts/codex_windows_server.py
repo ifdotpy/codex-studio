@@ -75,7 +75,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
     supervisor_log_path = state / "supervisor.log"
     backend_log_path = state / "backend.log"
     supervisor_script = root / "scripts" / "codex_process_supervisor.py"
-    backend_script = root / "scripts" / "codex_canvas.py"
+    backend_script = root / "scripts" / "codex_windows_backend.py"
     stopping = threading.Event()
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     for sig in previous_handlers:
