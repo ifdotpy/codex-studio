@@ -126,13 +126,6 @@
   overflow-wrap: anywhere;
   line-height: 1.5;
 }
-.dictation-transcript {
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  max-height: 140px;
-  overflow-y: auto;
-}
 .dictation-actions {
   display: flex;
   gap: 6px;

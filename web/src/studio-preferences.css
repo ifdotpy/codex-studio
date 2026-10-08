@@ -125,13 +125,6 @@
   gap: 12px;
 }
 
-.studio-settings-panel .settings-help {
-  margin: -5px 0 2px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .studio-settings-panel .account-picker {
   width: 100%;
 }
