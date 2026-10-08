@@ -163,6 +163,7 @@ test("account project ui", async ({ browser: _browser }) => {
     runtime: {
       agents,
       projects,
+      projectOrganizationVersion: 1,
       rooms: [],
       complaints: [],
       requests: [],
@@ -562,6 +563,22 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(agents.find((a) => a.id === "empty").accountKey, "work");
     const newChat = async (name) => {
       await closeSettings();
+      if (name.startsWith("folder ")) {
+        const project = page.locator('[data-project-path="/projects/Lumina"]');
+        const toggle = project.locator(
+          ":scope > .project-tree-heading > .project-tree-toggle",
+        );
+        if ((await toggle.getAttribute("aria-expanded")) === "false")
+          await toggle.click();
+        const folderHeading = page.locator(
+          '[data-folder-id="review"] > .project-tree-heading',
+        );
+        await folderHeading.hover();
+        await folderHeading
+          .getByRole("button", { name: `New chat in ${name}`, exact: true })
+          .click();
+        return;
+      }
       const button = page.getByRole("button", {
         name: `New chat in ${name}`,
         exact: true,
@@ -836,7 +853,12 @@ test("account project ui", async ({ browser: _browser }) => {
       assert.equal(agents.filter((item) => item.id === request.id).length, 1);
     const pendingKey = `codex-pending-creation:${evidence}:request:external`;
     await page.evaluate((key) => {
-      const value = JSON.stringify({ id: "external", cwd: "/projects/Lumina" });
+      const value = JSON.stringify({
+        id: "external",
+        previous: null,
+        reuse_empty: false,
+        cwd: "/projects/Lumina",
+      });
       localStorage.setItem(key, value);
       window.dispatchEvent(
         new StorageEvent("storage", { key, newValue: value }),

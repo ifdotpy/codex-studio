@@ -792,8 +792,15 @@ function entityValuesFromSnapshot(snapshot) {
       "updated",
       "accountKey",
       "accountRevision",
+      "accountKeys",
+      "organizationRevision",
+      "peerTeamsRevision",
+      "folders",
+      "peerTeams",
       "workerBaseRef",
       "workerBaseRevision",
+      "workerEnvironment",
+      "workerEnvironmentRevision",
     ]),
   );
   append("request", runtime.requests);
