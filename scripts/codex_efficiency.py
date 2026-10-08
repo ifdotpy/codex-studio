@@ -368,6 +368,8 @@ class EfficiencyMixin:
             return result
 
     def model_tool_result(self: "_EfficiencyHost", actor: str, key: str, result: dict[str, "Any"]) -> dict[str, "Any"]:
+        from codex_server_exec import expire_tool_output
+        result = expire_tool_output(result)
         from codex_agent_modes import tool_mode_context
         result = tool_mode_context(self, actor, result, key)  # type: ignore[arg-type]  # typed-narrowing: host protocol supplies runtime arguments
         content = result.get('contentItems', [])
@@ -460,7 +462,8 @@ class EfficiencyMixin:
                 if row is None:
                     raise ValueError('Result is not available yet. Do not repeat the operation.')
                 from codex_payloads import resolve_result, state_root
-                result = resolve_result(state_root(self), row[0])
+                from codex_server_exec import expire_tool_output
+                result = expire_tool_output(resolve_result(state_root(self), row[0]))
                 text = '\n'.join(c.get('text', '') for c in result.get('contentItems', []) if c.get('type') == 'inputText')
             offset = args.get('offset', 0)
             if type(offset) is not int or offset < 0 or offset > len(text):
@@ -476,6 +479,7 @@ class EfficiencyMixin:
             return {'outputRef': key, 'success': result.get('success'), 'outcome': receipt['outcome'],
                     'offset': offset, 'nextOffset': end if end < len(text) else None,
                     'totalChars': len(text), 'text': excerpt,
+                    **({'outputExpiresAt': result['serverOutputExpiresAt']} if 'serverOutputExpiresAt' in result else {}),
                     **({'source': 'saved_native_output', 'truncated': bool(native.get('truncated')),
                         'commandStatus': payload.get('status'), 'exitCode': payload.get('exitCode')} if native else {})}
 
