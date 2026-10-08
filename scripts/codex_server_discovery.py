@@ -24,6 +24,7 @@ PROBE_TIMEOUT = 5
 PASS_TIMEOUT = 90
 CONCURRENCY = 4
 MAX_CANDIDATES = 64
+DISCOVERY_PORTS = (443, 8443)
 
 
 class ServerDiscovery:
@@ -253,12 +254,15 @@ class ServerDiscovery:
                 if (not isinstance(peer, dict) or peer.get("Online") is not True or peer.get("Tags")
                         or peer.get("UserID") != node.get("UserID") or not isinstance(peer.get("DNSName"), str)):
                     continue
-                try:
-                    origin = access._origin("https://" + peer["DNSName"].rstrip(".").lower())
-                except access.AccessError:
-                    continue
-                if origin != self.service.public_origin:
-                    candidates.add(origin)
+                hostname = peer["DNSName"].rstrip(".").lower()
+                for port in DISCOVERY_PORTS:
+                    authority = hostname if port == 443 else f"{hostname}:{port}"
+                    try:
+                        origin = access._origin("https://" + authority)
+                    except access.AccessError:
+                        continue
+                    if origin != self.service.public_origin:
+                        candidates.add(origin)
             # Formerly known peers that disappeared or went offline retain their identity.
             with self.service.runtime.read_db() as db:
                 origins = [json.loads(row[0])["origin"] for row in db.execute("SELECT record FROM runtime_access_discovered")]

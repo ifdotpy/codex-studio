@@ -15,13 +15,16 @@ class WorktreeNeedsReview(ValueError):
 def _run_checkout(command, *, timeout, check, capture_output, text):
     """Stop Git's checkout workers too when the deadline expires."""
     with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                          text=text, start_new_session=True) as process:
+                          text=text, start_new_session=os.name != 'nt') as process:
         try:
             output, error = process.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
+                if os.name == 'nt':
+                    process.kill()
+                else:
+                    os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
                 pass
             process.communicate()
             raise subprocess.TimeoutExpired(command, timeout) from None

@@ -1,19 +1,18 @@
 # Windows server and worker environments
 
-Status: design for phase 1, 2026-10-08. This document defines a Windows server
-that runs workers natively or in Windows Subsystem for Linux 2 (WSL2). The
-Windows machine is `kukuka-win`. Phase 1 does not access it. Phase 2 requires
-separate approval and SSH access.
+Status: implementation record, 2026-10-08. The Windows machine is
+`kukuka-win`. It runs a native Windows Studio server beside a separate Studio
+Linux server inside Windows Subsystem for Linux 2 (WSL2).
 
 ## Decisions
 
 1. The Windows server runs without the desktop application. A paired Studio UI
    connects to its loopback API through Tailscale Serve and the existing pairing
    protocol in [multiple Studio servers](multi-server.md).
-2. `environment: "host"` selects native Windows on a Windows server. A new
-   `environment: "wsl"` selects a WSL2 distribution on that server. The
-   existing `host` default stays unchanged. Existing `linux` remains the Linux
-   VM choice on macOS.
+2. The selected Studio server determines the worker environment. The native
+   Windows server runs Windows workers. The separate WSL2 Studio server runs
+   Linux workers. The existing `host` default stays unchanged. Existing `linux`
+   remains the Linux VM choice on macOS.
 3. Native Windows workers use Git worktrees. Image workspaces remain unsupported
    on Windows. Linux VM workspaces remain unsupported on Windows.
 4. WSL2 workers use Linux builds of Codex and Claude Code. They use the existing
@@ -27,8 +26,8 @@ separate approval and SSH access.
 
 ## Server shape
 
-Install two Windows services under one dedicated, non-administrator Windows
-account:
+The target design uses two Windows services under one dedicated,
+non-administrator Windows account:
 
 | Service                 | Role                                                                                                                                                     |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -57,6 +56,30 @@ to run at boot and without an interactive logon is a fallback only if a tested
 service host cannot be packaged. It must use the same account and recovery
 rules. A task must not start a second backend when the existing state directory
 is occupied.
+
+## kukuka-win deployment
+
+The current deployment runs under the existing `IGOS3` account. A Scheduled
+Task starts the server at logon with a limited interactive token. It uses the
+Python environment and source checkout under `C:\Users\IGOS3\studio-dev`.
+Installer files and server state live under `%LOCALAPPDATA%\CodexStudio`.
+
+The Python entrypoint starts the process supervisor once, then starts the API
+on `127.0.0.1:4630`. It restarts the API after a process exit. The supervisor
+keeps native workers and reattaches them after each API restart. The task
+restarts the entrypoint after a failure. The API and supervisor use the same
+`%LOCALAPPDATA%\CodexStudio\state` directory.
+
+Tailscale Serve keeps the WSL2 Studio server on HTTPS port 443, which proxies
+to `127.0.0.1:4720`. The native Windows server uses HTTPS port 8443, which
+proxies to `127.0.0.1:4630`. Its public origin is
+`https://kukuka-win.tailf00fa0.ts.net:8443`. Discovery probes same-owner
+Tailscale nodes on ports 443 and 8443. It records each origin with its port.
+
+The native server discovers Codex and Claude through Windows executable
+discovery, including `.cmd` shims. Native implementers use Git worktrees under
+the Windows repository. They do not use image workspaces or the WSL2 server's
+Linux workspace.
 
 ## POSIX dependencies and port plan
 

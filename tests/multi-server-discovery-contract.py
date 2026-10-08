@@ -22,7 +22,7 @@ fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_federation import _crypto, _sign
 from codex_multi_server import request_bytes
-from codex_server_discovery import AUTO_PAIR_PATH, IDENTITY_PATH
+from codex_server_discovery import AUTO_PAIR_PATH, DISCOVERY_PORTS, IDENTITY_PATH
 
 
 class DiscoveryContract(unittest.TestCase):
@@ -298,6 +298,28 @@ print(json.dumps(value))
         self.assertEqual(total, 64)
         self.assertGreater(peak, 1)
         self.assertLessEqual(peak, 4)
+
+    def test_discovery_probes_only_fixed_ports_for_same_owner_peers(self):
+        self.a.local({"action": "settings", "autoPair": False})
+        peer_key = self.b.runtime.paired_access()._keys()["publicKey"]
+        probed = []
+
+        def probe(origin, *, timeout):
+            probed.append(origin)
+            return {"protocol": 1, "serverId": self.b.server_id, "label": "Windows",
+                    "origin": origin, "publicKey": peer_key, "tailscaleUser": fixture.OWNER,
+                    "autoPair": False}
+
+        with patch.object(self.a.runtime.paired_access().discovery(), "probe", side_effect=probe):
+            self.discover()
+
+        expected = {
+            "https://a.example.ts.net:8443",
+            *("https://b.example.ts.net" if port == 443 else f"https://b.example.ts.net:{port}"
+              for port in DISCOVERY_PORTS),
+        }
+        self.assertEqual(set(probed), expected)
+        self.assertEqual(len(probed), len(expected))
 
 
 if __name__ == "__main__":
