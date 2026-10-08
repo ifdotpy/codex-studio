@@ -383,6 +383,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         () => !document.querySelector("#send-state").textContent,
       );
       await stable("sent and draft cleared");
+      const postFirstSendSteady = await boxes();
       const nonEmptyTranscript = structuredClone(transcript);
       nonEmptyTranscript.items = [
         {
@@ -439,7 +440,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         .waitFor();
       await waitForStableGeometry(comparisonPage);
       const nonEmptyChat = await boxes(comparisonPage);
-      for (const [selector, box] of Object.entries(firstSend))
+      for (const [selector, box] of Object.entries(postFirstSendSteady))
         for (const key of width === 390
           ? ["y", "width", "height"]
           : ["x", "y", "width", "height"])
