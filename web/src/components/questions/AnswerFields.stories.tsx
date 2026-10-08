@@ -15,6 +15,7 @@ export const ChoicesAndFreeText: Story = {
     questions: [
       {
         id: "approach",
+        isOther: true,
         question: "Which approach should I use?",
         options: [
           { label: "Small change", description: "Keep the patch focused." },
@@ -22,16 +23,16 @@ export const ChoicesAndFreeText: Story = {
         ],
       },
     ],
-    values: { approach: "Small change" },
+    values: { approach: { selected: ["Small change"], other: "" } },
     onChange: fn(),
   },
   play: async ({ canvasElement, args }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /Small change/ }));
-    await expect(args.onChange).toHaveBeenCalledWith(
-      "approach",
-      "Small change",
-    );
+    await expect(args.onChange).toHaveBeenCalledWith("approach", {
+      selected: ["Small change"],
+      other: "",
+    });
   },
 };
 
