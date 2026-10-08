@@ -38,8 +38,32 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
   });
   page.setDefaultTimeout(15_000);
   const errors = [];
+  const pendingReads = new Set();
+  const completedTranscripts = new Set();
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname.startsWith("/api/") && url.pathname !== "/api/sync/stream")
+      pendingReads.add(request);
+  });
+  page.on("requestfinished", (request) => {
+    pendingReads.delete(request);
+    const url = new URL(request.url());
+    if (url.pathname === "/api/sync/pull")
+      completedTranscripts.add(url.searchParams.get("scope"));
+  });
+  page.on("requestfailed", (request) => pendingReads.delete(request));
   page.on("pageerror", (error) => errors.push(error.message));
   await page.addInitScript(() => {
+    window.resourceFrames = [];
+    const NativeEventSource = window.EventSource;
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("resources", (event) => {
+          window.resourceFrames.push(JSON.parse(event.data));
+        });
+      }
+    };
     window.renderCounts = {};
     window.__studioPromptComposerRenderProbe = (component, id) => {
       const key = id ? `${component}:${id}` : component;
@@ -61,6 +85,7 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     ).toContainText(name);
   };
   const counts = () => page.evaluate(() => ({ ...window.renderCounts }));
+  const frames = () => page.evaluate(() => window.resourceFrames);
   const reset = () =>
     page.evaluate(() => {
       window.renderCounts = {};
@@ -74,11 +99,58 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await page
       .locator("#message")
       .fill("Keep this draft while other agents update.");
-    await page.waitForTimeout(700);
+    // The idle prefetch pump mounts transcript subscriptions after 1000 ms.
+    // Wait for their stream baseline and completed reads before measuring
+    // entity changes. A sleep can count startup reconciliation as a rename.
+    await expect
+      .poll(async () =>
+        (await frames()).some(
+          (event) =>
+            event.reason === "initial" &&
+            snapshot.threads.every((agent) =>
+              event.resources.some(
+                (resource) =>
+                  resource.kind === "transcript" &&
+                  resource.agentId === agent.id,
+              ),
+            ),
+        ),
+      )
+      .toBe(true);
+    await expect
+      .poll(() =>
+        snapshot.threads.every((agent) =>
+          completedTranscripts.has(`transcript:${agent.id}`),
+        ),
+      )
+      .toBe(true);
+    await expect.poll(() => pendingReads.size).toBe(0);
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
     await reset();
+    await page.waitForTimeout(200);
+    const idle = await counts();
+    expect(idle.conversation || 0).toBe(0);
+    for (const worker of workers)
+      expect(idle[`team-row:${worker.id}`] || 0).toBe(0);
+    await reset();
+    const firstMeasuredFrame = (await frames()).length;
     for (let i = 0; i < 6; i++) await rename(other, `Other changed ${i}`);
     const unrelated = await counts();
-    console.log(JSON.stringify({ unrelated }));
+    console.log(JSON.stringify({ idle, unrelated }));
+    // No baseline or reconnect can explain renders in this measured interval.
+    const measuredFrames = (await frames()).slice(firstMeasuredFrame);
+    expect(measuredFrames.length).toBeGreaterThan(0);
+    for (const frame of measuredFrames) {
+      expect(frame.reason).toBe("change");
+      expect(
+        frame.resources.every((resource) => resource.kind === "state"),
+      ).toBe(true);
+    }
     expect(unrelated.conversation || 0).toBe(0);
     expect(unrelated[`prompt-composer:${lead.id}`] || 0).toBe(0);
     expect(unrelated[`turn-history:${lead.id}`] || 0).toBe(0);
@@ -89,16 +161,6 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await expect(page.locator("#message")).toHaveValue(
       "Keep this draft while other agents update.",
     );
-    await page.context().setOffline(true);
-    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
-    await expect(page.locator("#error")).toContainText("Offline");
-    await expect(page.locator("#message")).toHaveValue(
-      "Keep this draft while other agents update.",
-    );
-    await page.context().setOffline(false);
-    await page.evaluate(() => window.dispatchEvent(new Event("online")));
-    await expect(page.locator("#error")).toHaveCount(0);
-
     await reset();
     await rename(workers[0], "Worker changed");
     const affected = await counts();
@@ -116,6 +178,17 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await expect(page.locator("#message")).toHaveValue(
       "Keep this draft while other agents update.",
     );
+    // Reconnect intentionally refreshes catalogs and transcript resources.
+    // Check that behavior after the isolated entity render measurements.
+    await page.context().setOffline(true);
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
+    await expect(page.locator("#error")).toContainText("Offline");
+    await expect(page.locator("#message")).toHaveValue(
+      "Keep this draft while other agents update.",
+    );
+    await page.context().setOffline(false);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect(page.locator("#error")).toHaveCount(0);
     await page.locator(`[data-worker="${workers[0].id}"]`).click();
     await expect(page.locator("#conversation-title")).toContainText(
       "Worker changed",
