@@ -69,7 +69,9 @@ def monitor_records(db: "sqlite3.Connection", root: str | None = None) -> list["
         params * (1 + len(MONITOR_TERMINAL_STATUSES)),
     ).fetchall()
     records = _decode_records("monitor", rows)
-    owners = sorted({record["agent"] for record in records if isinstance(record.get("agent"), str)})
+    owners = sorted({
+        owner for record in records if isinstance(owner := record.get("agent"), str)
+    })
     active_agents: set[str] = set()
     for start in range(0, len(owners), 500):
         batch = owners[start:start + 500]
