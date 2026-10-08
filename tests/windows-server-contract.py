@@ -76,6 +76,43 @@ class WindowsServerContract(unittest.TestCase):
                 "port": 4630, "publicOrigin": "https://kukuka-win.tailf00fa0.ts.net:8443",
             })
 
+    def test_supervisor_pipe_starts_from_the_entrypoint_process(self):
+        from codex_process_supervisor import status
+
+        with tempfile.TemporaryDirectory(prefix="studio pipe Ω ") as temporary:
+            state = Path(temporary) / "state Ω"
+            executable, environment = _base_python()
+            environment["CODEX_AGENTS_STATE_DIR"] = str(state)
+            log_path = Path(temporary) / "supervisor.log"
+            with log_path.open("ab") as output:
+                process = subprocess.Popen(
+                    [executable, "-B", str(ROOT / "scripts" / "codex_process_supervisor.py"),
+                     "--state", str(state)],
+                    cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=output,
+                    stderr=subprocess.STDOUT, close_fds=True,
+                )
+                try:
+                    def healthy():
+                        try:
+                            return status(state)
+                        except (OSError, RuntimeError, ValueError):
+                            return None
+
+                    result = _wait_until(healthy)
+                    self.assertEqual(result["stateDir"], str(state.resolve()))
+                except AssertionError as error:
+                    output.flush()
+                    log_path.seek(0)
+                    detail = log_path.read_text(encoding="utf-8", errors="replace")
+                    raise AssertionError(f"{error}; supervisor log: {detail}") from error
+                finally:
+                    process.terminate()
+                    try:
+                        process.wait(timeout=10)
+                    except subprocess.TimeoutExpired:
+                        process.kill()
+                        process.wait(timeout=5)
+
     def test_backend_restart_keeps_supervisor_process(self):
         with tempfile.TemporaryDirectory(prefix="studio restart Ω ") as temporary:
             root = Path(temporary)

@@ -726,7 +726,7 @@ def main():
             return
         canvas = Canvas()
         # Bind first so a port collision cannot disturb an existing runtime.
-        server = make_server(canvas, args.port, unix_socket=True)
+        server = make_server(canvas, args.port, unix_socket=os.name != "nt")
         if shutdown.requested():
             return
         if server.unix_server:
