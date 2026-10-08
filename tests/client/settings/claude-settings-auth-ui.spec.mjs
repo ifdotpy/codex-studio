@@ -4,7 +4,55 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve, join } from "node:path";
 
-import { test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
+
+const syncWorkspaceId = "1234567890abcdef1234567890abcdef";
+
+async function fulfillSyncFixture(route, url) {
+  if (url.pathname === "/api/sync/identity")
+    return route.fulfill({
+      headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      json: { workspaceId: syncWorkspaceId, syncProtocol: 2 },
+    });
+  if (url.pathname === "/api/sync/pull")
+    return route.fulfill({
+      json: {
+        workspaceId: syncWorkspaceId,
+        generation: 1,
+        documents: [],
+        checkpoint: { seq: 0 },
+        maxSeq: 0,
+        initialHigh: 0,
+      },
+    });
+  if (url.pathname === "/api/sync/stream") {
+    const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+    return route.fulfill({
+      contentType: "text/event-stream",
+      body: apiSchemaHandshakeSse(
+        `event: resources\ndata: ${JSON.stringify({
+          protocol: 3,
+          workspaceId: syncWorkspaceId,
+          epoch: "fixture",
+          revision: 1,
+          reason: "initial",
+          resources,
+          resourceVersions: resources.map((resource) => ({
+            resource,
+            revision: 1,
+          })),
+        })}\n\n`,
+      ),
+    });
+  }
+  return false;
+}
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -21,7 +69,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("claude settings auth ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const root = resolve(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -75,6 +123,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
     const page = await browser.newPage({
       viewport: { width: 390, height: 844 },
     });
+    installApiSchemaFixtureHeaders(page);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
     let authenticated = false;
@@ -87,6 +136,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       const req = route.request();
       const url = new URL(req.url());
       const body = req.method() === "POST" ? req.postDataJSON() : {};
+      if (await fulfillSyncFixture(route, url)) return;
       if (url.pathname === "/api/claude/session") {
         assert.equal(body.id, "chat");
         if (body.action !== "state") mutations.push(body);
@@ -188,10 +238,12 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
 
     // A chat without a native thread can return stored settings after sign-out.
     const emptyChat = await browser.newPage();
+    installApiSchemaFixtureHeaders(emptyChat);
     const emptyChatRequests = [];
     await emptyChat.route("**/api/**", async (route) => {
       const req = route.request();
       const url = new URL(req.url());
+      if (await fulfillSyncFixture(route, url)) return;
       if (url.pathname === "/api/claude/session") {
         emptyChatRequests.push(req.postDataJSON());
         return route.fulfill({

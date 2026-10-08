@@ -19,7 +19,7 @@ import { test } from "../playwright.mjs";
 import { setupControl, setupToggle } from "../../setup-controls.mjs";
 
 test("Daybreak settings", async ({ context }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   // Exercise the real settings component without a backend or model request.
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
@@ -27,6 +27,10 @@ test("Daybreak settings", async ({ context }) => {
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-daybreak-settings-"));
   const entry = join(root, "daybreak-settings-fixture.tsx");
+  const schemaHeaders = JSON.stringify({
+    "Content-Type": "application/json",
+    [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+  });
   const server = await createServer({
     configFile: false,
     root,
@@ -78,16 +82,16 @@ test("Daybreak settings", async ({ context }) => {
   window.calls=[];window.fail=null;window.reply=null;window.refreshCount=0;window.retries=0;
   const nativeFetch=window.fetch;
   window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;
-    if(url.startsWith('/api/models'))return new Response(JSON.stringify({data:window.models}),{headers:{'Content-Type':'application/json'}});
+    if(url.startsWith('/api/models'))return new Response(JSON.stringify({data:window.models}),{headers:${schemaHeaders}});
     if(url!='/api/conversation')return nativeFetch(url,options);
     const request=JSON.parse(options.body);window.calls.push(request);
     if(window.hold)await new Promise(resolve=>window.release=resolve);
     if(window.fail==='network')throw new TypeError('Connection lost');
-    if(window.fail==='rejected')return new Response(JSON.stringify({error:'Mode not supported'}),{status:422});
+    if(window.fail==='rejected')return new Response(JSON.stringify({error:'Mode not supported'}),{status:422,headers:${schemaHeaders}});
     const values=request.worker_defaults||request;
     const settings={model:values.model,effort:values.effort,fastMode:values.fast_mode,daybreakEnabled:values.daybreak_enabled};
     const canonical=window.reply||{...window.agent,...(request.worker_defaults?{workerDefaults:settings}:request.next_turn?{pendingSettings:settings,pendingSettingsAccountKey:window.agent.accountKey}:settings)};
-    return new Response(JSON.stringify(canonical),{status:200,headers:{'Content-Type':'application/json'}});
+    return new Response(JSON.stringify(canonical),{status:200,headers:${schemaHeaders}});
   };
   function Fixture(){
     const[agent,setAgent]=useState(initial),[models,setModels]=useState(initialModels),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);
@@ -114,6 +118,7 @@ test("Daybreak settings", async ({ context }) => {
       );
       return route.fulfill({
         contentType: "text/event-stream",
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         body: apiSchemaHandshakeSse(
           `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
         ),
@@ -131,7 +136,9 @@ test("Daybreak settings", async ({ context }) => {
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
-    await page.waitForFunction(() => !!window.reset);
+    await page.waitForFunction(() => !!window.reset, undefined, {
+      timeout: 5_000,
+    });
     const reset = async (options) => {
       await page.evaluate((options) => {
         localStorage.clear();
@@ -324,7 +331,9 @@ test("Daybreak settings", async ({ context }) => {
     );
     assert.match(await page.locator("body").innerText(), /next turn/i);
     await page.reload();
-    await page.waitForFunction(() => !!window.reset);
+    await page.waitForFunction(() => !!window.reset, undefined, {
+      timeout: 5_000,
+    });
     await page
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();

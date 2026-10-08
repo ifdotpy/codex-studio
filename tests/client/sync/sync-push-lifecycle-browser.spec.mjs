@@ -1,5 +1,11 @@
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Sync Push Lifecycle Browser", async ({
   browser: _testBrowser,
@@ -45,6 +51,7 @@ test("Sync Push Lifecycle Browser", async ({
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
         res.setHeader("Content-Type", "application/json");
+        res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") res.end("<!doctype html>");
@@ -55,7 +62,10 @@ test("Sync Push Lifecycle Browser", async ({
         else json({ workspaceId });
       } else if (url.pathname === "/api/sync/stream") {
         opened++;
-        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        });
         res.write(apiSchemaHandshakeSse());
         streams.add(res);
         res.on("close", () => streams.delete(res));

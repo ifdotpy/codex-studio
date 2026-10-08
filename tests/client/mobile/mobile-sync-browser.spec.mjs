@@ -102,6 +102,7 @@ test("mobile sync browser", async ({ page }) => {
       pullCursors.push({ scope, after });
       const entityScope = scope === "state:entities:v1";
       return route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
           workspaceId,
           documents:
@@ -138,7 +139,10 @@ test("mobile sync browser", async ({ page }) => {
       });
     });
     await page.route("**/api/sync/drafts", (route) =>
-      route.fulfill({ json: [] }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: [],
+      }),
     );
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,

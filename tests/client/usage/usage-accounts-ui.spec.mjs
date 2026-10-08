@@ -5,7 +5,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  test,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -22,7 +27,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 });
 
 test("usage accounts ui", async ({ browser: _browser }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -95,6 +100,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
         configureServer(vite) {
           vite.middlewares.use((req, res, next) => {
             if (req.url?.startsWith("/api/sync/identity")) {
+              res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
               res.setHeader("Content-Type", "application/json");
               res.end(JSON.stringify({ workspaceId }));
               return;
@@ -112,6 +118,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
                 "Content-Type": "text/event-stream",
                 "Cache-Control": "no-cache",
                 Connection: "keep-alive",
+                [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
               });
               res.write(apiSchemaHandshakeSse());
               streams.add(stream);
@@ -124,6 +131,7 @@ test("usage accounts ui", async ({ browser: _browser }) => {
               return;
             }
             if (req.url?.startsWith("/api/")) {
+              res.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
               res.setHeader("Content-Type", "application/json");
               if (req.url.startsWith("/api/session-cost")) {
                 reads.sessionCost++;

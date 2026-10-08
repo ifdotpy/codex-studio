@@ -4,10 +4,14 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 
 test("Native runtime status", async ({ context }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
 
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(join(root, "package.json"));
@@ -133,9 +137,15 @@ export function watchResourceChanges(resource,callback){let group=subscribers.ge
       );
       if (new URL(route.request().url()).pathname === "/api/desktop") {
         reads++;
-        return route.fulfill({ json: body });
+        return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          json: body,
+        });
       }
-      return route.fulfill({ json: { accounts: [], data: null } });
+      return route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: { accounts: [], data: null },
+      });
     });
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
@@ -151,8 +161,8 @@ export function watchResourceChanges(resource,callback){let group=subscribers.ge
       name: "Provider versions",
       exact: true,
     });
-    await panel.waitFor();
-    await providerPanel.waitFor();
+    await panel.waitFor({ timeout: 5_000 });
+    await providerPanel.waitFor({ timeout: 5_000 });
     assert.match(await panel.innerText(), /0\.116\.0/);
     assert.match(
       await providerPanel.innerText(),

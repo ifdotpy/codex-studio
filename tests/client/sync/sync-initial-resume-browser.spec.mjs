@@ -1,7 +1,12 @@
 // A partial first page keeps its original baseline across a browser restart.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 
 test("sync initial resume browser", async ({ page }) => {
   const { createServer } = await import(
@@ -37,7 +42,10 @@ test("sync initial resume browser", async ({ page }) => {
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: { workspaceId },
+      }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -49,6 +57,7 @@ test("sync initial resume browser", async ({ page }) => {
       const query = new URL(route.request().url()).searchParams;
       pulls.push(Object.fromEntries(query));
       return route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
           workspaceId,
           documents: [

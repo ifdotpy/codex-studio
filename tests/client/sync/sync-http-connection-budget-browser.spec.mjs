@@ -1,4 +1,9 @@
-import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 // Actual HTTP connection capacity with two renderer windows and slow history.
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
@@ -11,7 +16,7 @@ test("Sync http connection budget browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -94,7 +99,10 @@ test("Sync http connection budget browser", async ({
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
-        res.writeHead(200, { "Content-Type": "application/json" });
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        });
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") {
@@ -121,6 +129,7 @@ test("Sync http connection budget browser", async ({
           res.writeHead(200, {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
+            [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
           });
           res.write(apiSchemaHandshakeSse());
           res.write(": connected\n\n");
@@ -239,12 +248,12 @@ test("Sync http connection budget browser", async ({
     await pages[0].waitForFunction(
       () => window.snapshot.error || window.snapshot.data.token,
       undefined,
-      { timeout: 20000 },
+      { timeout: 5000 },
     );
     await Promise.race([
       pages[0].evaluate(() => window.refresh),
       new Promise((_, reject) =>
-        setTimeout(() => reject(new Error("refresh did not terminate")), 18000),
+        setTimeout(() => reject(new Error("refresh did not terminate")), 5000),
       ),
     ]);
     const elapsedMs = Date.now() - started;

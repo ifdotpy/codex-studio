@@ -2,7 +2,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -58,7 +63,10 @@ test("sync reset browser", async ({ browser: _browser }) => {
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: { workspaceId },
+      }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -67,7 +75,10 @@ test("sync reset browser", async ({ browser: _browser }) => {
       }),
     );
     await page.route("**/api/sync/drafts", (route) =>
-      route.fulfill({ json: [] }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: [],
+      }),
     );
     await page.route("**/api/sync/pull?**", async (route) => {
       const url = new URL(route.request().url());
@@ -81,10 +92,12 @@ test("sync reset browser", async ({ browser: _browser }) => {
       });
       if (scope === "drafts")
         return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
           json: { workspaceId, documents: [], checkpoint: { seq: 0 } },
         });
       if (after === 950)
         return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
           json: { workspaceId, reset: true, floor: 1000, maxSeq: 1000 },
         });
       if (after === 0) {
@@ -102,6 +115,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
           };
         });
         return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
           json: {
             workspaceId,
             documents,
@@ -116,6 +130,7 @@ test("sync reset browser", async ({ browser: _browser }) => {
         await secondPageRelease;
         const id = "agent-500";
         return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
           json: {
             workspaceId,
             documents: [

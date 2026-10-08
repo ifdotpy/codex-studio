@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   syncIdentityFixture,
   legacySnapshotRoute,
   test,
@@ -98,7 +100,10 @@ test("Team Motion Ui", async ({
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identityResponse }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: identityResponse,
+      }),
     );
     await page.route("**/api/sync/pull?*", async (route) => {
       const response = await route.fetch();
@@ -301,10 +306,6 @@ test("Team Motion Ui", async ({
       ),
     );
     assert.deepEqual(stateRequests, []);
-    await page.screenshot({
-      path: join(root, "team-motion.png"),
-      animations: "disabled",
-    });
     console.log(
       JSON.stringify({
         passed: true,

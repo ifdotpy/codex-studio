@@ -1,4 +1,8 @@
-import { test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
@@ -9,7 +13,7 @@ test("Radio browser", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const root = resolve(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -59,6 +63,7 @@ test("Radio browser", async ({
     const requests = [];
     await page.route("**/api/agent-chat?*", (r) =>
       r.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
           messages: [
             {
@@ -99,13 +104,22 @@ test("Radio browser", async ({
         return r.abort("failed");
       }
       if (mode === "reject")
-        return r.fulfill({ status: 409, json: { error: "Revision changed" } });
-      return r.fulfill({ json: { room: { id: "radio:t" } } });
+        return r.fulfill({
+          status: 409,
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          json: { error: "Revision changed" },
+        });
+      return r.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: { room: { id: "radio:t" } },
+      });
     });
     await page.goto(
       `http://127.0.0.1:${server.httpServer.address().port}/check`,
     );
-    await page.getByText("Second reply with a different view.").waitFor();
+    await page
+      .getByText("Second reply with a different view.")
+      .waitFor({ timeout: 5_000 });
     assert.deepEqual(
       await page
         .locator(".radio-message")
@@ -262,14 +276,10 @@ test("Radio browser", async ({
           ),
         true,
       );
-      await page.screenshot({
-        path: join(tmpdir(), `studio-radio-${width}.png`),
-        fullPage: true,
-      });
     }
     assert.deepEqual(errors, []);
     console.log(
-      `PASS radio UI: ordered transcript, timestamps, durable exact retry, acknowledged refresh, rejected revision, pass, stop, open and responsive layout. Screenshots ${tmpdir()}/studio-radio-{1100,375}.png`,
+      "PASS radio UI: ordered transcript, timestamps, durable exact retry, acknowledged refresh, rejected revision, pass, stop, open and responsive layout.",
     );
   } finally {
     await Promise.all(

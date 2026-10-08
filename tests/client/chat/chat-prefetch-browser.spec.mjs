@@ -1,21 +1,31 @@
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 // Real RxDB projection persistence and two browser tabs, with an isolated API.
 import assert from "node:assert/strict";
+import { mkdtemp, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 test("Chat prefetch browser", async ({
   browser: testBrowser,
   context: runnerContext,
 }) => {
-  test.setTimeout(300_000);
+  test.setTimeout(60_000);
   const { createServer } = await import(
     new URL(
       "../../../web/node_modules/vite/dist/node/index.js",
       import.meta.url,
     )
   );
+  const cacheDir = await mkdtemp(join(tmpdir(), "studio-chat-prefetch-vite-"));
   const streams = new Set();
   const server = await createServer({
     configFile: false,
+    cacheDir,
     optimizeDeps: { force: true },
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
@@ -64,7 +74,10 @@ test("Chat prefetch browser", async ({
         route.fulfill({ contentType: "text/html", body: "<!doctype html>" }),
       );
       await page.route("**/api/sync/identity", (route) =>
-        route.fulfill({ json: { workspaceId } }),
+        route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          json: { workspaceId },
+        }),
       );
       await page.route("**/api/sync/pull?*", async (route) => {
         const url = new URL(route.request().url());
@@ -77,6 +90,7 @@ test("Chat prefetch browser", async ({
           running--;
           return route.fulfill({
             status: 500,
+            headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
             json: { error: "Temporary fixture failure" },
           });
         }
@@ -92,7 +106,10 @@ test("Chat prefetch browser", async ({
           await hold;
         }
         try {
-          await route.fulfill({ json: result });
+          await route.fulfill({
+            headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+            json: result,
+          });
         } finally {
           running--;
         }
@@ -156,7 +173,8 @@ test("Chat prefetch browser", async ({
       "Completed background work releases its socket",
     );
     const finishedPulls = pulls.length;
-    await delay(3200);
+    await page.clock.install();
+    await page.clock.fastForward(3200);
     assert.equal(
       pulls.length,
       finishedPulls,
@@ -478,8 +496,17 @@ test("Chat prefetch browser", async ({
         () => {},
       );
     });
+    assert.equal(
+      await second.evaluate(
+        (workspace) => client.prefetchTranscript(workspace, "active"),
+        workspaceId,
+      ),
+      true,
+    );
     await second.waitForFunction(
       () => activeValues.at(-1)?.items[0].body === "revision 10",
+      undefined,
+      { timeout: 10_000 },
     );
     documents.set("transcript:active", doc("active", 11, true));
     await page.evaluate(
@@ -530,6 +557,11 @@ test("Chat prefetch browser", async ({
         () => {},
       );
     });
+    await page.waitForFunction(
+      (workspace) => cache.peekTranscript(workspace, "race")?.seq === 7,
+      workspaceId,
+      { timeout: 5_000 },
+    );
     assert.deepEqual(
       await page.evaluate(
         (workspace) => cache.peekTranscript(workspace, "race"),
@@ -594,70 +626,113 @@ test("Chat prefetch browser", async ({
     );
 
     // The shared coordinator carries compact revisions through the real channel.
-    await second.evaluate((workspace) => {
-      window.revisionHints = [];
-      window.stopHints = client.watchTranscriptRevisions(workspace, (value) =>
-        revisionHints.push(value),
+    await second.evaluate(() => {
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: false,
+      });
+      window.dispatchEvent(new Event("offline"));
+    });
+    await until(
+      () => streams.size === 0,
+      "Offline peer releases its workspace stream",
+    );
+    await page.evaluate(() => {
+      Object.defineProperty(navigator, "onLine", {
+        configurable: true,
+        value: true,
+      });
+      window.dispatchEvent(new Event("online"));
+      window.stopHintOwner = client.watchSyncInvalidations(
+        "transcript:a",
+        () => {},
       );
-    }, workspaceId);
+    });
     await until(
       () => streams.size === 1,
-      "Revision hints reuse one workspace stream",
+      "Online tab owns the workspace stream",
     );
-    const hint = async (workspace, revisions) => {
+    await second.evaluate(() => {
+      window.revisionHints = [];
+      window.stopHints = client.watchSyncInvalidations("transcript:a", (v) =>
+        revisionHints.push(v),
+      );
+    });
+    const resource = { kind: "transcript", agentId: "a" };
+    const resourceEvent = async (workspace, revision, schemaHash) => {
       await second.evaluate(
-        ({ workspace, revisions, channelWorkspace }) => {
+        ({ workspace, revision, schemaHash, channelWorkspace, resource }) => {
           const channel = new BroadcastChannel(
             `codex-sync-${location.origin}-${channelWorkspace}`,
           );
           channel.postMessage({
-            protocol: 2,
-            kind: "generations",
+            apiSchemaHash: schemaHash,
+            tabId: "other-tab",
+            kind: "resource-event",
             workspaceId: workspace,
-            generations: { state: 1, transcripts: 1, drafts: 0 },
-            transcriptRevisions: revisions,
+            event: {
+              protocol: 3,
+              workspaceId: workspace,
+              epoch: "fixture-epoch",
+              revision,
+              reason: "change",
+              resources: [resource],
+              resourceVersions: [{ resource, revision }],
+            },
           });
           channel.close();
         },
-        { workspace, revisions, channelWorkspace: workspaceId },
+        {
+          workspace,
+          revision,
+          schemaHash,
+          channelWorkspace: workspaceId,
+          resource,
+        },
       );
       await delay(100);
     };
-    await hint("c".repeat(32), { a: 99 });
+    const schemaHash = readApiSchemaHash();
+    await resourceEvent("c".repeat(32), 99, schemaHash);
     assert.deepEqual(
       await second.evaluate(() => revisionHints),
       [],
-      "Foreign workspace hints are rejected",
+      "Foreign workspace resource events are rejected",
     );
-    await hint(workspaceId, { a: 7 });
+    await resourceEvent(workspaceId, 7, schemaHash);
     assert.deepEqual(await second.evaluate(() => revisionHints.at(-1)), {
-      a: 7,
+      epoch: "fixture-epoch",
+      revision: 7,
     });
-    await second.evaluate((workspace) => {
-      const channel = new BroadcastChannel(
-        `codex-sync-${location.origin}-${workspace}`,
-      );
-      channel.postMessage({
-        protocol: 2,
-        kind: "heartbeat",
-        workspaceId: workspace,
-        generations: { state: 1, transcripts: 1, drafts: 0 },
-      });
-      channel.close();
-    }, workspaceId);
+    await second.evaluate(
+      ({ workspace, schemaHash }) => {
+        const channel = new BroadcastChannel(
+          `codex-sync-${location.origin}-${workspace}`,
+        );
+        channel.postMessage({
+          apiSchemaHash: schemaHash,
+          tabId: "other-tab",
+          kind: "tab-heartbeat",
+          workspaceId: workspace,
+        });
+        channel.close();
+      },
+      { workspace: workspaceId, schemaHash: readApiSchemaHash() },
+    );
     await delay(100);
     assert.deepEqual(
       await second.evaluate(() => revisionHints.at(-1)),
-      { a: 7 },
-      "An older tab heartbeat cannot clear current server revisions",
+      { epoch: "fixture-epoch", revision: 7 },
+      "A peer heartbeat cannot clear current resource revisions",
     );
-    await hint(workspaceId, { a: -1 });
+    await resourceEvent(workspaceId, 6, schemaHash);
     assert.deepEqual(
       await second.evaluate(() => revisionHints.at(-1)),
-      { a: 7 },
-      "Malformed revisions cannot replace valid hints",
+      { epoch: "fixture-epoch", revision: 7 },
+      "A stale peer revision cannot replace the current resource version",
     );
     await second.evaluate(() => stopHints());
+    await page.evaluate(() => stopHintOwner());
     await until(
       () => streams.size === 0,
       "Revision hint disposal releases its shared stream",
@@ -666,11 +741,12 @@ test("Chat prefetch browser", async ({
     // The memory view is bounded; evicted chats remain in IndexedDB.
     await second.evaluate((workspace) => {
       for (let i = 0; i < 64; i++)
-        cache.cacheTranscript(workspace, `memory-${i}`, {
-          id: `transcript:memory-${i}`,
-          seq: 100 + i,
-          payload: "{}",
-        });
+        cache.cacheTranscriptValue(
+          workspace,
+          `memory-${i}`,
+          { items: [] },
+          100 + i,
+        );
     }, workspaceId);
     assert.equal(
       await second.evaluate(
@@ -682,11 +758,12 @@ test("Chat prefetch browser", async ({
     );
     await second.evaluate((workspace) => {
       for (let i = 64; i < 320; i++)
-        cache.cacheTranscript(workspace, `memory-${i}`, {
-          id: `transcript:memory-${i}`,
-          seq: 100 + i,
-          payload: "{}",
-        });
+        cache.cacheTranscriptValue(
+          workspace,
+          `memory-${i}`,
+          { items: [] },
+          100 + i,
+        );
     }, workspaceId);
     assert.equal(
       await second.evaluate(
@@ -717,5 +794,6 @@ test("Chat prefetch browser", async ({
         .map((ownedContext) => ownedContext.close()),
     );
     await server.close();
+    await rm(cacheDir, { recursive: true, force: true });
   }
 });

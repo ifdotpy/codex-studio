@@ -2,10 +2,15 @@ import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 
-test("Realtime voice ux", async ({ context }, testInfo) => {
-  test.setTimeout(180_000);
+test("Realtime voice ux", async ({ context }) => {
+  test.setTimeout(30_000);
   // React fixture: no microphone, native account, or model request.
   const root = fileURLToPath(new URL("../../../web/", import.meta.url));
   const require = createRequire(root + "/package.json");
@@ -19,7 +24,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
   Object.defineProperty(navigator,'mediaDevices',{value:{getUserMedia:async()=>{window.order.push('capture');return {getTracks:()=>[track],getAudioTracks:()=>[track]};}}});
   window.emit=e=>window.dc.onmessage({data:JSON.stringify(e)});
   const nativeFetch=window.fetch.bind(window);window.resourceChange=()=>nativeFetch('/audit/resource-change',{method:'POST'});
-  window.fetch=async(input,opts)=>{const request=input instanceof Request?input:null,path=request?.url||input,body=request?await request.clone().text():opts?.body;const a=new URL(path,location.origin).pathname.split('/').at(-1),b=JSON.parse(body||'{}');window.calls.push([a,b]);let data={};if(a==='identity')data={workspaceId:'${workspaceId}'};if(a==='status'){window.order.push('status');data={configured:true,transport:'native'};}if(a==='records'&&window.failRecords)throw Error('Connection unavailable');if(a==='records')data={records:window.records,cursor:window.records.length,session:window.sid?{session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError}:null};if(a==='start'){window.sid=b.session_id;const stale=window.holdStart?{session_id:window.sid,state:'connecting',sdp:null}:null;if(window.holdStart)await new Promise(r=>window.releaseStart=r);data=stale||{session_id:window.sid,state:window.pending?'connecting':'ready',sdp:window.pending?null:'answer'};}if(a==='session')data={session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError};return new Response(JSON.stringify(data));};
+  window.fetch=async(input,opts)=>{const request=input instanceof Request?input:null,path=request?.url||input,body=request?await request.clone().text():opts?.body;const a=new URL(path,location.origin).pathname.split('/').at(-1),b=JSON.parse(body||'{}');window.calls.push([a,b]);let data={};if(a==='identity')data={workspaceId:'${workspaceId}'};if(a==='status'){window.order.push('status');data={configured:true,transport:'native'};}if(a==='records'&&window.failRecords)throw Error('Connection unavailable');if(a==='records')data={records:window.records,cursor:window.records.length,session:window.sid?{session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError}:null};if(a==='start'){window.sid=b.session_id;const stale=window.holdStart?{session_id:window.sid,state:'connecting',sdp:null}:null;if(window.holdStart)await new Promise(r=>window.releaseStart=r);data=stale||{session_id:window.sid,state:window.pending?'connecting':'ready',sdp:window.pending?null:'answer'};}if(a==='session')data={session_id:window.sid,state:window.voiceError?'failed':window.pending?'connecting':'ready',sdp:window.pending?null:'answer',error:window.voiceError};return new Response(JSON.stringify(data),{headers:{'${API_SCHEMA_HASH_HEADER}':'${readApiSchemaHash()}'}});};
   const root=createRoot(document.getElementById('root'));window.render=id=>root.render(<MantineProvider defaultColorScheme='dark'><RealtimeVoice agentId={id} notify={()=>{}}/></MantineProvider>);window.render('chat-one');`;
   const server = await createServer({
     configFile: false,
@@ -64,6 +69,7 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
               "Content-Type": "text/event-stream",
               "Cache-Control": "no-cache",
               Connection: "keep-alive",
+              [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
             });
             res.write(apiSchemaHandshakeSse());
             streams.add(stream);
@@ -165,9 +171,6 @@ test("Realtime voice ux", async ({ context }, testInfo) => {
     );
     await page.getByRole("button", { name: "Mute", exact: true }).click();
     await page.getByRole("button", { name: "Unmute", exact: true }).waitFor();
-    await page.screenshot({
-      path: testInfo.outputPath("studio-native-voice-ui.png"),
-    });
     await page.getByRole("button", { name: "End voice", exact: true }).click();
     await page.waitForFunction(
       () => window.stops === 1 && window.calls.some((c) => c[0] === "end"),

@@ -1,13 +1,15 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import {
+  API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
+  readApiSchemaHash,
   protocol3SseEvent,
   test,
 } from "../playwright.mjs";
 
 test("Sync push", async ({ context: testContext }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(30_000);
   // Real RxDB/Dexie reconciles a shared stream invalidation through HTTP pull.
   const { createServer } = await import(
     new URL(
@@ -29,7 +31,10 @@ test("Sync push", async ({ context: testContext }) => {
     handle(req, res, next) {
       const url = new URL(req.url, "http://localhost");
       const json = (value) => {
-        res.setHeader("Content-Type", "application/json");
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        });
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/push-check") res.end("<!doctype html>");
@@ -37,7 +42,10 @@ test("Sync push", async ({ context: testContext }) => {
       else if (url.pathname === "/api/sync/stream") {
         assert.equal(url.searchParams.get("protocol"), "3");
         const resources = JSON.parse(url.searchParams.get("resources") || "[]");
-        res.writeHead(200, { "Content-Type": "text/event-stream" });
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        });
         res.write(
           apiSchemaHandshakeSse(
             protocol3SseEvent("resources", {

@@ -1,5 +1,7 @@
 import {
   readTestState,
+  readApiSchemaHash,
+  installApiSchemaFixtureHeaders,
   test,
   expect,
   spawnFixture as spawn,
@@ -12,7 +14,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("chat-navigation-ui", async ({ page: fixturePage }) => {
-  test.setTimeout(120_000);
+  test.setTimeout(60_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -30,6 +32,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   });
   const url = `http://127.0.0.1:${port}`;
   const page = fixturePage;
+  installApiSchemaFixtureHeaders(page);
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   const chatActions = page.getByRole("button", {
     name: "Chat actions",
@@ -113,19 +116,37 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   };
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  const identityResponse = page.waitForResponse((response) => {
+    const requestUrl = new URL(response.url());
+    return requestUrl.pathname === "/api/sync/identity";
+  });
   await page.goto(url);
+  assert.equal(
+    (await identityResponse).headers()["x-studio-api-schema"],
+    readApiSchemaHash(),
+    "The fixture identity response must match the renderer schema",
+  );
+  await expect(
+    page.getByRole("alertdialog", {
+      name: "Studio update required",
+      exact: true,
+    }),
+  ).toHaveCount(0, { timeout: 2000 });
   await page.locator(".project-tree-heading").first().hover();
   await page
     .getByRole("button", { name: /^New chat in / })
     .first()
     .click();
-  await page.getByRole("heading", { name: "New chat", exact: true }).waitFor();
-  const state = await readTestState(url);
-  assert.ok(
-    state.runtime.agents.some(
-      (a) => a.name === "New chat" && a.status === "idle",
-    ),
-  );
+  await page.locator("#conversation-title").waitFor();
+  let state;
+  await expect
+    .poll(async () => {
+      state = await readTestState(url);
+      return state.runtime.agents.some(
+        (a) => a.name === "New chat" && a.status === "idle",
+      );
+    })
+    .toBe(true);
   await page.locator("#message").waitFor();
   assert.equal(
     await page.locator('.agent-phase[data-phase="idle"]').count(),
@@ -186,7 +207,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     exact: true,
   });
   await picker.getByLabel("Folder path", { exact: true }).fill("/projects");
-  await picker.getByRole("button", { name: "Go", exact: true }).click();
+  await picker.getByRole("button", { name: "Open path", exact: true }).click();
   await picker.getByRole("button", { name: "Alpha", exact: true }).waitFor();
   await picker.getByLabel("Filter folders").fill("alpha");
   assert.equal(await picker.locator(".directory-row").count(), 1);
@@ -197,7 +218,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     .getByText("Cannot read this folder")
     .waitFor();
   assert.ok(
-    await picker.getByRole("button", { name: "Use this folder" }).isDisabled(),
+    await picker.getByRole("button", { name: "Add project" }).isDisabled(),
   );
   await picker.getByRole("button", { name: "Retry", exact: true }).click();
   await picker.getByText("No folders inside").waitFor();
@@ -208,11 +229,10 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     assert.ok(
       await picker.evaluate((node) => node.scrollWidth <= node.clientWidth + 1),
     );
-    await page.screenshot({ path: join(root, `folders-${width}.png`) });
   }
   await picker.getByRole("button", { name: "Alpha", exact: true }).click();
   await picker.getByText("No folders inside").waitFor();
-  await picker.getByRole("button", { name: "Use this folder" }).click();
+  await picker.getByRole("button", { name: "Add project" }).click();
   await picker.waitFor({ state: "hidden" });
   assert.deepEqual(selections, [{ id: emptyId, cwd: "/projects/Alpha" }]);
   await page.setViewportSize({ width: 1440, height: 960 });
@@ -220,7 +240,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   for (const [section, title] of [
     ["messages", "Messages"],
     ["changes", "Changes"],
-    ["search", "Search"],
+    ["search", "Search messages"],
     ["plan", "Plan"],
     ["rules", "Rules"],
   ]) {
@@ -228,6 +248,13 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
     else {
       await openChatActions();
       await page.locator(`[data-workspace-section="${section}"]`).click();
+    }
+    if (section === "search") {
+      const search = page.getByRole("dialog", { name: title, exact: true });
+      await search.waitFor();
+      await page.keyboard.press("Escape");
+      await search.waitFor({ state: "hidden" });
+      continue;
     }
     const drawer = page.locator(".workspace-drawer");
     await drawer.getByRole("heading", { name: title, exact: true }).waitFor();
@@ -277,7 +304,6 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
       ),
       "page fits " + width,
     );
-    await page.screenshot({ path: join(root, `navigation-${width}.png`) });
   }
   await page.locator("#message").fill("/monitor must-not-run");
   await page.locator("#send").click();

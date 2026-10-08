@@ -1,4 +1,9 @@
-import { apiSchemaHandshakeSse, test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 // Exercise reconnect and delivery state in real React/RxDB browser hooks.
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
@@ -7,7 +12,7 @@ test("Sync recovery browser", async ({
   page: runnerPage,
   context: runnerContext,
 }) => {
-  test.setTimeout(180_000);
+  test.setTimeout(60_000);
   const { createServer } = await import(
     new URL(
       "../../../web/node_modules/vite/dist/node/index.js",
@@ -29,6 +34,7 @@ test("Sync recovery browser", async ({
       failPull = false,
       badReceipt = true;
     let workspaceId = "c".repeat(32);
+    let streamRevision = 0;
     const sends = [];
     await page.route("**/check", (route) =>
       route.fulfill({
@@ -43,23 +49,51 @@ test("Sync recovery browser", async ({
           identityStatus === 200
             ? { workspaceId }
             : { error: "Connection unavailable" },
+        headers:
+          identityStatus === 200
+            ? { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() }
+            : undefined,
       }),
     );
     await page.route("**/api/session", (route) =>
-      hangSession ? undefined : route.fulfill({ json: { token: "fixture" } }),
+      hangSession
+        ? undefined
+        : route.fulfill({
+            headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+            json: { token: "fixture" },
+          }),
     );
-    await page.route("**/api/sync/stream*", (route) =>
-      route.fulfill({
+    await page.route("**/api/sync/stream*", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      const revision = ++streamRevision;
+      return route.fulfill({
         contentType: "text/event-stream",
-        body: apiSchemaHandshakeSse(),
-      }),
-    );
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        body: apiSchemaHandshakeSse(
+          `event: resources\ndata: ${JSON.stringify({
+            protocol: 3,
+            workspaceId,
+            epoch: "fixture",
+            revision,
+            reason: revision === 1 ? "initial" : "change",
+            resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision,
+            })),
+          })}\n\n`,
+        ),
+      });
+    });
     await page.route("**/api/sync/pull?*", (route) => {
       const after = Number(
         new URL(route.request().url()).searchParams.get("after"),
       );
       return route.fulfill({
         status: failPull ? 503 : 200,
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: failPull
           ? { error: "Pull unavailable" }
           : {
@@ -92,6 +126,7 @@ test("Sync recovery browser", async ({
       const body = route.request().postDataJSON();
       sends.push(body);
       return route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
           id: badReceipt ? "wrong-message" : body.id,
           status: "accepted",
@@ -132,6 +167,8 @@ test("Sync recovery browser", async ({
         window.second.data?.runtime?.marker === "replicated" &&
         !window.snapshot.error &&
         !window.outbox.error,
+      undefined,
+      { timeout: 10_000 },
     );
     failPull = true;
     await page.evaluate(() => window.dispatchEvent(new Event("online")));

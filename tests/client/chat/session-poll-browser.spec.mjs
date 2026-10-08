@@ -1,6 +1,8 @@
 import {
+  API_SCHEMA_HASH_HEADER,
   apiSchemaHandshakeSse,
   legacySnapshotRoute,
+  readApiSchemaHash,
   syncIdentityFixture,
   test,
   expect,
@@ -66,11 +68,15 @@ test("Session Poll Browser", async ({
       sessions++;
       return route.fulfill({
         status,
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: status === 200 ? { token } : { error: "Session unavailable" },
       });
     });
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identity }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: identity,
+      }),
     );
     await page.route("**/api/sync/stream**", (route) =>
       route.fulfill({
@@ -84,6 +90,7 @@ test("Session Poll Browser", async ({
         new URL(route.request().url()).searchParams.get("after"),
       );
       return route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: {
           workspaceId,
           documents: after

@@ -1,6 +1,10 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  test,
+} from "../playwright.mjs";
 
 const workspaceId = "d".repeat(32);
 
@@ -30,7 +34,10 @@ async function createFixture(page) {
     handle(req, res, next) {
       const url = new URL(req.url || "/", "http://localhost");
       const json = (value, status = 200) => {
-        res.writeHead(status, { "Content-Type": "application/json" });
+        res.writeHead(status, {
+          "Content-Type": "application/json",
+          [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+        });
         res.end(JSON.stringify(value));
       };
       if (url.pathname === "/check") res.end("<!doctype html>");
