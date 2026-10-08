@@ -134,7 +134,7 @@ class ServerSuiteRunner(unittest.TestCase):
             )
 
         self.assertEqual(len(commands), 1)
-        self.assertTrue(commands[0][-4].endswith("suite_entry.py"))
+        self.assertTrue(commands[0][-4].endswith("server_test_entry.py"))
         self.assertEqual(commands[0][-3:], ["module", "studio_api.agents.test_router", "-v"])
 
     def test_aggregates_failed_child_and_reports_opt_in_skip(self):

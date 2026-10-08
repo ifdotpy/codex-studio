@@ -644,7 +644,7 @@ def _close_windows_job(job):
 def _suite_command(relative, root):
     if relative.endswith(".mjs"):
         return ["node", str(root / relative)]
-    entry = root / "tests/server/suite_entry.py"
+    entry = root / "scripts/server_test_entry.py"
     if relative.startswith("scripts/studio_api/") and relative.endswith(".py"):
         module_name = relative[len("scripts/"):-3].replace("/", ".")
         return [sys.executable, "-B", str(entry), "module", module_name, "-v"]
