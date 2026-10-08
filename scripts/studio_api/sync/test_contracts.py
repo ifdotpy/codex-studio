@@ -30,6 +30,7 @@ from studio_api.sync.models import (
     RequestEntityDto,
     RoomRadioSeen,
     SyncDocument,
+    SyncPullResponse,
     WorkspaceEntityDto,
 )
 
@@ -497,6 +498,53 @@ class SyncEntityContractTests(unittest.TestCase):
             "codexErrorInfo": "rateLimitExceeded",
         })
         self.assertEqual(error.codexErrorInfo, "rateLimitExceeded")
+
+    def test_projection_preserves_structured_native_provider_errors(self) -> None:
+        provider_error: dict[str, JsonValue] = {
+            "message": {"message": "Reconnecting 2/5"},
+            "additionalDetails": {"message": "retry detail", "attempt": 7},
+            "code": -32000,
+            "data": {"retryable": True},
+            "codexErrorInfo": "other",
+        }
+        source: dict[str, JsonValue] = {
+            "id": "agent-structured-error", "kind": "agent",
+            "nativeStatus": {"phase": "retrying", "error": provider_error},
+            "nativeTurnError": {"turnId": "turn-structured", "error": provider_error},
+        }
+        with self.assertNoLogs("codex_sync_entities", level="WARNING"):
+            projected = project("agent", source)
+        if not isinstance(projected, dict):
+            self.fail("agent with structured provider errors did not project")
+        self.assertEqual(projected["nativeStatus"], source["nativeStatus"])
+        self.assertEqual(projected["nativeTurnError"], source["nativeTurnError"])
+
+        pull = SyncPullResponse.model_validate({
+            "workspaceId": "fixture-workspace", "generation": 1,
+            "documents": [{
+                "id": "entity:agent:agent-structured-error",
+                "payload": json.dumps({
+                    "collection": "agent", "id": "agent-structured-error", "value": projected,
+                }),
+                "seq": 1, "_deleted": False,
+            }],
+            "checkpoint": {"seq": 1},
+        })
+        envelope = validate_entity_payload(pull.documents[0].payload)
+        self.assertIsNotNone(envelope.value.nativeStatus)
+        self.assertIsNotNone(envelope.value.nativeTurnError)
+        assert envelope.value.nativeStatus is not None
+        assert envelope.value.nativeTurnError is not None
+        self.assertIsInstance(envelope.value.nativeStatus.error, NativeProviderError)
+        self.assertIsInstance(envelope.value.nativeTurnError.error, NativeProviderError)
+        assert isinstance(envelope.value.nativeStatus.error, NativeProviderError)
+        assert isinstance(envelope.value.nativeTurnError.error, NativeProviderError)
+        self.assertEqual(envelope.value.nativeStatus.error.message, provider_error["message"])
+        self.assertEqual(envelope.value.nativeStatus.error.additionalDetails,
+                         provider_error["additionalDetails"])
+        self.assertEqual(envelope.value.nativeTurnError.error.message, provider_error["message"])
+        self.assertEqual(envelope.value.nativeTurnError.error.additionalDetails,
+                         provider_error["additionalDetails"])
 
     def test_projection_preserves_typed_runtime_and_request_receipts(self) -> None:
         provider_error: dict[str, JsonValue] = {

@@ -70,10 +70,10 @@ class NativeProviderError(ContractModel):
     model_config = ConfigDict(extra="allow", strict=True)
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
     code: int | str | None = None
-    message: str | None = None
+    message: str | dict[str, JsonValue] | None = None
     data: JsonValue | None = None
     codexErrorInfo: str | dict[str, JsonValue] | list[JsonValue] | None = None
-    additionalDetails: str | None = None
+    additionalDetails: str | dict[str, JsonValue] | None = None
 
 
 class AgentNativeStatus(ContractModel):
