@@ -113,6 +113,7 @@ test("installed queue display ui", async ({ browser: _browser }) => {
     const queuedItem = (text) =>
       page.locator(".message-queue-item").filter({ hasText: text });
     await queuedItem("First queued instruction").waitFor();
+    await queuedItem("Second queued instruction").waitFor();
     assert.equal(
       await page.locator(".message-queue").count(),
       1,
