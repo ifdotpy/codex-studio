@@ -985,7 +985,10 @@ export default function App() {
           () =>
             limitsCacheHydrations.current.get(key)?.promise ??
             Promise.resolve(false),
-          () => reloadLimitsForRef.current(key),
+          // Later resource notifications must refresh even when the cached
+          // snapshot is under 60 seconds old. The helper suppresses this read
+          // only for a baseline covered by successful cache hydration.
+          () => reloadLimitsForRef.current(key, true),
           () => {
             const account = accountsForLimits.current.find(
               (item) => item.id === key,

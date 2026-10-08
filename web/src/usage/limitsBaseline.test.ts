@@ -22,7 +22,7 @@ describe("limits baseline hydration", () => {
     expect(shownLimits).toBe(42);
   });
 
-  it("awaits successful hydration and issues no extra read on baseline", async () => {
+  it("awaits successful hydration, then reads every later resource event", async () => {
     const requests = { cached: 0, fresh: 0 };
     let resolveHydration!: (result: boolean) => void;
     const hydration = new Promise<boolean>((resolve) => {
@@ -49,6 +49,10 @@ describe("limits baseline hydration", () => {
     await onBaseline();
     expect(freshRead).toHaveBeenCalledTimes(1);
     expect(requests).toEqual({ cached: 1, fresh: 1 });
+
+    await onBaseline();
+    expect(freshRead).toHaveBeenCalledTimes(2);
+    expect(requests).toEqual({ cached: 1, fresh: 2 });
   });
 
   it("does not fall back if the account disconnects during hydration", async () => {

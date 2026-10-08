@@ -219,6 +219,21 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         reads = [];
       let unknownAvailable = true;
       page.on("pageerror", (error) => errors.push(error.message));
+      await page.addInitScript(() => {
+        const NativeEventSource = window.EventSource;
+        window.studioTestSources = [];
+        window.studioLastResourceEvent = null;
+        window.EventSource = class extends NativeEventSource {
+          constructor(...args) {
+            super(...args);
+            window.studioTestSources.push(this);
+            this.studioLastResourceEvent = null;
+            this.addEventListener("resources", (message) => {
+              this.studioLastResourceEvent = JSON.parse(message.data);
+            });
+          }
+        };
+      });
       await page.route("**/api/accounts", (route) =>
         route.fulfill({ json: { defaultAccountKey: "default", accounts } }),
       );
@@ -375,6 +390,57 @@ test("account limit dots ui", async ({ browser: runnerBrowser }) => {
         7,
         JSON.stringify(reads),
       );
+      const defaultHydration = reads.find(
+        (read) => read.key === "default" && read.cached,
+      );
+      assert.ok(Date.now() / 1000 - defaultHydration.at < 60);
+      const defaultFreshReadsBeforeEvent = reads.filter(
+        (read) => read.key === "default" && !read.cached,
+      ).length;
+      await page.waitForFunction(() =>
+        window.studioTestSources?.some(
+          (source) =>
+            new URL(source.url).pathname === "/api/sync/stream" &&
+            source.readyState === EventSource.OPEN &&
+            source.studioLastResourceEvent,
+        ),
+      );
+      await page.evaluate(() => {
+        const source = window.studioTestSources.find(
+          (item) =>
+            new URL(item.url).pathname === "/api/sync/stream" &&
+            item.readyState === EventSource.OPEN &&
+            item.studioLastResourceEvent,
+        );
+        const previous = source.studioLastResourceEvent;
+        const resource = { kind: "limits", accountKey: "default" };
+        const previousResourceRevision =
+          previous.resourceVersions?.find(
+            (entry) =>
+              entry.resource?.kind === resource.kind &&
+              entry.resource.accountKey === resource.accountKey,
+          )?.revision ?? previous.revision;
+        const revision =
+          Math.max(previous.revision, previousResourceRevision) + 1;
+        source.dispatchEvent(
+          new MessageEvent("resources", {
+            data: JSON.stringify({
+              ...previous,
+              revision,
+              reason: "change",
+              resources: [resource],
+              resourceVersions: [{ resource, revision }],
+            }),
+          }),
+        );
+      });
+      await expect
+        .poll(
+          () =>
+            reads.filter((read) => read.key === "default" && !read.cached)
+              .length,
+        )
+        .toBe(defaultFreshReadsBeforeEvent + 1);
       const defaultDot = page.locator(
         '.account-limits-dot-target[data-account-key="default"]',
       );
