@@ -328,10 +328,25 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 runtime.put(db, 'agents', send_agent)
             analytics_started, release_analytics, analytics_finished, sent = (
                 threading.Event(), threading.Event(), threading.Event(), threading.Event())
+            analytics_committed = threading.Event()
             capture_calls, receipts, send_errors, delivered = [], [], [], []
+            captured_connection = None
             original_capture = runtime.analytics_event
+            original_analytics_db = runtime.analytics_db
+
+            @contextmanager
+            def observed_analytics_db(*, busy_timeout=None):
+                with original_analytics_db(busy_timeout=busy_timeout) as db:
+                    connection_id = id(db)
+                    yield db
+                if connection_id == captured_connection:
+                    analytics_committed.set()
+
+            runtime.analytics_db = observed_analytics_db
 
             def blocked_capture(db, agent, method, params, **options):
+                nonlocal captured_connection
+                captured_connection = id(db)
                 capture_calls.append(method)
                 analytics_started.set()
                 if not release_analytics.wait(5):
@@ -390,6 +405,8 @@ class SupervisorPersistenceRetry(unittest.TestCase):
                 self.assertEqual(delivered, [1, 2])
                 self.assertTrue(analytics_finished.wait(3), 'The released analytics capture must finish')
                 self.assertEqual(capture_calls, ['item/agentMessage/delta'])
+                self.assertTrue(analytics_committed.wait(3),
+                                'The analytics connection must close before committed rows are read')
                 with runtime.analytics_db() as db:
                     count = db.execute('SELECT coalesce(sum(count),0) FROM analytics_notifications '
                                        'WHERE agent=? AND method=?',
