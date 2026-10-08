@@ -6865,7 +6865,12 @@ export interface components {
      */
     NativeProviderError: {
       /** Additionaldetails */
-      additionalDetails?: string | null;
+      additionalDetails?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
       /** Code */
       code?: number | string | null;
       /** Codexerrorinfo */
@@ -6878,7 +6883,12 @@ export interface components {
         | null;
       data?: components["schemas"]["JsonValue"] | null;
       /** Message */
-      message?: string | null;
+      message?:
+        | string
+        | {
+            [key: string]: components["schemas"]["JsonValue"];
+          }
+        | null;
     } & {
       [key: string]: components["schemas"]["JsonValue"];
     };
