@@ -4,11 +4,13 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr
+from pydantic import Field, RootModel, StrictBool, StrictFloat, StrictInt, StrictStr, model_validator
 
-from studio_api.models import ContractModel
+from studio_api.models import ContractModel, SyncEntity
 
 MAX_SAFE_REVISION = 9_007_199_254_740_991
+MAX_ENTITY_CHANGE_DOCUMENTS = 512
+MAX_ENTITY_CHANGE_BYTES = 262_144
 ResourceRevision = Annotated[StrictInt, Field(ge=0, le=MAX_SAFE_REVISION)]
 NonEmptyIdentifier = Annotated[StrictStr, Field(min_length=1)]
 NonNegativeFiniteNumber = Annotated[StrictInt, Field(ge=0)] | Annotated[
@@ -139,6 +141,26 @@ class ResourceRef(RootModel[ResourceRefValue]):
     """Closed discriminated union of all typed UI resource identities."""
 
 
+class EntityChangeBatch(ContractModel):
+    """Complete state changes in one durable (after, through] interval."""
+
+    after: ResourceRevision
+    through: ResourceRevision
+    documents: list[SyncEntity] = Field(max_length=MAX_ENTITY_CHANGE_DOCUMENTS)
+
+    @model_validator(mode="after")
+    def validate_coverage(self) -> EntityChangeBatch:
+        if self.after >= self.through:
+            raise ValueError("Entity change interval must advance")
+        if any(not self.after < document.seq <= self.through for document in self.documents):
+            raise ValueError("Entity change document is outside its interval")
+        if len({document.id for document in self.documents}) != len(self.documents):
+            raise ValueError("Entity change documents must have unique identities")
+        if len(self.model_dump_json(by_alias=True).encode("utf-8")) > MAX_ENTITY_CHANGE_BYTES:
+            raise ValueError("Entity change batch exceeds byte limit")
+        return self
+
+
 class ResourceRevisionEntry(ContractModel):
     """Per-resource revision; StateResource uses the entity sequence."""
 
@@ -148,10 +170,11 @@ class ResourceRevisionEntry(ContractModel):
     revision: ResourceRevision
     entitySequences: list[ResourceRevision] | None = None
     entitySequenceReset: bool | None = None
+    entityChanges: EntityChangeBatch | None = None
 
 
 class ResourceChangeEvent(ContractModel):
-    """Named `resources` SSE payload. A change invalidates the listed refs."""
+    """Named `resources` SSE payload with optional bounded state data."""
 
     protocol: Literal[3]
     workspaceId: NonEmptyIdentifier
@@ -160,6 +183,18 @@ class ResourceChangeEvent(ContractModel):
     reason: Literal["initial", "change", "reconnect", "overflow", "workspace"]
     resources: list[ResourceRef]
     resourceVersions: list[ResourceRevisionEntry]
+
+    @model_validator(mode="after")
+    def validate_entity_changes(self) -> ResourceChangeEvent:
+        for index, version in enumerate(self.resourceVersions):
+            changes = version.entityChanges
+            if changes is None:
+                continue
+            if (self.reason != "change" or index >= len(self.resources)
+                    or not isinstance(self.resources[index].root, StateResource)
+                    or version.entitySequenceReset or version.revision != changes.through):
+                raise ValueError("Entity changes require a matching state change revision")
+        return self
 
 
 class ResourceHeartbeatEvent(ContractModel):
