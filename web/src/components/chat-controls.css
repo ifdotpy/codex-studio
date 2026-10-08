@@ -238,3 +238,62 @@
 .outbox-controls [role="alert"] {
   color: var(--warning, #e3b761);
 }
+
+/* Phone layout: the agent picker gets its own row, tools and send share the
+   second row, and the send-timing hint stays in the tooltip only. */
+@media (max-width: 760px) {
+  #composer .composer-bar {
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  #composer .composer-tools {
+    display: contents;
+  }
+  #composer .composer-context-row {
+    order: -1;
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  #composer .composer-context-row .execution-menu {
+    max-width: 100%;
+  }
+  #composer .execution-selected {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #composer .composer-timing {
+    display: none;
+  }
+  #composer .composer-submit-actions {
+    margin-left: auto;
+    flex-wrap: nowrap;
+  }
+  /* One footer row: context and cost shrink, limits stay at the end. */
+  #conversation .usage-footer {
+    flex-wrap: nowrap;
+    gap: 8px;
+  }
+  #conversation .usage-footer .session-cost-summary,
+  #conversation .usage-footer .token-rate {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  #conversation .usage-footer .account-limits-group {
+    flex-shrink: 0;
+    margin-left: auto;
+  }
+}
+/* Keyboard hints mean nothing on touch screens. */
+@media (hover: none) {
+  #sidebar .sidebar-search kbd {
+    display: none;
+  }
+}
+/* A panel header without help text aligns its action with the title. */
+.conversation-results .ui-panel-header {
+  align-items: center;
+}
