@@ -6,7 +6,12 @@ import { useDesktopNotifications } from "./hooks/desktopNotifications";
 import { useNativeAction } from "./useNativeAction";
 import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
-import { accountLimits } from "./usage/accountUsage";
+import {
+  accountLimits,
+  limitsReadSucceeded,
+  limitsSnapshotIsFresh,
+  shouldReplaceLimitsSnapshot,
+} from "./usage/accountUsage";
 import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
@@ -154,7 +159,10 @@ import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyC
 import Conversation from "./components/Conversation";
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
-import { limitsBaselineReader } from "./usage/limitsBaseline";
+import {
+  limitsBaselineReader,
+  type LimitsBaselineHydration,
+} from "./usage/limitsBaseline";
 import RadioChat from "./components/RadioChat";
 import SharedChatCreate, {
   sharedCreationKey,
@@ -625,7 +633,7 @@ export default function App() {
     accountKey,
     !!agent && agent.source === "managed",
   );
-  const limitsRequests = useRef(new Map<string, Promise<void>>());
+  const limitsRequests = useRef(new Map<string, Promise<boolean>>());
   const selectedAccount =
     accounts.data.accounts.find((a) => a.id === accountKey) ||
     accounts.data.archivedAccounts?.find((a) => a.id === accountKey);
@@ -773,7 +781,10 @@ export default function App() {
   limitsCache.current = limitsByAccount;
   const limitsWatchers = useRef(new Map<string, () => void>());
   const limitsCacheHydrations = useRef(
-    new Map<string, { token: object; promise: Promise<boolean> }>(),
+    new Map<
+      string,
+      { token: object; promise: Promise<LimitsBaselineHydration> }
+    >(),
   );
   const accountsForLimits = useRef(accounts.data.accounts);
   accountsForLimits.current = accounts.data.accounts;
@@ -790,22 +801,47 @@ export default function App() {
         !cached.error &&
         Date.now() / 1000 - (cached.at || 0) < 60
       )
-        return Promise.resolve();
+        return Promise.resolve(true);
+      const requestStartedAt = Date.now() / 1000;
       setLimitsLoading((old) => ({ ...old, [key]: true }));
       const request = get("/api/limits", {
         query: key === "default" ? undefined : { account_key: key },
         timeoutMs: 25000,
       })
         .then((result) => {
-          if (!accountLimits(result, key, selectedId))
+          const responseSnapshot = accountLimits(result, key, selectedId);
+          if (!responseSnapshot)
             throw new Error("Codex returned limits for another account.");
+          const snapshot =
+            responseSnapshot.data === null && limitsReadSucceeded(result)
+              ? { ...responseSnapshot, at: requestStartedAt }
+              : responseSnapshot;
+          const currentSnapshot = accountLimits(
+            limitsCache.current[key],
+            key,
+            selectedId,
+          );
+          if (shouldReplaceLimitsSnapshot(currentSnapshot, snapshot))
+            limitsCache.current = {
+              ...limitsCache.current,
+              [key]: { ...snapshot, accountKey: key },
+            };
           setLimitsByAccount((old) => {
             const previous = accountLimits(old[key], key, selectedId);
-            if (previous && (previous.at || 0) > (result.at || 0)) return old;
-            return { ...old, [key]: { ...result, accountKey: key } };
+            if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return old;
+            return { ...old, [key]: { ...snapshot, accountKey: key } };
           });
+          return limitsReadSucceeded(result);
         })
         .catch((error) => {
+          limitsCache.current = {
+            ...limitsCache.current,
+            [key]: {
+              ...(limitsCache.current[key] || { data: null }),
+              error: errorText(error),
+              accountKey: key,
+            },
+          };
           setLimitsByAccount((old) => ({
             ...old,
             [key]: {
@@ -814,6 +850,7 @@ export default function App() {
               accountKey: key,
             },
           }));
+          return false;
         })
         .finally(() => {
           limitsRequests.current.delete(key);
@@ -825,7 +862,9 @@ export default function App() {
     [accounts.data.accounts],
   );
   const reloadLimits = useCallback(
-    (force = false) => reloadLimitsFor(accountKey, force),
+    async (force = false) => {
+      await reloadLimitsFor(accountKey, force);
+    },
     [accountKey, reloadLimitsFor],
   );
   const forceReloadLimits = useCallback(
@@ -894,7 +933,9 @@ export default function App() {
           signedOut: !!account?.disconnected,
           limits,
           loading: !!limitsLoading[key],
-          reload: (force = false) => reloadLimitsFor(key, force),
+          reload: async (force = false) => {
+            await reloadLimitsFor(key, force);
+          },
         };
       });
   }, [
@@ -933,22 +974,41 @@ export default function App() {
           const currentAccount = accountsForLimits.current.find(
             (item) => item.id === key,
           );
+          const snapshot = accountLimits(
+            result,
+            key,
+            currentAccount?.accountId,
+          );
           if (
             currentAccount?.disconnected ||
-            !accountLimits(result, key, currentAccount?.accountId) ||
-            !result.data
+            !snapshot ||
+            !limitsSnapshotIsFresh(snapshot, key, currentAccount?.accountId)
           )
             return false;
+          const previousCurrent = accountLimits(
+            limitsCache.current[key],
+            key,
+            currentAccount?.accountId,
+          );
+          if (
+            !previousCurrent ||
+            (previousCurrent.at || 0) < (snapshot.at || 0)
+          )
+            limitsCache.current = {
+              ...limitsCache.current,
+              [key]: { ...snapshot, accountKey: key },
+            };
           setLimitsByAccount((old) => {
             const previous = accountLimits(
               old[key],
               key,
               currentAccount?.accountId,
             );
-            if (previous && (previous.at || 0) >= (result.at || 0)) return old;
-            return { ...old, [key]: result };
+            if (previous && (previous.at || 0) >= (snapshot.at || 0))
+              return old;
+            return { ...old, [key]: snapshot };
           });
-          return true;
+          return { snapshot };
         })
         .catch(() => false);
       limitsCacheHydrations.current.set(key, { token, promise: hydration });
@@ -985,15 +1045,24 @@ export default function App() {
           () =>
             limitsCacheHydrations.current.get(key)?.promise ??
             Promise.resolve(false),
-          // Later resource notifications must refresh even when the cached
-          // snapshot is under 60 seconds old. The helper suppresses this read
-          // only for a baseline covered by successful cache hydration.
+          // A same-version reconnect baseline is covered by hydration; a newer
+          // resource version still forces a read despite a fresh cache entry.
           () => reloadLimitsForRef.current(key, true),
           () => {
             const account = accountsForLimits.current.find(
               (item) => item.id === key,
             );
             return active && !account?.disconnected;
+          },
+          (snapshot) => {
+            const account = accountsForLimits.current.find(
+              (item) => item.id === key,
+            );
+            return limitsSnapshotIsFresh(
+              snapshot ?? limitsCache.current[key],
+              key,
+              account?.accountId,
+            );
           },
         ),
         () => {
