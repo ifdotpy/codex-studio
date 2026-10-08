@@ -15,6 +15,8 @@ import {
   test,
 } from "../playwright.mjs";
 
+const SILENT_HANDSHAKE_RETRY_ADVANCE_MS = 16_000;
+
 async function startColdGateFixture() {
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cold-gate-"));
@@ -267,9 +269,16 @@ test("cold three silent stream handshakes escalate to the mismatch gate", async 
   page,
 }) => {
   await page.addInitScript(() => {
-    const nativeSetTimeout = window.setTimeout.bind(window);
-    window.setTimeout = (handler, timeout, ...args) =>
-      nativeSetTimeout(handler, timeout === 15_000 ? 25 : timeout, ...args);
+    const NativeEventSource = window.EventSource;
+    window.studioSchemaGateOpenStreams = 0;
+    window.EventSource = class extends NativeEventSource {
+      constructor(...args) {
+        super(...args);
+        this.addEventListener("open", () => {
+          window.studioSchemaGateOpenStreams++;
+        });
+      }
+    };
   });
   let streams = 0;
   const { url } = await startColdGateFixture();
@@ -291,7 +300,18 @@ test("cold three silent stream handshakes escalate to the mismatch gate", async 
     delete headers[API_SCHEMA_HASH_HEADER.toLowerCase()];
     return route.fulfill({ response, headers });
   });
+  await page.clock.install();
   await page.goto(url);
+  await expect
+    .poll(() => page.evaluate(() => window.studioSchemaGateOpenStreams))
+    .toBeGreaterThan(0);
+  for (let attempt = 2; attempt <= 3; attempt++) {
+    await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
+    await expect
+      .poll(() => page.evaluate(() => window.studioSchemaGateOpenStreams))
+      .toBeGreaterThanOrEqual(attempt);
+  }
+  await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
   await expect(
     page.locator('[data-modal-content="true"]').filter({
       hasText:
@@ -503,6 +523,9 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     await page.context().addInitScript(
       (handshakes) => {
         const behavior = sessionStorage.getItem("schema-gate-handshake");
+        window.__schemaGateStreamOpens = Number(
+          sessionStorage.getItem("schema-gate-stream-opens") || "0",
+        );
         if (sessionStorage.getItem("schema-gate-strip-api-hash") === "1") {
           const nativeFetch = window.fetch.bind(window);
           window.fetch = async (input, init) => {
@@ -543,6 +566,11 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
             queueMicrotask(() => {
               if (this.#closed) return;
               this.readyState = TestEventSource.OPEN;
+              window.__schemaGateStreamOpens++;
+              sessionStorage.setItem(
+                "schema-gate-stream-opens",
+                String(window.__schemaGateStreamOpens),
+              );
               this.dispatchEvent(new Event("open"));
               if (behavior === "silent") return;
               this.dispatchEvent(
@@ -683,7 +711,20 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     await page.evaluate(() =>
       sessionStorage.setItem("schema-gate-strip-api-hash", "0"),
     );
+    const silentOpenBaseline = await page.evaluate(
+      () => window.__schemaGateStreamOpens || 0,
+    );
     await page.reload();
+    await expect
+      .poll(() => page.evaluate(() => window.__schemaGateStreamOpens || 0))
+      .toBeGreaterThan(silentOpenBaseline);
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
+      await expect
+        .poll(() => page.evaluate(() => window.__schemaGateStreamOpens || 0))
+        .toBeGreaterThan(silentOpenBaseline + attempt);
+    }
+    await page.clock.runFor(SILENT_HANDSHAKE_RETRY_ADVANCE_MS);
     await expect(
       page.locator('[data-modal-content="true"]').filter({
         hasText: "Studio has been updated. Update this tab",
