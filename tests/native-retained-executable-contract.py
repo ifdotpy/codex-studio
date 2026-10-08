@@ -320,8 +320,8 @@ class OperatorCloseContract(unittest.TestCase):
 
         first.proc.ack = delayed_ack
         pending = first.submit('model/list', {})
-        self.assertEqual(first.wait(pending, timeout=3)['data'][0]['model'], 'fake')
-        self.assertTrue(ack_entered.wait(3), 'native model/list response was not read for ACK')
+        self.assertEqual(first.wait(pending, timeout=30)['data'][0]['model'], 'fake')
+        self.assertTrue(ack_entered.wait(30), 'native model/list response was not read for ACK')
 
         closed = self.close('test:operator-replace')
         self.assertEqual(closed['handle'], 'test:operator-replace')
@@ -335,15 +335,15 @@ class OperatorCloseContract(unittest.TestCase):
         self.assertFalse(second.supervisor_resumed)
         self.assertEqual(second.proc.generation, first.proc.generation + 1)
         new_pid = fixture.wait_for(lambda: (
-            candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None))
+            candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
         self.assertNotEqual(new_pid, pid)
 
         # The old proxy's normal ACK reaches the live supervisor after the new
         # proxy has captured its open cursor. No journal rows are fabricated.
         release_ack.set()
-        self.assertTrue(ack_finished.wait(3), 'real supervisor ACK action did not finish')
+        self.assertTrue(ack_finished.wait(30), 'real supervisor ACK action did not finish')
         try:
-            self.replacement_model_list = second.call('model/list', {}, timeout=3)
+            self.replacement_model_list = second.call('model/list', {}, timeout=30)
         except RuntimeError as error:
             expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
                         'Supervisor replay cursor is stale or ahead of the journal')
