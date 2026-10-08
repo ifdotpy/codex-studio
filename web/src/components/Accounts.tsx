@@ -25,6 +25,7 @@ import {
   useCallback,
   useEffect,
   useRef,
+  useMemo,
   useState,
   type SetStateAction,
   type ReactNode,
@@ -126,7 +127,10 @@ export function useAccounts(stateDir?: string) {
       stop();
     };
   }, [stateDir, refresh]);
-  return { data, setData, error, refresh, scope: stateDir };
+  return useMemo(
+    () => ({ data, setData, error, refresh, scope: stateDir }),
+    [data, setData, error, refresh, stateDir],
+  );
 }
 
 function AccountNameEditor({

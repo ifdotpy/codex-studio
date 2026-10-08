@@ -26,7 +26,7 @@ import { accountLimits } from "./usage/accountUsage";
 import { usageAccountConnectionKey as usageConnectionKey } from "./usage/usageAccountRefresh";
 import type { AccountLimitsSnapshot } from "./usage/accountUsage";
 import { useMobileViewport } from "./hooks/mobileViewport";
-import { chatSnapshot, roomLeadIds, messageAttentionCount } from "./chatScope";
+import { roomLeadIds, messageAttentionCount } from "./chatScope";
 import { nativeThreadError } from "./nativeErrors";
 import {
   pendingChatCreations,
@@ -75,6 +75,7 @@ import {
   lazy,
   useRef,
   useState,
+  memo,
   Suspense,
   type ReactNode,
 } from "react";
@@ -91,7 +92,12 @@ import {
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
 } from "./api";
-import { useSnapshot } from "./hooks";
+import {
+  useSnapshot,
+  useChatSnapshot,
+  useCommittedCallback,
+  useRetainedArray,
+} from "./hooks";
 import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
@@ -169,6 +175,7 @@ import CodexSignIn from "./components/CodexSignIn";
 import ConversationTitle from "./components/shell/ConversationTitle";
 import SubagentConcurrencyControl from "./components/agents/SubagentConcurrencyControl";
 import Conversation from "./components/Conversation";
+const SelectedConversation = memo(Conversation);
 import type { UsageAccount } from "./components/Usage";
 import { watchResourceReads } from "./components/watchResourceReads";
 import { limitsBaselineReader } from "./usage/limitsBaseline";
@@ -557,6 +564,9 @@ export default function App() {
         }),
     [outgoingMessages, receipts],
   );
+  const conversationOutgoing = useRetainedArray(
+    visibleOutgoing.filter((entry) => entry.body.room === opened),
+  );
   const {
     setDrafts,
     getDraft,
@@ -566,6 +576,9 @@ export default function App() {
     error: draftError,
     localPersistenceFailed,
   } = useSyncedDrafts();
+  const conversationDraftConflicts = useRetainedArray(
+    draftConflicts.filter((version) => version.session === (opened || "new")),
+  );
   useServerActivity(localPersistenceFailed || sending);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
@@ -646,8 +659,12 @@ export default function App() {
                 ? roomContext
                 : roomRoots[0])),
         ),
-    team = lead ? agents.filter((a) => a.rootId === lead.id) : [],
-    workers = team.filter((a) => !a.isLead);
+    team = useRetainedArray(
+      lead
+        ? agents.filter((a) => a.id === lead.id || a.rootId === lead.id)
+        : [],
+    ),
+    workers = useRetainedArray(team.filter((a) => !a.isLead));
   useTeamTokenRateStream(
     lead?.id,
     Boolean(workers.length && (narrowTeam ? teamOpen : wideTeamOpen)),
@@ -707,10 +724,8 @@ export default function App() {
     (!cachedLimits || (matchingSnapshot.at || 0) > (cachedLimits.at || 0))
       ? matchingSnapshot
       : cachedLimits || null;
-  const chatData = useMemo(
-    () => chatSnapshot(data, lead?.id),
-    [data, lead?.id],
-  );
+  const chatData = useChatSnapshot(data, lead?.id);
+  const scopedConversationData = useChatSnapshot(data, lead?.id, true);
   const attentionCount = messageAttentionCount(chatData);
   const taskCount = backgroundTasks(chatData).filter(activeTask).length;
   const setDraft = useCallback(
@@ -724,7 +739,7 @@ export default function App() {
       }),
     [opened, setDrafts],
   );
-  const open = (id: string, messageId?: string) => {
+  const open = useCommittedCallback((id: string, messageId?: string) => {
     prepareChat(id);
     navigationIntent.current++;
     setJumpTarget(
@@ -736,7 +751,7 @@ export default function App() {
     setOpened(id);
     setSidebar(false);
     setTeamOpen(false);
-  };
+  });
   useEffect(() => {
     if (!data) return;
     if (
@@ -897,12 +912,15 @@ export default function App() {
   );
   const reloadLimitsForRef = useRef(reloadLimitsFor);
   reloadLimitsForRef.current = reloadLimitsFor;
+  const usageTeamIndicators = team
+    .map((item) => indicators.get(item.id)?.kind || "")
+    .join(",");
   const usageAccounts = useMemo<UsageAccount[]>(() => {
     if (!agent) return [];
     const rootId = agent.rootId || agent.id;
     // The lead's current account and the accounts of working subagents take
     // part in this chat. Finished workers keep an account the chat left.
-    const teamAgents = agents.filter(
+    const teamAgents = team.filter(
       (item) =>
         !item.deletedAt &&
         (item.id === rootId ||
@@ -962,8 +980,8 @@ export default function App() {
       });
   }, [
     agent,
-    agents,
-    indicators,
+    team,
+    usageTeamIndicators,
     accounts.data.accounts,
     limitsByAccount,
     data?.runtime?.rateLimitsByAccount,
@@ -1475,6 +1493,29 @@ export default function App() {
       release();
     }
   };
+  const sendToConversation = useCommittedCallback(send);
+  const branchCreated = useCommittedCallback((id: string) => {
+    navigationIntent.current++;
+    createdSelection.current = id;
+    setOpened(id);
+    setSidebar(false);
+    setTeamOpen(false);
+  });
+  const newConversation = useCommittedCallback(
+    () => void newChat(agent?.cwd || lead?.cwd || undefined),
+  );
+  const chooseConversation = useCallback(() => {
+    setSidebar(true);
+    setSidebarCollapsed(false);
+    save("codex-sidebar-collapsed", false);
+    requestAnimationFrame(() =>
+      document
+        .querySelector<HTMLInputElement>(
+          '#sidebar [aria-label="Filter projects and chats"]',
+        )
+        ?.focus(),
+    );
+  }, []);
   const rename = async (id: string, name: string) => {
     try {
       await post("/api/rename", { id, name, request_id: crypto.randomUUID() });
@@ -2392,25 +2433,27 @@ export default function App() {
               notify={notify}
             />
           ) : (
-            <Conversation
+            <SelectedConversation
               accountsState={accounts}
               syncWorkspaceId={workspaceId}
               id={opened}
               agent={agent}
               room={room}
               legacy={legacy}
-              data={data}
+              data={
+                agent?.source === "managed" && !room
+                  ? scopedConversationData!
+                  : data
+              }
               getDraft={getDraft}
               subscribeDraft={subscribeDraft}
               setDraft={setDraft}
-              draftConflicts={draftConflicts.filter(
-                (version) => version.session === (opened || "new"),
-              )}
+              draftConflicts={conversationDraftConflicts}
               dismissDraft={dismissDraft}
-              send={send}
+              send={sendToConversation}
               sending={sending}
               schemaMismatch={schemaMismatch}
-              outgoing={visibleOutgoing}
+              outgoing={conversationOutgoing}
               onObserved={observeSends}
               onReadResult={readState.observeRead}
               onOutgoingEdit={editSend}
@@ -2428,28 +2471,9 @@ export default function App() {
               reloadLimits={forceReloadLimits}
               onPhase={onPhase}
               onSelect={open}
-              onBranchCreated={(id) => {
-                navigationIntent.current++;
-                createdSelection.current = id;
-                setOpened(id);
-                setSidebar(false);
-                setTeamOpen(false);
-              }}
-              onNewChat={() =>
-                void newChat(agent?.cwd || lead?.cwd || undefined)
-              }
-              onChooseChat={() => {
-                setSidebar(true);
-                setSidebarCollapsed(false);
-                save("codex-sidebar-collapsed", false);
-                requestAnimationFrame(() =>
-                  document
-                    .querySelector<HTMLInputElement>(
-                      '#sidebar [aria-label="Filter projects and chats"]',
-                    )
-                    ?.focus(),
-                );
-              }}
+              onBranchCreated={branchCreated}
+              onNewChat={newConversation}
+              onChooseChat={chooseConversation}
             />
           )}
         </UIErrorBoundary>

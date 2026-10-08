@@ -13,7 +13,9 @@ import {
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
-import { useContext, useState } from "react";
+import { memo, useContext, useMemo, useState } from "react";
+import { useCommittedCallback } from "../../hooks";
+import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
 import { save, saved } from "../../api";
 import { nativeErrorView } from "../../nativeErrors";
 import { setupModelName } from "./AgentSetupPicker";
@@ -89,17 +91,7 @@ function WorkerExcerpt({
   );
 }
 
-export default function WorkerCard({
-  agent,
-  accounts = [],
-  selected,
-  awaitingAnswer,
-  deferred,
-  open,
-  previewResult,
-  indicator,
-  remove,
-}: {
+type WorkerCardProps = {
   agent: Agent;
   accounts?: Account[];
   selected: boolean;
@@ -109,7 +101,39 @@ export default function WorkerCard({
   previewResult: () => void;
   remove?: () => void;
   indicator?: ChatIndicator;
-}) {
+};
+
+export default function WorkerCard(props: WorkerCardProps) {
+  const open = useCommittedCallback(props.open);
+  const previewResult = useCommittedCallback(props.previewResult);
+  const remove = useCommittedCallback(() => props.remove?.());
+  const indicator = useMemo(
+    () => props.indicator,
+    [props.indicator?.kind, props.indicator?.label],
+  );
+  return (
+    <WorkerCardView
+      {...props}
+      open={open}
+      previewResult={previewResult}
+      remove={props.remove ? remove : undefined}
+      indicator={indicator}
+    />
+  );
+}
+
+const WorkerCardView = memo(function WorkerCardView({
+  agent,
+  accounts = [],
+  selected,
+  awaitingAnswer,
+  deferred,
+  open,
+  previewResult,
+  indicator,
+  remove,
+}: WorkerCardProps) {
+  reportPromptComposerRender("team-row", agent.id);
   const provider = agent.provider || "codex";
   const models = useContext(TeamModelCatalog).filter(
     (row) => !row.provider || row.provider === provider,
@@ -321,4 +345,4 @@ export default function WorkerCard({
       )}
     </div>
   );
-}
+});

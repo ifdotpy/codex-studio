@@ -1,3 +1,4 @@
+import { reportPromptComposerRender } from "../../prompt-composer/renderProbe";
 import {
   Fragment,
   memo,
@@ -363,6 +364,7 @@ export default function TurnHistory({
   agentId?: string;
   onJump: (id: string) => void;
 }) {
+  reportPromptComposerRender("turn-history", agentId);
   const { items, loading, failed, retry } = useTurnErrors(
     sourceItems,
     enabled ? agent : undefined,

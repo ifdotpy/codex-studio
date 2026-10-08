@@ -4,6 +4,7 @@ import {
   type FormEvent,
   type ReactNode,
 } from "react";
+import { reportPromptComposerRender } from "./renderProbe";
 
 export type DraftSubscription = (
   session: string,
@@ -39,6 +40,7 @@ export default function PromptComposer(p: {
   className?: string;
   children: (draft: string) => ReactNode;
 }) {
+  reportPromptComposerRender("prompt-composer", p.session);
   const draft = usePromptDraft(p.session, p.getDraft, p.subscribeDraft);
   return (
     <form
