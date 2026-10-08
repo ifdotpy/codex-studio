@@ -59,11 +59,29 @@ class CryptoProcess:
             try:
                 if self.closed:
                     raise RuntimeError("The Ed25519 service is closed")
+                node = os.environ.get("CODEX_NODE") or shutil.which("node")
+                if not node:
+                    raise OSError("The Node runtime is unavailable")
+                self.sequence += 1
+                request = json.dumps({"id": self.sequence, "operation": operation, **fields},
+                                     separators=(",", ":")).encode() + b"\n"
+                if len(request) > 1_048_576:
+                    raise ValueError("The crypto request is too large")
+                if os.name == "nt":
+                    result = subprocess.run(
+                        [node, str(Path(__file__).with_suffix(".mjs"))],
+                        input=request, capture_output=True, timeout=max(0.1, deadline - time.monotonic()),
+                        check=True, env={**os.environ, "ELECTRON_RUN_AS_NODE": "1"},
+                    )
+                    if len(result.stdout) > 1_048_576:
+                        raise ValueError("The crypto response is too large")
+                    response = json.loads(result.stdout)
+                    if (not isinstance(response, dict) or response.get("id") != self.sequence
+                            or not isinstance(response.get("result"), dict)):
+                        raise ValueError("The crypto response is invalid")
+                    return cast(dict[str, Any], response["result"])
                 if self.process is None or self.process.poll() is not None:
                     self.close()
-                    node = os.environ.get("CODEX_NODE") or shutil.which("node")
-                    if not node:
-                        raise OSError("The Node runtime is unavailable")
                     self.process = subprocess.Popen(
                         [node, str(Path(__file__).with_suffix(".mjs"))], stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -71,11 +89,6 @@ class CryptoProcess:
                     )
                 process = self.process
                 assert process.stdin is not None and process.stdout is not None
-                self.sequence += 1
-                request = json.dumps({"id": self.sequence, "operation": operation, **fields},
-                                     separators=(",", ":")).encode() + b"\n"
-                if len(request) > 1_048_576:
-                    raise ValueError("The crypto request is too large")
                 incoming = bytearray()
                 offset = 0
                 for pipe in (process.stdin, process.stdout):

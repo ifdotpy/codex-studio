@@ -7,8 +7,10 @@ import signal
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -136,6 +138,35 @@ class WindowsServerContract(unittest.TestCase):
                     except subprocess.TimeoutExpired:
                         process.kill()
                         process.wait(timeout=5)
+
+    def test_multi_server_identity_uses_owner_only_windows_acl(self):
+        from codex_multi_server import MultiServerService
+        from codex_multi_server_crypto import CryptoProcess
+
+        with tempfile.TemporaryDirectory(prefix="studio identity Ω ") as temporary:
+            state = Path(temporary) / "state with spaces Ω"
+            service = object.__new__(MultiServerService)
+            service.lock = threading.RLock()
+            service._identity = None
+            service.runtime = SimpleNamespace(root=state)
+            service.crypto = CryptoProcess()
+            try:
+                service._keys()
+            finally:
+                service.crypto.shutdown()
+
+            identity = subprocess.run(["whoami.exe", "/user", "/fo", "csv", "/nh"],
+                                      capture_output=True, text=True, check=True).stdout
+            owner = identity.split(",", 1)[0].strip().strip('"').casefold()
+            for path in (state / "multi-server", state / "multi-server" / "identity.json"):
+                output = subprocess.run(["icacls.exe", str(path)], capture_output=True,
+                                        text=True, check=True, timeout=10).stdout.casefold()
+                self.assertNotIn("everyone", output)
+                self.assertNotIn("\\builtin\\users", output)
+                principals = [line.strip().casefold() for line in output.splitlines()
+                              if ":(" in line]
+                self.assertEqual(len(principals), 1, output)
+                self.assertIn(owner, principals[0], output)
 
     def test_backend_restart_keeps_supervisor_process(self):
         with tempfile.TemporaryDirectory(prefix="studio restart Ω ") as temporary:

@@ -327,11 +327,21 @@ class MultiServerService:
                 return self._identity
             directory = self.runtime.root / "multi-server"
             directory.mkdir(mode=0o700, exist_ok=True)
-            if directory.is_symlink() or directory.stat().st_mode & 0o077:
+            if directory.is_symlink():
+                raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
+            if os.name == "nt":
+                from codex_private_paths import ensure_private_dir
+
+                ensure_private_dir(directory)
+            elif directory.stat().st_mode & 0o077:
                 raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
             path = directory / "identity.json"
             if path.is_symlink():
                 raise AccessError(503, "credential_permissions", "The credential file must not be a symbolic link")
+            if os.name == "nt" and path.exists():
+                from codex_private_paths import protect_temp_file
+
+                protect_temp_file(path)
             if not path.exists():
                 pair = self.crypto.call("generate")
                 value = {"serverId": uuid.uuid4().hex, "publicKey": pair["publicKey"],
@@ -342,19 +352,26 @@ class MultiServerService:
                         stream.write(_json(value))
                         stream.flush()
                         os.fsync(stream.fileno())
+                    if os.name == "nt":
+                        from codex_private_paths import protect_temp_file
+
+                        protect_temp_file(temporary)
                     os.replace(temporary, path)
-                    directory_fd = os.open(directory, os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    if os.name != "nt":
+                        directory_fd = os.open(directory, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
             fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
             with os.fdopen(fd) as stream:
                 metadata = os.fstat(stream.fileno())
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 16_384:
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or (os.name != "nt" and metadata.st_mode & 0o077)
+                        or metadata.st_size > 16_384):
                     raise AccessError(503, "credential_permissions", "The credential file requires owner-only access")
                 value = json.load(stream)
                 private_key = value.get("privateKey") if isinstance(value, dict) else None
