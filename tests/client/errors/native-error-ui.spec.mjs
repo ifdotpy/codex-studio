@@ -12,6 +12,9 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("native error ui", async ({ page: runnerPage }) => {
+  // This one test covers many live-runtime scenarios. Solo repeats took 25.2–28.9s;
+  // the loaded checkpoint exceeded Playwright's 30s default at 31.6s.
+  test.setTimeout(60_000);
   const skill = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -203,7 +206,15 @@ test("native error ui", async ({ page: runnerPage }) => {
       .getByRole("dialog")
       .getByText("Codex offers gpt-5.6-sol.", { exact: false })
       .waitFor();
-    await page.waitForTimeout(250); // Let the dialog enter before the visual capture.
+    await page.waitForFunction(() => {
+      const dialog = document.querySelector('[role="dialog"]');
+      return (
+        dialog &&
+        dialog
+          .getAnimations({ subtree: true })
+          .every((animation) => animation.playState === "finished")
+      );
+    });
     await page
       .getByRole("dialog")
       .getByRole("button", { name: "Keep waiting", exact: true })

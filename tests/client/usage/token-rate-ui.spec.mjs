@@ -303,8 +303,15 @@ test("Token rate ui", async ({
       (id) => window.__lastRateBatch?.rates[id]?.active === false,
       other.id,
     );
-    const inject = async (rate) =>
-      page.evaluate(
+    const inject = async (rate) => {
+      await page.waitForFunction(() =>
+        window.__rateSources.some(
+          (source) =>
+            source.readyState === 1 &&
+            source.url.includes("/api/sync/stream?protocol=3"),
+        ),
+      );
+      await page.evaluate(
         ({ id, turnId, rate }) => {
           const source = window.__rateSources.findLast(
             (source) =>
@@ -339,6 +346,7 @@ test("Token rate ui", async ({
         },
         { id: other.id, turnId: actor.turnId, rate },
       );
+    };
     const waitForMobileFooterLayout = async () => {
       await page.waitForFunction(() => {
         const composer = document.querySelector("#composer");
@@ -476,6 +484,12 @@ test("Token rate ui", async ({
     );
     const cardsOffConnections = await connections();
     await page.locator("#team-toggle").click();
+    await page.waitForFunction(() =>
+      window.__rateSources.some(
+        (source) =>
+          source.readyState === 1 && source.url.includes("protocol=3"),
+      ),
+    );
     assert.deepEqual(
       await connections(),
       cardsOffConnections,
@@ -550,6 +564,12 @@ test("Token rate ui", async ({
       await connections(),
       cardsOffConnections,
       "open worker and Team cards add zero connections after return to the lead",
+    );
+    await page.waitForFunction(() =>
+      window.__rateSources.some(
+        (source) =>
+          source.readyState === 1 && source.url.includes("protocol=3"),
+      ),
     );
     assert.equal(
       await page.evaluate(

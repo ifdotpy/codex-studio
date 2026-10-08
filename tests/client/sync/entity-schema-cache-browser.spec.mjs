@@ -65,6 +65,8 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   });
   let activeHash = oldHash;
   let pendingEntitySequence;
+  let pendingChangeEventResolve;
+  let newPageStateCheckpoint;
   let firstPullFails = false;
   let pullFailureCount = 0;
   const rendererHashes = [];
@@ -113,6 +115,12 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
         confirmedResources.add(key);
         return true;
       });
+      if (pendingEntitySequence !== undefined)
+        console.log("schema-cache pending stream event", {
+          streamHash,
+          initialResources,
+          pendingEntitySequence,
+        });
       let body = "";
       if (initialResources.length > 0) {
         const identity = await fetch(new URL("/api/sync/identity", requestUrl));
@@ -141,6 +149,11 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
               },
             ],
           });
+          console.log("schema-cache injected change resource event", {
+            sequence: pendingEntitySequence,
+          });
+          pendingChangeEventResolve?.(pendingEntitySequence);
+          pendingChangeEventResolve = undefined;
           pendingEntitySequence = undefined;
         }
       }
@@ -168,6 +181,19 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       const requestHeaders = { ...route.request().headers() };
       requestHeaders[API_SCHEMA_HASH_HEADER.toLowerCase()] = oldHash;
       const response = await route.fetch({ headers: requestHeaders });
+      if (
+        requestUrl.pathname === "/api/sync/pull" &&
+        requestUrl.searchParams.get("scope") === "state:entities:v1" &&
+        requestUrl.searchParams.get("after") === "0" &&
+        response.status() === 200 &&
+        variantPages.has(route.request().frame().page())
+      ) {
+        const body = JSON.parse((await response.body()).toString("utf8"));
+        newPageStateCheckpoint = Math.max(
+          0,
+          ...(body.documents ?? []).map((document) => document.seq ?? 0),
+        );
+      }
       if (
         requestUrl.pathname === "/api/sync/pull" &&
         requestUrl.searchParams.get("scope")?.startsWith("transcript:")
@@ -366,7 +392,17 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
     await newPageSession.send("Network.setCacheDisabled", {
       cacheDisabled: true,
     });
+    const newPageResetPull = newPage.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1" &&
+        url.searchParams.get("after") === "0" &&
+        response.status() === 200
+      );
+    });
     await newPage.goto(origin);
+    await newPageResetPull;
     await expect(newPage.locator(".startup")).toBeVisible({ timeout: 10_000 });
     await expect(
       newPage.getByRole("button", { name: /^Release lead/ }).first(),
@@ -466,19 +502,54 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
       row.id.startsWith("entity:"),
     );
     assert.ok(mutationEntity, "fixture mutation returns a sequenced entity");
+    assert.ok(
+      Number.isSafeInteger(newPageStateCheckpoint),
+      "the new build's successful reset pull established its entity checkpoint",
+    );
+    assert.ok(
+      mutationEntity.seq > newPageStateCheckpoint,
+      `the fixture change is beyond the applied checkpoint: event=${mutationEntity.seq}, checkpoint=${newPageStateCheckpoint}`,
+    );
+    console.log("schema-cache checkpoint/event sequence", {
+      checkpoint: newPageStateCheckpoint,
+      event: mutationEntity.seq,
+    });
     const pullsBeforeMutationEvent = statePulls.filter(
       (pull) => pull.page === newPage,
     ).length;
     pendingEntitySequence = mutationEntity.seq;
+    const changeEventInjected = new Promise((resolve) => {
+      pendingChangeEventResolve = resolve;
+    });
     confirmedResources.clear();
-    await newPage.reload();
+    const retainedCheckpointPull = newPage.waitForRequest((request) => {
+      const url = new URL(request.url());
+      return (
+        url.pathname === "/api/sync/pull" &&
+        url.searchParams.get("scope") === "state:entities:v1" &&
+        Number(url.searchParams.get("after")) > 0
+      );
+    });
+    await changeEventInjected;
+    await retainedCheckpointPull;
     await expect
-      .poll(() => statePulls.filter((pull) => pull.page === newPage).length)
+      .poll(() => statePulls.filter((pull) => pull.page === newPage).length, {
+        message: "the route records the retained-checkpoint pull",
+      })
       .toBeGreaterThan(pullsBeforeMutationEvent);
     const checkpointPulls = statePulls.filter((pull) => pull.page === newPage);
     assert.ok(
+      checkpointPulls.length > pullsBeforeMutationEvent,
+      "the change resource event triggers a retained-checkpoint pull",
+    );
+    assert.ok(
       checkpointPulls.some((pull) => Number(pull.after) > 0),
       "the valid tab pulls the fixture change from its retained checkpoint",
+    );
+    assert.equal(
+      Number(checkpointPulls.find((pull) => Number(pull.after) > 0).after),
+      newPageStateCheckpoint,
+      "the incremental pull starts at the successful reset checkpoint",
     );
     await expect(newPage.locator(`[data-chat="${createdId}"]`)).toBeVisible({
       timeout: 30_000,
