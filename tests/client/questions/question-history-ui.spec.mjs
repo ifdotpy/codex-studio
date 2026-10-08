@@ -65,8 +65,8 @@ test("Question history", async ({ context }) => {
     assert.equal(transcriptLayout.left, 0);
     assert.equal(
       transcriptLayout.border,
-      "0px",
-      "assistant answers have no card border",
+      "1px",
+      "assistant answers retain their bordered card",
     );
     const copy = assistant.getByRole("button", {
       name: "Copy message",
