@@ -179,8 +179,20 @@ test("chat-status-ui", async ({ browser }) => {
     ).json();
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     const workspaceId = identityResponse.workspaceId;
+    // This spec exercises chat status, not the one-time sidebar-order migration.
+    // Keep the fixture at the migrated server state so its unauthenticated
+    // migration POST cannot leak unrelated 403s into the browser error check.
+    const withMigratedSidebarOrder = (document) => {
+      const envelope = JSON.parse(document.payload);
+      if (envelope.collection === "workspace" && envelope.id === "current")
+        envelope.value.sidebarOrder = { revision: 0, groups: {} };
+      return { ...document, payload: JSON.stringify(envelope) };
+    };
     const fixtureDocuments = new Map(
-      updateEntitySyncFixture(state).map((document) => [document.id, document]),
+      updateEntitySyncFixture(state).map((document) => [
+        document.id,
+        withMigratedSidebarOrder(document),
+      ]),
     );
     let fixtureTranscriptSeq = 1;
     let fixtureMaxSeq = Math.max(
@@ -189,7 +201,7 @@ test("chat-status-ui", async ({ browser }) => {
     );
     const rememberFixtureDocuments = (documents) => {
       for (const document of documents) {
-        fixtureDocuments.set(document.id, document);
+        fixtureDocuments.set(document.id, withMigratedSidebarOrder(document));
         fixtureMaxSeq = Math.max(fixtureMaxSeq, document.seq);
       }
     };
@@ -543,13 +555,14 @@ test("chat-status-ui", async ({ browser }) => {
     Object.assign(worker(1), { status: "completed", inFlight: false });
     state.runtime.tasks = [];
     state.runtime.monitors = [];
+    const finalPullAfter = fixtureMaxSeq;
     refreshFixtureEntities();
     const finalPullResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
         url.pathname === "/api/sync/pull" &&
         url.searchParams.get("scope") === "state:entities:v1" &&
-        Number(url.searchParams.get("after")) >= 290
+        Number(url.searchParams.get("after")) === finalPullAfter
       );
     });
     await page.reload();
