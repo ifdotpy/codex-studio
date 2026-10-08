@@ -1,6 +1,19 @@
-import { Button, Popover, Drawer, Switch } from "@mantine/core";
+import {
+  Button,
+  Popover,
+  Drawer,
+  Switch,
+  SegmentedControl,
+  Tooltip,
+} from "@mantine/core";
 import { ChevronDown } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { createPortal } from "react-dom";
 import {
   post,
@@ -27,7 +40,7 @@ import {
   type SetupRole,
 } from "./AgentSetupPicker";
 import "./execution-settings.css";
-import { SettingsSection } from "../ui/primitives";
+import { SettingsSection, SettingsRow } from "../ui/primitives";
 
 type Catalog = ReturnType<typeof useWorkerModels>;
 type ConversationBody = PostBody<"/api/conversation">;
@@ -100,6 +113,9 @@ type SettingsProps = {
   team?: Agent[];
   refresh: () => Promise<void>;
   teamDefaults?: boolean;
+  initialRole?: SetupRole;
+  settingsRow?: boolean;
+  extrasTargetId?: string;
   nextTurnSupported?: boolean;
   onOpenChange?: (opened: boolean) => void;
   openRequest?: number;
@@ -184,7 +200,7 @@ const jsonObject = (value: unknown): Json | null => {
 
 export function ExecutionSettings(props: SettingsProps) {
   const [role, setRole] = useState<SetupRole>(
-    props.teamDefaults ? "worker" : "orchestrator",
+    props.initialRole || (props.teamDefaults ? "worker" : "orchestrator"),
   );
   const [opened, setOpened] = useState(false);
   useEffect(() => {
@@ -193,6 +209,14 @@ export function ExecutionSettings(props: SettingsProps) {
       setOpened(true);
     }
   }, [props.openRequest]);
+  const changeOpened = useCallback(
+    (value: boolean) => {
+      setOpened(value);
+      if (!value && props.settingsRow)
+        setRole(props.initialRole || "orchestrator");
+    },
+    [props.settingsRow, props.initialRole],
+  );
   const scope = JSON.stringify([props.agent.id, accountOf(props.agent), role]);
   return (
     <ScopedExecutionSettings
@@ -202,7 +226,7 @@ export function ExecutionSettings(props: SettingsProps) {
       role={role}
       onRole={setRole}
       opened={opened}
-      setOpened={setOpened}
+      setOpened={changeOpened}
     />
   );
 }
@@ -217,6 +241,9 @@ function ScopedExecutionSettings({
   nextTurnSupported,
   onOpenChange,
   permissionsOnly = false,
+  initialRole = "orchestrator",
+  settingsRow = false,
+  extrasTargetId,
   permissionsTargetId,
   onAccountChange,
   accountDisabled = false,
@@ -237,6 +264,12 @@ function ScopedExecutionSettings({
       permissionsTargetId ? document.getElementById(permissionsTargetId) : null,
     );
   }, [permissionsTargetId]);
+  const [extrasTarget, setExtrasTarget] = useState<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    setExtrasTarget(
+      extrasTargetId ? document.getElementById(extrasTargetId) : null,
+    );
+  }, [extrasTargetId]);
   const mounted = useRef(true);
   useEffect(() => {
     mounted.current = true;
@@ -343,7 +376,7 @@ function ScopedExecutionSettings({
     role === "review" ? agent.workerDefaults?.accountKey : current.account_key;
   const accountCatalog = useWorkerModels(
     effectiveAccount || accountOf(agent),
-    teamDefaults && opened,
+    teamDefaults && (opened || settingsRow),
     !effectiveAccount,
   );
   const catalog = teamDefaults ? accountCatalog : parentCatalog;
@@ -1052,20 +1085,56 @@ function ScopedExecutionSettings({
       )}
     </>
   );
-  const permissions = (
-    <>
-      {agent.isLead && agent.provider !== "claude" && (
+  const permissionsActive = !!agent.inFlight || busy.has(agent.status ?? "");
+  const permissions =
+    agent.isLead && agent.provider !== "claude" ? (
+      settingsRow ? (
+        <SettingsRow label="Permissions">
+          <Tooltip
+            label={
+              permissionsActive
+                ? "Available when this turn ends."
+                : !("yoloMode" in agent)
+                  ? "Available after the server update."
+                  : ""
+            }
+            disabled={!permissionsActive && "yoloMode" in agent}
+          >
+            <span>
+              <SegmentedControl
+                aria-label="Full access without approval"
+                value={
+                  (pendingYolo?.value ?? agent.yoloMode === true)
+                    ? "full"
+                    : "ask"
+                }
+                disabled={saving || permissionsActive || !("yoloMode" in agent)}
+                data={[
+                  { value: "ask", label: "Ask" },
+                  { value: "full", label: "Full" },
+                ]}
+                onChange={(value) => void changeYolo(value === "full")}
+              />
+            </span>
+          </Tooltip>
+          {error && (
+            <p className="execution-error" role="alert">
+              {error}
+            </p>
+          )}
+        </SettingsRow>
+      ) : (
         <SettingsSection title="Permissions">
           <p>Applies to the whole team.</p>
           <Switch
             label="Full access without approval"
             aria-label="Full access without approval"
             checked={pendingYolo?.value ?? agent.yoloMode === true}
-            disabled={saving || active || !("yoloMode" in agent)}
+            disabled={saving || permissionsActive || !("yoloMode" in agent)}
             description={
               !("yoloMode" in agent)
                 ? "Available after the server update."
-                : active
+                : permissionsActive
                   ? "Available when this turn ends."
                   : agent.yoloMode == null
                     ? "The team uses normal Codex permissions."
@@ -1080,44 +1149,137 @@ function ScopedExecutionSettings({
             </p>
           )}
         </SettingsSection>
-      )}
-    </>
-  );
+      )
+    ) : null;
   const mainSettings =
     role === "orchestrator" ? current : settingsFor(agent, false);
   const mainModel = mainSettings.model || agent.model || "";
   const mainInfo = infoFor(parentCatalog, mainModel);
+  const summaryRole = settingsRow ? initialRole : "orchestrator";
+  const summary =
+    summaryRole === "orchestrator"
+      ? mainSettings
+      : role === "worker"
+        ? current
+        : settingsFor(agent, true);
+  const summaryReview = role === "review" ? reviewCurrent : reviewStored;
+  const summaryModel =
+    summaryRole === "review"
+      ? summaryReview.model || mainModel
+      : summary.model || mainModel;
+  const summaryAccount =
+    summaryRole === "orchestrator"
+      ? accountOf(agent)
+      : summary.account_key || accountOf(agent);
+  const summaryWorkerCatalog = useWorkerModels(
+    summaryAccount,
+    settingsRow && summaryRole !== "orchestrator",
+    !summary.account_key,
+  );
+  const summaryCatalog =
+    summaryRole === "orchestrator" ? parentCatalog : summaryWorkerCatalog;
+  const summaryInfo =
+    infoFor(summaryCatalog, summaryModel) ||
+    infoFor(parentCatalog, summaryModel);
+  const summaryProvider =
+    summaryRole === "review"
+      ? "codex"
+      : summaryInfo?.provider ||
+        activeAccount?.provider ||
+        agent.provider ||
+        "codex";
+  const summaryEffort =
+    (summaryRole === "review"
+      ? summaryReview.effort || mainSettings.effort
+      : summary.effort) ||
+    summaryInfo?.defaultReasoningEffort ||
+    mainSettings.effort ||
+    mainInfo?.defaultReasoningEffort;
   const trigger = (
     <Button
       className="execution-menu"
       rightSection={<ChevronDown size={14} />}
-      aria-label={label}
+      aria-label={
+        settingsRow
+          ? initialRole === "worker"
+            ? "Subagent defaults"
+            : initialRole === "review"
+              ? "Review settings"
+              : agent.isLead
+                ? "Main agent settings"
+                : "Subagent settings"
+          : label
+      }
       aria-expanded={opened}
-      title={[
-        selectedModel,
-        current.effort || "Default reasoning",
-        current.fast_mode ? "Fast" : "Standard",
-        `${modeLabel}${modeQueued ? " (next turn)" : ""}`,
-      ].join(" · ")}
       onClick={() => {
+        if (settingsRow) onRole(initialRole);
         setError("");
         setStatus(null);
         setOpened(!opened);
       }}
     >
-      <ProviderMark provider={agent.provider || "codex"} />
-      <span className="execution-selected">
-        {displayModel(parentCatalog, mainModel)} ·{" "}
-        {title(
-          mainSettings.effort || mainInfo?.defaultReasoningEffort || "Default",
-        )}
-        {connectedAccounts.filter(
-          (account) =>
-            (account.provider || "codex") === (agent.provider || "codex"),
-        ).length > 1 &&
-          ` · ${setupAccountName(accounts.find((account) => account.id === accountOf(agent)))}`}
+      <ProviderMark provider={summaryProvider} />
+      <span
+        className="execution-selected"
+        data-inherited={
+          summaryRole === "review"
+            ? !summaryReview.model || undefined
+            : summaryRole === "worker"
+              ? summary.model === null || undefined
+              : undefined
+        }
+      >
+        {displayModel(summaryCatalog, summaryModel)}
+        {summaryEffort && ` · ${title(summaryEffort)}`}
+        {summaryRole !== "review" &&
+          connectedAccounts.filter(
+            (account) => (account.provider || "codex") === summaryProvider,
+          ).length > 1 &&
+          ` · ${setupAccountName(accounts.find((account) => account.id === summaryAccount))}`}
       </span>
     </Button>
+  );
+  const extras = (
+    <div className="settings-group">
+      {selectedProvider !== "claude" && (
+        <Switch
+          label="Daybreak"
+          aria-label="Daybreak"
+          checked={daybreakEnabled}
+          disabled={
+            disabled ||
+            (daybreakEnabled
+              ? !supportsMode(info, false)
+              : !supportsMode(info, true))
+          }
+          onChange={(event) =>
+            void change({ daybreak_enabled: event.currentTarget.checked })
+          }
+        />
+      )}
+      <Switch
+        label="Fast mode"
+        aria-label="Fast mode"
+        checked={current.fast_mode}
+        disabled={
+          disabled || !modeSupported || (!current.fast_mode && !fastTier(info))
+        }
+        onChange={(event) =>
+          void change({ fast_mode: event.currentTarget.checked })
+        }
+      />
+      {error && <p role="alert">{error}</p>}
+      {unconfirmed && (
+        <Button
+          disabled={saving}
+          onClick={() =>
+            void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
+          }
+        >
+          Check settings save
+        </Button>
+      )}
+    </div>
   );
   if (permissionsOnly) return permissions;
   if (mobile)
@@ -1125,6 +1287,7 @@ function ScopedExecutionSettings({
       <>
         {trigger}
         {permissionsTarget && createPortal(permissions, permissionsTarget)}
+        {extrasTarget && createPortal(extras, extrasTarget)}
         <Drawer
           opened={opened}
           onClose={() => setOpened(false)}
@@ -1143,6 +1306,7 @@ function ScopedExecutionSettings({
   return (
     <>
       {permissionsTarget && createPortal(permissions, permissionsTarget)}
+      {extrasTarget && createPortal(extras, extrasTarget)}
       <Popover
         opened={opened}
         onChange={setOpened}

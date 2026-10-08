@@ -159,11 +159,33 @@ test("execution settings ui", async ({ browser: _browser }) => {
         await page
           .getByRole("button", { name: "Chat settings", exact: true })
           .click();
-      const trigger = settings.locator(".execution-menu");
+      if (name === "Main agent settings") {
+        assert.deepEqual(
+          await settings.locator(".ui-row-label").allTextContents(),
+          ["Model", "Workers", "Review", "Parallel", "Permissions", "Browser"],
+        );
+        assert.equal(
+          await settings.locator(".chat-settings-more").getAttribute("open"),
+          null,
+        );
+        assert.equal(await settings.locator("h3").count(), 0);
+        assert.equal(
+          await settings
+            .getByRole("button", { name: "Review settings", exact: true })
+            .count(),
+          1,
+        );
+      }
+      const trigger = settings.getByRole("button", { name, exact: true });
       if ((await trigger.getAttribute("aria-expanded")) !== "true")
         await trigger.click();
       const role = name === "Subagent defaults" ? "Worker" : "Orchestrator";
-      await page.getByRole("button", { name: role, exact: true }).click();
+      assert.equal(
+        await page
+          .getByRole("button", { name: role, exact: true })
+          .getAttribute("aria-pressed"),
+        "true",
+      );
     };
     await page
       .locator("[data-chat]")
@@ -260,8 +282,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await waitFor(() => leadReasoning.isEnabled());
     await page.getByText("Permissions", { exact: true }).click();
-    const yolo = page.getByRole("switch", {
-      name: "Full access without approval",
+    const yolo = page.getByRole("radio", {
+      name: "Full",
       exact: true,
     });
     assert.equal(await yolo.isChecked(), true);
@@ -269,7 +291,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.yolo_mode === false,
     );
-    await yolo.click();
+    await page
+      .locator("#chat-settings-permissions")
+      .getByText("Ask", { exact: true })
+      .click();
     await page
       .locator("#chat-settings-permissions .execution-error[role=alert]")
       .filter({ hasText: "Wait for every team turn" })
@@ -533,8 +558,8 @@ test("execution settings ui", async ({ browser: _browser }) => {
     await page.locator(`[data-chat="${fresh.id}"]`).click();
     await openSettings("Main agent settings");
     await page.getByText("Permissions", { exact: true }).click();
-    const freshYolo = page.getByRole("switch", {
-      name: "Full access without approval",
+    const freshYolo = page.getByRole("radio", {
+      name: "Full",
       exact: true,
     });
     assert.equal(await freshYolo.isChecked(), true);
@@ -542,7 +567,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       fresh.id,
       (body) => body.yolo_mode === false,
     );
-    await freshYolo.uncheck();
+    await page
+      .locator("#chat-settings-permissions")
+      .getByText("Ask", { exact: true })
+      .click();
     assert.ok((await freshYoloOffSaved).ok());
     await waitFor(
       async () =>
@@ -554,7 +582,10 @@ test("execution settings ui", async ({ browser: _browser }) => {
       fresh.id,
       (body) => body.yolo_mode === true,
     );
-    await freshYolo.check();
+    await page
+      .locator("#chat-settings-permissions")
+      .getByText("Full", { exact: true })
+      .click();
     assert.ok((await freshYoloOnSaved).ok());
     await waitFor(
       async () =>
