@@ -19,7 +19,14 @@ test("native error ui", async ({ page: runnerPage }) => {
   const proc = spawn(
     "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
-    { stdio: ["pipe", "pipe", "pipe"] },
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: {
+        ...process.env,
+        CAPACITY_UI_FIXTURE: "1",
+        CAPACITY_UI_RETRY_DELAYS: JSON.stringify([60, 60, 60, 60]),
+      },
+    },
   );
   let log = "",
     page;
@@ -120,6 +127,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       name: "Warnings",
       exact: true,
     });
+    await accountNotice.getByText("Details", { exact: true }).click();
     assert.deepEqual(
       JSON.parse(await accountNotice.locator("pre").innerText()),
       accountDetails,
@@ -150,7 +158,11 @@ test("native error ui", async ({ page: runnerPage }) => {
         .count(),
       0,
     );
-    await accountNotice
+    const featureNotice = accountNotice
+      .locator("article")
+      .filter({ hasText: featureWarning });
+    await featureNotice.locator("summary").click();
+    await featureNotice
       .getByText('"current_time_reminder"', { exact: false })
       .waitFor();
     await page.keyboard.press("Escape");
@@ -224,6 +236,7 @@ test("native error ui", async ({ page: runnerPage }) => {
       .locator('[data-phase="retrying"]')
       .getByText("Reconnecting 1/5", { exact: true })
       .waitFor();
+    await page.locator('[data-phase="retrying"] summary').click();
     await page
       .locator('[data-phase="retrying"] pre')
       .getByText("The request failed. Another attempt starts in 2 seconds.", {
@@ -233,18 +246,21 @@ test("native error ui", async ({ page: runnerPage }) => {
     event("error", {
       willRetry: true,
       error: {
-        message: { message: "Reconnecting 2/5" },
+        message: "Reconnecting 2/5",
         codexErrorInfo: "other",
-        additionalDetails: {
+        additionalDetails: JSON.stringify({
           message: "The request failed. Another attempt starts in 2 seconds.",
           httpStatusCode: 503,
-        },
+        }),
       },
     });
     await page
       .locator('[data-phase="retrying"]')
       .getByText("Reconnecting 2/5", { exact: true })
       .waitFor();
+    const retryingDetails = page.locator('[data-phase="retrying"] details');
+    if (!(await retryingDetails.evaluate((details) => details.open)))
+      await retryingDetails.locator("summary").click();
     assert.deepEqual(
       JSON.parse(await page.locator('[data-phase="retrying"] pre').innerText()),
       {
@@ -404,9 +420,10 @@ test("native error ui", async ({ page: runnerPage }) => {
       message: "Model is at capacity",
       codexErrorInfo: "serverOverloaded",
     });
-    await page
-      .locator(".native-error.warning")
-      .getByText("Model is at capacity", { exact: true })
+    const capacityError = page.locator(".native-error.warning");
+    await capacityError.waitFor();
+    await capacityError
+      .getByText("Waiting for the account sign-in", { exact: true })
       .waitFor();
     await page
       .locator(".native-notice.warning")
