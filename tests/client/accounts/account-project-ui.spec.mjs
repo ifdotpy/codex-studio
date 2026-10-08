@@ -980,7 +980,9 @@ test("account project ui", async ({ browser: _browser }) => {
       .click();
     await otherRow.waitFor({ state: "detached" });
     assert.equal(archivedAccounts[0].id, "other");
-    await page.getByRole("button", { name: "Close", exact: true }).click();
+    await deletion.getByRole("button", { name: "Close", exact: true }).click();
+    await deletion.waitFor({ state: "hidden" });
+    await removalManager.getByRole("button", { name: "Close" }).click();
     await removalManager.waitFor({ state: "hidden" });
 
     await openProject("fixture");
