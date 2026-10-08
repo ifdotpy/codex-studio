@@ -149,7 +149,9 @@ class WindowsServerContract(unittest.TestCase):
             log = (root / "entrypoint.log").open("ab")
             executable, environment = _base_python()
             environment.update({"CODEX_HOME": str(profile), "CODEX_AGENTS_STATE_DIR": str(state),
-                                "CODEX_AGENTS_SUPERVISOR_MODE": "1"})
+                                "CODEX_AGENTS_SUPERVISOR_MODE": "1",
+                                "CODEX_BIN": "",
+                                "PATH": str(Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32")})
             process = subprocess.Popen(
                 [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
