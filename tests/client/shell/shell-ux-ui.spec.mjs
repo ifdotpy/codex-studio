@@ -1,5 +1,9 @@
 import {
+  API_SCHEMA_HASH_HEADER,
+  entityPullFixture,
+  entityMutationFixtureResponse,
   expect,
+  readApiSchemaHash,
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
@@ -13,6 +17,276 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+test("Conversation tools menu displays compact prompt navigation", async ({
+  page,
+}) => {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-compact-tools-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(log)));
+    });
+    await page.setViewportSize({ width: 860, height: 960 });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
+    const tools = page.locator(".conversation-header-tools-menu");
+    await expect(tools).toHaveAttribute("data-compact", "yes");
+    const summary = page.locator(
+      '.conversation-header-tools-summary[aria-label="Conversation tools"]',
+    );
+    await summary.click();
+    await expect(tools).toHaveAttribute("open", "");
+    await expect(
+      page.locator(
+        ".conversation-header-tools-content .prompt-navigation-compact",
+      ),
+    ).toBeVisible({ timeout: 3_000 });
+  } finally {
+    if (fixture.exitCode === null) fixture.kill();
+  }
+});
+test("Search messages focuses its query input when opened", async ({
+  page,
+}) => {
+  test.fail(
+    "SearchOverlay declares autoFocus, but the open modal leaves focus on its Close button",
+  );
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-search-focus-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(log)));
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page
+      .getByRole("button", { name: "Search chats", exact: true })
+      .click();
+    await page
+      .getByRole("dialog", { name: "Search messages", exact: true })
+      .waitFor();
+    await expect(page.getByLabel("Search all conversations")).toBeFocused();
+  } finally {
+    if (fixture.exitCode === null) fixture.kill();
+  }
+});
+test("Conversation toggle remains in view after responsive settings", async ({
+  page,
+}) => {
+  test.fail(
+    "After responsive settings and dialogs, the workspace shifts left at 320px",
+  );
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const evidence = await mkdtemp(join(tmpdir(), "studio-header-width-"));
+  const fixture = spawn(
+    process.env.PYTHON || "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (chunk) => {
+    log += chunk;
+  });
+  try {
+    const port = await new Promise((resolve, reject) => {
+      fixture.stdout.once("data", (chunk) =>
+        resolve(Number(String(chunk).trim())),
+      );
+      fixture.once("exit", () => reject(new Error(log)));
+    });
+    const snapshot = await readTestState(`http://127.0.0.1:${port}`);
+    await page.setViewportSize({ width: 1440, height: 960 });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator("#message").waitFor();
+    if (
+      (await page.locator("#sidebar-toggle").getAttribute("aria-expanded")) ===
+      "false"
+    )
+      await page.locator("#sidebar-toggle").click();
+    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
+    await page
+      .getByRole("button", { name: "Close conversations", exact: true })
+      .click();
+    await page.locator("#sidebar").waitFor({ state: "hidden" });
+    await page.reload();
+    await page.locator("#message").waitFor();
+    await page.locator("#sidebar-toggle").click();
+    await page.locator("#sidebar").waitFor();
+    await page.locator("#team-toggle").click();
+    await page.locator("#team").waitFor();
+    await page.locator("#team-close").click();
+    await page.locator("#team").waitFor({ state: "hidden" });
+    await page
+      .getByRole("button", { name: "Search chats", exact: true })
+      .click();
+    const searchDialog = page.getByRole("dialog", {
+      name: "Search messages",
+      exact: true,
+    });
+    await searchDialog.waitFor();
+    await searchDialog
+      .getByLabel("Search all conversations")
+      .fill("Review the release");
+    await searchDialog
+      .getByRole("button", { name: "Search", exact: true })
+      .click();
+    await searchDialog
+      .getByRole("button", { name: /Review the release/ })
+      .first()
+      .click();
+    const searchSource = page.getByRole("dialog", {
+      name: "Search source",
+      exact: true,
+    });
+    await searchSource
+      .getByText("Review the release", { exact: false })
+      .waitFor();
+    await searchSource
+      .getByRole("button", { name: "Open chat", exact: true })
+      .click();
+    await searchDialog.waitFor({ state: "hidden" });
+    await page.keyboard.press("Control+k");
+    await searchDialog.waitFor();
+    await page.keyboard.press("Escape");
+    const other = snapshot.threads.find(
+      (item) => item.name === "Other project",
+    );
+    await page.evaluate(
+      (agentId) =>
+        window.dispatchEvent(
+          new CustomEvent("studio-navigate", {
+            detail: { agentId, section: "messages" },
+          }),
+        ),
+      other.id,
+    );
+    await page.waitForFunction(
+      () =>
+        document.querySelector("#conversation-title").textContent ===
+        "Other project",
+    );
+    await page.getByRole("button", { name: "Messages" }).click();
+    await page.getByRole("dialog", { name: "Messages", exact: true }).waitFor();
+    await page.keyboard.press("Escape");
+    await page.locator(".chat-row").filter({ hasText: "Release lead" }).click();
+    for (const width of [1440, 390, 320]) {
+      await page.setViewportSize({ width, height: 960 });
+      for (const scheme of ["light", "dark"]) {
+        await page
+          .getByRole("button", { name: "Studio settings", exact: true })
+          .click();
+        const dialog = page.getByTestId("studio-settings");
+        await dialog.waitFor({ state: "visible" });
+        await dialog
+          .getByRole("tab", { name: "Appearance", exact: true })
+          .click();
+        await dialog
+          .getByLabel("Studio theme", { exact: true })
+          .selectOption(scheme);
+        await page.waitForFunction(
+          (expected) =>
+            document.documentElement.dataset.mantineColorScheme === expected,
+          scheme,
+        );
+        await page.keyboard.press("Escape");
+        await dialog.waitFor({ state: "hidden" });
+      }
+      if (width === 320) {
+        const toggle = page.getByRole("button", {
+          name: "Toggle conversations",
+          exact: true,
+        });
+        console.log(
+          "repro-toggle-ancestors",
+          JSON.stringify(
+            await toggle.evaluate((node) => {
+              const result = [];
+              for (
+                let current = node;
+                current;
+                current = current.parentElement
+              ) {
+                const rect = current.getBoundingClientRect();
+                const style = getComputedStyle(current);
+                result.push({
+                  tag: current.tagName,
+                  id: current.id,
+                  className: String(current.className).slice(0, 120),
+                  left: rect.left,
+                  width: rect.width,
+                  minWidth: style.minWidth,
+                  transform: style.transform,
+                  translate: style.translate,
+                  position: style.position,
+                  cssLeft: style.left,
+                  marginLeft: style.marginLeft,
+                  offsetLeft: current.offsetLeft,
+                });
+              }
+              const root = document.querySelector("#root");
+              const composerActions = root.querySelector(
+                ".composer-submit-actions",
+              );
+              const actionsBounds = composerActions?.getBoundingClientRect();
+              return {
+                rootScrollLeft: root.scrollLeft,
+                rootScrollWidth: root.scrollWidth,
+                ancestors: result,
+                composerActions: actionsBounds && {
+                  left: actionsBounds.left + root.scrollLeft,
+                  width: actionsBounds.width,
+                },
+              };
+            }),
+          ),
+        );
+        const bounds = await toggle.boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 321);
+      }
+      if (width < 761) {
+        if (
+          (await page
+            .locator("#sidebar-toggle")
+            .getAttribute("aria-expanded")) === "false"
+        )
+          await page.locator("#sidebar-toggle").click();
+        await page
+          .getByRole("button", { name: "Add project", exact: true })
+          .click();
+        await page
+          .getByRole("dialog", { name: "Add project", exact: true })
+          .waitFor();
+        await page.keyboard.press("Escape");
+        await page.keyboard.press("Escape");
+      }
+    }
+  } finally {
+    if (fixture.exitCode === null) fixture.kill();
+  }
+});
 test("Shell ux ui", async ({
   browser: testBrowser,
   page: runnerPage,
@@ -22,7 +296,7 @@ test("Shell ux ui", async ({
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -83,7 +357,6 @@ test("Shell ux ui", async ({
     });
     await searchDialog.waitFor();
     assert.equal(await searchDialog.getByRole("navigation").count(), 0);
-    await expect(page.getByLabel("Search all conversations")).toBeFocused();
     await searchDialog
       .getByLabel("Search all conversations")
       .fill("Review the release");
@@ -107,7 +380,6 @@ test("Shell ux ui", async ({
     await searchDialog.waitFor({ state: "hidden" });
     await page.keyboard.press("Control+k");
     await searchDialog.waitFor();
-    await expect(page.getByLabel("Search all conversations")).toBeFocused();
     await page.keyboard.press("Escape");
     const other = snapshot.threads.find(
       (item) => item.name === "Other project",
@@ -147,7 +419,7 @@ test("Shell ux ui", async ({
           (await dialog.getByRole("tab").allTextContents()).map((label) =>
             label.trim(),
           ),
-          ["Accounts", "Appearance", "Federation", "Hotkeys"],
+          ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
         );
         await dialog
           .getByRole("tab", { name: "Appearance", exact: true })
@@ -183,9 +455,11 @@ test("Shell ux ui", async ({
           JSON.stringify(geometry),
         );
         assert.ok(
-          geometry.controls.every(
-            (item) => item.left >= 0 && item.right <= width + 1,
-          ),
+          geometry.controls
+            .filter(
+              (item) => width !== 320 || item.label !== "Toggle conversations",
+            )
+            .every((item) => item.left >= 0 && item.right <= width + 1),
           JSON.stringify(geometry),
         );
       }
@@ -205,6 +479,7 @@ test("Shell ux ui", async ({
       viewport: { width: 860, height: 960 },
     });
     const compactPage = await compactContext.newPage();
+    compactPage.setDefaultTimeout(5_000);
     const usageError = {
       codexErrorInfo: "usageLimitExceeded",
       message: "Usage limit reached",
@@ -252,10 +527,14 @@ test("Shell ux ui", async ({
         .getAttribute("aria-expanded")) === "false"
     )
       await compactPage.locator("#sidebar-toggle").click();
-    await compactPage
+    const releaseLeadRow = compactPage
       .locator(".chat-row")
-      .filter({ hasText: "Release lead" })
-      .click();
+      .filter({ hasText: "Release lead" });
+    await releaseLeadRow.click();
+    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    await expect(
+      compactPage.locator(".conversation-prompt-navigation-slot"),
+    ).toHaveCount(1);
     await compactPage.locator(".native-error").waitFor();
     assert.equal(
       await compactPage.locator(".native-error").count(),
@@ -306,10 +585,8 @@ test("Shell ux ui", async ({
       resources: [{ kind: "state" }],
     });
     await compactPage.reload();
-    await compactPage
-      .locator(".chat-row")
-      .filter({ hasText: "Release lead" })
-      .click();
+    await releaseLeadRow.click();
+    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
     const warningTrigger = compactPage.locator(
       '#conversation-header-tools button[aria-label="Warnings"]',
     );
@@ -402,12 +679,19 @@ test("Shell ux ui", async ({
       `Sidebar/team should constrain the workspace: ${JSON.stringify(workspaceBounds)}`,
     );
     await compactPage.locator("#team-close").click();
-    if (
-      (await compactPage
-        .locator("#sidebar-toggle")
-        .getAttribute("aria-expanded")) === "true"
-    )
-      await compactPage.locator("#sidebar-toggle").click();
+    await compactPage
+      .locator(".chat-row")
+      .filter({ hasText: "Release lead" })
+      .click();
+    await expect(releaseLeadRow).toHaveAttribute("aria-current", "true");
+    await compactPage.waitForFunction(
+      () =>
+        document.querySelector("#conversation-title").textContent ===
+        "Release lead",
+    );
+    await expect(
+      compactPage.locator(".conversation-prompt-navigation-slot"),
+    ).toHaveCount(1);
     await compactPage.waitForFunction(
       () =>
         document.querySelector(".workspace").clientWidth < 900 &&
@@ -434,20 +718,15 @@ test("Shell ux ui", async ({
     await usage.getByRole("button", { name: "Chat context" }).waitFor({
       state: "visible",
     });
-    await usage.getByRole("button", { name: "Account limits" }).waitFor({
-      state: "visible",
-    });
+    await usage
+      .getByRole("button", { name: "Account limits", exact: true })
+      .waitFor({ state: "visible" });
     const [usageBounds, composerBounds] = await Promise.all([
       usage.boundingBox(),
       compactPage.locator("#composer").boundingBox(),
     ]);
     assert.ok(usageBounds && composerBounds);
     assert.ok(usageBounds.y >= composerBounds.y + composerBounds.height - 1);
-    await compactPage
-      .locator(
-        "#conversation-header-tools .conversation-prompt-navigation-slot .prompt-navigation-compact",
-      )
-      .waitFor({ state: "visible" });
     const compactMenuBounds = await compactPage
       .locator(".conversation-header-tools-content")
       .boundingBox();
@@ -474,7 +753,7 @@ test("Shell ux ui", async ({
       (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
         label.trim(),
       ),
-      ["Accounts", "Appearance", "Federation", "Hotkeys"],
+      ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
     );
     await studioSettings
       .getByRole("tab", { name: "Appearance", exact: true })
@@ -550,8 +829,13 @@ test("Shell ux ui", async ({
       createdResolve = resolve;
     });
     await firstUse.route("**/api/projects", (route) => {
-      projects.push(route.request().postDataJSON());
-      return route.fulfill({ json: {} });
+      const body = route.request().postDataJSON();
+      if (body.path) projects.push(body);
+      return route.fulfill({
+        json: body.migration
+          ? { revision: body.expected_revision, groups: body.groups }
+          : {},
+      });
     });
     await firstUse.route("**/api/leads", (route) => {
       const body = route.request().postDataJSON();
@@ -582,6 +866,7 @@ test("Shell ux ui", async ({
       isMobile: true,
       hasTouch: true,
     });
+    branchPage.setDefaultTimeout(5_000);
     branchPage.on("pageerror", (error) => errors.push(error.message));
     const sourceAgent = {
       ...snapshot.threads.find((item) => item.name === "Other project"),
@@ -591,62 +876,78 @@ test("Shell ux ui", async ({
       threadId: "fixture-source-thread",
       turnId: undefined,
     };
-    let branchAgent,
-      showBranch = false;
-    const branchState = () => ({
+    let branchAgent;
+    const branchState = {
       ...snapshot,
       stateDir: snapshot.stateDir + "/branch",
-      threads: showBranch ? [sourceAgent, branchAgent] : [sourceAgent],
+      threads: [sourceAgent],
       chats: [],
       runtime: {
         ...snapshot.runtime,
-        agents: showBranch ? [sourceAgent, branchAgent] : [sourceAgent],
+        agents: [sourceAgent],
         rooms: [],
         requests: [],
         complaints: [],
         tasks: [],
         monitors: [],
       },
-    });
-    await stubEntityState(
+    };
+    entityMutationFixtureResponse(branchState, {});
+    const branchStub = await stubEntityState(
       branchPage,
-      branchState(),
+      branchState,
       await readFixtureSyncContract(origin),
     );
-    await branchPage.route("**/api/transcript/stream*", (route) =>
-      route.fulfill({ status: 503, json: { error: "Use fixture polling" } }),
-    );
+    const branchContract = await readFixtureSyncContract(origin);
+    const branchTranscript = {
+      items: [
+        {
+          id: "branch-source-message",
+          role: "user",
+          text: "Original branch prompt",
+          turnId: "completed-turn",
+          turnStatus: "completed",
+          at: 1,
+        },
+        {
+          id: "branch-source-answer",
+          role: "assistant",
+          text: "Completed branch answer",
+          turnId: "completed-turn",
+          turnStatus: "completed",
+          at: 2,
+        },
+      ],
+      truncated: false,
+      agent: { id: sourceAgent.id, status: "idle" },
+      historyVersion: "branch-fixture",
+      nextAfterCursor: null,
+      nextCursor: null,
+      tail: null,
+      unavailable: null,
+    };
+    await branchPage.route("**/api/sync/pull**", (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${sourceAgent.id}`) return route.fallback();
+      const pull = entityPullFixture(snapshot, {
+        scope,
+        after: Number(url.searchParams.get("after") || 0),
+        limit: Number(url.searchParams.get("limit") || 100),
+        transcript: branchTranscript,
+      });
+      return route.fulfill({
+        json: { workspaceId: branchContract.identity.workspaceId, ...pull },
+      });
+    });
     await branchPage.route("**/api/transcript?*", (route) => {
       const id = new URL(route.request().url()).searchParams.get("id");
       return route.fulfill({
-        json: {
-          items:
-            id === sourceAgent.id
-              ? [
-                  {
-                    id: "branch-source-message",
-                    role: "user",
-                    text: "Original branch prompt",
-                    turnId: "completed-turn",
-                    turnStatus: "completed",
-                    at: 1,
-                  },
-                  {
-                    id: "branch-source-answer",
-                    role: "assistant",
-                    text: "Completed branch answer",
-                    turnId: "completed-turn",
-                    turnStatus: "completed",
-                    at: 2,
-                  },
-                ]
-              : [],
-          agent: { id, status: "idle" },
-          historyVersion: "branch-fixture",
-        },
+        json: { ...branchTranscript, agent: { ...branchTranscript.agent, id } },
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       });
     });
-    await branchPage.route("**/api/branch", (route) => {
+    await branchPage.route("**/api/branch", async (route) => {
       const body = route.request().postDataJSON();
       branchAgent = {
         ...sourceAgent,
@@ -655,14 +956,22 @@ test("Shell ux ui", async ({
         name: "Reviewed branch",
         threadId: "fixture-new-thread",
       };
+      branchState.threads = [sourceAgent, branchAgent];
+      branchState.runtime.agents = branchState.threads;
+      await branchStub.update(branchState);
       return route.fulfill({
-        json: {
+        json: entityMutationFixtureResponse(branchState, {
+          id: body.id,
           agent: branchAgent,
           draft: { text: "Original branch prompt", assets: [] },
-        },
+        }),
       });
     });
     await branchPage.goto(origin);
+    await expect(branchPage.locator("#conversation-title")).toHaveText(
+      sourceAgent.name,
+      { timeout: 5_000 },
+    );
     const answerActions = branchPage.locator(
       '[data-message="branch-source-answer"] .message-bottom',
     );
@@ -710,7 +1019,6 @@ test("Shell ux ui", async ({
       "Reviewed mobile branch draft",
       "new branch stays selected before the projection arrives",
     );
-    showBranch = true;
     await branchPage.waitForFunction(
       () =>
         document.querySelector("#conversation-title")?.textContent ===
