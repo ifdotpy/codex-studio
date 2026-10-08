@@ -11,6 +11,12 @@ export function configureTokenRateStream(
 ) {
   watchStream = watch;
 }
+// The coordinator applies each batch once. Interest requests its cached replay.
+export function watchTokenRateInterest() {
+  return typeof window !== "undefined" && watchStream
+    ? watchStream(() => {})
+    : () => {};
+}
 const values = new Map<string, TokenRate | null>();
 const listeners = new Map<string, Set<(value: TokenRate | null) => void>>();
 const teamMembers = new Map<string, Set<string>>();

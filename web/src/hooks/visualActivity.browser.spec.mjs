@@ -17,11 +17,16 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     import TokenRate from '/src/components/TokenRate.tsx';
     import ReasoningDuration from '/src/components/conversation/transcript/ReasoningDuration.tsx';
     import ChatStatus from '/src/components/agents/ChatStatus.tsx';
-    import {receiveTokenRate,workerRateKey} from '/src/usage/tokenRate.ts';
+    import {receiveTokenRate,workerRateKey,configureTokenRateStream} from '/src/usage/tokenRate.ts';
     import '/src/visual-activity.css';
     import '/src/components/team-navigation.css';
     const e=React.createElement;
     window.commits={};
+    window.rateInterests=new Set();
+    configureTokenRateStream(listener=>{
+      window.rateInterests.add(listener);
+      return ()=>window.rateInterests.delete(listener);
+    });
     window.rate=(id,value)=>receiveTokenRate(id,{data:JSON.stringify({turnId:'turn',active:true,rate:value,outputTokens:100})});
     window.workerRate=value=>window.rate(workerRateKey('team','worker'),value);
     for(const id of ['near','far','closed'])window.rate(id,20);
@@ -129,6 +134,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
     expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(1);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(2);
     expect(
       await page
         .locator("#far .chat-status svg")
@@ -159,6 +165,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     );
     await page.locator("#fold summary").click();
     await expect(page.locator("#closed .token-rate")).toHaveText("129 tok/s");
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(3);
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(2);
@@ -166,6 +173,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(0);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(0);
     const ticks = await page.evaluate(() => window.visualMetrics.ticks);
     await page.waitForTimeout(1200);
     expect(await page.evaluate(() => window.visualMetrics.ticks)).toBe(ticks);
@@ -186,6 +194,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       "true",
     );
     await expect(page.locator("#far .token-rate")).toHaveText("129 tok/s");
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(1);
     await expect
       .poll(() => page.evaluate(() => window.activeVisualTimers()))
       .toBe(1);
@@ -197,6 +206,7 @@ test("hidden visual rows stop timers and rate renders and resume current values"
       .toBe(true);
     await page.evaluate(() => window.unmount());
     expect(await page.evaluate(() => window.activeVisualTimers())).toBe(0);
+    expect(await page.evaluate(() => window.rateInterests.size)).toBe(0);
     expect(await page.evaluate(() => window.visualMetrics.observers)).toBe(0);
     // Without an observer, keep visible-tab updates active after hide/resume.
     // There is no scroll observer to reactivate an offscreen row in this mode.

@@ -7,6 +7,7 @@ import {
   subscribeTokenRate,
   tweenTokenRate,
   workerRateKey,
+  watchTokenRateInterest,
 } from "../usage/tokenRate";
 import type { TokenRate as Rate } from "../usage/tokenRate";
 import { useVisualActivity } from "../hooks/useVisualActivity";
@@ -52,13 +53,18 @@ export default function TokenRate({
   const [shown, setShown] = useState(0);
   const current = useRef(0);
   const previousTurn = useRef("");
-  useEffect(
-    () =>
-      visualActive
-        ? subscribeTokenRate(scope, (value) => setSample({ id: scope, value }))
-        : undefined,
-    [scope, visualActive],
-  );
+  useEffect(() => {
+    if (!visualActive) return;
+    const stopRate = subscribeTokenRate(scope, (value) =>
+      setSample({ id: scope, value }),
+    );
+    const stopInterest =
+      variant === "footer" ? watchTokenRateInterest() : undefined;
+    return () => {
+      stopInterest?.();
+      stopRate();
+    };
+  }, [scope, visualActive, variant]);
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     const update = () => setMotionReduced(media.matches);
