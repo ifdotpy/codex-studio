@@ -1053,10 +1053,18 @@ def process_launch_environment(pid):
     return environment
 
 
-# Backend diagnostics and ownership. A native child neither reads nor needs
-# them, so they must not change its launch identity.
+# Backend diagnostics, ownership, and the desktop Node runtime for federation.
+# A native child does not need these values in its launch identity.
 BACKEND_ONLY_ENVIRONMENT = ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRICS',
-                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE')
+                            'CODEX_AGENTS_PROVIDER_CAPTURE', 'CODEX_AGENTS_PROVIDER_CAPTURE_FILE',
+                            'CODEX_NODE')
+
+# Shell and desktop launchers can supply different ambient values after an
+# update. Retained children keep their original values and exact signature.
+RETAINED_LAUNCHER_ENVIRONMENT = frozenset({
+    'PATH', 'LANG', 'LC_CTYPE', '__PYVENV_LAUNCHER__', 'COMMAND_MODE',
+    'MallocNanoZone', 'XPC_SERVICE_NAME', '__CFBundleIdentifier',
+})
 
 
 def native_launch_environment(root, handle, command, env, cwd):
@@ -1093,14 +1101,14 @@ def native_launch_environment(root, handle, command, env, cwd):
     comparable = dict(original)
     for key in BACKEND_ONLY_ENVIRONMENT:
         comparable.pop(key, None)
-    # Reattachment keeps the child's accepted launch, including its PATH and
-    # locale. A backend launcher can supply different ambient values. These
+    # Reattachment keeps the child's accepted launch, including its desktop
+    # and locale settings. A launcher can supply different ambient values. These
     # values never replace the live child's settings; command, account,
     # credentials, provider options and process identity still match exactly.
-    for key in ('PATH', 'LANG', '__PYVENV_LAUNCHER__'):
+    for key in RETAINED_LAUNCHER_ENVIRONMENT:
         comparable.pop(key, None)
     requested = {key: value for key, value in clean.items()
-                 if key not in {'PATH', 'LANG', '__PYVENV_LAUNCHER__'}}
+                 if key not in RETAINED_LAUNCHER_ENVIRONMENT}
     if (comparable != requested or Supervisor.signature(command, original, cwd) != saved[0]
             or not process_start_matches(pid, started, allow_legacy=True)):
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')

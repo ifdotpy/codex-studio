@@ -1254,12 +1254,47 @@ class ProcessSupervisorContract(unittest.TestCase):
     def test_reattach_preserves_native_environment_after_backend_launcher_changes(self):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
+        original = process_supervisor.process_launch_environment(native_pid)
+        signature = process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:default')['signature']
         first.close()
         with patch.dict(os.environ, {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
+                                    'LC_CTYPE': 'C.UTF-8', 'COMMAND_MODE': 'unix2003',
+                                    'MallocNanoZone': '0', 'XPC_SERVICE_NAME': 'desktop-launch',
+                                    '__CFBundleIdentifier': 'studio.desktop.fixture',
+                                    'CODEX_NODE': '/different/backend/electron',
                                     '__PYVENV_LAUNCHER__': '/different/backend/python'}):
             second = self.server()
+        self.assertTrue(second.proc.resumed)
         self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.assertEqual(process_supervisor.process_launch_environment(native_pid), original)
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:default')['signature'], signature)
+        operations = [json.loads(line)['method'] for line in
+                      (self.root/'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(operations.count('initialize'), 1)
+        self.assertNotIn('turn/start', operations)
+
+    def test_legacy_desktop_node_preserves_exact_launch_on_reattach(self):
+        with patch.dict(os.environ, {'CODEX_NODE': '/original/backend/electron'}), \
+                patch.object(process_supervisor, 'native_launch_environment',
+                             side_effect=lambda root, handle, command, env, cwd: dict(env)):
+            first = self.server()
+        native_pid = int(self.pid_file.read_text())
+        original = process_supervisor.process_launch_environment(native_pid)
+        signature = process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:default')['signature']
+        first.close()
+        with patch.dict(os.environ, {'CODEX_NODE': '/replacement/backend/electron',
+                                    'COMMAND_MODE': 'unix2003', 'MallocNanoZone': '0'}):
+            second = self.server()
+        self.assertTrue(second.proc.resumed)
+        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        self.assertEqual(int(self.pid_file.read_text()), native_pid)
+        self.assertEqual(process_supervisor.process_launch_environment(native_pid), original)
+        self.assertEqual(process_supervisor.supervisor_launch_snapshot(
+            self.root, 'account:default')['signature'], signature)
         operations = [json.loads(line)['method'] for line in
                       (self.root/'native-ops.jsonl').read_text().splitlines()]
         self.assertEqual(operations.count('initialize'), 1)
@@ -1270,6 +1305,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         native_pid = int(self.pid_file.read_text())
         first.close()
         with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1',
+                                    'CODEX_NODE': '/different/backend/electron',
                                     'CODEX_AGENTS_PROVIDER_CAPTURE': '1'}):
             second = self.server()
         self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
@@ -1283,9 +1319,12 @@ class ProcessSupervisorContract(unittest.TestCase):
         first = self.server()
         native_pid = int(self.pid_file.read_text())
         first.close()
-        for key in ('CODEX_HOME', 'HOME', 'OPENAI_API_KEY', 'STUDIO_CLAUDE_OPTIONS',
-                    'CLAUDE_CONFIG_DIR'):
-            with self.subTest(key=key), patch.dict(os.environ, {key: 'different-value'}):
+        for key in ('CODEX_HOME', 'HOME', 'OPENAI_API_KEY', 'CODEX_API_KEY',
+                    'STUDIO_CLAUDE_ACCOUNT', 'STUDIO_CLAUDE_BIN', 'STUDIO_CLAUDE_OPTIONS',
+                    'CLAUDE_CONFIG_DIR', 'STUDIO_NODE_BIN', 'UNRECOGNIZED_SETTING'):
+            with self.subTest(key=key), patch.dict(os.environ, {
+                    key: 'different-value', 'COMMAND_MODE': 'unix2003',
+                    'XPC_SERVICE_NAME': 'desktop-launch'}):
                 with self.assertRaisesRegex(RuntimeError, 'launch settings changed'):
                     self.server()
         with patch.dict(os.environ, {'PATH': '/usr/bin:/bin'}):
@@ -1295,13 +1334,16 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(int(self.pid_file.read_text()), native_pid)
 
     def test_backend_lock_metrics_do_not_change_native_launch_or_reattach(self):
-        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1'}):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '1',
+                                    'CODEX_NODE': '/original/backend/electron'}):
             first = self.server()
         native_pid = int(self.pid_file.read_text())
         self.assertFalse('CODEX_RUNTIME_LOCK_METRICS' in
                          process_supervisor.process_launch_environment(native_pid))
+        self.assertNotIn('CODEX_NODE', process_supervisor.process_launch_environment(native_pid))
         first.close()
-        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0'}):
+        with patch.dict(os.environ, {'CODEX_RUNTIME_LOCK_METRICS': '0',
+                                    'CODEX_NODE': '/replacement/backend/electron'}):
             second = self.server()
         self.assertTrue(second.proc.resumed)
         self.assertEqual(int(self.pid_file.read_text()), native_pid)

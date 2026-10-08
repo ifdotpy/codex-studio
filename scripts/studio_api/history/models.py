@@ -89,6 +89,15 @@ class TranscriptRecord(ContractModel):
     reasoningSince: float | None = None
     reasoningObservedAt: float | None = None
     observedWait: StrictBool | None = None
+    nativeNotice: Literal["info", "warning", "error"] | None = None
+    # Native provider payloads remain extensible JSON inside named UI fields.
+    nativeError: JsonValue | None = None
+    nativeHook: dict[str, JsonValue] | None = None
+    nativeReview: dict[str, JsonValue] | None = None
+    nativeHookQuiet: StrictBool | None = None
+    details: JsonValue | None = None
+    accountWide: StrictBool | None = None
+    previousError: JsonValue | None = None
 
 
 class TranscriptMessageRecord(TranscriptRecord):
