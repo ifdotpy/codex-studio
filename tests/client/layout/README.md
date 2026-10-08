@@ -47,14 +47,14 @@ state directories stay under this scratch root.
 The CPU limit is the smaller of `os.availableParallelism()` and the cgroup CPU
 quota. The runner samples `/proc/stat` ten times across about two seconds,
 subtracts its own process from each `procs_running` sample, and subtracts the
-80th-percentile competing count from the CPU limit. The memory limit first
-reserves the larger constraint: worker use is at most half of available memory
-and leaves 4 GiB available for the rest of the machine. The per-worker memory
-estimate adds the highest measured marginal tree-PSS slope to the largest
-sampled fixture scratch, then rounds up to a 64 MiB boundary. If headroom cannot
-fit one measured worker while retaining the reserve, the automatic runner
-refuses to start. The automatic worker count is the smaller CPU or memory
-limit. The selector and its current measured inputs live in
+80th-percentile competing count from the CPU limit. The memory budget is the
+smaller of 70% of available memory and available memory minus a 4 GiB reserve.
+Each worker is sized by its measured p90 process tree PSS, which already
+includes Chromium and fixture children. Until at least five worker samples
+exist, the selector uses a conservative 2.1 GiB tree-PSS default. If headroom
+cannot fit one worker while retaining the reserve, the automatic runner refuses
+to start. The automatic worker count is the smaller CPU or memory limit. The
+selector and its current measured inputs live in
 [`playwright-workers.mjs`](../../../web/playwright-workers.mjs). Use
 `PLAYWRIGHT_WORKERS=<n>` to lower or otherwise manually choose concurrency;
 the override still must fit the measured memory ceiling and reserve.

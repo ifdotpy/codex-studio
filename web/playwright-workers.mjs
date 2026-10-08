@@ -6,10 +6,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const defaultWorkerTreePssBytes = Math.ceil(2.1 * 1024 ** 3);
-const workerRuntimeReserveBytes = 384 * 1024 * 1024;
 export const measuredFixtureScratchBytes = 18 * 1024 * 1024;
-const minimumWorkerMemoryProfileSamples = 8;
-const maximumMemoryFraction = 0.5;
+const minimumWorkerMemoryProfileSamples = 5;
+const maximumMemoryFraction = 0.7;
 const minimumAvailableMemoryReserveBytes = 4 * 1024 * 1024 * 1024;
 const minimumCpuWorkerFraction = 0.25;
 const runnableSampleCount = 11;
@@ -107,21 +106,18 @@ export function persistWorkerMemorySample({
 }
 
 export function estimateWorkerMemoryBytes({ profile, fallbackPssBytes }) {
-  const pssBytes =
-    Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
+  return Number.isSafeInteger(profile?.processTreeP90PssBytes) &&
     profile.processTreeP90PssBytes > 0 &&
     Number.isSafeInteger(profile.workerCount) &&
     profile.workerCount >= minimumWorkerMemoryProfileSamples
-      ? profile.processTreeP90PssBytes
-      : fallbackPssBytes;
-  return (
-    Math.ceil(
-      (pssBytes + workerRuntimeReserveBytes + measuredFixtureScratchBytes) /
-        (64 * 1024 * 1024),
-    ) *
-    64 *
-    1024 *
-    1024
+    ? profile.processTreeP90PssBytes
+    : fallbackPssBytes;
+}
+
+export function calculateMemoryBudgetBytes(memoryAvailableBytes) {
+  return Math.min(
+    Math.floor(memoryAvailableBytes * maximumMemoryFraction),
+    Math.max(0, memoryAvailableBytes - minimumAvailableMemoryReserveBytes),
   );
 }
 
@@ -345,10 +341,7 @@ function workerSelection(environment = process.env) {
     hostMemoryAvailableBytes(),
     cgroupMemoryAvailableBytes() ?? Number.POSITIVE_INFINITY,
   );
-  const memoryBudget = Math.min(
-    Math.floor(memoryAvailable * maximumMemoryFraction),
-    Math.max(0, memoryAvailable - minimumAvailableMemoryReserveBytes),
-  );
+  const memoryBudget = calculateMemoryBudgetBytes(memoryAvailable);
   let memoryProfile;
   try {
     memoryProfile = JSON.parse(
@@ -394,7 +387,6 @@ function workerSelection(environment = process.env) {
     workerMemoryProfileRunId: memoryProfile?.runId,
     workerMemoryProfileSamples: memoryProfile?.workerCount ?? 0,
     workerMemoryRunId,
-    workerRuntimeReserveBytes,
     measuredFixtureScratchBytes,
     measuredWorkerMemoryBytes,
   };

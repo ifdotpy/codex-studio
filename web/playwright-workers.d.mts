@@ -17,7 +17,6 @@ export function getPlaywrightWorkerSelection(environment?: NodeJS.ProcessEnv): {
   maximumMemoryFraction: number;
   minimumCpuWorkerFraction: number;
   measuredWorkerPssBytes: number;
-  workerRuntimeReserveBytes: number;
   measuredFixtureScratchBytes: number;
   measuredWorkerMemoryBytes: number;
   memorySafeToStart: boolean;
@@ -26,6 +25,7 @@ export function getPlaywrightWorkerSelection(environment?: NodeJS.ProcessEnv): {
   cached?: boolean;
 };
 export const measuredFixtureScratchBytes: number;
+export function calculateMemoryBudgetBytes(memoryAvailableBytes: number): number;
 export function choosePlaywrightWorkerCount(input: {
   cpuLimit: number;
   competingRunnable: number;

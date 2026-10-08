@@ -6,6 +6,7 @@ import test from "node:test";
 
 import {
   choosePlaywrightWorkerCount,
+  calculateMemoryBudgetBytes,
   completeWorkerMemoryRun,
   estimateWorkerMemoryBytes,
   persistWorkerMemorySample,
@@ -130,24 +131,25 @@ test("completed multi-worker run persists p90 process-tree memory profile", () =
   }
 });
 
-test("worker memory uses measured p90 plus reserve and conservative fallback", () => {
+test("worker memory uses measured p90 or conservative fallback without double-counting tree children", () => {
   const measured = estimateWorkerMemoryBytes({
-    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 11 },
+    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 5 },
     fallbackPssBytes: 2_150_000_000,
   });
-  assert.equal(measured, 1_476_395_008);
+  assert.equal(measured, 1_000_000_000);
   const fallback = estimateWorkerMemoryBytes({
-    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 1 },
+    profile: { processTreeP90PssBytes: 1_000_000_000, workerCount: 4 },
     fallbackPssBytes: Math.ceil(2.1 * 1024 ** 3),
   });
-  assert.equal(fallback, 2_684_354_560);
+  assert.equal(fallback, Math.ceil(2.1 * 1024 ** 3));
   assert.equal(
-    choosePlaywrightWorkerCount({
-      cpuLimit: 32,
-      competingRunnable: 0,
-      memoryWorkers: Math.floor((12 * 1024 ** 3) / measured),
-    }).workers,
-    8,
+    calculateMemoryBudgetBytes(24 * 1024 ** 3),
+    Math.floor(0.7 * 24 * 1024 ** 3),
+  );
+  assert.equal(calculateMemoryBudgetBytes(5 * 1024 ** 3), 1024 ** 3);
+  assert.equal(
+    Math.floor(calculateMemoryBudgetBytes(24 * 1024 ** 3) / fallback),
+    7,
   );
 });
 
