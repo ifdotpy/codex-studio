@@ -126,7 +126,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
               minHeight: getComputedStyle(node).minHeight,
             })),
             connectionNotice: !!document.querySelector(
-              '.sync-status[role="alert"]',
+              '#error, .sync-status[role="alert"]',
             ),
             top: root.top,
             height: root.height,
