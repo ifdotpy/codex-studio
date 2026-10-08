@@ -70,15 +70,6 @@
   padding-bottom: 12px;
 }
 
-.execution-permissions summary {
-  cursor: pointer;
-  font-weight: 600;
-}
-.execution-permissions p {
-  color: var(--muted);
-  font-size: 12px;
-}
-
 .setup-roles,
 .setup-modes {
   display: flex;

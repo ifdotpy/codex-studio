@@ -8,7 +8,7 @@ import sys
 import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
-from codex_source import digest, signature, source_function, source_instructions
+from codex_source import digest, signature, source_function
 
 
 class SourceContract(unittest.TestCase):
@@ -50,12 +50,7 @@ class Current:
         self.assertFalse(static)
         self.assertIs(function(), value)
 
-    def test_instructions_must_be_one_literal_string(self):
-        self.assertEqual(source_instructions('INSTRUCTIONS = "current"'), 'current')
-        for source in ('INSTRUCTIONS = get_secret()', 'INSTRUCTIONS = 7',
-                       'INSTRUCTIONS = "one"\nINSTRUCTIONS = "two"'):
-            with self.assertRaises((ValueError, RuntimeError)):
-                source_instructions(source)
+    def test_digest_is_key_order_independent(self):
         self.assertEqual(digest({'a': 1, 'b': 2}), digest({'b': 2, 'a': 1}))
 
 

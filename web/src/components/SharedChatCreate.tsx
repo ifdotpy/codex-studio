@@ -2,7 +2,7 @@ import { AccountTiles } from "./AccountTiles";
 import { Button, NativeSelect, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
 import { ApiError, errorText, post, save, saved, type PostBody } from "../api";
-import type { JsonValue, Snapshot } from "../types";
+import type { Snapshot } from "../types";
 import type { AccountsState } from "./Accounts";
 import { useWorkerModels } from "./agents/WorkerModelPicker";
 import { ModelPicker, type ModelOption } from "./ModelPicker";
@@ -43,28 +43,13 @@ function ParticipantFields({
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const options: ModelOption[] = catalog.models.map((row) => ({
     value: row.model,
-    label:
-      typeof row.displayName === "string" && row.displayName
-        ? row.displayName
-        : row.model,
-    ...(typeof row.description === "string" && row.description
-      ? { description: row.description }
-      : {}),
-    isDefault: row.isDefault === true,
+    label: row.displayName || row.model,
+    ...(row.description ? { description: row.description } : {}),
+    isDefault: row.isDefault ?? false,
   }));
   const info = catalog.models.find((row) => row.model === value.model);
-  const reasoningEfforts = Array.isArray(info?.supportedReasoningEfforts)
-    ? info.supportedReasoningEfforts.flatMap((item: JsonValue) => {
-        if (
-          !item ||
-          typeof item !== "object" ||
-          Array.isArray(item) ||
-          typeof item.reasoningEffort !== "string"
-        )
-          return [];
-        return [item.reasoningEffort];
-      })
-    : [];
+  const reasoningEfforts =
+    info?.supportedReasoningEfforts.map((item) => item.reasoningEffort) ?? [];
   useEffect(() => {
     valid(!!info && !catalog.loading && !catalog.error);
     if (!frozen && !value.model && catalog.models.length) {

@@ -73,14 +73,3 @@ def source_function(source, path, namespace, filename='<source>', closure=None,
                               for arg, value in zip(node.args.kwonlyargs, node.args.kw_defaults)
                               if value is not None} or None
     return function, static
-
-def source_instructions(source):
-    nodes = [node for node in ast.parse(source).body if isinstance(node, ast.Assign)
-             and any(isinstance(target, ast.Name) and target.id == 'INSTRUCTIONS'
-                     for target in node.targets)]
-    if len(nodes) != 1:
-        raise RuntimeError('Unknown instructions source')
-    value = ast.literal_eval(nodes[0].value)
-    if type(value) is not str:
-        raise RuntimeError('Unknown instructions value')
-    return value

@@ -156,9 +156,6 @@
   .mantine-Button-section[data-position="right"] {
   margin-left: auto;
 }
-.settings-models {
-  gap: 8px;
-}
 .chat-settings-panel .settings-new-chat {
   justify-self: start;
   font-size: 12px;
@@ -501,22 +498,11 @@
 }
 
 /* Chat configuration and composer context share the existing section layout. */
-.chat-settings-panel .execution-inline {
-  width: 100%;
-}
 .chat-settings-panel .execution-menu {
   width: 100%;
   justify-content: space-between;
   height: auto;
   min-height: 36px;
-}
-.execution-inline-body {
-  display: grid;
-  gap: 12px;
-  padding: 12px 0;
-}
-.execution-inline-body .ui-settings-section {
-  margin: 0;
 }
 .chat-settings-footer {
   display: flex;
@@ -657,9 +643,6 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.execution-role {
-  flex-shrink: 0;
-}
 
 .message-queue-content:has(.message-queue-preview) {
   display: flex;
@@ -698,9 +681,6 @@
 .chat-settings-panel #project {
   border: 0;
   background: transparent;
-}
-.chat-settings-panel .model-refresh {
-  justify-self: end;
 }
 .composer-tools .composer-context-row {
   margin: 0;

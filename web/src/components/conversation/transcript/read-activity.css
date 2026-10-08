@@ -92,15 +92,6 @@
     var(--mantine-color-violet-3)
   );
 }
-
-.tool-group.tool-group-inline {
-  border: 0;
-  padding: 0;
-}
-.turn-work-inline > .tool-card,
-.tool-group-inline > .tool-card {
-  margin: 6px 0;
-}
 .activity-limit {
   color: light-dark(var(--mantine-color-red-8), var(--mantine-color-red-3));
   font-weight: 600;

@@ -55,16 +55,6 @@
 .composer-submit-actions > button {
   flex: none;
 }
-.conversation-navigation {
-  flex: none;
-  min-width: 0;
-}
-.conversation-navigation:empty {
-  display: none;
-}
-.conversation-navigation .prompt-navigation {
-  background: transparent;
-}
 .draft-length-error {
   display: flex;
   flex-wrap: wrap;
@@ -216,28 +206,10 @@
 .message-delivery-error p {
   margin: 0 0 4px;
 }
-.sidebar-filters {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 7px 14px;
-}
-.sidebar-filters > div {
-  min-width: 0;
-  flex: 1;
-}
-.sidebar-filters input {
-  background: transparent;
-  border-color: transparent;
-}
 .chat-pin {
   margin-right: 5px;
   vertical-align: -1px;
   opacity: 0.55;
-}
-.chat-project {
-  opacity: 0.6;
-  font-size: 10px;
 }
 @media (max-width: 760px) {
   .message-queue {
