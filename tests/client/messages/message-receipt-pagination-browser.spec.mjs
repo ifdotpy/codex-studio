@@ -339,6 +339,14 @@ test("Message receipt pagination browser", async ({
     await page.locator("#message").waitFor();
     const bubble = (message) =>
       page.locator("#messages .message.user").filter({ hasText: message });
+    const readAppReceipt = (key) =>
+      page.evaluate(async (messageId) => {
+        const { db } = await (
+          await import("/src/sync/client.ts")
+        ).syncDatabase();
+        const doc = await db.outbox.findOne(messageId).exec();
+        return doc && JSON.parse(doc.getLatest().payload);
+      }, key);
     await bubble(text)
       .getByRole("status")
       .filter({ hasText: "Waiting for agent" })
@@ -378,8 +386,13 @@ test("Message receipt pagination browser", async ({
       }, "The exact delivered receipt did not reconcile an accepted message outside the latest 120 items");
     } catch (error) {
       const status = await bubble(text).getByRole("status").allTextContents();
+      const storedInApp = await readAppReceipt(id);
+      const storedInSeedPage = await storage.evaluate(
+        (key) => window.readReceiptFixture(key),
+        id,
+      );
       throw new Error(
-        `${error.message}: ${JSON.stringify({ status, receiptRequestCount: receiptRequests.length, posts })}`,
+        `${error.message}: ${JSON.stringify({ status, storedInApp, storedInSeedPage, receiptRequestCount: receiptRequests.length, posts, errors })}`,
       );
     }
     await bubble(text)
