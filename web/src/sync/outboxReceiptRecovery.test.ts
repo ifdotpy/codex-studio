@@ -13,7 +13,11 @@ vi.mock("../api", () => ({
   ApiSchemaMismatchError: class extends Error {},
 }));
 
-import { recoverAcknowledgedOutbox } from "./send";
+import {
+  acknowledgeOutbox,
+  reconcileOutboxReceipts,
+  recoverAcknowledgedOutbox,
+} from "./send";
 
 type Entry = {
   id: string;
@@ -30,6 +34,7 @@ function fixture(entries: Entry[]) {
         status: entry.status || "accepted",
         displayPending: entry.displayPending ?? true,
         created: 1,
+        receipt: { id: entry.id, status: "pending", materialized: false },
       }),
     };
     return {
@@ -58,6 +63,35 @@ function fixture(entries: Entry[]) {
 }
 
 afterEach(() => vi.resetAllMocks());
+
+it("reconciles delivered receipts after transcript observation without showing them again", async () => {
+  const { docs } = fixture([
+    { id: "hidden" },
+    { id: "other-room", room: "elsewhere" },
+  ]);
+  await acknowledgeOutbox(["hidden", "other-room"]);
+  expect(JSON.parse(docs[0].getLatest().payload).displayPending).toBe(false);
+  expect(JSON.parse(docs[1].getLatest().payload).displayPending).toBe(false);
+  const otherRoomBefore = docs[1].getLatest().payload;
+  await reconcileOutboxReceipts(
+    "chat",
+    [
+      { id: "hidden", status: "delivered", materialized: true },
+      { id: "other-room", status: "delivered", materialized: true },
+    ],
+    "workspace",
+  );
+
+  const hidden = JSON.parse(docs[0].getLatest().payload);
+  expect(hidden.status).toBe("accepted");
+  expect(hidden.receipt).toMatchObject({
+    id: "hidden",
+    status: "delivered",
+    materialized: true,
+  });
+  expect(hidden.displayPending).toBe(false);
+  expect(docs[1].getLatest().payload).toBe(otherRoomBefore);
+});
 
 it("clears only acknowledged copies with confirmed saved originals across chats", async () => {
   const { docs } = fixture([
