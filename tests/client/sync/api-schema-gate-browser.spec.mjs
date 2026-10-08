@@ -704,7 +704,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
     ).toBeVisible();
     await expect(page.getByRole("button", { name: "Update" })).toHaveCount(1);
 
-    mismatchEnabled = true;
+    mismatchEnabled = false;
     await page.evaluate(() =>
       sessionStorage.setItem("schema-gate-handshake", "silent"),
     );
@@ -736,6 +736,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
         request.isNavigationRequest() && url.searchParams.has("studio-update")
       );
     });
+    mismatchEnabled = true;
     await page.getByRole("button", { name: "Update" }).click();
     await responseUpdateNavigation;
     await expect(
