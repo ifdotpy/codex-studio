@@ -269,6 +269,7 @@ export const ToolCard = memo(function ToolCard({
       ref={visualRef}
       className="tool-card"
       data-message={item.id}
+      data-source-message={item.sourceId}
       data-tool-status={state}
       data-read-count={read.targets.length || undefined}
       open={open}
@@ -547,6 +548,7 @@ export default memo(function Activity({
             <span
               key={item.id}
               data-message={item.id}
+              data-source-message={item.sourceId}
               data-lazy-message
               hidden
             />

@@ -49,6 +49,7 @@ export default memo(function FileChangeCard({
       ref={visualRef}
       className="file-change-card"
       data-message={item.id}
+      data-source-message={item.sourceId}
       data-tool-status={status}
       open={open}
       onToggle={(event) => {
