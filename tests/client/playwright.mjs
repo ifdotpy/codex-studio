@@ -42,6 +42,20 @@ const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
+// Resolve the fixture interpreter once so every shared fixture launch uses the
+// same dependency-equipped runtime, regardless of legacy caller spellings.
+const fixturePythonCommand =
+  process.env.PYTHON_BIN ||
+  process.env.PYTHON ||
+  process.env.CODEX_AGENTS_PYTHON ||
+  "python3";
+
+function isPythonCommand(command) {
+  return (
+    typeof command === "string" &&
+    /^(?:.*[/\\])?python(?:\d+(?:\.\d+)*)?$/.test(command)
+  );
+}
 
 const generatedApiSchema = readFileSync(
   new URL("../../web/src/generated/apiSchema.ts", import.meta.url),
@@ -370,17 +384,21 @@ export function spawnFixture(command, args, options) {
   const cache = join(fixtureScratch, "cache");
   for (const directory of [home, state, cache])
     mkdirSync(directory, { recursive: true });
-  const child = spawn(command, args, {
-    ...options,
-    env: {
-      ...process.env,
-      ...options?.env,
-      TMPDIR: playwrightScratch.root,
-      HOME: home,
-      XDG_STATE_HOME: state,
-      XDG_CACHE_HOME: cache,
+  const child = spawn(
+    isPythonCommand(command) ? fixturePythonCommand : command,
+    args,
+    {
+      ...options,
+      env: {
+        ...process.env,
+        ...options?.env,
+        TMPDIR: playwrightScratch.root,
+        HOME: home,
+        XDG_STATE_HOME: state,
+        XDG_CACHE_HOME: cache,
+      },
     },
-  });
+  );
   let scratchFailure = "";
   child.stderr?.on("data", (chunk) => {
     const text = String(chunk);
