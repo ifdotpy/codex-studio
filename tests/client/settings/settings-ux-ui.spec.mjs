@@ -6,8 +6,14 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  accountTileButton,
+  accountTileGroup,
+  entityMutationFixtureResponse,
   expect,
   installApiSchemaFixtureHeaders,
+  readFixtureSyncContract,
+  readTestState,
+  stubEntityState,
   test,
 } from "../playwright.mjs";
 import { spawnFixture as spawn } from "../playwright.mjs";
@@ -19,7 +25,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   );
   const evidence = await mkdtemp(join(tmpdir(), "studio-settings-ux-"));
   const proc = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
@@ -31,6 +37,9 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
     proc.once("exit", () => reject(Error(log)));
   });
+  const url = `http://127.0.0.1:${port}`;
+  const snapshot = await readTestState(url);
+  const syncContract = await readFixtureSyncContract(url);
   const accounts = [
     {
       id: "default",
@@ -67,6 +76,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   const held = [];
   const page = fixturePage;
   installApiSchemaFixtureHeaders(page);
+  const entitySync = await stubEntityState(page, snapshot, syncContract);
   await fixturePage.setViewportSize({ width: 1280, height: 900 });
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
@@ -147,7 +157,21 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
         .length === 1
     )
       return route.abort();
-    await route.fulfill({ json: { status: "pending" } });
+    const agent = snapshot.runtime.agents.find((row) => row.id === body.id);
+    assert.ok(agent, "the transfer target exists in the entity fixture");
+    if (body.scope === "subagents")
+      agent.workerDefaults = {
+        ...agent.workerDefaults,
+        accountKey: body.account_key,
+      };
+    else agent.accountKey = body.account_key;
+    await entitySync.update(snapshot, { origin: url, token: snapshot.token });
+    await route.fulfill({
+      json: entityMutationFixtureResponse(snapshot, {
+        status: "pending",
+        targetAccountKey: body.account_key,
+      }),
+    });
   });
   const limits = (route) => ({
     accountKey:
@@ -175,7 +199,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     analyticsCalls++;
     await route.fulfill({ json: {} });
   });
-  await page.goto(`http://127.0.0.1:${port}`);
+  await page.goto(url);
   await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
   await page.getByRole("button", { name: "Chat context", exact: true }).click();
   await page
@@ -203,12 +227,14 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  const picker = page.getByTestId("account-picker");
-  await picker.click();
-  assert.ok(
-    await page.getByRole("menuitem", { name: /Signed out/ }).isDisabled(),
+  const workAccount = accountTileButton(page, "Account", "Work");
+  assert.equal(
+    await accountTileButton(page, "Account", "Personal").getAttribute(
+      "aria-pressed",
+    ),
+    "true",
   );
-  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
+  await workAccount.click();
   const transfer = page.getByRole("dialog", {
     name: "Transfer this chat",
     exact: true,
@@ -221,34 +247,39 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   );
   await transfer.getByRole("button", { name: "Cancel", exact: true }).click();
   assert.equal(transferCalls, 0);
-  await picker.click();
-  await page.getByRole("menuitem", { name: /work@example.invalid/ }).click();
+  await workAccount.click();
   await transfer
     .getByRole("button", { name: "Transfer chat", exact: true })
     .click();
   await transfer.waitFor({ state: "hidden" });
   assert.equal(transferCalls, 1);
   await page
-    .getByRole("button", { name: "Subagent defaults", exact: true })
+    .getByRole("dialog", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Main agent settings", exact: true })
     .click();
-  const subagentAccount = page.getByLabel("Subagent account", {
-    exact: true,
-  });
+  await page
+    .getByRole("dialog", { name: "Main agent settings", exact: true })
+    .getByRole("group", { name: "Agent role", exact: true })
+    .getByRole("button", { name: "Worker", exact: true })
+    .click();
   const defaults = page.getByRole("dialog", {
     name: "Subagent defaults",
     exact: true,
   });
+  const subagentAccount = accountTileGroup(page, "Subagent account");
   assert.equal(
     await defaults.getByRole("button", { name: /Save/ }).count(),
     0,
     "The account choice applies at once",
   );
-  await subagentAccount.selectOption("work");
-  await page.locator(".execution-error[role=alert]").waitFor();
+  const originalSubagentAccount =
+    await subagentAccount.getAttribute("data-value");
+  await accountTileButton(page, "Subagent account", "Work").click();
+  await defaults.locator(".execution-error[role=alert]").waitFor();
   assert.equal(transferCalls, 2, "the account choice transfers without a save");
   assert.equal(
-    await subagentAccount.inputValue(),
-    "",
+    await subagentAccount.getAttribute("data-value"),
+    originalSubagentAccount,
     "a failed transfer reverts the account",
   );
   const subagentTransferResponse = page.waitForResponse((response) =>
@@ -265,14 +296,21 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
   assert.equal(transferRequests[2].account_key, "work");
   assert.equal(transferRequests[2].scope, "subagents");
-  assert.equal(await subagentAccount.inputValue(), "work");
+  assert.equal(await subagentAccount.getAttribute("data-value"), "work");
   await page.keyboard.press("Escape");
-  await picker.click();
-  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
-  const manager = page.getByRole("dialog", {
-    name: "Accounts",
+  await page.keyboard.press("Escape");
+  const chatAccountBeforeStudioSettings = await accountTileGroup(
+    page,
+    "Account",
+  ).getAttribute("data-value");
+  await page
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
+  const studioSettings = page.getByRole("dialog", {
+    name: "Studio settings",
     exact: true,
   });
+  const manager = studioSettings.locator(".accounts-manager-inline");
   await manager.waitFor();
   assert.equal(
     await manager.getByRole("button", { name: "Sign in" }).count(),
@@ -281,13 +319,11 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await manager
     .getByRole("button", { name: "Add account", exact: true })
     .click();
-  const add = page.getByRole("dialog", {
-    name: "Add account",
-    exact: true,
-  });
-  await add.getByRole("button", { name: "Sign in" }).waitFor();
-  assert.equal(await add.locator(".account-row").count(), 0);
-  await add.getByRole("button", { name: "Back to accounts" }).click();
+  await manager
+    .getByRole("heading", { name: "Add account", exact: true })
+    .waitFor();
+  assert.equal(await manager.locator(".account-row").count(), 0);
+  await manager.getByRole("button", { name: "Back to accounts" }).click();
   const work = manager.locator('[data-account="work"]');
   await work
     .getByRole("button", { name: "Disconnect account", exact: true })
@@ -305,12 +341,6 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("button", { name: "Reconnect account", exact: true })
     .waitFor();
   assert.equal(disconnectCalls, 1);
-  await page.setViewportSize({ width: 390, height: 844 });
-  assert.ok(
-    await page.evaluate(
-      () => document.documentElement.scrollWidth <= innerWidth + 1,
-    ),
-  );
   await work
     .getByRole("button", { name: "Reconnect account", exact: true })
     .click();
@@ -318,33 +348,31 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("button", { name: "Disconnect account", exact: true })
     .waitFor();
   await page.keyboard.press("Escape");
-  await manager.waitFor({ state: "hidden" });
-  const chatSettings = page.getByRole("dialog", {
-    name: "Chat settings",
-    exact: true,
-  });
-  assert.ok(
-    await chatSettings.isVisible(),
-    "Escape closes only account management",
+  await page
+    .getByRole("button", { name: "Chat settings", exact: true })
+    .click();
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(
+    await accountTileButton(page, "Account", "Work").getAttribute(
+      "aria-pressed",
+    ),
+    "true",
+    "Mobile settings retain the selected account",
   );
   assert.ok(
-    await picker.locator(".account-picker-label").isVisible(),
-    "Mobile settings retain the account name",
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth + 1,
+    ),
   );
   await page.keyboard.press("Escape");
-  await chatSettings.waitFor({ state: "hidden" });
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
-  const studioSettings = page.getByRole("dialog", {
-    name: "Studio settings",
-    exact: true,
-  });
   assert.deepEqual(
     (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
       label.trim(),
     ),
-    ["Accounts", "Appearance", "Federation", "Hotkeys"],
+    ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
     "Global Studio settings exposes each available settings tab",
   );
   await studioSettings
@@ -371,6 +399,20 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await workRow.getByText("Application default", { exact: true }).waitFor();
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Chat settings", exact: true })
+    .click();
+  assert.equal(
+    await accountTileGroup(page, "Account").getAttribute("data-value"),
+    chatAccountBeforeStudioSettings,
+    "Changing the application default preserves the chat's selected account",
+  );
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
   const personal = studioManager.locator('[data-account="default"]');
   await personal
     .getByRole("button", { name: "Delete account", exact: true })
@@ -435,20 +477,20 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   );
   await page.keyboard.press("Escape");
   await reopenedSettings.waitFor({ state: "hidden" });
-  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
   await page
-    .getByRole("menuitem", { name: "Chat settings", exact: true })
+    .getByRole("button", { name: "Studio settings", exact: true })
     .click();
-  assert.match(
-    await picker.locator(".account-picker-label").textContent(),
-    /personal@example.invalid/,
-  );
-  await picker.click();
-  await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
-  await manager.waitFor();
+  const finalSettings = page.getByRole("dialog", {
+    name: "Studio settings",
+    exact: true,
+  });
+  const finalManager = finalSettings.locator(".accounts-manager-inline");
+  await finalManager
+    .getByText("Application default", { exact: true })
+    .waitFor();
   await page.waitForFunction(
     (element) => getComputedStyle(element).opacity === "1",
-    await manager.elementHandle(),
+    await finalManager.elementHandle(),
   );
   assert.equal(
     await page.locator("html").getAttribute("data-mantine-color-scheme"),

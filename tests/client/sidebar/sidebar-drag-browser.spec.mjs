@@ -13,7 +13,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
   console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
   const proc = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -169,6 +169,40 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
           ),
         );
       });
+    const sidebarOrderResponse = () =>
+      page.waitForResponse(
+        (response) => {
+          const request = response.request();
+          return (
+            new URL(response.url()).pathname === "/api/projects" &&
+            request.method() === "POST" &&
+            request.postDataJSON()?.action === "reorder"
+          );
+        },
+        { timeout: 5_000 },
+      );
+    const waitForSavedSidebarOrder = async (responsePromise) => {
+      const body = await (await responsePromise).json();
+      const workspaceEntity = body._syncEntities?.find((entity) => {
+        if (entity.id !== "entity:workspace:current") return false;
+        return Boolean(JSON.parse(entity.payload).value.sidebarOrder);
+      });
+      assert.ok(
+        workspaceEntity,
+        "The reorder response publishes workspace order",
+      );
+      const expectedSidebarOrder = JSON.parse(workspaceEntity.payload).value
+        .sidebarOrder;
+      await expect
+        .poll(async () =>
+          (await workspaceCache()).some(
+            (entry) =>
+              JSON.stringify(entry.workspace) ===
+              JSON.stringify(expectedSidebarOrder),
+          ),
+        )
+        .toBe(true);
+    };
     await expect
       .poll(async () =>
         (await workspaceCache()).some(
@@ -203,6 +237,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       .locator("> .project-tree-heading > .project-tree-toggle");
     const team = projectA.locator(".peer-team-toggle");
     assert.equal((await topItems())[0], "Team A");
+    const folderTeamReorder = sidebarOrderResponse();
     await drag(folderA, team, 0.1);
     await page.waitForFunction(
       (path) =>
@@ -217,14 +252,20 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       projectPath,
     );
     assert.equal((await topItems())[0], "Folder A");
+    await waitForSavedSidebarOrder(folderTeamReorder);
+    const teamMoveUp = sidebarOrderResponse();
     await team.press("Alt+ArrowUp");
+    await waitForSavedSidebarOrder(teamMoveUp);
     assert.equal((await topItems())[0], "Team A");
+    const teamMoveDown = sidebarOrderResponse();
     await team.press("Alt+ArrowDown");
+    await waitForSavedSidebarOrder(teamMoveDown);
     assert.equal((await topItems())[1], "Team A");
     await page.reload();
     await row("Destination").waitFor();
     assert.equal((await topItems())[0], "Folder A");
     // Loose chats share the same order group with folders and teams.
+    const looseChatReorder = sidebarOrderResponse();
     await drag(row("Destination"), folderA, 0.1);
     await page.waitForFunction(
       (path) =>
@@ -238,16 +279,17 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       projectPath,
     );
     assert.equal((await topItems())[0], "Destination");
+    await waitForSavedSidebarOrder(looseChatReorder);
     await page.reload();
     await row("Destination").waitFor();
     assert.equal((await topItems())[0], "Destination");
     // Compact mode keeps peer teams, pinned, recent, unread and running chats.
-    await page
-      .getByRole("button", {
-        name: "Options for project Project A",
-        exact: true,
-      })
-      .click();
+    const projectOptions = page.getByRole("button", {
+      name: "Options for project Project A",
+      exact: true,
+    });
+    await projectA.locator("> .project-tree-heading").hover();
+    await projectOptions.click({ timeout: 5_000 });
     await page
       .getByRole("menuitem", { name: "Compact project", exact: true })
       .click();
@@ -263,13 +305,17 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     ])
       assert.equal(await row(name).isVisible(), true, name);
     const compactOrder = await topItems();
+    const compactTeamMoveDown = sidebarOrderResponse();
     await team.press("Alt+ArrowDown");
+    await waitForSavedSidebarOrder(compactTeamMoveDown);
     assert.equal(
       (await topItems()).indexOf("Team A"),
       compactOrder.indexOf("Team A") + 1,
       "Compact keyboard order skips hidden folders and chats",
     );
+    const compactTeamMoveUp = sidebarOrderResponse();
     await team.press("Alt+ArrowUp");
+    await waitForSavedSidebarOrder(compactTeamMoveUp);
     assert.deepEqual(await topItems(), compactOrder);
     const showAll = page.getByRole("button", {
       name: "Show all 9",
@@ -380,5 +426,153 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
   } catch (error) {
     console.error("Fixture errors:", log);
     throw error;
+  }
+});
+
+async function startSidebarOverlapSetup(page) {
+  const root = resolve(import.meta.dirname, "../../..");
+  const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-overlap-"));
+  const proc = spawn(
+    process.env.PYTHON || "python3",
+    ["-B", join(root, "tests/sidebar-drag-fixture.py"), stateDir],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  let releaseFirst;
+  let firstResponse;
+  proc.stderr.on("data", (data) => (log += data));
+  const stop = () => {
+    releaseFirst?.();
+    if (proc.exitCode === null) proc.kill();
+  };
+  try {
+    const port = await new Promise((resolve, reject) => {
+      const timer = setTimeout(
+        () => reject(Error("Sidebar fixture startup timed out: " + log)),
+        10_000,
+      );
+      proc.stdout.once("data", (data) => {
+        clearTimeout(timer);
+        resolve(Number(String(data).trim()));
+      });
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        reject(Error(log || "Sidebar fixture exited"));
+      });
+    });
+    const url = `http://127.0.0.1:${port}`;
+    const initial = await readTestState(url);
+    const projectPath = initial.runtime.projects.find(
+      (project) => project.name === "Project A",
+    ).path;
+    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.goto(url);
+    const project = page.locator(`[data-project-path="${projectPath}"]`);
+    const team = project.locator(".peer-team-toggle");
+    await team.waitFor();
+    const topItems = () =>
+      project
+        .locator(".project-chats > [data-sidebar-item]")
+        .evaluateAll((nodes) =>
+          nodes
+            .filter((node) => !node.querySelector(".chat-pin"))
+            .map(
+              (node) =>
+                node.querySelector(".project-tree-toggle span,.row-copy strong")
+                  ?.textContent,
+            ),
+        );
+    const before = await topItems();
+    const teamIndex = before.indexOf("Team A");
+    assert.notEqual(teamIndex, -1, "The fixture contains Team A");
+    const direction = teamIndex <= before.length - 3 ? "ArrowDown" : "ArrowUp";
+    const bodies = [];
+    const responseGate = new Promise((resolve) => {
+      releaseFirst = resolve;
+    });
+    let firstReachedServer;
+    const firstRequest = new Promise((resolve) => {
+      firstReachedServer = resolve;
+    });
+    await page.route("**/api/projects", async (route) => {
+      const body = route.request().postDataJSON();
+      if (body.action !== "reorder" || body.migration) return route.continue();
+      bodies.push(body);
+      const response = await route.fetch();
+      if (bodies.length === 1) {
+        firstReachedServer();
+        await responseGate;
+      }
+      await route.fulfill({ response });
+    });
+    firstResponse = page.waitForResponse((response) => {
+      const request = response.request();
+      return (
+        new URL(response.url()).pathname === "/api/projects" &&
+        request.method() === "POST" &&
+        request.postDataJSON()?.action === "reorder" &&
+        !request.postDataJSON()?.migration
+      );
+    });
+    await team.press(`Alt+${direction}`);
+    await firstRequest;
+    const firstOrder = await topItems();
+    return {
+      stop,
+      releaseFirst,
+      team,
+      before,
+      firstOrder,
+      direction,
+      bodies,
+      topItems,
+      firstResponse,
+    };
+  } catch (error) {
+    stop();
+    throw Error(`${error instanceof Error ? error.message : error}\n${log}`);
+  }
+}
+
+test("sidebar reorder setup holds the first save after its optimistic move", async ({
+  page: runnerPage,
+}) => {
+  const setup = await startSidebarOverlapSetup(runnerPage);
+  try {
+    assert.equal(
+      setup.bodies.length,
+      1,
+      "The first reorder reached the server",
+    );
+    assert.notDeepEqual(setup.firstOrder, setup.before);
+  } finally {
+    setup.releaseFirst();
+    await setup.firstResponse.catch(() => {});
+    setup.stop();
+  }
+});
+
+test("sidebar queues a second reorder while the first save is pending", async ({
+  page: runnerPage,
+}) => {
+  const setup = await startSidebarOverlapSetup(runnerPage);
+  try {
+    test.fail(
+      true,
+      "A second reorder during an in-flight save is currently silently dropped",
+    );
+    await setup.team.press(`Alt+${setup.direction}`);
+    setup.releaseFirst();
+    await setup.firstResponse;
+    await expect
+      .poll(() => setup.bodies.length, {
+        timeout: 5_000,
+        message: "The second rapid reorder should be sent after the first save",
+      })
+      .toBe(2);
+    assert.notDeepEqual(await setup.topItems(), setup.firstOrder);
+  } finally {
+    setup.stop();
+    await setup.firstResponse.catch(() => {});
   }
 });

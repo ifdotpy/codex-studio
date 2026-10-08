@@ -3,7 +3,13 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  readApiSchemaHash,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("team room bounds ui", async ({ page: runnerPage }) => {
   const root = resolve(import.meta.dirname, "../../../web");
@@ -60,6 +66,27 @@ test("team room bounds ui", async ({ page: runnerPage }) => {
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
+    await page.route("**/api/sync/stream?**", (route) => {
+      const resources = JSON.parse(
+        new URL(route.request().url()).searchParams.get("resources") || "[]",
+      );
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        body: apiSchemaHandshakeSse(
+          `event: resources\ndata: ${JSON.stringify({ protocol: 3, workspaceId: "1234567890abcdef1234567890abcdef", epoch: "fixture", revision: 1, reason: "initial", resources })}\n\n`,
+        ),
+      });
+    });
+    await page.route("**/api/sync/identity", (route) =>
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: {
+          workspaceId: "1234567890abcdef1234567890abcdef",
+          syncProtocol: 2,
+        },
+      }),
+    );
     const requests = [];
     await page.route("**/api/agent-chat?*", async (route) => {
       const url = new URL(route.request().url());

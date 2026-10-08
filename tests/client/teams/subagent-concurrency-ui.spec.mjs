@@ -156,6 +156,15 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         prompts.push(request.url());
     });
     await page.goto(origin);
+    const openChatSettings = async (target = page) => {
+      await target
+        .getByRole("button", { name: "Chat settings", exact: true })
+        .click();
+      await target
+        .getByRole("spinbutton", { name: "Subagent parallelism" })
+        .waitFor();
+    };
+    await openChatSettings();
 
     const control = page.locator(".agent-mode-control");
     const input = page.getByRole("spinbutton", {
@@ -248,6 +257,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     assert.equal(lost.expected_mode_revision, 3);
     assert.equal((await currentLead()).agentModeRevision, 4);
     await page.reload();
+    await openChatSettings();
     await retry.waitFor();
     await retry.click();
     await retry.waitFor({ state: "detached" });
@@ -285,6 +295,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       { leadId: lead.id, legacy },
     );
     await page.reload();
+    await openChatSettings();
     await page
       .getByRole("button", { name: "Retry mode change", exact: true })
       .click();
@@ -343,6 +354,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       { leadId: lead.id, noOp },
     );
     await page.reload();
+    await openChatSettings();
     await page
       .getByRole("button", { name: "Retry limit change", exact: true })
       .click();
@@ -355,11 +367,13 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     console.log("PASS same-revision no-op receipt is accepted");
 
     // Each chat keeps a separate limit.
+    await page.keyboard.press("Escape");
     await page.locator(`[data-chat="${other.id}"]`).click();
     await page
       .locator("#conversation-title")
       .filter({ hasText: "Other project" })
       .waitFor();
+    await openChatSettings();
     const otherInput = page.getByRole("spinbutton", {
       name: "Subagent parallelism",
     });
@@ -374,7 +388,9 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         .concurrency,
       17,
     );
+    await page.keyboard.press("Escape");
     await page.locator(`[data-chat="${lead.id}"]`).click();
+    await openChatSettings();
     await waitConcurrency(9);
     console.log("PASS settings are isolated per chat");
 
@@ -476,6 +492,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         await route.continue();
       });
       await rollingPage.goto(origin);
+      await openChatSettings(rollingPage);
       const oldInput = rollingPage.getByRole("spinbutton", {
         name: "Subagent parallelism",
       });
@@ -574,6 +591,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
         await route.continue();
       });
       await upgradedPage.goto(origin);
+      await openChatSettings(upgradedPage);
       const retryName =
         "subagent_concurrency" in operation
           ? "Retry limit change"
@@ -618,6 +636,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
       localStorage.setItem(key, "{bad json");
     }, lead.id);
     await page.reload();
+    await openChatSettings();
     const discard = page.getByRole("button", {
       name: "Discard unreadable concurrency request",
       exact: true,
@@ -650,6 +669,7 @@ test("subagent concurrency ui", async ({ browser: _browser }) => {
     });
 
     // Mobile exposes the same numeric control in Chat settings with no horizontal overflow.
+    await page.keyboard.press("Escape");
     await page.setViewportSize({ width: 390, height: 844 });
     await page
       .getByRole("button", { name: "Chat actions", exact: true })

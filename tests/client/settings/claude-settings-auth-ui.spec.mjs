@@ -15,13 +15,15 @@ import {
 const syncWorkspaceId = "1234567890abcdef1234567890abcdef";
 
 async function fulfillSyncFixture(route, url) {
-  if (url.pathname === "/api/sync/identity")
-    return route.fulfill({
+  if (url.pathname === "/api/sync/identity") {
+    await route.fulfill({
       headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
       json: { workspaceId: syncWorkspaceId, syncProtocol: 2 },
     });
-  if (url.pathname === "/api/sync/pull")
-    return route.fulfill({
+    return true;
+  }
+  if (url.pathname === "/api/sync/pull") {
+    await route.fulfill({
       json: {
         workspaceId: syncWorkspaceId,
         generation: 1,
@@ -31,9 +33,11 @@ async function fulfillSyncFixture(route, url) {
         initialHigh: 0,
       },
     });
+    return true;
+  }
   if (url.pathname === "/api/sync/stream") {
     const resources = JSON.parse(url.searchParams.get("resources") || "[]");
-    return route.fulfill({
+    await route.fulfill({
       contentType: "text/event-stream",
       body: apiSchemaHandshakeSse(
         `event: resources\ndata: ${JSON.stringify({
@@ -50,6 +54,7 @@ async function fulfillSyncFixture(route, url) {
         })}\n\n`,
       ),
     });
+    return true;
   }
   return false;
 }
@@ -280,7 +285,9 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
       await emptyChat.getByLabel("Extended thinking").isDisabled(),
       true,
     );
-    await emptyChat.getByText("Advanced", { exact: true }).click();
+    await emptyChat
+      .getByText("More settings and actions", { exact: true })
+      .click();
     assert.equal(
       await emptyChat.getByLabel("Auto-compact token limit").isDisabled(),
       true,

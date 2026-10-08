@@ -20,7 +20,7 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   );
   const root = await mkdtemp(join(tmpdir(), "codex-chat-navigation-"));
   const proc = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
     { stdio: ["pipe", "pipe", "pipe"] },
   );

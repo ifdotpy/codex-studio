@@ -23,7 +23,7 @@ test("studio settings browser ui", async ({
   const evidence = await mkdtemp(join(tmpdir(), "studio-settings-browser-"));
   let emptyPage;
   const fixture = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
@@ -157,8 +157,8 @@ test("studio settings browser ui", async ({
     const settingsTabs = settings.getByRole("tab");
     assert.deepEqual(
       (await settingsTabs.allTextContents()).map((label) => label.trim()),
-      ["Accounts", "Appearance", "Federation", "Hotkeys"],
-      "Studio settings exposes account, appearance, federation, and hotkey tabs",
+      ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
+      "Studio settings exposes account, appearance, federation, Linux VM, and hotkey tabs",
     );
     await settings.getByRole("tab", { name: "Accounts", exact: true }).click();
     await settings
@@ -519,7 +519,7 @@ test("studio settings browser ui", async ({
       (await reloadedSettings.getByRole("tab").allTextContents()).map((label) =>
         label.trim(),
       ),
-      ["Accounts", "Appearance", "Federation", "Hotkeys"],
+      ["Accounts", "Appearance", "Federation", "Linux VM", "Hotkeys"],
     );
     assert.equal(
       await reloadedSettings.getByRole("alert").count(),
