@@ -79,7 +79,7 @@ class SchedulerMaintenance(unittest.TestCase):
             return run
 
         for name in ('monitors_tick', 'rules_tick', 'capacity_tick', 'usage_resume_tick',
-                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick'):
+                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick', 'turn_item_links_tick'):
             setattr(rt, name, phase(name))
         rt._cross_server_service = SimpleNamespace(tick=phase('cross_server'))
         rt.dispatch = lambda **options: seen.append(('dispatch', clock.now, options))
@@ -93,7 +93,7 @@ class SchedulerMaintenance(unittest.TestCase):
         self.assertEqual(len(dispatched), 100)
         self.assertTrue(all(item[2] == {'maintenance': False} for item in dispatched))
         for name in ('monitors_tick', 'rules_tick', 'capacity_tick', 'usage_resume_tick',
-                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick',
+                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick', 'turn_item_links_tick',
                      'cross_server'):
             self.assertEqual(sum(item[0] == name for item in seen), 1, name)
         self.assertTrue(all(0 <= wait <= 1 for wait in clock.waits))
@@ -104,6 +104,11 @@ class SchedulerMaintenance(unittest.TestCase):
         self.assertEqual(sum(item[0] == 'dispatch' for item in seen), 2)
         self.assertEqual(sum(item[0] == 'rules_tick' for item in seen), 3)
         self.assertEqual(sum(item[0] == 'runtime_maintenance_tick' for item in seen), 2)
+
+    def test_turn_item_backfill_has_its_own_completion_deadline(self):
+        _, seen, _ = self.exercise([(.001, True), (.20, True), (.06, False), (.20, False), (.06, False)])
+        self.assertEqual(sum(item[0] == 'turn_item_links_tick' for item in seen), 3)
+        self.assertEqual(sum(item[0] == 'runtime_maintenance_tick' for item in seen), 1)
 
     def test_failed_phase_does_not_block_dispatch_or_repeat_on_each_wake(self):
         rt, seen, _ = self.exercise([(.001, True)] * 100, failed='rules_tick')
@@ -127,7 +132,7 @@ class SchedulerMaintenance(unittest.TestCase):
 
         rt.dispatch = dispatch
         for name in ('monitors_tick', 'rules_tick', 'capacity_tick', 'usage_resume_tick',
-                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick'):
+                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick', 'turn_item_links_tick'):
             setattr(rt, name, lambda: seen.append('late maintenance'))
         with clock.installed():
             rt.schedule()
@@ -153,7 +158,7 @@ class SchedulerConnection(unittest.TestCase):
         rt._publish_committed_resource_changes = lambda: None
         rt.dispatch = dispatch
         for name in ('monitors_tick', 'capacity_tick', 'usage_resume_tick',
-                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick'):
+                     'accepted_archive_tick', 'retry_monitor_results', 'runtime_maintenance_tick', 'turn_item_links_tick'):
             setattr(rt, name, lambda: None)
         rt.rules_tick = rules
 
