@@ -111,6 +111,7 @@ import ComposerAttachments, {
   type Attachment,
 } from "./ComposerAttachments";
 import "./chat-controls.css";
+import "./conversation/empty-chat-settings.css";
 import { copyText } from "../clipboard/clipboard";
 
 function isJsonObject(value: unknown): value is Json {
@@ -689,6 +690,8 @@ export default function Conversation(p: {
     setLimitsOpen(false);
   }, [p.id]);
   const managed = agent?.source === "managed";
+  const emptyMainChat =
+    loaded && !items.length && !before && !after && !p.room && p.agent?.isLead;
   const queueScope = `${p.data.stateDir}:${p.syncWorkspaceId || ""}:${p.id}`;
   const messageQueue = useMessageQueue({
     id: p.id,
@@ -1575,11 +1578,7 @@ export default function Conversation(p: {
                   </span>
                 )}
                 <h2>{p.room ? "No messages yet" : "New chat"}</h2>
-                <p>
-                  {p.room
-                    ? "Agent messages will appear here."
-                    : `Ask a question or give a task.${agent?.cwd ? " Project: " + (p.data.runtime?.projects?.find((project) => project.path === agent.cwd)?.name || agent.cwd.split("/").filter(Boolean).pop()) + "." : ""}`}
-                </p>
+                {p.room && <p>Agent messages will appear here.</p>}
               </div>
             )}
           {transcript}
@@ -1937,7 +1936,7 @@ export default function Conversation(p: {
                             notify={p.notify}
                           />
                         )}
-                      {p.agent?.source === "managed" && (
+                      {p.agent?.source === "managed" && !emptyMainChat && (
                         <div className="composer-context-row">
                           <UnifiedAgentSettings
                             state={p.accountsState}
@@ -2079,6 +2078,32 @@ export default function Conversation(p: {
               );
             }}
           </PromptComposer>
+          {emptyMainChat && p.agent?.source === "managed" && (
+            <div className="empty-chat-settings" aria-label="Agent settings">
+              {(["orchestrator", "worker"] as const).map((role) => (
+                <div className="empty-chat-setting" key={role}>
+                  <span>{role === "orchestrator" ? "Model" : "Workers"}</span>
+                  <UnifiedAgentSettings
+                    state={p.accountsState}
+                    notify={p.notify}
+                    team={p.data.runtime?.agents || []}
+                    agent={p.agent!}
+                    catalog={modelCatalog}
+                    refresh={p.refresh}
+                    settingsRow
+                    showAccountSummary
+                    initialRole={role}
+                    openRequest={
+                      role === "orchestrator" ? modelCommandRequest : 0
+                    }
+                    onOpenChange={
+                      role === "orchestrator" ? setModelCommandOpen : undefined
+                    }
+                  />
+                </div>
+              ))}
+            </div>
+          )}
           {agent?.source === "managed" && (
             <Usage
               key={p.agent?.accountKey || "default"}
