@@ -1237,6 +1237,7 @@ class AgentRecord(TypedDict):
     error: NotRequired[str | JsonObject | None]
     tail: NotRequired[str]
     worktree: NotRequired[bool]
+    environment: NotRequired[Literal["host", "linux"] | None]
     worktreeReady: NotRequired[bool]
     worktreePreparation: NotRequired[WorktreePreparation | None]
     worktreeWarning: NotRequired[str | None]
