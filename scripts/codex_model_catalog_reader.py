@@ -4,6 +4,7 @@ from __future__ import annotations
 import concurrent.futures
 import json
 import os
+import queue
 import selectors
 import subprocess
 import threading
@@ -33,53 +34,97 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
     proc = subprocess.Popen(command, env=env, stdin=subprocess.PIPE,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             start_new_session=True)
+    windows_readers = os.name == "nt"
+    selector = None
+    output_chunks: queue.Queue[tuple[str, bytes | None]] | None = None
     try:
-        with selectors.DefaultSelector() as selector:
+        if windows_readers:
+            output_chunks = queue.Queue(maxsize=64)
+
+            def drain_pipe(stream, name, emit):
+                while True:
+                    try:
+                        data = os.read(stream.fileno(), 65536)
+                    except OSError:
+                        data = b""
+                    if not data:
+                        if emit:
+                            output_chunks.put((name, None))
+                        return
+                    if emit:
+                        output_chunks.put((name, data))
+
+            threading.Thread(target=drain_pipe, args=(proc.stdout, "stdout", True),
+                             name="native-catalog-stdout", daemon=True).start()
+            threading.Thread(target=drain_pipe, args=(proc.stderr, "stderr", False),
+                             name="native-catalog-stderr", daemon=True).start()
+        else:
+            selector = selectors.DefaultSelector()
             selector.register(proc.stdout, selectors.EVENT_READ, "stdout")
             selector.register(proc.stderr, selectors.EVENT_READ, "stderr")
             os.set_blocking(proc.stdin.fileno(), False)
-            buffer = bytearray()
-            total_bytes = 0
-            sequence = 0
+        buffer = bytearray()
+        total_bytes = 0
+        sequence = 0
 
-            def send(message):
-                data = json.dumps(message).encode("utf-8") + b"\n"
-                # All requests are small metadata frames. A partial write is a
-                # transport failure; this isolated process is never reused.
-                if os.write(proc.stdin.fileno(), data) != len(data):
-                    raise RuntimeError("Native model catalog input did not drain")
+        def send(message):
+            data = json.dumps(message).encode("utf-8") + b"\n"
+            # All requests are small metadata frames. A partial write is a
+            # transport failure; this isolated process is never reused.
+            if windows_readers:
+                proc.stdin.write(data)
+                proc.stdin.flush()
+            elif os.write(proc.stdin.fileno(), data) != len(data):
+                raise RuntimeError("Native model catalog input did not drain")
 
-            def request(method, params):
-                nonlocal sequence, total_bytes
-                sequence += 1
-                send({"id": sequence, "method": method, "params": params})
-                while True:
-                    if not current():
-                        raise RuntimeError("Model catalog connection changed")
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise TimeoutError("Native model catalog timed out")
-                    while b"\n" in buffer:
-                        line, _, tail = buffer.partition(b"\n")
-                        buffer[:] = tail
-                        if not line.strip():
-                            continue
-                        message = json.loads(line)
-                        if not isinstance(message, dict):
-                            raise ValueError("Invalid native model catalog message")
-                        if "method" in message:
-                            if "id" in message:
-                                raise RuntimeError("Native model catalog requested an unsupported action")
-                            continue
-                        if message.get("id") != sequence:
-                            raise ValueError("Unexpected native model catalog response identity")
-                        if "error" in message:
-                            # Native errors can include account details. Do not
-                            # publish raw response or stderr text to the UI.
-                            raise RuntimeError(f"Native {method} failed")
-                        if "result" not in message:
-                            raise ValueError("Invalid native model catalog response")
-                        return message["result"]
+        def request(method, params):
+            nonlocal sequence, total_bytes
+            sequence += 1
+            send({"id": sequence, "method": method, "params": params})
+            while True:
+                if not current():
+                    raise RuntimeError("Model catalog connection changed")
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Native model catalog timed out")
+                while b"\n" in buffer:
+                    line, _, tail = buffer.partition(b"\n")
+                    buffer[:] = tail
+                    if not line.strip():
+                        continue
+                    message = json.loads(line)
+                    if not isinstance(message, dict):
+                        raise ValueError("Invalid native model catalog message")
+                    if "method" in message:
+                        if "id" in message:
+                            raise RuntimeError("Native model catalog requested an unsupported action")
+                        continue
+                    if message.get("id") != sequence:
+                        raise ValueError("Unexpected native model catalog response identity")
+                    if "error" in message:
+                        # Native errors can include account details. Do not
+                        # publish raw response or stderr text to the UI.
+                        raise RuntimeError(f"Native {method} failed")
+                    if "result" not in message:
+                        raise ValueError("Invalid native model catalog response")
+                    return message["result"]
+                if windows_readers:
+                    assert output_chunks is not None
+                    try:
+                        stream_name, data = output_chunks.get(timeout=min(remaining, .25))
+                    except queue.Empty:
+                        continue
+                    if data is None:
+                        if stream_name == "stdout":
+                            raise RuntimeError("Native model catalog closed its output")
+                        continue
+                    if stream_name == "stdout":
+                        total_bytes += len(data)
+                        buffer.extend(data)
+                        if len(buffer) > MAX_FRAME_BYTES or total_bytes > MAX_RESPONSE_BYTES:
+                            raise ValueError("Native model catalog response is too large")
+                else:
+                    assert selector is not None
                     events = selector.select(min(remaining, .25))
                     for key, _ in events:
                         data = os.read(key.fileobj.fileno(), 65536)
@@ -94,35 +139,37 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
                             if len(buffer) > MAX_FRAME_BYTES or total_bytes > MAX_RESPONSE_BYTES:
                                 raise ValueError("Native model catalog response is too large")
 
-            request("initialize", {"clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
-                                   "capabilities": {"experimentalApi": True}})
-            send({"method": "initialized"})
-            rows, cursors, models = [], set(), set()
-            first_page = None
-            cursor = None
-            while True:
-                value = request("model/list", {"limit": 100, "includeHidden": True,
-                                               **({"cursor": cursor} if cursor is not None else {})})
-                if not isinstance(value, dict) or not isinstance(value.get("data"), list):
-                    raise ValueError("Invalid model/list response")
-                if first_page is None:
-                    first_page = value
-                for row in value["data"]:
-                    if (not isinstance(row, dict) or not isinstance(row.get("model"), str)
-                            or not row["model"].strip() or row["model"] in models):
-                        raise ValueError("Invalid or duplicate model in model/list pages")
-                    models.add(row["model"])
-                    rows.append(row)
-                cursor = value.get("nextCursor")
-                if cursor is None:
-                    if not current():
-                        raise RuntimeError("Model catalog connection changed")
-                    return {**first_page, "data": rows, "nextCursor": None}
-                if (not isinstance(cursor, str) or not cursor or cursor in cursors
-                        or len(cursors) >= 100):
-                    raise ValueError("Invalid or repeated model/list cursor")
-                cursors.add(cursor)
+        request("initialize", {"clientInfo": {"name": "codex_studio_catalog", "version": "1.0.0"},
+                               "capabilities": {"experimentalApi": True}})
+        send({"method": "initialized"})
+        rows, cursors, models = [], set(), set()
+        first_page = None
+        cursor = None
+        while True:
+            value = request("model/list", {"limit": 100, "includeHidden": True,
+                                           **({"cursor": cursor} if cursor is not None else {})})
+            if not isinstance(value, dict) or not isinstance(value.get("data"), list):
+                raise ValueError("Invalid model/list response")
+            if first_page is None:
+                first_page = value
+            for row in value["data"]:
+                if (not isinstance(row, dict) or not isinstance(row.get("model"), str)
+                        or not row["model"].strip() or row["model"] in models):
+                    raise ValueError("Invalid or duplicate model in model/list pages")
+                models.add(row["model"])
+                rows.append(row)
+            cursor = value.get("nextCursor")
+            if cursor is None:
+                if not current():
+                    raise RuntimeError("Model catalog connection changed")
+                return {**first_page, "data": rows, "nextCursor": None}
+            if (not isinstance(cursor, str) or not cursor or cursor in cursors
+                    or len(cursors) >= 100):
+                raise ValueError("Invalid or repeated model/list cursor")
+            cursors.add(cursor)
     finally:
+        if selector is not None:
+            selector.close()
         if proc.poll() is None:
             proc.terminate()
             try:
