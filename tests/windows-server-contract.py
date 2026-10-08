@@ -20,6 +20,7 @@ skip_posix = unittest.skipUnless(WINDOWS, "Windows server contract")
 if WINDOWS:
     tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
     Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
+    os.environ.setdefault("PYTHONIOENCODING", "utf-8")
 
 
 def _wait_until(check, timeout=60):
@@ -121,7 +122,6 @@ class WindowsServerContract(unittest.TestCase):
             project = worktree / project_name
             created = create_worker_worktree(root, worktree, project, branch)
             self.assertFalse(created)
-            project.mkdir(parents=True)
             output = project / "fixture result Ω.txt"
             output.write_text("fixture provider result\n", encoding="utf-8")
             subprocess.run(["git", "-C", str(worktree), "add", "--", str(output)], check=True)

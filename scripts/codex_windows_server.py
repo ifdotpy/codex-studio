@@ -102,8 +102,11 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                 raise RuntimeError("The native process supervisor exited")
             env["CODEX_AGENTS_BACKEND_ID"] = str(uuid.uuid4())
             with backend_log_path.open("ab", buffering=0) as output:
+                command = [sys.executable, "-B", str(backend_script), "--port", str(port)]
+                output.write((json.dumps({"event": "backend_start", "command": command}, ensure_ascii=True)
+                              + "\n").encode("utf-8"))
                 backend = subprocess.Popen(
-                    [sys.executable, "-B", str(backend_script), "--port", str(port)],
+                    command,
                     cwd=root, env=env, stdin=subprocess.DEVNULL, stdout=output,
                     stderr=subprocess.STDOUT, close_fds=True,
                 )
@@ -111,6 +114,8 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                     if supervisor is not None and supervisor.poll() is not None:
                         raise RuntimeError("The native process supervisor exited")
                     time.sleep(0.25)
+                output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
+                              + "\n").encode("utf-8"))
             if stopping.is_set():
                 break
             time.sleep(delay)
