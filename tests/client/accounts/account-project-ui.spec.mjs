@@ -428,7 +428,7 @@ test("account project ui", async ({ browser: _browser }) => {
       await closeSettings();
       if (!(await studioSettings.isVisible()))
         await page.getByRole("button", { name: "Studio settings" }).click();
-      await studioSettings.locator('[data-account="personal"]').waitFor();
+      await studioSettings.locator('[data-account="default"]').waitFor();
     };
     await page.locator('[data-chat="empty"]').click();
     await openSettings();
