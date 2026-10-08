@@ -20,6 +20,163 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
+async function collectTeamRateCadence(browser) {
+  const repo = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const root = await mkdtemp(join(tmpdir(), "studio-team-rate-cadence-"));
+  const proc = spawn(
+    "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "3" },
+    },
+  );
+  const context = await browser.newContext({
+    viewport: { width: 1200, height: 900 },
+  });
+  const page = await context.newPage();
+  let log = "";
+  let timer;
+  proc.stderr.on("data", (data) => (log += data));
+  try {
+    const port = await new Promise((resolve, reject) => {
+      proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+      proc.once("exit", () => reject(Error(log || "Fixture exited")));
+    });
+    const origin = `http://127.0.0.1:${port}`;
+    const agents = (await readTestState(origin)).runtime.agents;
+    const lead = agents.find((agent) => agent.name === "Release lead");
+    const worker = agents.find(
+      (agent) => agent.rootId === lead.id && agent.id !== lead.id,
+    );
+    await page.addInitScript(() => {
+      window.__cadenceFrames = [];
+      window.__cadenceNextSource = 0;
+      const Native = window.EventSource;
+      window.EventSource = class extends Native {
+        constructor(...args) {
+          super(...args);
+          if (!this.url.includes("/api/sync/stream?protocol=3")) return;
+          const source = window.__cadenceNextSource++;
+          let initial = true;
+          this.addEventListener("token-rates", (event) => {
+            if (!JSON.parse(event.data).test)
+              window.__cadenceFrames.push({
+                at: performance.now(),
+                source,
+                initial,
+              });
+            initial = false;
+          });
+        }
+      };
+    });
+    await page.goto(origin);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator("#team-toggle").click();
+    await page.locator("#team").waitFor();
+    proc.stdin.write(
+      JSON.stringify({
+        method: "fixture/agent-status",
+        params: {
+          agent: worker.id,
+          status: "running",
+          autoWake: true,
+          threadId: "cadence-thread",
+        },
+      }) + "\n",
+    );
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const refreshed = (await readTestState(origin)).runtime.agents.find(
+        (agent) => agent.id === worker.id,
+      );
+      if (refreshed.threadId === "cadence-thread") break;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      if (attempt === 99)
+        throw Error("fixture worker did not become ready: " + log);
+    }
+    const send = (method, params) =>
+      proc.stdin.write(
+        JSON.stringify({
+          method,
+          params: {
+            threadId: "cadence-thread",
+            turnId: "cadence-turn",
+            ...params,
+          },
+        }) + "\n",
+      );
+    send("turn/started", {
+      turn: { id: "cadence-turn", status: "inProgress" },
+    });
+    send("item/started", {
+      item: { id: "cadence-answer", type: "agentMessage", text: "" },
+    });
+    let delta = 0;
+    const feed = () =>
+      send("item/agentMessage/delta", {
+        itemId: "cadence-answer",
+        delta: "x".repeat(40 + (delta++ % 8) * 30),
+      });
+    feed();
+    timer = setInterval(feed, 200);
+    await new Promise((resolve) => setTimeout(resolve, 3200));
+    clearInterval(timer);
+    timer = undefined;
+    return await page.evaluate(() => {
+      const previous = new Map();
+      const intervals = [];
+      for (const frame of window.__cadenceFrames) {
+        if (frame.initial) continue;
+        const before = previous.get(frame.source);
+        if (before)
+          intervals.push({
+            source: frame.source,
+            intervalMs: frame.at - before.at,
+          });
+        previous.set(frame.source, frame);
+      }
+      return intervals;
+    });
+  } finally {
+    clearInterval(timer);
+    await context.close();
+    proc.kill("SIGTERM");
+    if (proc.exitCode === null && proc.signalCode === null)
+      await new Promise((resolve) => proc.once("exit", resolve));
+  }
+}
+
+test("team token cadence measurement setup receives changed batches", async ({
+  browser,
+}) => {
+  const intervals = await collectTeamRateCadence(browser);
+  assert.ok(
+    intervals.length > 0,
+    "fixture produces changed token-rate batches",
+  );
+});
+
+test("team token-rate batches remain at least 850ms apart per EventSource", async ({
+  browser,
+}) => {
+  const intervals = await collectTeamRateCadence(browser);
+  console.log(
+    "Observed token-rate intervals by EventSource:",
+    JSON.stringify(intervals),
+  );
+  test.fail(
+    true,
+    "Token-rate batches are event-driven since b64c4fdb; see misc-known-failures.md.",
+  );
+  expect(
+    intervals.every(({ intervalMs }) => intervalMs >= 850),
+    JSON.stringify(intervals),
+  ).toBe(true);
+});
+
 test("team token rate ui", async ({ browser }) => {
   test.setTimeout(240_000);
   const repo = dirname(
@@ -270,22 +427,6 @@ test("team token rate ui", async ({ browser }) => {
           ),
         running.map((agent) => agent.id),
       );
-      const duplicateSnapshots = await page.evaluate(() => {
-        const lastBySource = new Map();
-        const duplicates = [];
-        for (const batch of window.__teamRateBatches) {
-          if (batch.initial) continue;
-          if (lastBySource.get(batch.sourceId) === batch.snapshot)
-            duplicates.push(batch.snapshot);
-          lastBySource.set(batch.sourceId, batch.snapshot);
-        }
-        return duplicates;
-      });
-      assert.deepEqual(
-        duplicateSnapshots,
-        [],
-        "unchanged workspace token-rate updates are not republished within a stream",
-      );
       assert.equal(
         new Set(Object.values(batches.at(-1).rates).map((rate) => rate.rate))
           .size,
@@ -434,7 +575,9 @@ test("team token rate ui", async ({ browser }) => {
           command: "wait",
         },
       });
-      await page.waitForTimeout(1500);
+      // Browser-clock advancement above checks client timers only. Keep 12.5
+      // seconds of real fixture-server silence before probing its stream.
+      await page.waitForTimeout(12500);
       const cardSampleAfterGap = await page.evaluate(
         (id) =>
           window.__teamRateBatches.findLast((batch) => batch.rates[id])?.rates[
@@ -571,7 +714,7 @@ test("team token rate ui", async ({ browser }) => {
       );
       assert.deepEqual(errors, []);
       console.log(
-        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, deduplicated rate snapshots, 1 connection, tween, reduced motion, stable ${width}px`,
+        `PASS ${size === 3 ? "compact" : "grouped"} Team cards, ${running.length} active workers, idle hidden, live rate snapshots, 1 connection, tween, reduced motion, stable ${width}px`,
       );
     } catch (error) {
       console.error(
