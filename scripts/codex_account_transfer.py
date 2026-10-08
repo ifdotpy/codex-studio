@@ -1560,6 +1560,20 @@ class AccountTransfers:
             return False
         if empty_proof:
             assert empty_connection is not None
+            # The proof reads durable rows only. A turn that started after it
+            # may not have written any yet, so the native status must agree.
+            try:
+                status = empty_connection.call('thread/read', {'threadId':thread_id, 'includeTurns':False},
+                                               timeout=10)['thread'].get('status', {}).get('type')
+            except Exception as error:
+                if not self.missing_rollout_error(error, thread_id):
+                    raise
+                status = 'notLoaded'
+            if status not in {'idle', 'notLoaded', 'systemError'}:
+                self.invalidate_archive(
+                    key, aid, 'The source changed after its checked-empty archive. '
+                    'Cancel this transfer and start a new one.')
+                return False
             queue = empty_connection.call('thread/queue/list', {'threadId':thread_id}, timeout=10)
             jobs = self.empty_source_background_jobs(empty_connection, thread_id)
             queues_empty = (isinstance(queue, dict) and isinstance(queue.get('data'), list)

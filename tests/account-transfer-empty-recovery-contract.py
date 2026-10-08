@@ -32,6 +32,7 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         if self._testMethodName in {
                 'test_reverse_provider_transfer_of_proven_empty_start_uses_one_new_start',
                 'test_reverse_provider_transfer_when_native_reads_the_empty_thread_metadata',
+                'test_reverse_provider_transfer_blocks_when_the_empty_source_becomes_active',
                 'test_imported_empty_start_proof_requires_its_exact_valid_archive',
                 'test_saved_result_rechecks_ordinary_portable_archive_source',
                 'test_retry_reconciles_stale_empty_proof_before_archive_publication',
@@ -306,6 +307,9 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             if method == 'thread/read':
                 return {'thread':{'id':self.old_thread, 'status':{'type':'notLoaded'},
                                   'historyMode':'paginated', 'updatedAt':1}}
+            if method == 'thread/turns/list':
+                raise RuntimeError(json.dumps({'code':-32600, 'message':
+                    f'invalid paginated history lineage for {self.old_thread}: missing source rollout'}))
             if method == 'thread/backgroundTerminals/list':
                 raise RuntimeError(json.dumps({'code':-32600, 'message':'thread not found: ' + self.old_thread}))
             return {'data': []}
@@ -313,6 +317,20 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             metadata_only, stale_member={'archiveSourceThread':{'id':self.old_thread, 'updatedAt':1}})
         self.assertNotIn('thread/turns/list', [method for method, _ in calls])
         self.assertGreaterEqual([method for method, _ in calls].count('thread/backgroundTerminals/list'), 1)
+
+    def test_reverse_provider_transfer_blocks_when_the_empty_source_becomes_active(self):
+        # The durable proof still holds while a first turn runs and has written
+        # nothing. The native status read before submission must stop the move.
+        reads = []
+        def turn_started(method):
+            if method == 'thread/read':
+                reads.append(method)
+                return {'thread':{'id':self.old_thread, 'updatedAt':1,
+                                  'status':{'type':'notLoaded' if len(reads) == 1 else 'active'}}}
+            return {'data': []}
+        with self.assertRaisesRegex(RuntimeError, 'source changed'):
+            self._reverse_transfer_of_empty_start(turn_started)
+        self.assertEqual(self.rt.agent(self.aid)['threadId'], self.old_thread)
 
     def test_empty_source_background_jobs_accepts_only_the_unloaded_thread_answer(self):
         class Source:
@@ -334,7 +352,8 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         calls = []
         def source_call(method, params, timeout=60):
             calls.append((method, params))
-            if method in {'thread/read', 'thread/queue/list', 'thread/backgroundTerminals/list'}:
+            if method in {'thread/read', 'thread/turns/list', 'thread/queue/list',
+                          'thread/backgroundTerminals/list'}:
                 return native_answer(method)
             raise AssertionError('Unexpected native method: ' + method)
         source.call = source_call
@@ -378,7 +397,6 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             self.assertEqual(self.t.receipt(op['id'])['members'][self.aid]['sourceEmptyProof']['threadId'],
                              self.old_thread)
             self.assertEqual(self.t.runtime.agent(self.aid)['accountKey'], 'claude-fixture')
-            self.assertEqual([m for m, _ in calls].count('thread/read'), 1)
             self.assertEqual([m for m, _ in target_calls].count('thread/start'), 1)
             descriptor = self.t.runtime.agent(self.aid)['portableHistory']
             self.assertEqual(descriptor['source']['threadId'], self.old_thread)
