@@ -1,4 +1,11 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import { randomUUID } from "node:crypto";
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  readTestState,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Exercise workspace actions through the real runtime and HTTP server.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -153,6 +160,20 @@ test("workspace ui", async ({ browser: _browser }) => {
     let modal;
     await section("Plan");
     await drawer.getByText("This agent has not reported a plan.").waitFor();
+    const refreshAck = await fetch(origin + "/api/sync/notify", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Canvas-Token": initial.token,
+        Origin: origin,
+        [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
+      },
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        resources: [{ kind: "workspace", agentId: lead.id }],
+      }),
+    });
+    assert.equal(refreshAck.status, 200, await refreshAck.clone().text());
     await poll(
       async () => planNotModified.length > 0,
       "unchanged workspace plan uses a conditional 304 refresh",
@@ -402,16 +423,27 @@ test("workspace ui", async ({ browser: _browser }) => {
     await modal
       .getByLabel("Task for this subagent")
       .fill("Review the release evidence using the saved profile.");
-    await modal
-      .getByRole("button", { name: "Start subagent", exact: true })
-      .click();
+    const [profileWorkerRequest] = await Promise.all([
+      page.waitForRequest(
+        (request) =>
+          new URL(request.url()).pathname === "/api/agents" &&
+          request.method() === "POST",
+      ),
+      modal
+        .getByRole("button", { name: "Start subagent", exact: true })
+        .click(),
+    ]);
+    assert.ok(
+      profileWorkerRequest.postDataJSON().profile_id,
+      "the selected saved profile is sent with worker creation",
+    );
     await poll(
       async () =>
         (await readTestState(origin)).runtime.agents.some(
           (a) =>
             a.name === "Evidence reviewer" &&
             a.parentId === lead.id &&
-            a.profileId,
+            a.role === "reviewer",
         ),
       "profile worker created in selected team",
     );
