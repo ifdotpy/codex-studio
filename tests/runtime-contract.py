@@ -1216,6 +1216,20 @@ class RuntimeContract(unittest.TestCase):
         before = sum(m == 'turn/start' for m,p in self.runtime.server.calls)
         m = self.runtime.monitor(lead['id'], {'command': 'example-command'}, approved=True)
         eventually(lambda: bool(read_runtime_state(self.runtime)['monitors'][0]['tail']))
+        monitor_output_seen = threading.Event()
+        monitor_output_seen.set()
+        scheduler_tick_finished = threading.Event()
+        original_dispatch = self.runtime.dispatch
+
+        def dispatch_after_output(*args, **kwargs):
+            result = original_dispatch(*args, **kwargs)
+            if monitor_output_seen.is_set():
+                scheduler_tick_finished.set()
+            return result
+
+        with patch.object(self.runtime, 'dispatch', side_effect=dispatch_after_output):
+            self.runtime.changed.set()
+            self.assertTrue(scheduler_tick_finished.wait(3), 'scheduler tick after monitor output')
         self.assertEqual(sum(method == 'turn/start' for method,p in self.runtime.server.calls), before)
         self.runtime.server.gate.set()
         eventually(lambda: self.runtime.agent(lead['id'])['status'] == 'running')
