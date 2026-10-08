@@ -266,8 +266,23 @@ class ImageWorkspaceRuntime(unittest.TestCase):
             'type': 'workspaceWrite', 'writableRoots': [temp_dir],
             'networkAccess': False})
         eventually(lambda: self.rt.agent(worker_id)['turnId'] is not None)
-        self.rt.server.complete(self.rt.agent(worker_id)['threadId'],
-                                self.rt.agent(worker_id)['turnId'])
+        initial_turn = self.rt.agent(worker_id)['turnId']
+        thread_id = self.rt.agent(worker_id)['threadId']
+        server = self.rt.server
+        second_turn_started = threading.Event()
+        original_notify = server._notify
+
+        def notify_after_second_turn(message):
+            original_notify(message)
+            params = message.get('params', {})
+            turn = params.get('turn', {})
+            if (message.get('method') == 'turn/started' and
+                    params.get('threadId') == thread_id and
+                    turn.get('id') != initial_turn):
+                second_turn_started.set()
+
+        server._notify = notify_after_second_turn
+        self.rt.server.complete(thread_id, initial_turn)
         eventually(lambda: not self.rt.agent(worker_id)['inFlight'])
         mount = self.root / 'protocol-mount'
         project = mount / 'repo' / 'project'
@@ -281,9 +296,8 @@ class ImageWorkspaceRuntime(unittest.TestCase):
         with patch.dict(sys.modules, {'codex_workspace_images': engine}):
             self.rt.image_base_completed(worker_id, {'state': 'ready'})
             self.rt.dispatch()
-            eventually(lambda: len([params for method, params in self.rt.server.calls
-                                    if method == 'turn/start' and params['threadId'] ==
-                                    self.rt.agent(worker_id)['threadId']]) >= 2)
+            self.assertTrue(second_turn_started.wait(30),
+                            'ready image base did not start the resumed turn')
             notice_turn = [params for method, params in self.rt.server.calls if method == 'turn/start'
                            and params['threadId'] == self.rt.agent(worker_id)['threadId']][-1]
             resume = [params for method, params in self.rt.server.calls if method == 'thread/resume'
