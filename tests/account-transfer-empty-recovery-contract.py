@@ -3,6 +3,7 @@
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ import threading
 import time
 import unittest
 import uuid
+from unittest.mock import patch
 
 spec = importlib.util.spec_from_file_location(
     'account_transfer_fixture', Path(__file__).with_name('account-transfer-contract.py'))
@@ -29,6 +31,8 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         self.t.set_agent(self.aid, threadId=None, error=None)
         if self._testMethodName in {
                 'test_reverse_provider_transfer_of_proven_empty_start_uses_one_new_start',
+                'test_imported_empty_start_proof_requires_its_exact_valid_archive',
+                'test_saved_result_rechecks_ordinary_portable_archive_source',
                 'test_retry_reconciles_stale_empty_proof_before_archive_publication',
                 'test_ready_receipt_blocks_when_checked_empty_source_changes'}:
             claude_home = self.t.root / 'claude-home'
@@ -244,17 +248,53 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
         history_db.commit()
         history_db.close()
 
+    def _install_imported_archive_receipt(self):
+        """Model a completed Claude-to-Codex start that imported an archive."""
+        from codex_portable_history import export_history
+
+        source_thread = 'prior-claude-thread'
+        prior_transfer_id = str(uuid.uuid4())
+        source = {**self.rt.agent(self.aid), 'accountKey':'claude-fixture',
+                  'threadId':source_thread}
+
+        class SourceHistory:
+            def call(_self, method, params, timeout=60):
+                if method == 'thread/read':
+                    return {'thread':{'id':source_thread, 'status':{'type':'idle'},
+                                      'updatedAt':1, 'historyVersion':1}}
+                if method == 'thread/turns/list':
+                    return {'data':[]}
+                raise AssertionError('Unexpected archive method: ' + method)
+
+        archive = export_history(self.rt, source, prior_transfer_id, SourceHistory())
+        self.assertEqual(archive['source']['threadId'], source_thread)
+        self.assertEqual(archive['counts']['native_thread'], 1)
+        with self.rt.lock, self.rt.db() as db:
+            transfer = copy.deepcopy(self.t.store.get(db, self.op['id']))
+            transfer['id'] = prior_transfer_id
+            member = transfer['members'][self.aid]
+            member.update(sourceAccountKey='claude-fixture', sourceThreadId=source_thread,
+                          nativeMethod='thread/start', portableHistory=archive,
+                          phase='completed', result={'thread':{'id':self.old_thread}})
+            transfer.update(status='completed', targetAccountKey=self.t.other_key)
+            self.rt.put(db, 'account_transfers', transfer)
+            agent = self.rt.agent(self.aid, db)
+            agent.update(accountKey=self.t.other_key, threadId=self.old_thread,
+                         portableHistory=archive)
+            history = agent['accountHistory'][-1]
+            history.update(accountKey='claude-fixture', threadId=source_thread,
+                            targetAccountKey=self.t.other_key, targetThreadId=self.old_thread,
+                            transferId=prior_transfer_id, portableHistory=archive)
+            self.rt.put(db, 'agents', agent)
+        return archive
+
     def test_reverse_provider_transfer_of_proven_empty_start_uses_one_new_start(self):
-        # First hop: the existing completed transfer receipt proves this ID was
-        # created by thread/start with no source thread. Second hop returns it
-        # to a Claude account after Codex has never materialized its rollout.
+        # First hop imported an archive onto a new native thread. The reverse
+        # transfer must preserve that ancestry when the rollout is still absent.
+        prior_archive = self._install_imported_archive_receipt()
         self._write_empty_source_native_state()
         self.t.pending.clear()
         self.t.drive_lazy_for_tests = False
-        with self.rt.lock, self.rt.db() as db:
-            agent = self.rt.agent(self.aid, db)
-            agent['accountHistory'][-1]['threadId'] = 'prior-claude-thread'
-            self.rt.put(db, 'agents', agent)
         source = self.rt.connect(self.t.other_key)
         calls = []
         def source_call(method, params, timeout=60):
@@ -309,6 +349,8 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             descriptor = self.t.runtime.agent(self.aid)['portableHistory']
             self.assertEqual(descriptor['source']['threadId'], self.old_thread)
             records = [json.loads(line) for line in Path(descriptor['path']).read_text().splitlines()]
+            self.assertIn(prior_archive,
+                          [row['archive'] for row in records if row['kind'] == 'ancestor'])
             marker = next(row for row in records if row['kind'] == 'native_unmaterialized')
             self.assertEqual(marker['threadId'], self.old_thread)
             self.assertEqual(marker['emptyProof']['nativeHistory']['nativeTurns'], 0)
@@ -317,6 +359,71 @@ class EmptyTransferredThreadRecovery(unittest.TestCase):
             self.rt.catalog = original_catalog
             self.t.store.destination_settings = original_settings
             self.rt.new_thread_params = original_params
+
+    def test_imported_empty_start_proof_requires_its_exact_valid_archive(self):
+        archive = self._install_imported_archive_receipt()
+        self._write_empty_source_native_state()
+        expected = f'invalid paginated history lineage for {self.old_thread}: missing source rollout'
+        with self.rt.lock, self.rt.db() as db:
+            agent = self.rt.agent(self.aid, db)
+            proof = self.t.store.native_empty_transfer_proof(
+                db, agent, self.old_thread, expected, source_account_key=self.t.other_key)
+        self.assertIsNotNone(proof)
+
+        with self.rt.lock, self.rt.db() as db:
+            transfer = self.t.store.get(db, archive['transferId'])
+            transfer['members'][self.aid].pop('portableHistory')
+            self.t.store.save(db, transfer)
+            self.assertIsNone(self.t.store.native_empty_transfer_proof(
+                db, self.rt.agent(self.aid, db), self.old_thread, expected,
+                source_account_key=self.t.other_key))
+            wrong_archive = {**archive, 'sha256':'wrong'}
+            transfer['members'][self.aid]['portableHistory'] = wrong_archive
+            self.t.store.save(db, transfer)
+            agent = self.rt.agent(self.aid, db)
+            agent['accountHistory'][-1]['portableHistory'] = wrong_archive
+            self.rt.put(db, 'agents', agent)
+            self.assertIsNone(self.t.store.native_empty_transfer_proof(
+                db, self.rt.agent(self.aid, db), self.old_thread, expected,
+                source_account_key=self.t.other_key))
+            transfer['members'][self.aid]['portableHistory'] = archive
+            self.t.store.save(db, transfer)
+            agent = self.rt.agent(self.aid, db)
+            agent['accountHistory'][-1]['portableHistory'] = archive
+            self.rt.put(db, 'agents', agent)
+
+        rollout = Path(self.rt.accounts.home(self.t.other_key)) / 'sessions' / 'not-materialized.jsonl'
+        rollout.parent.mkdir(parents=True, exist_ok=True)
+        rollout.write_text('{"type":"session_meta"}\n')
+        with self.rt.db() as db:
+            self.assertIsNone(self.t.store.native_empty_transfer_proof(
+                db, self.rt.agent(self.aid, db), self.old_thread, expected,
+                source_account_key=self.t.other_key))
+
+    def test_saved_result_rechecks_ordinary_portable_archive_source(self):
+        key = str(uuid.uuid4())
+        with self.rt.lock, self.rt.db() as db:
+            transfer = copy.deepcopy(self.t.store.get(db, self.op['id']))
+            transfer.update(id=key, status='pending', targetAccountKey='claude-fixture')
+            member = transfer['members'][self.aid]
+            member.update(phase='ready', result={'thread':{'id':'saved-target-thread'}},
+                          archiveSourceThread={'id':self.old_thread, 'updatedAt':1,
+                                               'historyVersion':1},
+                          portableHistory={'source':{'threadId':self.old_thread}},
+                          targetSettings={}, settings={})
+            self.rt.put(db, 'account_transfers', transfer)
+            agent = self.rt.agent(self.aid, db)
+            agent.update(accountKey='claude-fixture', accountTransferId=key,
+                         lazyAccountTransfer={'id':key, 'sourceAccountKey':self.t.other_key,
+                                              'sourceThreadId':self.old_thread})
+            self.rt.put(db, 'agents', agent)
+        with patch.object(self.t.store, 'assert_settings'), \
+                patch.object(self.t.store, 'archive_source_current', return_value=False) as check_archive:
+            with self.assertRaisesRegex(RuntimeError, 'source changed after history export'):
+                self.t.store.move_lazy(key, self.aid)
+        check_archive.assert_called_once_with(key, self.aid)
+        self.assertEqual(self.t.receipt(key)['members'][self.aid]['result']['thread']['id'],
+                         'saved-target-thread')
 
     def test_empty_transfer_proof_rejects_nonempty_or_ambiguous_native_state(self):
         self._write_empty_source_native_state()

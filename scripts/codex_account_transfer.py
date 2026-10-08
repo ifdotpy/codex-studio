@@ -782,7 +782,8 @@ class AccountTransfers:
                         else:
                             reusable_settings = True
                 if reusable_settings:
-                    if member.get('sourceEmptyProof') and not self.archive_source_current(key, aid):
+                    if ((member.get('sourceEmptyProof') or member.get('archiveSourceThread') is not None)
+                            and not self.archive_source_current(key, aid)):
                         raise RuntimeError('The source changed after history export; the saved fork will not be adopted')
                     return self.commit_lazy(key, aid, saved_result, background=background)
                 catalog = rt.catalog(op['targetAccountKey'])
@@ -798,7 +799,8 @@ class AccountTransfers:
                                   pendingSettingsAccountKey=a.get('pendingSettingsAccountKey'))
                     self.save(db, op)
                     db.commit()
-                if member.get('sourceEmptyProof') and not self.archive_source_current(key, aid):
+                if ((member.get('sourceEmptyProof') or member.get('archiveSourceThread') is not None)
+                        and not self.archive_source_current(key, aid)):
                     raise RuntimeError('The source changed after history export; the saved fork will not be adopted')
                 return self.commit_lazy(key, aid, saved_result, background=background)
             except Exception as error:
@@ -1171,10 +1173,36 @@ class AccountTransfers:
         member = (op.get('members') or {}).get(agent['id']) or {}
         result = member.get('result') or {}
         if (op.get('status') != 'completed' or op.get('targetAccountKey') != source_account
-                or member.get('phase') != 'completed' or member.get('sourceThreadId') is not None
+                or member.get('phase') != 'completed'
                 or member.get('nativeMethod') != 'thread/start'
                 or result.get('thread', {}).get('id') != thread_id):
             return None
+        source_thread = member.get('sourceThreadId')
+        if source_thread is not None:
+            # A newly started target thread can have an imported transcript.
+            # Require the exact immutable archive on both the completed receipt
+            # and its account-history entry, with matching source provenance.
+            archive = member.get('portableHistory')
+            if (not isinstance(archive, dict) or entry.get('portableHistory') != archive
+                    or archive.get('transferId') != transfer_id):
+                return None
+            archive_source = archive.get('source')
+            archive_counts = archive.get('counts')
+            if (not isinstance(archive_source, dict)
+                    or archive_source.get('agentId') != agent['id']
+                    or archive_source.get('accountKey') != member.get('sourceAccountKey')
+                    or archive_source.get('threadId') != source_thread
+                    or not isinstance(archive_counts, dict)
+                    or not (archive_counts.get('native_thread')
+                            or archive_counts.get('native_unmaterialized'))
+                    or entry.get('accountKey') != member.get('sourceAccountKey')
+                    or entry.get('threadId') != source_thread):
+                return None
+            try:
+                from codex_portable_history import _validate
+                _validate(self.rt, archive)
+            except Exception:
+                return None
         native = self.source_history_missing(self.rt.accounts.home(source_account), thread_id)
         if not native:
             return None
