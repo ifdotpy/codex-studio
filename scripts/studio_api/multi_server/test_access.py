@@ -27,7 +27,7 @@ import httpx
 from starlette.types import Message, Receive, Scope, Send
 
 from codex_federation import _crypto, _sign
-from codex_multi_server import AccessError, MultiServerService, PAIR_PATH, request_bytes
+from codex_multi_server import AccessError, MultiServerService, PAIR_PATH, _peer_login, request_bytes
 from codex_remote import RemoteAccess
 from studio_api.app import create_app
 from studio_api.context import ApiContext
@@ -592,9 +592,26 @@ class AccessTests(unittest.TestCase):
         with patch("codex_multi_server._owner_login", return_value="owner@example.com") as owner, \
              patch("codex_multi_server._peer_login", return_value="owner@example.com") as peer:
             for index in range(4):
-                self.assertEqual(self.client.get("/api/probe", headers=self.signed("GET", "/api/probe", request_id=f"cache-{index}")).status_code, 200)
+                headers = {**self.signed("GET", "/api/probe", request_id=f"cache-{index}"),
+                           "Tailscale-User-Login": "owner@example.com"}
+                self.assertEqual(self.client.get("/api/probe", headers=headers).status_code, 200)
             self.assertLessEqual(owner.call_count, 1)
             self.assertLessEqual(peer.call_count, 1)
+
+    def test_review_missing_serve_login_rechecks_changed_peer_identity(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        for identity in ({"Node": {}, "UserProfile": {"LoginName": "other@example.com"}},
+                         {"Node": {"Tags": ["tag:server"]}, "UserProfile": {"LoginName": "owner@example.com"}}):
+            with self.subTest(identity=identity):
+                self.runtime.service.identity_cache["100.64.0.12"] = (time.monotonic(), "owner@example.com")
+                with patch("codex_multi_server._peer_login", side_effect=_peer_login), \
+                     patch("codex_multi_server._tailscale_json", return_value=identity) as whois:
+                    headers = self.signed("GET", "/api/probe", request_id="changed-peer")
+                    self.assertNotIn("Tailscale-User-Login", headers)
+                    response = self.client.get("/api/probe", headers=headers)
+                self.assertEqual(response.status_code, 403, response.text)
+                whois.assert_called_once_with("whois", "--json", "100.64.0.12")
+                self.assertEqual(self.runtime.service.identity_cache, {})
 
     def test_review_orchestration_responses_are_not_persisted_in_the_generic_cache(self) -> None:
         invitation = self.invitation()
@@ -686,6 +703,82 @@ class AccessTests(unittest.TestCase):
 
     def test_review_changing_the_remote_origin_closes_the_stream(self) -> None:
         self._assert_stream_closes(lambda: setattr(self.context.remote, "override", "https://new.example.ts.net"))
+
+    def test_review_unsigned_phone_stream_closes_when_remote_access_is_disabled(self) -> None:
+        self._assert_real_unsigned_stream_policy({"enabled": False, "origin": self.origin})
+
+    def test_review_unsigned_phone_stream_closes_when_remote_origin_changes(self) -> None:
+        self._assert_real_unsigned_stream_policy({"enabled": True, "origin": "https://new.example.ts.net"})
+
+    def test_review_local_stream_survives_remote_access_disable(self) -> None:
+        self._assert_real_unsigned_stream_policy({"enabled": False, "origin": self.origin}, local=True)
+
+    def _assert_real_unsigned_stream_policy(self, updated: dict[str, Any], *, local: bool = False) -> None:
+        self.runtime.closed = False
+        remote = cast(RemoteAccess, self.context.remote)
+        remote.override = None
+        remote.path.write_text(json.dumps({"enabled": True, "origin": self.origin}))
+        identity = self.client.get("/api/sync/identity")
+        self.assertEqual(identity.status_code, 200, identity.text)
+        hub = ResourceHub(identity.json()["workspaceId"])
+        self.context._resource_hub = hub
+        self.addCleanup(self.context.close)
+        query = urlencode({"protocol": "3", "resources": json.dumps([{"kind": "state"}])}).encode()
+        messages: list[Message] = []
+
+        async def run() -> None:
+            ready, disconnected, changed = asyncio.Event(), asyncio.Event(), asyncio.Event()
+            consumed = False
+            headers = {} if local else {**self.proxy(), "Origin": self.origin}
+            scope: Scope = {"type": "http", "http_version": "1.1", "scheme": "http", "root_path": "",
+                            "path": "/api/sync/stream", "raw_path": b"/api/sync/stream", "query_string": query,
+                            "method": "GET", "client": ("127.0.0.1", 9), "server": ("127.0.0.1", 8765),
+                            "headers": [(b"host", b"127.0.0.1:8765"),
+                                        *[(key.lower().encode(), value.encode()) for key, value in headers.items()]]}
+
+            async def receive() -> Message:
+                nonlocal consumed
+                if not consumed:
+                    consumed = True
+                    return {"type": "http.request", "body": b"", "more_body": False}
+                await disconnected.wait()
+                return {"type": "http.disconnect"}
+
+            async def send(message: Message) -> None:
+                messages.append(message)
+                if message["type"] == "http.response.body":
+                    if b"event: token-rates" in message.get("body", b""):
+                        ready.set()
+                    if b'"reason":"overflow"' in message.get("body", b""):
+                        changed.set()
+
+            request = asyncio.create_task(self.app(scope, receive, send))
+            try:
+                await asyncio.wait_for(ready.wait(), 3)
+                remote.path.write_text(json.dumps(updated))
+                if local:
+                    # Wait through several policy checks, then verify live delivery.
+                    await asyncio.sleep(0.05)
+                    self.assertFalse(request.done())
+                    hub.publish_overflow()
+                    await asyncio.wait_for(changed.wait(), 3)
+                    disconnected.set()
+                await asyncio.wait_for(asyncio.shield(request), 1)
+                self.assertFalse(hub._subscriptions)
+                if not local:
+                    count = len(messages)
+                    hub.publish_overflow()
+                    await asyncio.sleep(0)
+                    self.assertEqual(len(messages), count)
+            finally:
+                request.cancel()
+                await asyncio.gather(request, return_exceptions=True)
+
+        with patch("studio_api.multi_server.boundary.STREAM_RECHECK_SECONDS", 0.01):
+            asyncio.run(run())
+        self.assertEqual(messages[0]["status"], 200)
+        if not local:
+            self.assertFalse(messages[-1].get("more_body", False))
 
     def _assert_stream_closes(self, change: Callable[[], object]) -> None:
         self.assertEqual(self.pair().status_code, 200)

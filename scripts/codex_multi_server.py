@@ -226,7 +226,10 @@ class MultiServerService:
             now = time.monotonic()
             saved = self.identity_cache.get(address)
             try:
-                if saved and now - saved[0] < IDENTITY_CACHE_SECONDS:
+                supplied = headers.get_all("Tailscale-User-Login", []) if headers is not None else []
+                cache_proof = headers is None or (len(supplied) == 1 and saved is not None
+                                                 and supplied[0].strip().lower() == saved[1])
+                if saved and now - saved[0] < IDENTITY_CACHE_SECONDS and cache_proof:
                     login = saved[1]
                 else:
                     login = _peer_login(headers) if headers is not None else _owner_login()
@@ -234,7 +237,6 @@ class MultiServerService:
                         self.identity_cache.clear()
                     self.identity_cache[address] = (now, login)
                 if headers is not None:
-                    supplied = headers.get_all("Tailscale-User-Login", [])
                     if len(supplied) > 1 or (supplied and supplied[0].strip().lower() != login):
                         raise AccessError(403, "owner_mismatch", "The Tailscale identity does not match")
                 return login

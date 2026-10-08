@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections.abc import Callable
 import json
 import sqlite3
 import time
@@ -92,6 +93,44 @@ class MultiServerBoundary:
     def __init__(self, app: ASGIApp, context: ApiContext) -> None:
         self.app, self.context = app, context
 
+    async def _serve_stream(self, scope: Scope, receive: Receive, send: Send,
+                            allowed: Callable[[], bool]) -> None:
+        started = False
+
+        async def stream_send(message: Message) -> None:
+            nonlocal started
+            if message["type"] == "http.response.start":
+                started = True
+            await send(message)
+
+        async def policy_changed() -> None:
+            while True:
+                await asyncio.sleep(STREAM_RECHECK_SECONDS)
+                try:
+                    if not await asyncio.to_thread(allowed):
+                        return
+                except (OSError, RuntimeError, sqlite3.Error):
+                    return
+
+        application = asyncio.ensure_future(self.app(scope, receive, stream_send))
+        watcher = asyncio.create_task(policy_changed())
+        try:
+            finished, _ = await asyncio.wait((application, watcher), return_when=asyncio.FIRST_COMPLETED)
+            if application in finished:
+                await application
+            else:
+                await watcher
+                application.cancel()
+                await asyncio.gather(application, return_exceptions=True)
+                if started:
+                    await send({"type": "http.response.body", "body": b"", "more_body": False})
+                else:
+                    await _failure(send, AccessError(403, "remote_access_changed", "The remote stream access is disabled"))
+        finally:
+            application.cancel()
+            watcher.cancel()
+            await asyncio.gather(application, watcher, return_exceptions=True)
+
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
@@ -148,7 +187,10 @@ class MultiServerBoundary:
         # browser-origin checks and local session token. Partial device proof
         # cannot fall back to that flow.
         if not any(headers.get(name) is not None for name in SIGNATURE_HEADERS):
-            await self.app(scope, receive, send)
+            if path == "/api/sync/stream":
+                await self._serve_stream(scope, receive, send, lambda: self.context.remote.origin() == origin)
+            else:
+                await self.app(scope, receive, send)
             return
         service = None
         reserved = False
@@ -216,42 +258,8 @@ class MultiServerBoundary:
 
             if path == "/api/sync/stream":
                 assert service is not None
-                started = False
-
-                async def stream_send(message: Message) -> None:
-                    nonlocal started
-                    if message["type"] == "http.response.start":
-                        started = True
-                    await identified_send(message)
-
-                async def revoked() -> None:
-                    while True:
-                        await asyncio.sleep(STREAM_RECHECK_SECONDS)
-                        try:
-                            allowed = (await asyncio.to_thread(service.allowed, principal["clientId"])) and self.context.remote.origin() == origin
-                        except (OSError, RuntimeError, sqlite3.Error):
-                            return
-                        if not allowed:
-                            return
-
-                application = asyncio.ensure_future(self.app(scope, replay_receive, stream_send))
-                watcher = asyncio.create_task(revoked())
-                try:
-                    finished, _ = await asyncio.wait((application, watcher), return_when=asyncio.FIRST_COMPLETED)
-                    if application in finished:
-                        await application
-                    else:
-                        await watcher
-                        application.cancel()
-                        await asyncio.gather(application, return_exceptions=True)
-                        if started:
-                            await identified_send({"type": "http.response.body", "body": b"", "more_body": False})
-                        else:
-                            await _failure(identified_send, AccessError(403, "client_revoked", "The client is revoked"))
-                finally:
-                    application.cancel()
-                    watcher.cancel()
-                    await asyncio.gather(application, watcher, return_exceptions=True)
+                await self._serve_stream(scope, replay_receive, identified_send,
+                                         lambda: service.allowed(principal["clientId"]) and self.context.remote.origin() == origin)
             elif generic_receipt:
                 start: Message | None = None
                 response_body = bytearray()

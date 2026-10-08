@@ -136,7 +136,8 @@ a fresh nonce, and a new request ID. The server checks revocation during the
 stream. It closes the stream when the client is revoked. The existing sync
 cursor, heartbeat, schema checks, and reconnect rules stay in use.
 The stream also closes if the configured Serve origin changes or remote access
-is disabled.
+is disabled. The same checks apply to unsigned phone streams through Serve.
+Local loopback streams do not use these checks.
 
 ### Management and server transport
 
@@ -165,8 +166,9 @@ The maximum orchestration request size is
 256 KiB. The maximum response size is 1 MiB. A timeout leaves the operation
 outcome unknown until its durable receipt is recovered.
 Response identity fields must match the stored peer ID and public key. Identity
-checks have a 30-second cache, limited to 256 addresses. An identity error clears
-the cache. One persistent crypto process signs and verifies requests. Each crypto
+checks have a 30-second cache, limited to 256 addresses. A peer cache hit requires
+one `Tailscale-User-Login` header that matches the cached login. Without that
+header, the server calls `whois` again. An identity error clears the cache. One persistent crypto process signs and verifies requests. Each crypto
 operation has an 8-second deadline. A failed process closes and can restart.
 
 `Runtime.multi_server()` owns cross-server orchestration. The signed
