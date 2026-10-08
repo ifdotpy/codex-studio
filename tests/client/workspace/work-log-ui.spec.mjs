@@ -10,6 +10,7 @@ import {
 // Final answers, work disclosure, manual choice, and scroll intent. No model calls.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1009,5 +1010,137 @@ test("work log ui", async ({ browser: _browser }) => {
     throw error;
   } finally {
     fixture.stdin?.end();
+  }
+});
+
+test("reload converges after an in-flight transcript pull", async ({
+  browser,
+}) => {
+  const repo = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "studio-work-log-reload-"));
+  const fixture = spawn(
+    "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), directory],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (data) => (log += data));
+  const lines = createInterface({ input: fixture.stdout });
+  const fixtureReplies = new Map();
+  let port;
+  const startup = new Promise((resolve, reject) => {
+    lines.once("line", (line) => resolve(Number(line)));
+    fixture.once("exit", () => reject(Error(log)));
+  });
+  lines.on("line", (line) => {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      return;
+    }
+    fixtureReplies.get(reply.id)?.(reply);
+  });
+  const fixtureRequest = (method, params) => {
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        fixtureReplies.delete(id);
+        reject(new Error(`fixture request timed out: ${method}: ${log}`));
+      }, 5000);
+      fixtureReplies.set(id, (reply) => {
+        clearTimeout(timeout);
+        resolve(reply);
+      });
+      fixture.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  };
+  let page;
+  let releaseHeldPull;
+  let heldPullResolve;
+  let mutationPublished = false;
+  let heldOnce = false;
+  const heldPull = new Promise((resolve) => (heldPullResolve = resolve));
+  try {
+    port = await startup;
+    const origin = `http://127.0.0.1:${port}`;
+    const state = await readTestState(origin);
+    const lead = state.threads.find((agent) => agent.name === "Other project");
+    assert.ok(lead, "fixture lead is available");
+    page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+    });
+    installApiSchemaFixtureHeaders(page);
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const scope = requestUrl.searchParams.get("scope");
+      const after = requestUrl.searchParams.get("after");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const response = await route.fetch();
+      const body = await response.json();
+      const docs = body.documents ?? [];
+      const containsUpdate = docs.some((doc) =>
+        doc.payload?.includes("After in-flight reload update"),
+      );
+      if (
+        mutationPublished &&
+        !heldOnce &&
+        scope === `transcript:${lead.id}` &&
+        containsUpdate
+      ) {
+        heldOnce = true;
+        heldPullResolve({
+          after,
+          docs: docs.map(({ id, seq }) => ({ id, seq })),
+        });
+        await new Promise((resolve) => (releaseHeldPull = resolve));
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(origin);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator("#message").waitFor();
+    mutationPublished = true;
+    const update = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: "reload-after",
+      text: "After in-flight reload update",
+    });
+    assert.equal(update.ok, true, "fixture persisted the transcript update");
+    const held = await Promise.race([
+      heldPull,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("changed transcript pull not observed")),
+          10_000,
+        ),
+      ),
+    ]);
+    assert.ok(
+      held.docs.length > 0,
+      "the held pull contains the updated transcript",
+    );
+
+    const navigation = page.reload();
+    await Promise.resolve();
+    releaseHeldPull?.();
+    await navigation;
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#messages")
+          ?.textContent.includes("After in-flight reload update"),
+      undefined,
+      { timeout: 10_000 },
+    );
+  } finally {
+    releaseHeldPull?.();
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await page?.close();
+    lines.close();
+    fixture.kill("SIGTERM");
   }
 });
