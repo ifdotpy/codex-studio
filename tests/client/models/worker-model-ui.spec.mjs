@@ -2,6 +2,7 @@ import {
   readTestState,
   installApiSchemaFixtureHeaders,
   test,
+  expect,
   browserExecutablePath,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -71,8 +72,12 @@ test("Worker model", async () => {
     }
     let requests = 0;
     let workerRequests = 0;
+    let explicitRetryRequests = 0;
+    let catalogAvailable = false;
+    const accountCatalogKeys = new Set();
     await page.route("**/api/models?**", async (route) => {
-      if (new URL(route.request().url()).searchParams.get("workers") === "1") {
+      const query = new URL(route.request().url()).searchParams;
+      if (query.get("workers") === "1") {
         workerRequests++;
         return route.fulfill({
           json: {
@@ -88,12 +93,17 @@ test("Worker model", async () => {
           },
         });
       }
-      requests++;
-      if (requests === 1)
+      accountCatalogKeys.add(query.get("account_key"));
+      if (query.get("retry") === "1") {
+        explicitRetryRequests++;
+        catalogAvailable = true;
+      }
+      if (!catalogAvailable)
         return route.fulfill({
           status: 503,
           json: { error: "Model catalog unavailable" },
         });
+      requests++;
       return route.fulfill({
         json: {
           data: [
@@ -212,15 +222,15 @@ test("Worker model", async () => {
     assert.equal(await modelValue(selector), "test-model");
     for (const width of [1440, 768, 420]) {
       await page.setViewportSize({ width, height: 960 });
-      await page.waitForFunction(
-        (expectedWidth) =>
-          new Promise((resolve) => {
-            let previous = "";
-            let stableFrames = 0;
-            const sample = () => {
+      let previous = "";
+      let stableSamples = 0;
+      await expect
+        .poll(
+          async () => {
+            const values = await page.evaluate(() => {
               const dialog = document.querySelector('[role="dialog"]');
               const rect = dialog?.getBoundingClientRect();
-              const values = [
+              return [
                 innerWidth,
                 document.documentElement.scrollWidth,
                 document.body.scrollWidth,
@@ -229,18 +239,17 @@ test("Worker model", async () => {
                 rect?.width,
                 rect?.height,
               ].join(":");
-              stableFrames =
-                innerWidth === expectedWidth && values === previous
-                  ? stableFrames + 1
-                  : 0;
-              previous = values;
-              if (stableFrames >= 3) resolve(true);
-              else requestAnimationFrame(sample);
-            };
-            requestAnimationFrame(sample);
-          }),
-        width,
-      );
+            });
+            stableSamples =
+              values.startsWith(`${width}:`) && values === previous
+                ? stableSamples + 1
+                : 0;
+            previous = values;
+            return stableSamples >= 3;
+          },
+          { message: `layout settles at ${width}px` },
+        )
+        .toBe(true);
       assert.ok(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth + 1,
@@ -303,10 +312,12 @@ test("Worker model", async () => {
       "test-model",
     );
     assert.equal(
-      requests,
-      2,
-      "one account catalog is shared by the worker list and chat",
+      explicitRetryRequests,
+      1,
+      "the worker and chat settings share one explicit account catalog retry",
     );
+    assert.deepEqual([...accountCatalogKeys], ["default"]);
+    assert.ok(requests > 0, "The account catalog is loaded after retry");
     await page.keyboard.press("Escape");
     await openSettings("Subagent defaults");
     const defaults = page.getByRole("dialog", {
