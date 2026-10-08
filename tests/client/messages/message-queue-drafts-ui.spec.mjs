@@ -50,7 +50,15 @@ import { useState } from ${JSON.stringify(require.resolve("react"))};
 import { createRoot } from ${JSON.stringify(require.resolve("react-dom/client"))};
 import MessageQueue from ${JSON.stringify(join(repo, "web/src/components/MessageQueue.tsx"))};
 function App() {
-  const [items, setItems] = useState([{ id: "q1", text: "Original message" }]);
+  const [items, setItems] = useState([
+    {
+      id: "q1",
+      text: "Original message",
+      created: 1,
+      status: "pending",
+      kind: "user",
+    },
+  ]);
   return <MessageQueue scope="journal-fixture" items={items} canReorder={true}
     onEdit={async (item, text) => setItems([{ ...item, text }])}
     onCancel={async () => setItems([])} onReorder={async () => {}} />;
