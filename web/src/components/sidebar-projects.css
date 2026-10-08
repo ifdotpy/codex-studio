@@ -97,13 +97,6 @@
   min-width: 28px;
   height: 28px;
 }
-.lead-row .row-meta {
-  flex-shrink: 0;
-}
-.lead-row .row-meta .dot {
-  margin-top: 0;
-  box-shadow: none;
-}
 @media (max-width: 760px) {
   .project-chats .chat-row {
     padding-right: 56px;
@@ -127,30 +120,6 @@
   .project-tree-action {
     opacity: 1;
   }
-}
-
-.agent-chats-context {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-  padding: 8px;
-  border-radius: 8px;
-  color: var(--muted);
-  font-size: 12px;
-}
-.agent-chats-context:hover {
-  background: var(--surface);
-  color: var(--text);
-}
-.agent-chats-context svg {
-  flex-shrink: 0;
-}
-.agent-chats-context span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 /* Titles own the row until pointer or keyboard interaction reveals controls. */
