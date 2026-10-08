@@ -1,6 +1,15 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Final answers, work disclosure, manual choice, and scroll intent. No model calls.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -130,40 +139,64 @@ test("work log ui", async ({ browser: _browser }) => {
     });
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    installApiSchemaFixtureHeaders(page);
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.addInitScript(() => {
-      window.streams = [];
-      window.EventSource = class extends EventTarget {
-        constructor(url) {
-          super();
-          this.url = url;
-          window.streams.push(this);
-        }
-        close() {
-          window.streams = window.streams.filter((s) => s !== this);
-        }
-      };
-    });
-    await page.route("**/api/sync/**", (r) =>
-      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    let transcriptSeq = 1;
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ json: identityResponse }),
     );
+    await page.route("**/api/sync/pull?*", (r) => {
+      const requestUrl = r.request().url();
+      const scope = new URL(requestUrl).searchParams.get("scope");
+      return r.fulfill({
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl, {
+            transcriptSeq,
+            ...(scope === `transcript:${lead.id}`
+              ? { transcript: transcript() }
+              : {}),
+          }),
+        },
+      });
+    });
     await page.route("**/api/transcript?*", (r) =>
       new URL(r.request().url()).searchParams.get("id") === lead.id
         ? r.fulfill({ json: transcript() })
         : r.fallback(),
     );
     const emit = async () => {
-      await page.evaluate(
-        ({ id, data }) => {
-          for (const s of window.streams)
-            if (new URL(s.url, location.href).searchParams.get("id") === id)
-              s.onmessage?.({ data: JSON.stringify(data) });
+      transcriptSeq++;
+      const updatedTranscript = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${lead.id}` &&
+          Number(url.searchParams.get("after") || 0) < transcriptSeq
+        );
+      });
+      const notification = await fetch(new URL("/api/sync/notify", origin), {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          "X-Canvas-Token": state.token,
+          ...apiSchemaHeaders(),
         },
-        { id: lead.id, data: transcript() },
-      );
-      await page.waitForTimeout(100);
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "transcript", agentId: lead.id }],
+        }),
+      });
+      assert.equal(notification.status, 200, await notification.text());
+      await updatedTranscript;
     };
     const finish = async () => {
       items.push({
