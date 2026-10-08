@@ -39,7 +39,7 @@ test("Selection Quote Ui", async ({
   );
   const root = await mkdtemp(join(tmpdir(), "codex-selection-quote-ui-"));
   const fixture = spawn(
-    "python3",
+    process.env.PYTHON || "python3",
     ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
     {
       stdio: ["pipe", "pipe", "pipe"],
@@ -75,7 +75,7 @@ test("Selection Quote Ui", async ({
     const draft = page.locator("#message");
     const select = async (startText, endText = startText) => {
       await paragraphs.first().scrollIntoViewIfNeeded();
-      return prose.evaluate(
+      const selected = await prose.evaluate(
         (element, { startText, endText }) => {
           const walker = document.createTreeWalker(
             element,
@@ -100,6 +100,8 @@ test("Selection Quote Ui", async ({
         },
         { startText, endText },
       );
+      await action.waitFor({ state: "visible" });
+      return selected;
     };
     const append = (previous, excerpt) =>
       `${previous}${!previous || previous.endsWith("\n\n") ? "" : previous.endsWith("\n") ? "\n" : "\n\n"}${excerpt
