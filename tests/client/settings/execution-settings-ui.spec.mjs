@@ -184,9 +184,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
         ]),
       ),
       [
-        ["gpt-6-astra", "Astra", false],
-        ["gpt-5.6-sol", "Sol", true],
-        ["gpt-6-luna", "Luna", false],
+        ["gpt-6-astra", "Astra 6", false],
+        ["gpt-5.6-sol", "Sol 5.6", true],
+        ["gpt-6-luna", "Luna 6", false],
         ["gpt-5.6-luna", "Luna 5.6", false],
         ["test-slow", "Standard only", false],
       ],
