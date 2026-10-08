@@ -91,10 +91,7 @@ function publishTeam(teamId: string) {
 }
 // Uses the shared workspace stream. No transport or database belongs to a card.
 export function watchTeamTokenRates(teamId: string) {
-  const stopStream =
-    typeof window !== "undefined" && watchStream
-      ? watchStream(receiveResourceTokenRates)
-      : () => {};
+  const stopStream = watchTokenRateInterest();
   openTeams.set(teamId, (openTeams.get(teamId) || 0) + 1);
   publishTeam(teamId);
   return () => {
