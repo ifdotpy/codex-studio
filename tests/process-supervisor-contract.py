@@ -1502,14 +1502,16 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertNotIn('turn/start', operations)
 
     def test_reattach_preserves_native_environment_after_backend_launcher_changes(self):
-        first = self.server()
+        with patch.dict(os.environ, {'LC_ALL': 'C'}):
+            first = self.server()
         native_pid = int(self.pid_file.read_text())
         original = process_supervisor.process_launch_environment(native_pid)
         signature = process_supervisor.supervisor_launch_snapshot(
             self.root, 'account:default')['signature']
         first.close()
         with patch.dict(os.environ, {'PATH': '/usr/bin:/bin', 'LANG': 'C.UTF-8',
-                                    'LC_CTYPE': 'C.UTF-8', 'COMMAND_MODE': 'unix2003',
+                                    'LC_CTYPE': 'C.UTF-8', 'LC_ALL': 'C.UTF-8',
+                                    'COMMAND_MODE': 'unix2003',
                                     'MallocNanoZone': '0', 'XPC_SERVICE_NAME': 'desktop-launch',
                                     '__CFBundleIdentifier': 'studio.desktop.fixture',
                                     'CODEX_NODE': '/different/backend/electron',

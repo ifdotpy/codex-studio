@@ -181,6 +181,170 @@ def _kernel_image(compressed: bytes) -> bytes:
     return image
 
 
+def _provision_info(console: Path) -> dict[str, Any]:
+    if not console.exists():
+        return {}
+    log = console.read_text(errors='replace')
+    failed = log.rfind('STUDIO_PROVISION_ERROR:')
+    ready = log.rfind('STUDIO_PROVISION_READY')
+    stages = re.findall(r'STUDIO_PROVISION_STAGE: ([a-z-]+)', log)
+    stage = stages[-1] if stages else ('codex' if 'STUDIO_PROVISION_CODEX' in log else 'boot')
+    if not stages and log.rfind('STUDIO_PROVISION_CLAUDE') > log.rfind('STUDIO_PROVISION_CODEX'):
+        stage = 'claude'
+    result: dict[str, Any] = {'stage': stage, 'state': 'ready' if ready > failed else 'running'}
+    result['downloads'] = [{'stage': match[0], 'attempt': int(match[1]),
+                            'bytes': int(match[2]), 'seconds': float(match[3])}
+        for match in re.findall(r'STUDIO_DOWNLOAD: ([a-z-]+) attempt=(\d+) bytes=(\d+) seconds=([\d.]+)', log)]
+    timed_out = log.rfind('codex-studio-provision.service: start operation timed out')
+    if timed_out > max(failed, ready):
+        result.update(state='failed', cause='deadline exceeded')
+    if failed > ready:
+        detail = log[failed:].splitlines()[0].partition(':')[2].strip()
+        if re.fullmatch(r'line \d+ failed', detail):
+            detail = 'deadline exceeded' if re.search(r'Killed\s+timeout', log[:failed]) else 'command failed'
+        elif detail.startswith(stage + ': '):
+            detail = detail[len(stage) + 2:]
+        result.update(state='failed', cause=re.sub(r'[^a-zA-Z0-9 .,:_-]', '', detail)[:120])
+    return result
+
+
+def _provision_script(codex_version: str, claude_version: str) -> str:
+    # Versions become shell tokens only after validation, including during recovery.
+    for version in (codex_version, claude_version):
+        if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?', version):
+            raise LinuxVMError('The saved provider version is invalid.')
+    return r'''#!/bin/bash
+set -Eeuo pipefail
+export DEBIAN_FRONTEND=noninteractive
+stage=clock
+stage_start=$SECONDS
+stage() {
+  stage=$1
+  failure_cause=
+  stage_start=$SECONDS
+  echo "STUDIO_PROVISION_STAGE: $stage"
+}
+failed() {
+  local code=$?
+  local cause="${failure_cause:-command exited with code $code}"
+  if [ "$code" = 124 ] || [ "$code" = 137 ] || [ "$code" = 28 ]; then cause="deadline exceeded"; fi
+  printf '%s\n' "$stage: $cause" > /var/lib/codex-studio/provision-error
+  echo "STUDIO_PROVISION_ERROR: $stage: $cause" >&2
+  exit "$code"
+}
+trap failed ERR
+# Downloads have two attempts, a ten-second backoff, and a deadline per attempt.
+# curl reports bytes and elapsed seconds for successful and failed transfers.
+download() {
+  local url=$1 target=$2 limit=$3 attempt code metrics
+  for attempt in 1 2; do
+    code=0
+    metrics=$(curl --fail --location --silent --show-error --connect-timeout 20 \
+      --max-time "$limit" --max-filesize 209715200 --output "$target.part" \
+      --write-out "STUDIO_DOWNLOAD: $stage attempt=$attempt bytes=%{size_download} seconds=%{time_total} http=%{http_code}\n" \
+      "$url") || code=$?
+    echo "$metrics"
+    if [ "$code" = 0 ]; then mv "$target.part" "$target" || return $?; return 0; fi
+    rm -f "$target.part"
+    # An absent release asset can use the pinned npm package. Other failures stay visible.
+    if [ "$code" = 22 ] && [[ "$metrics" == *http=404 ]]; then return 44; fi
+    if [ "$attempt" = 1 ]; then echo "STUDIO_PROVISION_RETRY: $stage in 10 seconds"; sleep 10; fi
+  done
+  return "$code"
+}
+retry_npm() {
+  local limit=$1 attempt code
+  shift
+  for attempt in 1 2; do
+    code=0
+    timeout --kill-after=5 "$limit" npm "$@" || code=$?
+    echo "STUDIO_INSTALL: $stage attempt=$attempt seconds=$((SECONDS-stage_start)) exit=$code"
+    if [ "$code" = 0 ]; then return 0; fi
+    if [ "$attempt" = 1 ]; then echo "STUDIO_PROVISION_RETRY: $stage in 10 seconds"; sleep 10; fi
+  done
+  return "$code"
+}
+mkdir -p /var/lib/codex-studio
+stage clock
+timeout --kill-after=5 15 timedatectl set-ntp true
+timeout --kill-after=5 120 bash -c 'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'
+stage system-packages
+printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99studio-timeouts
+apt-mark hold linux-generic linux-image-generic || true
+missing_tools=0
+for tool in git rsync btrfs python3 curl xz blkid mountpoint unshare nsenter lsof; do
+  if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
+done
+if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
+  timeout --kill-after=5 300 apt-get update
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof
+fi
+stage data-disk
+if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
+if ! grep -q 'LABEL=studio-data' /etc/fstab; then echo 'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0' >> /etc/fstab; fi
+mountpoint -q /var/lib/codex-studio || mount /var/lib/codex-studio
+if [ -f /var/lib/codex-studio/provision-ready ]; then echo STUDIO_PROVISION_READY; exit 0; fi
+rm -f /var/lib/codex-studio/provision-error
+btrfs filesystem resize max /var/lib/codex-studio
+stage node
+if [ "$(node --version 2>/dev/null || true)" != v22.15.0 ]; then
+  download https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-arm64.tar.xz /tmp/node.tar.xz 180
+  download https://nodejs.org/dist/v22.15.0/SHASUMS256.txt /tmp/node-sums 60
+  (cd /tmp && grep ' node-v22.15.0-linux-arm64.tar.xz$' node-sums | sed 's/node-v22.15.0-linux-arm64.tar.xz/node.tar.xz/' | sha256sum -c -)
+  tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
+  rm /tmp/node.tar.xz /tmp/node-sums
+fi
+export npm_config_fetch_timeout=120000 npm_config_fetch_retries=2
+export npm_config_fetch_retry_mintimeout=1000 npm_config_fetch_retry_maxtimeout=5000
+export npm_config_update_notifier=false
+stage claude-bridge
+bridge=/opt/codex-studio/claude_bridge
+bridge_sum=$(sha256sum "$bridge/package-lock.json" | cut -d' ' -f1)
+if [ ! -d "$bridge/node_modules" ] || [ "$(cat /var/lib/codex-studio/bridge-ready 2>/dev/null || true)" != "$bridge_sum" ]; then
+  retry_npm 300 --prefix "$bridge" ci --ignore-scripts --omit=optional --no-audit --no-fund
+  echo "$bridge_sum" > /var/lib/codex-studio/bridge-ready
+fi
+stage codex
+echo STUDIO_PROVISION_CODEX
+if [ "$(codex --version 2>/dev/null || true)" != 'codex-cli @CODEX@' ]; then
+  release=https://github.com/openai/codex/releases/download/rust-v@CODEX@
+  asset=codex-package-aarch64-unknown-linux-musl.tar.gz
+  if download "$release/codex-package_SHA256SUMS" /tmp/codex-sums 60; then
+    # No npm fallback for a checksum failure or a malformed checksum manifest.
+    grep "  $asset$" /tmp/codex-sums > /tmp/codex-check
+    download "$release/$asset" "/tmp/$asset" 600
+    failure_cause="SHA-256 checksum mismatch"
+    (cd /tmp && sha256sum -c codex-check)
+    failure_cause=
+    mkdir -p /opt/codex-studio/codex
+    tar -xzf "/tmp/$asset" -C /opt/codex-studio/codex
+    # The release package contains the CLI and its companion executables.
+    ln -sf /opt/codex-studio/codex/bin/codex /usr/local/bin/codex
+    rm "/tmp/$asset" /tmp/codex-sums /tmp/codex-check
+  else
+    code=$?
+    if [ "$code" != 44 ]; then (exit "$code"); fi
+    retry_npm 600 install -g --foreground-scripts --no-audit --no-fund @openai/codex@@CODEX@
+  fi
+fi
+stage claude
+echo STUDIO_PROVISION_CLAUDE
+if [ "$(claude --version 2>/dev/null | cut -d' ' -f1 || true)" != '@CLAUDE@' ]; then
+  retry_npm 300 install -g --foreground-scripts --no-audit --no-fund @anthropic-ai/claude-code@@CLAUDE@
+fi
+stage verify-providers
+test "$(codex --version)" = 'codex-cli @CODEX@'
+test "$(claude --version | cut -d' ' -f1)" = '@CLAUDE@'
+stage guest-service
+timeout --kill-after=5 120 bash /opt/codex-studio/vm/guest/install.sh
+codex --version > /var/lib/codex-studio/provider-versions
+claude --version >> /var/lib/codex-studio/provider-versions
+touch /var/lib/codex-studio/provision-ready
+rm -f /var/lib/codex-studio/provision-error
+echo STUDIO_PROVISION_READY
+'''.replace('@CODEX@', codex_version).replace('@CLAUDE@', claude_version)
+
+
 def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> dict[str, Any]:
     """Return cloud-init data. Guest service installation is a reviewed guest contract."""
     files = []
@@ -194,7 +358,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
     scripts = guest_dir.parents[1] / 'scripts'
     for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py',
-                 'codex_open_file_limit.py']:
+                 'codex_open_file_limit.py', 'codex_records.py']:
         source = scripts / name
         if not source.is_file():
             raise LinuxVMError(f'The Linux VM runtime payload is unavailable: {name}.')
@@ -209,58 +373,18 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
                           'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
     if not any(entry['path'].endswith('/claude_bridge/package-lock.json') for entry in files):
         raise LinuxVMError('The pinned Claude bridge dependency manifest is unavailable.')
-    script = f'''#!/bin/bash
-set -euo pipefail
-export DEBIAN_FRONTEND=noninteractive
-printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";\\n' > /etc/apt/apt.conf.d/99studio-timeouts
-mkdir -p /var/lib/codex-studio
-apt-mark hold linux-generic linux-image-generic || true
-trap 'printf "%s\\n" "Provision failed at line $LINENO" > /var/lib/codex-studio/provision-error; echo "STUDIO_PROVISION_ERROR: line $LINENO failed" >&2' ERR
-timeout --kill-after=5 15 timedatectl set-ntp true
-timeout --kill-after=5 120 bash -c 'until [ "$(timedatectl show --property=NTPSynchronized --value)" = yes ]; do sleep 1; done'
-timeout --kill-after=5 300 apt-get update
-timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof
-if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
-mkdir -p /var/lib/codex-studio
-if ! grep -q 'LABEL=studio-data' /etc/fstab; then echo 'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0' >> /etc/fstab; fi
-mountpoint -q /var/lib/codex-studio || mount /var/lib/codex-studio
-if [ -f /var/lib/codex-studio/provision-ready ]; then exit 0; fi
-rm -f /var/lib/codex-studio/provision-error
-btrfs filesystem resize max /var/lib/codex-studio
-curl --fail --location --connect-timeout 20 --max-time 180 -o /tmp/node.tar.xz https://nodejs.org/dist/v22.15.0/node-v22.15.0-linux-arm64.tar.xz
-curl --fail --location --connect-timeout 20 --max-time 60 -o /tmp/node-sums https://nodejs.org/dist/v22.15.0/SHASUMS256.txt
-(cd /tmp && grep ' node-v22.15.0-linux-arm64.tar.xz$' node-sums | sed 's/node-v22.15.0-linux-arm64.tar.xz/node.tar.xz/' | sha256sum -c -)
-tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1
-rm /tmp/node.tar.xz /tmp/node-sums
-export npm_config_fetch_timeout=30000 npm_config_fetch_retries=2
-export npm_config_fetch_retry_mintimeout=1000 npm_config_fetch_retry_maxtimeout=5000
-export npm_config_update_notifier=false
-timeout --kill-after=5 300 npm --prefix /opt/codex-studio/claude_bridge ci --ignore-scripts --omit=optional --no-audit --no-fund
-echo STUDIO_PROVISION_CODEX
-timeout --kill-after=5 180 npm install -g --foreground-scripts --no-audit --no-fund @openai/codex@{codex_version}
-echo STUDIO_PROVISION_CLAUDE
-timeout --kill-after=5 180 npm install -g --foreground-scripts --no-audit --no-fund @anthropic-ai/claude-code@{claude_version}
-test "$(codex --version)" = "codex-cli {codex_version}"
-test "$(claude --version | cut -d' ' -f1)" = "{claude_version}"
-# install.sh belongs to the guest component and defines its service boundary.
-timeout --kill-after=5 120 bash /opt/codex-studio/vm/guest/install.sh
-codex --version > /var/lib/codex-studio/provider-versions
-claude --version >> /var/lib/codex-studio/provider-versions
-touch /var/lib/codex-studio/provision-ready
-rm -f /var/lib/codex-studio/provision-error
-echo STUDIO_PROVISION_READY
-'''
+    script = _provision_script(codex_version, claude_version)
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
-After=network-online.target
+After=network-online.target cloud-config.service
 Wants=network-online.target
 ConditionPathExists=!/var/lib/codex-studio/provision-ready
 
 [Service]
 Type=oneshot
 ExecStart=/bin/bash /opt/codex-studio/provision.sh
-TimeoutStartSec=1200
+TimeoutStartSec=2500
 TimeoutStopSec=5
 KillMode=control-group
 RemainAfterExit=yes
@@ -275,7 +399,7 @@ WantedBy=multi-user.target
                                           'shell': '/bin/bash'}],
             'write_files': files, 'runcmd': [['systemctl', 'daemon-reload'],
                 ['systemctl', 'enable', 'codex-studio-provision.service'],
-                ['timeout', '--kill-after=5', '1210', 'systemctl', 'start', 'codex-studio-provision.service']]}
+                ['timeout', '--kill-after=5', '2510', 'systemctl', 'restart', 'codex-studio-provision.service']]}
 
 
 class Client:
@@ -372,6 +496,7 @@ class Client:
         if self.state_dir.exists():
             result['allocatedDiskBytes'] = sum(path.stat().st_blocks * 512 for path in self.state_dir.glob('*.raw'))
             result['freeHostBytes'] = shutil.disk_usage(self.state_dir).free
+        result['provision'] = _provision_info(self.state_dir / 'console.log')
         return result
 
     def create(self, settings: Settings | None = None, *, timeout: float = 1500) -> dict[str, Any]:
@@ -454,7 +579,33 @@ class Client:
                 _atomic_json(self.state_dir / 'settings.json', asdict(settings))
         return asdict(settings)
 
-    def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 1500) -> dict[str, Any]:
+    def _refresh_provision_seed(self, deadline: float) -> None:
+        # Change the NoCloud instance only after a known incomplete provision.
+        # cloud-init then replaces the old script without replacing either disk.
+        console = self.state_dir / 'console.log'
+        if console.exists():
+            (self.state_dir / 'console.previous.log').write_bytes(console.read_bytes()[-1024 * 1024:])
+        manifest = json.loads((self.state_dir / 'image.json').read_text())
+        config = _cloud_config(self.guest_dir, manifest['codex'], manifest['claude'])
+        payload = '#cloud-config\n' + json.dumps(config)
+        identity = hashlib.sha256(payload.encode()).hexdigest()
+        with tempfile.TemporaryDirectory(prefix='provision-', dir=self.state_dir) as name:
+            staging = Path(name)
+            seed = staging / 'seed'
+            seed.mkdir()
+            (seed / 'user-data').write_text(payload)
+            (seed / 'meta-data').write_text('instance-id: studio-linux-' + identity + '\nlocal-hostname: studio-linux\n')
+            _run(['hdiutil', 'makehybrid', '-iso', '-joliet', '-default-volume-name', 'cidata',
+                  '-o', str(staging / 'seed.iso'), str(seed)], timeout=_remaining(deadline, 60))
+            os.replace(staging / 'seed.iso', self.state_dir / 'seed.iso')
+            _atomic_json(self.state_dir / 'provision-seed.json', {'instanceId': 'studio-linux-' + identity})
+
+    def _provision_error(self, info: dict[str, Any], *, timeout: bool = False) -> LinuxVMError:
+        cause = 'deadline exceeded' if timeout else info.get('cause', 'command failed')
+        return LinuxVMError(f"Linux VM stage {info.get('stage', 'boot')} failed: {cause}. "
+                            f"Retry the Linux spawn. Log: {self.state_dir / 'console.log'}")
+
+    def ensure_running(self, settings: Settings | dict[str, int] | None = None, *, timeout: float = 3600) -> dict[str, Any]:
         if not 0 < timeout <= 3600:
             raise LinuxVMError('VM start timeout must be between 0 and 3600 seconds.')
         deadline = time.monotonic() + timeout
@@ -470,6 +621,25 @@ class Client:
         with self._lock(_remaining(deadline, 15)):
             _remaining(deadline, 1)
             state = self.status()
+            previous = _provision_info(self.state_dir / 'console.log')
+            if previous.get('state') == 'failed':
+                healthy = False
+                if state['state'] == 'running':
+                    try:
+                        self.call('health', {}, timeout=_remaining(deadline, 5))
+                        healthy = True
+                    except LinuxVMError:
+                        pass
+                if not healthy:
+                    if state['state'] != 'stopped':
+                        if state['state'] != 'stopping':
+                            self._host('host.stop', timeout=_remaining(deadline, 5))
+                        stop_deadline = min(deadline, time.monotonic() + 40)
+                        while self.status()['state'] != 'stopped':
+                            _remaining(stop_deadline, 1)
+                            time.sleep(0.1)
+                    self._refresh_provision_seed(deadline)
+                    state = self.status()
             if state['state'] == 'stopped':
                 _require_space(self.state_dir, create=False)
                 if not self.helper.is_file() or not os.access(self.helper, os.X_OK):
@@ -483,8 +653,7 @@ class Client:
                 start_deadline = min(deadline, time.monotonic() + 15)
                 while time.monotonic() < start_deadline:
                     if launched.poll() is not None:
-                        details = log_path.read_text(errors='replace')[-2000:]
-                        raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}: {details}')
+                        raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}. Log: {log_path}')
                     try:
                         self._host('host.status', timeout=1)
                         break
@@ -493,14 +662,8 @@ class Client:
                 else:
                     raise LinuxVMError('The Linux VM helper did not publish its control socket within 15 seconds.', uncertain=True)
         while time.monotonic() < deadline:
-            console = self.state_dir / 'console.log'
-            if console.exists():
-                diagnostics = console.read_text(errors='replace')
-                if diagnostics.rfind('STUDIO_PROVISION_ERROR:') > diagnostics.rfind('STUDIO_PROVISION_READY'):
-                    raise LinuxVMError('Linux VM provisioning failed. ' + diagnostics[-2000:])
             if launched is not None and launched.poll() is not None:
-                details = (self.state_dir / 'helper.log').read_text(errors='replace')[-2000:]
-                raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}: {details}')
+                raise LinuxVMError(f'The Linux VM helper exited with code {launched.returncode}. Log: {self.state_dir / "helper.log"}')
             state = self.status()
             if state['state'] == 'failed':
                 raise LinuxVMError(f"The Linux VM failed: {state.get('error')}")
@@ -512,10 +675,12 @@ class Client:
                 else:
                     self._wait_guest_clock(deadline)
                     return {**state, 'health': health}
+            info = _provision_info(self.state_dir / 'console.log')
+            if info.get('state') == 'failed':
+                raise self._provision_error(info)
+
             time.sleep(0.25)
-        diagnostics = self.state_dir / ('console.log' if (self.state_dir / 'console.log').exists() else 'helper.log')
-        details = diagnostics.read_text(errors='replace')[-2000:] if diagnostics.exists() else ''
-        raise LinuxVMError(f'The Linux VM did not become ready within {timeout} seconds. {details}')
+        raise self._provision_error(_provision_info(self.state_dir / 'console.log'), timeout=True)
 
     def _wait_guest_clock(self, deadline: float) -> None:
         # Direct Linux boot starts without an RTC. TLS needs a current guest clock.

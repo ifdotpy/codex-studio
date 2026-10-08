@@ -1071,7 +1071,7 @@ BACKEND_ONLY_ENVIRONMENT = ('CODEX_AGENTS_BACKEND_ID', 'CODEX_RUNTIME_LOCK_METRI
 # Shell and desktop launchers can supply different ambient values after an
 # update. Retained children keep their original values and exact signature.
 RETAINED_LAUNCHER_ENVIRONMENT = frozenset({
-    'PATH', 'LANG', 'LC_CTYPE', '__PYVENV_LAUNCHER__', 'COMMAND_MODE',
+    'PATH', 'LANG', 'LC_CTYPE', 'LC_ALL', '__PYVENV_LAUNCHER__', 'COMMAND_MODE',
     'MallocNanoZone', 'XPC_SERVICE_NAME', '__CFBundleIdentifier',
 })
 

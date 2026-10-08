@@ -1,4 +1,10 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+  readTestState,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 // Built App and a private runtime fixture. No model calls or user state.
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
@@ -81,6 +87,9 @@ test("Message receipt pagination browser", async ({
                              (record['id'], agent, json.dumps(record), record['at']))
           else:
               db.execute("UPDATE runtime_events SET status='delivered' WHERE id=? AND agent=?", (value['id'], agent))
+              db.execute("UPDATE runtime_items SET record=json_set(record,'$.materialized',json('true'),"
+                         "'$.pending',json('false'),'$.deliveryStatus','delivered') WHERE id=? AND agent=?",
+                         (agent + ':' + value['id'], agent))
               now = time.time()
               # Both aggregate event and transcript windows now omit the original.
               # The exact durable receipt remains available by its primary key.
@@ -138,7 +147,9 @@ test("Message receipt pagination browser", async ({
     const port = await new Promise((resolve, reject) => {
       const timer = setTimeout(
         () => reject(new Error("Private fixture startup timed out: " + log)),
-        15000,
+        // FastAPI imports alone took 21.7 seconds under live machine load.
+        // Keep fixture setup separate from the delivery assertions below.
+        60000,
       );
       fixture.stdout.once("data", (chunk) => {
         clearTimeout(timer);
@@ -165,6 +176,30 @@ test("Message receipt pagination browser", async ({
       return response.json();
     };
     const state = await readTestState(target);
+    // Wait for the fixture's canonical schema before the outbox flow.
+    await until(
+      async () => {
+        const response = await fetch(target + "/api/sync/identity", {
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          signal: AbortSignal.timeout(15000),
+        });
+        if (response.status === 503) {
+          assert.match(
+            await response.text(),
+            /Studio API schema identity is unavailable/,
+          );
+          return false;
+        }
+        assert.equal(response.status, 200, await response.text());
+        assert.equal(
+          response.headers.get(API_SCHEMA_HASH_HEADER),
+          readApiSchemaHash(),
+        );
+        return true;
+      },
+      "The private fixture API schema did not become ready: " + log,
+      60000,
+    );
     const agent = state.threads.find((agent) => agent.name === "Release lead");
     assert.ok(agent?.id);
     await changeFixture(agent.id, "initial", target, state.token);
@@ -366,6 +401,8 @@ test("Message receipt pagination browser", async ({
     assert.equal(delivered.body.id, id);
     assert.equal(delivered.body.text, text);
     assert.equal(delivered.status, "accepted");
+    assert.equal(delivered.receipt.materialized, true);
+    assert.equal(delivered.displayPending, false);
     const uncertain = await storage.evaluate(
       (key) => window.readReceiptFixture(key),
       uncertainId,
@@ -388,6 +425,26 @@ test("Message receipt pagination browser", async ({
       .getByRole("status")
       .filter({ hasText: "Waiting for agent" })
       .waitFor();
+
+    await page.reload();
+    await page.locator("#message").waitFor();
+    await until(
+      async () => (await bubble(text).count()) === 0,
+      "A delivered local copy reappeared after reload",
+    );
+    await page
+      .getByRole("button", { name: "Earlier messages", exact: true })
+      .click();
+    await until(
+      async () => (await bubble(text).count()) === 1,
+      "The saved original is missing from its history page",
+    );
+    assert.equal(await bubble(text).count(), 1);
+    assert.equal(
+      posts.length,
+      0,
+      "History recovery must not resend or cancel input",
+    );
     assert.ok(
       receiptRequests.some(
         (request) => request.agent === agent.id && request.ids.includes(id),

@@ -129,7 +129,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         name: "Main agent settings",
         exact: true,
       });
-      await expect(trigger).toContainText("Astra · Medium · Work 1");
+      await expect(trigger).toContainText("Astra 6 · Medium · Work 1");
       assert.equal(
         await trigger
           .locator(".execution-selected")
@@ -237,10 +237,10 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         }),
       );
       await expect(
-        page.getByRole("option", { name: "Astra recommended", exact: true }),
+        page.getByRole("option", { name: "Astra 6 recommended", exact: true }),
       ).toBeVisible();
       await page
-        .getByRole("option", { name: "Astra recommended", exact: true })
+        .getByRole("option", { name: "Astra 6 recommended", exact: true })
         .click();
       await page.waitForFunction(() =>
         window.calls.some(

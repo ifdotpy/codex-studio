@@ -6375,6 +6375,8 @@ export interface components {
       agent: string;
       /** Items */
       items: components["schemas"]["studio_api__work__models__MessageReceipt"][];
+      /** Workspaceid */
+      workspaceId?: string | null;
     };
     /** MessageRecord */
     MessageRecord: {
@@ -10191,6 +10193,11 @@ export interface components {
       error?: string | null;
       /** Id */
       id: string;
+      /**
+       * Materialized
+       * @description The exact user input exists in the saved transcript.
+       */
+      materialized?: boolean | null;
       /** Message */
       message?: string | null;
       /** Room */

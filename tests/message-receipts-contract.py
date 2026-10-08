@@ -34,7 +34,8 @@ class MessageReceiptsContract(unittest.TestCase):
         with self.runtime.lock, ThreadPoolExecutor(1) as pool:
             # Reads cannot wait for the unrelated scheduler lock.
             result = pool.submit(self.runtime.user_delivery_receipts, agent, ['sso', 'unknown']).result(timeout=1)
-        self.assertEqual(result, {'agent': agent, 'items': [{'id': 'sso', 'status': 'delivered', 'error': None}]})
+        self.assertEqual(result, {'agent': agent, 'items': [
+            {'id': 'sso', 'status': 'delivered', 'error': None, 'materialized': False}]})
         with self.runtime.db() as db:
             self.assertEqual(self.receipt_state(db), before)
 
@@ -58,7 +59,50 @@ class MessageReceiptsContract(unittest.TestCase):
             with self.runtime.db() as db:
                 db.execute('UPDATE runtime_events SET status=?,error=? WHERE id=?', (status, 'Native result unknown', 'original'))
             self.assertEqual(self.runtime.user_delivery_receipts(agent, ['original'])['items'],
-                             [{'id': 'original', 'status': status, 'error': 'Native result unknown'}])
+                             [{'id': 'original', 'status': status, 'error': 'Native result unknown', 'materialized': False}])
+
+    def test_materialization_proves_exact_inputs_beyond_the_loaded_page(self):
+        agent = self.lead()['id']
+        for event in ('first', 'second', 'legacy'):
+            self.runtime.send(agent, 'Same text', event)
+        with self.runtime.db() as db:
+            self.runtime.item(db, agent, 'first', 'user', 'Same text', inputs=[
+                {'id': 'first', 'kind': 'user', 'text': 'Same text'},
+                {'id': 'second', 'kind': 'user', 'text': 'Same text'},
+            ])
+            self.runtime.item(db, agent, 'legacy', 'user', 'Same text')
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE agent=?", (agent,))
+            for index in range(130):
+                self.runtime.item(db, agent, 'new-' + str(index), 'assistant', 'Newer activity')
+            before = self.receipt_state(db)
+        self.assertFalse(any(item['role'] == 'user' for item in self.runtime.transcript(agent)['items']))
+        receipts = self.runtime.user_delivery_receipts(agent, ['first', 'second', 'legacy'])
+        self.assertEqual({row['id']: row['materialized'] for row in receipts['items']},
+                         {'first': True, 'second': True, 'legacy': True})
+        with self.runtime.db() as db:
+            self.assertEqual(self.receipt_state(db), before)
+
+    def test_materialization_rejects_missing_foreign_and_wrong_batch_inputs(self):
+        agent = self.lead()['id']
+        other = self.lead()['id']
+        self.runtime.send(agent, 'Original', 'original')
+        with self.runtime.db() as db:
+            self.runtime.item(db, agent, 'wrong-batch', 'user', 'Same text', inputs=[
+                {'id': 'other-input', 'kind': 'user', 'text': 'Original'},
+            ])
+            self.runtime.item(db, agent, 'system-batch', 'user', 'Original', inputs=[
+                {'id': 'original', 'kind': 'followup', 'text': 'Original'},
+            ])
+            self.runtime.item(db, other, 'original', 'user', 'Original')
+            self.runtime.item(db, agent, 'assistant', 'assistant', 'Original')
+            db.execute("UPDATE runtime_events SET status='delivered' WHERE id='original'")
+        for item_id in (agent + ':missing', other + ':original', agent + ':wrong-batch',
+                        agent + ':system-batch', agent + ':assistant'):
+            with self.subTest(item=item_id), self.runtime.db() as db:
+                db.execute("UPDATE runtime_event_meta SET record=json_set(record,'$.transcriptItemId',?) "
+                           "WHERE id='original'", (item_id,))
+            result = self.runtime.user_delivery_receipts(agent, ['original'])
+            self.assertFalse(result['items'][0]['materialized'])
 
     def test_bounded_ids_and_deleted_chat(self):
         agent = self.lead()['id']

@@ -5077,11 +5077,19 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             db.execute("BEGIN")
             self.checked_actor(db, agent_id)
             rows = db.execute(
-                "SELECT id,status,error FROM runtime_events WHERE agent=? AND kind='user' "
-                "AND id IN (" + ",".join("?" for _ in identities) + ")",
+                "SELECT e.id,e.status,e.error,EXISTS (SELECT 1 FROM runtime_items i "
+                "WHERE i.agent=e.agent AND i.id=COALESCE(json_extract(m.record,'$.transcriptItemId'),e.agent||':'||e.id) "
+                "AND ((i.id=e.agent||':'||e.id AND json_extract(i.record,'$.role')='user' "
+                "AND json_type(i.record,'$.inputs') IS NULL) OR EXISTS ("
+                "SELECT 1 FROM json_each(i.record,'$.inputs') input "
+                "WHERE json_extract(input.value,'$.id')=e.id AND json_extract(input.value,'$.kind')='user'))) "
+                "AS materialized FROM runtime_events e LEFT JOIN runtime_event_meta m ON m.id=e.id "
+                "WHERE e.agent=? AND e.kind='user' "
+                "AND e.id IN (" + ",".join("?" for _ in identities) + ")",
                 (agent_id, *identities),
             ).fetchall() if identities else []
-            return {"agent": agent_id, "items": [dict(row) for row in rows]}
+            return {"agent": agent_id, "items": [
+                {**dict(row), "materialized": bool(row["materialized"])} for row in rows]}
 
     def retire_legacy_steer(self, db, a):
         """Keep old submitted steer receipts uncertain during the delivery upgrade."""
@@ -5294,6 +5302,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
             self.complete_image_workspace(agent_id, status)
 
+    def _linux_host_image_fallback(self, db, agent, message):
+        if agent.get("environment") != "linux":
+            return False
+        supported, _reason = self.image_workspace_support(agent["imageWorkspaceRepo"])
+        if not supported:
+            return False
+        agent.update(environment="host", imageWorkspace=True, imageWorkspacePhase="read_only",
+                     imageWorkspaceBaseState="building", imageWorkspaceError=str(message)[:1200],
+                     worktree=False, worktreeWarning=None, error=None)
+        self._image_base_callback_agents.discard(agent["id"])
+        self.loaded.discard(agent["id"])
+        self.put(db, "agents", agent)
+        notice = ("[Studio workspace fallback] " + str(message)[:800]
+                  + ". Studio will create a host image workspace with the user's uncommitted changes.")
+        self.parent_event(db, agent, "image-workspace-fallback", notice, recovery=True)
+        self.pool.submit(self._send_image_workspace_notice, agent["id"], notice,
+                         "image-workspace-fallback:" + agent["id"])
+        self.pool.submit(self._start_host_image_fallback, agent["id"], agent["imageWorkspaceRepo"])
+        self.changed.set()
+        return True
+
+    def _start_host_image_fallback(self, agent_id, repo):
+        try:
+            self.start_image_base(repo, agent_id, retry_failed=True)
+        except Exception as error:
+            self.image_base_completed(agent_id, {"state": "failed", "error": str(error)})
+
     def complete_image_workspace(self, agent_id, status):
         workspace = None
         workspace_attempted = False
@@ -5309,6 +5344,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Image workspace repository is missing")
                 if status.get("state") != "ready":
                     message = status.get("error") or "Image workspace base build failed"
+                    if self._linux_host_image_fallback(db, agent, message):
+                        return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(message)[:1200],
@@ -5377,6 +5414,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
+                    if self._linux_host_image_fallback(db, agent, error):
+                        return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(error)[:1200],
@@ -5404,7 +5443,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = self.agent(agent_id, db)
                 if agent.get("imageWorkspaceNoticeSent") == message_id:
                     return
-                if not agent.get("imageWorkspaceNoticeText"):
+                if agent.get("imageWorkspaceNoticeId") != message_id:
+                    agent["imageWorkspaceNoticeId"] = message_id
                     agent["imageWorkspaceNoticeText"] = text
                     self.put(db, "agents", agent)
                 text = agent["imageWorkspaceNoticeText"]
