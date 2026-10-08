@@ -1243,7 +1243,7 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
     };
   }
   if (scope.startsWith("transcript:")) {
-    const high = options.transcriptSeq ?? 1;
+    const highWatermark = options.transcriptSeq ?? 1;
     const limit = Math.min(100, Math.max(1, options.limit ?? 100));
     /** @type {TranscriptPageResponse} */
     const transcript = options.transcript ?? {
@@ -1256,16 +1256,26 @@ export function entityPullFixture(snapshot, optionsOrAfter = {}) {
       tail: null,
       unavailable: null,
     };
-    const doc = generatedSyncEntity({
-      id: scope,
-      seq: high,
-      payload: JSON.stringify(transcript),
-      _deleted: false,
-    });
+    const availableDocuments = [
+      generatedSyncEntity({
+        id: scope,
+        seq: highWatermark,
+        payload: JSON.stringify(transcript),
+        _deleted: false,
+      }),
+    ];
+    const page = availableDocuments
+      .filter((document) => document.seq > after)
+      .slice(0, limit);
     return {
       generation,
-      documents: after < high ? [doc].slice(0, limit) : [],
-      checkpoint: { seq: after < high ? high : after },
+      documents: page,
+      checkpoint: {
+        seq:
+          page.length === limit
+            ? page.at(-1).seq
+            : Math.max(after, highWatermark),
+      },
     };
   }
   if (scope !== "state:entities:v1")

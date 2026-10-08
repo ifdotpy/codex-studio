@@ -18,6 +18,46 @@ import {
   test,
 } from "../playwright.mjs";
 
+test("transcript fixture applies its sequence before the request cursor", async () => {
+  const snapshot = {
+    token: "fixture-token",
+    stateDir: "/tmp/fixture",
+    threads: [],
+    chats: [],
+    edges: [],
+    runtime: {},
+  };
+  const transcript = {
+    items: [],
+    truncated: false,
+    agent: null,
+    historyVersion: "0",
+    nextAfterCursor: null,
+    nextCursor: null,
+    tail: null,
+    unavailable: null,
+  };
+  const firstPull = entityPullFixtureForRequest(
+    snapshot,
+    "/api/sync/pull?scope=transcript%3Aagent-a&after=1&limit=100",
+    { transcript, transcriptSeq: 2 },
+  );
+  assert.deepEqual(
+    firstPull.documents.map(({ seq }) => seq),
+    [2],
+    "an advanced transcript sequence is eligible after the previous cursor",
+  );
+  assert.equal(firstPull.checkpoint.seq, 2);
+
+  const unchangedPull = entityPullFixtureForRequest(
+    snapshot,
+    "/api/sync/pull?scope=transcript%3Aagent-a&after=2&limit=100",
+    { transcript, transcriptSeq: 2 },
+  );
+  assert.deepEqual(unchangedPull.documents, []);
+  assert.equal(unchangedPull.checkpoint.seq, 2);
+});
+
 test("entity fixture contract matches the real sync backend", async () => {
   const root = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
