@@ -472,6 +472,7 @@ test("account project ui", async ({ browser: _browser }) => {
     const freshPage = await browser.newPage({
       viewport: { width: 1440, height: 900 },
     });
+    freshPage.setDefaultTimeout(5000);
     const initialEntityPull = freshPage.waitForResponse((response) => {
       const url = new URL(response.url());
       return (
@@ -487,9 +488,24 @@ test("account project ui", async ({ browser: _browser }) => {
     assert.equal(pulledEmptyLead.value.accountKey, "work");
     await freshPage.locator('[data-chat="empty"]').click();
     await freshPage
-      .locator("#composer")
-      .getByText("work@example.com", { exact: true })
-      .waitFor();
+      .getByRole("button", { name: "Chat settings", exact: true })
+      .click();
+    const freshAccountTile = freshPage.getByRole("group", {
+      name: "Account",
+      exact: true,
+    });
+    await freshPage.waitForFunction(
+      () =>
+        document.querySelector('[role="group"][aria-label="Account"]')?.dataset
+          .value === "work",
+    );
+    console.log(
+      "FRESH CHAT ENTITY AND ACCOUNT TILE",
+      JSON.stringify({
+        pulledAccountKey: pulledEmptyLead.value.accountKey,
+        renderedTileValue: await freshAccountTile.getAttribute("data-value"),
+      }),
+    );
     await freshPage.context().close();
     await page.reload();
     await page.getByRole("button", { name: "Studio settings" }).click();
