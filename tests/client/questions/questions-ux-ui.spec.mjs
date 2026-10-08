@@ -83,8 +83,8 @@ test("Questions Ux Ui", async ({
       1,
     );
     assert.equal(
-      await card.getByText("Agent can continue", { exact: true }).count(),
-      1,
+      await card.getByText("Agent can continue", { exact: true }).isVisible(),
+      false,
     );
     assert.equal(
       await page
@@ -100,13 +100,37 @@ test("Questions Ux Ui", async ({
         .count(),
       1,
     );
+    await page.setViewportSize({ width: 390, height: 844 });
+    const approvalCard = page.locator('[data-request="permission-question"]');
+    for (const name of ["Decline", "Approve"]) {
+      const action = approvalCard.getByRole("button", { name, exact: true });
+      await action.scrollIntoViewIfNeeded();
+      await action.click({ trial: true });
+      assert.equal(
+        await action.evaluate((element) => {
+          const rect = element.getBoundingClientRect();
+          return element.contains(
+            document.elementFromPoint(
+              rect.x + rect.width / 2,
+              rect.y + rect.height / 2,
+            ),
+          );
+        }),
+        true,
+        `${name} remains clear of Latest on 390px`,
+      );
+    }
+    assert.equal(
+      await page.locator(".jump-slot").isVisible(),
+      false,
+      "pending approval hides Latest before a form opens",
+    );
+    await page.setViewportSize({ width: 1440, height: 960 });
     await page.locator('[data-answer="blocking-question"]').click();
     const modal = page
       .locator('[data-request="blocking-question"]')
       .getByRole("form");
-    await modal
-      .getByRole("textbox", { name: "Blocking tool question?" })
-      .waitFor();
+    await modal.getByRole("button", { name: "Yes", exact: true }).waitFor();
     assert.equal(
       await page
         .locator('[data-request="blocking-question"]')
@@ -123,6 +147,11 @@ test("Questions Ux Ui", async ({
     const mcpSend = mcpForm.getByRole("button", { name: "Send answer" });
     assert.equal(await mcpSend.isDisabled(), true);
     assert.equal(await mcpForm.getByRole("checkbox").count(), 2);
+    assert.equal(
+      await mcpForm.getByRole("textbox").count(),
+      2,
+      "enum fields have no custom answer",
+    );
     await mcpForm.getByRole("textbox", { name: "Required scope" }).fill("One");
     await poll(() => mcpSend.isEnabled(), "optional fields do not block Send");
     let mcpAnswer;
@@ -156,6 +185,12 @@ test("Questions Ux Ui", async ({
       "an open multi-question card does not repeat its first question",
     );
     assert.equal(await card.locator(".request-prompt").count(), 0);
+    assert.equal(
+      await card.getByRole("button", { name: "Defer", exact: true }).count(),
+      0,
+    );
+    assert.equal(await form.getByText("Other", { exact: true }).count(), 0);
+    assert.equal(await page.locator(".jump-slot").isVisible(), false);
     const openLayout = await card.evaluate((element) => {
       const viewport = document
         .querySelector("#messages")
@@ -191,6 +226,29 @@ test("Questions Ux Ui", async ({
     assert.equal(await send.isDisabled(), true, "no default answer");
     assert.equal(await form.locator('[aria-pressed="true"]').count(), 0);
     await form.getByText(description, { exact: true }).waitFor();
+    const firstOption = form.getByRole("button", {
+      name: "One file",
+      exact: true,
+    });
+    await firstOption.focus();
+    await page.keyboard.press("2");
+    assert.equal(
+      await form
+        .getByRole("button", { name: "All files", exact: true })
+        .getAttribute("aria-pressed"),
+      "true",
+    );
+    await page.keyboard.press("1");
+    assert.equal(await firstOption.getAttribute("aria-pressed"), "true");
+    const testsOption = form.getByRole("checkbox", {
+      name: "Tests",
+      exact: true,
+    });
+    await testsOption.focus();
+    await page.keyboard.press("1");
+    assert.equal(await testsOption.isChecked(), true);
+    await page.keyboard.press("1");
+    assert.equal(await testsOption.isChecked(), false);
     await page.locator("#message").fill("The main composer remains available.");
     assert.equal(
       await page
@@ -214,6 +272,14 @@ test("Questions Ux Ui", async ({
       true,
     );
     assert.equal(await send.isEnabled(), true);
+    await form
+      .getByRole("textbox", { name: "Which scope?" })
+      .fill("Only the request controls");
+    await page.keyboard.press("2");
+    assert.equal(
+      await form.getByRole("textbox", { name: "Which scope?" }).inputValue(),
+      "Only the request controls2",
+    );
     await form
       .getByRole("textbox", { name: "Which scope?" })
       .fill("Only the request controls");
