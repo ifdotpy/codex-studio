@@ -33,6 +33,17 @@ def _wait_until(check, timeout=60):
     raise AssertionError("The Windows server did not reach the expected state")
 
 
+def _base_python() -> tuple[str, dict[str, str]]:
+    executable = getattr(sys, "_base_executable", sys.executable) if WINDOWS else sys.executable
+    environment = os.environ.copy()
+    if WINDOWS:
+        site_packages = [path for path in sys.path if "site-packages" in path.casefold()]
+        environment["PYTHONPATH"] = os.pathsep.join(
+            [str(ROOT / "scripts"), *site_packages, environment.get("PYTHONPATH", "")]
+        )
+    return executable, environment
+
+
 def _port_owner(port):
     result = subprocess.run(
         ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
@@ -75,11 +86,11 @@ class WindowsServerContract(unittest.TestCase):
                 listener.bind(("127.0.0.1", 0))
                 port = listener.getsockname()[1]
             log = (root / "entrypoint.log").open("ab")
-            environment = os.environ.copy()
+            executable, environment = _base_python()
             environment.update({"CODEX_HOME": str(profile), "CODEX_AGENTS_STATE_DIR": str(state),
                                 "CODEX_AGENTS_SUPERVISOR_MODE": "1"})
             process = subprocess.Popen(
-                [sys.executable, str(ROOT / "scripts" / "codex_windows_server.py"),
+                [executable, str(ROOT / "scripts" / "codex_windows_server.py"),
                  "--source-root", str(ROOT), "--state", str(state), "--port", str(port),
                  "--public-origin", "https://kukuka-win.tailf00fa0.ts.net:8443"],
                 cwd=ROOT, env=environment, stdin=subprocess.DEVNULL, stdout=log, stderr=log,

@@ -85,7 +85,8 @@ with open(sys.argv[1], 'r+') as handle:
     print('locked', flush=True)
     time.sleep(60)
 """
-            process = subprocess.Popen([sys.executable, "-c", worker, str(path), str(ROOT / "scripts")],
+            process = subprocess.Popen([getattr(sys, "_base_executable", sys.executable),
+                                        "-c", worker, str(path), str(ROOT / "scripts")],
                                        stdout=subprocess.PIPE, text=True)
             try:
                 self.assertEqual(process.stdout.readline().strip(), "locked")
