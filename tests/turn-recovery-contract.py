@@ -136,12 +136,15 @@ class TurnRecoveryContract(unittest.TestCase):
             self.assertEqual(sum(method == 'turn/start' for method, _ in self.server.calls), before)
 
     def test_observed_turn_clears_stale_timeout_error(self):
-        self.lose_start_receipt()
-        self.server.notify({'method': 'turn/started', 'params': {
-            'threadId': self.a['threadId'], 'turn': {'id': self.turn, 'status': 'inProgress'}}})
-        current = self.runtime.agent(self.key)
-        self.assertEqual((current['status'], current['turnId'], current['error']),
-                         ('running', self.turn, None))
+        # This test owns the notification. Keep periodic reconciliation from
+        # completing the aged synthetic turn before the notification is applied.
+        with patch.object(self.runtime, 'queue_turn_recovery'):
+            self.lose_start_receipt()
+            self.server.notify({'method': 'turn/started', 'params': {
+                'threadId': self.a['threadId'], 'turn': {'id': self.turn, 'status': 'inProgress'}}})
+            current = self.runtime.agent(self.key)
+            self.assertEqual((current['status'], current['turnId'], current['error']),
+                             ('running', self.turn, None))
 
     def test_dispatch_clears_saved_timeout_after_turn_was_observed(self):
         self.lose_start_receipt()
