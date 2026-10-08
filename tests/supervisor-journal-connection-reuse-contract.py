@@ -106,6 +106,8 @@ def workload(journal_type, directory, count):
         child.stopping = threading.Event()
         child.paused = threading.Event()
         child.persistence_errors = {}
+        child.reader = SimpleNamespace(is_alive=lambda: False)
+        child.stderr = SimpleNamespace(is_alive=lambda: False)
         child.process = SimpleNamespace(supervisor=server, stdin=io.StringIO(), poll=lambda: None)
         server.children[child.handle] = child
         receipts = []
