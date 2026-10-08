@@ -3,6 +3,7 @@
 
 import argparse
 import ast
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import ctypes
 import fnmatch
@@ -816,27 +817,80 @@ def sample_runnable_other_process_count(window_seconds=5.0, interval_seconds=0.5
     return max(0, math.ceil(statistics.median(samples)) - 1) if samples else 0
 
 
+def _read_profile_file(path):
+    try:
+        saved = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return saved if isinstance(saved, dict) else {}
+
+
+@contextmanager
+def _profile_file_lock():
+    """Serialize profile read/merge/write across independent runner processes."""
+    PROFILE_PATH.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = PROFILE_PATH.with_suffix(".lock")
+    with lock_path.open("a+b") as lock_file:
+        lock_file.seek(0, os.SEEK_END)
+        if lock_file.tell() == 0:
+            lock_file.write(b"\0")
+            lock_file.flush()
+        lock_file.seek(0)
+        if os.name == "nt":  # pragma: no cover - Windows
+            import msvcrt
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                lock_file.seek(0)
+                msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _load_profile():
     profile = {}
     for path in (BASELINE_PATH, PROFILE_PATH):
-        try:
-            saved = json.loads(path.read_text(encoding="utf-8"))
-            if not isinstance(saved, dict):
-                continue
-            costs = dict(profile.get("suiteSeconds", {}))
-            costs.update(saved.get("suiteSeconds", {}))
-            profile.update(saved)
-            profile["suiteSeconds"] = costs
-        except (OSError, json.JSONDecodeError):
+        saved = _read_profile_file(path)
+        if not saved:
             continue
+        costs = dict(profile.get("suiteSeconds", {}))
+        costs.update(saved.get("suiteSeconds", {}))
+        profile.update(saved)
+        profile["suiteSeconds"] = costs
     return profile
 
 
 def _save_profile(profile):
     TEST_TMP_ROOT.mkdir(parents=True, exist_ok=True)
-    temporary = PROFILE_PATH.with_suffix(".tmp")
-    temporary.write_text(json.dumps(profile, sort_keys=True), encoding="utf-8")
-    temporary.replace(PROFILE_PATH)
+    with _profile_file_lock():
+        merged = _read_profile_file(PROFILE_PATH)
+        suites = dict(merged.get("suiteSeconds", {}))
+        suites.update(profile.get("suiteSeconds", {}))
+        maximums = {
+            key: max(int(value) for value in (merged.get(key), profile.get(key)) if value is not None)
+            for key in ("maxSuiteRssBytes", "maxSuiteScratchBytes")
+            if merged.get(key) is not None or profile.get(key) is not None
+        }
+        merged.update(profile)
+        merged["suiteSeconds"] = suites
+        merged.update(maximums)
+        descriptor, temporary_name = tempfile.mkstemp(
+            prefix=f".{PROFILE_PATH.name}.", suffix=".tmp", dir=PROFILE_PATH.parent,
+        )
+        temporary = Path(temporary_name)
+        try:
+            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
+                json.dump(merged, output, sort_keys=True)
+                output.flush()
+            os.replace(temporary, PROFILE_PATH)
+        finally:
+            temporary.unlink(missing_ok=True)
 
 
 def _measured_child_peak_rss_bytes():

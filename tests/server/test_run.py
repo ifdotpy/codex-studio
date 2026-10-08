@@ -2,9 +2,11 @@
 
 import contextlib
 import ctypes
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import io
 import json
+import multiprocessing
 import os
 from pathlib import Path
 import sys
@@ -19,6 +21,13 @@ RUNNER_PATH = ROOT / "tests" / "server" / "run.py"
 RUNNER_SPEC = importlib.util.spec_from_file_location("server_suite_runner", RUNNER_PATH)
 RUNNER = importlib.util.module_from_spec(RUNNER_SPEC)
 RUNNER_SPEC.loader.exec_module(RUNNER)
+
+
+def _save_profile_in_process(profile_path, profile, start_gate):
+    RUNNER.PROFILE_PATH = Path(profile_path)
+    RUNNER.TEST_TMP_ROOT = Path(profile_path).parent
+    start_gate.wait(timeout=5)
+    RUNNER._save_profile(profile)
 
 
 class ServerSuiteRunner(unittest.TestCase):
@@ -182,6 +191,57 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(skipped, [])
         self.assertEqual(failures, [])
         self.assertEqual(executed, ["slow.py", "fast.py"])
+
+    def test_concurrent_profile_writers_merge_with_unique_atomic_temporaries(self):
+        try:
+            context = multiprocessing.get_context("fork")
+        except ValueError:  # pragma: no cover - Windows
+            self.skipTest("Concurrent profile writer test requires process-shared fork events")
+        with tempfile.TemporaryDirectory(prefix="server-profile-writers-") as directory:
+            profile_path = Path(directory) / "runner-profile.json"
+            start_gate = context.Event()
+
+            profiles = (
+                {"suiteSeconds": {"first.py": 3.0}, "maxSuiteRssBytes": 100,
+                 "maxSuiteScratchBytes": 200},
+                {"suiteSeconds": {"second.py": 4.0}, "maxSuiteRssBytes": 300,
+                 "maxSuiteScratchBytes": 150},
+            )
+            writers = [context.Process(target=_save_profile_in_process,
+                                       args=(str(profile_path), profile, start_gate))
+                       for profile in profiles]
+            for writer in writers:
+                writer.start()
+            start_gate.set()
+            for writer in writers:
+                writer.join(timeout=5)
+                if writer.is_alive():
+                    writer.terminate()
+                    writer.join(timeout=2)
+                self.assertEqual(writer.exitcode, 0)
+            saved = json.loads(profile_path.read_text(encoding="utf-8"))
+            self.assertEqual(saved["suiteSeconds"], {"first.py": 3.0, "second.py": 4.0})
+            self.assertEqual(saved["maxSuiteRssBytes"], 300)
+            self.assertEqual(saved["maxSuiteScratchBytes"], 200)
+            self.assertEqual(list(Path(directory).glob(".runner-profile.json.*.tmp")), [])
+
+    def test_concurrent_tmpfs_roots_are_unique_and_cleanup_is_owned(self):
+        with tempfile.TemporaryDirectory(prefix="server-runner-root-race-") as temp:
+            mount = Path(temp)
+            with (mock.patch.object(RUNNER, "MAX_SHORT_TMP_ROOT_BYTES", 200),
+                  mock.patch.object(RUNNER, "_tmpfs_mounts", side_effect=lambda: iter([mount])),
+                  mock.patch.object(RUNNER, "_probe_scratch_capacity", return_value=True),
+                  mock.patch.object(RUNNER.shutil, "disk_usage",
+                                    return_value=type("Usage", (), {"free": 4096})())):
+                with ThreadPoolExecutor(max_workers=2) as pool:
+                    roots = list(pool.map(lambda _: RUNNER._memory_scratch_root(1024, 512), range(2)))
+            self.assertTrue(all(roots))
+            self.assertNotEqual(roots[0], roots[1])
+            self.assertTrue(all(root.is_dir() for root in roots))
+            RUNNER.shutil.rmtree(roots[0])
+            self.assertFalse(roots[0].exists())
+            self.assertTrue(roots[1].is_dir())
+            RUNNER.shutil.rmtree(roots[1])
 
     def test_automatic_worker_count_tracks_cpu_affinity_and_measured_memory(self):
         profile = {
