@@ -267,6 +267,11 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     exact: true,
   });
   const subagentAccount = accountTileGroup(page, "Subagent account");
+  assert.equal(
+    await defaults.getByRole("button", { name: /Save/ }).count(),
+    0,
+    "The account choice applies at once",
+  );
   const originalSubagentAccount =
     await subagentAccount.getAttribute("data-value");
   await accountTileButton(page, "Subagent account", "Work").click();
@@ -294,6 +299,10 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   assert.equal(await subagentAccount.getAttribute("data-value"), "work");
   await page.keyboard.press("Escape");
   await page.keyboard.press("Escape");
+  const chatAccountBeforeStudioSettings = await accountTileGroup(
+    page,
+    "Account",
+  ).getAttribute("data-value");
   await page
     .getByRole("button", { name: "Studio settings", exact: true })
     .click();
@@ -390,6 +399,20 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await workRow.getByText("Application default", { exact: true }).waitFor();
   assert.equal(defaultAccountCalls, 1);
   assert.equal(defaultAccountKey, "work");
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "Chat actions", exact: true }).click();
+  await page
+    .getByRole("menuitem", { name: "Chat settings", exact: true })
+    .click();
+  assert.equal(
+    await accountTileGroup(page, "Account").getAttribute("data-value"),
+    chatAccountBeforeStudioSettings,
+    "Changing the application default preserves the chat's selected account",
+  );
+  await page.keyboard.press("Escape");
+  await page
+    .getByRole("button", { name: "Studio settings", exact: true })
+    .click();
   const personal = studioManager.locator('[data-account="default"]');
   await personal
     .getByRole("button", { name: "Delete account", exact: true })
