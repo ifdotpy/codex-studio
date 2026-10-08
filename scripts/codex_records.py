@@ -1253,6 +1253,7 @@ class AgentRecord(TypedDict):
     imageWorkspaceHasGit: NotRequired[bool]
     imageWorkspaceSnapshotCommit: NotRequired[str | None]
     imageWorkspaceMount: NotRequired[str | None]
+    imageWorkspaceNoticeId: NotRequired[str | None]
     imageWorkspaceNoticeSent: NotRequired[str | None]
     imageWorkspaceNoticeText: NotRequired[str | None]
     imageWorkspaceNoticeError: NotRequired[str | None]
