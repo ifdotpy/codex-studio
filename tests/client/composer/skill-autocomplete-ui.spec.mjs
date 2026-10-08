@@ -100,6 +100,26 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     );
     const composer = page.locator("#message");
     await composer.waitFor();
+    await page
+      .locator("#messages [data-message]")
+      .first()
+      .waitFor()
+      .catch(async (error) => {
+        console.error(
+          "prompt recall transcript not rendered",
+          await page.evaluate(() => ({
+            title: document.querySelector("#conversation-title")?.textContent,
+            messages: Array.from(
+              document.querySelectorAll("#messages [data-message]"),
+            ).map((node) => ({
+              id: node.getAttribute("data-message"),
+              text: node.textContent,
+            })),
+            text: document.querySelector("#messages")?.textContent,
+          })),
+        );
+        throw error;
+      });
 
     // Existing prompt recall still works outside an active suggestion.
     await composer.press("ArrowUp");

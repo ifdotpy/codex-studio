@@ -100,11 +100,11 @@ test("Original Typography Browser", async ({
       .getByLabel("Studio text style", { exact: true })
       .selectOption("original");
     const checkOriginal = async () => {
-      // These are the sizes in 4a0746c^, before global typography overrides.
+      // Restore legacy sizes; the shared UI meta minimum is intentionally 12px.
       for (const [selector, expected] of [
         [".chat-row .row-copy strong", "13px"],
         ["#conversation-title", "15px"],
-        ["#conversation-status", "11px"],
+        ["#conversation-status", "12px"],
         ["#messages .prose", "14px"],
         ["#message", "14px"],
       ])

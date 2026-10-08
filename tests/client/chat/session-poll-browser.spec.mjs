@@ -41,6 +41,21 @@ test("Session Poll Browser", async ({
     configFile: false,
     root: fileURLToPath(new URL("../../../web", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
+    plugins: [
+      {
+        name: "session-poll-stream-fixture",
+        configureServer(server) {
+          server.middlewares.use("/api/sync/stream", (_request, response) => {
+            response.setHeader("Content-Type", "text/event-stream");
+            response.setHeader("Cache-Control", "no-cache");
+            response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
+            response.write(apiSchemaHandshakeSse());
+            response.write(": connected\n\n");
+            response.flushHeaders();
+          });
+        },
+      },
+    ],
   });
   await server.listen();
   try {
@@ -76,12 +91,6 @@ test("Session Poll Browser", async ({
       route.fulfill({
         headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         json: identity,
-      }),
-    );
-    await page.route("**/api/sync/stream**", (route) =>
-      route.fulfill({
-        contentType: "text/event-stream",
-        body: apiSchemaHandshakeSse(),
       }),
     );
     await page.route("**/api/sync/pull?*", (route) => {

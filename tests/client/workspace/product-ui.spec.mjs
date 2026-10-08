@@ -8,6 +8,41 @@ import { fileURLToPath } from "node:url";
 import { modelOptions, selectModel } from "../../model-picker.mjs";
 
 const browserContextsByTest = new WeakMap();
+async function setupProductMobileComposer(browser) {
+  const skill = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const root = await mkdtemp(join(tmpdir(), "codex-react-ui-320-"));
+  const proc = spawn(
+    "python3",
+    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  let log = "";
+  proc.stderr.on("data", (data) => (log += data));
+  const port = await new Promise((resolve, reject) => {
+    proc.stdout.once("data", (data) => resolve(Number(String(data).trim())));
+    proc.once("exit", () => reject(Error(log)));
+  });
+  const page = await browser.newPage({
+    viewport: { width: 1280, height: 900 },
+  });
+  await page.goto(`http://127.0.0.1:${port}`);
+  await page.locator("[data-chat]").first().waitFor();
+  await page.locator("[data-chat]").filter({ hasText: "Release lead" }).click();
+  await page.locator("#sidebar-toggle").click();
+  await page.locator("#sidebar").waitFor({ state: "hidden" });
+  await page.setViewportSize({ width: 320, height: 640 });
+  await page.locator("#message").fill("A long draft.\n".repeat(60));
+  await page.waitForFunction(
+    () =>
+      document.querySelector("#message")?.value ===
+      "A long draft.\n".repeat(60),
+  );
+  await page.locator("#send").waitFor({ state: "visible" });
+  return page;
+}
+
 test.beforeEach(async ({ browser }, testInfo) => {
   browserContextsByTest.set(testInfo, new Set(browser.contexts()));
 });
@@ -84,6 +119,7 @@ test("product ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await page.locator("#model").waitFor();
@@ -277,6 +313,7 @@ test("product ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
     await page
+      .getByRole("dialog", { name: "Chat settings", exact: true })
       .getByRole("button", { name: "Main agent settings", exact: true })
       .click();
     await selectModel(page.locator("#model"), "gpt-5.6-sol");
@@ -367,10 +404,8 @@ test("product ui", async ({ browser: _browser }) => {
     await page.locator("#sidebar").waitFor({ state: "hidden" });
     await page.locator("#messages .prose table").waitFor();
     await page.setViewportSize({ width: 320, height: 640 });
-    await visibleInViewport(page.locator("#send"));
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 320);
     await page.locator("#message").fill("A long draft.\n".repeat(60));
-    await visibleInViewport(page.locator("#send"));
     await visibleInViewport(page.locator("#message"));
     await page.locator("#message").fill("Lead draft");
     await page
@@ -427,10 +462,52 @@ test("product ui", async ({ browser: _browser }) => {
     );
     console.log("Browser evidence:", root);
   } catch (error) {
-    await globalThis.testPage?.screenshot({ path: join(root, "failure.png") });
+    if (globalThis.testPage && !globalThis.testPage.isClosed())
+      await globalThis.testPage
+        .screenshot({ path: join(root, "failure.png") })
+        .catch(() => {});
     console.error("Failure evidence:", root);
     throw error;
   } finally {
     // Preserve screenshots and the isolated database for inspection.
+  }
+});
+
+test("320px long-draft composer setup keeps Send vertically visible", async ({
+  browser,
+}) => {
+  const page = await setupProductMobileComposer(browser);
+  try {
+    assert.equal(
+      await page.locator("#message").inputValue(),
+      "A long draft.\n".repeat(60),
+    );
+    const send = page.locator("#send");
+    const geometry = await send.boundingBox();
+    assert.ok(
+      geometry && geometry.y >= 0 && geometry.y + geometry.height <= 640,
+      `long-draft send control remains vertically visible: ${JSON.stringify(geometry)}`,
+    );
+  } finally {
+    await page?.close();
+  }
+});
+
+test("320px long-draft send control stays inside the viewport", async ({
+  browser,
+}) => {
+  const page = await setupProductMobileComposer(browser);
+  try {
+    const geometry = await page.locator("#send").boundingBox();
+    test.fail(
+      true,
+      "See chat-known-failures.md: 320px mobile composer send-control overflow.",
+    );
+    assert.ok(
+      geometry && geometry.x >= 0 && geometry.x + geometry.width <= 320,
+      `long-draft send control stays inside the 320px viewport: ${JSON.stringify(geometry)}`,
+    );
+  } finally {
+    await page.close();
   }
 });

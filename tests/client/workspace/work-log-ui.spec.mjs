@@ -1,6 +1,16 @@
-import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
+import {
+  readTestState,
+  syncIdentityFixture,
+  entityPullFixtureForRequest,
+  installApiSchemaFixtureHeaders,
+  apiSchemaHeaders,
+  spawnFixture as spawn,
+  test,
+} from "../playwright.mjs";
 // Final answers, work disclosure, manual choice, and scroll intent. No model calls.
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createInterface } from "node:readline";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -130,40 +140,64 @@ test("work log ui", async ({ browser: _browser }) => {
     });
     browser = _browser;
     page = await browser.newPage({ viewport: { width: 1280, height: 900 } });
+    installApiSchemaFixtureHeaders(page);
     page.setDefaultTimeout(10000);
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
-    await page.addInitScript(() => {
-      window.streams = [];
-      window.EventSource = class extends EventTarget {
-        constructor(url) {
-          super();
-          this.url = url;
-          window.streams.push(this);
-        }
-        close() {
-          window.streams = window.streams.filter((s) => s !== this);
-        }
-      };
-    });
-    await page.route("**/api/sync/**", (r) =>
-      r.fulfill({ status: 404, json: { error: "HTTP fixture" } }),
+    const backendIdentity = await (
+      await fetch(`${origin}/api/sync/identity`)
+    ).json();
+    const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
+    const workspaceId = identityResponse.workspaceId;
+    let transcriptSeq = 1;
+    await page.route("**/api/sync/identity", (r) =>
+      r.fulfill({ json: identityResponse }),
     );
+    await page.route("**/api/sync/pull?*", (r) => {
+      const requestUrl = r.request().url();
+      const scope = new URL(requestUrl).searchParams.get("scope");
+      return r.fulfill({
+        json: {
+          workspaceId,
+          ...entityPullFixtureForRequest(state, requestUrl, {
+            transcriptSeq,
+            ...(scope === `transcript:${lead.id}`
+              ? { transcript: transcript() }
+              : {}),
+          }),
+        },
+      });
+    });
     await page.route("**/api/transcript?*", (r) =>
       new URL(r.request().url()).searchParams.get("id") === lead.id
         ? r.fulfill({ json: transcript() })
         : r.fallback(),
     );
     const emit = async () => {
-      await page.evaluate(
-        ({ id, data }) => {
-          for (const s of window.streams)
-            if (new URL(s.url, location.href).searchParams.get("id") === id)
-              s.onmessage?.({ data: JSON.stringify(data) });
+      transcriptSeq++;
+      const updatedTranscript = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${lead.id}` &&
+          Number(url.searchParams.get("after") || 0) < transcriptSeq
+        );
+      });
+      const notification = await fetch(new URL("/api/sync/notify", origin), {
+        method: "POST",
+        headers: {
+          Origin: origin,
+          "Content-Type": "application/json",
+          "X-Canvas-Token": state.token,
+          ...apiSchemaHeaders(),
         },
-        { id: lead.id, data: transcript() },
-      );
-      await page.waitForTimeout(100);
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          resources: [{ kind: "transcript", agentId: lead.id }],
+        }),
+      });
+      assert.equal(notification.status, 200, await notification.text());
+      await updatedTranscript;
     };
     const finish = async () => {
       items.push({
@@ -976,5 +1010,140 @@ test("work log ui", async ({ browser: _browser }) => {
     throw error;
   } finally {
     fixture.stdin?.end();
+  }
+});
+
+test("reload converges after an in-flight transcript pull", async ({
+  browser,
+}) => {
+  const repo = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  const directory = await mkdtemp(join(tmpdir(), "studio-work-log-reload-"));
+  const fixture = spawn(
+    "python3",
+    ["-B", join(repo, "tests/simple-ui-fixture.py"), directory],
+    { stdio: ["pipe", "pipe", "pipe"] },
+  );
+  let log = "";
+  fixture.stderr.on("data", (data) => (log += data));
+  const lines = createInterface({ input: fixture.stdout });
+  const fixtureReplies = new Map();
+  let port;
+  const startup = new Promise((resolve, reject) => {
+    lines.once("line", (line) => resolve(Number(line)));
+    fixture.once("exit", () => reject(Error(log)));
+  });
+  lines.on("line", (line) => {
+    let reply;
+    try {
+      reply = JSON.parse(line);
+    } catch {
+      return;
+    }
+    fixtureReplies.get(reply.id)?.(reply);
+  });
+  const fixtureRequest = (method, params) => {
+    const id = randomUUID();
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        fixtureReplies.delete(id);
+        reject(new Error(`fixture request timed out: ${method}: ${log}`));
+      }, 5000);
+      fixtureReplies.set(id, (reply) => {
+        clearTimeout(timeout);
+        resolve(reply);
+      });
+      fixture.stdin.write(`${JSON.stringify({ id, method, params })}\n`);
+    });
+  };
+  let page;
+  let releaseHeldPull;
+  let heldPullResolve;
+  let mutationPublished = false;
+  let heldOnce = false;
+  const heldPull = new Promise((resolve) => (heldPullResolve = resolve));
+  try {
+    port = await startup;
+    const origin = `http://127.0.0.1:${port}`;
+    const state = await readTestState(origin);
+    const lead = state.threads.find((agent) => agent.name === "Other project");
+    assert.ok(lead, "fixture lead is available");
+    page = await browser.newPage({
+      viewport: { width: 1280, height: 900 },
+    });
+    installApiSchemaFixtureHeaders(page);
+    await page.route("**/api/sync/pull?*", async (route) => {
+      const requestUrl = new URL(route.request().url());
+      const scope = requestUrl.searchParams.get("scope");
+      const after = requestUrl.searchParams.get("after");
+      if (scope !== `transcript:${lead.id}`) return route.fallback();
+      const response = await route.fetch();
+      const body = await response.json();
+      const docs = body.documents ?? [];
+      const containsUpdate = docs.some((doc) =>
+        doc.payload?.includes("After in-flight reload update"),
+      );
+      if (
+        mutationPublished &&
+        !heldOnce &&
+        scope === `transcript:${lead.id}` &&
+        containsUpdate
+      ) {
+        heldOnce = true;
+        heldPullResolve({
+          after,
+          docs: docs.map(({ id, seq }) => ({ id, seq })),
+        });
+        await new Promise((resolve) => (releaseHeldPull = resolve));
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await page.goto(origin);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.locator("#message").waitFor();
+    mutationPublished = true;
+    const update = await fixtureRequest("fixture/stream-transcript", {
+      agent: lead.id,
+      id: "reload-after",
+      text: "After in-flight reload update",
+    });
+    assert.equal(update.ok, true, "fixture persisted the transcript update");
+    const held = await Promise.race([
+      heldPull,
+      new Promise((_, reject) =>
+        setTimeout(
+          () => reject(new Error("changed transcript pull not observed")),
+          10_000,
+        ),
+      ),
+    ]);
+    assert.ok(
+      held.docs.length > 0,
+      "the held pull contains the updated transcript",
+    );
+
+    const navigationCommitted = page.waitForEvent("framenavigated", {
+      predicate: (frame) => frame === page.mainFrame(),
+    });
+    const navigation = page.reload();
+    await navigationCommitted;
+    releaseHeldPull?.();
+    await navigation;
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(
+      () =>
+        document
+          .querySelector("#messages")
+          ?.textContent.includes("After in-flight reload update"),
+      undefined,
+      { timeout: 10_000 },
+    );
+  } finally {
+    releaseHeldPull?.();
+    await page?.unrouteAll({ behavior: "ignoreErrors" });
+    await page?.close();
+    lines.close();
+    fixture.kill("SIGTERM");
   }
 });
