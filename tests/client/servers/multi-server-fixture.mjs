@@ -485,7 +485,7 @@ export async function fixture(
     }
     if (url.pathname === "/api/models") {
       json({
-        models: [
+        data: [
           {
             model: "fixture-model",
             displayName: "Fixture",

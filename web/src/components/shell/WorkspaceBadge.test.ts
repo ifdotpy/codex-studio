@@ -75,3 +75,16 @@ test.each([
     ).toEqual({ label, title: `${name} · /remote/repo` });
   },
 );
+
+test.each([
+  ["layr", "LAYR"],
+  ["image", "ASIF"],
+  ["worktree", "WT"],
+])("shows the chat workspace %s as %s", (mode, label) => {
+  const current = { ...agent({ isLead: true }), workspaceMode: mode } as Agent;
+  const markup = renderToStaticMarkup(
+    createElement(WorkspaceBadge, { agent: current }),
+  );
+  expect(workspaceBadgeInfo(current)?.label).toBe(label);
+  expect(markup).toContain(`>${label}</span>`);
+});

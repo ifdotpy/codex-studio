@@ -20,13 +20,19 @@ describe("new chat actions", () => {
               { serverId: "local", path: "/folder", projectId: "/folder" },
             ],
           },
-          servers: [{ id: "local", label: "This Mac" }],
+          servers: [{ id: "local", label: "This Mac", system: "Darwin" }],
           onChoose: () => {},
           onAdd: () => {},
           onCancel: () => {},
         }),
       ),
     );
+    expect(markup).toContain("Workspace");
+    expect(markup).toContain("layr");
+    expect(markup).toContain("ASIF");
+    expect(markup).toContain("worktree");
+    expect(markup).toContain("Model");
+    expect(markup).toContain("Workers");
     expect(markup).toContain("Cancel");
     expect(markup).toContain("Start chat");
     expect(markup).toMatch(/data-variant="filled"[^>]*>[\s\S]*?Start chat/);

@@ -5783,6 +5783,12 @@ export interface components {
       account_key?: string | null;
       /** Cwd */
       cwd?: string | null;
+      /** Daybreak Enabled */
+      daybreak_enabled?: boolean | null;
+      /** Effort */
+      effort?: string | null;
+      /** Fast Mode */
+      fast_mode?: boolean | null;
       /** Id */
       id?: string | null;
       /** Model */
@@ -5797,6 +5803,8 @@ export interface components {
       project_server_id?: string | null;
       /** Reuse Empty */
       reuse_empty?: boolean | null;
+      review_defaults?: components["schemas"]["ReviewDefaults"] | null;
+      worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };

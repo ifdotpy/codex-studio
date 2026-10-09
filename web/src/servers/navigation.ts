@@ -5,6 +5,10 @@ import {
 import type { DesktopAlert } from "../desktop/desktopAlerts";
 import type { Snapshot } from "../types";
 import { saved } from "../api";
+import {
+  isNewChatSettings,
+  type NewChatSettings,
+} from "../components/newChatSettings";
 import type { LocationProject } from "./projectLocations";
 import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
@@ -48,7 +52,9 @@ export type ServerCommand =
   | { action: "open"; id: string; messageId?: string }
   | {
       action: "new-chat";
+      settings?: NewChatSettings;
       path?: string;
+      projectFolder?: string;
       projectId?: string;
       projectServerId?: string;
     }
@@ -208,7 +214,11 @@ export function isServerCommand(value: unknown): value is ServerCommand {
   return command.action === "open"
     ? typeof command.id === "string" && !!command.id
     : command.action === "new-chat"
-      ? (command.path === undefined || typeof command.path === "string") &&
+      ? (command.settings === undefined ||
+          isNewChatSettings(command.settings)) &&
+        (command.path === undefined || typeof command.path === "string") &&
+        (command.projectFolder === undefined ||
+          typeof command.projectFolder === "string") &&
         (command.projectId === undefined ||
           typeof command.projectId === "string") &&
         (command.projectServerId === undefined ||

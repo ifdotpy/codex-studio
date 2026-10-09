@@ -213,6 +213,7 @@ import SharedChatCreate, {
 } from "./components/SharedChatCreate";
 import ProjectDirectoryPicker from "./components/ProjectDirectoryPicker";
 import ProjectServerCards from "./components/ProjectServerCards";
+import type { NewChatSettings } from "./components/newChatSettings";
 import ProjectFoldersDialog from "./components/ProjectFoldersDialog";
 import {
   readProjectServers,
@@ -1312,8 +1313,10 @@ export default function App() {
     projectFolder?: string,
     retryId?: string,
     projectBinding?: { projectId: string; homeServerId: string },
+    settings?: NewChatSettings,
   ) => {
     if (creationLock.current) return null;
+    setSidebar(false);
     if (!retryId && !cwd) {
       cwd =
         (lead?.cwd ?? undefined) ||
@@ -1324,11 +1327,28 @@ export default function App() {
           : undefined);
       projectFolder = lead?.projectFolder || undefined;
     }
-    if (!retryId && !projectBinding) {
-      const project = data?.runtime?.projects?.find(
-        (row) => row.path === cwd || row.id === cwd,
+    if (!retryId && !settings && isServerView && window.parent !== window) {
+      window.parent.postMessage(
+        {
+          kind: "studio-open-new-chat",
+          serverId: serverViewId,
+          path: cwd,
+          projectFolder,
+          projectId: projectBinding?.projectId,
+        },
+        serverParentOrigin,
       );
-      if (project?.locations?.length && project.path && project.name) {
+      return null;
+    }
+    if (!retryId && !settings) {
+      const project =
+        data?.runtime?.projects?.find(
+          (row) => row.path === cwd || row.id === cwd,
+        ) ||
+        (cwd
+          ? { id: cwd, path: cwd, name: cwd.split("/").pop() || cwd }
+          : { id: "default", path: "", name: "Current folder" });
+      if (project.path || !mobileClient) {
         let servers: ProjectServerChoice[];
         try {
           servers = await readProjectServers();
@@ -1340,7 +1360,11 @@ export default function App() {
           title: "New chat",
           body: (
             <ProjectServerCards
-              project={{ ...project, path: project.path, name: project.name }}
+              project={{
+                ...project,
+                path: project.path || "",
+                name: project.name || "Current folder",
+              }}
               servers={servers}
               lastServer={
                 saved<string>(`project-last-server:${project.id}`, "") ||
@@ -1357,24 +1381,30 @@ export default function App() {
                   )[0]?.serverId ||
                 "local"
               }
-              onChoose={(location) => {
+              onChoose={(location, chosenSettings) => {
                 save(`project-last-server:${project.id}`, location.serverId);
                 setModal(null);
-                const binding = {
-                  projectId: project.id,
-                  homeServerId: project.homeServerId || "",
-                };
+                const binding =
+                  projectBinding ||
+                  (project.homeServerId
+                    ? {
+                        projectId: project.id,
+                        homeServerId: project.homeServerId,
+                      }
+                    : undefined);
                 if (location.serverId === "local")
                   void newChat(
                     location.path,
                     projectFolder,
                     undefined,
                     binding,
+                    chosenSettings,
                   );
                 else if (window.parent !== window)
                   window.parent.postMessage(
                     {
                       kind: "studio-project-new-chat",
+                      settings: chosenSettings,
                       serverId: serverViewId,
                       target: location.serverId,
                       path: location.path,
@@ -1414,7 +1444,13 @@ export default function App() {
                 (request.project_id || undefined) ===
                   projectBinding?.projectId &&
                 (request.project_server_id || undefined) ===
-                  projectBinding?.homeServerId,
+                  projectBinding?.homeServerId &&
+                (!settings ||
+                  Object.entries(settings).every(
+                    ([key, value]) =>
+                      JSON.stringify((request as Json)[key]) ===
+                      JSON.stringify(value),
+                  )),
             )) || null;
       setPendingCreations(pending);
       if (retryId && !creation.current)
@@ -1470,7 +1506,9 @@ export default function App() {
           }
         : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
-      ...(!projectBinding &&
+      ...settings,
+      ...(!settings?.account_key &&
+      !projectBinding &&
       cwd &&
       data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
@@ -1863,7 +1901,11 @@ export default function App() {
       title: "Project settings",
       body: (
         <ProjectFoldersDialog
-          project={{ ...project, path: project.path, name: project.name }}
+          project={{
+            ...project,
+            path: project.path || "",
+            name: project.name || "Current folder",
+          }}
           initialServer={server}
           saved={refresh}
         />
@@ -1960,7 +2002,7 @@ export default function App() {
       } else if (command.action === "new-chat")
         void newChat(
           command.path,
-          undefined,
+          command.projectFolder,
           undefined,
           command.projectId && command.projectServerId
             ? {
@@ -1968,6 +2010,7 @@ export default function App() {
                 homeServerId: command.projectServerId,
               }
             : undefined,
+          command.settings,
         );
       else if (command.action === "add-project") openAddProject();
       else if (command.action === "project-folders")
@@ -3495,13 +3538,20 @@ export default function App() {
       </Modal>
       <Modal
         opened={!!modal}
+        closeOnEscape={modal?.title !== "New chat"}
         onClose={() => setModal(null)}
         title={modal?.title}
         size={
-          modal?.title === "Project settings" ? modalSizes.settings : undefined
+          modal?.title === "Project settings"
+            ? modalSizes.settings
+            : modal?.title === "New chat"
+              ? "lg"
+              : undefined
         }
       >
-        <div className="picker">{modal?.body}</div>
+        <div className={modal?.title === "New chat" ? undefined : "picker"}>
+          {modal?.body}
+        </div>
       </Modal>
       <Modal
         opened={!!sharedCreate}

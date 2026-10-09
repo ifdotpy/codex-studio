@@ -1,12 +1,35 @@
 import type { Agent } from "../../types";
 
 export type WorkspaceBadgeInfo = {
-  label: "ASIF" | "VM" | "WT" | "SHARED";
+  label: "LAYR" | "ASIF" | "VM" | "WT" | "SHARED";
   title: string;
 };
 
 export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
-  if (!agent || agent.isLead) return null;
+  if (!agent) return null;
+  if (agent.isLead) {
+    const mode = (agent as { workspaceMode?: string }).workspaceMode;
+    if (!mode) return null;
+    const label =
+      mode === "layr"
+        ? "LAYR"
+        : mode === "image"
+          ? "ASIF"
+          : mode === "worktree"
+            ? "WT"
+            : undefined;
+    return label
+      ? {
+          label,
+          title:
+            label === "LAYR"
+              ? "Linux VM with layr"
+              : label === "ASIF"
+                ? "Apple Sparse Image Format workspace"
+                : "Git worktree",
+        }
+      : null;
+  }
   if (
     agent.remoteWorker &&
     (!agent.cwd ||

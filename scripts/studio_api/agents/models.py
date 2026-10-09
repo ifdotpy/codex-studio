@@ -206,6 +206,11 @@ class CreateLeadRequest(ContractModel):
     account_key: str | None = Field(default=None, min_length=1, max_length=200)
     model: str | None = Field(default=None, min_length=1, max_length=300)
     yolo_mode: bool | None = None
+    effort: str | None = Field(default=None, max_length=100)
+    fast_mode: bool | None = None
+    daybreak_enabled: bool | None = None
+    worker_defaults: WorkerDefaults | None = None
+    review_defaults: ReviewDefaults | None = None
 
     @field_validator("model")
     @classmethod

@@ -21,6 +21,7 @@ export default function ProjectGroupsSidebar({
   current,
   query,
   send,
+  onNewChat,
 }: {
   navigation: Record<string, ServerNavigation>;
   servers: StudioServer[];
@@ -30,6 +31,7 @@ export default function ProjectGroupsSidebar({
   current: string;
   query: string;
   send: (server: string, command: ServerCommand) => void;
+  onNewChat: () => void;
 }) {
   const groups = useMemo(() => logicalProjects(navigation), [navigation]);
   const [collapsed, setCollapsed] = useSyncedVisualState<
@@ -43,7 +45,9 @@ export default function ProjectGroupsSidebar({
   const [legacyCompact] = useState<Record<string, boolean>>(() =>
     saved("studio-server-project-compact-v1", {}),
   );
-  const choices = projectServerChoices(servers, statuses, reachability);
+  const choices = projectServerChoices(servers, statuses, reachability).map(
+    (row) => ({ ...row, system: navigation[row.id]?.system }),
+  );
   const aliases = Object.fromEntries(
     servers.map((server) => [
       server.id,
@@ -111,7 +115,10 @@ export default function ProjectGroupsSidebar({
               <ActionIcon
                 className="project-tree-action"
                 aria-label={`New chat in ${project.name}`}
-                onClick={() => setChoosing(project)}
+                onClick={() => {
+                  onNewChat();
+                  setChoosing(project);
+                }}
               >
                 <Plus size={15} />
               </ActionIcon>
@@ -193,6 +200,7 @@ export default function ProjectGroupsSidebar({
       })}
       <Modal
         opened={!!choosing}
+        closeOnEscape={false}
         onClose={() => setChoosing(null)}
         title="New chat"
         aria-label="New chat"
@@ -203,10 +211,11 @@ export default function ProjectGroupsSidebar({
             project={choosing}
             servers={choices}
             lastServer={lastServer(choosing)}
-            onChoose={(location) => {
+            onChoose={(location, settings) => {
               save(`project-last-server:${choosing.key}`, location.serverId);
               send(location.serverId, {
                 action: "new-chat",
+                settings,
                 path: location.path,
                 projectId: choosing.id,
                 projectServerId: choosing.homeServerId || choosing.owner,
