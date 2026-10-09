@@ -251,6 +251,8 @@ test("work log ui", async ({ browser: _browser }) => {
       "all current calls are visible without expanding the group",
     );
     const build = page.locator(`[data-message="build-${turn}"]`);
+    await build.scrollIntoViewIfNeeded();
+    assert.equal(await build.isVisible(), true, "the build result is in view");
     await build.evaluate((element) => {
       element.dataset.retained = "yes";
     });
@@ -289,7 +291,7 @@ test("work log ui", async ({ browser: _browser }) => {
     assert.equal(
       await build.getAttribute("data-retained"),
       "yes",
-      "call keeps its DOM node",
+      "updated call keeps its DOM node",
     );
     assert.equal(await build.getAttribute("data-tool-status"), "failed");
     assert.equal(
@@ -409,6 +411,93 @@ test("work log ui", async ({ browser: _browser }) => {
       null,
       "manual expansion survives streamed updates",
     );
+    const visibleBuildBeforeCompletion = await page.evaluate(() => {
+      const root = document.querySelector("#messages");
+      const row = document.querySelector('[data-message="build-first"]');
+      const output = row?.querySelector(".tool-output");
+      return {
+        rowTag: row?.tagName,
+        rowVisible: !!row && row.getBoundingClientRect().height > 0,
+        outputExpanded: row?.hasAttribute("open"),
+        outputVisible: !!output && output.getBoundingClientRect().height > 0,
+        scrollTop: root?.scrollTop,
+      };
+    });
+    const selectedOutputBeforeCompletion = await page.evaluate(() => {
+      const output = document.querySelector(
+        '[data-message="build-first"] .tool-output',
+      );
+      if (!output) return "";
+      const range = document.createRange();
+      range.selectNodeContents(output);
+      const selection = window.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+      return selection?.toString() || "";
+    });
+    const buildRowBefore = await build.elementHandle();
+    const toolBodyBefore = await build.locator(".tool-body").elementHandle();
+    const selectedOutputBefore = await build
+      .locator(".tool-output")
+      .elementHandle();
+    const selectedRangeNodeBefore = await page.evaluateHandle(
+      () => window.getSelection()?.getRangeAt(0).commonAncestorContainer,
+    );
+    const inspectHandle = async (handle) =>
+      handle?.evaluate((node) => {
+        const element =
+          node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
+        const rect = element?.getBoundingClientRect();
+        const style = element ? getComputedStyle(element) : undefined;
+        return {
+          tag: element?.tagName,
+          className: element?.className,
+          connected: !!element?.isConnected,
+          visible:
+            !!rect &&
+            rect.width > 0 &&
+            rect.height > 0 &&
+            style?.display !== "none" &&
+            style?.visibility !== "hidden",
+          bounds: rect
+            ? {
+                x: rect.x,
+                y: rect.y,
+                width: rect.width,
+                height: rect.height,
+              }
+            : null,
+          text: element?.textContent?.trim().slice(0, 120),
+        };
+      });
+    const beforeNodeEvidence = {
+      row: await inspectHandle(buildRowBefore),
+      toolBody: await inspectHandle(toolBodyBefore),
+      selectedOutput: await inspectHandle(selectedOutputBefore),
+      selectedRangeNode: await inspectHandle(selectedRangeNodeBefore),
+      relation: await page.evaluate(
+        ([row, body, output, rangeNode]) => ({
+          rowContainsToolBody: row?.contains(body),
+          toolBodyContainsSelectedOutput: body?.contains(output),
+          selectedRangeNodeIsOutput: rangeNode === output,
+          selectionText: window.getSelection()?.toString() || "",
+        }),
+        [
+          buildRowBefore,
+          toolBodyBefore,
+          selectedOutputBefore,
+          selectedRangeNodeBefore,
+        ],
+      ),
+    };
+    console.log("work-log before completion DOM evidence", beforeNodeEvidence);
+    const beforeCompletionScreenshot = test
+      .info()
+      .outputPath("work-log-before-turn-completion.png");
+    await page.screenshot({ path: beforeCompletionScreenshot });
+    visibleBuildBeforeCompletion.scrollTop = await page.evaluate(
+      () => document.querySelector("#messages")?.scrollTop,
+    );
     items = items.map((item) => ({
       ...item,
       streaming: false,
@@ -416,10 +505,115 @@ test("work log ui", async ({ browser: _browser }) => {
     }));
     turnDone = true;
     await emit();
+    const buildRowAfter = await page
+      .locator('[data-message="build-first"]')
+      .elementHandle();
+    const toolBodyAfter = await page
+      .locator('[data-message="build-first"] .tool-body')
+      .elementHandle();
+    const selectedOutputAfter = await page
+      .locator('[data-message="build-first"] .tool-output')
+      .elementHandle();
+    const selectedRangeNodeAfter = await page.evaluateHandle(
+      () => window.getSelection()?.getRangeAt(0).commonAncestorContainer,
+    );
+    const sameNode = async (before, after) =>
+      !!before &&
+      !!after &&
+      page.evaluate(([a, b]) => a === b, [before, after]);
+    console.log("work-log after completion DOM evidence", {
+      row: await inspectHandle(buildRowAfter),
+      toolBody: await inspectHandle(toolBodyAfter),
+      selectedOutput: await inspectHandle(selectedOutputAfter),
+      selectedRangeNode: await inspectHandle(selectedRangeNodeAfter),
+      identity: {
+        row: await sameNode(buildRowBefore, buildRowAfter),
+        toolBody: await sameNode(toolBodyBefore, toolBodyAfter),
+        selectedOutput: await sameNode(
+          selectedOutputBefore,
+          selectedOutputAfter,
+        ),
+        selectedRangeNode: await sameNode(
+          selectedRangeNodeBefore,
+          selectedRangeNodeAfter,
+        ),
+        oldRowConnected: await inspectHandle(buildRowBefore),
+        oldToolBodyConnected: await inspectHandle(toolBodyBefore),
+        oldSelectedOutputConnected: await inspectHandle(selectedOutputBefore),
+        oldSelectedRangeNodeConnected: await inspectHandle(
+          selectedRangeNodeBefore,
+        ),
+      },
+      selection: await page.evaluate(() => ({
+        text: window.getSelection()?.toString() || "",
+        rangeText: window.getSelection()?.getRangeAt(0).toString() || "",
+      })),
+      matchingMessageNodes: await page.evaluate(() =>
+        Array.from(
+          document.querySelectorAll('[data-message="build-first"]'),
+        ).map((node) => ({
+          tag: node.tagName,
+          className: node.className,
+          lazyPlaceholder: node.hasAttribute("data-lazy-message"),
+          visible: node.getBoundingClientRect().height > 0,
+          text: node.textContent?.trim().slice(0, 120),
+        })),
+      ),
+    });
+    const afterCompletionScreenshot = test
+      .info()
+      .outputPath("work-log-after-turn-completion.png");
+    await page.screenshot({ path: afterCompletionScreenshot });
+    console.log(
+      "work-log completion identity evidence",
+      await page.evaluate(() => {
+        const row = document.querySelector('[data-message="build-first"]');
+        const work = document.querySelector('[data-turn="first"] .turn-work');
+        const root = document.querySelector("#messages");
+        const output = row?.querySelector(".tool-output");
+        return {
+          workOpen: work?.hasAttribute("open"),
+          nodeTag: row?.tagName,
+          lazyPlaceholder: row?.hasAttribute("data-lazy-message"),
+          retained: row?.getAttribute("data-retained"),
+          toolCardsInExpandedWork: work?.querySelectorAll(".tool-card").length,
+          outputVisible: !!output && output.getBoundingClientRect().height > 0,
+          selectedOutputText: window.getSelection()?.toString() || "",
+          scrollTop: root?.scrollTop,
+        };
+      }),
+      "before completion",
+      visibleBuildBeforeCompletion,
+      "selected output text before completion",
+      selectedOutputBeforeCompletion,
+    );
     assert.equal(
-      await build.getAttribute("data-retained"),
-      "yes",
-      "turn completion preserves visible tool nodes",
+      await sameNode(buildRowBefore, buildRowAfter),
+      true,
+      "turn completion preserves the visible build tool node",
+    );
+    assert.equal(
+      await sameNode(toolBodyBefore, toolBodyAfter),
+      true,
+      "turn completion preserves the expanded tool body",
+    );
+    assert.equal(
+      await sameNode(selectedOutputBefore, selectedOutputAfter),
+      true,
+      "turn completion preserves the selected output node",
+    );
+    assert.equal(
+      await sameNode(selectedRangeNodeBefore, selectedRangeNodeAfter),
+      true,
+      "turn completion preserves the selected text range node",
+    );
+    assert.equal((await build.getAttribute("open")) !== null, true);
+    assert.equal(await build.locator(".tool-body").isVisible(), true);
+    assert.equal(await build.locator(".tool-output").isVisible(), true);
+    assert.equal(
+      await page.evaluate(() => window.getSelection()?.toString() || ""),
+      "fixture build failed",
+      "turn completion leaves the output text selected",
     );
     await page.reload();
     await page.locator(`[data-chat="${lead.id}"]`).click();
@@ -601,11 +795,12 @@ test("work log ui", async ({ browser: _browser }) => {
       .first()
       .locator(":scope > summary")
       .click();
-    await blocks
-      .first()
-      .locator(".tool-card")
-      .first()
-      .evaluate((element) => (element.dataset.retained = "yes"));
+    const firstExpandedTool = blocks.first().locator(".tool-card").first();
+    await firstExpandedTool.scrollIntoViewIfNeeded();
+    assert.equal(await firstExpandedTool.isVisible(), true);
+    await firstExpandedTool.evaluate((element) => {
+      element.dataset.retained = "yes";
+    });
     items.splice(2, 0, tool("third-result", "Third result received"));
     await emit();
     await page.locator('.tool-card[data-message="third-result"]').waitFor();
@@ -627,6 +822,7 @@ test("work log ui", async ({ browser: _browser }) => {
         .first()
         .getAttribute("data-retained"),
       "yes",
+      "the previously expanded tool keeps its DOM node",
     );
     assert.notEqual(
       await blocks.first().locator(".tool-card").first().getAttribute("open"),
@@ -758,7 +954,10 @@ test("work log ui", async ({ browser: _browser }) => {
     await crossTurnWork
       .locator('.tool-card[data-message="cross-tool-b"] > summary')
       .click();
-    await page.locator('[data-message="cross-tool-b"]').evaluate((element) => {
+    const crossToolB = page.locator('[data-message="cross-tool-b"]');
+    await crossToolB.scrollIntoViewIfNeeded();
+    assert.equal(await crossToolB.isVisible(), true);
+    await crossToolB.evaluate((element) => {
       element.dataset.retained = "yes";
     });
     items = items.map((item) =>

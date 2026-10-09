@@ -231,8 +231,9 @@ test("Team Motion Ui", async ({
     await publishStateChange("queued");
     await page.waitForFunction(
       (id) =>
-        document.querySelector(`[data-worker="${id}"] small`)?.textContent ===
-        "Queued",
+        document
+          .querySelector(`[data-worker="${id}"] .worker-state`)
+          ?.getAttribute("aria-label") === "Queued",
       target.id,
     );
     assert.equal(

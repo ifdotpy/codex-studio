@@ -476,9 +476,22 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
         `Worker draft ${width}`,
       );
       await openChatSettingsFromHeader();
-      const accountOptions = page
-        .getByRole("dialog", { name: "Chat settings", exact: true })
-        .locator(".setup-account");
+      const chatSettings = page.getByRole("dialog", {
+        name: "Chat settings",
+        exact: true,
+      });
+      await chatSettings
+        .getByRole("button", { name: "Subagent settings", exact: true })
+        .click();
+      const subagentSettings = page.getByRole("dialog").filter({
+        has: page.getByRole("heading", {
+          name: "Subagent settings",
+          exact: true,
+        }),
+      });
+      const accountOptions = subagentSettings.getByRole("button", {
+        name: /^Select account /,
+      });
       await accountOptions.first().waitFor({ state: "visible" });
       assert.ok(await accountOptions.count(), "saved accounts are visible");
       for (const account of await accountOptions.all())
@@ -487,11 +500,12 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
           true,
           "a subagent cannot change accounts",
         );
-      await page
-        .getByRole("dialog")
+      await subagentSettings.getByRole("button").first().click();
+      await subagentSettings.waitFor({ state: "hidden" });
+      await chatSettings
         .getByRole("button", { name: "Close", exact: true })
         .click();
-      await page.getByRole("dialog").waitFor({ state: "hidden" });
+      await chatSettings.waitFor({ state: "hidden" });
       await page.locator("#back-lead").click();
       assert.equal(
         await page.locator("#message").inputValue(),
@@ -518,7 +532,11 @@ test("team-navigation-ui", async ({ page: fixturePage }) => {
       }),
     );
   } catch (error) {
-    await page?.screenshot({ path: join(root, "failure.png") });
+    try {
+      await page?.screenshot({ path: join(root, "failure.png") });
+    } catch {
+      // Preserve the original test failure if Playwright already closed the page.
+    }
     console.error("Failure evidence:", root);
     throw error;
   }

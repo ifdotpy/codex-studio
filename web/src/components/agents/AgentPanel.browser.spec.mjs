@@ -17,7 +17,7 @@ import {
   spawnFixture,
 } from "../../../../tests/client/playwright.mjs";
 
-test("an active AgentPanel follows native progress changes without polling", async ({
+test("an active AgentPanel follows native progress without panel polling", async ({
   browser,
 }) => {
   test.setTimeout(210_000);
@@ -240,8 +240,21 @@ test("an active AgentPanel follows native progress changes without polling", asy
     const servedAssets = [];
     const statusGets = [];
     const backgroundRequests = [];
+    let follower = null;
+    const discoveryGets = { owner: [], follower: [] };
     context.on("request", (request) => {
       const url = new URL(request.url());
+      if (url.pathname === "/api/multi-server" && request.method() === "GET") {
+        let requestPage;
+        try {
+          requestPage = request.frame().page();
+        } catch {
+          requestPage = null;
+        }
+        if (requestPage === page) discoveryGets.owner.push(Date.now());
+        else if (requestPage === follower)
+          discoveryGets.follower.push(Date.now());
+      }
       if (
         url.pathname.startsWith("/api/") &&
         url.pathname !== "/api/sync/stream" &&
@@ -274,6 +287,13 @@ test("an active AgentPanel follows native progress changes without polling", asy
         });
     });
     await page.goto(origin);
+    const savedPairedServers = await page.evaluate(() =>
+      JSON.parse(localStorage.getItem("studio-paired-servers-v1") || "[]"),
+    );
+    expect(
+      savedPairedServers,
+      "the fixture has no paired remote servers",
+    ).toEqual([]);
     await expect
       .poll(() =>
         servedAssets.some(
@@ -310,7 +330,7 @@ test("an active AgentPanel follows native progress changes without polling", asy
       observerAlive: true,
     });
 
-    const follower = await context.newPage();
+    follower = await context.newPage();
     const followerPanelGets = [];
     follower.on("request", (request) => {
       const url = new URL(request.url());
@@ -507,8 +527,53 @@ test("an active AgentPanel follows native progress changes without polling", asy
     const quietPanelGets = panelGets.length;
     const quietLayoutPosts = layoutPosts.length;
     const quietRequestStart = backgroundRequests.length;
+    const quietDiscoveryStart = {
+      owner: discoveryGets.owner.length,
+      follower: discoveryGets.follower.length,
+    };
     await page.waitForTimeout(120_000);
-    expect(backgroundRequests.slice(quietRequestStart)).toEqual([]);
+    const idleBackgroundReads = backgroundRequests.slice(quietRequestStart);
+    const idleDiscoveryGets = {
+      owner: discoveryGets.owner.slice(quietDiscoveryStart.owner),
+      follower: discoveryGets.follower.slice(quietDiscoveryStart.follower),
+    };
+    const discoveryIntervals = Object.fromEntries(
+      Object.entries(idleDiscoveryGets).map(([name, timestamps]) => [
+        name,
+        timestamps.slice(1).map((at, index) => at - timestamps[index]),
+      ]),
+    );
+    console.log(
+      "Unpaired AgentPanel idle discovery polling:",
+      JSON.stringify({
+        pairedServers: savedPairedServers.length,
+        totalGets: Object.values(idleDiscoveryGets).reduce(
+          (total, timestamps) => total + timestamps.length,
+          0,
+        ),
+        pages: Object.fromEntries(
+          Object.entries(idleDiscoveryGets).map(([name, timestamps]) => [
+            name,
+            { gets: timestamps.length, intervalsMs: discoveryIntervals[name] },
+          ]),
+        ),
+      }),
+    );
+    expect(
+      idleBackgroundReads.filter(
+        (request) => request !== "GET /api/multi-server",
+      ),
+      "idle panel reads stay quiet; only the global discovery poll is observed",
+    ).toEqual([]);
+    for (const timestamps of Object.values(idleDiscoveryGets)) {
+      expect(timestamps.length).toBeGreaterThanOrEqual(3);
+      expect(timestamps.length).toBeLessThanOrEqual(5);
+    }
+    for (const intervals of Object.values(discoveryIntervals))
+      for (const interval of intervals) {
+        expect(interval).toBeGreaterThanOrEqual(25_000);
+        expect(interval).toBeLessThanOrEqual(40_000);
+      }
     expect(panelGets.length).toBe(quietPanelGets);
     expect(layoutPosts.length).toBe(quietLayoutPosts);
 
