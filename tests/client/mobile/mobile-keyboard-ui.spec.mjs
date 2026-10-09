@@ -61,6 +61,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
         hasTouch: true,
         userAgent,
       });
+      // This geometry scenario intentionally exercises the non-empty lead.
       await context.addInitScript((id) => {
         localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
       }, leadId);
@@ -122,6 +123,23 @@ for (const [platform, userAgent] of mobileBrowsers) {
           timeout: 10_000,
         })
         .toBe("Release lead");
+      await expect
+        .poll(
+          () =>
+            page
+              .locator("#messages")
+              .evaluate((root) =>
+                root.scrollHeight > root.clientHeight + 1
+                  ? Math.abs(
+                      root.scrollHeight - root.clientHeight - root.scrollTop,
+                    )
+                  : Number.POSITIVE_INFINITY,
+              ),
+          {
+            message: "The initial transcript settles at the following position",
+          },
+        )
+        .toBeLessThan(1);
       const geometry = () =>
         page.evaluate(() => {
           const root = document.querySelector("#root").getBoundingClientRect();
@@ -217,10 +235,16 @@ for (const [platform, userAgent] of mobileBrowsers) {
             .height,
           minimumInput: (() => {
             const input = document.querySelector("#message");
-            const previous = input.style.height;
-            input.style.removeProperty("height");
-            const height = input.getBoundingClientRect().height;
-            if (previous) input.style.height = previous;
+            const measurement = input.cloneNode();
+            measurement.style.position = "fixed";
+            measurement.style.visibility = "hidden";
+            measurement.style.left = "-10000px";
+            measurement.style.top = "0";
+            measurement.style.height = "auto";
+            measurement.style.width = `${input.getBoundingClientRect().width}px`;
+            input.parentElement.append(measurement);
+            const height = measurement.getBoundingClientRect().height;
+            measurement.remove();
             return height;
           })(),
           scrollHeight: document.querySelector("#message").scrollHeight,
@@ -466,6 +490,100 @@ for (const [platform, userAgent] of mobileBrowsers) {
         shortDraftComposerHeight,
       );
       assert.equal(minimumViewport.footerBottom, 378);
+
+      await page.getByLabel("Toggle conversations").click();
+      await page
+        .locator(".chat-row")
+        .filter({ hasText: "Other project" })
+        .click();
+      await expect(page.locator("#conversation-title")).toHaveText(
+        "Other project",
+      );
+      const settings = page.locator(".empty-chat-settings");
+      await expect(settings).toBeVisible();
+      await page.evaluate(() =>
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
+      );
+      await settle(844, 0);
+      const expandedSettingsHeight = (await settings.boundingBox()).height;
+      assert.equal(expandedSettingsHeight, 108);
+      const assertEmptyKeyboard = async (height, top) => {
+        await page.evaluate(
+          ({ height, top }) =>
+            window.setTestViewport({ height, offsetTop: top }),
+          { height, top },
+        );
+        await expect
+          .poll(() =>
+            page.evaluate(() => ({
+              height: document.querySelector("#root").getBoundingClientRect()
+                .height,
+              bottom: document.querySelector("#root").getBoundingClientRect()
+                .bottom,
+              footerBottom: document
+                .querySelector(".usage-footer")
+                .getBoundingClientRect().bottom,
+              composerBottom: document
+                .querySelector("#composer")
+                .getBoundingClientRect().bottom,
+              scrollY,
+              panelHeight: document.querySelector(".empty-chat-settings")
+                .clientHeight,
+              panelScrollHeight: document.querySelector(".empty-chat-settings")
+                .scrollHeight,
+            })),
+          )
+          .toMatchObject({ height });
+        const box = await page.evaluate(() => {
+          const root = document.querySelector("#root").getBoundingClientRect();
+          const footer = document
+            .querySelector(".usage-footer")
+            .getBoundingClientRect();
+          const composer = document
+            .querySelector("#composer")
+            .getBoundingClientRect();
+          const panel = document.querySelector(".empty-chat-settings");
+          return {
+            bottom: root.bottom,
+            footerBottom: footer.bottom,
+            composerBottom: composer.bottom,
+            scrollY,
+            panelHeight: panel.clientHeight,
+            panelScrollHeight: panel.scrollHeight,
+          };
+        });
+        assert.ok(box.footerBottom <= box.bottom + 1, JSON.stringify(box));
+        assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
+        assert.equal(box.scrollY, 0);
+        await expect(page.locator("#send")).toBeVisible();
+        await expect(
+          page.locator("#composer .composer-submit-actions"),
+        ).toBeVisible();
+        const menus = settings.locator(".execution-menu");
+        assert.equal(await menus.count(), 2);
+        await settings.evaluate((node) => (node.scrollTop = 0));
+        let first = await menus.nth(0).boundingBox();
+        let panel = await settings.boundingBox();
+        assert.ok(
+          first.y >= panel.y &&
+            first.y + first.height <= panel.y + panel.height,
+        );
+        await settings.evaluate((node) => (node.scrollTop = node.scrollHeight));
+        const last = await menus.nth(1).boundingBox();
+        panel = await settings.boundingBox();
+        assert.ok(
+          last.y >= panel.y && last.y + last.height <= panel.y + panel.height,
+        );
+        assert.equal(await page.evaluate(() => scrollY), 0);
+      };
+      await assertEmptyKeyboard(390, 54);
+      await assertEmptyKeyboard(330, 64);
+      await page.evaluate(() =>
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
+      );
+      await expect
+        .poll(async () => (await settings.boundingBox()).height)
+        .toBe(expandedSettingsHeight);
       assert.equal(errors.length, 0, errors.join("\n"));
       console.log(
         `mobile-keyboard-ui: PASS (simulated keyboard geometry, input stability, offset, scroll reset, close, rotation, pinch, desktop). Screenshot: ${join(state, "keyboard-open.png")}`,
@@ -478,3 +596,58 @@ for (const [platform, userAgent] of mobileBrowsers) {
     }
   });
 }
+
+test("default mobile chat is stable across ten fresh iPhone starts", async ({
+  browser,
+}) => {
+  test.setTimeout(180_000);
+  const root = dirname(
+    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  );
+  for (let run = 1; run <= 10; run++) {
+    const state = await mkdtemp(join(tmpdir(), "codex-mobile-default-"));
+    const fixture = spawn(
+      "python3",
+      ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+      {
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
+      },
+    );
+    let log = "";
+    fixture.stderr.on("data", (chunk) => {
+      log += chunk;
+    });
+    let context;
+    try {
+      const port = await new Promise((resolve, reject) => {
+        fixture.stdout.once("data", (chunk) =>
+          resolve(Number(String(chunk).trim())),
+        );
+        fixture.once("exit", () => reject(new Error(log)));
+      });
+      context = await browser.newContext({
+        viewport: { width: 390, height: 844 },
+        isMobile: true,
+        hasTouch: true,
+        userAgent:
+          "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1",
+      });
+      const page = await context.newPage();
+      await page.goto(`http://127.0.0.1:${port}`);
+      await page.locator("#composer").waitFor();
+      await expect
+        .poll(() => page.locator("#conversation-title").innerText(), {
+          message: `Fresh iPhone fixture ${run} must default to Other project`,
+          timeout: 10_000,
+        })
+        .toBe("Other project");
+    } finally {
+      await context?.close();
+      const exited = new Promise((resolve) => fixture.once("exit", resolve));
+      fixture.kill();
+      await exited;
+    }
+  }
+  console.log("mobile-default-chat: PASS (10/10 fresh iPhone fixture states)");
+});
