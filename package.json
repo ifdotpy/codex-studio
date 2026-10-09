@@ -32,5 +32,10 @@
     "openapi-typescript": "7.13.0",
     "oxfmt": "0.71.0",
     "oxlint": "1.86.0"
-  }
+  },
+  "overrides": {
+    "@modelcontextprotocol/sdk": "1.31.0",
+    "typed-rest-client>qs": "6.16.0"
+  },
+  "packageManager": "pnpm@12.10.1"
 }
