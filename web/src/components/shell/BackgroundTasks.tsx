@@ -483,7 +483,6 @@ function TaskDetail({
     setPending(true);
     try {
       const result = await post(path, body);
-      await refresh();
       if (
         result &&
         typeof result === "object" &&
@@ -491,6 +490,7 @@ function TaskDetail({
         result.error
       )
         throw new Error(displayError(result.error));
+      void refresh().catch((error) => notify(errorText(error)));
       return true;
     } catch (error) {
       notify(errorText(error));

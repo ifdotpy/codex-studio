@@ -9,7 +9,8 @@ import {
   excludedServers,
   setServerExcluded,
 } from "./automaticAccessStore";
-import { readServers, type StudioServer } from "./registry";
+import { readServers, writeServers, type StudioServer } from "./registry";
+import { LOCAL_ALIAS_KEY } from "./serverAliases";
 import { serverCredentialAdapter } from "./transport";
 export const DISCOVERY_REFRESH_EVENT = "studio-server-discovery-refresh";
 export function useServerDiscovery(
@@ -66,12 +67,17 @@ export function useServerDiscovery(
       },
       pair: (...args) => serverCredentialAdapter().pair(...args),
       invite: async (server, requestId) => {
-        await refreshSession();
-        const value = await serverAccess("POST", {
-          action: "ui_invite",
-          serverId: server.id,
-          requestId,
-        });
+        const session = await refreshSession();
+        const value = await serverAccess(
+          "POST",
+          {
+            action: "ui_invite",
+            serverId: server.id,
+            requestId,
+          },
+          15000,
+          session.token,
+        );
         if (!("invitation" in value))
           throw new Error("The server invitation response is invalid.");
         return value.invitation;
@@ -90,12 +96,13 @@ export function useServerDiscovery(
       await navigator.locks.request(name, work);
     },
     async (body) => {
-      await refreshSession();
+      const session = await refreshSession();
       if (body.action === "revoke") controller.current?.cancel(body.clientId);
       await serverAccess(
         "POST",
         body,
         body.action === "discover" ? 105000 : 15000,
+        session.token,
       );
     },
   );
@@ -103,6 +110,14 @@ export function useServerDiscovery(
   const apply = async (state: ServerAccessState) => {
     const next = discoverySnapshot(state);
     if (!active.current) return;
+    if (next?.aliases) {
+      const aliases = next.aliases;
+      if (aliases.local) localStorage.setItem(LOCAL_ALIAS_KEY, aliases.local);
+      const paired = readServers().map((server) =>
+        aliases[server.id] ? { ...server, alias: aliases[server.id] } : server,
+      );
+      writeServers(paired);
+    }
     setSnapshot(next);
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());
@@ -157,7 +172,7 @@ export function useServerDiscovery(
     };
   }, [enabled]);
   const run = async (request: ServerAccessRequest) => {
-    if (!enabled || busyRef.current) return;
+    if (!enabled || busyRef.current) return false;
     busyRef.current = true;
     setBusy(true);
     setError("");
@@ -166,8 +181,10 @@ export function useServerDiscovery(
       // A retry receipt contains the original snapshot. Read the current state.
       if (loading.current) await loading.current;
       await load();
+      return true;
     } catch (failure) {
       setError(errorText(failure));
+      return false;
     } finally {
       try {
         setPending(management.pending()[0] || null);
@@ -209,6 +226,13 @@ export function useServerDiscovery(
         });
       },
     },
+    setAlias: (serverId: string, alias: string) =>
+      run({
+        action: "alias",
+        serverId,
+        alias,
+        requestId: crypto.randomUUID(),
+      }),
     revoke: (id: string) => {
       void run({
         action: "revoke",

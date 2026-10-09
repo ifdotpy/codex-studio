@@ -10,9 +10,18 @@ from typing import ContextManager, Literal
 from pydantic import Field
 
 from studio_api.models import ContractModel
+from studio_api.sync.models import ProjectLocationDto, ProjectAliasDto
+
+
+def _timestamp(value: object) -> float | None:
+    return float(value) if isinstance(value, (int, float)) else None
 
 
 class SummaryProject(ContractModel):
+    id: str | None = None
+    homeServerId: str | None = None
+    locations: list[ProjectLocationDto] | None = None
+    projectAliases: list[ProjectAliasDto] | None = None
     path: str
     name: str
 
@@ -24,6 +33,15 @@ class SummaryChat(ContractModel):
     archived: bool
     status: str
     unread: bool
+    serverId: str | None = None
+    projectId: str | None = None
+    projectServerId: str | None = None
+    provider: str | None = None
+    updated: float | None = None
+    created: float | None = None
+    inFlight: bool = False
+    pinned: bool = False
+    team: bool = False
 
 
 class SummaryTarget(ContractModel):
@@ -83,10 +101,18 @@ def read_summary(
             except (ValueError, KeyError, TypeError):
                 continue
     result.ready = True
-    projects = {str(row["path"]): SummaryProject(path=str(row["path"]), name=str(row.get("name") or row["path"]))
+    projects = {str(row["path"]): SummaryProject.model_validate({key: row[key] for key in SummaryProject.model_fields if key in row})
                 for row in values.get("project", []) if row.get("path")}
     agents = {str(row["id"]): row for row in values.get("agent", []) if row.get("id") and not row.get("deletedAt")}
     result.agentsRunning = sum(bool(row.get("inFlight")) for row in agents.values())
+    team_members: set[str] = set()
+    for project in values.get("project", []):
+        teams = project.get("peerTeams")
+        if isinstance(teams, list):
+            for team in teams:
+                members = team.get("members") if isinstance(team, dict) else None
+                if isinstance(members, list):
+                    team_members.update(str(member) for member in members)
     unread: set[str] = set()
     for agent_id, row in agents.items():
         result.busy = result.busy or bool(row.get("inFlight"))
@@ -98,9 +124,20 @@ def read_summary(
         if row.get("source") != "managed" or not row.get("isLead") or row.get("sharedRoomId") or row.get("remoteAnchor"):
             continue
         path = str(row.get("cwd") or "")
-        projects.setdefault(path, SummaryProject(path=path, name=path or "Other chats"))
+        if not any((project.id == row.get("projectId") and project.homeServerId == row.get("projectServerId") and project.id)
+                   or any(location.path == path and location.serverId == row.get("serverId") for location in project.locations or [])
+                   for project in projects.values()):
+            projects.setdefault(path, SummaryProject(path=path, name=path or "Other chats"))
         result.chats.append(SummaryChat(id=agent_id, name=str(row.get("name") or "Chat"), path=path,
-                                        archived=bool(row.get("archived")), status=str(row.get("status") or ""), unread=agent_id in unread))
+                                        archived=bool(row.get("archived")), status=str(row.get("status") or ""), unread=agent_id in unread,
+                                        serverId=str(row["serverId"]) if row.get("serverId") else None,
+                                        projectId=str(row["projectId"]) if row.get("projectId") else None,
+                                        projectServerId=str(row["projectServerId"]) if row.get("projectServerId") else None,
+                                        provider=str(row["provider"]) if row.get("provider") else None,
+                                        updated=_timestamp(row.get("updated")),
+                                        created=_timestamp(row.get("created")),
+                                        inFlight=bool(row.get("inFlight")), pinned=bool(row.get("pinned")),
+                                        team=agent_id in team_members))
 
     def add(alert_id: str, agent_id: object, title: str, body: object, item_id: object = None) -> None:
         agent = agents.get(str(agent_id))

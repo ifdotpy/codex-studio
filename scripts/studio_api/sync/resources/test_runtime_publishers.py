@@ -832,6 +832,10 @@ class RuntimeResourcePublisherTests(unittest.IsolatedAsyncioTestCase):
                 "accountKey": "default", "data": None, "at": None, "error": None,
             }
             runtime.rate_limits_by_account = {}
+            runtime.workspace_entity_view = lambda *_args: {
+                "stateDir": str(state_dir), "rateLimits": runtime.rate_limits,
+                "rateLimitsByAccount": runtime.rate_limits_by_account.copy(),
+            }
             runtime.analytics_safe = lambda *_args, **_kwargs: None
             runtime.schedule_analytics_captures = lambda *_args, **_kwargs: None
             runtime.mark_agent_records_changed = lambda *_args, **_kwargs: None

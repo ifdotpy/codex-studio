@@ -1303,6 +1303,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/project-locations": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Project Location Query */
+    get: operations["project_location_query_api_project_locations_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/projects": {
     parameters: {
       query?: never;
@@ -2211,7 +2228,8 @@ export interface components {
         | "accept_invite"
         | "auto_pair"
         | "unrevoke"
-        | "settings";
+        | "settings"
+        | "alias";
       /** Actorid */
       actorId: string;
       /** Clientid */
@@ -2232,6 +2250,8 @@ export interface components {
     };
     /** AccessClient */
     AccessClient: {
+      /** Alias */
+      alias?: string | null;
       /** Autopair */
       autoPair?: boolean | null;
       /** Clientid */
@@ -2255,6 +2275,8 @@ export interface components {
       origin: string | null;
       /** Publickey */
       publicKey: string;
+      /** Reachability */
+      reachability?: ("reachable" | "unreachable" | "unknown") | null;
       /** Revoked */
       revoked: number | null;
       /** Serverid */
@@ -2293,6 +2315,10 @@ export interface components {
     };
     /** AccessSettings */
     AccessSettings: {
+      /** Aliases */
+      aliases?: {
+        [key: string]: string;
+      };
       /** Autopair */
       autoPair: boolean;
     };
@@ -2829,6 +2855,10 @@ export interface components {
       projectFolder?: string | null;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
+      /** Projectid */
+      projectId?: string | null;
+      /** Projectserverid */
+      projectServerId?: string | null;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -2844,6 +2874,8 @@ export interface components {
       role?: components["schemas"]["AgentRole"] | null;
       /** Rootid */
       rootId?: string | null;
+      /** Serverid */
+      serverId?: string | null;
       /** Sharedroomid */
       sharedRoomId?: string | null;
       source?: components["schemas"]["AgentSource"] | null;
@@ -3164,6 +3196,10 @@ export interface components {
       projectFolder?: string | null;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
+      /** Projectid */
+      projectId?: string | null;
+      /** Projectserverid */
+      projectServerId?: string | null;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -3181,6 +3217,8 @@ export interface components {
         | null;
       /** Rootid */
       rootId?: string | null;
+      /** Serverid */
+      serverId?: string | null;
       /** Sharedroomid */
       sharedRoomId?: string | null;
       source?: components["schemas"]["AgentSource"] | null;
@@ -4576,6 +4614,10 @@ export interface components {
       projectFolder?: string | null;
       /** Projectfolderrevision */
       projectFolderRevision?: number | null;
+      /** Projectid */
+      projectId?: string | null;
+      /** Projectserverid */
+      projectServerId?: string | null;
       provider?: components["schemas"]["AgentProvider"] | null;
       queuedSettings?: components["schemas"]["ExecutionSettingsDto"] | null;
       quickCreate?: components["schemas"]["JsonValue"] | null;
@@ -4593,6 +4635,8 @@ export interface components {
         | null;
       /** Rootid */
       rootId?: string | null;
+      /** Serverid */
+      serverId?: string | null;
       /** Sharedroomid */
       sharedRoomId?: string | null;
       source?: components["schemas"]["AgentSource"] | null;
@@ -5672,6 +5716,10 @@ export interface components {
       previous?: string | null;
       /** Project Folder */
       project_folder?: string | null;
+      /** Project Id */
+      project_id?: string | null;
+      /** Project Server Id */
+      project_server_id?: string | null;
       /** Reuse Empty */
       reuse_empty?: boolean | null;
       /** Yolo Mode */
@@ -7713,8 +7761,14 @@ export interface components {
       created: number;
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Homeserverid */
+      homeServerId?: string | null;
       /** Id */
       id: string;
+      /** Locations */
+      locations?: components["schemas"]["ProjectLocation"][] | null;
+      /** Locationsrevision */
+      locationsRevision?: number | null;
       /** Name */
       name: string;
       /** Organizationrevision */
@@ -7725,6 +7779,8 @@ export interface components {
       peerTeams?: components["schemas"]["PeerTeam"][] | null;
       /** Peerteamsrevision */
       peerTeamsRevision?: number | null;
+      /** Projectaliases */
+      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8243,8 +8299,14 @@ export interface components {
       created: number;
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Homeserverid */
+      homeServerId?: string | null;
       /** Id */
       id: string;
+      /** Locations */
+      locations?: components["schemas"]["ProjectLocation"][] | null;
+      /** Locationsrevision */
+      locationsRevision?: number | null;
       /** Name */
       name: string;
       /** Organizationrevision */
@@ -8255,6 +8317,8 @@ export interface components {
       peerTeams?: components["schemas"]["PeerTeam"][] | null;
       /** Peerteamsrevision */
       peerTeamsRevision?: number | null;
+      /** Projectaliases */
+      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8265,6 +8329,24 @@ export interface components {
       workerEnvironment?: ("host" | "linux") | null;
       /** Workerenvironmentrevision */
       workerEnvironmentRevision?: number | null;
+    };
+    /** ProjectAlias */
+    ProjectAlias: {
+      /** Name */
+      name: string;
+      /** Projectid */
+      projectId: string;
+      /** Serverid */
+      serverId: string;
+    };
+    /** ProjectAliasDto */
+    ProjectAliasDto: {
+      /** Name */
+      name: string;
+      /** Projectid */
+      projectId: string;
+      /** Serverid */
+      serverId: string;
     };
     /** ProjectEntityDto */
     ProjectEntityDto: {
@@ -8278,8 +8360,14 @@ export interface components {
       created?: number | null;
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Homeserverid */
+      homeServerId?: string | null;
       /** Id */
       id: string;
+      /** Locations */
+      locations?: components["schemas"]["ProjectLocationDto"][] | null;
+      /** Locationsrevision */
+      locationsRevision?: number | null;
       /** Name */
       name?: string | null;
       /** Organizationrevision */
@@ -8290,6 +8378,8 @@ export interface components {
       peerTeams?: components["schemas"]["ProjectPeerTeamDto"][] | null;
       /** Peerteamsrevision */
       peerTeamsRevision?: number | null;
+      /** Projectaliases */
+      projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8310,6 +8400,70 @@ export interface components {
       /** Parentid */
       parentId?: string | null;
     };
+    /** ProjectLocation */
+    ProjectLocation: {
+      /** Gitorigin */
+      gitOrigin?: string | null;
+      /** Path */
+      path: string;
+      /** Projectid */
+      projectId: string;
+      /** Requestedpath */
+      requestedPath?: string | null;
+      /** Serverid */
+      serverId: string;
+    };
+    /** ProjectLocationDto */
+    ProjectLocationDto: {
+      /** Gitorigin */
+      gitOrigin?: string | null;
+      /** Path */
+      path: string;
+      /** Projectid */
+      projectId: string;
+      /** Requestedpath */
+      requestedPath?: string | null;
+      /** Serverid */
+      serverId: string;
+    };
+    /** ProjectLocationMatch */
+    ProjectLocationMatch: {
+      /** Name */
+      name: string;
+      /** Path */
+      path: string;
+      /** Projectid */
+      projectId: string;
+    };
+    /** ProjectLocationQueryResponse */
+    ProjectLocationQueryResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Githead */
+      gitHead?: string | null;
+      /** Gitorigin */
+      gitOrigin?: string | null;
+      /** Matches */
+      matches?: components["schemas"]["ProjectLocationMatch"][];
+    };
+    /** ProjectLocationRequest */
+    ProjectLocationRequest: {
+      /**
+       * Action
+       * @enum {string}
+       */
+      action: "add_location" | "remove_location";
+      /** Path */
+      path?: string | null;
+      /** Project */
+      project: string;
+      /** Request Id */
+      request_id: string;
+      /** Server */
+      server: string;
+    };
     /**
      * ProjectMutationRecord
      * @description A project record returned directly by successful project writes.
@@ -8329,8 +8483,14 @@ export interface components {
       created: number;
       /** Folders */
       folders?: components["schemas"]["ProjectFolder"][] | null;
+      /** Homeserverid */
+      homeServerId?: string | null;
       /** Id */
       id: string;
+      /** Locations */
+      locations?: components["schemas"]["ProjectLocation"][] | null;
+      /** Locationsrevision */
+      locationsRevision?: number | null;
       /** Name */
       name: string;
       /** Organizationrevision */
@@ -8341,6 +8501,8 @@ export interface components {
       peerTeams?: components["schemas"]["PeerTeam"][] | null;
       /** Peerteamsrevision */
       peerTeamsRevision?: number | null;
+      /** Projectaliases */
+      projectAliases?: components["schemas"]["ProjectAlias"][] | null;
       /** Updated */
       updated?: number | null;
       /** Workerbaseref */
@@ -8416,6 +8578,10 @@ export interface components {
       parent_id?: string | null;
       /** Path */
       path: string;
+      /** Request Id */
+      request_id?: string | null;
+      /** Server */
+      server?: string | null;
     };
     /**
      * ProviderModel
@@ -8897,6 +9063,23 @@ export interface components {
       home: string;
       /** Link */
       link: string;
+    };
+    /** RemoteProjectRegistrationResponse */
+    RemoteProjectRegistrationResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Error */
+      error?: string | null;
+      /** Outcome */
+      outcome: string;
+      /** Projectid */
+      projectId: string;
+      /** Requestid */
+      requestId: string;
+      /** @description The action-specific result from cross-server orchestration. */
+      value?: components["schemas"]["JsonValue"] | null;
     };
     /** RemoteRoomMemberDto */
     RemoteRoomMemberDto: {
@@ -10269,6 +10452,20 @@ export interface components {
       /** Enabled */
       enabled: boolean;
     };
+    /** SetServerAlias */
+    SetServerAlias: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "alias";
+      /** Alias */
+      alias: string;
+      /** Requestid */
+      requestId: string;
+      /** Serverid */
+      serverId: string;
+    };
     /** SharedParticipantRequest */
     SharedParticipantRequest: {
       /** Account Key */
@@ -10822,23 +11019,58 @@ export interface components {
     SummaryChat: {
       /** Archived */
       archived: boolean;
+      /** Created */
+      created?: number | null;
       /** Id */
       id: string;
+      /**
+       * Inflight
+       * @default false
+       */
+      inFlight?: boolean;
       /** Name */
       name: string;
       /** Path */
       path: string;
+      /**
+       * Pinned
+       * @default false
+       */
+      pinned?: boolean;
+      /** Projectid */
+      projectId?: string | null;
+      /** Projectserverid */
+      projectServerId?: string | null;
+      /** Provider */
+      provider?: string | null;
+      /** Serverid */
+      serverId?: string | null;
       /** Status */
       status: string;
+      /**
+       * Team
+       * @default false
+       */
+      team?: boolean;
       /** Unread */
       unread: boolean;
+      /** Updated */
+      updated?: number | null;
     };
     /** SummaryProject */
     SummaryProject: {
+      /** Homeserverid */
+      homeServerId?: string | null;
+      /** Id */
+      id?: string | null;
+      /** Locations */
+      locations?: components["schemas"]["ProjectLocationDto"][] | null;
       /** Name */
       name: string;
       /** Path */
       path: string;
+      /** Projectaliases */
+      projectAliases?: components["schemas"]["ProjectAliasDto"][] | null;
     };
     /** SummaryTarget */
     SummaryTarget: {
@@ -16385,6 +16617,8 @@ export interface operations {
     parameters: {
       query?: {
         path?: string | null;
+        request_id?: string | null;
+        server?: string | null;
       };
       header?: never;
       path?: never;
@@ -16410,8 +16644,17 @@ export interface operations {
           "application/json": components["schemas"]["ErrorResponse"];
         };
       };
-      /** @description Local origin and session token required */
+      /** @description Forbidden */
       403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
         headers: {
           [name: string]: unknown;
         };
@@ -17945,7 +18188,8 @@ export interface operations {
           | components["schemas"]["DiscoverServers"]
           | components["schemas"]["UiInvite"]
           | components["schemas"]["SetAccessSettings"]
-          | components["schemas"]["UnrevokeServer"];
+          | components["schemas"]["UnrevokeServer"]
+          | components["schemas"]["SetServerAlias"];
       };
     };
     responses: {
@@ -19208,6 +19452,57 @@ export interface operations {
       };
     };
   };
+  project_location_query_api_project_locations_get: {
+    parameters: {
+      query: {
+        action?: "info" | "matches";
+        path?: string | null;
+        project: string;
+        request_id?: string | null;
+        server: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ProjectLocationQueryResponse"];
+        };
+      };
+      /** @description Invalid request or operation failed */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Input validation errors are returned as HTTP 400 */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
   projects_api_projects_get: {
     parameters: {
       query?: never;
@@ -19264,7 +19559,8 @@ export interface operations {
       content: {
         "application/json":
           | components["schemas"]["ProjectWriteRequest"]
-          | components["schemas"]["SidebarReorderRequest"];
+          | components["schemas"]["SidebarReorderRequest"]
+          | components["schemas"]["ProjectLocationRequest"];
       };
     };
     responses: {
@@ -19277,7 +19573,9 @@ export interface operations {
           "application/json":
             | components["schemas"]["ProjectMutationRecord"]
             | components["schemas"]["ProjectRemovalResponse"]
-            | components["schemas"]["SidebarOrderResponse"];
+            | components["schemas"]["SidebarOrderResponse"]
+            | components["schemas"]["RemoteProjectRegistrationResponse"]
+            | components["schemas"]["ServerOperationResponse"];
         };
       };
       /** @description Invalid request or operation failed */

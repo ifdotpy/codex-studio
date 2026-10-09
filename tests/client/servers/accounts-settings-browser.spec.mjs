@@ -100,7 +100,7 @@ test("accounts settings show per-server state and provider choices", async ({
       .getByRole("button", { name: "Pair server", exact: true })
       .click();
     await expect(
-      page.locator(`[data-server="${server.invitation.serverId}"]`),
+      page.locator(`[data-settings-server="${server.invitation.serverId}"]`),
     ).toBeVisible();
     if (await dialog.isVisible().catch(() => false))
       await dialog.getByRole("button", { name: "Close", exact: true }).click();

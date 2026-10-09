@@ -1,0 +1,35 @@
+.chat-server-line {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 14px;
+}
+.chat-server-line svg {
+  flex: 0 0 11px;
+  width: 11px;
+  height: 11px;
+}
+.chat-row:has(.chat-server-line) > .chat-status,
+.server-chat:has(.chat-server-line) > .chat-status {
+  align-self: flex-start;
+  margin-top: 2px;
+}
+.server-sidebar .server-chat {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+.server-chat .row-copy strong {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-weight: 400;
+}
+.server-sidebar .project-show-more {
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}

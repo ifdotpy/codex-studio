@@ -1,9 +1,19 @@
 import { isRemoteServerView } from "../servers/environment";
-import { ActionIcon, Button, TextInput, UnstyledButton } from "@mantine/core";
+import {
+  ActionIcon,
+  Button,
+  Select,
+  TextInput,
+  UnstyledButton,
+} from "@mantine/core";
 import { ArrowUp, ChevronRight, Folder, Search } from "lucide-react";
 import { useEffect, useState } from "react";
 import { get, errorText } from "../api";
 import type { paths } from "../generated/api";
+import {
+  readProjectServers,
+  type ProjectServerChoice,
+} from "../servers/projectLocations";
 import "./project-directory-picker.css";
 
 type Directory =
@@ -12,10 +22,46 @@ type Directory =
 export default function ProjectDirectoryPicker({
   initialPath,
   onSelect,
+  serverChoices,
+  initialServer,
+  projectId,
+  showServerSelector = true,
+  submitLabel = "Add project",
 }: {
   initialPath?: string;
-  onSelect: (path: string) => Promise<void>;
+  onSelect: (path: string, server: string) => Promise<void>;
+  serverChoices?: ProjectServerChoice[];
+  initialServer?: string;
+  projectId?: string;
+  showServerSelector?: boolean;
+  submitLabel?: string;
 }) {
+  const [servers, setServers] = useState<ProjectServerChoice[]>(
+    serverChoices || [{ id: "local", label: "This Mac" }],
+  );
+  const [server, setServer] = useState(
+    initialServer || serverChoices?.[0]?.id || "local",
+  );
+  const [serverError, setServerError] = useState("");
+  const [matches, setMatches] = useState<string[]>([]);
+  const selectedServer = servers.find((row) => row.id === server);
+  useEffect(() => {
+    if (serverChoices) {
+      setServers(serverChoices);
+      return;
+    }
+    let active = true;
+    void readProjectServers()
+      .then((rows) => {
+        if (active) setServers(rows);
+      })
+      .catch((error) => {
+        if (active) setServerError(errorText(error));
+      });
+    return () => {
+      active = false;
+    };
+  }, [serverChoices]);
   const [path, setPath] = useState(initialPath);
   const [typedPath, setTypedPath] = useState(initialPath || "");
   const [directory, setDirectory] = useState<Directory | null>(null);
@@ -30,7 +76,12 @@ export default function ProjectDirectoryPicker({
     let active = true;
     setLoading(true);
     setError("");
-    get("/api/directories", { query: path ? { path } : {} })
+    get("/api/directories", {
+      query: {
+        ...(path ? { path } : {}),
+        ...(server !== "local" ? { server } : {}),
+      },
+    })
       .then((result) => {
         if (active) {
           setDirectory(result);
@@ -48,7 +99,28 @@ export default function ProjectDirectoryPicker({
     return () => {
       active = false;
     };
-  }, [path, attempt]);
+  }, [path, attempt, server]);
+
+  useEffect(() => {
+    setMatches([]);
+    if (!projectId) return;
+    let active = true;
+    void get("/api/project-locations", {
+      query: {
+        project: projectId,
+        server,
+        action: "matches",
+        ...(directory ? { path: directory.path } : {}),
+      },
+    })
+      .then((result) => {
+        if (active) setMatches((result.matches || []).map((row) => row.path));
+      })
+      .catch(() => {});
+    return () => {
+      active = false;
+    };
+  }, [projectId, server, directory?.path]);
 
   const navigate = (next: string) => {
     setLoading(true);
@@ -63,7 +135,33 @@ export default function ProjectDirectoryPicker({
   );
   const pathChanged = !!directory && typedPath.trim() !== directory.path;
   return (
-    <div className="directory-picker" aria-busy={loading || saving}>
+    <div
+      className="directory-picker"
+      aria-busy={loading || saving}
+      data-server-selector={showServerSelector}
+    >
+      {showServerSelector && (
+        <Select
+          label="Server"
+          value={server}
+          disabled={saving}
+          data={servers.map((row) => ({
+            value: row.id,
+            label: row.label + (row.disabled ? " (Offline)" : ""),
+            disabled: row.disabled,
+          }))}
+          onChange={(next) => {
+            if (!next || next === server) return;
+            setServer(next);
+            setPath(undefined);
+            setTypedPath("");
+            setDirectory(null);
+            setQuery("");
+            setSelectionError("");
+          }}
+        />
+      )}
+      {serverError && <p role="alert">{serverError}</p>}
       <form
         className="directory-path-entry"
         onSubmit={(event) => {
@@ -82,7 +180,7 @@ export default function ProjectDirectoryPicker({
           Open path
         </Button>
       </form>
-      {window.codexDesktop && !isRemoteServerView && (
+      {window.codexDesktop && !isRemoteServerView && server === "local" && (
         <Button
           variant="light"
           onClick={() => {
@@ -140,7 +238,12 @@ export default function ProjectDirectoryPicker({
               onClick={() => navigate(row.path)}
             >
               <Folder size={17} />
-              <span>{row.name}</span>
+              <span>
+                {row.name}
+                {matches.includes(row.path) && (
+                  <small> (same git origin)</small>
+                )}
+              </span>
               <ChevronRight size={15} />
             </UnstyledButton>
           ))
@@ -160,13 +263,19 @@ export default function ProjectDirectoryPicker({
         <Button
           variant="filled"
           loading={saving}
-          disabled={loading || !!error || !directory || pathChanged}
+          disabled={
+            loading ||
+            !!error ||
+            !directory ||
+            pathChanged ||
+            !!selectedServer?.disabled
+          }
           onClick={async () => {
             if (!directory || saving) return;
             setSaving(true);
             setSelectionError("");
             try {
-              await onSelect(directory.path);
+              await onSelect(directory.path, server);
             } catch (failure) {
               setSelectionError(errorText(failure));
             } finally {
@@ -174,7 +283,7 @@ export default function ProjectDirectoryPicker({
             }
           }}
         >
-          Add project
+          {submitLabel}
         </Button>
       </div>
     </div>

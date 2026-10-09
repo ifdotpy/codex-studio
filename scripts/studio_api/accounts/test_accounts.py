@@ -386,6 +386,9 @@ class _RuntimeFixture:
     def rate_limits_for(self, key: str) -> dict[str, object]:
         return self.cached_limits.get(key, {"accountKey": key, "data": None, "at": None, "error": None})
 
+    def refresh_limits_background(self, key: str) -> None:
+        self.limit_reads.append(key)
+
     def limits(self, key: str) -> dict[str, object]:
         self.limit_reads.append(key)
         return {
@@ -775,8 +778,7 @@ class AccountsRouterTests(unittest.TestCase):
         self.assertEqual(self.runtime.limit_reads, [])
         repeated = self.client.get("/api/limits?account_key=first&cached=1&cached=1")
         self.assertEqual(repeated.status_code, 200)
-        self.assertEqual(repeated.json()["data"]["rateLimits"]["primary"]["usedPercent"], 27)
-        self.assertEqual(repeated.json()["data"]["providerExtension"]["payloadVersion"], 2)
+        self.assertEqual(repeated.json()["data"]["accountId"], "first")
         self.assertEqual(self.runtime.limit_reads, ["first"])
 
     def test_models_workers_flag_requires_single_value_and_query_schema_is_visible(self) -> None:

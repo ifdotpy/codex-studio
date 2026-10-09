@@ -397,6 +397,9 @@ class MultiServerService:
             if result['outcome'] != 'unknown':
                 db.execute("UPDATE runtime_server_outbox SET state='complete',result=?,error=NULL,completed_at=? WHERE id=?",
                            (encoded(compact_receipt(envelope['action'], result)), time.time(), key))
+                if envelope['action'] in {'add_location', 'remove_location'} and result['outcome'] == 'applied':
+                    from codex_project_locations import applied as location_applied
+                    location_applied(self.runtime, db, envelope, server, result)
                 if envelope['action'] == 'spawn':
                     if result['outcome'] == 'applied':
                         self._spawn_received(db, envelope['payload'], result['value'])
@@ -763,7 +766,7 @@ class MultiServerService:
                 # Preserve the crash boundary. Only an exact durable effect can
                 # reconcile a running receipt; no second execution is allowed.
                 if (row['state'] == 'waiting'
-                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt'}
+                        or action in {'admit', 'projects', 'folders', 'git', 'chunk', 'directory', 'chat_read', 'context', 'exec_read', 'exec_receipt', 'location_matches', 'location_info'}
                         or action == 'task' and payload.get('args', {}).get('action') in {'list', 'get', 'history'}
                         or action == 'complaint' and payload.get('args', {}).get('action') == 'read'):
                     # Reads have no effect. Slot admission is a compare-and-set reservation, with no
@@ -835,6 +838,10 @@ class MultiServerService:
             pass
 
     def _evidence(self, db: Any, action: str, payload: dict[str, Any], key: str) -> dict[str, Any] | None:
+        if action in {'add_location', 'remove_location'}:
+            row = db.execute('SELECT result FROM runtime_operation_receipts WHERE id=?',
+                             (identity('location-effect', key),)).fetchone()
+            return json.loads(row[0]) if row else None
         if action == 'exec':
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='runtime_server_exec'").fetchone():
                 return None
@@ -889,6 +896,15 @@ class MultiServerService:
         return None
 
     def _receive(self, principal: str, action: str, p: dict[str, Any], key: str) -> dict[str, Any]:
+        if action in {'add_location', 'remove_location'}:
+            from codex_project_locations import receive as receive_location
+            return receive_location(self.runtime, principal, action, p, key)
+        if action == 'location_info':
+            from codex_project_locations import info
+            return info(p['cwd'])
+        if action == 'location_matches':
+            from codex_project_locations import matches
+            return matches(self.runtime, p['origin'], p.get('cwd'))
         if action == 'exec_receipt':
             with self.runtime.db() as db:
                 original = db.execute('SELECT * FROM runtime_server_inbox WHERE id=?', (p['handle'],)).fetchone()
@@ -1111,6 +1127,12 @@ class MultiServerService:
             with self.runtime.read_db() as db:
                 pending = {r[0] for r in db.execute("SELECT DISTINCT server FROM runtime_server_outbox WHERE state='queued' AND error IS NOT NULL")}
             return {'localServer': self.server_id, 'servers': [{**s, **({'status': 'offline'} if s['id'] in pending else {})} for s in self.transport.servers()]}
+        if action in {'add_location', 'remove_location'}:
+            from codex_project_locations import request as location_request
+            return location_request(self.runtime, {**args, 'request_id': key}, actor=actor)
+        if action == 'location_matches':
+            from codex_project_locations import suggestions
+            return suggestions(self.runtime, args['project'], args['server'], identity(actor['id'], action, key))
         if action in {'exec', 'exec_read', 'exec_input', 'exec_cancel'}:
             return self._exec_tool(actor, args, key)
         server = args.get('server', self.server_id if action == 'receipt' else None)
@@ -1160,7 +1182,7 @@ class MultiServerService:
                    'handle', 'input', 'close_stdin', 'stdout_offset', 'stderr_offset') if k in args}
         payload['actor'] = actor['id']
         if action == 'exec':
-            payload = validate(payload)
+            payload = validate(payload, allow_foreign_windows_path=server != self.server_id)
         key = identity(actor['id'], action, key)
         if len(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()) > 256 * 1024:
             raise ValueError('The encoded command request exceeds 256 KiB')
@@ -1180,18 +1202,8 @@ class MultiServerService:
         if action == 'projects':
             return cast(dict[str, Any], self.runtime.projects())
         if action == 'folders':
-            directory = Path(p.get('cwd', '')).expanduser()
-            if not directory.is_absolute() or not directory.is_dir():
-                raise ValueError('Supply an existing absolute folder')
-            # No recursive traversal or file content. The owner can choose a
-            # folder outside a registered project, as with local spawn.
-            names = []
-            for child in directory.iterdir():
-                if child.is_dir():
-                    names.append(child.name)
-                    if len(names) == 200:
-                        break
-            return {'cwd': str(directory), 'folders': sorted(names), 'truncated': len(names) == 200}
+            from codex_project_locations import folders
+            return folders(p.get('cwd'))
         if action == 'release':
             path = self.runtime.root / 'server-exports' / (str(uuid.UUID(p['export'])) + '.bundle')
             path.unlink(missing_ok=True)
@@ -1438,9 +1450,9 @@ def file_digest(path: Path) -> str:
 
 
 def server_tools(tool: Any, text: Any) -> list[dict[str, Any]]:
-    return [tool('orchestration_servers', 'Lead only. List paired servers, run Git reads, fetch branches, or run commands as the Studio user on local or paired servers. exec takes command argv or shell text, absolute cwd, env additions, timeout (120 seconds, max 1800), output_limit (256 KiB, max 4 MiB), and request_id. Above 5 seconds it returns a handle; exit events reach the lead. exec_read reads bounded head/tail output with stdout_offset and stderr_offset cursors. exec_input sends input or closes stdin (32 requests per command, 64 KiB each); exec_cancel stops the process group. Exact retries never repeat execution. Unknown outcomes require inspection.',
-        {'action': {'type': 'string', 'enum': ['list', 'projects', 'folders', 'git', 'fetch', 'receipt', 'exec', 'exec_read', 'exec_input', 'exec_cancel']},
-         'server': text, 'cwd': text, 'agent_id': text, 'branch': text, 'destination': text,
+    return [tool('orchestration_servers', 'Lead only. add_location(project, server, path) registers a project folder on that server. remove_location removes the association and keeps files and chats. location_matches suggests registered folders with the same Git origin. No credentials move. List paired servers, run Git reads, fetch branches, or run commands as the Studio user on local or paired servers. exec takes command argv or shell text, absolute cwd, env additions, timeout (120 seconds, max 1800), output_limit (256 KiB, max 4 MiB), and request_id. Above 5 seconds it returns a handle; exit events reach the lead. exec_read reads bounded head/tail output with stdout_offset and stderr_offset cursors. exec_input sends input or closes stdin (32 requests per command, 64 KiB each); exec_cancel stops the process group. Exact retries never repeat execution. Unknown outcomes require inspection.',
+        {'action': {'type': 'string', 'enum': ['list', 'projects', 'folders', 'git', 'fetch', 'receipt', 'add_location', 'remove_location', 'location_matches', 'exec', 'exec_read', 'exec_input', 'exec_cancel']},
+         'server': text, 'project': text, 'path': text, 'name': text, 'cwd': text, 'agent_id': text, 'branch': text, 'destination': text,
          'argv': {'type': 'array', 'items': text, 'maxItems': 8}, 'request_id': text,
          'command': {'oneOf': [text, {'type': 'array', 'items': text, 'minItems': 1, 'maxItems': 256}]},
          'env': {'type': 'object', 'additionalProperties': text},

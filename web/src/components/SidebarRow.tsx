@@ -31,6 +31,7 @@ import {
   type ChatIndicator,
 } from "./chat-status/chatStatusModel";
 import ChatStatus from "./agents/ChatStatus";
+import { ChatServerLine } from "../servers/ProjectChatRows";
 import { reportPromptComposerRender } from "./prompt-composer/renderProbe";
 
 type Actions = {
@@ -56,6 +57,7 @@ type Bindings = HTMLAttributes<HTMLElement> & {
 type Props = {
   row: Agent;
   selected: boolean;
+  serverAlias: string;
   indicator?: ChatIndicator;
   renaming: boolean;
   name: string;
@@ -123,6 +125,7 @@ export default function SidebarRow(props: Props) {
     <SidebarRowView
       row={props.row}
       selected={props.selected}
+      serverAlias={props.serverAlias}
       indicator={indicator}
       renaming={props.renaming}
       name={props.name}
@@ -139,6 +142,7 @@ export default function SidebarRow(props: Props) {
 const SidebarRowView = memo(function SidebarRowView({
   row,
   selected,
+  serverAlias,
   indicator,
   renaming,
   name,
@@ -174,6 +178,10 @@ const SidebarRowView = memo(function SidebarRowView({
             {a?.pinned && <Pin size={11} className="chat-pin" />}
             {row.name ?? ""}
           </strong>
+          <ChatServerLine
+            provider={a.provider || undefined}
+            alias={serverAlias}
+          />
         </span>
         <ChatStatus
           status={indicator}

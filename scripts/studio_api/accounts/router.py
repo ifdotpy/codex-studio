@@ -6,7 +6,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any, TYPE_CHECKING, Protocol, cast
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request
+from fastapi import APIRouter, Body, Depends, HTTPException, Query, Request
 from starlette.responses import Response
 
 from studio_api.models import ErrorResponse, JsonValue
@@ -42,6 +42,9 @@ from .models import (
     PeerTeamsResponse,
     ProjectReadResponse,
     ProjectWriteRequest,
+    ProjectLocationRequest,
+    ProjectLocationQuery,
+    ProjectLocationQueryResponse,
     SidebarReorderRequest,
     ProjectMutationResponse,
     RegisterAccountRequest,
@@ -92,6 +95,8 @@ class RuntimePort(Protocol):
     def rate_limits_for(self, account_key: str) -> dict[str, JsonValue]: ...
 
     def limits(self, account_key: str) -> dict[str, JsonValue]: ...
+
+    def refresh_limits_background(self, account_key: str) -> None: ...
 
     def catalog(self, account_key: str) -> JsonValue: ...
 
@@ -219,6 +224,9 @@ def create_router(context: ApiContext) -> APIRouter:
         cached = [value for value in request.query_params.getlist("cached") if value]
         current = runtime.rate_limits_for(account_key)
         if cached == ["1"] and (current.get("data") is not None or current.get("error")):
+            return context.send(request, current)
+        if current.get("data") is not None:
+            runtime.refresh_limits_background(account_key)
             return context.send(request, current)
         return context.send(request, runtime.limits(account_key))
 
@@ -395,12 +403,25 @@ def create_router(context: ApiContext) -> APIRouter:
         reset_service = cast(Callable[[RuntimePort, dict[str, JsonValue]], JsonValue], consume_reset)
         return context.send(request, reset_service(_runtime(context), body_data(body)))
 
+    @router.get("/api/project-locations", response_model=ProjectLocationQueryResponse, responses=_ERROR_RESPONSES)
+    def project_location_query(request: Request, query: ProjectLocationQuery = Depends()) -> Response:
+        from codex_project_locations import query as read_location
+        try:
+            result = read_location(_runtime(context), query.model_dump(exclude_none=True))
+        except PermissionError as error:
+            return context.send(request, {"error": str(error)}, status=403)
+        except (ValueError, RuntimeError) as error:
+            return context.send(request, {"error": str(error)}, status=400)
+        return context.send(request, result)
+
     @router.post("/api/projects", response_model=ProjectMutationResponse, responses=_ERROR_RESPONSES)
-    def project_write(request: Request, body: Annotated[ProjectWriteRequest | SidebarReorderRequest, Body()]) -> Response:
+    def project_write(request: Request, body: Annotated[ProjectWriteRequest | SidebarReorderRequest | ProjectLocationRequest, Body()]) -> Response:
         from codex_project_folders import SidebarOrderConflict
 
         try:
             result = _runtime(context).projects(body_data(body))
+        except PermissionError as error:
+            return context.send(request, {"error": str(error)}, status=403)
         except SidebarOrderConflict as error:
             return context.send(request, {"error": str(error)}, status=409)
         return context.send(request, result)

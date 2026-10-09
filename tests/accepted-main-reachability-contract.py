@@ -5,9 +5,12 @@ isolate_supervisor_environment()
 
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
+import sys
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -236,6 +239,26 @@ class MainReachability(unittest.TestCase):
         self.assertFalse(thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(results[0]['archive']['status'], 'archived')
+
+    @unittest.skipIf(os.name == 'nt', 'Windows Job Object coverage is in windows-server-contract.py')
+    def test_checkout_timeout_kills_process_group_and_bounds_pipe_drain(self):
+        from codex_worktree_creation import _run_checkout
+
+        child_file = self.root / 'checkout-child.pid'
+        child = 'import time; time.sleep(60)'
+        parent = (
+            'import pathlib,subprocess,sys,time; '
+            f'p=subprocess.Popen([sys.executable,"-c",{child!r}]); '
+            f'pathlib.Path({str(child_file)!r}).write_text(str(p.pid)); time.sleep(60)'
+        )
+        started = time.monotonic()
+        with self.assertRaises(subprocess.TimeoutExpired):
+            _run_checkout([sys.executable, '-c', parent], timeout=.5,
+                          check=False, capture_output=True, text=True)
+        self.assertLess(time.monotonic() - started, 3)
+        pid = int(child_file.read_text(encoding='ascii'))
+        with self.assertRaises(ProcessLookupError):
+            os.kill(pid, 0)
 
     def test_changed_origin_or_fetched_ref_blocks_archive(self):
         for change in ('origin', 'ref'):

@@ -310,6 +310,10 @@ class MultiServerService:
         CREATE TABLE IF NOT EXISTS runtime_access_audit (
           seq INTEGER PRIMARY KEY AUTOINCREMENT, client TEXT NOT NULL, actor TEXT NOT NULL,
           action TEXT NOT NULL, created REAL NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_local_alias (
+          id INTEGER PRIMARY KEY CHECK(id=1), alias TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_alias_requests (
+          id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL);
         """)
         if "actor" not in {row[1] for row in db.execute("PRAGMA table_info(runtime_access_audit)")}:
             db.execute("ALTER TABLE runtime_access_audit ADD COLUMN actor TEXT NOT NULL DEFAULT 'local'")
@@ -326,35 +330,87 @@ class MultiServerService:
             if self._identity is not None:
                 return self._identity
             directory = self.runtime.root / "multi-server"
+            if os.name == "nt":
+                from codex_private_paths import reject_reparse_path
+
+                try:
+                    reject_reparse_path(self.runtime.root, directory, allow_missing=True)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access") from error
             directory.mkdir(mode=0o700, exist_ok=True)
-            if directory.is_symlink() or directory.stat().st_mode & 0o077:
+            if directory.is_symlink():
+                raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
+            if os.name == "nt":
+                from codex_private_paths import ensure_private_dir, reject_reparse_path
+
+                try:
+                    reject_reparse_path(self.runtime.root, directory)
+                    ensure_private_dir(directory)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access") from error
+            elif directory.stat().st_mode & 0o077:
                 raise AccessError(503, "credential_permissions", "The credential directory requires owner-only access")
             path = directory / "identity.json"
             if path.is_symlink():
                 raise AccessError(503, "credential_permissions", "The credential file must not be a symbolic link")
+            if os.name == "nt":
+                from codex_private_paths import reject_reparse_path
+
+                try:
+                    reject_reparse_path(self.runtime.root, path, allow_missing=True)
+                except (OSError, ValueError) as error:
+                    raise AccessError(503, "credential_permissions", "The credential file must not be a reparse point") from error
+            if os.name == "nt" and path.exists():
+                from codex_private_paths import protect_temp_file
+
+                protect_temp_file(path)
             if not path.exists():
                 pair = self.crypto.call("generate")
                 value = {"serverId": uuid.uuid4().hex, "publicKey": pair["publicKey"],
                          "privateKey": pair["privateKey"], "label": "Studio server"}
                 fd, temporary = tempfile.mkstemp(prefix="identity-", dir=directory)
                 try:
+                    if os.name == "nt":
+                        from codex_private_paths import verify_handle_within_directory
+
+                        try:
+                            verify_handle_within_directory(fd, directory)
+                        except (OSError, ValueError) as error:
+                            os.close(fd)
+                            raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
                     with os.fdopen(fd, "w") as stream:
                         stream.write(_json(value))
                         stream.flush()
                         os.fsync(stream.fileno())
+                    if os.name == "nt":
+                        from codex_private_paths import protect_temp_file
+
+                        protect_temp_file(temporary)
                     os.replace(temporary, path)
-                    directory_fd = os.open(directory, os.O_RDONLY)
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    if os.name != "nt":
+                        directory_fd = os.open(directory, os.O_RDONLY)
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                 finally:
                     if os.path.exists(temporary):
                         os.unlink(temporary)
-            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+            flags = os.O_RDONLY | (os.O_NOFOLLOW if os.name != "nt" else 0)
+            fd = os.open(path, flags)
+            if os.name == "nt":
+                from codex_private_paths import verify_handle_within_directory
+
+                try:
+                    verify_handle_within_directory(fd, directory)
+                except (OSError, ValueError) as error:
+                    os.close(fd)
+                    raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
             with os.fdopen(fd) as stream:
                 metadata = os.fstat(stream.fileno())
-                if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077 or metadata.st_size > 16_384:
+                if (not stat.S_ISREG(metadata.st_mode)
+                        or (os.name != "nt" and metadata.st_mode & 0o077)
+                        or metadata.st_size > 16_384):
                     raise AccessError(503, "credential_permissions", "The credential file requires owner-only access")
                 value = json.load(stream)
                 private_key = value.get("privateKey") if isinstance(value, dict) else None
@@ -380,6 +436,7 @@ class MultiServerService:
         return result
 
     def servers(self) -> list[dict[str, Any]]:
+        self.server_aliases()
         with self.runtime.read_db() as db:
             rows = db.execute("SELECT record FROM runtime_access_clients WHERE json_extract(record,'$.kind')='server'").fetchall()
         return self.discovery().servers([self._public(cast(dict[str, Any], _record(row))) for row in rows])
@@ -397,9 +454,43 @@ class MultiServerService:
     @staticmethod
     def _public(client: dict[str, Any]) -> dict[str, Any]:
         return {key: client.get(key) for key in ("id", "clientId", "serverId", "label", "kind", "origin", "publicKey",
-                                                "tailscaleUser", "status", "created", "lastAccess", "revoked")}
+                                                "tailscaleUser", "status", "created", "lastAccess", "revoked", "alias")}
+
+    def server_aliases(self) -> dict[str, str]:
+        from codex_server_aliases import ensure_aliases
+        identity = self.identity()
+        with self._write() as db:
+            return ensure_aliases(db, identity)
+
+    def set_server_alias(self, server_id: str, alias: str, request_id: str, actor: str) -> dict[str, Any]:
+        from codex_server_aliases import ensure_aliases
+        _id(server_id, "server ID")
+        _id(request_id, "request ID")
+        if not re.fullmatch(r"[A-Z]{1,3}", alias):
+            raise AccessError(400, "invalid_alias", "Use 1 to 3 uppercase letters.")
+        identity = self.identity()
+        target = "local" if server_id in ("local", identity["serverId"]) else server_id
+        with self._write() as db:
+            saved = db.execute("SELECT server,alias FROM runtime_access_alias_requests WHERE id=?", (request_id,)).fetchone()
+            if saved and (saved[0], saved[1]) != (target, alias):
+                raise AccessError(409, "request_conflict", "The request ID has different content.")
+            if not saved:
+                aliases = ensure_aliases(db, identity)
+                if target not in aliases:
+                    raise AccessError(404, "server_not_found", "Select a paired server.")
+                if any(value == alias and key not in (target, identity["serverId"] if target == "local" else target)
+                       for key, value in aliases.items()):
+                    raise AccessError(409, "alias_conflict", "This alias belongs to another server.")
+                if target == "local":
+                    db.execute("INSERT INTO runtime_access_local_alias VALUES(1,?) ON CONFLICT(id) DO UPDATE SET alias=excluded.alias", (alias,))
+                else:
+                    db.execute("UPDATE runtime_access_clients SET record=json_set(record,'$.alias',?) WHERE id=?", (alias, target))
+                db.execute("INSERT INTO runtime_access_alias_requests VALUES(?,?,?)", (request_id, target, alias))
+                self._audit(db, target, "alias", actor)
+        return self.snapshot()
 
     def snapshot(self) -> dict[str, Any]:
+        aliases = self.server_aliases()
         with self.runtime.read_db() as db:
             clients = [self._public(cast(dict[str, Any], _record(row))) for row in db.execute("SELECT record FROM runtime_access_clients ORDER BY id")]
             invites = []
@@ -407,7 +498,8 @@ class MultiServerService:
                 record = cast(dict[str, Any], _record(row))
                 invites.append({key: record.get(key) for key in ("inviteId", "expires", "created", "status")})
         return {"protocol": PROTOCOL, "identity": self.identity(), "clients": clients,
-                "servers": self.servers(), "invites": invites, "settings": {"autoPair": self.discovery().enabled()}}
+                "servers": self.servers(), "invites": invites,
+                "settings": {"autoPair": self.discovery().enabled(), "aliases": aliases}}
 
     def create_invite(self, body: dict[str, Any], actor: str = "local") -> dict[str, Any]:
         request_id = _id(body.get("requestId"), "request ID")

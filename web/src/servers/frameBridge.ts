@@ -6,6 +6,7 @@ import { get, errorText } from "../api";
 import { desktopAlerts } from "../desktop/desktopAlerts";
 import { useEffect, useRef } from "react";
 import { serverViewId, serverParentOrigin } from "./environment";
+import { publishServerAliases } from "./serverAliases";
 import {
   isServerCommand,
   navigationSnapshot,
@@ -34,6 +35,15 @@ export function useServerFrame(
       )
         return;
       if (event.data.kind === "studio-server-preferences") {
+        const aliases = event.data.aliases;
+        if (
+          aliases &&
+          typeof aliases === "object" &&
+          Object.values(aliases).every(
+            (value) => typeof value === "string" && /^[A-Z]{1,3}$/.test(value),
+          )
+        )
+          publishServerAliases(aliases);
         try {
           const value = JSON.stringify(
             parseStudioPreferences(JSON.stringify(event.data.preferences)),

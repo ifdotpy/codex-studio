@@ -1,10 +1,16 @@
 // Current activity lifecycle through the real component. HTTP calls use fixtures.
 import { createRequire } from "node:module";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../playwright.mjs";
+import {
+  test,
+  expect,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
+} from "../playwright.mjs";
 
 test("Background Current Browser", async ({
   browser: _testBrowser,
@@ -45,7 +51,7 @@ const root=createRoot(document.getElementById('root'));
 window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
  React.createElement(MantineProvider,{defaultColorScheme:"dark"},React.createElement(BackgroundTasks,{
   opened:true,close:()=>{},data,leadId,initialFocus,
-  openAgent:()=>{},refresh:async()=>{},notify:()=>{}
+  openAgent:()=>{},refresh:async()=>{window.refreshCalls=(window.refreshCalls||0)+1;if(window.holdRefresh)await new Promise((resolve,reject)=>{window.resolveRefresh=resolve;window.rejectRefresh=reject;});},notify:error=>(window.notifications??=[]).push(error)
  })));
 `;
   const server = await createServer({
@@ -59,6 +65,15 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
           if (id === "virtual:current-background") return "\0" + id;
         },
         load(id) {
+          if (
+            process.env.BASELINE_SYNC_WAIT === "1" &&
+            id === join(root, "web/src/components/shell/BackgroundTasks.tsx")
+          )
+            return execFileSync(
+              "git",
+              ["show", "HEAD:web/src/components/shell/BackgroundTasks.tsx"],
+              { cwd: root, encoding: "utf8" },
+            );
           if (id === "\0virtual:current-background") return harness;
         },
       },
@@ -78,7 +93,9 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         body: '<!doctype html><div id="root"></div><script type="module">import "/@id/__x00__virtual:current-background";</script>',
       }),
     );
-    await page.route("**/api/**", (route) => {
+    let holdAnswer = false,
+      releaseAnswer;
+    await page.route("**/api/**", async (route) => {
       const request = route.request();
       const url = new URL(request.url());
       calls.push({
@@ -86,10 +103,26 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         path: url.pathname,
         id: url.searchParams.get("id"),
       });
+      if (url.pathname === "/api/sync/identity")
+        return route.fulfill({
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+          json: {
+            workspaceId: "1234567890abcdef1234567890abcdef",
+            syncProtocol: 2,
+          },
+        });
       if (url.pathname === "/api/workspace/tasks")
         return route.fulfill({
           status: 503,
           json: { error: "Fixture uses embedded task snapshots" },
+        });
+      if (
+        request.method() === "POST" &&
+        url.pathname === "/api/answer" &&
+        holdAnswer
+      )
+        await new Promise((resolve) => {
+          releaseAnswer = resolve;
         });
       return route.fulfill({
         json: { id: url.searchParams.get("id"), tail: "Live fixture output" },
@@ -151,7 +184,7 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     const rows = () => page.locator("[data-task]");
     await render();
     await page.waitForFunction(
-      () => document.querySelectorAll("[data-task]").length === 7,
+      () => document.querySelectorAll("[data-task]").length === 6,
     );
     assert.deepEqual(
       (
@@ -159,28 +192,26 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
           nodes.map((node) => node.dataset.task),
         )
       ).sort(),
-      [
-        "active",
-        "approval",
-        "child",
-        "pending",
-        "starting",
-        "stopping",
-        "tool",
-      ],
+      ["active", "approval", "child", "pending", "starting", "stopping"],
     );
     assert.equal(
       await page.getByRole("radiogroup", { name: "Task status" }).count(),
       0,
     );
     assert.equal(await page.getByText("History", { exact: true }).count(), 0);
-    for (const name of ["Commands", "Monitors", "Other tools"]) {
+    for (const name of ["Commands", "Monitors"]) {
       await page.getByRole("region", { name, exact: true }).waitFor();
       assert.equal(
         await page.getByRole("heading", { name, exact: true }).count(),
         1,
       );
     }
+    assert.equal(
+      await page
+        .getByRole("region", { name: "Other tools", exact: true })
+        .count(),
+      0,
+    );
 
     assert.equal(await page.locator(".tasks-footnote").count(), 0);
     assert.equal(
@@ -259,6 +290,47 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     await page
       .getByRole("button", { name: "Cancel monitor", exact: true })
       .waitFor();
+    await page.evaluate(() => {
+      window.holdRefresh = true;
+      window.refreshCalls = 0;
+    });
+    holdAnswer = true;
+    const approve = page.getByRole("button", {
+      name: "Approve command",
+      exact: true,
+    });
+    const pendingControl = page.getByRole("button", {
+      name: "Download task log",
+      exact: true,
+    });
+    await approve.click();
+    await expect
+      .poll(async () => ({
+        release: typeof releaseAnswer,
+        notifications: await page.evaluate(() => window.notifications || []),
+      }))
+      .toMatchObject({ release: "function" });
+    await expect(pendingControl).toBeDisabled();
+    assert.equal(await page.evaluate(() => window.refreshCalls), 0);
+    holdAnswer = false;
+    releaseAnswer();
+    await expect(pendingControl).toBeEnabled({ timeout: 2000 });
+    await page.waitForFunction(
+      () => window.refreshCalls === 1 && !!window.rejectRefresh,
+    );
+    await page.evaluate(() => {
+      window.holdRefresh = false;
+      window.rejectRefresh(new Error("Credential refresh unavailable"));
+    });
+    await page.waitForFunction(() =>
+      window.notifications?.includes("Credential refresh unavailable"),
+    );
+    assert.equal(
+      calls.filter(
+        (call) => call.method === "POST" && call.path === "/api/answer",
+      ).length,
+      1,
+    );
     await page.getByLabel("Task type", { exact: true }).selectOption("command");
     assert.equal(await page.locator('[data-task="approval"]').count(), 0);
     await page.getByLabel("Task type", { exact: true }).selectOption("all");
@@ -324,12 +396,12 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
     );
     assert.equal(
       calls.filter((call) => call.method !== "GET").length,
-      0,
+      1,
       "Visibility changes cannot replay or cancel work",
     );
     assert.deepEqual(errors, []);
     console.log(
-      "PASS: current snapshot only, completion and historical focus hide details, approval/process controls, filters, chat scope, 320/1920 viewports, no history reads or writes",
+      "PASS: current snapshot only, completion hides details, approval acknowledgment releases controls before refresh, filters, chat scope, 320/1920 viewports, no history reads or duplicate writes",
     );
   } finally {
     await server.close();

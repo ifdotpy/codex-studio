@@ -289,6 +289,7 @@ export async function serverAccess(
   method: "GET" | "POST",
   body?: import("./servers/accessContract").ServerAccessRequest,
   timeoutMs = 15000,
+  sessionToken?: string,
 ) {
   const controller = requestController({}, timeoutMs);
   try {
@@ -301,7 +302,7 @@ export async function serverAccess(
             body: body!,
             signal: controller.signal,
             headers: {
-              "X-Canvas-Token": token,
+              "X-Canvas-Token": sessionToken ?? token,
               "X-Canvas-Workspace": workspace,
             },
           });

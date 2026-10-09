@@ -11,7 +11,17 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const workspaceId = "b".repeat(32);
-export async function fixture(label, signed = false, accountRows = null) {
+export async function fixture(
+  label,
+  signed = false,
+  accountRowsOrOptions = null,
+) {
+  const options = Array.isArray(accountRowsOrOptions)
+    ? {}
+    : accountRowsOrOptions || {};
+  const accountRows = Array.isArray(accountRowsOrOptions)
+    ? accountRowsOrOptions
+    : null;
   const keys = crypto.generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey
     .export({ format: "pem", type: "spki" })
@@ -180,6 +190,7 @@ export async function fixture(label, signed = false, accountRows = null) {
           );
       }
     }
+    if (options.handle?.({ request, url, body, json, snapshot })) return;
     if (url.pathname === "/api/monitor/log") {
       response.writeHead(200, {
         "Content-Type": "text/plain",
@@ -222,17 +233,32 @@ export async function fixture(label, signed = false, accountRows = null) {
         busy: !!agent.inFlight,
         system: "Darwin",
         agentsRunning: agent.inFlight ? 1 : 0,
-        projects: [{ path: "/same/project", name: `${label} project` }],
-        chats: [
-          {
-            id: agent.id,
-            name: agent.name,
-            path: agent.cwd,
-            archived: false,
-            status: agent.status,
-            unread,
-          },
-        ],
+        projects: snapshot.runtime.projects,
+        chats: snapshot.threads
+          .filter(
+            (chat) =>
+              chat.source === "managed" &&
+              chat.isLead &&
+              !chat.deletedAt &&
+              !chat.sharedRoomId,
+          )
+          .map((chat) => ({
+            id: chat.id,
+            name: chat.name,
+            path: chat.cwd || "",
+            archived: !!chat.archived,
+            status: chat.status || "",
+            unread: chat.id === agent.id ? unread : false,
+            serverId: chat.serverId || null,
+            projectId: chat.projectId || null,
+            projectServerId: chat.projectServerId || null,
+            provider: chat.provider || null,
+            updated: chat.updated || null,
+            created: chat.created || null,
+            inFlight: !!chat.inFlight,
+            pinned: !!chat.pinned,
+            team: false,
+          })),
         alerts: unread
           ? [
               {
@@ -502,6 +528,7 @@ export async function fixture(label, signed = false, accountRows = null) {
   return {
     origin: `http://127.0.0.1:${server.address().port}`,
     invitation,
+    snapshot,
     writes,
     accountWrites,
     accounts() {
@@ -509,10 +536,14 @@ export async function fixture(label, signed = false, accountRows = null) {
     },
     pairs,
     accessRequests,
+    setChats(rows) {
+      snapshot.threads = rows;
+      snapshot.runtime.agents = rows;
+    },
     staleSettingsReceipts(value) {
       staleSettingsReceipts = value;
     },
-    discoverPeer(peer, status = "paired") {
+    discoverPeer(peer, status = "paired", reachability) {
       const value = peer.invitation;
       discoveredPeers = [
         ...discoveredPeers.filter((row) => row.serverId !== value.serverId),
@@ -526,6 +557,7 @@ export async function fixture(label, signed = false, accountRows = null) {
           publicKey: value.publicKey,
           tailscaleUser: value.tailscaleUser,
           status,
+          reachability,
           created: 1,
           lastSeen: Math.floor(Date.now() / 1000),
           autoPair: true,

@@ -14,7 +14,7 @@ from studio_api.multi_server.models import (
     AccessAuditResponse, AccessSnapshot, AcceptInvite, CreateInvite, DevicePairRequest,
     DevicePairResponse, InvitationResponse, ManagementRequest, RevokeClient,
     ServerOperationRequest, ServerOperationResponse, DiscoveryIdentity, AutoPairRequest,
-    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer,
+    DiscoverServers, UiInvite, SetAccessSettings, UnrevokeServer, SetServerAlias,
 )
 from studio_api.models import ErrorResponse
 
@@ -70,11 +70,13 @@ def create_router(context: ApiContext) -> APIRouter:
             service = service_for(context)
             principal = request.scope.get("studio_principal") or {}
             actor = principal.get("clientId", "local")
-            if isinstance(body, (DiscoverServers, UiInvite)):
+            if isinstance(body, (DiscoverServers, UiInvite, SetServerAlias)):
                 if principal or any(request.headers.get(name) is not None for name in ("X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto")):
                     raise AccessError(403, "local_session_required", "This action requires the local server session")
                 if isinstance(body, DiscoverServers):
                     return service.discovery().discover()
+                if isinstance(body, SetServerAlias):
+                    return service.set_server_alias(body.serverId, body.alias, body.requestId, actor)
                 return service.ui_invite(body.serverId, body.requestId)
             if isinstance(body, SetAccessSettings):
                 return service.discovery().settings(body.autoPair, actor)
