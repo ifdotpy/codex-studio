@@ -101,14 +101,23 @@ def _local_idle(rt: "Runtime", db: "sqlite3.Connection", key: str, server: "Any"
     agents = [mode_fields(json.loads(row[0])) for row in db.execute(
         "SELECT record FROM runtime_agents WHERE " + account_scope, (key, key))]
     ids = {a["id"] for a in agents}
+    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     for agent in agents:
-        if (agent.get("inFlight") or agent.get("status") in ACTIVE or agent.get("activeTools")
+        active_tools = agent.get("activeTools")
+        if (active_tools and (agent.get("deletedAt") or agent.get("agentArchive"))
+                and agent.get("threadId") is None and not agent.get("inFlight")):
+            # Unstarted workers can inherit their parent's spawn tool flag.
+            # Keep every owned receipt, even when its outcome is uncertain.
+            if not any("runtime_" + name in tables and db.execute(
+                    f"SELECT 1 FROM runtime_{name} WHERE json_extract(record,'$.agent')=? LIMIT 1",
+                    (agent["id"],)).fetchone() for name in ("tool_requests", "monitors", "tasks")):
+                active_tools = None
+        if (agent.get("inFlight") or agent.get("status") in ACTIVE or active_tools
                 or agent.get("workspaceOperation") or agent.get("accountTransferId")):
             return None, "Waiting for account work to finish"
     if any(p.get("accountKey", "default") == key and not p["future"].done()
            for p in rt.preparations.values()):
         return None, "Waiting for native thread preparation"
-    tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     ids_sql = ",".join("?" for _ in ids) or "NULL"
     for name, statuses in (("monitors", ACTIVE), ("tasks", ACTIVE | {"pending"}),
                            ("requests", {"pending", "answering"})):

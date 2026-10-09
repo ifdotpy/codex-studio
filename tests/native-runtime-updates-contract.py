@@ -149,6 +149,61 @@ class Contract(unittest.TestCase):
         self.assertFalse(native_tools.account_reserved(self.rt, "default"))
         self.assertIn("waiting", str(self.manager.status()).lower())
 
+    def orphan_tool_flags(self, **changes):
+        agent = {"id": "deleted-worker", "accountKey": "default", "status": "paused",
+                 "threadId": None, "inFlight": False, "epoch": 1, "deletedAt": 1,
+                 "activeTools": [{"id": "parent-spawn", "type": "dynamicToolCall",
+                                  "name": "orchestration_spawn"}]}
+        agent.update(changes)
+        with self.rt.db() as db:
+            self.rt.put(db, "agents", agent)
+        return agent
+
+    def test_rotation_ignores_orphan_tool_flags_on_deleted_workers(self):
+        deleted = self.orphan_tool_flags()
+        archived = self.orphan_tool_flags(id="archived-worker", deletedAt=None, agentArchive={"epoch": 1})
+        with self.rt.db() as db:
+            self.rt.put(db, "tool_requests", {"id": "parent-spawn", "agent": "chat-1",
+                                             "stage": "completed", "outcome": "applied"})
+        with self.supervised() as (_, closes):
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(self.old.close_count, 1)
+        self.assertEqual(len(self.spawned), 1)
+        self.assertIs(self.rt.servers["default"], self.spawned[0])
+        self.assertEqual(self.rt.agent(deleted["id"]), deleted)
+        self.assertEqual(self.rt.agent(archived["id"]), archived)
+        self.assertIn("thread/backgroundTerminals/list", [method for method, _ in self.old.calls])
+
+    def test_orphan_tool_flags_with_owned_records_still_block_rotation(self):
+        self.orphan_tool_flags()
+        for table, state in (("tool_requests", {"stage": "queued"}),
+                             ("tool_requests", {"stage": "failed", "outcome": "unknown"}),
+                             ("monitors", {"status": "running"}),
+                             ("monitors", {"status": "completed"}),
+                             ("tasks", {"status": "running"}),
+                             ("tasks", {"status": "completed"})):
+            with self.subTest(table=table, state=state):
+                with self.rt.db() as db:
+                    self.rt.put(db, table, {"id": "worker-record", "agent": "deleted-worker", **state})
+                self.assert_waiting()
+                with self.rt.db() as db:
+                    db.execute(f"DELETE FROM runtime_{table} WHERE id='worker-record'")
+
+    def test_tool_flags_without_orphan_identity_still_block_rotation(self):
+        for changes in ({"deletedAt": None}, {"threadId": "worker-thread"},
+                        {"inFlight": True}, {"status": "running"},
+                        {"workspaceOperation": "workspace"}, {"accountTransferId": "transfer"}):
+            with self.subTest(changes=changes):
+                self.orphan_tool_flags(**changes)
+                self.assert_waiting()
+
+    def test_orphan_tool_flags_do_not_bypass_native_work(self):
+        self.orphan_tool_flags()
+        self.old.background = [{"id": "live-command"}]
+        self.assert_waiting()
+        self.assertIn("thread/backgroundTerminals/list", [method for method, _ in self.old.calls])
+
     @contextmanager
     def supervised(self, *, close_error=None):
         self.old.pid = 101
