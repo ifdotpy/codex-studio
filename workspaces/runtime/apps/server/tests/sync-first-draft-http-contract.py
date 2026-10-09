@@ -1,4 +1,6 @@
 """A first protocol write can push drafts before any sync pull."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -12,7 +14,7 @@ import sys
 import tempfile
 import urllib.request
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 
 with tempfile.TemporaryDirectory(prefix="sync-first-draft-") as directory:
     root = Path(directory)
@@ -34,7 +36,7 @@ with tempfile.TemporaryDirectory(prefix="sync-first-draft-") as directory:
         "NO_PROXY": "127.0.0.1,localhost",
     })
     process = subprocess.Popen(
-        [sys.executable, "-B", str(ROOT / "tests/fixtures/sync-first-draft-fixture.py"),
+        [sys.executable, "-B", str(SERVER_TESTS_ROOT / "fixtures/sync-first-draft-fixture.py"),
          str(root / "state")],
         cwd=ROOT,
         env=env,

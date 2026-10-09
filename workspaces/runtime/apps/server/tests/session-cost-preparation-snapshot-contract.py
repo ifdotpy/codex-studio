@@ -1,4 +1,6 @@
 """Cost preparation waits outside SQL snapshots and checks the saved source."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,12 +15,12 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_session_costs
 from codex_source import source_function
 
-spec = importlib.util.spec_from_file_location('cost_snapshot_fixture', ROOT / 'tests/session-cost-snapshot-contract.py')
+spec = importlib.util.spec_from_file_location('cost_snapshot_fixture', SERVER_TESTS_ROOT / 'session-cost-snapshot-contract.py')
 fixtures = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixtures)
 

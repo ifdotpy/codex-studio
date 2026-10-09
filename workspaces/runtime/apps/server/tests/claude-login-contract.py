@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise native process login with a local fake CLI, without OAuth requests."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -20,7 +22,7 @@ import uuid
 import urllib.request
 import urllib.error
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_claude
 from codex_claude_login import LoginManager, verification_url
 
@@ -331,7 +333,7 @@ while manager.status(rid)['status'] == 'starting':
     time.sleep(.02)
 os._exit(0)
 """
-        env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
+        env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
         subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=20)
         config = self.root / 'claude-logins' / ('config-' + rid)
@@ -430,7 +432,7 @@ manager.start('claude-test',rid)
 while manager.status(rid)['status'] == 'starting': time.sleep(.02)
 os._exit(0)
 """
-        env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
+        env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'FIXTURE_PROFILE':json.dumps(self.profile), 'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
         subprocess.run([sys.executable,'-B','-c',script],env=env,check=True,timeout=20)
         pid = int((self.config / 'native-pid').read_text())
@@ -468,7 +470,7 @@ while not status_pid.exists() and time.monotonic() < end: time.sleep(.02)
 if not status_pid.exists(): raise SystemExit('status process did not start')
 os._exit(0)
 """
-        env = {**os.environ, 'PYTHONPATH':str(Path(__file__).resolve().parents[1] / 'scripts'),
+        env = {**os.environ, 'PYTHONPATH':str(SERVER_SOURCE_ROOT),
                'STUDIO_CLAUDE_BIN':str(self.binary), 'FIXTURE_PROFILE':json.dumps(self.profile),
                'FIXTURE_ROOT':str(self.root), 'FIXTURE_REQUEST':rid}
         subprocess.run([sys.executable, '-B', '-c', script], env=env, check=True, timeout=60)

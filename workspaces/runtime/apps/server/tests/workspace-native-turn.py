@@ -3,6 +3,7 @@
 
 Uses the installed Codex binary, a temporary CODEX_HOME, and no cloud provider.
 """
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import json
 import os
@@ -16,7 +17,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import AppServer, THREAD_CONFIG, TOOLS
 
 

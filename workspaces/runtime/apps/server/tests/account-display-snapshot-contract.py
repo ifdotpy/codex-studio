@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Account display reads use saved metadata, without native auth probes."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from starlette.responses import JSONResponse

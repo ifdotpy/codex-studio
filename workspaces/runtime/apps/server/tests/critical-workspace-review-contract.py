@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Independent checks for workspace recovery and current source state."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,7 +12,7 @@ import sys
 import threading
 import unittest
 from unittest.mock import patch
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 
 spec = importlib.util.spec_from_file_location('workspace_fixture', Path(__file__).with_name('workspace-contract.py'))

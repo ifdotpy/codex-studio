@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Start an isolated Canvas backend and exercise real browser setup paths."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import json
 import os
 from pathlib import Path
@@ -14,8 +16,8 @@ from unittest.mock import patch
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
-REPO = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(REPO / "scripts"))
+REPO = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 
 def fake_server():
@@ -87,7 +89,7 @@ def run():
             "PYTHONDONTWRITEBYTECODE": "1",
         }
         backend = subprocess.Popen(
-            [sys.executable, str(REPO / "scripts/codex-canvas"), "--port", "0"],
+            [sys.executable, str(SERVER_SOURCE_ROOT / "codex-canvas"), "--port", "0"],
             cwd=REPO, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         )
         try:

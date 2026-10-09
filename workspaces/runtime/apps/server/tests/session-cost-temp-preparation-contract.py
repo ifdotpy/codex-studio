@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Cost TEMP preparation releases history snapshots and replaces retry keys."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -9,8 +11,8 @@ from pathlib import Path
 import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 spec = importlib.util.spec_from_file_location("cost_snapshot_fixture", Path(__file__).with_name("session-cost-snapshot-contract.py"))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)

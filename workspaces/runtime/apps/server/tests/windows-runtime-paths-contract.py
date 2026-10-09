@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Windows contracts for paths used by native worker startup."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import os
 import json
 from pathlib import Path
@@ -13,8 +15,8 @@ from types import SimpleNamespace
 from contextlib import contextmanager
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_native_input_projection import _open_rollout, accepted_turns
 from codex_progress import provision_progress, read_progress

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Unchanged entity reads do not require SQLite's sole WAL writer."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_sync import SyncStore
 from codex_sync_entities import encoded, install_bypass_triggers, max_seq, put, register_functions
 

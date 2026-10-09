@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Duplicate notices must not invalidate the complete session cost history."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,12 +15,12 @@ import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_analytics import AnalyticsMixin
 from codex_session_costs import SessionCostReader
 
-spec = importlib.util.spec_from_file_location('cost_fixture', ROOT / 'tests/pricing-session-cost-contract.py')
+spec = importlib.util.spec_from_file_location('cost_fixture', SERVER_TESTS_ROOT / 'pricing-session-cost-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

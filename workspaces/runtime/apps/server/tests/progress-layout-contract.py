@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Renderer feedback refers to the exact file and preserves narrow-client failures."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -19,15 +21,15 @@ import time
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_progress_layout as layout
 from codex_progress import provision_progress, read_progress
 from studio_api.app import create_app
 from studio_api.context import ApiContext
 from fastapi.testclient import TestClient
 
-spec = importlib.util.spec_from_file_location("progress_file_fixture", ROOT / "tests/progress-file-contract.py")
+spec = importlib.util.spec_from_file_location("progress_file_fixture", SERVER_TESTS_ROOT / "progress-file-contract.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 
@@ -123,7 +125,7 @@ class ProgressLayoutContract(unittest.TestCase):
                     lastVisibleHeading="Next step")
         self.record(client="desktop", width=900, height=280, contentHeight=250,
                     totalLines=8, visibleLines=8, lastVisibleLine="Last result")
-        result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"),
+        result = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex_progress_layout.py"),
                                  str(self.path)], capture_output=True, text=True, timeout=10)
         self.assertEqual(result.returncode, 0, result.stderr)
         value = json.loads(result.stdout)
@@ -285,7 +287,7 @@ class ProgressLayoutContract(unittest.TestCase):
 
     def test_cli_codes_include_empty_unknown_and_invalid_file(self):
         def run(path=self.path):
-            result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"), str(path)],
+            result = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex_progress_layout.py"), str(path)],
                                     capture_output=True, text=True, timeout=10)
             return result.returncode, json.loads(result.stdout)["status"]
         self.assertEqual(run(), (2, "unmeasured"))
@@ -342,14 +344,14 @@ class ProgressLayoutContract(unittest.TestCase):
             if not measured:
                 self.assertEqual(json.loads(output.getvalue())['waitedSeconds'], 0.2)
         for wait in ("-1", "5.01", "nan", "inf"):
-            result = subprocess.run([sys.executable, str(ROOT / "scripts/codex_progress_layout.py"),
+            result = subprocess.run([sys.executable, str(SERVER_SOURCE_ROOT / "codex_progress_layout.py"),
                                      str(self.path), "--wait", wait], capture_output=True, timeout=10)
             self.assertEqual(result.returncode, 2)
 
     def test_cli_wait_reads_later_measurement_for_current_revision(self):
         self.record()
         self.path.write_text('A newer revision.\n')
-        command = [sys.executable, str(ROOT / 'scripts/codex_progress_layout.py'),
+        command = [sys.executable, str(SERVER_SOURCE_ROOT / "codex_progress_layout.py"),
                    str(self.path), '--wait', '1']
         process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:

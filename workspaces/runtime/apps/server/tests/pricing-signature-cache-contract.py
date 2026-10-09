@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Reuse only an authoritative catalog's exact signature. No network calls."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,13 +16,13 @@ import threading
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_pricing import PricingCatalog
 from codex_session_costs import SessionCostReader
 
 spec = importlib.util.spec_from_file_location('pricing_snapshot_fixture',
-                                            ROOT / 'tests/session-cost-snapshot-contract.py')
+                                            SERVER_TESTS_ROOT / 'session-cost-snapshot-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

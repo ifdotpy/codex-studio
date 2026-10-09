@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """SQLite diagnostics use owner events without touching foreign connections."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,8 +18,8 @@ import unittest
 from unittest.mock import patch
 import weakref
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_sqlite
 import codex_sqlite_traces as traces
 

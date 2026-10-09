@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """The backend and the supervisor raise the soft open-file limit for native children."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,7 +12,7 @@ import sys
 import unittest
 from unittest import mock
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = SERVER_SOURCE_ROOT
 PROBE = (
     "import sys, resource, subprocess; sys.path.insert(0, %r); "
     "from codex_open_file_limit import raise_open_file_limit; "

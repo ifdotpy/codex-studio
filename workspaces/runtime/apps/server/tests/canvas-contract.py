@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exercise the canvas with local fixtures. No model or real worker is called."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -22,7 +24,7 @@ import urllib.request
 import uuid
 
 sys.dont_write_bytecode = True
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = SERVER_SOURCE_ROOT
 sys.path.insert(0, str(SCRIPTS))
 from codex_canvas import Canvas, make_server, READ_LIMIT
 from studio_api.testing import read_session_token
@@ -551,7 +553,7 @@ class CanvasContract(unittest.TestCase):
             headers = {"Origin": base, "X-Canvas-Token": token}
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
             self.assertEqual(request("/api/chats", body, headers)[0], 200)
-            self.assertEqual(request("/../../scripts/codex_canvas.py")[0], 404)
+            self.assertEqual(request("/../../workspaces/runtime/apps/server/src/codex_canvas.py")[0], 404)
             web = Path(self.temp.name) / "web"
             web.mkdir()
             (web / "index.html").write_text("fixture")

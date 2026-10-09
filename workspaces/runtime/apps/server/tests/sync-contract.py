@@ -1,4 +1,6 @@
 """Isolated checkpoint, replay, draft branch and rollback contracts."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -8,7 +10,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import tempfile
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_sync import SyncStore
 
 with tempfile.TemporaryDirectory() as directory:

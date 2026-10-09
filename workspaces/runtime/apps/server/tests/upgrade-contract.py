@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Reopen private states written by two historical runtimes and finish upgrades."""
 from __future__ import annotations
+from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from contextlib import ExitStack
 import importlib.util
@@ -23,8 +24,8 @@ from unittest.mock import patch
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import AppServer, Runtime
 import codex_analytics_storage
@@ -35,7 +36,7 @@ from codex_payloads import resolve_record, resolve_result
 from codex_sync_entities import ENTITY_TOMBSTONE_LIMIT
 from studio_api.testing import read_test_state
 
-recovery_spec = importlib.util.spec_from_file_location("recover_backend", ROOT / "desktop/recover_backend.py")
+recovery_spec = importlib.util.spec_from_file_location("recover_backend", DESKTOP_ROOT / "recover_backend.py")
 recover_backend = importlib.util.module_from_spec(recovery_spec)
 recovery_spec.loader.exec_module(recover_backend)
 
@@ -269,7 +270,7 @@ class UpgradeContract(unittest.TestCase):
                                      "fixture migration failure")
                     runtime.search_migration_error = None
                     upgrade_check = json.loads(subprocess.run(
-                        [str(ROOT / "scripts/codex-upgrade-check"), "--repo", str(ROOT),
+                        [str(SERVER_SOURCE_ROOT / "codex-upgrade-check"), "--repo", str(ROOT),
                          "--state-dir", str(state), "--diagnostics-url", origin + "/api/diagnostics"],
                         check=True, capture_output=True, text=True, cwd=ROOT).stdout)
                     self.assertTrue(upgrade_check["prechecks"]["stateDatabase"]["readable"],

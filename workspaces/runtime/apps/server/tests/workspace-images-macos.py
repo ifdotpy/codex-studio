@@ -1,4 +1,5 @@
 """Real macOS lifecycle checks for generic folder workspace copies."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import os
 import pathlib
@@ -10,7 +11,7 @@ import threading
 import unittest
 from unittest import mock
 
-sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 import codex_workspace_images as images
 from codex_workspace_macos import Backend

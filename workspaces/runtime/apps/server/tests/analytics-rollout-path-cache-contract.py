@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Rollout discovery reads each directory once and keeps exact profile scope."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,7 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_analytics_history as history
 
 THREAD = '01a07781-5d19-7390-bc74-c12094143962'

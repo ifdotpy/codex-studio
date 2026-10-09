@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Cost profile isolation, shared scan admission, and real HTTP account routing."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import unittest
 from unittest.mock import patch
 from urllib.request import urlopen
 from urllib.error import HTTPError
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_costs import AccountCostReader, CostReader
 from codex_canvas import Canvas, make_server
 spec = importlib.util.spec_from_file_location('cost_fixture', Path(__file__).with_name('costs-contract.py'))

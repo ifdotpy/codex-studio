@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic contract checks for blob storage, reference safety and retention."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,7 +16,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_payload_migrate import migrate_batch
 import codex_payload_migrate

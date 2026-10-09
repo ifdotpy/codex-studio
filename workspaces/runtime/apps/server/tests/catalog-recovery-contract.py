@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Delayed model metadata cannot create workers or block coordination locks."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,12 +14,12 @@ import threading
 import unittest
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_catalog import CatalogPending, CatalogUnavailable, ModelCatalogCache
 from studio_api.testing import read_runtime_state
 
-fixture_spec = importlib.util.spec_from_file_location("catalog_fixture", ROOT / "tests/runtime-contract.py")
+fixture_spec = importlib.util.spec_from_file_location("catalog_fixture", SERVER_TESTS_ROOT / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(fixture_spec)
 fixture_spec.loader.exec_module(fixture)
 
