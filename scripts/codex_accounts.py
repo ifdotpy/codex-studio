@@ -245,6 +245,8 @@ class AccountStore:
                     or not isinstance(account.get('planType'), str) or not account['planType']):
                 raise ValueError('Cannot verify the original Claude subscription account')
             row = self._row(key)
+            if row.get('status') == 'ready':
+                return self._public(row)
             row.update(status='ready', plan=account['planType'])
             row.pop('error', None)
             row.pop('_authErrorKind', None)
@@ -255,14 +257,15 @@ class AccountStore:
         with self.lock:
             row = self._row(key)
             return bool(
-                row.get('provider') == 'claude' and row.get('status') == 'error'
-                and row.get('_authErrorKind') == 'keychain'
+                row.get('provider') == 'claude' and observed.get('status') == 'error'
+                and ((row.get('status') == 'error' and row.get('_authErrorKind') == 'keychain')
+                     or (row.get('status') == 'ready' and observed.get('canAttemptNativeProof') is True))
                 and not any(row.get(field) for field in ('deleted', 'disconnected', 'duplicateOf'))
                 and isinstance(row.get('email'), str) and row['email']
                 and row.get('accountId') == 'claude:' + row['email']
                 and row.get('_credentialIdentity') == row['accountId']
                 and all(row.get(field) == observed.get(field) for field in (
-                    'id', 'provider', 'accountId', 'email', 'claudeOptions', 'status',
+                    'id', 'provider', 'home', 'accountId', 'email', 'claudeOptions',
                 ))
             )
 

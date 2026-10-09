@@ -158,6 +158,41 @@ class Profiles(unittest.TestCase):
         self.assertNotIn('error', results[0])
         self.assertEqual(results[0]['accountId'], AUTH['accountId'])
 
+    def test_two_native_reads_can_confirm_the_same_account(self):
+        store = AccountStore(self.root / 'state')
+        with patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            key = store.register_claude({'configDir': str(self.root / 'claude')}, 'Work')
+        denied = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  '_authErrorKind': 'keychain', 'error': 'Keychain interaction is unavailable'}
+        with patch.object(c, 'auth_metadata', return_value=denied):
+            observed = store.get(key)
+        proof = {'account': {'type': 'claude', 'email': AUTH['email'], 'planType': AUTH['plan']}}
+        first = store.confirm_native_auth(key, observed, proof)
+        self.assertTrue(store.allow_native_auth_attempt(key, observed))
+        second = store.confirm_native_auth(key, observed, proof)
+        self.assertEqual(first, second)
+        self.assertEqual(second['status'], 'ready')
+        self.assertNotIn('canAttemptNativeProof', second)
+        self.assertFalse(store.allow_native_auth_attempt(key, second))
+
+        row = store.data['accounts'][key]
+        mutations = {'home': '/another/home', 'claudeOptions': {'configDir': '/another/config'},
+                     'email': 'other@test', 'accountId': 'claude:other@test',
+                     '_credentialIdentity': 'claude:other@test', 'provider': 'codex',
+                     'deleted': True, 'disconnected': True, 'duplicateOf': 'other',
+                     'status': 'changed'}
+        for field, value in mutations.items():
+            with self.subTest(field=field), patch.dict(row, {field: value}):
+                self.assertFalse(store.allow_native_auth_attempt(key, observed))
+                with self.assertRaises(ValueError):
+                    store.confirm_native_auth(key, observed, proof)
+        for account in ({'type': 'claude', 'email': 'other@test', 'planType': 'max'},
+                        {'type': 'claude', 'email': AUTH['email'], 'planType': ''},
+                        {'type': 'api', 'email': AUTH['email'], 'planType': 'max'}):
+            with self.subTest(account=account), self.assertRaises(ValueError):
+                store.confirm_native_auth(key, observed, {'account': account})
+
     def test_profile_change_during_native_confirmation_does_not_return_old_proof(self):
         store = AccountStore(self.root / 'state')
         with patch.object(c, 'installed', return_value='/bin/claude'), \
