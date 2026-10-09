@@ -139,7 +139,7 @@ differences.
 
 Upstream pnpm is active; release v12.10.1 was published 2026-10-06, with an MIT
 license. The documented supported platforms include Linux, macOS, and Windows;
-the npm installer requires Node 22.13+, compatible with this repository's
+pnpm installation requires Node 22.13+, compatible with this repository's
 stated minimum. Pin and verify the chosen tool artifact and lockfile; review
 allowed dependency build scripts. This adds a development/package-build tool,
 not a production service or hosted account. Existing registry requests continue;

@@ -140,7 +140,7 @@ clients cannot treat a generic dispatcher as part of the contract.
 
 `workspaces/runtime/apps/server/src/codex_live_updates.py` applies temporary release patches to the running
 runtime and stores its receipt at `<state-directory>/live-update.json`. A
-published release may include `scripts/studio-live-update.json`; no manifest or
+published release artifact may include a `scripts/studio-live-update.json` manifest; no manifest or
 patch is stored in this repository. A patch is not a
 safe way to change a live server from the legacy handler to FastAPI. The
 architecture migration must wait until active agents, monitors, terminals, and
