@@ -44,7 +44,7 @@ test("Sync http connection budget browser", async ({
   };
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: {
       include: [

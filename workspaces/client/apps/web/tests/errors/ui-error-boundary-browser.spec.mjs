@@ -33,7 +33,7 @@ test("ui-error-boundary-browser", async ({ page }) => {
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {

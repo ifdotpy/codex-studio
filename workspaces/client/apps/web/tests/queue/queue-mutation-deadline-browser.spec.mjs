@@ -21,7 +21,7 @@ test("queue-mutation-deadline-browser @performance", async ({
   const workspaceId = "c".repeat(32);
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
     optimizeDeps: { include: ["react", "react-dom/client"] },
     plugins: [

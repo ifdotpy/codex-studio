@@ -916,7 +916,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   );
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();

@@ -52,7 +52,7 @@ test("outbox-controls-ui", async ({ browser: fixtureBrowser }) => {
     const identity = await (await fetch(target + "/api/sync/identity")).json();
     server = await createServer({
       configFile: false,
-      root: join(repo, "web"),
+      root: join(repo, "workspaces/client/apps/web"),
       cacheDir: join(evidence, "vite"),
       server: {
         host: "127.0.0.1",
