@@ -255,6 +255,9 @@
     min-width: 0;
     flex-wrap: nowrap;
   }
+  #composer .composer-context-row:not(:has(.composer-context-values))::after {
+    content: none;
+  }
   #composer .composer-context-values {
     flex: 1;
   }

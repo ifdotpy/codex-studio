@@ -102,12 +102,13 @@ BROWSER=webkit npm --prefix web run test:browser -- mobile-keyboard-ui.spec.mjs
 
 ## Recorded measurements
 
-The paired script uses headless Chromium and a production build. The original
-baseline was measured before extraction. Timing numbers are local observations,
+The paired script uses headless Chromium and a production build. It generates
+the baseline API types from that revision's server schema before building.
+The original baseline was measured before extraction. Timing numbers are local observations,
 not service-level guarantees. Draft persistence counts and render counts are the
 more repeatable contract.
 
-| 500 drafts, 20 edits                          |     Baseline |    Current |
+| 500 drafts, 20 edits (7066718 → current)      |     Baseline |    Current |
 | --------------------------------------------- | -----------: | ---------: |
 | Parent / sidebar / transcript-fixture renders | 20 / 20 / 20 |  0 / 0 / 0 |
 | Composer commits                              |           20 |         20 |

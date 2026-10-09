@@ -102,6 +102,11 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.waitFor();
 
     // Existing prompt recall still works outside an active suggestion.
+    await page.waitForFunction(() =>
+      Array.from(document.querySelectorAll("#messages .message.user")).some(
+        (message) => message.textContent.includes("Review the release"),
+      ),
+    );
     await composer.press("ArrowUp");
     await page.waitForFunction(() =>
       document.querySelector("#message")?.value.includes("Review the release"),

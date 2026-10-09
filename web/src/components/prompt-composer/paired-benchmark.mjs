@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const BASELINE_REVISION = "e681bcc618d9ea4f4a0799de3fa81d01eee92687";
+const BASELINE_REVISION = "7066718";
 const commandTimeoutMs = 90_000;
 const benchmarkGlobalTimeoutMs = 360_000;
 const benchmarkCommandTimeoutMs = 390_000;
@@ -110,6 +110,10 @@ async function prepareBaseline() {
       "/scripts/claude_bridge/**",
       "/scripts/codex_canvas.py",
       "/scripts/codex_runtime.py",
+      "/scripts/**",
+      "/package.json",
+      "/package-lock.json",
+      "/.oxfmtrc.json",
     ],
     repo,
   );
@@ -123,6 +127,12 @@ async function prepareBaseline() {
     join(baselineWeb, "node_modules"),
     "dir",
   );
+  await symlink(
+    join(repo, "node_modules"),
+    join(baseline, "node_modules"),
+    "dir",
+  );
+  command("npm", ["run", "api:generate"], baseline);
   const probeDir = join(baselineWeb, "src/components/prompt-composer");
   await mkdir(probeDir, { recursive: true });
   await copyFile(
