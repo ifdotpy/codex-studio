@@ -7,6 +7,11 @@ async function settings(page) {
   await page.getByRole("tab", { name: "Servers", exact: true }).click();
   return page.getByRole("dialog", { name: "Studio settings", exact: true });
 }
+async function showFixtureChats(page) {
+  await page
+    .getByLabel("Find projects and chats", { exact: true })
+    .fill("chat");
+}
 test("revoke cancels an automatic invitation whose reply is still in flight", async ({
   page,
   context,
@@ -375,7 +380,8 @@ test("an unused legacy invitation expires into a new attempt without a credentia
     await remoteNetwork(context, remote);
     local.discoverPeer(remote);
     await seedLegacy(page, local, remote, true);
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=combined");
+    await showFixtureChats(page);
     await expect(
       page.locator(".server-sidebar [data-chat=overlap]"),
     ).toHaveCount(2);
@@ -419,7 +425,7 @@ test("Add to this UI recovers after an uncertain discover blocks revoke before d
         return response;
       };
     });
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=combined");
     const dialog = await settings(page);
     await dialog
       .getByRole("button", { name: "Find servers now", exact: true })
@@ -451,6 +457,8 @@ test("Add to this UI recovers after an uncertain discover blocks revoke before d
       .locator("[data-settings-server=remote]")
       .getByRole("button", { name: "Add to this UI", exact: true })
       .click();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await showFixtureChats(page);
     await expect(
       page.locator(".server-sidebar [data-chat=overlap]"),
     ).toHaveCount(2);

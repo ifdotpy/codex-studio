@@ -17,6 +17,7 @@ import { useServerFrame } from "./servers/frameBridge";
 import {
   serverViewId,
   isServerView,
+  isClassicServerView,
   isRemoteServerView,
   serverParentOrigin,
 } from "./servers/environment";
@@ -450,7 +451,7 @@ export default function App() {
     return () => window.removeEventListener("storage", preferences);
   }, []);
   const toggleSidebar = useCallback(() => {
-    if (isServerView) {
+    if (isServerView && !isClassicServerView) {
       window.parent.postMessage(
         { kind: "studio-server-toggle-sidebar" },
         serverParentOrigin,

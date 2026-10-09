@@ -74,7 +74,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
         },
       },
     );
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=combined");
     await page.locator("#message").waitFor();
     await expect(page.locator(".server-manager-launch")).toHaveCount(0);
     await page

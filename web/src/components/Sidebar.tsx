@@ -962,7 +962,10 @@ export default function Sidebar(p: Props) {
         {sorting.announcement}
       </span>
       <div className="sidebar-header">
-        <a className="brand" href="/">
+        <a
+          className="brand"
+          href={serverViewId ? location.pathname + location.search : "/"}
+        >
           <span className="brand-name">
             <strong>Codex</strong> <span>Studio</span>
           </span>

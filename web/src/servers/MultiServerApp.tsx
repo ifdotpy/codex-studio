@@ -13,9 +13,10 @@ import {
   Modal,
   useMantineColorScheme,
   Tabs,
+  NativeSelect,
   ActionIcon,
 } from "@mantine/core";
-import { Search, Settings, Plus } from "lucide-react";
+import { Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
 import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
@@ -50,6 +51,8 @@ import type { GetResult } from "../api";
 import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
+const combinedNavigation =
+  new URLSearchParams(location.search).get("studio-navigation") === "combined";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
   const load = () => {
@@ -721,7 +724,12 @@ export default function MultiServerApp() {
       </div>
     </Modal>
   );
-  if (!uiOnly && !paired.length && accountsServers.length === servers.length)
+  if (
+    !uiOnly &&
+    !paired.length &&
+    accountsServers.length === servers.length &&
+    !manager
+  )
     return (
       <ServerSettingsContext.Provider
         value={{
@@ -742,85 +750,98 @@ export default function MultiServerApp() {
   return (
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
+      data-navigation={combinedNavigation ? "combined" : "classic"}
     >
-      <Button
-        className="server-mobile-toggle"
-        onClick={() => setMobileOpen(!mobileOpen)}
-        aria-expanded={mobileOpen}
-      >
-        Servers and chats
-      </Button>
-      <aside
-        className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
-        aria-label="Servers and projects"
-      >
-        <header className="server-sidebar-header">
-          <strong>
-            Studio servers{" "}
-            {unread > 0 && (
-              <span aria-label={`${unread} unread chats`}>({unread})</span>
-            )}
-          </strong>
+      {!combinedNavigation && (
+        <div className="server-switcher">
+          <NativeSelect
+            aria-label="Studio server"
+            value={current}
+            data={servers.map((server) => ({
+              value: server.id,
+              label: server.label,
+            }))}
+            onChange={(event) => select(event.currentTarget.value)}
+          />
           <ActionIcon
-            size="xs"
+            aria-label="Studio settings"
             variant="subtle"
             onClick={() => setManager(true)}
-            aria-label="Studio settings"
           >
             <Settings size={18} />
           </ActionIcon>
-        </header>
-        <Button
-          className="server-sidebar-nav"
-          variant="subtle"
-          leftSection={<Search size={16} />}
-          onClick={() => setSearchOpen(true)}
-        >
-          Search all messages
-        </Button>
-        <TextInput
-          className="server-sidebar-filter"
-          aria-label="Find projects and chats"
-          placeholder="Find projects and chats"
-          leftSection={<Search size={15} />}
-          value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-        />
-        {failure && <p role="alert">{failure}</p>}
-        {!servers.length && (
-          <p>Pair a server to open its projects and chats.</p>
-        )}
-        <Button
-          className="server-sidebar-nav"
-          variant="subtle"
-          leftSection={<Plus size={16} />}
-          onClick={() =>
-            send(
-              servers.some((row) => row.id === "local") ? "local" : current,
-              { action: "add-project" },
-            )
-          }
-        >
-          Add project
-        </Button>
-        <div className="server-sidebar-projects">
-          <ProjectGroupsSidebar
-            navigation={navigation}
-            servers={servers}
-            statuses={status}
-            serverAliases={discovery.snapshot?.aliases}
-            reachability={Object.fromEntries(
-              (discovery.snapshot?.servers || []).map((server) => [
-                server.id,
-                server.reachability,
-              ]),
-            )}
-            current={current}
-            query={query}
-            send={send}
-          />
         </div>
-      </aside>
+      )}
+      {combinedNavigation && (
+        <>
+          <Button
+            className="server-mobile-toggle"
+            onClick={() => setMobileOpen(!mobileOpen)}
+            aria-expanded={mobileOpen}
+          >
+            Servers and chats
+          </Button>
+          <aside
+            className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
+            aria-label="Servers and projects"
+          >
+            <header>
+              <strong>
+                Studio servers{" "}
+                {unread > 0 && (
+                  <span aria-label={`${unread} unread chats`}>({unread})</span>
+                )}
+              </strong>
+              <Button
+                size="xs"
+                variant="subtle"
+                onClick={() => setManager(true)}
+                aria-label="Studio settings"
+              >
+                Settings
+              </Button>
+            </header>
+            <Button variant="subtle" onClick={() => setSearchOpen(true)}>
+              Search all messages
+            </Button>
+            <TextInput
+              label="Find projects and chats"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+            {failure && <p role="alert">{failure}</p>}
+            {!servers.length && (
+              <p>Pair a server to open its projects and chats.</p>
+            )}
+            <Button
+              variant="subtle"
+              onClick={() =>
+                send(
+                  servers.some((row) => row.id === "local") ? "local" : current,
+                  { action: "add-project" },
+                )
+              }
+            >
+              Add project
+            </Button>
+            <ProjectGroupsSidebar
+              navigation={navigation}
+              servers={servers}
+              statuses={status}
+              serverAliases={discovery.snapshot?.aliases}
+              reachability={Object.fromEntries(
+                (discovery.snapshot?.servers || []).map((server) => [
+                  server.id,
+                  server.reachability,
+                ]),
+              )}
+              current={current}
+              query={query}
+              send={send}
+            />
+          </aside>
+        </>
+      )}
       <main className="server-views">
         {!servers.length && (
           <div className="startup">

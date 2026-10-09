@@ -32,6 +32,10 @@ export function frameURL(
   base.pathname = "/";
   base.search = new URLSearchParams({
     "studio-server": server.id,
+    "studio-navigation":
+      root.searchParams.get("studio-navigation") === "combined"
+        ? "combined"
+        : "classic",
     ...(isolated
       ? {
           "studio-parent": root.origin,

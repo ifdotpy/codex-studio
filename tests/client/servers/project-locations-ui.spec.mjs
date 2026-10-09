@@ -164,7 +164,7 @@ async function openFixtures(page, context, local, remote) {
     },
     { destination: remote.origin, source: remote.invitation.origin },
   );
-  await page.goto(local.origin);
+  await page.goto(local.origin + "/?studio-navigation=combined");
 }
 
 test("project folders, remote browse, and New chat server choice", async ({

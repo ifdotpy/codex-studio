@@ -31,6 +31,11 @@ Dissolution preserves the chats and saved messages but removes peer access.
 Two Studio installations can also share an approved room over Tailscale. This
 feature is off by default; see the [peer federation operator guide](docs/peer-federation.md).
 
+Paired servers use the standard sidebar with the Codex Studio name, chat pins,
+project folders, and chat menus. Select the server above the workspace.
+Each server keeps its own open chat and sidebar state. The combined project
+sidebar remains available for checks with `?studio-navigation=combined`.
+
 Select **New shared chat** to create one conversation with two agents.
 Choose a project and each participant's account and model before creation.
 The sidebar shows one chat. No existing chats or peer team are required.

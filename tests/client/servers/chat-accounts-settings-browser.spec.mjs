@@ -181,9 +181,9 @@ test("chat Accounts settings show all servers and route remote sign-in", async (
     );
     const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
     await page
-      .getByRole("button", { name: "Show more (1)", exact: true })
-      .click();
-    await page.getByRole("button", { name: /^Local chat/ }).click();
+      .getByLabel("Studio server", { exact: true })
+      .selectOption("local");
+    await localFrame.getByRole("button", { name: /^Local chat/ }).click();
     await localFrame.locator("#message").waitFor();
     await localFrame
       .getByRole("button", { name: "Studio settings", exact: true })
