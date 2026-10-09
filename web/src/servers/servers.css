@@ -11,6 +11,10 @@
   padding: 16px 12px;
   border-right: 1px solid var(--line);
   background: var(--sidebar);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
 }
 .server-card-grid {
   display: grid;
@@ -200,7 +204,7 @@
   gap: 8px;
 }
 .server-sidebar section {
-  margin-top: 16px;
+  margin: 0 0 12px;
 }
 .server-sidebar summary {
   cursor: pointer;
@@ -233,7 +237,10 @@
   overflow-wrap: anywhere;
 }
 .server-chat[aria-current="page"] {
-  background: var(--line);
+  background: light-dark(#1824470c, #ffffff0c);
+}
+.server-chat:hover {
+  background: var(--hover);
 }
 .server-views {
   flex: 1;
@@ -280,7 +287,7 @@ html[data-server-view] .workspace {
     z-index: 200;
   }
   .server-sidebar-open {
-    display: block;
+    display: flex;
   }
 }
 
@@ -299,6 +306,81 @@ html[data-server-view] .workspace {
   border-radius: 6px;
 }
 .server-sidebar {
-  font-size: var(--studio-sidebar-font-size);
-  font-family: var(--studio-font-family);
+  font-size: var(--studio-sidebar-font-size, var(--studio-text-body));
+  font-family: var(--studio-font-family, var(--mantine-font-family));
+}
+.server-sidebar-header {
+  min-height: 32px;
+  margin-bottom: 4px;
+  flex-shrink: 0;
+}
+.server-sidebar-header strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 16px;
+  font-weight: 600;
+}
+.server-sidebar-header .mantine-ActionIcon-root {
+  width: 28px;
+  height: 28px;
+  flex-shrink: 0;
+}
+.server-sidebar-nav {
+  width: 100%;
+  min-height: 36px;
+  flex-shrink: 0;
+  padding-inline: 8px;
+  color: var(--text);
+  font-size: inherit;
+  font-weight: 400;
+}
+.server-sidebar-nav .mantine-Button-inner {
+  justify-content: flex-start;
+}
+.server-sidebar-nav .mantine-Button-section,
+.server-sidebar-filter .mantine-TextInput-section {
+  color: var(--muted);
+}
+.server-sidebar-filter {
+  flex-shrink: 0;
+}
+.server-sidebar-filter .mantine-TextInput-input {
+  min-height: 36px;
+  border-radius: 8px;
+  border-color: light-dark(#18244707, #ffffff07);
+  background: light-dark(#18244703, #ffffff03);
+  font-size: inherit;
+}
+.server-sidebar-filter .mantine-TextInput-input:focus {
+  border-color: var(--accent);
+}
+.server-sidebar-projects {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  scrollbar-width: thin;
+  scrollbar-color: light-dark(#18244718, #ffffff18) transparent;
+  margin-top: 4px;
+}
+.server-sidebar .project-tree-toggle {
+  font-size: inherit;
+}
+.server-sidebar .project-tree-toggle span {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.server-sidebar .project-tree-action[aria-haspopup="menu"] {
+  opacity: 1;
+}
+.server-sidebar .server-chat {
+  min-height: 40px;
+  padding: 7px 8px 7px 24px;
+  border-radius: 8px;
+}
+.server-sidebar .row-copy strong {
+  font-size: inherit;
+  line-height: 1.45;
+}
+.server-sidebar .project-show-more {
+  padding: 6px 8px 6px 24px;
 }

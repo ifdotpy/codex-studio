@@ -13,7 +13,9 @@ import {
   Modal,
   useMantineColorScheme,
   Tabs,
+  ActionIcon,
 } from "@mantine/core";
+import { Search, Settings, Plus } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
 import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
@@ -752,27 +754,35 @@ export default function MultiServerApp() {
         className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
         aria-label="Servers and projects"
       >
-        <header>
+        <header className="server-sidebar-header">
           <strong>
             Studio servers{" "}
             {unread > 0 && (
               <span aria-label={`${unread} unread chats`}>({unread})</span>
             )}
           </strong>
-          <Button
+          <ActionIcon
             size="xs"
             variant="subtle"
             onClick={() => setManager(true)}
             aria-label="Studio settings"
           >
-            Settings
-          </Button>
+            <Settings size={18} />
+          </ActionIcon>
         </header>
-        <Button variant="subtle" onClick={() => setSearchOpen(true)}>
+        <Button
+          className="server-sidebar-nav"
+          variant="subtle"
+          leftSection={<Search size={16} />}
+          onClick={() => setSearchOpen(true)}
+        >
           Search all messages
         </Button>
         <TextInput
-          label="Find projects and chats"
+          className="server-sidebar-filter"
+          aria-label="Find projects and chats"
+          placeholder="Find projects and chats"
+          leftSection={<Search size={15} />}
           value={query}
           onChange={(event) => setQuery(event.currentTarget.value)}
         />
@@ -781,7 +791,9 @@ export default function MultiServerApp() {
           <p>Pair a server to open its projects and chats.</p>
         )}
         <Button
+          className="server-sidebar-nav"
           variant="subtle"
+          leftSection={<Plus size={16} />}
           onClick={() =>
             send(
               servers.some((row) => row.id === "local") ? "local" : current,
@@ -791,21 +803,23 @@ export default function MultiServerApp() {
         >
           Add project
         </Button>
-        <ProjectGroupsSidebar
-          navigation={navigation}
-          servers={servers}
-          statuses={status}
-          serverAliases={discovery.snapshot?.aliases}
-          reachability={Object.fromEntries(
-            (discovery.snapshot?.servers || []).map((server) => [
-              server.id,
-              server.reachability,
-            ]),
-          )}
-          current={current}
-          query={query}
-          send={send}
-        />
+        <div className="server-sidebar-projects">
+          <ProjectGroupsSidebar
+            navigation={navigation}
+            servers={servers}
+            statuses={status}
+            serverAliases={discovery.snapshot?.aliases}
+            reachability={Object.fromEntries(
+              (discovery.snapshot?.servers || []).map((server) => [
+                server.id,
+                server.reachability,
+              ]),
+            )}
+            current={current}
+            query={query}
+            send={send}
+          />
+        </div>
       </aside>
       <main className="server-views">
         {!servers.length && (
