@@ -57,6 +57,22 @@ test("tool limit history ui", async ({ browser: _browser }) => {
         "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 15th, 2026 3:23 AM.",
       codexErrorInfo: "usageLimitExceeded",
     };
+    // A real agent entity and its transcript project one runtime record. Keep
+    // this fixture consistent so hydration cannot change the lookup batch.
+    const fixtureAgent = {
+      ...lead,
+      ...initial.agent,
+      id: lead.id,
+      name: lead.name,
+      kind: "agent",
+      status: "failed",
+      inFlight: false,
+      turnId: null,
+      threadId: "history-thread",
+      lastCompletedTurn: "latest-limit",
+      error,
+    };
+    state.runtime.agents[state.runtime.agents.indexOf(lead)] = fixtureAgent;
     const worker = (id, turnId, failed = true) => ({
       id,
       role: "tool",
@@ -162,15 +178,7 @@ test("tool limit history ui", async ({ browser: _browser }) => {
       items,
       order: items.map((i) => i.id),
       replace: true,
-      agent: {
-        ...initial.agent,
-        status: "failed",
-        inFlight: false,
-        turnId: null,
-        threadId: "history-thread",
-        lastCompletedTurn: "latest-limit",
-        error,
-      },
+      agent: fixtureAgent,
     };
     browser = _browser;
     const page = await browser.newPage({
