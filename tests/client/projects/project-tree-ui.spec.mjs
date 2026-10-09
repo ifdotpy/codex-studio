@@ -657,6 +657,10 @@ test("project tree ui", async ({ page: runnerPage }) => {
         exact: true,
       })
       .click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
     await waitFor(async () =>
       (await state()).some(
         (a) =>
