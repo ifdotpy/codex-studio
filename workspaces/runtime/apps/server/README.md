@@ -9,7 +9,7 @@ credentials and native privileges stay with their owning processes. Preserve
 state-directory identity, request IDs, receipts, and unknown outcomes after a
 lost response. Runtime configuration belongs to the server source and its
 deployment units; command scripts are owned by the [root manifest](../../../../package.json).
-Focused check: `pnpm run test:server:python -- --filter workspaces/runtime/apps/server/tests/runtime-contract.py`.
+Focused check from the repository root: `pnpm run test:server:python -- --filter workspaces/runtime/apps/server/tests/runtime-contract.py`.
 
 ## Navigation
 

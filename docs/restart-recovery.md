@@ -271,7 +271,7 @@ Run the isolated recovery checks:
 python3 -B workspaces/runtime/apps/server/tests/restart-recovery-contract.py
 python3 -B workspaces/runtime/apps/server/tests/monitor-restart-contract.py
 python3 -B workspaces/runtime/apps/server/tests/terminal-history-restart-contract.py
-pnpm --filter codex-agents-desktop test
+pnpm --filter codex-agents-desktop run test
 pnpm --filter codex-agents-web run test:restart
 pnpm --filter codex-agents-web run test:rxdb-cache
 pnpm --filter codex-agents-web run test:display
