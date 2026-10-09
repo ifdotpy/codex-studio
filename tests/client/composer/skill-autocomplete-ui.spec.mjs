@@ -376,6 +376,14 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       name: /release Prepare a release/,
     });
     await release.waitFor();
+    await page.waitForFunction(() => {
+      const input = document.querySelector("#message");
+      return (
+        input?.value === "before $rel after" &&
+        input.selectionStart === "before $rel".length &&
+        input.selectionEnd === "before $rel".length
+      );
+    });
     await release.click();
     assert.equal(await composer.inputValue(), "before $release after");
     await page.waitForFunction(
