@@ -160,6 +160,11 @@ test("the owner adapter preserves saved organization in standalone and classic s
         origin,
         destination,
       }) => {
+        window.__sidebarSnapshots = [];
+        window.addEventListener("message", (event) => {
+          if (event.data?.kind === "studio-server-navigation")
+            window.__sidebarSnapshots.push(event.data);
+        });
         const server = new URLSearchParams(location.search).get(
           "studio-server",
         );
@@ -246,6 +251,34 @@ test("the owner adapter preserves saved organization in standalone and classic s
       classic.getByRole("button", { name: "Saved team", exact: true }),
     ).toBeVisible();
     expect(await organization(classic)).toEqual(before);
+    const frameSnapshot = () =>
+      page.evaluate(
+        () =>
+          window.__sidebarSnapshots.findLast(
+            (message) =>
+              message.serverId === "local" && message.navigation?.sidebar,
+          )?.navigation.sidebar || null,
+      );
+    await expect.poll(frameSnapshot).not.toBeNull();
+    const published = await frameSnapshot();
+    expect(published.stateDir).toBe(scope);
+    expect(published.compact).toEqual(compact);
+    expect(published.collapsed).toEqual(tree);
+    expect(published.sidebarOrder).toEqual({ revision: 3, groups: order });
+    expect(
+      published.projects.find((project) => project.path === path).folders,
+    ).toEqual([
+      { id: "parent", name: "Parent", parentId: null },
+      { id: "nested", name: "Nested", parentId: "parent" },
+    ]);
+    expect(published.peerTeams.map((team) => team.id)).toEqual(["team"]);
+    expect(published.threads.find((chat) => chat.id === "overlap").pinned).toBe(
+      true,
+    );
+    expect(
+      published.threads.find((chat) => chat.id === "archived-chat").archived,
+    ).toBe(true);
+    expect(published).not.toHaveProperty("token");
     await classic.screenshot({
       path: testInfo.outputPath("classic-saved-sidebar.png"),
     });
