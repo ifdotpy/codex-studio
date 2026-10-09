@@ -395,17 +395,25 @@ replication between machines.
 
 ## Open items
 
+Design:
+
 - The reverse guest to host channel for `host_exec`, and slot management (create, reuse, remove,
   disk budget).
-- `host_exec` with simulators, UI tests and a large Xcode project.
+- Index emulation for partial `add` (hunks, `add -p`).
+- The first set of git verbs that `layr` implements.
+- Directory-level merge cases: rename against change, folder delete against a new file inside,
+  symlinks, file modes.
+- The access model in the VM: agents own their lines; the `layr` service owns states, the log and
+  metadata.
 
-- Index emulation details for partial `add` (hunks, `add -p`).
-- Which git porcelain and plumbing commands the utility implements first, and which use passthrough.
-- The passthrough repository needs an index for the current state; build it on demand and cache it
-  per state.
-- Measure the one-way mirror at chromium scale: first write, update after a merge, and the
-  background verification.
-- Directory-level merge cases listed above.
+Measurements:
+
+- `host_exec` with simulators, UI tests and a large Xcode project.
+- The one-way mirror at chromium scale: first write, update after a merge, background verification.
+- The loop-file option on a real ext4 host.
+
+Later:
+
 - Replace overlayfs with writable snapshots for Linux workspaces
   ([image workspaces](workspace-images.md) uses overlayfs today).
 - APFS backend (deferred).
