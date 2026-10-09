@@ -2,3 +2,12 @@ packages:
   - "."
   - "workspaces/*/apps/*"
   - "workspaces/*/packages/*"
+
+overrides:
+  "@modelcontextprotocol/sdk": 1.31.0
+  "typed-rest-client>qs": 6.16.0
+
+allowBuilds:
+  electron: true
+  esbuild: true
+  playwright: true
