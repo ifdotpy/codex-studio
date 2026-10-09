@@ -8,6 +8,7 @@ import {
   externalCatalog,
   verifyExternalCatalog,
   listExternalTools,
+  readExternalInstructions,
 } from "./move-external.mjs";
 
 const statuses = [
@@ -123,6 +124,34 @@ test("stdio proof sends initialize and tools/list without tool calls or model in
       "initialize",
       "notifications/initialized",
       "tools/list",
+    ]);
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Codex instruction proof initializes without listing resources or calling tools", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "codex-mcp-instructions-"),
+  );
+  const script = path.join(root, "server.mjs");
+  const log = path.join(root, "requests");
+  await fs.writeFile(
+    script,
+    `import fs from 'node:fs';import {createInterface} from 'node:readline';for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);fs.appendFileSync(${JSON.stringify(log)},r.method+'\\n');if(!('id'in r))continue;process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result:{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},serverInfo:{name:'fixture',version:'1'},instructions:'Private instructions'}})+'\\n');}`,
+  );
+  try {
+    assert.equal(
+      await readExternalInstructions({
+        type: "stdio",
+        command: process.execPath,
+        args: [script],
+      }),
+      "Private instructions",
+    );
+    assert.deepEqual((await fs.readFile(log, "utf8")).trim().split("\n"), [
+      "initialize",
+      "notifications/initialized",
     ]);
   } finally {
     await fs.rm(root, { recursive: true, force: true });

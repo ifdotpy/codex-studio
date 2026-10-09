@@ -226,8 +226,7 @@ def auth_metadata_from_output(returncode, stdout):
     return result
 
 
-def transport(root, profile=None):
-    executable = installed(profile)
+def node_executable() -> str | None:
     configured_node = os.environ.get('STUDIO_NODE_BIN')
     candidates = [configured_node] if configured_node else [
         shutil.which('node'), '/opt/homebrew/bin/node', '/usr/local/bin/node',
@@ -235,7 +234,12 @@ def transport(root, profile=None):
         str(Path.home() / 'Library/Application Support/fnm/aliases/default/bin/node'),
         str(Path.home() / '.volta/bin/node'), str(Path.home() / '.local/share/mise/shims/node'),
     ]
-    node = next((str(Path(p).resolve()) for p in candidates if p and os.access(p, os.X_OK)), None)
+    return next((str(Path(p).resolve()) for p in candidates if p and os.access(p, os.X_OK)), None)
+
+
+def transport(root, profile=None):
+    executable = installed(profile)
+    node = node_executable()
     bridge = Path(__file__).resolve().parent / 'claude_bridge/bridge.mjs'
     if not executable or not node:
         raise ValueError('Install Node.js and Claude Code, then run claude auth login')
