@@ -401,3 +401,61 @@ test("offline paired server is disabled in all project choices", async ({
     await remote.close();
   }
 });
+
+for (const variant of ["light", "dark", "mobile"]) {
+  test(`project sidebar and New chat cards ${variant}`, async ({
+    page,
+    context,
+  }, testInfo) => {
+    const { local, remote } = await projectFixtures();
+    try {
+      await page.setViewportSize(
+        variant === "mobile"
+          ? { width: 390, height: 844 }
+          : { width: 1280, height: 720 },
+      );
+      await page.emulateMedia({
+        colorScheme: variant === "dark" ? "dark" : "light",
+      });
+      await openFixtures(page, context, local, remote);
+      if (variant === "mobile")
+        await page
+          .getByRole("button", { name: "Servers and chats", exact: true })
+          .click();
+      const group = page.locator(
+        '.server-sidebar [data-project-path="project:logical"]',
+      );
+      await expect(
+        group
+          .getByText("Remote chat", { exact: true })
+          .locator("..")
+          .locator(".chat-server-line"),
+      ).toBeVisible();
+      await expect(page.locator("html")).toHaveAttribute(
+        "data-mantine-color-scheme",
+        variant === "dark" ? "dark" : "light",
+      );
+      await page.screenshot({
+        animations: "disabled",
+        path: testInfo.outputPath(`sidebar-${variant}.png`),
+      });
+      await group
+        .getByRole("button", { name: "New chat in attar", exact: true })
+        .click();
+      const dialog = page.getByRole("dialog", {
+        name: "New chat",
+        exact: true,
+      });
+      await expect(
+        dialog.getByRole("button", { name: "Start chat", exact: true }),
+      ).toBeVisible();
+      await page.screenshot({
+        animations: "disabled",
+        path: testInfo.outputPath(`new-chat-${variant}.png`),
+      });
+    } finally {
+      await local.close();
+      await remote.close();
+    }
+  });
+}

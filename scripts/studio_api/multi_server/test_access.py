@@ -132,6 +132,53 @@ class AccessTests(unittest.TestCase):
         self.addCleanup(owner.stop)
         self.addCleanup(peer.stop)
 
+    def test_alias_api_persists_defaults_edits_and_request_identity(self) -> None:
+        headers = {"X-Canvas-Token": "local-token"}
+        peers = [
+            ("mbp", "igor-mbp", "https://igor-mbp.tailf00fa0.ts.net"),
+            ("wsl", "kukuka-win", "https://kukuka-win.tailf00fa0.ts.net"),
+            ("win", "kukuka-win", "https://kukuka-win.tailf00fa0.ts.net:8443"),
+            ("other-mbp", "igor-mbp", "https://igor-mbp-two.tailf00fa0.ts.net"),
+            ("new-node", "New node", "https://new-node.tailf00fa0.ts.net"),
+        ]
+        with self.runtime.db() as db:
+            for server_id, label, origin in peers:
+                record = {"id": server_id, "clientId": server_id, "serverId": server_id,
+                          "kind": "server", "label": label, "origin": origin, "publicKey": "fixture-key",
+                          "tailscaleUser": "owner", "status": "paired", "created": 1,
+                          "lastAccess": None, "revoked": None}
+                db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", (server_id, json.dumps(record)))
+        state = self.client.get("/api/multi-server", headers=headers)
+        self.assertEqual(state.status_code, 200, state.text)
+        aliases = state.json()["settings"]["aliases"]
+        self.assertEqual({key: aliases[key] for key in ["local", "mbp", "wsl", "win"]},
+                         {"local": "MAC", "mbp": "MBP", "wsl": "WSL", "win": "WIN"})
+        self.assertEqual(len(set(aliases.values())), len(aliases) - 1)
+        self.assertTrue(all(value.isalpha() and value.isupper() and 1 <= len(value) <= 3 for value in aliases.values()))
+        body = {"action": "alias", "serverId": "mbp", "alias": "LAP", "requestId": "alias-1"}
+        first = self.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(first.status_code, 200, first.text)
+        self.assertEqual(first.json()["settings"]["aliases"]["mbp"], "LAP")
+        self.assertEqual(self.client.post("/api/multi-server", json=body, headers=headers).status_code, 200)
+        self.assertEqual(self.client.post("/api/multi-server", json={**body, "alias": "NEW"}, headers=headers).status_code, 409)
+        with self.runtime.db() as db:
+            record = json.loads(db.execute("SELECT record FROM runtime_access_clients WHERE id='mbp'").fetchone()[0])
+            self.assertEqual(record["alias"], "LAP")
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='alias'").fetchone()[0], 1)
+        newer = self.client.post("/api/multi-server", json={**body, "alias": "TOP", "requestId": "alias-2"}, headers=headers)
+        self.assertEqual(newer.status_code, 200, newer.text)
+        replay = self.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(replay.json()["settings"]["aliases"]["mbp"], "TOP")
+        for alias in ["", "ABCD", "lower", "A1", "MAC", "WIN"]:
+            reply = self.client.post("/api/multi-server", json={**body, "alias": alias, "requestId": "invalid-" + alias}, headers=headers)
+            self.assertIn(reply.status_code, [400, 409, 422], reply.text)
+        local = self.client.post("/api/multi-server", json={**body, "serverId": "local", "alias": "DES", "requestId": "alias-local"}, headers=headers)
+        self.assertEqual(local.status_code, 200, local.text)
+        self.assertEqual(local.json()["settings"]["aliases"]["local"], "DES")
+        missing = self.client.post("/api/multi-server", json={**body, "serverId": "missing", "requestId": "alias-missing"}, headers=headers)
+        self.assertEqual(missing.status_code, 404, missing.text)
+        self.assertEqual(self.client.post("/api/multi-server", json={**body, "requestId": "alias-no-token"}).status_code, 403)
+
     def proxy(self) -> dict[str, str]:
         return {"X-Forwarded-Host": "server.example.ts.net", "X-Forwarded-Proto": "https",
                 "X-Forwarded-For": "100.64.0.12"}

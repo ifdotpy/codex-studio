@@ -2211,7 +2211,8 @@ export interface components {
         | "accept_invite"
         | "auto_pair"
         | "unrevoke"
-        | "settings";
+        | "settings"
+        | "alias";
       /** Actorid */
       actorId: string;
       /** Clientid */
@@ -2232,6 +2233,8 @@ export interface components {
     };
     /** AccessClient */
     AccessClient: {
+      /** Alias */
+      alias?: string | null;
       /** Autopair */
       autoPair?: boolean | null;
       /** Clientid */
@@ -2295,6 +2298,10 @@ export interface components {
     };
     /** AccessSettings */
     AccessSettings: {
+      /** Aliases */
+      aliases?: {
+        [key: string]: string;
+      };
       /** Autopair */
       autoPair: boolean;
     };
@@ -10401,6 +10408,20 @@ export interface components {
       /** Enabled */
       enabled: boolean;
     };
+    /** SetServerAlias */
+    SetServerAlias: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "alias";
+      /** Alias */
+      alias: string;
+      /** Requestid */
+      requestId: string;
+      /** Serverid */
+      serverId: string;
+    };
     /** SharedParticipantRequest */
     SharedParticipantRequest: {
       /** Account Key */
@@ -18014,7 +18035,8 @@ export interface operations {
           | components["schemas"]["DiscoverServers"]
           | components["schemas"]["UiInvite"]
           | components["schemas"]["SetAccessSettings"]
-          | components["schemas"]["UnrevokeServer"];
+          | components["schemas"]["UnrevokeServer"]
+          | components["schemas"]["SetServerAlias"];
       };
     };
     responses: {

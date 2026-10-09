@@ -12,6 +12,7 @@ export type DiscoveredServer = {
 };
 export type DiscoverySnapshot = {
   localServerId: string;
+  aliases?: Record<string, string>;
   localLabel?: string;
   localOrigin?: string | null;
   autoPair: boolean;
@@ -33,6 +34,7 @@ export function discoverySnapshot(
     localLabel: state.identity.label,
     localOrigin: state.identity.origin,
     autoPair: state.settings.autoPair,
+    aliases: state.settings.aliases,
     servers: state.servers
       .filter(
         (peer) =>

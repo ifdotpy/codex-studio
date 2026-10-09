@@ -35,11 +35,14 @@ export default function ProjectGroupsSidebar({
   const [compact, setCompact] = useState<Record<string, boolean>>(() =>
     saved("studio-logical-project-compact", {}),
   );
+  const [legacyCompact] = useState<Record<string, boolean>>(() =>
+    saved("studio-server-project-compact-v1", {}),
+  );
   const choices = projectServerChoices(servers, statuses, reachability);
   const aliases = Object.fromEntries(
     servers.map((server) => [
       server.id,
-      (server as StudioServer & { alias?: string }).alias ||
+      server.alias ||
         (server.id === "local"
           ? "MAC"
           : server.label
@@ -138,7 +141,14 @@ export default function ProjectGroupsSidebar({
                   id: navigation[current]?.opened || "",
                   serverId: current,
                 }}
-                compact={compact[project.key] ?? project.compact ?? true}
+                compact={
+                  compact[project.key] ??
+                  legacyCompact[
+                    JSON.stringify([project.owner, project.path])
+                  ] ??
+                  project.compact ??
+                  true
+                }
                 query={query}
                 setCompact={(value) => {
                   const next = { ...compact, [project.key]: value };

@@ -163,10 +163,23 @@ export default function MultiServerApp() {
   const publishPreferences = (value: unknown) => {
     for (const [id, frame] of frames.current)
       frame.contentWindow?.postMessage(
-        { kind: "studio-server-preferences", serverId: id, preferences: value },
+        {
+          kind: "studio-server-preferences",
+          serverId: id,
+          preferences: value,
+          aliases: Object.fromEntries(
+            serversRef.current.map((server) => [
+              server.id,
+              server.alias || "MAC",
+            ]),
+          ),
+        },
         new URL(frame.src).origin,
       );
   };
+  useEffect(() => {
+    publishPreferences(preferencesRef.current);
+  }, [paired]);
   const select = useCallback((id: string) => {
     mount(id);
     life(id).idleSince = Date.now();
@@ -489,7 +502,10 @@ export default function MultiServerApp() {
     const same = old.find((row) => row.id === server.id);
     if (same && same.origin !== server.origin)
       throw new Error("This server identity belongs to another address.");
-    writeServers([...old.filter((row) => row.id !== server.id), server]);
+    writeServers([
+      ...old.filter((row) => row.id !== server.id),
+      { ...server, alias: server.alias || same?.alias },
+    ]);
     if (focus) select(server.id);
   };
   const remove = (server: StudioServer) => {
