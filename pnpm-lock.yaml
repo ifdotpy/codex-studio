@@ -194,6 +194,9 @@ importers:
       playwright-core:
         specifier: 1.63.0
         version: 1.63.0
+      vitest:
+        specifier: 5.0.3
+        version: 5.0.3(@types/node@26.6.4)(@vitest/browser-playwright@5.0.3)(@vitest/ui@5.0.3)(vite@8.2.2(@types/node@26.6.4)(esbuild@0.28.2))
 
   workspaces/client/apps/web:
     dependencies:
@@ -294,9 +297,16 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.3.285
         version: 0.3.285(@anthropic-ai/sdk@0.132.1(zod@4.6.5))(@modelcontextprotocol/sdk@1.31.0(supports-color@10.2.2)(zod@4.6.5))(zod@4.6.5)
+      '@modelcontextprotocol/sdk':
+        specifier: 1.31.0
+        version: 1.31.0(supports-color@10.2.2)(zod@4.6.5)
       zod:
         specifier: 4.6.5
         version: 4.6.5
+    devDependencies:
+      vitest:
+        specifier: 5.0.3
+        version: 5.0.3(@types/node@26.6.4)(@vitest/browser-playwright@5.0.3)(@vitest/ui@5.0.3)(vite@8.2.2(@types/node@26.6.4)(esbuild@0.28.2))
 
 packages:
 
