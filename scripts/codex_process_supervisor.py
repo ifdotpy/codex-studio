@@ -761,7 +761,7 @@ class Supervisor:
                                  (handle,)).fetchone()
             return {"resumed": resumed, "initResult": json.loads(row[0]) if row[0] else None,
                     "acknowledged": row[1], "sequence": row[2], "generation": row[3],
-                    "returnCode": child.process.poll()}
+                    "returnCode": child.process.poll(), "pid": child.process.pid}
         child = self.children.get(handle)
         if child is None:
             raise RuntimeError("Unknown supervisor handle")
@@ -1337,7 +1337,7 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
             initialized = None
         if not isinstance(initialized, dict):
             raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
-        return {'resumed': True, 'initResult': initialized, 'generation': saved['generation'],
+        return {'resumed': True, 'pid': saved['pid'], 'initResult': initialized, 'generation': saved['generation'],
                 'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
     if (saved is None or any(saved[key] != expected.get(key) for key in keys)
             or saved['closed_at'] is not None or status.get('pid') != saved['pid']
@@ -1352,7 +1352,7 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
         initialized = None
     if not isinstance(initialized, dict):
         raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
-    return {'resumed': True, 'initResult': initialized, 'generation': saved['generation'],
+    return {'resumed': True, 'pid': saved['pid'], 'initResult': initialized, 'generation': saved['generation'],
             'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
 
 
@@ -1502,6 +1502,15 @@ class ProcessProxy:
         # may resume persisted work only when this handle reused its live child.
         self.resumed = opened.get("resumed") is True
         self.generation = opened.get("generation", 1)
+        self.native_pid = opened.get("pid")
+        if self.native_pid is None:
+            # A retained supervisor can predate the PID field in open receipts.
+            saved = supervisor_launch_snapshot(self.root, handle)
+            if (not saved or saved['generation'] != self.generation or saved['closed_at'] is not None
+                    or saved['signature'] != Supervisor.signature(command, env, cwd)):
+                self.detach()
+                raise RuntimeError('The supervisor open process identity is unavailable')
+            self.native_pid = saved['pid']
         self.cursor = opened["acknowledged"]
         self.read_cursor = self.cursor
         self.ack_pending = set()
@@ -1783,7 +1792,7 @@ def retire_command(root, handle, *, persisted=False):
         client.close()
 
 
-def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature):
+def admin_close_handle(root, handle, expected_pid, expected_start_time, expected_signature, *, request_id=None):
     root = Path(root).expanduser().resolve()
     # The owner can wait three seconds for TERM and two seconds for KILL.
     client = _connect(root, timeout=10)
@@ -1793,7 +1802,7 @@ def admin_close_handle(root, handle, expected_pid, expected_start_time, expected
         hello = _recv(client, reader)
         if hello.get("error"):
             raise RuntimeError(hello["error"])
-        request_id = uuid.uuid4().hex
+        request_id = request_id or uuid.uuid4().hex
         _send(client, {"requestId": request_id, "action": "adminCloseHandle", "handle": handle,
                        "expectedPid": expected_pid, "expectedStartTime": expected_start_time,
                        "expectedSignature": expected_signature})

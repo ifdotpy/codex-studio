@@ -227,6 +227,15 @@ loaded Codex threads per connected account, live Claude queries, queue sizes,
 short runtime lock samples, and host memory. Account names and process command
 lines stay out of the output. The snapshot reads process and native state only
 when requested. Resident memory totals can count shared pages more than once.
+`/api/desktop` reports the selected Codex version and each account's current
+version in `nativeRuntime`. Supervisor accounts adopt an approved update only
+after all local work, native threads, event queues, and receipts are idle.
+Studio reserves the account, checks it again, and closes only its exact process
+identity. Active accounts wait and retry. A lost close reply keeps new input
+blocked until the supervisor journal proves that the old child stopped.
+The account's native history remains unchanged. Rotation records use
+`native-runtime/rotations.jsonl` in the state directory, with three 1 MiB backups.
+
 Idle Codex subscriptions release after 15 minutes and native threads can take
 about one more minute to unload. Idle Claude queries close after 15 minutes.
 Native background tasks and unresolved input keep their sessions open. New work
