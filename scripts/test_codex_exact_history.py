@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch
 import uuid
 import zipfile
 
-from codex_exact_history import export_codex, extend_codex_history, frozen_codex_parameters, unpack_codex
+from codex_exact_history import export_codex, extend_codex_history, frozen_codex_parameters, unpack_codex, private_write
 
 
 class ExactHistory(unittest.TestCase):
@@ -88,6 +88,18 @@ class ExactHistory(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'different bytes'):
                 unpack_codex(self.archive, target)
 
+    def test_review_rollout_identity_and_settings_match_before_publication(self) -> None:
+        source = self.rollout()
+        export_codex(self.home, source, self.archive)
+        target = self.root / 'target'
+        with self.assertRaisesRegex(ValueError, 'native identity differs'):
+            unpack_codex(self.archive, target, str(uuid.uuid4()))
+        self.assertFalse(target.exists())
+        thread = json.loads(source.read_bytes().splitlines()[0])['payload']['id']
+        with self.assertRaisesRegex(ValueError, 'native settings differ'):
+            unpack_codex(self.archive, target, thread, {})
+        self.assertFalse(target.exists())
+
     def test_existing_native_prefix_cannot_change_or_be_active(self) -> None:
         old = self.rollout()
         thread = json.loads(old.read_bytes().splitlines()[0])['payload']['id']
@@ -104,6 +116,38 @@ class ExactHistory(unittest.TestCase):
         imported.write_bytes(old.read_bytes())
         with self.assertRaisesRegex(ValueError, 'session is active'):
             extend_codex_history(native, self.home, thread, imported, backup)
+
+    def test_review_append_before_replace_is_not_erased(self) -> None:
+        old = self.rollout()
+        thread = json.loads(old.read_bytes().splitlines()[0])['payload']['id']
+        before = old.read_bytes()
+        appended = b'{"type":"response_item","payload":"concurrent append"}\n'
+        imported = self.root / 'incoming.jsonl'
+        imported.write_bytes(before + b'{"type":"response_item","payload":"moved turn"}\n')
+        backup = self.root / 'backup.jsonl'
+        native = Mock()
+        native.call.return_value = {'thread': {'path': str(old), 'status': {'type': 'idle'}}}
+        original_read = Path.read_bytes
+        archived = False
+        injected = False
+        def call(method: str, params: dict[str, object], timeout: int = 20) -> dict[str, object]:
+            nonlocal archived
+            if method == 'thread/archive':
+                archived = True
+            return {'thread': {'path': str(old), 'status': {'type': 'idle'}}}
+        native.call.side_effect = call
+        def read_with_append(path: Path) -> bytes:
+            nonlocal injected
+            data = original_read(path)
+            if path.resolve() == old.resolve() and archived and not injected:
+                injected = True
+                with old.open('ab') as stream:
+                    stream.write(appended)
+            return data
+        with patch.object(Path, 'read_bytes', read_with_append):
+            with self.assertRaisesRegex(ValueError, 'changed|prefix'):
+                extend_codex_history(native, self.home, thread, imported, backup)
+        self.assertEqual(old.read_bytes(), before + appended)
 
 
 if __name__ == '__main__':

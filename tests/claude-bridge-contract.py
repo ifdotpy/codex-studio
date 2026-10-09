@@ -19,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 SDK = r'''
 import fs from 'node:fs';
 import fsp from 'node:fs/promises';
+import {McpServer} from '@modelcontextprotocol/sdk/server/mcp.js';
 let beginRace,releaseRace;
 const raceStarted=new Promise(resolve=>beginRace=resolve);
 const originalRead=fsp.readFile.bind(fsp);
@@ -52,8 +53,12 @@ fsp.rename=async(from,to)=>{
  }return value;
 };
 
-export const tool=(name,description,schema,call)=>({name,call});
-export const createSdkMcpServer=value=>value;
+export const tool=(name,description,schema,call)=>({name,description,schema,call});
+export const createSdkMcpServer=value=>{
+ const instance=new McpServer({name:value.name,version:value.version});
+ for(const t of value.tools)instance.registerTool(t.name,{description:t.description,inputSchema:t.schema},t.call);
+ return {...value,instance};
+};
 export const forkSession=async()=>({sessionId:'22222222-2222-4222-8222-222222222222'});
 export const getSessionMessages=async()=>[];
 export function query({prompt,options}){
@@ -238,37 +243,36 @@ class Bridge(unittest.TestCase):
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
 
     def test_move_native_history_import_has_no_model_input_and_resumes_the_same_session(self):
-        config = self.root / 'claude-native'
-        projects = config / 'projects' / 'source'
+        self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',
+                                                'dynamicTools': []})['thread']['id']
+        projects = self.root / 'native-config' / 'projects' / 'source'
         projects.mkdir(parents=True)
         native = projects / (self.thread + '.jsonl')
-        native.write_bytes(b'{"type":"user","message":{"content":"Exact native history"}}\n')
-        # The test bridge uses only this isolated native configuration directory.
-        # The import path is supplied directly; no account token or auth file is copied.
-        session = {'id': self.thread, 'nativeId': self.thread, 'started': True, 'model': 'default',
-                   'cwd': str(self.root), 'developerInstructions': 'Frozen instructions',
-                   'dynamicTools': [], 'turns': []}
-        new_id = str(uuid.uuid4())
-        session['id'] = new_id
-        session['nativeId'] = new_id
-        target_config = self.root / 'native-config'
-        imported = self.call('claude/moveImport', {'session': session, 'cwd': str(self.root), 'path': str(native)})
-        self.assertEqual(imported['thread']['id'], new_id)
+        rows = [{'type': 'user', 'sessionId': self.thread, 'message': {'content': 'Exact native history'}},
+                {'type': 'attachment', 'sessionId': self.thread,
+                 'attachment': {'type': 'prompt_snapshot', 'systemPrompt': ['Frozen instructions'], 'tools': []}}]
+        native.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        exported = self.call('claude/moveExport', {'threadId': self.thread})
+        exported['session']['started'] = True
+        incoming = self.root / 'incoming.jsonl'
+        incoming.write_bytes(native.read_bytes())
+        imported = self.call('claude/moveImport', {'session': exported['session'],
+                             'cwd': str(self.root), 'path': str(incoming)})
+        self.assertEqual(imported['thread']['id'], self.thread)
         self.assertFalse((self.root / '.queries').exists())
-        published = next((target_config / 'projects').glob('*/*.jsonl'))
-        self.assertEqual(published.read_bytes(), native.read_bytes())
-        self.thread = new_id
-        turn = self.call('turn/start', {'threadId': new_id, 'clientUserMessageId': 'move-handoff',
+        published = next((self.root / 'native-config' / 'projects').glob('*/*.jsonl'))
+        self.assertEqual(published.read_bytes(), incoming.read_bytes())
+        turn = self.call('turn/start', {'threadId': self.thread, 'clientUserMessageId': 'move-handoff',
                                       'input': [{'type': 'text', 'text': 'Continue here'}]})['turn']['id']
         self.assertEqual(self.completed()['id'], turn)
         query = json.loads((self.root / '.queries').read_text().splitlines()[-1])
-        self.assertEqual(query['resume'], new_id)
+        self.assertEqual(query['resume'], self.thread)
         self.assertTrue(query['systemPrompt']['snapshot'])
         self.assertTrue(query['systemPrompt']['excludeDynamicSections'])
-        exported = self.call('claude/moveExport', {'threadId': new_id})
-        self.assertEqual(exported['session']['nativeId'], new_id)
+        exported = self.call('claude/moveExport', {'threadId': self.thread})
+        self.assertEqual(exported['session']['nativeId'], self.thread)
         self.assertEqual(exported['session']['turns'], [])
-        self.assertEqual(Path(exported['path']).read_bytes(), native.read_bytes())
+        self.assertEqual(Path(exported['path']).read_bytes(), incoming.read_bytes())
 
     def close(self):
         self.proc.stdin.close()

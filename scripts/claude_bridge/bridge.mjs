@@ -40,6 +40,9 @@ import {
   nativeFile,
   nativeDestination,
   publishNative,
+  savedPromptProof,
+  verifyToolProof,
+  studioToolCatalog,
 } from "./move.mjs";
 
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
@@ -195,10 +198,19 @@ async function session(id) {
 const settings = (s) => ({
   cwd: s.cwd,
   pathToClaudeCodeExecutable: process.env.STUDIO_CLAUDE_BIN || "claude",
-  settingSources: ["user", "project", "local"],
+  settingSources: s.moveProof ? [] : ["user", "project", "local"],
+  ...(s.moveProof
+    ? { strictMcpConfig: true, tools: s.moveProof.options.tools }
+    : {}),
   includePartialMessages: true,
   env: {
     ...process.env,
+    ...(s.moveProof
+      ? {
+          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+          CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
+        }
+      : {}),
     ...(typeof s.studioImageWorkspaceTempDir === "string"
       ? { TMPDIR: s.studioImageWorkspaceTempDir }
       : {}),
@@ -522,6 +534,30 @@ function studioTools(s, getTurn) {
     }),
   });
 }
+
+async function proofOptions(s, proof) {
+  const compiled = await studioToolCatalog(studioTools(s, () => null));
+  const tools = verifyToolProof(proof, compiled);
+  const options = {
+    tools,
+    disallowedTools: ["Agent"],
+    settingSources: [],
+    strictMcpConfig: true,
+    model: s.model,
+    permissionMode: permissionMode(s, {}),
+    settings: await flags(s, { model: s.model, ...s.moveTurnOptions }),
+    effort: s.moveTurnOptions?.effort || null,
+    extraArgs: providerOptions.extraArgs || {},
+  };
+  return {
+    ...proof,
+    options,
+    optionsHash: createHash("sha256")
+      .update(JSON.stringify(options))
+      .digest("hex"),
+    proofMethod: "saved_snapshot_and_identical_studio_options",
+  };
+}
 // Codex continues a thread on turn/start without input; Claude needs text.
 const CONTINUE_TEXT =
   "Continue the previous turn from where it stopped. Check the current state first and do not repeat completed work.";
@@ -807,12 +843,12 @@ async function startSession(s, active, p) {
     yield* active.input;
   }
   try {
-    const mode = permissionMode(s, p);
+    const mode = s.moveProof?.options.permissionMode || permissionMode(s, p);
     const q = query({
       prompt: prompt(),
       options: {
         ...settings(s),
-        model: p.model || s.model,
+        model: s.moveProof?.options.model || p.model || s.model,
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
@@ -826,9 +862,14 @@ async function startSession(s, active, p) {
         disallowedTools: ["Agent"],
         permissionMode: mode,
         allowDangerouslySkipPermissions: true,
-        ...(p.effort ? { effort: p.effort } : {}),
+        ...((s.moveProof ? s.moveProof.options.effort : p.effort)
+          ? { effort: s.moveProof ? s.moveProof.options.effort : p.effort }
+          : {}),
         settings: await boundedPreparation(
-          () => flags(s, p),
+          () =>
+            s.moveProof
+              ? Promise.resolve(s.moveProof.options.settings)
+              : flags(s, p),
           deadline,
           () => {},
           "catalog_flags",
@@ -1485,15 +1526,44 @@ async function handle(method, p) {
     return moveVersions(process.env.STUDIO_CLAUDE_BIN || "claude");
   if (method === "claude/moveIdentity")
     return moveIdentity(process.env.STUDIO_CLAUDE_BIN || "claude");
+  if (method === "claude/moveProof") {
+    const s = await session(p.threadId);
+    const file = await nativeFile(s.nativeId || s.id, undefined, s.cwd);
+    return proofOptions(s, await savedPromptProof(file, s));
+  }
+  if (method === "claude/movePreflight") {
+    const source = p.proof;
+    if (source.session.model !== p.model)
+      throw new Error("The saved Claude model differs from preflight");
+    const proof = await proofOptions({ ...source.session, cwd: p.cwd }, source);
+    if (proof.optionsHash !== source.optionsHash)
+      throw new Error(
+        "The effective target tool options differ from the source proof",
+      );
+    return {
+      snapshotHash: proof.snapshotHash,
+      optionsHash: proof.optionsHash,
+      proofMethod: proof.proofMethod,
+    };
+  }
   if (method === "claude/moveExport") {
     const s = await session(p.threadId);
     if (queries.get(s.id)?.turn || queries.get(s.id)?.tasks.size)
       throw new Error(
         "Finish the Claude turn and background tasks before a move",
       );
+    const proof = await proofOptions(
+      s,
+      await savedPromptProof(
+        await nativeFile(s.nativeId || s.id, undefined, s.cwd),
+        s,
+      ),
+    );
+    const moveProof = { ...proof };
+    delete moveProof.session;
     return {
       path: await nativeFile(s.nativeId || s.id, undefined, s.cwd),
-      session: { ...structuredClone(s), turns: [] },
+      session: { ...structuredClone(s), turns: [], moveProof },
     };
   }
   if (method === "claude/moveImport") {
@@ -1513,13 +1583,28 @@ async function handle(method, p) {
     active?.input.close();
     active?.q?.close();
     queries.delete(p.session.id);
-    const s = { ...p.session, cwd: p.cwd };
+    let s = { ...p.session, cwd: p.cwd };
+    const saved = await savedPromptProof(p.path, s);
+    if (saved.snapshotHash !== s.moveProof?.snapshotHash)
+      throw new Error(
+        "The imported saved prompt snapshot differs from preflight",
+      );
+    const proof = await proofOptions(s, saved);
+    if (proof.optionsHash !== s.moveProof.optionsHash)
+      throw new Error(
+        "The effective target tool options changed before import",
+      );
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),
       !!existing,
     );
-    sessions.set(s.id, s);
+    if (existing) {
+      const cached = await session(s.id);
+      for (const key of Object.keys(cached)) delete cached[key];
+      Object.assign(cached, s);
+      s = cached;
+    } else sessions.set(s.id, s);
     await persist(s);
     return { thread: wireThread(s, await sessionStore.metadata(s.id), false) };
   }
@@ -1883,6 +1968,12 @@ async function handle(method, p) {
       active.reservingInput = true;
     }
     s.model = p.model || s.model;
+    if (!s.moveProof)
+      s.moveTurnOptions = Object.fromEntries(
+        ["effort", "serviceTier"]
+          .filter((key) => p[key] !== undefined)
+          .map((key) => [key, p[key]]),
+      );
     pendingTurnReceipts.add(turn.id);
     s.turns.push(turn);
     s.preview =

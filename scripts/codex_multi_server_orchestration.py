@@ -1062,7 +1062,7 @@ class MultiServerService:
                     raise ValueError('The parent epoch was superseded')
                 if p.get('controlEpoch', 0) != worker.get('remoteControlEpoch', 0):
                     raise ValueError('The remote worker control epoch changed')
-                if worker.get('movedTo'):
+                if worker.get('moveImportPending') or worker.get('movedTo'):
                     # A queued input can arrive after the source becomes read-only.
                     # Route it through the canonical home without reopening native input here.
                     self.runtime.enqueue_recovery_event(db, worker, p['kind'], p['text'], key)

@@ -28,9 +28,20 @@ class HistoryServer(f.fixture.f.FakeServer):
         self.cli_version = '2.1.291'
         self.sdk_version = '0.3.285'
         self.organization = 'org-fixture'
+        self.move_snapshot = True
+        self.move_catalog = 'fixture-tools'
         self.native_binary = {'version': 'fixture-native'}
 
     def call(self, method, params, timeout=60):
+        if method == 'claude/moveProof':
+            if not self.move_snapshot:
+                raise ValueError('The session has no verified saved prompt snapshot')
+            return {'snapshotHash': 'fixture-prompt', 'catalog': self.move_catalog,
+                    'session': copy.deepcopy(self.sessions[params['threadId']])}
+        if method == 'claude/movePreflight':
+            if params['proof']['catalog'] != self.move_catalog:
+                raise ValueError('The effective target tool definitions differ')
+            return {'snapshotHash': params['proof']['snapshotHash'], 'catalog': self.move_catalog}
         if method == 'claude/moveVersions':
             return {'cli': self.cli_version, 'sdk': self.sdk_version}
         if method == 'claude/moveIdentity':
@@ -277,6 +288,98 @@ class Moves(f.SignedIntegration):
         self.assertEqual(reply['agentId'], moved['id'])
         self.assertEqual(len([1 for m, _ in self.b.runtime.server.calls if m == 'turn/start']), 1)
 
+    def test_review_first_target_cache_is_visible_on_the_source_receipt(self):
+        moved = self.finish_move(self.lead)
+        params = {'threadId': moved['threadId'], 'turnId': moved['turnId'],
+                  'tokenUsage': {'last': {'inputTokens': 100, 'cachedInputTokens': 900,
+                                         'cacheWriteInputTokens': 30, 'outputTokens': 5, 'totalTokens': 1035}}}
+        self.b.runtime.notification('thread/tokenUsage/updated', params)
+        status = self.a.runtime.multi_server().moves().status(moved['id'], 'move-one')
+        self.assertEqual(status['firstTurnCache']['cachedInputTokens'], 900)
+        self.assertEqual(status['firstTurnCache']['cacheWriteInputTokens'], 30)
+        self.assertEqual(status['acceptance']['cacheProof'], 'exact_native_history_and_catalog')
+
+    def test_review_target_uuid_owner_is_checked_during_preflight(self):
+        victim = self.b.runtime.prepare(self.b.runtime.create(
+            {'name': 'Victim', 'prompt': '', 'cwd': str(self.b.folder)}, draft=True))
+        attacker = {**self.lead, 'threadId': victim['threadId']}
+        with self.assertRaisesRegex(ValueError, 'native identity.*owned'):
+            self.a.runtime.multi_server().moves().start(attacker,
+                {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'victim-preflight'}, 'victim-preflight')
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+        self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method == 'thread/resume'])
+
+    def test_review_native_uuid_cannot_belong_to_another_target_agent(self):
+        victim = self.b.runtime.create({'name': 'Victim', 'prompt': '', 'cwd': str(self.b.folder)}, draft=True)
+        victim = self.b.runtime.prepare(victim)
+        args = {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'uuid-collision'}
+        service = self.a.runtime.multi_server().moves()
+        reply = service.start(self.lead, args, 'uuid-collision')
+        with self.a.runtime.read_db() as db:
+            operation = service._get(db, reply['requestId'])
+        descriptor = service._export(operation)
+        descriptor['nativeThread'] = victim['threadId']
+        descriptor['agent']['threadId'] = victim['threadId']
+        descriptor['preflight']['nativeThread'] = victim['threadId']
+        target = self.b.runtime.multi_server().moves()
+        with self.assertRaisesRegex((ValueError, PermissionError), 'native.*identity|native.*owned'):
+            target.receive(self.a.server_id, 'move_begin', descriptor, 'attack-begin')
+        self.assertFalse((Path(self.b.runtime.root) / 'agent-moves' / reply['requestId']).exists())
+        self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method == 'thread/resume'])
+
+    def test_review_redirect_before_activation_keeps_child_result_pending(self):
+        from codex_multi_server_orchestration import identity
+        service = self.a.runtime.multi_server().moves()
+        original = service._exchange
+        observed = []
+        def deliver_child_first(server, action, payload, key):
+            if action == 'move_activate':
+                with self.a.runtime.db() as db:
+                    actor = self.a.runtime.agent(self.lead['id'], db)
+                    self.a.runtime.enqueue(db, actor, 'child_result', 'Result during activation', 'activation-child')
+                receipt = self.a.runtime.multi_server().deliver(identity('input', 'activation-child'))
+                with self.b.runtime.read_db() as db:
+                    rows = [dict(row) for row in db.execute("SELECT * FROM runtime_events WHERE agent=? AND kind='child_result' AND text=?", (self.lead['id'], 'Result during activation'))]
+                observed.append((receipt, rows))
+            return original(server, action, payload, key)
+        with patch.object(service, '_exchange', side_effect=deliver_child_first):
+            moved = self.finish_move(self.lead)
+        self.assertEqual(observed[0][0]['outcome'], 'applied', observed)
+        self.assertEqual(len(observed[0][1]), 1, observed)
+        self.assertEqual(observed[0][1][0]['status'], 'pending', observed)
+        self.assertEqual(len(self.events(self.b, moved['id'], 'child_result', 'Result during activation')), 1)
+        self.assertTrue(moved['autoWake'])
+
+    def test_review_lost_begin_and_chunk_replies_recover_the_saved_transfer(self):
+        service = self.a.runtime.multi_server().moves()
+        original = service._exchange
+        lost = {'move_begin', 'move_chunk'}
+        def lost_reply(server, action, payload, key):
+            result = original(server, action, payload, key)
+            if action in lost:
+                lost.remove(action)
+                raise RuntimeError('Lost saved transfer receipt')
+            return result
+        reply = self.tool(self.a, self.lead, 'orchestration_move',
+            {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'lost-transfer'}, 'lost-transfer')
+        with patch.object(service, '_exchange', side_effect=lost_reply):
+            for _ in range(3):
+                service.tick()
+                f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
+        actor = self.a.runtime.agent(self.lead['id'])
+        self.assertFalse(actor.get('executionMove'), actor.get('error'))
+        self.assertEqual(actor['movedTo']['server'], self.b.server_id)
+        self.assertEqual(len([1 for method, _ in self.b.runtime.server.calls if method == 'thread/resume']), 1)
+
+    def test_review_different_codex_identity_refuses_without_explicit_approval(self):
+        row = self.b.runtime.accounts.get('default')
+        row['accountId'] = 'different-organization'
+        with patch.object(self.b.runtime.accounts, 'list', return_value=[row]), patch.object(self.b.runtime.accounts, 'get', return_value=row):
+            with self.assertRaisesRegex(ValueError, 'cache|account identity'):
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'cache-refuse'}, 'cache-refuse')
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
     def test_children_stay_and_report_to_the_moved_lead(self):
         child = self.a.runtime.create({'name': 'Child', 'prompt': 'Check', 'role': 'reviewer'}, parent=self.lead['id'], defer=True)
         child['autoWake'] = True
@@ -522,6 +625,19 @@ class Moves(f.SignedIntegration):
                 {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'organization-refuse'}, 'organization-refuse')
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
+    def test_review_claude_requires_saved_snapshot_and_matching_target_tools(self):
+        self.claude_source()
+        self.a.runtime.server.move_snapshot = False
+        service = self.a.runtime.multi_server().moves()
+        args = {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'snapshot-refuse'}
+        with self.assertRaisesRegex(ValueError, 'saved prompt snapshot'):
+            service.start(self.lead, args, 'snapshot-refuse')
+        self.a.runtime.server.move_snapshot = True
+        self.b.runtime.server.move_catalog = 'different-schema-or-order'
+        with self.assertRaisesRegex(ValueError, 'tool definitions differ'):
+            service.start(self.lead, {**args, 'request_id': 'tool-refuse'}, 'tool-refuse')
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
     def test_provider_switch_refuses_and_another_codex_account_warns(self):
         row = self.b.runtime.accounts.get('default')
         row.update(provider='claude', email='different@example.com', accountId='different-account')
@@ -533,9 +649,10 @@ class Moves(f.SignedIntegration):
         row['provider'] = 'codex'
         with patch.object(self.b.runtime.accounts, 'list', return_value=[row]), patch.object(self.b.runtime.accounts, 'get', return_value=row):
             reply = self.tool(self.a, self.lead, 'orchestration_move',
-                {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'account-warning'}, 'account-warning')
+                {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'account-warning', 'accept_cache_loss': True}, 'account-warning')
         self.assertEqual(reply['status'], 'accepted')
         self.assertIn('prompt cache will be lost', reply['warning'])
+        self.assertTrue(reply['cacheLossApproved'])
 
     def test_local_move_preserves_history_and_the_old_workspace(self):
         service = self.a.runtime.multi_server().moves()

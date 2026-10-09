@@ -1026,7 +1026,10 @@ Pair each new target with the original home server before a subsequent move.
 A return to an earlier server imports the current native history there.
 Codex closes only that idle native session with archive and unarchive.
 The import extends its indexed file only if all old bytes remain an exact prefix.
-Studio retains a private copy of the previous native file.
+Studio locks the indexed file and verifies its bytes immediately before replacement.
+Studio retains a private copy of the exact replaced bytes.
+An external writer that ignores this lock has a small check-to-replace race window.
+Codex return and local moves require the POSIX file lock.
 Other native sessions stay loaded.
 
 A move refuses other active tools, native background commands, command monitors,
@@ -1049,10 +1052,17 @@ and organization to retain the prompt cache.
 Codex retains the native session ID, full history, instructions, model,
 reasoning settings, and ordered tool definitions.
 Codex preflight requires the same native version, OS, and MCP tool catalog.
-A different Codex account produces an explicit cache-loss warning.
+A different Codex account refuses by default.
+Only explicit `accept_cache_loss=true` approves cache loss for that move.
+The result records this approval and its cache-loss warning.
 Claude requires the same provider account and organization.
 Claude uses SDK `systemPrompt.snapshot=true` and `excludeDynamicSections=true`.
 Claude also requires matching Claude CLI and SDK versions on both servers.
+Studio verifies the saved native `prompt_snapshot`, model, and ordered Studio tool schemas.
+Identical CLI and SDK versions with identical Studio query options prove the builtin catalog.
+The result names this proof method. Target user, project, and local settings are excluded.
+External MCP snapshots refuse until Studio can verify their target catalogs.
+The move receipt records cached input and cache creation tokens from the first target turn.
 A mismatch names both versions and tells the caller to update the target.
 Studio does not upgrade a CLI during a move.
 Snapshot cache reuse depends on provider support and cache lifetime.

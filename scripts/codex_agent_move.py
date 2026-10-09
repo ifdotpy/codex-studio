@@ -26,8 +26,9 @@ def move_tools(tool: Any, text: dict[str, Any]) -> list[dict[str, Any]]:
         'Supply an absolute cwd and a stable request_id. Native history, model, instructions, and tool order stay exact. '
         'Codex and Claude retain native provider history. Active background commands and pending spawns prevent a move. '
         'Finish this turn after acceptance. The next turn continues on the target. Credentials never move. '
-        'Same account identity preserves the prompt cache; a different account returns a cache warning.',
-        {'server': text, 'cwd': text, 'account_key': text, 'note': text, 'request_id': text}, ['server', 'cwd'])]
+        'Same account identity preserves the prompt cache. A different Codex account requires explicit accept_cache_loss=true.',
+        {'server': text, 'cwd': text, 'account_key': text, 'note': text, 'request_id': text,
+         'accept_cache_loss': {'type': 'boolean', 'description': 'Explicit approval for this move to a different Codex account. The provider prompt cache will be lost.'}}, ['server', 'cwd'])]
 
 
 class AgentMoves:
@@ -97,6 +98,8 @@ class AgentMoves:
         warning = None
         if any(selected.get(key) != source.get(key) for key in ('email', 'accountId')):
             warning = 'The target account identity differs. The provider prompt cache will be lost'
+            if payload.get('accept_cache_loss') is not True:
+                raise ValueError('The exact target account identity is unavailable. Refusing a prompt cache reset; explicit accept_cache_loss=true is required for this move')
         if payload['provider'] == 'claude' and warning:
             raise ValueError('Claude moves require the same provider account and organization on the target')
         return selected, warning
@@ -116,6 +119,47 @@ class AgentMoves:
             raise ValueError('The complete native MCP tool catalog exceeds the move preflight limit')
         return {'version': native.get('version'), 'platform': platform.system(),
                 'mcp': hashlib.sha256(encoded(mcp.get('data', [])).encode()).hexdigest()}
+
+    def _native_owner(self, db: Any, actor: str, thread: str, account: str, provider: str) -> None:
+        uuid.UUID(thread)
+        owned = False
+        for row in db.execute('SELECT record FROM runtime_agents'):
+            other = json.loads(row[0])
+            identities = [(other.get('threadId'), other.get('accountKey', 'default'))]
+            identities.extend((entry.get('threadId'), entry.get('accountKey', other.get('accountKey', 'default')))
+                              for entry in other.get('executionArchives', []))
+            if (thread, account) in identities:
+                if other['id'] != actor:
+                    raise PermissionError('The native identity is owned by another target agent')
+                owned = True
+        for row in db.execute("SELECT record FROM runtime_agent_moves WHERE json_extract(record,'$.side')='target'"):
+            descriptor = json.loads(row[0])['descriptor']
+            if (descriptor['nativeThread'] == thread and descriptor['target']['accountKey'] == account
+                    and descriptor['agent']['id'] != actor):
+                raise PermissionError('The native identity is owned by another pending target import')
+        if not owned:
+            home = self.runtime.accounts.home(account)
+            roots = ('projects',) if provider == 'claude' else ('sessions', 'archived_sessions')
+            if any(next((home / root).rglob('*' + thread + '*.jsonl'), None) is not None for root in roots):
+                raise PermissionError('The native identity already exists without this Studio owner in the target account')
+
+    def _descriptor_identity(self, db: Any, descriptor: dict[str, Any]) -> None:
+        preflight, agent = descriptor['preflight'], descriptor['agent']
+        thread = descriptor['nativeThread']
+        receipt = db.execute('SELECT signature,result FROM runtime_server_inbox WHERE id=?',
+                             (identity(descriptor['move'], 'validate'),)).fetchone()
+        signature = hashlib.sha256(encoded([preflight['sourceServer'], 'move_validate', preflight]).encode()).hexdigest()
+        if (not receipt or receipt['signature'] != signature or not receipt['result']
+                or json.loads(receipt['result']).get('value') != descriptor['target']):
+            raise PermissionError('The native identity descriptor differs from its saved preflight receipt')
+        if (agent['id'] != preflight['agentId'] or agent['threadId'] != thread
+                or preflight['nativeThread'] != thread or agent.get('provider', 'codex') != preflight['provider']):
+            raise PermissionError('The descriptor and preflight native identity differ')
+        if preflight['provider'] == 'claude':
+            session = descriptor['bridgeSession']
+            if session['id'] != thread or session.get('nativeId', thread) != thread:
+                raise PermissionError('The Claude session native identity differs from preflight')
+        self._native_owner(db, agent['id'], thread, descriptor['target']['accountKey'], preflight['provider'])
 
     def _idle_checks(self, db: Any, agent: dict[str, Any], key: str) -> None:
         if agent.get('provider', 'codex') not in {'codex', 'claude'}:
@@ -185,13 +229,18 @@ class AgentMoves:
                  'link': origin['link'], 'target': server}, identity(key, 'home-validate'))
         else:
             canonical = None
-        preflight = {'routeHome': origin['home'] if origin else self.service.server_id, 'agentId': agent['id'], 'sourceServer': self.service.server_id, 'provider': agent.get('provider', 'codex'), 'cwd': cwd,
+        preflight = {'routeHome': origin['home'] if origin else self.service.server_id, 'agentId': agent['id'], 'nativeThread': agent['threadId'], 'sourceServer': self.service.server_id, 'provider': agent.get('provider', 'codex'), 'cwd': cwd,
                      'account_key': args.get('account_key'), 'accountIdentity': self._account_identity(account),
+                     'accept_cache_loss': args.get('accept_cache_loss') is True,
                      'capabilities': self._capabilities(agent), 'model': agent['model']}
+        if preflight['provider'] == 'claude':
+            preflight['claudeProof'] = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=20)
         target = self._exchange(server, 'move_validate', preflight, identity(key, 'validate'))
         result = {'requestId': key, 'agentId': agent['id'], 'server': server, 'cwd': cwd,
                   'status': 'accepted', 'accountKey': target['accountKey'],
                   'warning': target.get('warning'),
+                  'cacheLossApproved': bool(target.get('warning') and args.get('accept_cache_loss') is True),
+                  'cacheProof': target.get('cacheProof', 'exact_native_history_and_catalog'),
                   'delivery': 'Finish this turn. The next turn continues on the target server'}
         operation = {'id': key, 'side': 'source', 'agent': agent['id'], 'epoch': agent['epoch'],
                      'server': server, 'args': copy.deepcopy(args), 'fingerprint': fingerprint, 'result': result,
@@ -245,9 +294,37 @@ class AgentMoves:
             agent = operation.get('agent') or operation.get('descriptor', {}).get('agent', {}).get('id')
             if agent != actor:
                 raise PermissionError('The move belongs to another agent')
-            return {'requestId': key, 'phase': operation['phase'], 'error': operation.get('error'),
-                    'acceptance': operation.get('result') or operation['descriptor']['acceptedResult'],
-                    'server': operation.get('server') or self.service.server_id}
+        if operation['side'] == 'source' and operation['phase'] == 'complete' and not operation.get('firstTurnCache'):
+            try:
+                observed = self._exchange(operation['server'], 'move_status', {'move': key},
+                    identity(key, 'cache-status', str(int(time.time() // 20))))
+                if observed.get('firstTurnCache'):
+                    with self.runtime.db() as db:
+                        operation = self._get(db, key) or operation
+                        operation['firstTurnCache'] = observed['firstTurnCache']
+                        self._save(db, operation)
+            except Exception:
+                pass
+        return {'requestId': key, 'phase': operation['phase'], 'error': operation.get('error'),
+                'acceptance': operation.get('result') or operation['descriptor']['acceptedResult'],
+                'server': operation.get('server') or self.service.server_id,
+                'firstTurnCache': operation.get('firstTurnCache')}
+
+    def capture_cache(self, db: Any, agent: dict[str, Any], notification: dict[str, Any]) -> None:
+        moved = agent.get('movedFrom')
+        if not moved or not agent.get('inFlight'):
+            return
+        operation = self._get(db, identity(moved['move'], 'target'))
+        if not operation or operation['phase'] != 'active' or operation.get('firstTurnCache'):
+            return
+        usage = notification.get('requestUsage') or notification.get('tokenUsage', {}).get('last', {})
+        cached = usage.get('cachedInputTokens')
+        if not isinstance(cached, int) or isinstance(cached, bool):
+            return
+        operation['firstTurnCache'] = {'turnId': agent.get('turnId'), 'cachedInputTokens': cached,
+            'cacheWriteInputTokens': usage.get('cacheWriteInputTokens'), 'inputTokens': usage.get('inputTokens'),
+            'observedAt': time.time()}
+        self._save(db, operation)
 
     def tick(self) -> None:
         with self.runtime.read_db() as db:
@@ -266,8 +343,7 @@ class AgentMoves:
         with self.runtime.read_db() as db:
             uncertain = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_agent_moves WHERE json_extract(record,'$.side')='source' "
-                "AND json_extract(record,'$.phase')='unknown' "
-                "AND json_extract(record,'$.uncertainPhase') IN ('importing','prepared','redirected')")]
+                "AND json_extract(record,'$.phase')='unknown'")]
         for operation in uncertain:
             key = operation['id']
             with self.lock:
@@ -309,9 +385,18 @@ class AgentMoves:
             # A fresh read identity observes newer state; it cannot resume or start input.
             target = self._exchange(operation['server'], 'move_status', {'move': key},
                                     identity(key, 'status', str(int(time.time() // 20))))
-            if target['phase'] not in {'ready', 'active'}:
-                return
             phase = operation['uncertainPhase']
+            if phase == 'waiting':
+                return
+            if phase == 'exported' and target['phase'] == 'receiving':
+                # Begin and chunks are immutable compare-and-set writes. The
+                # target receipt proves the same transfer exists; exact chunks
+                # resume from its saved bytes, never from a new native export.
+                pass
+            elif target['phase'] not in {'ready', 'active'}:
+                return
+            elif phase == 'exported':
+                phase = 'prepared'
             if phase == 'importing':
                 phase = 'prepared'
             operation.update(phase=phase)
@@ -356,6 +441,10 @@ class AgentMoves:
             exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=20)
             export_claude(Path(exported['path']), folder / 'native.zip')
             bridge_session = exported['session']
+            proof = bridge_session.get('moveProof')
+            preflight_proof = operation['preflight']['claudeProof']
+            if proof and any(proof.get(field) != preflight_proof.get(field) for field in ('snapshotHash', 'optionsHash')):
+                raise ValueError('The saved Claude prompt snapshot or tool options changed after preflight')
             parameters = {'baseInstructions': '', 'developerInstructions': bridge_session.get('developerInstructions', ''),
                           'model': agent['model'], 'dynamicTools': bridge_session['dynamicTools']}
         else:
@@ -376,7 +465,7 @@ class AgentMoves:
         workspace_archive = {field: value for field, value in agent.items()
             if field.startswith(('imageWorkspace', 'workerBase', 'worktree')) or field in {'cwd', 'sourceCwd'}}
         archived_agent.setdefault('executionArchives', []).append({'move': operation['id'], 'server': self.service.server_id,
-            'threadId': agent['threadId'], 'workspace': workspace_archive, 'at': operation['created']})
+            'threadId': agent['threadId'], 'accountKey': agent.get('accountKey', 'default'), 'workspace': workspace_archive, 'at': operation['created']})
         descriptor = {'move': operation['id'], 'fingerprint': operation['fingerprint'], 'acceptedResult': operation['result'], 'agent': archived_agent,
                       'workspaceArchive': workspace_archive,
                       'nativeThread': agent['threadId'], 'nativeParameters': parameters, 'bridgeSession': bridge_session,
@@ -563,6 +652,8 @@ class AgentMoves:
                 if not previous.get('movedTo') or previous['movedTo']['server'] != payload['sourceServer'] or previous.get('inFlight'):
                     raise ValueError('The target already has this active Studio identity')
             account, warning = self._select_account(payload)
+            with self.runtime.read_db() as db:
+                self._native_owner(db, payload['agentId'], payload['nativeThread'], account['id'], payload['provider'])
             temporary = {'provider': payload['provider'], 'accountKey': account['id'], 'id': 'move-preflight'}
             capabilities = self._capabilities(temporary)
             if capabilities != payload['capabilities'] and payload['provider'] == 'claude':
@@ -573,10 +664,15 @@ class AgentMoves:
             account_identity = self._account_identity(account)
             if payload['provider'] == 'claude' and account_identity != payload['accountIdentity']:
                 raise ValueError('Claude moves require the same provider account and organization on the target')
+            cache_proof = 'exact_native_history_and_catalog'
+            if payload['provider'] == 'claude':
+                proof = self.runtime.connect(account['id']).call('claude/movePreflight',
+                    {'proof': payload['claudeProof'], 'cwd': payload['cwd'], 'model': payload['model']}, timeout=25)
+                cache_proof = proof.get('proofMethod', 'saved_snapshot_and_identical_studio_options')
             catalog = self.runtime.catalog(account['id'])
             if not any(row.get('model') == payload['model'] for row in catalog.get('data', [])):
                 raise ValueError('The target account does not offer the source model')
-            return {'accountKey': account['id'], 'accountIdentity': account_identity, 'warning': warning}
+            return {'accountKey': account['id'], 'accountIdentity': account_identity, 'warning': warning, 'cacheProof': cache_proof}
         move = payload.get('move')
         if not isinstance(move, str):
             raise ValueError('Supply a move identity')
@@ -586,10 +682,13 @@ class AgentMoves:
             if action == 'move_begin':
                 if payload.get('link', {}).get('home') != payload.get('preflight', {}).get('routeHome'):
                     raise PermissionError('The source move identity differs from the paired server')
+                if payload['preflight']['sourceServer'] != principal:
+                    raise PermissionError('The native identity source differs from the paired principal')
                 if operation:
                     if operation['principal'] != principal or operation['descriptor'] != payload:
                         raise PermissionError('The move identity belongs to another source or content')
                     return {'phase': operation['phase']}
+                self._descriptor_identity(db, payload)
                 existing = db.execute('SELECT record FROM runtime_agents WHERE id=?', (payload['agent']['id'],)).fetchone()
                 if existing and principal != self.service.server_id:
                     previous = json.loads(existing[0])
@@ -600,10 +699,12 @@ class AgentMoves:
                              'descriptor': copy.deepcopy(payload), 'phase': 'receiving', 'created': time.time()}
                 self._save(db, operation)
                 return {'phase': 'receiving'}
+            if operation is None and action == 'move_status':
+                return {'phase': 'not_started'}
             if operation is None or operation['principal'] != principal:
                 raise PermissionError('The move belongs to another source server')
             if action == 'move_status':
-                return {'phase': operation['phase']}
+                return {'phase': operation['phase'], 'firstTurnCache': operation.get('firstTurnCache')}
         if action == 'move_chunk':
             if operation['phase'] != 'receiving':
                 raise ValueError('The move no longer accepts history chunks')
@@ -644,6 +745,8 @@ class AgentMoves:
         if operation['phase'] != 'receiving':
             raise RuntimeError('The native import outcome is unknown. It was not repeated')
         descriptor = operation['descriptor']
+        with self.runtime.read_db() as db:
+            self._descriptor_identity(db, descriptor)
         folder = self._folder(operation['move'])
         for entry in descriptor['files']:
             path = folder / ('incoming-' + entry['name'])
@@ -677,7 +780,8 @@ class AgentMoves:
             params = {'session': descriptor['bridgeSession'], 'cwd': agent['cwd'], 'path': str(folder / 'incoming-native.zip')}
             method = 'claude/moveImport'
         else:
-            source = unpack_codex(folder / 'incoming-native.zip', folder / 'staging')
+            source = unpack_codex(folder / 'incoming-native.zip', folder / 'staging',
+                                  descriptor['nativeThread'], descriptor['nativeParameters'])
             from codex_account_transfer import transfer_store
             copied = transfer_store(self.runtime).copy_history(folder / 'staging',
                 self.runtime.accounts.home(account['id']) / 'sessions' / '.studio-moves' / operation['move'], source)

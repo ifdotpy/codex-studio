@@ -105,7 +105,8 @@ def export_codex(home: Path, rollout: Path, destination: Path) -> dict[str, Any]
     return descriptor
 
 
-def unpack_codex(archive_path: Path, staging_home: Path) -> Path:
+def unpack_codex(archive_path: Path, staging_home: Path, expected_thread: str | None = None,
+                 expected_parameters: dict[str, Any] | None = None) -> Path:
     """Validate before publication. Importers use the existing account copy path."""
     with zipfile.ZipFile(archive_path) as archive:
         if len(archive.infolist()) > MAX_HISTORY_FILES + 1:
@@ -144,6 +145,11 @@ def unpack_codex(archive_path: Path, staging_home: Path) -> Path:
             validated.append((name, data))
         if total != manifest.get('bytes') or manifest.get('primary') not in names:
             raise ValueError('The native history manifest is invalid')
+        primary = next(data for name, data in validated if name == manifest['primary'])
+        if expected_thread is not None and _metadata(primary)['id'] != expected_thread:
+            raise ValueError('The rollout native identity differs from the descriptor and preflight')
+        if expected_parameters is not None and _frozen_codex_bytes(primary) != expected_parameters:
+            raise ValueError('The rollout native settings differ from the descriptor')
     for name, data in validated:
         destination = staging_home / name
         if destination.exists() and destination.read_bytes() != data:
@@ -154,15 +160,18 @@ def unpack_codex(archive_path: Path, staging_home: Path) -> Path:
 
 def frozen_codex_parameters(rollout: Path) -> dict[str, Any]:
     """Read persisted instructions and settings without changing old records."""
+    return _frozen_codex_bytes(rollout.read_bytes())
+
+
+def _frozen_codex_bytes(data: bytes) -> dict[str, Any]:
     metadata: dict[str, Any] | None = None
     context: dict[str, Any] | None = None
-    with rollout.open('rb') as stream:
-        for line in stream:
-            record = json.loads(line)
-            if record.get('type') == 'session_meta':
-                metadata = record['payload']
-            elif record.get('type') == 'turn_context':
-                context = record['payload']
+    for line in data.splitlines():
+        record = json.loads(line)
+        if record.get('type') == 'session_meta':
+            metadata = record['payload']
+        elif record.get('type') == 'turn_context':
+            context = record['payload']
     if metadata is None or context is None:
         raise ValueError('Exact move settings are unavailable before the first native turn')
     base = metadata.get('base_instructions')
@@ -200,13 +209,45 @@ def extend_codex_history(native: Any, home: Path, thread: str, imported: Path, b
         return path
 
     path = current()
-    private_write(backup, path.read_bytes())
     # Unsubscribe retains an idle loaded session. Archive closes only this
     # session; native paginated metadata still requires its indexed file path.
     native.call('thread/archive', {'threadId': thread}, timeout=20)
     path = current()
-    private_write(path, data)
+    _replace_indexed_history(path, data, backup)
     native.call('thread/unarchive', {'threadId': thread}, timeout=20)
+
+
+def _replace_indexed_history(path: Path, data: bytes, backup: Path) -> None:
+    """Guard the archived file, preserve exactly the bytes that get replaced."""
+    if os.name != 'posix':
+        raise ValueError('The native history writer lock is unavailable on this platform')
+    import fcntl
+    fd, name = tempfile.mkstemp(dir=path.parent, prefix='.move-')
+    temporary = Path(name)
+    try:
+        with os.fdopen(fd, 'wb') as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        with path.open('rb') as current:
+            fcntl.flock(current.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            old = current.read()
+            if not data.startswith(old):
+                raise ValueError('The imported history does not extend the exact destination prefix')
+            private_write(backup, old)
+            current.seek(0)
+            observed = current.read()
+            stat = os.fstat(current.fileno())
+            indexed = path.stat()
+            if (len(observed) != len(old) or hashlib.sha256(observed).digest() != hashlib.sha256(old).digest()
+                    or (stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns)
+                    != (indexed.st_dev, indexed.st_ino, len(old), indexed.st_mtime_ns)):
+                raise ValueError('The destination native history changed before replacement; no bytes were replaced')
+            # Archive has stopped Studio's native writer. The inode lock excludes
+            # cooperating writers; this final byte check detects other appends.
+            os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def export_claude(path: Path, destination: Path) -> None:

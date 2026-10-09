@@ -160,7 +160,10 @@ The Studio transcript stays on the source. Credentials never move.
 
 Move only when needed. The same provider account and organization keep the cache.
 Codex preserves the old request prefix and requires matching native versions,
-OS, and MCP tools. A different account returns a cache warning.
+OS, and MCP tools. A different account refuses by default.
+Only explicit `accept_cache_loss=true` approves cache loss for that Codex move.
+Claude requires a verified saved prompt snapshot and matching Studio tool schemas.
+External MCP snapshots currently refuse.
 Claude requires the same account and matching CLI and SDK versions.
 Its SDK keeps the system prompt snapshot and excludes dynamic sections.
 Refuse a version mismatch. Do not upgrade a CLI during a move.

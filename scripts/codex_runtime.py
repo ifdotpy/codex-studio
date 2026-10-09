@@ -7833,6 +7833,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                           "Plan" if method == "turn/plan/updated" else "Changes", turnId=p.get("turnId") or a.get("turnId"))
             elif method == "thread/tokenUsage/updated":
                 usage = p.get("tokenUsage", {})
+                if a.get('movedFrom'):
+                    self.multi_server().moves().capture_cache(db, a, p)
                 # The main transaction captures the budget before analytics runs.
                 if captured_tokens is None:
                     from codex_budget import budget_capture
@@ -10113,7 +10115,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         service = self.__dict__.get('_cross_server_service')
         if service and (a.get('remoteWorker') or a.get('remoteAnchor')):
             return self.enqueue(db, a, kind, text, key)
-        pending_recovery = self._recovery_event_pending(a)
+        pending_recovery = self._recovery_event_pending(a) or bool(a.get('moveImportPending'))
         if not pending_recovery:
             return self.enqueue(db, a, kind, text, key)
         # Save the event now; only native reconciliation can reopen dispatch.

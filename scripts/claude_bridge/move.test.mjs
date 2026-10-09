@@ -11,6 +11,9 @@ import {
   nativeDestination,
   publishNative,
   moveVersions,
+  savedPromptProof,
+  verifyToolProof,
+  studioToolCatalog,
 } from "./move.mjs";
 
 test("move exports only its native session, preserves bytes and refuses conflicts", async () => {
@@ -102,4 +105,104 @@ test("move identity checks the signed-in organization without a model request", 
   } finally {
     await fs.rm(root, { recursive: true, force: true });
   }
+});
+
+test("saved snapshots require a complete prompt and ordered schemas for the native identity", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "claude-snapshot-"));
+  const file = path.join(root, "native.jsonl");
+  const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+  const row = (attachment) =>
+    JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
+    "\n";
+  try {
+    await fs.writeFile(
+      file,
+      row({ type: "prompt_snapshot", systemPrompt: ["Original"] }),
+    );
+    await assert.rejects(
+      savedPromptProof(file, session),
+      /verified saved prompt snapshot/,
+    );
+    const attachment = {
+      type: "prompt_snapshot",
+      systemPrompt: ["Original"],
+      tools: [
+        { name: "Bash", description: "Run", input_schema: { type: "object" } },
+        {
+          name: "mcp__studio__move",
+          input_schema: {
+            type: "object",
+            properties: { cwd: { type: "string" } },
+          },
+        },
+      ],
+    };
+    await fs.writeFile(file, row(attachment));
+    const proof = await savedPromptProof(file, session);
+    assert.deepEqual(proof.tools, attachment.tools);
+    assert.equal(proof.snapshotHash.length, 64);
+    assert.deepEqual(
+      verifyToolProof(proof, attachment.tools.slice(1), ["Bash"]),
+      ["Bash"],
+    );
+    assert.throws(
+      () => verifyToolProof(proof, [], ["Bash"]),
+      /tool definitions differ/,
+    );
+    assert.throws(
+      () => verifyToolProof(proof, attachment.tools.slice(1), []),
+      /does not offer/,
+    );
+    assert.throws(
+      () => verifyToolProof({ tools: [{ name: "mcp__external__read" }] }, []),
+      /External MCP/,
+    );
+    await assert.rejects(
+      savedPromptProof(file, { ...session, id: randomUUID() }),
+      /session identity differs/,
+    );
+    await fs.appendFile(
+      file,
+      row({ type: "prompt_snapshot", systemPrompt: ["New"] }),
+    );
+    await assert.rejects(
+      savedPromptProof(file, session),
+      /verified saved prompt snapshot/,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("Studio proof reads the compiled ordered MCP schemas without model input", async () => {
+  const { createSdkMcpServer, tool } =
+    await import("@anthropic-ai/claude-agent-sdk");
+  const { z } = await import("zod");
+  const server = createSdkMcpServer({
+    name: "studio",
+    version: "1",
+    tools: [
+      tool("one", "First", { cwd: z.string() }, async () => ({ content: [] })),
+      tool("two", "Second", {}, async () => ({ content: [] })),
+    ],
+  });
+  assert.deepEqual(
+    await studioToolCatalog(
+      createSdkMcpServer({ name: "studio", version: "1", tools: [] }),
+    ),
+    [],
+  );
+  const catalog = await studioToolCatalog(server);
+  assert.deepEqual(
+    catalog.map((entry) => entry.name),
+    ["mcp__studio__one", "mcp__studio__two"],
+  );
+  assert.equal(catalog[0].input_schema.properties.cwd.type, "string");
+  assert.throws(
+    () => verifyToolProof({ tools: catalog }, [...catalog].reverse()),
+    /order/,
+  );
+  const changed = structuredClone(catalog);
+  changed[0].input_schema.properties.cwd.type = "number";
+  assert.throws(() => verifyToolProof({ tools: catalog }, changed), /schemas/);
 });

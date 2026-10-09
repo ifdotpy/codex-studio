@@ -5,9 +5,104 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { createRequire } from "node:module";
+import { createHash } from "node:crypto";
 const require = createRequire(import.meta.url);
 const run = promisify(execFile);
 export const movePrompt = { snapshot: true, excludeDynamicSections: true };
+
+export async function savedPromptProof(file, session) {
+  const bytes = await fs.readFile(file);
+  if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
+    throw new Error("The complete native snapshot history is unavailable");
+  let snapshot;
+  for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
+    const row = JSON.parse(line);
+    if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
+      throw new Error("The native snapshot session identity differs");
+    if (row.type === "attachment" && row.attachment?.type === "prompt_snapshot")
+      snapshot = row.attachment;
+  }
+  if (
+    !Array.isArray(snapshot?.systemPrompt) ||
+    !snapshot.systemPrompt.length ||
+    !snapshot.systemPrompt.every((text) => typeof text === "string") ||
+    !Array.isArray(snapshot.tools) ||
+    !snapshot.tools.every(
+      (entry) =>
+        typeof entry.name === "string" &&
+        entry.input_schema &&
+        typeof entry.input_schema === "object",
+    )
+  )
+    throw new Error(
+      "The session has no verified saved prompt snapshot with complete ordered tool schemas",
+    );
+  return {
+    snapshotHash: createHash("sha256")
+      .update(JSON.stringify(snapshot))
+      .digest("hex"),
+    tools: snapshot.tools,
+    session: Object.fromEntries(
+      [
+        "model",
+        "dynamicTools",
+        "approvalPolicy",
+        "sandbox",
+        "claude",
+        "moveTurnOptions",
+      ]
+        .filter((key) => session[key] !== undefined)
+        .map((key) => [key, structuredClone(session[key])]),
+    ),
+  };
+}
+
+export function verifyToolProof(proof, studio, offered) {
+  const builtin = proof.tools.filter(
+    (entry) => !entry.name.startsWith("mcp__"),
+  );
+  const mcp = proof.tools.filter((entry) => entry.name.startsWith("mcp__"));
+  if (mcp.some((entry) => !entry.name.startsWith("mcp__studio__")))
+    throw new Error(
+      "External MCP tool snapshots are not supported yet. Their target schemas cannot be verified without a server catalog proof",
+    );
+  const shape = (entry) => ({
+    name: entry.name,
+    description: entry.description || "",
+    input_schema: entry.input_schema,
+  });
+  if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape)))
+    throw new Error(
+      "The effective target Studio tool definitions differ in names, schemas, or order",
+    );
+  if (offered && builtin.some((entry) => !offered.includes(entry.name)))
+    throw new Error("The target CLI does not offer a saved builtin tool");
+  return builtin.map((entry) => entry.name);
+}
+
+export async function studioToolCatalog(server) {
+  const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
+  const { InMemoryTransport } =
+    await import("@modelcontextprotocol/sdk/inMemory.js");
+  const [left, right] = InMemoryTransport.createLinkedPair();
+  const client = new Client({ name: "studio-move-proof", version: "1" });
+  try {
+    await server.instance.connect(right);
+    await client.connect(left);
+    if (!client.getServerCapabilities()?.tools) return [];
+    const result = await client.listTools();
+    if (result.nextCursor)
+      throw new Error("The complete Studio tool catalog is unavailable");
+    return result.tools.map((entry) => ({
+      name: "mcp__studio__" + entry.name,
+      description: entry.description || "",
+      input_schema: entry.inputSchema,
+    }));
+  } finally {
+    await client.close();
+    await server.instance.close();
+  }
+}
 
 export async function moveIdentity(executable) {
   const { stdout } = await run(executable, ["auth", "status", "--json"], {
