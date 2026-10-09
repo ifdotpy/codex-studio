@@ -39,6 +39,12 @@ def _canvas_launcher(resources: Path) -> Path:
     return _runtime_source(resources) / 'codex-canvas'
 
 
+def _canvas_launchers(resources: Path) -> tuple[Path, ...]:
+    # A backend started before the relocation keeps the root compatibility
+    # launcher in its command line while the checkout already has the new tree.
+    return (_canvas_launcher(resources), resources / 'scripts' / 'codex-canvas')
+
+
 def _supervisor_launcher(resources: Path) -> Path:
     return _runtime_source(resources) / 'codex-supervisor'
 
@@ -276,7 +282,7 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     birth = cast(Callable[[int], str | None], process_start_time)
     arguments = cast(Callable[[int], list[str]], process_launch_command)
     started = birth(before['pid']) if before else None
-    if before and (started is None or not any(Path(arg).resolve() == _canvas_launcher(resources) for arg in arguments(before['pid']))):
+    if before and (started is None or not any(Path(arg).resolve() in _canvas_launchers(resources) for arg in arguments(before['pid']))):
         raise RuntimeError('Cannot prove the backend process identity; no process was signaled.')
     if before and sys.platform == 'linux':
         main_pid = int(run(['systemctl', '--user', 'show', 'codex-studio.service', '--property=MainPID', '--value']).stdout.strip())

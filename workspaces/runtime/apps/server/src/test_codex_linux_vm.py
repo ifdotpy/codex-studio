@@ -375,7 +375,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertNotIn('--os=', bridge_section)
         self.assertIn('--filter studio-claude-bridge', bridge_section)
         self.assertIn('bridge-ready', bridge_section)
-        self.assertIn('sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-lock.yaml', bridge_section)
+        self.assertIn('sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-workspace.yaml', bridge_section)
         self.assertIn('"$bridge_workspace/package.json"', bridge_section)
         self.assertIn('find /opt/codex-studio/patches -type f', bridge_section)
         self.assertIn('/opt/codex-studio/pnpm-lock.yaml', bridge_section)

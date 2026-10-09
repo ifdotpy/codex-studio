@@ -352,8 +352,8 @@ bridge_workspace=/opt/codex-studio/workspaces/providers/apps/claude-bridge
 bridge_ready=/var/lib/codex-studio/bridge-ready
 bridge_sum=$(
   {
-    sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-lock.yaml \
-      "$bridge_workspace/package.json"
+    sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-workspace.yaml \
+      /opt/codex-studio/pnpm-lock.yaml "$bridge_workspace/package.json"
     find /opt/codex-studio/patches -type f -print0 | sort -z | xargs -0 -r sha256sum
   } | sha256sum | cut -d' ' -f1
 )

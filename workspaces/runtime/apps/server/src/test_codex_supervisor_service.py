@@ -132,6 +132,23 @@ class Services(unittest.TestCase):
         idle.assert_not_called()
         self.assertFalse(any('restart' in call.args[0] for call in run.call_args_list))
 
+    def test_backend_started_through_legacy_launcher_keeps_its_identity(self) -> None:
+        current = {'pid': 123, 'supervisorMode': True, 'supervisor': {'protocol': 1}}
+        for launcher, accepted in (('scripts/codex-canvas', True), ('elsewhere/codex-canvas', False)):
+            with self.subTest(launcher=launcher), patch.object(sys, 'platform', 'linux'), \
+                    patch.object(service, 'desktop', return_value=current), \
+                    patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '123')), \
+                    patch.object(Path, 'home', return_value=self.root), \
+                    patch('codex_process_supervisor.process_start_time', return_value='birth'), \
+                    patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / launcher)]), \
+                    patch.object(service, 'wait_ready', return_value={'pid': 456, 'handles': ['live']}), \
+                    patch.object(service, 'idle'):
+                if accepted:
+                    self.assertTrue(service.enable(self.resources, self.state, 4720)['supervisorMode'])
+                else:
+                    with self.assertRaisesRegex(RuntimeError, 'Cannot prove the backend process identity'):
+                        service.enable(self.resources, self.state, 4720)
+
     def test_first_cutover_refuses_existing_supervisor_handles(self) -> None:
         (self.state / 'supervisor.sock').touch()
         current = {'pid': 123, 'supervisorMode': False}
