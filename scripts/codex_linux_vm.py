@@ -11,6 +11,7 @@ from dataclasses import dataclass, asdict
 import fcntl
 import gzip
 import hashlib
+import importlib
 import json
 import os
 from pathlib import Path
@@ -39,9 +40,10 @@ _MAX_FRAME = 2 * 1024 * 1024
 
 
 class LinuxVMError(RuntimeError):
-    def __init__(self, message: str, *, uncertain: bool = False):
+    def __init__(self, message: str, *, uncertain: bool = False, code: str | None = None):
         super().__init__(message)
         self.uncertain = uncertain
+        self.code = code
 
 
 @dataclass(frozen=True)
@@ -191,7 +193,7 @@ def _provision_info(console: Path) -> dict[str, Any]:
     stage = stages[-1] if stages else ('codex' if 'STUDIO_PROVISION_CODEX' in log else 'boot')
     if not stages and log.rfind('STUDIO_PROVISION_CLAUDE') > log.rfind('STUDIO_PROVISION_CODEX'):
         stage = 'claude'
-    result: dict[str, Any] = {'stage': stage, 'state': 'ready' if ready > failed else 'running'}
+    result: dict[str, Any] = {'stage': stage, 'state': 'ready' if ready > max(failed, log.rfind('STUDIO_PROVISION_STAGE:')) else 'running'}
     result['downloads'] = [{'stage': match[0], 'attempt': int(match[1]),
                             'bytes': int(match[2]), 'seconds': float(match[3])}
         for match in re.findall(r'STUDIO_DOWNLOAD: ([a-z-]+) attempt=(\d+) bytes=(\d+) seconds=([\d.]+)', log)]
@@ -272,18 +274,17 @@ stage system-packages
 printf 'Acquire::Retries "2"; Acquire::http::Timeout "30"; Acquire::https::Timeout "30";\n' > /etc/apt/apt.conf.d/99studio-timeouts
 apt-mark hold linux-generic linux-image-generic || true
 missing_tools=0
-for tool in git rsync btrfs python3 curl xz blkid mountpoint unshare nsenter lsof; do
+for tool in git rsync btrfs python3 curl xz blkid mountpoint lsof smbd smbpasswd testparm cc zstd; do
   if ! command -v "$tool" >/dev/null; then missing_tools=1; fi
 done
 if [ "$missing_tools" = 1 ] || ! python3 -c 'import ensurepip' >/dev/null 2>&1; then
   timeout --kill-after=5 300 apt-get update
-  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof
+  timeout --kill-after=5 600 apt-get install -y --no-install-recommends git rsync btrfs-progs python3 python3-venv curl xz-utils ca-certificates util-linux lsof samba build-essential zstd
 fi
 stage data-disk
 if ! blkid /dev/vdb; then mkfs.btrfs -f -L studio-data /dev/vdb; fi
 if ! grep -q 'LABEL=studio-data' /etc/fstab; then echo 'LABEL=studio-data /var/lib/codex-studio btrfs defaults,nofail,user_subvol_rm_allowed 0 0' >> /etc/fstab; fi
 mountpoint -q /var/lib/codex-studio || mount /var/lib/codex-studio
-if [ -f /var/lib/codex-studio/provision-ready ]; then echo STUDIO_PROVISION_READY; exit 0; fi
 rm -f /var/lib/codex-studio/provision-error
 btrfs filesystem resize max /var/lib/codex-studio
 stage node
@@ -336,7 +337,7 @@ stage verify-providers
 test "$(codex --version)" = 'codex-cli @CODEX@'
 test "$(claude --version | cut -d' ' -f1)" = '@CLAUDE@'
 stage guest-service
-timeout --kill-after=5 120 bash /opt/codex-studio/vm/guest/install.sh
+timeout --kill-after=10 2000 bash /opt/codex-studio/vm/guest/install.sh
 codex --version > /var/lib/codex-studio/provider-versions
 claude --version >> /var/lib/codex-studio/provider-versions
 touch /var/lib/codex-studio/provision-ready
@@ -350,12 +351,34 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
     files = []
     for path in sorted(guest_dir.rglob('*')):
         if (path.is_file() and not path.is_symlink() and '__pycache__' not in path.parts
-                and path.suffix in {'.py', '.sh', '.service'} and not path.name.startswith('test')):
+                and path.suffix in {'.py', '.sh', '.service'} and not path.name.startswith('test')
+                and path.name not in {'workspace.py', 'namespace_exec.py'}):
             files.append({'path': '/opt/codex-studio/vm/guest/' + path.relative_to(guest_dir).as_posix(),
                           'permissions': '0644', 'encoding': 'gz+b64',
                           'content': base64.b64encode(gzip.compress(path.read_bytes())).decode()})
     if not (guest_dir / 'install.sh').is_file():
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
+    layr_source = guest_dir.parent / 'layr'
+    manifest = json.loads((layr_source / 'manifest.json').read_text())
+    for name, expected in manifest['files'].items():
+        source = layr_source / name
+        if not source.is_relative_to(layr_source) or '..' in Path(name).parts or source.is_symlink():
+            raise LinuxVMError('The layr source manifest contains an invalid path.')
+        data = source.read_bytes()
+        if hashlib.sha256(data).hexdigest() != expected:
+            raise LinuxVMError('The vendored layr source checksum differs: ' + name)
+        files.append({'path': '/opt/codex-studio/vm/layr/' + name, 'permissions': '0644',
+                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data)).decode()})
+    files.append({'path': '/opt/codex-studio/vm/layr/manifest.json', 'permissions': '0644',
+                  'content': json.dumps(manifest)})
+    skills = guest_dir.parents[1] / '.agents/skills'
+    for name in ('codex-orchestrator/SKILL.md', 'codex-subagent/SKILL.md',
+                 'codex-workspace/SKILL.md', 'codex-workspace/references/layr.md'):
+        source = skills / name
+        if source.is_file() and not source.is_symlink():
+            files.append({'path': '/opt/codex-studio/.agents/skills/' + name,
+                          'permissions': '0644', 'encoding': 'gz+b64',
+                          'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
     scripts = guest_dir.parents[1] / 'scripts'
     for name in ['codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
@@ -618,7 +641,18 @@ class Client:
             self.create(settings, timeout=_remaining(deadline, timeout))
         elif settings is not None and asdict(settings) != self.get_settings():
             self.create(settings, timeout=_remaining(deadline, timeout))
+        # This module arrives with the host_exec integration. Older native mode
+        # remains usable before that companion feature is installed.
+        try:
+            host_exec = importlib.import_module('codex_host_exec')
+        except ModuleNotFoundError as exc:
+            if exc.name != 'codex_host_exec':
+                raise
+            host_exec = None
+        if host_exec is not None:
+            host_exec.ensure_service(self.state_dir)
         launched = None
+        healthy_previous = False
         with self._lock(_remaining(deadline, 15)):
             _remaining(deadline, 1)
             state = self.status()
@@ -629,6 +663,7 @@ class Client:
                     try:
                         self.call('health', {}, timeout=_remaining(deadline, 5))
                         healthy = True
+                        healthy_previous = True
                     except LinuxVMError:
                         pass
                 if not healthy:
@@ -674,7 +709,14 @@ class Client:
                 except LinuxVMError:
                     pass
                 else:
+                    if not healthy_previous and _provision_info(self.state_dir / 'console.log').get('state') != 'ready':
+                        time.sleep(0.25)
+                        continue
                     self._wait_guest_clock(deadline)
+                    if host_exec is not None:
+                        host_exec.configure_guest(self)
+                    from codex_linux_vm_share import remount_registered
+                    remount_registered(self)
                     return {**state, 'health': health}
             info = _provision_info(self.state_dir / 'console.log')
             if info.get('state') == 'failed':
@@ -709,8 +751,9 @@ class Client:
         identity = request_id if request_id is not None else str(uuid.uuid4())
         if not isinstance(identity, str) or not 1 <= len(identity) <= 128:
             raise LinuxVMError('Guest request IDs must have 1 to 128 characters.')
-        if not 0 < timeout <= 3600:
-            raise LinuxVMError('Guest request timeout must be between 0 and 3600 seconds.')
+        maximum = 9000 if method == 'host.exec' else 3600
+        if not 0 < timeout <= maximum:
+            raise LinuxVMError(f'Guest request timeout must be between 0 and {maximum} seconds.')
         if method in {'project.import', 'line.branch', 'upload.begin', 'upload.commit', 'sync.push'}:
             _require_space(self.state_dir, create=False)
         sent = False
@@ -730,7 +773,7 @@ class Client:
                     if 'error' in response:
                         error = response['error']
                         code = error.get('code') if isinstance(error, dict) else None
-                        raise LinuxVMError(f"Linux guest {method}: {error}", uncertain=code == 'outcome_unknown')
+                        raise LinuxVMError(f"Linux guest {method}: {error}", uncertain=code == 'outcome_unknown', code=code)
                     yield response
                     if 'result' in response:
                         return
@@ -749,6 +792,24 @@ class Client:
 
     def close(self) -> None:
         """Connections close after each request. No VM lifecycle action occurs."""
+
+    def ensure_layr_project(self, project_id: str, source: str | Path, owner: str | None = None,
+                            request_id: str | None = None, *, incremental: bool = False,
+                            expected_state_id: str | None = None) -> dict[str, Any]:
+        from codex_linux_vm_share import import_project
+        return import_project(self, project_id, source, owner, request_id,
+                              incremental=incremental, expected_state_id=expected_state_id)
+
+    def layr_status(self) -> dict[str, Any]:
+        state = self.status()
+        if state['state'] == 'running':
+            try:
+                state['layr'] = self.call('layr.health', {}, timeout=8)
+            except LinuxVMError as error:
+                state['layr'] = {'state': 'unavailable', 'error': str(error)}
+        from codex_linux_vm_share import mount_status
+        state['share'] = mount_status(self.state_dir)
+        return state
 
     def __enter__(self) -> 'Client':
         return self

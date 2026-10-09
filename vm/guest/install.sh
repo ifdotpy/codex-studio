@@ -19,6 +19,15 @@ for script in codex_process_supervisor.py codex_open_file_limit.py codex_records
     [ -f "$repo_dir/scripts/$script" ] || { echo "The runtime script is missing: $script" >&2; exit 1; }
 done
 [ "$repo_dir" = /opt/codex-studio ] || { echo 'Copy the runtime into /opt/codex-studio before installation.' >&2; exit 1; }
+# Remove only the old Studio overlay payload and its VM-specific policy.
+rm -f "$script_dir/workspace.py" "$script_dir/namespace_exec.py" \
+    "$repo_dir/scripts/codex_workspace_linux.py" "$repo_dir/scripts/codex_workspace_images.py"
+if [ -f /etc/sysctl.d/90-codex-studio-userns.conf ]; then
+    rm /etc/sysctl.d/90-codex-studio-userns.conf
+    if [ -f /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+        sysctl -q -w kernel.apparmor_restrict_unprivileged_userns=1
+    fi
+fi
 chown root:root "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
 chmod 0755 "$repo_dir" "$repo_dir/vm" "$script_dir" "$repo_dir/scripts"
 for file in "$script_dir"/*.py "$script_dir"/*.service "$repo_dir/scripts/codex_process_supervisor.py" "$repo_dir/scripts/codex_open_file_limit.py" "$repo_dir/scripts/codex_records.py"; do
@@ -30,4 +39,6 @@ install -d -m 0700 -o studio -g studio /var/lib/codex-studio/guest /var/lib/code
 sed "s|@REPO@|$repo_dir|g" "$script_dir/codex-studio-guest.service" >/etc/systemd/system/codex-studio-guest.service
 install -m 0644 "$script_dir/codex-studio-grow.service" /etc/systemd/system/codex-studio-grow.service
 systemctl daemon-reload
+systemctl start codex-studio-grow.service
+bash "$script_dir/install-layr.sh"
 systemctl enable --now codex-studio-grow.service codex-studio-guest.service

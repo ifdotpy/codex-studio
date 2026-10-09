@@ -25,12 +25,14 @@ from upload import Uploads, sha, tree_space
 
 READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
+READ_METHODS |= {"project.ensure", "share.status", "layr.health"}
 METHODS = READ_METHODS | {"exec", "sync.push", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
 LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.progress", "layr.provider.list", "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
 LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
 READ_METHODS |= LAYR_READ_METHODS
 METHODS |= LAYR_METHODS
+METHODS |= {"project.import", "share.configure"}
 CLIENT_IDLE_SECONDS = 60
 
 
@@ -381,6 +383,8 @@ class Service:
             return await admin_request(request_id, "layr.exec", params, emit=emit)
         if method in {"file.stat", "file.read"} and layr_agent:
             return await admin_request(request_id, "layr." + method, params, emit=emit)
+        if method in {"project.ensure", "project.import", "share.configure", "share.status", "layr.health"}:
+            return await admin_request(request_id, method, params, emit=emit)
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
@@ -390,11 +394,16 @@ class Service:
                 process.kill()
                 await asyncio.wait_for(process.wait(), 5)
                 output = b"unknown"
+            try:
+                from layr_admin_client import admin_request
+                layr = await admin_request(request_id + ":layr", "layr.health", {})
+            except GuestError as error:
+                layr = {"state": "unavailable", "error": error.code}
             return {"protocol": PROTOCOL, "uid": os.getuid(), "home": str(self.home), "store": str(self.store),
                     "projects": str(self.projects), "state": str(self.state), "filesystem": output.decode().strip(),
                     "providers": len(self.list_providers()),
                     "disk": {"freeBytes": shutil.disk_usage(self.store).free, "totalBytes": shutil.disk_usage(self.store).total},
-                    "memory": self.memory()}
+                    "memory": self.memory(), "layr": layr}
         if method.startswith("file."):
             return await self.file(method, params)
         if method.startswith("upload."):

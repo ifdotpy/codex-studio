@@ -68,6 +68,20 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(frames[0]['data'], 'hello')
         self.assertEqual(frames[-1]['result']['exitCode'], 0)
 
+    def test_host_exec_uses_its_outer_budget_without_expanding_other_methods(self):
+        from contextlib import nullcontext
+        channel = Mock()
+        for timeout in (3960, 7260):
+            with patch.object(self.client, '_channel', return_value=nullcontext(channel)), \
+                 patch.object(self.client, '_read', return_value={'id':'host-budget','result':{}}):
+                self.assertEqual(list(self.client.stream('host.exec', {}, request_id='host-budget', timeout=timeout)),
+                                 [{'id':'host-budget','result':{}}])
+        for method, timeout, maximum in [('host.exec',9000.01,9000),('exec',3600.01,3600)]:
+            with patch.object(self.client, '_channel') as open_channel:
+                with self.assertRaisesRegex(vm.LinuxVMError, 'between 0 and ' + str(maximum)):
+                    list(self.client.stream(method, {}, timeout=timeout))
+                open_channel.assert_not_called()
+
     def test_lost_mutation_response_is_uncertain_without_retry(self):
         applied = []
         guest = Guest(self.directory, lambda channel, request: applied.append(request['id']))
@@ -317,10 +331,13 @@ class ClientTests(unittest.TestCase):
         bridge = scripts / 'claude_bridge'
         bridge.mkdir()
         (bridge / 'package-lock.json').write_text('{}')
+        layr = self.directory / 'vm/layr'
+        layr.mkdir()
+        (layr / 'manifest.json').write_text(json.dumps({'files': {}}))
         config = vm._cloud_config(guest, '1.2.3', '4.5.6')
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 9)
+        self.assertEqual(len(paths), 10)
         self.assertNotIn('credentials', json.dumps(config))
 
 
@@ -405,15 +422,22 @@ class ProvisionTests(unittest.TestCase):
 
     def test_runtime_payload_imports_without_host_source_modules(self):
         config = vm._cloud_config(Path(__file__).resolve().parents[1] / 'vm/guest', '0.160.1', '2.1.291')
+        for name in ('codex-orchestrator', 'codex-subagent', 'codex-workspace'):
+            entry = next(row for row in config['write_files']
+                         if row['path'] == '/opt/codex-studio/.agents/skills/' + name + '/SKILL.md')
+            source = Path(__file__).resolve().parents[1] / '.agents/skills' / name / 'SKILL.md'
+            self.assertEqual(gzip.decompress(base64.b64decode(entry['content'])), source.read_bytes())
         payload = self.root / 'scripts'
         payload.mkdir()
         for entry in config['write_files']:
             if entry['path'].startswith('/opt/codex-studio/scripts/'):
                 (payload / Path(entry['path']).name).write_bytes(gzip.decompress(base64.b64decode(entry['content'])))
         code = ('import sys;sys.path.insert(0,' + repr(str(payload)) + ');'
-                'import codex_process_supervisor')
+                'import codex_process_supervisor,codex_file_lock,codex_private_paths')
         result = subprocess.run([__import__('sys').executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
+        self.assertFalse((payload / 'codex_workspace_linux.py').exists())
+        self.assertFalse((payload / 'codex_workspace_images.py').exists())
 
     def test_saved_versions_cannot_inject_shell_commands(self):
         with self.assertRaises(vm.LinuxVMError):
