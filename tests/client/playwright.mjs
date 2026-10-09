@@ -231,7 +231,10 @@ export function installApiSchemaFixtureHeaders(target) {
   const wrappedHandlers = [];
   target.route = (url, handler, options) => {
     const wrappedHandler = (route, request) => {
-      if (!new URL(request.url()).pathname.startsWith("/api/"))
+      if (
+        !apiSchemaFixtureHeaderState.enabled ||
+        !new URL(request.url()).pathname.startsWith("/api/")
+      )
         return handler(route, request);
       return handler(
         new Proxy(route, {
