@@ -6,6 +6,7 @@ import {
 } from "../generated/apiSchema";
 import {
   initializePreferenceMigration,
+  acknowledgePreferenceFields,
   readPreferenceFields,
   receivePreferenceFields,
   watchPreferenceWrites,
@@ -108,8 +109,9 @@ export function connectUiPreferences(
           });
           if (stopped) return;
           confirmed[scope] = serialized;
-          receivePreferenceFields(
+          acknowledgePreferenceFields(
             scope,
+            fields,
             result.fields as PreferenceFields,
             storage,
           );

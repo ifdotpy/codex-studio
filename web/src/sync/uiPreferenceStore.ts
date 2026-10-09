@@ -11,6 +11,7 @@ import {
 } from "../servers/storage";
 import {
   preferenceCacheKey,
+  prunePreferenceFields,
   preferenceEvent,
   preferenceScope,
   storageFields,
@@ -24,8 +25,8 @@ let applying = false;
 const listeners = new Set<() => void>();
 function cache(storage: Storage, scope: PreferenceScope): PreferenceFields {
   try {
-    return JSON.parse(
-      storage.getItem(`${preferenceCacheKey}:${scope}`) || "{}",
+    return prunePreferenceFields(
+      JSON.parse(storage.getItem(`${preferenceCacheKey}:${scope}`) || "{}"),
     );
   } catch {
     return {};
@@ -36,7 +37,10 @@ function persist(
   scope: PreferenceScope,
   fields: PreferenceFields,
 ) {
-  storage.setItem(`${preferenceCacheKey}:${scope}`, JSON.stringify(fields));
+  storage.setItem(
+    `${preferenceCacheKey}:${scope}`,
+    JSON.stringify(prunePreferenceFields(fields)),
+  );
 }
 function writer() {
   let value = userStorage().getItem("studio-ui-preference-writer-v1");
@@ -102,11 +106,12 @@ export function receivePreferenceFields(
   scope: PreferenceScope,
   incoming: PreferenceFields,
   storage = serverLocalStorage,
+  materialize = false,
 ) {
   const target = scope === "user" ? userStorage() : storage;
   const prior = cache(target, scope);
   const fields = mergePreferenceFields(prior, incoming);
-  if (JSON.stringify(prior) === JSON.stringify(fields)) return;
+  if (!materialize && JSON.stringify(prior) === JSON.stringify(fields)) return;
   applying = true;
   try {
     persist(target, scope, fields);
@@ -275,4 +280,22 @@ export function applyCachedPreferenceAppearance() {
   } catch {
     /* The existing preference loader reports invalid cache values. */
   }
+}
+
+/** Adopt the server clock correction only if this exact edit is still current. */
+export function acknowledgePreferenceFields(
+  scope: PreferenceScope,
+  submitted: PreferenceFields,
+  accepted: PreferenceFields,
+  storage = serverLocalStorage,
+) {
+  const target = scope === "user" ? userStorage() : storage;
+  const fields = cache(target, scope);
+  for (const [name, sent] of Object.entries(submitted)) {
+    if (JSON.stringify(fields[name]) !== JSON.stringify(sent)) continue;
+    if (accepted[name]) fields[name] = accepted[name];
+    else delete fields[name];
+  }
+  persist(target, scope, fields);
+  receivePreferenceFields(scope, accepted, storage, true);
 }

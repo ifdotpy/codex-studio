@@ -27,7 +27,7 @@ Server preferences stay on their own server.
 | Server label and registry order                                             | `studio-paired-servers-v1[].label`, array order                                                                                         | User, credentials and pairing stay local                                      |
 | Progress visibility                                                         | `codex-progress-hidden:<stateDir>`                                                                                                      | Server, explicit choice overrides the phone width default                     |
 | Worker excerpt disclosures                                                  | `codex-worker-disclosures`                                                                                                              | Server                                                                        |
-| Transcript tool disclosures                                                 | `studio-turns:<stateDir>:<chat>:tools-v3`                                                                                               | Server                                                                        |
+| Transcript tool disclosures                                                 | `studio-turns:<stateDir>:<chat>:tools-v3`                                                                                               | Device, transient per-turn expansion                                          |
 | Prompt bookmarks                                                            | `studio-prompt-bookmarks:<stateDir>:<chat>`                                                                                             | Server                                                                        |
 | Project names, folder names and hierarchy                                   | `/api/projects`, `runtime_projects`, `project` entities                                                                                 | Server, already synced                                                        |
 | Chat folder assignment, pin, archive, hide                                  | Organization APIs, agent and chat entities                                                                                              | Server, already synced                                                        |
@@ -113,3 +113,40 @@ Build and unit logs: `/tmp/prefs-sync-final-build.log` and
 Backend and runtime check log:
 `/Users/igor/.local/state/codex-agents/monitor-logs/7d4821aa-e581-5380-9d4c-933d8636dcda.log`.
 No installed app, live backend, or port 4620 was used.
+
+## Review corrections
+
+Per-item preference fields have a limit of 3000 entries per entity row.
+The merge drops the oldest timestamps first, with the field key as a stable tie rule.
+Appearance and server alias, label, and order fields are never pruned.
+The request accepts a larger map and prunes the merge before entity validation.
+The offline field cache uses the same limit.
+Boolean defaults and deletion markers keep their versions until age-based pruning.
+Removing their versions at once could restore an older value from another client.
+
+Transcript tool expansions (`studio-turns:*:tools-v3`) stay on each device.
+Their original local control behavior is restored.
+Existing copies of these fields are excluded from server reads and client caches.
+
+The server clamps timestamps more than five minutes ahead to its current time.
+The client accepts the correction only for the exact edit it submitted.
+A newer local edit keeps its own version.
+
+Checks after the review corrections:
+
+- Web build and generated contract check: pass.
+- Client unit tests: 613 passed, one skipped, 110 files.
+- Backend preference, router, and contract tests: 64 passed.
+- The earlier broader backend run with core tests: 107 passed.
+- Strict runtime mypy: pass, 299 files.
+- Preference browser test: pass (two live clients and one fresh phone context).
+- Staged Oxlint and Oxfmt: pass.
+
+Updated browser evidence:
+`/var/folders/29/8pytxrvn6qlcm4384bmy9n6m0000gn/T/studio-preferences-sync-arcweU`.
+Updated browser log:
+`/Users/igor/.local/state/codex-agents/monitor-logs/c82aa635-13db-516d-a0a6-04cdd28f3870.log`.
+Updated backend and runtime log:
+`/Users/igor/.local/state/codex-agents/monitor-logs/28acd2b1-6747-58b7-8a34-911007e941c7.log`.
+Updated build and unit logs: `/tmp/prefs-sync-review-build.log` and
+`/tmp/prefs-sync-review-unit.log`.

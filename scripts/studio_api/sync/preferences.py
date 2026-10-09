@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import time
 from typing import Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -16,7 +17,7 @@ class PreferenceField(ContractModel):
 
 
 class UiPreferencesDto(ContractModel):
-    fields: dict[str, PreferenceField] = Field(default_factory=dict, max_length=20000)
+    fields: dict[str, PreferenceField] = Field(default_factory=dict)
 
     @field_validator("fields")
     @classmethod
@@ -39,7 +40,6 @@ class UiPreferencesDto(ContractModel):
                 "codex-progress-hidden:", "studio-prompt-bookmarks:")) or key in {
                 "codex-worker-disclosures", "studio-logical-project-collapsed",
                 "studio-logical-project-compact", "studio-server-project-compact-v1"}
-            visual = visual or (key.startswith("studio-turns:") and key.endswith(":tools-v3"))
             shell = key == "server-order" or key.startswith(("server-alias:", "server-label:"))
             if not (appearance or visual or shell):
                 raise ValueError("Unknown preference key")
@@ -96,7 +96,29 @@ class PreferencePushRequest(UiPreferencesDto):
 
 def read_preferences(db: sqlite3.Connection, scope: str) -> UiPreferencesDto:
     row = db.execute("SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id=? AND deleted=0", (scope,)).fetchone()
-    return UiPreferencesDto.model_validate(json.loads(row[0])["value"]) if row else UiPreferencesDto()
+    if not row:
+        return UiPreferencesDto()
+    value = json.loads(row[0])["value"]
+    value["fields"] = {name: field for name, field in value["fields"].items()
+                       if not json.loads(name)[0].startswith("studio-turns:")}
+    return UiPreferencesDto.model_validate(value)
+
+
+ITEM_FIELD_CAP = 3000
+MAX_CLOCK_SKEW_MS = 5 * 60 * 1000
+
+
+def prune_fields(fields: dict[str, PreferenceField]) -> dict[str, PreferenceField]:
+    protected: dict[str, PreferenceField] = {}
+    items: list[tuple[str, PreferenceField]] = []
+    for name, field in fields.items():
+        key = json.loads(name)[0]
+        if key == "codex-studio-preferences-v1" or key.startswith("server-"):
+            protected[name] = field
+        else:
+            items.append((name, field))
+    items.sort(key=lambda item: (item[1].timestamp, item[0]), reverse=True)
+    return {**protected, **dict(items[:ITEM_FIELD_CAP])}
 
 
 def merge_preferences(db: sqlite3.Connection, request: PreferencePushRequest) -> UiPreferencesDto:
@@ -104,14 +126,17 @@ def merge_preferences(db: sqlite3.Connection, request: PreferencePushRequest) ->
     if not db.in_transaction:
         db.execute("BEGIN IMMEDIATE")
     fields = read_preferences(db, request.scope).fields
+    now = int(time.time() * 1000)
     for key, incoming in request.fields.items():
+        if incoming.timestamp > now + MAX_CLOCK_SKEW_MS:
+            incoming = incoming.model_copy(update={"timestamp": now})
         prior = fields.get(key)
         # Writer and canonical JSON make equal timestamps independent of arrival order.
         def rank(item: PreferenceField) -> tuple[int, str, str]:
             return (item.timestamp, item.writer, json.dumps(item.value, sort_keys=True, separators=(",", ":"), ensure_ascii=False))
         if prior is None or rank(incoming) > rank(prior):
             fields[key] = incoming
-    result = UiPreferencesDto(fields=fields)
+    result = UiPreferencesDto(fields=prune_fields(fields))
     put(db, "uiPreferences", request.scope, result.model_dump(mode="json"))
     return result
 

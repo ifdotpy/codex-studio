@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   mergePreferenceFields,
+  prunePreferenceFields,
+  type PreferenceFields,
   migratePreferenceFields,
   preferenceScope,
   storageFields,
@@ -65,6 +67,36 @@ describe("UI preference fields", () => {
     ).toHaveLength(2);
     expect(preferenceScope("codex-project-tree:/state")).toBe("server");
     expect(preferenceScope("codex.terminal.height")).toBeNull();
+    expect(preferenceScope("studio-turns:/state:chat:tools-v3")).toBeNull();
     expect(preferenceScope("server-alias:workspace")).toBe("user");
   });
+});
+
+it("bounds per-item fields and keeps Appearance and server intent", () => {
+  const fields: PreferenceFields = Object.fromEntries(
+    Array.from({ length: 3100 }, (_, timestamp) => [
+      JSON.stringify(["codex-worker-disclosures", String(timestamp)]),
+      { value: true, timestamp, writer: "a" },
+    ]),
+  );
+  fields['["codex-studio-preferences-v1","theme"]'] = {
+    value: "dark",
+    timestamp: 0,
+    writer: "a",
+  };
+  fields['["server-alias:workspace"]'] = {
+    value: "ABC",
+    timestamp: 0,
+    writer: "a",
+  };
+  fields['["studio-turns:/state:chat:tools-v3","turn"]'] = {
+    value: true,
+    timestamp: 9999,
+    writer: "a",
+  };
+  const result = prunePreferenceFields(fields);
+  expect(Object.keys(result)).toHaveLength(3002);
+  expect(result['["codex-worker-disclosures","0"]']).toBeUndefined();
+  expect(result['["codex-worker-disclosures","3099"]'].value).toBe(true);
+  expect(result['["codex-studio-preferences-v1","theme"]'].value).toBe("dark");
 });

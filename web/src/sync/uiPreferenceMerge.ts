@@ -17,8 +17,7 @@ export function preferenceScope(key: string): PreferenceScope | null {
     key.startsWith("codex-project-compact:") ||
     key.startsWith("codex-progress-hidden:") ||
     key.startsWith("studio-prompt-bookmarks:") ||
-    key === "codex-worker-disclosures" ||
-    (key.startsWith("studio-turns:") && key.endsWith(":tools-v3"))
+    key === "codex-worker-disclosures"
   )
     return "server";
   return null;
@@ -102,4 +101,32 @@ export function migratePreferenceFields(
     }
   }
   return result;
+}
+
+export const itemPreferenceFieldCap = 3000;
+export function prunePreferenceFields(
+  fields: PreferenceFields,
+): PreferenceFields {
+  const protectedFields: PreferenceFields = {};
+  const items: [string, PreferenceField][] = [];
+  for (const [name, field] of Object.entries(fields)) {
+    let key: string;
+    try {
+      [key] = JSON.parse(name);
+    } catch {
+      key = name;
+    }
+    if (key.startsWith("studio-turns:")) continue;
+    if (key === "codex-studio-preferences-v1" || key.startsWith("server-"))
+      protectedFields[name] = field;
+    else items.push([name, field]);
+  }
+  items.sort(
+    ([a, x], [b, y]) =>
+      y.timestamp - x.timestamp || (a < b ? 1 : a > b ? -1 : 0),
+  );
+  return {
+    ...protectedFields,
+    ...Object.fromEntries(items.slice(0, itemPreferenceFieldCap)),
+  };
 }

@@ -1,9 +1,11 @@
 """Durable field merge and validation, with real entity storage."""
 import json
+import hashlib
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from pydantic import ValidationError
 from codex_sync_entities import ensure_tables
 from studio_api.models import JsonValue
@@ -53,3 +55,43 @@ class PreferencesTests(unittest.TestCase):
             merge_preferences(db, PreferencePushRequest(scope="server", fields={'["codex-project-tree:/state","/project"]': PreferenceField(value=True, timestamp=10, writer="a")}))
             self.assertEqual(len(read_preferences(db, "user").fields), 1)
             self.assertEqual(len(read_preferences(db, "server").fields), 1)
+
+    def test_growth_cap_preserves_appearance_and_server_keys(self) -> None:
+        fields = self.field("theme", "dark", 1)
+        fields['["server-alias:workspace"]'] = PreferenceField(value="ABC", timestamp=1, writer="a")
+        for index in range(20050):
+            name = json.dumps(["studio-logical-project-collapsed", str(index)], separators=(",", ":"))
+            fields[name] = PreferenceField(value=True, timestamp=index, writer="a")
+        with sqlite3.connect(":memory:") as db:
+            ensure_tables(db)
+            result = merge_preferences(db, PreferencePushRequest(scope="user", fields=fields))
+            self.assertEqual(len(result.fields), 3002)
+            self.assertEqual(result.fields['["codex-studio-preferences-v1","theme"]'].value, "dark")
+            self.assertEqual(result.fields['["server-alias:workspace"]'].value, "ABC")
+            self.assertNotIn('["studio-logical-project-collapsed","0"]', result.fields)
+            again = merge_preferences(db, PreferencePushRequest(scope="user", fields=self.field("mainFontSize", 18)))
+            self.assertEqual(len(again.fields), 3003)
+            self.assertEqual(len(read_preferences(db, "user").fields), 3003)
+
+    def test_future_clock_is_clamped_and_normal_edit_can_replace_it(self) -> None:
+        with sqlite3.connect(":memory:") as db, patch("studio_api.sync.preferences.time.time", return_value=1000):
+            ensure_tables(db)
+            result = merge_preferences(db, PreferencePushRequest(scope="user", fields=self.field("theme", "dark", 1_300_001)))
+            self.assertEqual(next(iter(result.fields.values())).timestamp, 1_000_000)
+            result = merge_preferences(db, PreferencePushRequest(scope="user", fields=self.field("theme", "light", 1_000_001)))
+            self.assertEqual(next(iter(result.fields.values())).value, "light")
+            result = merge_preferences(db, PreferencePushRequest(scope="user", fields=self.field("mainFontSize", 18, 1_300_000)))
+            self.assertEqual(result.fields['["codex-studio-preferences-v1","mainFontSize"]'].timestamp, 1_300_000)
+
+    def test_legacy_tool_expansions_are_removed_on_next_merge(self) -> None:
+        with sqlite3.connect(":memory:") as db:
+            ensure_tables(db)
+            merge_preferences(db, PreferencePushRequest(scope="server", fields={'["codex-project-tree:/state","project"]': PreferenceField(value=True, timestamp=1, writer="a")}))
+            row = db.execute("SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='server'").fetchone()
+            payload = json.loads(row[0])
+            payload["value"]["fields"]['["studio-turns:/state:chat:tools-v3","turn"]'] = {"value": True, "timestamp": 2, "writer": "a"}
+            serialized = json.dumps(payload)
+            db.execute("UPDATE sync_entities SET payload=?, hash=? WHERE collection='uiPreferences' AND id='server'", (serialized, hashlib.sha256(serialized.encode()).hexdigest()))
+            result = merge_preferences(db, PreferencePushRequest(scope="server", fields={}))
+            self.assertEqual(len(result.fields), 1)
+            self.assertNotIn("studio-turns:", db.execute("SELECT payload FROM sync_entities WHERE collection='uiPreferences' AND id='server'").fetchone()[0])
