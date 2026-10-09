@@ -29,9 +29,14 @@ def make_runtime(root):
     schedule = Runtime.schedule
     Runtime.schedule = lambda self: None
     try:
-        return Runtime(root, fixture.FakeServer)
+        runtime = Runtime(root, fixture.FakeServer)
     finally:
         Runtime.schedule = schedule
+    # Preserve the accepted event as pending at the simulated restart
+    # boundary; neither background nor fast dispatch belongs in this recovery
+    # measurement.
+    runtime._fast_delivery_enabled = False
+    return runtime
 
 def seed(runtime):
     leads = [runtime.create({"name": n, "cwd": str(runtime.root), "prompt": n}, defer=True) for n in "ABC"]
