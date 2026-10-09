@@ -25,7 +25,37 @@ export function getPlaywrightWorkerSelection(environment?: NodeJS.ProcessEnv): {
   cached?: boolean;
 };
 export const measuredFixtureScratchBytes: number;
-export function calculateMemoryBudgetBytes(memoryAvailableBytes: number): number;
+export function sampleProcessTreeMemory(
+  rootPid: number | string,
+  readProcFile?: (path: string) => string,
+): {
+  rssBytes: number;
+  pssBytes: number;
+  processCount: number;
+  processes: Array<{
+    pid: number;
+    rssBytes: number;
+    pssBytes: number;
+    name: string;
+    command: string;
+  }>;
+};
+export function persistWorkerMemorySample(input: {
+  environment?: NodeJS.ProcessEnv;
+  runId?: string;
+  workerPid: number;
+  processTreePssBytes: number;
+  processTreeBreakdown: Array<{
+    pid: number;
+    rssBytes: number;
+    pssBytes: number;
+    name: string;
+    command: string;
+  }>;
+}): void;
+export function calculateMemoryBudgetBytes(
+  memoryAvailableBytes: number,
+): number;
 export function choosePlaywrightWorkerCount(input: {
   cpuLimit: number;
   competingRunnable: number;

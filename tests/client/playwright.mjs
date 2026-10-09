@@ -109,6 +109,17 @@ export function apiSchemaHeaders(headers = {}) {
   return { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(), ...headers };
 }
 
+/**
+ * Assert the schema update gate is not visible. Mantine may keep its closed
+ * alertdialog portal in the DOM, so checking for absence would misread it.
+ * @param {import("playwright").Page} page
+ */
+export async function expectNoSchemaGate(page) {
+  await expect(
+    page.getByRole("alertdialog", { name: "Studio update required" }),
+  ).toBeHidden();
+}
+
 const apiSchemaFixtureTargets = new WeakSet();
 const apiSchemaFixtureBrowsers = new WeakSet();
 const apiSchemaFixtureHeaderState = { enabled: true };
