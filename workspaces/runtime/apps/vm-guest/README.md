@@ -1,7 +1,18 @@
 # Linux guest service
 
+## Change Contract
+
+This app owns the isolated Linux VM guest service, its vsock protocol, and
+guest-side workspace and provider process lifecycle. Its public interface is
+the host's versioned guest protocol; it must not own Studio's SQLite database
+or access host account credentials. Keep request receipts and guest journals
+durable, and do not remove active provider state. Provisioning configuration is
+owned by this app's installer and service unit. Focused check:
+`python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v`
+from the repository root.
+
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
-[linux-vm-workspaces.md](../../docs/linux-vm-workspaces.md).
+[linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).
 
 Copy this folder to `/opt/codex-studio/vm/guest`. Copy these runtime files to
 `/opt/codex-studio/scripts`:
@@ -30,7 +41,7 @@ data disk. The installer does not install provider binaries or credentials.
 Run the contract tests:
 
 ```sh
-python3 -B -m unittest discover -s vm/guest -p test_service.py -v
+python3 -B -m unittest discover -s workspaces/runtime/apps/vm-guest -p test_service.py -v
 ```
 
 The Linux test requires an isolated installed service and a private Unix socket.
@@ -39,14 +50,14 @@ For the test machine only, add this systemd override:
 ```ini
 [Service]
 ExecStart=
-ExecStart=/usr/bin/python3 /opt/codex-studio/vm/guest/service.py --unix-socket /var/lib/codex-studio/guest/test.sock
+ExecStart=/usr/bin/python3 /opt/codex-studio/workspaces/runtime/apps/vm-guest/service.py --unix-socket /var/lib/codex-studio/guest/test.sock
 ```
 
 Restart that test service. Run the test as `studio` with permission to restart
 that service through sudo:
 
 ```sh
-python3 vm/guest/test_linux_integration.py --socket /var/lib/codex-studio/guest/test.sock
+python3 workspaces/runtime/apps/vm-guest/test_linux_integration.py --socket /var/lib/codex-studio/guest/test.sock
 ```
 
 The test checks a btrfs base, a private workspace, a Git commit, and bundle fetch.

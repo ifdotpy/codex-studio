@@ -25,15 +25,15 @@ the enclosing tool outcome remains unknown. It does not prove that a subsequent
 statement in the caller's script executed.
 The equivalent route is `GET /api/tool-requests?agent=AGENT_ID&request_id=REQUEST_ID`.
 Authenticated `POST /api/tool-requests/cancel` accepts `agent` and `request_id`.
-See [Managed Codex teams](ORCHESTRATION.md) for limits, permissions and recovery.
+See [Managed Codex teams](orchestration.md) for limits, permissions and recovery.
 
 ## Mode
 
-| Mode | Use |
-|---|---|
-| One worker | One bounded bug, module, review, or measurement |
-| Implementer + reviewer | One change needing independent review |
-| Wave | Independent tasks, separate files and worktrees |
+| Mode                   | Use                                             |
+| ---------------------- | ----------------------------------------------- |
+| One worker             | One bounded bug, module, review, or measurement |
+| Implementer + reviewer | One change needing independent review           |
+| Wave                   | Independent tasks, separate files and worktrees |
 
 - Do not split sequential reasoning across workers; do not assign one file to two workers.
 - The orchestrator owns boundaries, steering, review, merges.
@@ -45,7 +45,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Paths and protocol
 
 - State dir: `$CODEX_AGENTS_STATE_DIR`, else `$XDG_STATE_HOME/codex-agents`, else `~/.local/state/codex-agents`. Scripts create it.
-- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 scripts/install-cli.py`.
+- `CODEX_HOME` selects the Codex login (default `~/.codex`). Install commands with `python3 workspaces/runtime/apps/server/src/install-cli.py`.
 - Codex state and profile directories must resolve outside `.claude`. Scripts reject these paths and do not discover legacy Claude job directories.
 - Move historical state only with explicit authorization. Preserve messages.
 - Schemas move; before depending on a protocol field: `codex --version; codex app-server generate-json-schema --experimental --out /tmp/codex-schema` (drop `--experimental` if it fails; read `v2`). Goal methods need `capabilities.experimentalApi: true` at `initialize`.
@@ -81,10 +81,16 @@ Do not report an unchanged monitored condition as a new failure.
 Write `codex-tasks.<wave>.json` in the state dir (or set `CODEX_TASKS`). Unique names and paths; default role `implementer`.
 
 ```json
-[{"name": "parser-fix", "role": "implementer",
-  "cwd": "/abs/worktree", "branch": "codex/parser-fix",
-  "objective": "Correct the parser error and prove it.",
-  "prompt": "Correct one parser error. Add a regression test. Run the parser gate. Commit."}]
+[
+  {
+    "name": "parser-fix",
+    "role": "implementer",
+    "cwd": "/abs/worktree",
+    "branch": "codex/parser-fix",
+    "objective": "Correct the parser error and prove it.",
+    "prompt": "Correct one parser error. Add a regression test. Run the parser gate. Commit."
+  }
+]
 ```
 
 ```bash
@@ -112,7 +118,7 @@ scripts/codex-report --wave parser [worker --answers]
 
 ## Studio, chats, and creator connections
 
-Build the interface with `npm ci && npm run build` in `web/`.
+Install dependencies from the repository root with `pnpm install --frozen-lockfile`; build the interface from the web app with `pnpm run build`.
 Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
 Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
 Keep its terminal session alive while Studio is in use.
@@ -223,19 +229,19 @@ scripts/codex-steer --wave parser parser-fix "Limit the change to the parser mod
 
 ## Commands
 
-| Command | Function |
-|---|---|
-| `codex-models` | Model ids and efforts |
-| `codex-swarm.mjs` | The wave launcher |
-| `codex-daemon` | Start/stop/status of a detached launcher |
-| `codex-watch` | Exit-on-terminal watcher |
-| `codex-report` | Bounded status and answers |
-| `codex-steer` | Mailbox message to one worker |
-| `codex-stop` | Verified launcher stop |
-| `luna` | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `waves`, `watch` |
-| `codex-canvas` | Lead conversations, global canvas, agent chats, approvals, and command monitors |
-| `codex-chat` | Create chat nodes, connect members, read messages, or post replies |
-| `codex-graph` | Register native agents and actual creator relationships |
+| Command           | Function                                                                                                   |
+| ----------------- | ---------------------------------------------------------------------------------------------------------- |
+| `codex-models`    | Model ids and efforts                                                                                      |
+| `codex-swarm.mjs` | The wave launcher                                                                                          |
+| `codex-daemon`    | Start/stop/status of a detached launcher                                                                   |
+| `codex-watch`     | Exit-on-terminal watcher                                                                                   |
+| `codex-report`    | Bounded status and answers                                                                                 |
+| `codex-steer`     | Mailbox message to one worker                                                                              |
+| `codex-stop`      | Verified launcher stop                                                                                     |
+| `luna`            | Explorer and mailbox: dashboard, `ls --all`, `show NAME`, `tail NAME`, `say NAME "text"`, `waves`, `watch` |
+| `codex-canvas`    | Lead conversations, global canvas, agent chats, approvals, and command monitors                            |
+| `codex-chat`      | Create chat nodes, connect members, read messages, or post replies                                         |
+| `codex-graph`     | Register native agents and actual creator relationships                                                    |
 
 `luna say` writes through `codex-steer`; other commands only read existing state.
 For `show`, `tail`, and `say`, use `--wave NAME` when worker names repeat.
@@ -249,11 +255,11 @@ An unfinished worker whose launcher ended is `abandoned`.
 Run from the project root:
 
 ```bash
-node tests/portable-smoke.mjs
-node tests/state-contract-smoke.mjs
-python3 -B tests/daemon-contract.py
-node tests/sandbox-smoke.mjs
-python3 -B tests/canvas-contract.py
+node workspaces/runtime/apps/server/tests/portable-smoke.mjs
+node workspaces/runtime/apps/server/tests/state-contract-smoke.mjs
+python3 -B workspaces/runtime/apps/server/tests/daemon-contract.py
+node workspaces/runtime/apps/server/tests/sandbox-smoke.mjs
+python3 -B workspaces/runtime/apps/server/tests/canvas-contract.py
 ```
 
 The first three checks use fixtures and mocks; they do not call a model.
@@ -261,7 +267,7 @@ The sandbox check needs a local Codex binary and tests real sandboxed commands, 
 Run these checks after changes to state schemas, paths, lifecycle, or message delivery.
 Mock protocol tests do not prove compatibility with every app-server version.
 
-For canvas client changes, run `npm --prefix . ci` and `npm --prefix . test` from `web/`.
+For canvas client changes, run `pnpm run test` from the web app directory after installing dependencies once at the repository root.
 Build the React client before starting the canvas server. The built client does not require a Node.js server.
 The client checks use headless Chrome and a local fixture server.
 They verify rendered behavior without model inference.

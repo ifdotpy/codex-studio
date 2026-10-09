@@ -141,7 +141,7 @@ replay; an unavailable, new, or mismatched child leaves it in place.
 ### First cutover and restart
 
 Use `codex-supervisor enable` for a terminal-only installation. Run
-`python3 scripts/install-cli.py` first to install the command link. The command
+`python3 workspaces/runtime/apps/server/src/install-cli.py` first to install the command link. The command
 uses the existing state directory. It does not start a second backend.
 
 ```sh
@@ -170,7 +170,7 @@ supervisor and its children alive. Do not restart the supervisor to update the
 backend. `codex-supervisor status --state <path>` reads supervisor health.
 `codex-supervisor wait --state <path>` waits up to 60 seconds for protocol 1.
 
-1. Install the desktop build containing `scripts/codex_process_supervisor.py`.
+1. Install the desktop build containing `workspaces/runtime/apps/server/src/codex_process_supervisor.py`.
    Existing launchd recovery configuration remains off for supervisor mode by
    default. When enabled, the desktop installs a dedicated
    `local.codex.agents.supervisor.<state-hash>` LaunchAgent before launching or
@@ -188,9 +188,9 @@ backend. `codex-supervisor status --state <path>` reads supervisor health.
    background tasks, and user terminals to finish. The first installation cannot
    transfer existing in-process pipes, so this is the one planned interruption.
 3. Set `CODEX_AGENTS_SUPERVISOR_MODE=1` in the environment used by the desktop,
-   then restart the desktop recovery configuration. `desktop/recovery.cjs` writes
+   then restart the desktop recovery configuration. `workspaces/client/apps/desktop/recovery.cjs` writes
    the mode into the recovery config and installs the independent supervisor
-   LaunchAgent. `desktop/recover_backend.py` probes the supervisor before any
+   LaunchAgent. `workspaces/client/apps/desktop/recover_backend.py` probes the supervisor before any
    backend starts but never takes ownership of its lifecycle. Verify that
    `/api/desktop` reports protocol 1 and an empty supervisor handle list.
 4. At the planned idle boundary, run
@@ -211,7 +211,7 @@ existing crash-recovery cleanup before it accepts backend connections.
 
 The legacy supervisor can still be torn down when launchd rewrites or boots out
 the recovery job that started it. Do not disable, rewrite, or boot out that job
-while its supervisor owns live handles. `desktop/recovery.cjs` checks the
+while its supervisor owns live handles. `workspaces/client/apps/desktop/recovery.cjs` checks the
 recovery job PID, supervisor parent PID, and supervisor status before a restart
 or bootout, and refuses the operation while that legacy owner has live handles.
 Wait for the legacy owner to exit or its handles to close, then retry the
@@ -268,14 +268,14 @@ The journal does not constitute a backup of the complete state directory.
 Run the isolated recovery checks:
 
 ```sh
-python3 -B tests/restart-recovery-contract.py
-python3 -B tests/monitor-restart-contract.py
-python3 -B tests/terminal-history-restart-contract.py
-npm --prefix desktop test
-npm --prefix web run test:restart
-npm --prefix web run test:rxdb-cache
-npm --prefix web run test:display
-npm --prefix web run test:diagnostics
+python3 -B workspaces/runtime/apps/server/tests/restart-recovery-contract.py
+python3 -B workspaces/runtime/apps/server/tests/monitor-restart-contract.py
+python3 -B workspaces/runtime/apps/server/tests/terminal-history-restart-contract.py
+pnpm --filter codex-agents-desktop test
+pnpm --filter codex-agents-web run test:restart
+pnpm --filter codex-agents-web run test:rxdb-cache
+pnpm --filter codex-agents-web run test:display
+pnpm --filter codex-agents-web run test:diagnostics
 ```
 
 These checks exercise abrupt process exit, backend and renderer failure, receipt

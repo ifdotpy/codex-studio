@@ -29,11 +29,11 @@ These are design choices, not a claim that this client has every feature of the 
 The subsequent owner request adds a global canvas, reuse of an empty current chat,
 conversation deletion, and agent communication. Private and broadcast rooms appear
 in the sidebar. The user can inspect them. The runtime controls membership and delivery.
-See [the orchestration contract](ORCHESTRATION.md#agent-chat) for the chat rules.
+See [the orchestration contract](orchestration.md#agent-chat) for the chat rules.
 
 ## Tool evidence
 
-`tests/tool-parity.py` starts the installed Codex 0.153.4 against a local Responses
+`workspaces/runtime/apps/server/tests/tool-parity.py` starts the installed Codex 0.153.4 against a local Responses
 fixture. It captures actual native and managed tool manifests, including tools
 inside code mode. This check makes no model inference call.
 
@@ -72,9 +72,9 @@ The permanent tests reproduce the relevant checks without relying on that direct
 
 ## Verification
 
-- `tests/runtime-contract.py`: 35 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
-- `tests/canvas-contract.py`: 17 data and HTTP cases retained for legacy sessions, shared chats, and safe request handling.
-- `tests/client/workspace/product-ui.spec.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
+- `workspaces/runtime/apps/server/tests/runtime-contract.py`: 35 runtime cases, including blank creation, model admission, role migration, async answers, 40-worker scheduling, monitor completion, cancellation, and parent wakes.
+- `workspaces/runtime/apps/server/tests/canvas-contract.py`: 17 data and HTTP cases retained for legacy sessions, shared chats, and safe request handling.
+- `workspaces/client/apps/web/tests/workspace/product-ui.spec.mjs`: actual HTTP and SQLite fixture; lead filtering, 40 workers, Markdown safety, drafts, global canvas, private chat history, deletion, empty-chat reuse, one-click creation, retry identity, model guard, async answer, monitor, and stop.
 - Headless Chrome: rendered at 1440 × 960 and 390 × 844; no horizontal page overflow.
 - Live Codex: one Astra lead, two reviewers, one command monitor. No claim of a live 40-model load test.
 
@@ -82,11 +82,11 @@ The older UI tests for manual marquee selection, graph ports, and creation forms
 were replaced because those controls were removed. Backend data tests remain.
 
 The interface now uses React, TypeScript, and Vite. The production server serves
-`web/dist`. The former global DOM script and copied vendor scripts were removed.
-See [web setup](web/README.md) for build and development commands.
+`workspaces/client/apps/web/dist`. The former global DOM script and copied vendor scripts were removed.
+See [web setup](../workspaces/client/apps/web/README.md) for build and development commands.
 
 The subsequent owner requests add a Telegram-style agent chat list, inline sidebar
 names and deletion, a complaint book, context usage, compaction counts, and account limits.
 The browser test uses the compiled React bundle, 40 workers, and more than 60 agent rooms.
 It checks desktop and mobile layouts. Complaint enforcement and source identities remain
-in the [orchestration contract](ORCHESTRATION.md).
+in the [orchestration contract](orchestration.md).

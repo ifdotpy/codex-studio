@@ -13,7 +13,7 @@ The local server remains at `http://127.0.0.1:4620`.
   and creation endpoint are removed. Existing monitor controls remain.
 - Native dialogs select projects and attachments. Finder, external links, and
   optional notifications use an isolated main-frame bridge.
-- [Time awareness](TIME-AWARENESS.md) adds time at user and tool boundaries without
+- [Time awareness](time-awareness.md) adds time at user and tool boundaries without
   changing previous request input. Cache hits and billing were not measured.
 - Account limits show Codex before Spark, compact quota rows, reset countdowns,
   and exact local dates. Local costs show today and the last 30 days.
@@ -51,8 +51,8 @@ have separate local storage. Existing chats stay in SQLite, but canvas positions
 are not copied between browser profiles. A backend restart ends user shells and
 retains their saved output.
 
-See the [desktop instructions](desktop/README.md) for startup, packaging, and
-native access boundaries. See [orchestration](ORCHESTRATION.md) for agent tools.
+See the [desktop instructions](../workspaces/client/apps/desktop/README.md) for startup, packaging, and
+native access boundaries. See [orchestration](orchestration.md) for agent tools.
 
 ## Installed artifact
 

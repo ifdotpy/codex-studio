@@ -67,8 +67,8 @@ codex-control create 'Task' --cwd /path/to/project
 codex-control create 'Task' --cwd /path/to/project --account ACCOUNT
 ```
 
-Checks: `tests/project-accounts-contract.py`, `tests/account-project-runtime.py`,
-`tests/runtime-accounts-contract.py`, and `tests/client/accounts/account-project-ui.spec.mjs`.
+Checks: `workspaces/runtime/apps/server/tests/project-accounts-contract.py`, `workspaces/runtime/apps/server/tests/account-project-runtime.py`,
+`workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`, and `workspaces/client/apps/web/tests/accounts/account-project-ui.spec.mjs`.
 Fixture checks do not make paid model requests or redeem real reset credits.
 
 ## Add an account
@@ -83,8 +83,8 @@ The sign-in request survives a page reload. **Check status** reads its saved res
 until Studio can reconcile it with the native profile. A retry with the same request
 ID does not start another login. An existing native account appears only once.
 
-Checks: `tests/account-login-contract.py`, `tests/runtime-accounts-contract.py`,
-and `tests/client/accounts/accounts-ui-smoke.spec.mjs`. These checks use isolated fixtures.
+Checks: `workspaces/runtime/apps/server/tests/account-login-contract.py`, `workspaces/runtime/apps/server/tests/runtime-accounts-contract.py`,
+and `workspaces/client/apps/web/tests/accounts/accounts-ui-smoke.spec.mjs`. These checks use isolated fixtures.
 
 ## Delete an account
 
@@ -142,6 +142,6 @@ same request ID with different content is rejected. `action` can be `retry` or
 `cancel` with the original `request_id`. These routes require the session token.
 The lead's `accountTransfer` field provides progress after a page reload.
 
-Checks: `tests/account-transfer-contract.py`, `tests/account-transfer-native.py`,
-and `tests/client/accounts/account-transfer-ui.spec.mjs`. The native test uses isolated profiles and a
+Checks: `workspaces/runtime/apps/server/tests/account-transfer-contract.py`, `workspaces/runtime/apps/server/tests/account-transfer-native.py`,
+and `workspaces/client/apps/web/tests/accounts/account-transfer-ui.spec.mjs`. The native test uses isolated profiles and a
 local Responses provider. It makes no cloud model requests.

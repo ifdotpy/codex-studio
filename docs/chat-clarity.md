@@ -39,7 +39,7 @@ cannot enter the quote. Chat changes clear the selection action.
 The production build, format check, and all eleven browser suites pass. The
 new cases cover account variants, direct navigation, idle status, exact quotes,
 paragraph boundaries, keyboard input, touch activation, and 320/390 px layouts.
-The parent reviewed source changes and desktop/mobile screenshots. Tests use
+The parent reviewed source changes and workspaces/client/apps/desktop/mobile screenshots. Tests use
 isolated runtime state. Native mobile long-press behavior is not measured.
 
 ## Delivery

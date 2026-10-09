@@ -37,7 +37,7 @@ or force the page to scroll. Long desktop drafts also scroll inside the field. T
 viewport hook continues to keep the composer inside the visible screen. Mobile
 model and account information shares one row so it does not push the send
 controls and usage footer below the keyboard.
-`tests/client/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
+`workspaces/client/apps/web/tests/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
 changes with Android and iPhone identities in Chromium and WebKit; it does not
 open a real operating-system language picker.
 
@@ -47,12 +47,12 @@ composition keep their existing event paths.
 
 ## Owned checks
 
-From `web/`, run:
+From `workspaces/client/apps/web/`, run:
 
 ```sh
-npm run test:prompt-composer
-npm run benchmark:prompt-composer
-npm run benchmark:prompt-composer:paired
+pnpm run test:prompt-composer
+pnpm run benchmark:prompt-composer
+pnpm run benchmark:prompt-composer:paired
 ```
 
 The first command builds and runs the geometry, autocomplete/recall/IME/caret,
@@ -89,8 +89,8 @@ threshold.
 The mobile keyboard regression can also run independently:
 
 ```sh
-npm --prefix web run test:browser -- mobile-keyboard-ui.spec.mjs
-BROWSER=webkit npm --prefix web run test:browser -- mobile-keyboard-ui.spec.mjs
+pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.mjs
+BROWSER=webkit pnpm --filter codex-agents-web run test:browser -- mobile-keyboard-ui.spec.mjs
 ```
 
 ## Recorded measurements

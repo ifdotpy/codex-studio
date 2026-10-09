@@ -98,7 +98,7 @@ The write-cost benchmark was removed and is available at commit `3507feea`.
 
 ## Notification replay measurement
 
-The October 3, 2026 replay uses `tests/notification-load-contract.py` on
+The October 3, 2026 replay uses `workspaces/runtime/apps/server/tests/notification-load-contract.py` on
 `origin/main` revision `6d8cabc` and the execution branch. Three trials alternate
 between the two checkouts. Each trial uses temporary state, 320 input frames,
 288 callbacks after transport coalescence, and one dispatcher connection.
@@ -118,7 +118,7 @@ Run this command in each checkout. Compare its `after` object; the command's
 `before` object is the older checked-in baseline.
 
 ```sh
-python3 -B tests/notification-load-contract.py
+python3 -B workspaces/runtime/apps/server/tests/notification-load-contract.py
 ```
 
 The 18,046,525,440-byte migration fixture was removed after its measurement.

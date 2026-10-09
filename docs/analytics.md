@@ -91,8 +91,8 @@ Analytics adds no messages or tool definitions to model input.
 ## Checks
 
 ```sh
-python3 -B tests/analytics-contract.py
-python3 -B tests/analytics-history-contract.py
-npm --prefix web run build
-npm --prefix web run test:browser -- analytics-ui.spec.mjs
+python3 -B workspaces/runtime/apps/server/tests/analytics-contract.py
+python3 -B workspaces/runtime/apps/server/tests/analytics-history-connection-reuse-contract.py
+pnpm --filter codex-agents-web run build
+pnpm --filter codex-agents-web run test:browser -- analytics-ui.spec.mjs
 ```

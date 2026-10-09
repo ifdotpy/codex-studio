@@ -20,10 +20,10 @@ owns their queue, permissions, state, and worker lifecycle.
 From a terminal, use this project's `scripts/codex-control --help` to find commands
 for the existing server. Do not start another server to control the same state.
 
-Read [managed orchestration](../../../ORCHESTRATION.md) for tool contracts,
-permissions, and recovery. Read [CLI usage](../../../CLI.md) only for standalone
+Read [managed orchestration](../../../docs/orchestration.md) for tool contracts,
+permissions, and recovery. Read [CLI usage](../../../docs/cli.md) only for standalone
 worker waves, daemon operations, or legacy chat commands. Read the
-[project README](../../../README.md) for setup. Paths are relative to this skill.
+[project README](../../../docs/product-guide.md) for setup. Paths are relative to this skill.
 
 If neither the managed tools nor an available application server support the
 requested action, report that limit. Native Codex tools do not imply that the
@@ -73,7 +73,7 @@ offers the model. A user-selected subagent account applies to all new workers.
 Set `account_key` only when it respects that choice.
 Omitted fields use team defaults. Use `effort: null` for the model's native default.
 Use `fast_mode: false` to disable Fast for that worker. Explicit profile values override team defaults.
-Only the user can change team defaults. See [the execution contract](../../../ORCHESTRATION.md).
+Only the user can change team defaults. See [the execution contract](../../../docs/orchestration.md).
 
 The managed server queues child results and starts a new lead turn after a final
 answer. Finish the current turn when useful independent work is exhausted and a
@@ -361,5 +361,5 @@ Claude requires the same account, CLI version, and SDK version.
 Claude uses the SDK system prompt snapshot and excludes dynamic sections.
 On a version mismatch, update the target CLI through its normal install process.
 Do not upgrade it as part of the move.
-See [the move contract](../../../ORCHESTRATION.md#move-your-execution-to-another-server)
+See [the move contract](../../../docs/orchestration.md#move-your-execution-to-another-server)
 for limits and recovery.

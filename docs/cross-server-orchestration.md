@@ -103,7 +103,7 @@ the worker has no active native turn or input.
 
 ## Checks
 
-Run `python3 scripts/codex_python.py --exec tests/multi-server-orchestration-contract.py`.
+Run `python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/multi-server-orchestration-contract.py`.
 The tests use two isolated SQLite runtimes and a fake paired transport. They
 cover native tool calls, dropped replies, duplicates, offline queues, restart,
 home concurrency, task review, messages, stops, access checks, and Git fetch.

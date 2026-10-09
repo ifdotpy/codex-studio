@@ -19,8 +19,8 @@ git -C "$REPO" status --short
 git -C "$REPO" fetch origin
 CHECK_DIR="$(mktemp -d)"
 trap 'rm -rf "$CHECK_DIR"' EXIT
-git -C "$REPO" archive origin/main scripts/codex-upgrade-check scripts/codex_state.py | tar -x -C "$CHECK_DIR"
-python3 "$CHECK_DIR/scripts/codex-upgrade-check" --repo "$REPO" --state-dir "$STATE" > /tmp/studio-upgrade-before.json
+git -C "$REPO" archive origin/main workspaces/runtime/apps/server/src/codex-upgrade-check workspaces/runtime/apps/server/src/codex_state.py | tar -x -C "$CHECK_DIR"
+python3 "$CHECK_DIR/workspaces/runtime/apps/server/src/codex-upgrade-check" --repo "$REPO" --state-dir "$STATE" > /tmp/studio-upgrade-before.json
 cat /tmp/studio-upgrade-before.json
 ```
 
@@ -116,7 +116,7 @@ Fetch a fresh check and diagnostics snapshot periodically; compare `cursor`,
 `phase`, and `updated` rather than relying on one observation:
 
 ```sh
-python3 "$REPO/scripts/codex-upgrade-check" --repo "$REPO" --state-dir "$STATE" > /tmp/studio-upgrade-after.json
+python3 "$REPO/workspaces/runtime/apps/server/src/codex-upgrade-check" --repo "$REPO" --state-dir "$STATE" > /tmp/studio-upgrade-after.json
 curl --fail --silent http://127.0.0.1:4620/api/diagnostics > /tmp/studio-upgrade-diagnostics.json
 ```
 
@@ -161,7 +161,7 @@ requests, tool results, and eligible old task tails while Studio continues to
 serve requests:
 
 ```sh
-python3 "$REPO/scripts/codex_payload_migrate.py" --state-dir "$STATE" --table all
+python3 "$REPO/workspaces/runtime/apps/server/src/codex_payload_migrate.py" --state-dir "$STATE" --table all
 ```
 
 The migration checks free space before each batch, uses a 64 MiB reserve, and
@@ -221,7 +221,7 @@ supervisor LaunchAgent waits for that owner to exit; the next reboot/login or a
 planned stop hands the lease to the waiting instance. The old owner can still be
 stopped by rewriting or booting out the recovery job that started it. Do not
 disable, rewrite, or boot out that recovery job while its supervisor owns live
-handles. `desktop/recovery.cjs` checks the recovery-job PID and supervisor
+handles. `workspaces/client/apps/desktop/recovery.cjs` checks the recovery-job PID and supervisor
 status, and refuses a recovery-job restart or bootout while those legacy handles
 are live. Wait for the legacy owner to exit or its handles to close before
 retrying. Rewriting, disabling, or kickstarting recovery after handoff does not

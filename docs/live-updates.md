@@ -2,7 +2,7 @@
 
 The backend can apply a reviewed Python patch to its running process without
 restarting active agent connections. The live-update mechanism remains in
-`scripts/codex_live_updates.py`; the publisher is `scripts/codex-publish-update`.
+`workspaces/runtime/apps/server/src/codex_live_updates.py`; the publisher source is `workspaces/runtime/apps/server/src/codex-publish-update`.
 No patch or `studio-live-update.json` manifest is stored in this repository.
 Patches are temporary release artifacts and must be retired after verification.
 
@@ -37,7 +37,7 @@ Release that lock, then publish the manifest with the Python 3.14 environment
 used by the backend:
 
 ```sh
-python3 scripts/codex-publish-update \
+python3 workspaces/runtime/apps/server/src/codex-publish-update \
   --scripts /path/to/release/scripts \
   --patch codex_release_update.py \
   --id current-release \
@@ -79,7 +79,7 @@ Long-running frames can finish their previous implementation. A patch must
 account for that behavior before publication. A failure after an external
 operation cannot be repaired by automatically replaying it.
 
-Run `python3 -B tests/live-updates-contract.py`,
-`python3 -B tests/live-update-retirement-race-contract.py`, and
-`node desktop/test.mjs` after changes to the mechanism. The desktop check uses
+Run `python3 -B workspaces/runtime/apps/server/tests/live-updates-contract.py`,
+`python3 -B workspaces/runtime/apps/server/tests/live-update-retirement-race-contract.py`, and
+`node workspaces/client/apps/desktop/test.mjs` after changes to the mechanism. The desktop check uses
 an isolated state directory and a hidden window.
