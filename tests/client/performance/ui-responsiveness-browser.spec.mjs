@@ -925,6 +925,7 @@ test(
         await response;
       }
       const later = page.locator("#newer-messages");
+      let newestReturnedId;
       while (await later.isVisible()) {
         const response = page.waitForResponse((candidate) => {
           const url = new URL(candidate.url());
@@ -934,23 +935,70 @@ test(
           );
         });
         await later.click();
-        await response;
+        const pageResponse = await response;
+        const pageData = await pageResponse.json();
+        newestReturnedId = pageData.items?.at(-1)?.id;
       }
+      const heldPageLastId = await page
+        .locator("#messages [data-message]:not([data-lazy-message])")
+        .last()
+        .getAttribute("data-message");
+      const laterButtonVisible = await later.isVisible();
+      const scrollRoot = page.locator("#messages");
+      const requestsBeforeScroll = await page.evaluate(
+        () =>
+          performance
+            .getEntriesByType("resource")
+            .filter((entry) =>
+              entry.name.includes("/api/transcript/page?after="),
+            ).length,
+      );
+      await scrollRoot.evaluate((root) => {
+        root.scrollTop = root.scrollHeight;
+        root.dispatchEvent(new Event("scroll", { bubbles: true }));
+      });
+      await page
+        .locator('[data-message="a-live"]:not([data-lazy-message])')
+        .waitFor({ state: "visible" });
+      const requestsAfterScroll = await page.evaluate(
+        () =>
+          performance
+            .getEntriesByType("resource")
+            .filter((entry) =>
+              entry.name.includes("/api/transcript/page?after="),
+            ).length,
+      );
       const latestMounted = await page
         .locator('[data-message="a-live"]:not([data-lazy-message])')
         .count();
       const laterCommentaryMounted = await page
         .locator('[data-message="a-text-24-0"]:not([data-lazy-message])')
         .count();
-      test.fail(
-        true,
-        "Known forward transcript paging defect: Later messages exhaust the server pages without moving the retained page past the old anchor",
+      assert.equal(
+        heldPageLastId,
+        "a-live",
+        "The retained page ends at the newest fixture row",
       );
-      assert.equal(latestMounted, 1, "The newest transcript row is mounted");
+      assert.equal(
+        newestReturnedId,
+        "a-live",
+        "The last forward page contains the newest fixture row",
+      );
+      assert.equal(laterButtonVisible, false, "Later messages is exhausted");
+      assert.equal(
+        latestMounted,
+        1,
+        "The newest transcript row is mounted after scrolling to the end",
+      );
       assert.equal(
         laterCommentaryMounted,
         1,
         "Commentary in the forward page is mounted",
+      );
+      assert.equal(
+        requestsAfterScroll,
+        requestsBeforeScroll,
+        "Scrolling does not request another page",
       );
     } finally {
       await page.close().catch(() => {});

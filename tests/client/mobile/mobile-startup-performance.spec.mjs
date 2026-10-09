@@ -456,13 +456,24 @@ test(
         "Reload restores the latest fixture message",
       );
       console.log(`Mobile history return boundary ${JSON.stringify(boundary)}`);
-      test.fail(
-        true,
-        "After bounded older-history paging, Later messages advances server cursors but the retained transcript window stays anchored at the oldest page, so recent messages are unreachable until reload.",
-      );
       assert.ok(
-        boundary.latestVisibleAfterPaging,
-        `After ${boundary.newerSteps.length} Later messages pages, the newest fixture message ${latestId} remains unreachable without reloading: ${JSON.stringify(boundary.newerSteps.at(-1))}`,
+        boundary.clientAtBoundary.pages.at(-1)?.last === latestId,
+        `The retained page ends at the newest fixture message ${latestId}: ${JSON.stringify(boundary.clientAtBoundary.pages.at(-1))}`,
+      );
+      assert.equal(
+        boundary.laterButtonAfterPaging,
+        false,
+        "Later messages is exhausted",
+      );
+      assert.equal(
+        boundary.latestVisibleAfterScrollDown,
+        true,
+        "The newest row is reachable after scrolling to the transcript end",
+      );
+      assert.equal(
+        boundary.scrollRequestsAfter,
+        boundary.scrollRequestsBefore,
+        "Scrolling does not request another page",
       );
       await context.close();
     } finally {
