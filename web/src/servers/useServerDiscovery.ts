@@ -66,12 +66,17 @@ export function useServerDiscovery(
       },
       pair: (...args) => serverCredentialAdapter().pair(...args),
       invite: async (server, requestId) => {
-        await refreshSession();
-        const value = await serverAccess("POST", {
-          action: "ui_invite",
-          serverId: server.id,
-          requestId,
-        });
+        const session = await refreshSession();
+        const value = await serverAccess(
+          "POST",
+          {
+            action: "ui_invite",
+            serverId: server.id,
+            requestId,
+          },
+          15000,
+          session.token,
+        );
         if (!("invitation" in value))
           throw new Error("The server invitation response is invalid.");
         return value.invitation;
@@ -90,12 +95,13 @@ export function useServerDiscovery(
       await navigator.locks.request(name, work);
     },
     async (body) => {
-      await refreshSession();
+      const session = await refreshSession();
       if (body.action === "revoke") controller.current?.cancel(body.clientId);
       await serverAccess(
         "POST",
         body,
         body.action === "discover" ? 105000 : 15000,
+        session.token,
       );
     },
   );

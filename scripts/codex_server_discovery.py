@@ -174,7 +174,11 @@ class ServerDiscovery:
             known = {row[0]: json.loads(row[1]) for row in db.execute("SELECT id,record FROM runtime_access_discovered")}
         for client in clients:
             discovered = known.get(client["id"], {})
-            known[client["id"]] = {**client, "lastSeen": discovered.get("lastSeen"), "autoPair": discovered.get("autoPair")}
+            known[client["id"]] = {**client, "lastSeen": discovered.get("lastSeen"), "autoPair": discovered.get("autoPair"),
+                "reachability": ("unreachable" if discovered.get("status") == "unreachable" else
+                                 "reachable" if discovered else "unknown")}
+        for peer in known.values():
+            peer.setdefault("reachability", "unreachable" if peer["status"] == "unreachable" else "reachable")
         return sorted(known.values(), key=lambda peer: peer["id"])
 
     def _candidate(self, origin: str, owner: str, deadline: float) -> None:
