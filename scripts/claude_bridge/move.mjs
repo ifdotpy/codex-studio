@@ -10,29 +10,49 @@ const require = createRequire(import.meta.url);
 const run = promisify(execFile);
 export const movePrompt = { snapshot: true, excludeDynamicSections: true };
 
+const toolSchema = (entry) => entry?.input_schema ?? entry?.schema;
+const completeTool = (entry) =>
+  typeof entry?.name === "string" &&
+  entry.name.length > 0 &&
+  toolSchema(entry) !== null &&
+  typeof toolSchema(entry) === "object" &&
+  !Array.isArray(toolSchema(entry));
+const normalizeTool = ({ schema, ...entry }) => ({
+  ...entry,
+  input_schema: entry.input_schema ?? schema,
+});
+
 export async function savedPromptProof(file, session) {
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
     throw new Error("The complete native snapshot history is unavailable");
   let snapshot;
+  const deferred = new Map();
   for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
     const row = JSON.parse(line);
     if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
       throw new Error("The native snapshot session identity differs");
     if (row.type === "attachment" && row.attachment?.type === "prompt_snapshot")
       snapshot = row.attachment;
+    if (
+      row.type === "attachment" &&
+      row.attachment?.type === "deferred_tools_record"
+    ) {
+      if (!Array.isArray(row.attachment.entries))
+        throw new Error("The saved deferred tool schemas are incomplete");
+      for (const entry of row.attachment.entries) {
+        if (!completeTool(entry))
+          throw new Error("The saved deferred tool schemas are incomplete");
+        deferred.set(entry.name, entry);
+      }
+    }
   }
   if (
     !Array.isArray(snapshot?.systemPrompt) ||
     !snapshot.systemPrompt.length ||
     !snapshot.systemPrompt.every((text) => typeof text === "string") ||
     !Array.isArray(snapshot.tools) ||
-    !snapshot.tools.every(
-      (entry) =>
-        typeof entry.name === "string" &&
-        entry.input_schema &&
-        typeof entry.input_schema === "object",
-    )
+    !snapshot.tools.every(completeTool)
   )
     throw new Error(
       "The session has no verified saved prompt snapshot with complete ordered tool schemas",
@@ -41,7 +61,13 @@ export async function savedPromptProof(file, session) {
     snapshotHash: createHash("sha256")
       .update(JSON.stringify(snapshot))
       .digest("hex"),
-    tools: snapshot.tools,
+    tools: snapshot.tools.map(normalizeTool),
+    ...(snapshot.inlineTools === false
+      ? {
+          deferredTools: [...deferred.values()],
+          inlineTools: false,
+        }
+      : {}),
     session: Object.fromEntries(
       [
         "model",
