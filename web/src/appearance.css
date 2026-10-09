@@ -551,21 +551,28 @@
   align-items: center;
   gap: 12px;
   padding: 0 8px 8px;
-  flex-wrap: wrap;
+  flex: 1 1 180px;
+  min-width: 0;
+  flex-wrap: nowrap;
 }
 .composer-context-row .execution-menu {
   height: 28px;
   padding: 0 6px;
   font-size: 12px;
+  flex: 0 1 auto;
+  min-width: 0;
 }
 .composer-context-values {
   display: flex;
+  flex: 1 1 0;
   gap: 12px;
   color: var(--muted);
   font-size: 12px;
   min-width: 0;
 }
 .composer-context-values > span {
+  flex: 1 1 0;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -623,6 +630,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 1 1 0;
   min-width: 0;
   flex-wrap: wrap;
 }

@@ -252,6 +252,23 @@
   font-size: var(--studio-main-font-size, inherit);
   white-space: nowrap;
 }
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label {
+  display: grid;
+}
+.conversation-header-tools-content .prompt-history-toggle-label,
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label::before {
+  grid-area: 1 / 1;
+}
+.conversation-header-tools-content
+  .prompt-history-toggle
+  .mantine-Button-label::before {
+  content: "Search chat";
+  visibility: hidden;
+}
 .conversation-header-tools-menu[data-compact="yes"][open]
   > .conversation-header-tools-content {
   position: fixed;

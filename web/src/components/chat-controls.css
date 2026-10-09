@@ -43,7 +43,7 @@
   white-space: nowrap;
 }
 .composer-bar {
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
 }
 .composer-submit-actions {
   display: flex;

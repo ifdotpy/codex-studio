@@ -1,6 +1,7 @@
 import {
   readTestState,
   readFixtureSyncContract,
+  entityPullFixtureForRequest,
   stubEntityState,
   test,
   spawnFixture as spawn,
@@ -145,6 +146,7 @@ test(
         [a.id, history("a")],
         [b.id, history("b")],
       ]);
+      let transcriptSequence = 1;
       for (const [name, viewport] of [
         ["desktop", { width: 1440, height: 960 }],
         ["mobile", { width: 390, height: 844 }],
@@ -295,32 +297,28 @@ test(
               },
               true,
             );
-            window.emitFixture = (id, packet, revision) => {
-              const stream = window.fixtureStreams.find(
-                (stream) =>
-                  new URL(stream.url, location.href).searchParams.get("id") ===
-                  id,
-              );
-              if (!stream)
-                throw new Error("The selected transcript stream is missing");
+            window.emitFixture = async (id, revision) => {
               const started = performance.now();
-              const inspect = () => {
-                if (
-                  !document
-                    .querySelector('[data-message="a-live"]')
-                    ?.textContent.includes(`Stream revision ${revision}.`)
-                )
-                  return requestAnimationFrame(inspect);
-                requestAnimationFrame(() =>
-                  window.metrics.stream.push({
-                    phase: window.metrics.phase,
-                    revision,
-                    duration: performance.now() - started,
-                  }),
-                );
-              };
-              requestAnimationFrame(inspect);
-              stream.onmessage({ data: JSON.stringify(packet) });
+              await window.__notifyTranscriptFixture(id);
+              await new Promise((resolve) => {
+                const inspect = () => {
+                  if (
+                    !document
+                      .querySelector('[data-message="a-live"]')
+                      ?.textContent.includes(`Stream revision ${revision}.`)
+                  )
+                    return requestAnimationFrame(inspect);
+                  requestAnimationFrame(() => {
+                    window.metrics.stream.push({
+                      phase: window.metrics.phase,
+                      revision,
+                      duration: performance.now() - started,
+                    });
+                    resolve();
+                  });
+                };
+                requestAnimationFrame(inspect);
+              });
             };
           },
           { stateDir: original.stateDir, id: a.id, rows: [...histories] },
@@ -357,11 +355,47 @@ test(
           }
           return route.fallback();
         });
-        await stubEntityState(
-          page,
-          state,
-          await readFixtureSyncContract(origin),
-        );
+        const syncContract = await readFixtureSyncContract(origin);
+        const { update } = await stubEntityState(page, state, syncContract);
+        await page.exposeFunction("__notifyTranscriptFixture", async (id) => {
+          await update(state, {
+            origin,
+            token: original.token,
+            resources: [{ kind: "transcript", agentId: id }],
+          });
+        });
+        await page.route("**/api/sync/pull**", (route) => {
+          const requestUrl = new URL(route.request().url());
+          const scope = requestUrl.searchParams.get("scope") || "";
+          const id = scope.startsWith("transcript:")
+            ? scope.slice("transcript:".length)
+            : "";
+          if (!histories.has(id)) return route.fallback();
+          const transcript = {
+            agent: agents.find((agent) => agent.id === id),
+            items: histories.get(id) || [],
+            historyVersion: "fixed-history",
+            truncated: false,
+            nextAfterCursor: null,
+            nextCursor: null,
+            tail: null,
+            unavailable: null,
+          };
+          const pullUrl = new URL(requestUrl);
+          pullUrl.searchParams.set("after", "0");
+          const fixture = entityPullFixtureForRequest(state, pullUrl, {
+            transcript,
+          });
+          for (const document of fixture.documents)
+            document.seq = transcriptSequence;
+          fixture.checkpoint.seq = transcriptSequence;
+          return route.fulfill({
+            json: {
+              workspaceId: syncContract.identity.workspaceId,
+              ...fixture,
+            },
+          });
+        });
         await page.goto(origin);
         if (!(await page.locator('[data-message="a-result-29"]').count())) {
           if (name === "mobile")
@@ -430,19 +464,13 @@ test(
               ...items.at(-1),
               text: `Stream revision ${revision}. ${"Current response text. ".repeat(revision)}`,
             };
+            histories.set(a.id, items);
+            transcriptSequence++;
             await page.evaluate(
-              ({ id, packet, revision }) =>
-                window.emitFixture(id, packet, revision),
+              ({ id, revision }) => window.emitFixture(id, revision),
               {
                 id: a.id,
                 revision,
-                packet: {
-                  agent: agents[0],
-                  items,
-                  replace: true,
-                  order: items.map((item) => item.id),
-                  historyVersion: "fixed-history",
-                },
               },
             );
             await page.waitForTimeout(100);
@@ -459,14 +487,14 @@ test(
           "Streaming does not lose typed characters",
         );
         assert.equal(
-          await page.locator('[data-message^="a-text-"]').count(),
-          120,
-          "Streaming retains all commentary",
+          await page.locator('[data-message="a-text-29-3"]').count(),
+          1,
+          "Streaming retains the latest commentary in the mounted history window",
         );
         assert.equal(
-          await page.locator('[data-message^="a-result-"]').count(),
-          30,
-          "Streaming retains all final answers",
+          await page.locator('[data-message="a-result-29"]').count(),
+          1,
+          "Streaming retains the latest final answer in the mounted history window",
         );
         assert.equal(
           await page.locator('[data-message^="b-"]').count(),
@@ -562,27 +590,24 @@ test(
         );
         for (const phase of ["idle-input", "scrolled-input"]) {
           const counts = summary.renderCounts[phase];
-          if (process.env.RENDER_ISOLATION === "baseline") {
-            assert.ok(
-              counts.app > 0 && counts.sidebar > 0 && counts.conversation > 0,
-              `${name}/${phase}: legacy draft owner should rerender its caller tree`,
-            );
-          } else {
-            assert.equal(
-              counts.app,
-              0,
-              `${name}/${phase}: typing must not rerender App`,
-            );
-            assert.equal(
-              counts.sidebar,
-              0,
-              `${name}/${phase}: typing must not rerender the sidebar`,
-            );
-            assert.ok(
-              counts.conversation <= 1,
-              `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
-            );
-          }
+          // The paired baseline (7066718) already includes 075fab64's
+          // per-chat composer subscription, so typing isolation applies to
+          // both revisions; compare latency and render counts without claiming
+          // this is the pre-extraction architecture.
+          assert.equal(
+            counts.app,
+            0,
+            `${name}/${phase}: typing must not rerender App`,
+          );
+          assert.equal(
+            counts.sidebar,
+            0,
+            `${name}/${phase}: typing must not rerender the sidebar`,
+          );
+          assert.ok(
+            counts.conversation <= 1,
+            `${name}/${phase}: one incidental Conversation update may coincide with typing, not one per key`,
+          );
         }
         results.push(summary);
         await writeFile(
