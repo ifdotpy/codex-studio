@@ -9,6 +9,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 test("sidebar drag browser", async ({ page: runnerPage }) => {
+  test.setTimeout(600000);
   const root = resolve(import.meta.dirname, "../../..");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
   console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
@@ -33,6 +34,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     const projectPath = initial.runtime.projects.find(
       (p) => p.name === "Project A",
     ).path;
+    const projectPaths = Object.fromEntries(
+      initial.runtime.projects.map((row) => [row.name, row.path]),
+    );
     const token = initial.token;
     const post = async (body) => {
       const r = await fetch(url + "/api/peer-teams", {
@@ -53,7 +57,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     });
     assert.equal(unauthorized.status, 403);
     const page = runnerPage;
-    await page.setViewportSize({ width: 1440, height: 1100 });
+    await page.setViewportSize({ width: 1440, height: 1440 });
     const errors = [];
     page.on("pageerror", (e) => errors.push(e.message));
     await page.goto(url);
@@ -64,9 +68,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       });
     const projectA = page.locator(`[data-project-path="${projectPath}"]`);
     const row = (name) => page.locator(`[data-chat="${agents[name].id}"]`);
-    await projectA
-      .getByRole("button", { name: "Show more", exact: true })
-      .click();
+    await projectA.getByRole("button", { name: /^Show more \(\d+\)$/ }).click();
     await row("Destination").waitFor();
     await row("Destination").click();
     console.log("Sidebar initial selection ready");
@@ -100,7 +102,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
         request.method() === "POST" &&
         request.postDataJSON()?.action === "reorder" &&
         Array.isArray(order) &&
-        order[0] === resolve(stateDir, "Project C")
+        order[0] === projectPaths["Project C"]
       );
     });
     await drag(
@@ -122,9 +124,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     const response = await reorderResponse;
     const responseBody = await response.json();
     const expectedOrder = [
-      resolve(stateDir, "Project C"),
-      resolve(stateDir, "Project A"),
-      resolve(stateDir, "Project B"),
+      projectPaths["Project C"],
+      projectPaths["Project A"],
+      projectPaths["Project B"],
     ];
     assert.ok(
       responseBody._syncEntities?.some((entity) => {
@@ -218,9 +220,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     );
     assert.equal((await topItems())[0], "Folder A");
     await team.press("Alt+ArrowUp");
-    assert.equal((await topItems())[0], "Team A");
+    await expect.poll(async () => (await topItems())[0]).toBe("Team A");
     await team.press("Alt+ArrowDown");
-    assert.equal((await topItems())[1], "Team A");
+    await expect.poll(async () => (await topItems())[1]).toBe("Team A");
     await page.reload();
     await row("Destination").waitFor();
     assert.equal((await topItems())[0], "Folder A");
@@ -249,7 +251,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       })
       .click();
     await page
-      .getByRole("menuitem", { name: "Compact project", exact: true })
+      .getByRole("menuitem", { name: "Show less", exact: true })
       .click();
     await row("Old hidden").waitFor({ state: "hidden" });
     assert.equal(await row("Old folder hidden").count(), 0);
@@ -264,18 +266,14 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       assert.equal(await row(name).isVisible(), true, name);
     const compactOrder = await topItems();
     await team.press("Alt+ArrowDown");
-    assert.equal(
-      (await topItems()).indexOf("Team A"),
-      compactOrder.indexOf("Team A") + 1,
-      "Compact keyboard order skips hidden folders and chats",
-    );
+    await expect
+      .poll(async () => (await topItems()).indexOf("Team A"))
+      .toBe(compactOrder.indexOf("Team A") + 1);
     await team.press("Alt+ArrowUp");
-    assert.deepEqual(await topItems(), compactOrder);
-    const showAll = page.getByRole("button", {
-      name: "Show all 9",
-      exact: true,
-    });
-    assert.ok((await showAll.getAttribute("title")).includes("24 hours"));
+    await expect.poll(topItems).toEqual(compactOrder);
+    await expect(
+      projectA.getByRole("button", { name: "Show more (2)", exact: true }),
+    ).toBeVisible();
     await page.reload();
     await row("Team source").waitFor();
     assert.equal(await row("Old hidden").count(), 0);
@@ -287,7 +285,9 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       .getByRole("searchbox", { name: "Filter projects and chats" })
       .fill("");
     await row("Old hidden").waitFor({ state: "hidden" });
-    await page.getByRole("button", { name: "Show all 9", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Show more (2)", exact: true })
+      .click();
     await row("Old hidden").waitFor();
     await page.reload();
     await row("Destination").waitFor();

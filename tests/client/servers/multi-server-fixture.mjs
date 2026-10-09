@@ -50,6 +50,8 @@ export async function fixture(label, signed = false) {
     source: "managed",
     cwd: "/same/project",
     status: "waiting",
+    provider: "codex",
+    updated: Date.now() / 1000,
     autoWake: true,
     canSend: true,
     model: "fixture-model",
@@ -380,6 +382,10 @@ export async function fixture(label, signed = false) {
     writes,
     pairs,
     accessRequests,
+    setChats(rows) {
+      snapshot.threads = rows;
+      snapshot.runtime.agents = rows;
+    },
     staleSettingsReceipts(value) {
       staleSettingsReceipts = value;
     },

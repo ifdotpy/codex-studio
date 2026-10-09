@@ -2,6 +2,7 @@
 """Isolated sidebar fixture. No native model requests or user state."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import sys
 import time
@@ -16,6 +17,12 @@ sys.path.insert(0, str(root / 'scripts'))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from codex_peer_teams import manage
+from studio_api.context import api_schema_cache_key, read_cached_or_compute_api_schema_hash
+from studio_api.schema import api_schema_hash, openapi_document
+
+# Build the real schema before runtime threads compete for the Python interpreter.
+read_cached_or_compute_api_schema_hash(
+    api_schema_cache_key(), lambda: api_schema_hash(openapi_document()))
 spec = importlib.util.spec_from_file_location('runtime_fixture', root / 'tests/runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
@@ -30,6 +37,14 @@ class QuietRuntime(Runtime):
 
 canvas = Canvas(Path(sys.argv[1]))
 canvas.runtime = rt = QuietRuntime(canvas.root, fixture.FakeServer)
+if os.environ.get('SIDEBAR_ALIAS_FIXTURE'):
+    access = rt.paired_access()
+    with rt.db() as db:
+        peer = {"id": "mbp", "clientId": "mbp", "serverId": "mbp", "kind": "server",
+                "label": "igor-mbp", "origin": "https://igor-mbp.tailf00fa0.ts.net",
+                "publicKey": "fixture-key", "tailscaleUser": "owner", "status": "revoked",
+                "created": 1, "lastAccess": None, "revoked": 1}
+        db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", ("mbp", json.dumps(peer)))
 paths = {}
 for name in ('Project A', 'Project B', 'Project C'):
     path = canvas.root / name
@@ -51,6 +66,8 @@ for name in ('Team source', 'Team peer', 'Destination', 'Old hidden', 'Old folde
             a['pinned'] = True
         if name == 'Recent':
             a['updated'] = time.time()
+            if os.environ.get('SIDEBAR_ALIAS_FIXTURE'):
+                a['provider'] = 'claude'
         if name == 'Unread':
             a.update(hasUnread=True, unreadCount=1)
         if name == 'Running':
@@ -66,6 +83,7 @@ team = str(uuid.uuid4())
 manage(rt, {'action': 'save', 'path': project, 'team_id': team, 'members': [leads['Team source']['id'], leads['Team peer']['id']],
             'name': 'Team A', 'expected_revision': 0, 'request_id': str(uuid.uuid4())})
 server = make_server(canvas, port=0)
+server.context.start_api_schema_hash().result(timeout=120)
 print(server.server_address[1], flush=True)
 try:
     server.serve_forever()

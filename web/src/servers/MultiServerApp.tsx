@@ -1,3 +1,4 @@
+import ProjectChatRows from "./ProjectChatRows";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
 } from "../components/StudioSettingsTabs";
@@ -97,6 +98,19 @@ export default function MultiServerApp() {
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
   const [query, setQuery] = useState("");
+  const compactKey = "studio-server-project-compact-v1";
+  const [compactProjects, setCompactProjects] = useState<
+    Record<string, boolean>
+  >(() => {
+    try {
+      return JSON.parse(localStorage.getItem(compactKey) || "{}");
+    } catch {
+      return {};
+    }
+  });
+  const aliases = Object.fromEntries(
+    servers.map((server) => [server.id, server.alias || "MAC"]),
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const pending = useRef(new Map<string, ServerCommand>());
@@ -159,10 +173,23 @@ export default function MultiServerApp() {
   const publishPreferences = (value: unknown) => {
     for (const [id, frame] of frames.current)
       frame.contentWindow?.postMessage(
-        { kind: "studio-server-preferences", serverId: id, preferences: value },
+        {
+          kind: "studio-server-preferences",
+          serverId: id,
+          preferences: value,
+          aliases: Object.fromEntries(
+            serversRef.current.map((server) => [
+              server.id,
+              server.alias || "MAC",
+            ]),
+          ),
+        },
         new URL(frame.src).origin,
       );
   };
+  useEffect(() => {
+    publishPreferences(preferencesRef.current);
+  }, [paired]);
   const select = useCallback((id: string) => {
     mount(id);
     life(id).idleSince = Date.now();
@@ -478,7 +505,10 @@ export default function MultiServerApp() {
     const same = old.find((row) => row.id === server.id);
     if (same && same.origin !== server.origin)
       throw new Error("This server identity belongs to another address.");
-    writeServers([...old.filter((row) => row.id !== server.id), server]);
+    writeServers([
+      ...old.filter((row) => row.id !== server.id),
+      { ...server, alias: server.alias || same?.alias },
+    ]);
     if (focus) select(server.id);
   };
   const remove = (server: StudioServer) => {
@@ -648,7 +678,6 @@ export default function MultiServerApp() {
                   <details key={project.path} open>
                     <summary title={`${project.path} (${server.label})`}>
                       {project.name}
-                      <small>{server.label}</small>
                     </summary>
                     <Button
                       size="xs"
@@ -662,26 +691,35 @@ export default function MultiServerApp() {
                     >
                       New chat
                     </Button>
-                    {chats.map((chat) => (
-                      <button
-                        className="server-chat"
-                        key={chat.id}
-                        data-chat={chat.id}
-                        aria-current={
-                          current === server.id && view.opened === chat.id
-                            ? "page"
-                            : undefined
-                        }
-                        onClick={() =>
-                          send(server.id, { action: "open", id: chat.id })
-                        }
-                      >
-                        {chat.name}
-                        {chat.unread && (
-                          <span aria-label="Unread result"> ●</span>
-                        )}
-                      </button>
-                    ))}
+                    <ProjectChatRows
+                      chats={chats.map((chat) => ({
+                        ...chat,
+                        serverId: server.id,
+                      }))}
+                      selected={
+                        current === server.id && view.opened
+                          ? { id: view.opened, serverId: server.id }
+                          : undefined
+                      }
+                      aliases={aliases}
+                      compact={
+                        compactProjects[
+                          JSON.stringify([server.id, project.path])
+                        ] !== false
+                      }
+                      query={query}
+                      open={(chat) =>
+                        send(server.id, { action: "open", id: chat.id })
+                      }
+                      setCompact={(value) => {
+                        const next = {
+                          ...compactProjects,
+                          [JSON.stringify([server.id, project.path])]: value,
+                        };
+                        localStorage.setItem(compactKey, JSON.stringify(next));
+                        setCompactProjects(next);
+                      }}
+                    />
                   </details>
                 );
               })}
