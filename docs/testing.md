@@ -36,6 +36,70 @@ production build. Browser checks build the renderer before exercising it.
 use the server runner's `--help` for filtering and optional categories.
 `test:server` also runs the colocated JavaScript bridge tests. To filter Python
 contracts, use `npm run test:server:python -- --filter <name>`.
+The Python server runner samples runnable processes for five seconds and uses
+their median. CPU jobs are `max(ceil(allowed CPUs / 4), allowed CPUs - competing
+runnable tasks)`. The plan then applies the hard memory limit and suite-count
+limit. Memory jobs divide the smaller of half `MemAvailable` and
+`MemAvailable - 4 GiB` by peak suite RSS. Linux `MemAvailable` already reflects
+memory currently occupied by tmpfs/shmem, so scratch is not counted a second
+time. The runner selects tmpfs only when free space is at least 256 MiB per planned
+worker, then runs a 64 MiB write+fsync quota probe. The bound rounds up the
+measured peak of about 4.5 GiB across 25 workers (184 MiB per worker) to leave
+headroom for concurrent suite scratch. The probe has caught roots that report free
+space but cannot actually write. If tmpfs is unavailable, it uses disk scratch
+with the same CPU/memory plan; disk-backed full runs under heavy load are not
+currently green (see [known failures](../tests/KNOWN-FAILURES.md)).
+
+Measured suite durations only order the longest suites first. Profile data is
+stored per repository in the short test cache; peak RSS is replaced with the
+latest completed run's measurement, so one outlier affects planning only until
+the next run. The plan line reports
+`availableCpus` (CPU allowance after competing load and floor), `otherRunnableProcesses`
+(sampled competitors), `cpuLimit` (affinity/cgroup ceiling), `cpuFloor`,
+`availableMemoryBytes`, `memoryBudgetBytes` (half available memory, retaining the
+4 GiB reserve), `measuredPeakSuiteRssBytes`, `measuredWorkerMemoryBytes`,
+`memoryWorkerSlots`, `cpuWorkerSlots`, `unclampedCpuCount`,
+`estimatedSuiteSeconds`, `runnableSuites`, `workers`,
+`codexExecutable` (the one resolved app-server executable or null), and
+`limitingBound` (CPU, memory, suite count, or explicit request). `cpuLimit` is the affinity/cgroup ceiling; `cpuFloor` is the
+quarter-CPU minimum. `otherRunnableProcesses` is the five-second median minus
+the planner's own runnable sample. `--jobs` and `CODEX_SERVER_TEST_JOBS` request a
+job count; if a resource bound reduces it, the runner prints the reduction.
+`--show-jobs` is advisory and does not reserve slots; use
+`--load-sample-seconds 0` or `CODEX_SERVER_TEST_LOAD_SAMPLE_SECONDS=0` for a
+fast query. The summary reports suite counts (plain assertion scripts count once per suite),
+opt-in/environment skips, runner errors, and elapsed time. It then prints the exact
+expected-failure and unexpected-success test IDs and structured unittest outcome counts. Those IDs are
+pinned in `tests/server/expected_failures.txt`; a mismatch fails the run.
+Known product issues and reproductions are in
+[`tests/KNOWN-FAILURES.md`](../tests/KNOWN-FAILURES.md), while expectation edits
+are tracked in [`tests/TEST-STATUS-CHANGES.md`](../tests/TEST-STATUS-CHANGES.md).
+Use `python3 tests/server/compare_runs.py LOG1 LOG2 ...` to compare failure sets.
+Concurrent runners serialize on one per-user lock held for the whole run. A waiting
+runner prints `waiting for another test run to finish`, then samples load and plans
+workers after the lock is released. The operating system releases the lock if a runner exits abnormally.
+Use `--show-jobs` to inspect the plan. Set `--jobs <count>` or
+`CODEX_SERVER_TEST_JOBS` to override it manually.
+Each suite gets separate short temporary, home, XDG, Codex, Claude, and workspace
+directories under the selected scratch root, so parallel suites do not share
+mutable test state. `--audit-home` uses Python audit hooks in suites and Python
+children to block and record access to the real user's `.codex`, `.claude`, and
+`.local/state/codex-agents` trees. For the default PTY suite only, it allows a
+read-only open and exec of the single canonical `codexExecutable` printed in the
+plan, and permits that exact resolved path as the `CODEX_BIN` and audit-policy
+environment values passed to the isolated supervisor. Exec detection also
+recognizes the exact executable immediately after a namespace wrapper's `--`
+marker; the wrapper and all other command arguments remain audited. The audit
+also requires `HOME`, `CODEX_HOME`, and all `XDG_*` home paths in each launched Codex child to
+stay outside protected state; this redirected child environment is the
+isolation boundary for native executable state. The audit hooks observe Python-level
+`open`, list, create, remove, rename, SQLite connect, and `subprocess.Popen`
+argv/environment events. They do not observe metadata checks, `exec*`, `posix_spawn`, shell `system`, or filesystem access performed
+internally by non-Python native child processes. The child isolation relies on its
+redirected `HOME`/`CODEX_HOME`/`XDG_*`; the audit does not inspect native child internals. The host binary is statically
+linked, so there are no adjacent shared-library paths to allow. The runner
+fails if any blocked access was logged and prints the allowed executable
+separately.
 
 For a focused client check, forward a file filter to Vitest or Playwright:
 
@@ -82,6 +146,21 @@ contract. `npm run test:desktop:native` selects the hidden Electron application
 check and needs desktop dependencies. The commands `test:server:transport` and
 `test:server:images` retain the process transport and macOS image-helper checks.
 `test:native:schema` explicitly enables the installed Codex schema check.
+`tests/terminals-contract.py` contains 15 PTY/app-server integration tests and
+runs by default when a Codex executable is available. The runner resolves the
+binary once (`CODEX_BIN`, then `codex` on `PATH`, then `~/.local/bin/codex`),
+prints the resolved path in its plan, and passes that one path to this suite
+and the decoy-supervisor isolation test while keeping `HOME`, `CODEX_HOME`, and
+`XDG_*` isolated. With `--audit-home`,
+the audit permits only read-only open and exec of that exact resolved executable
+under the real home; adjacent shared libraries are not needed for this host's
+statically linked executable. All other real-home state stays blocked and
+logged. If no executable resolves, this suite is reported as an environment
+skip with the missing Codex executable named. There is no fake-binary split:
+all 15 tests exercise PTY process creation and the real supervisor/app-server
+lifecycle protocol, so a stub would remove the contract under test. On the
+verified head the default run reports 330 passed suites, 0 failures, and 62
+opt-in skips.
 `npm --prefix web run test:rxdb-cache` verifies the runtime patch with an exposed
 garbage collector in a child process. These boundaries are not replaced by
 successful browser discovery or mocked unit tests.

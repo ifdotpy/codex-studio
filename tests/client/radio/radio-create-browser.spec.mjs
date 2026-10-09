@@ -1,12 +1,18 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { modelValue } from "../../model-picker.mjs";
-import { test, expect } from "../playwright.mjs";
+import { chooseSetupValue } from "../../setup-controls.mjs";
+import {
+  handleEntitySyncFixtureRequest,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("radio create browser", async ({ page: runnerPage }) => {
+  test.setTimeout(90000);
   const root = resolve(import.meta.dirname, "../../../web");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
@@ -16,11 +22,38 @@ test("radio create browser", async ({ page: runnerPage }) => {
     configFile: false,
     root,
     cacheDir,
-    server: { host: "127.0.0.1", port: 0 },
+    server: {
+      host: "127.0.0.1",
+      port: 0,
+      watch: { ignored: ["**/test-results/**", "**/playwright-report/**"] },
+    },
     plugins: [
       {
         name: "fixture",
         configureServer(s) {
+          s.middlewares.use((req, res, next) => {
+            if (
+              handleEntitySyncFixtureRequest(req, res, {
+                workspaceId: "1234567890abcdef1234567890abcdef",
+                snapshot: {
+                  stateDir: "create-test",
+                  threads: [],
+                  runtime: { rooms: [], projects: [], requests: [] },
+                },
+                onStreamReady: (notify) =>
+                  notify([
+                    { kind: "models" },
+                    ...[
+                      "codex",
+                      "claude",
+                      ...Array.from({ length: 5 }, (_, i) => "extra" + i),
+                    ].map((accountKey) => ({ kind: "limits", accountKey })),
+                  ]),
+              })
+            )
+              return;
+            next();
+          });
           s.middlewares.use("/check", (_req, res) => {
             res.setHeader("Content-Type", "text/html");
             res.end(
@@ -35,7 +68,7 @@ test("radio create browser", async ({ page: runnerPage }) => {
           if (id !== entry) return;
           return `
   import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {MantineProvider,Modal} from '@mantine/core';import '@mantine/core/styles.css';import SharedChatCreate from '/src/components/SharedChatCreate.tsx';import Sidebar from '/src/components/Sidebar.tsx';import '/src/style.css';import '/src/appearance.css';import '/src/workspace-layout.css';import {theme} from '/src/theme.ts';
-  const accounts={defaultAccountKey:'codex',accounts:[{id:'codex',label:'Personal',email:'personal@example.com',provider:'codex',status:'ready'},{id:'claude',label:'Work',email:'work@example.com',provider:'claude',status:'ready'}]};
+  const accounts={defaultAccountKey:'codex',accounts:[{id:'codex',label:'Personal',email:'personal@example.com',provider:'codex',status:'ready'},{id:'claude',label:'Work',email:'work@example.com',provider:'claude',status:'ready'},...Array.from({length:5},(_,i)=>({id:'extra'+i,label:'Account '+(i+3),email:'account'+i+'@example.com',provider:i<3?'codex':'claude',status:'ready'}))]};
   const initial={stateDir:'create-test',threads:[],runtime:{projects:[{id:'p',path:'/p',name:'Project'}],rooms:[],requests:[],peerTeamsVersion:1,peerTeams:[]}};
   function Fixture(){const[data,setData]=useState(initial);const[show,setShow]=useState({path:'/p'});const[opened,open]=useState(null);window.fixture=data;window.opened=opened;window.reopen=()=>setShow({path:'/p'});
   const refresh=async()=>{if(window.failRefresh)throw Error('Snapshot unavailable');const result=await fetch('/snapshot');setData(await result.json());};
@@ -71,6 +104,25 @@ test("radio create browser", async ({ page: runnerPage }) => {
                 { model: "gpt-6-astra", displayName: "Astra", isDefault: true },
                 { model: "gpt-6-luna", displayName: "Luna" },
               ],
+        },
+      }),
+    );
+    await page.route("**/api/limits?*", (r) =>
+      r.fulfill({
+        json: {
+          accountKey: new URL(r.request().url()).searchParams.get(
+            "account_key",
+          ),
+          at: Date.now() / 1000,
+          data: {
+            rateLimits: {
+              primary: {
+                usedPercent: 30,
+                windowDurationMins: 300,
+                resetsAt: Date.now() / 1000 + 3600,
+              },
+            },
+          },
         },
       }),
     );
@@ -133,28 +185,63 @@ test("radio create browser", async ({ page: runnerPage }) => {
     state = await page.evaluate(() => window.fixture);
     const form = page.getByRole("form", { name: "Create shared chat" });
     const create = form.getByRole("button", {
-      name: "Create shared chat",
+      name: "Create",
       exact: true,
     });
     await page.waitForFunction(
       () =>
         document.querySelector("form button[type=submit]")?.disabled === false,
     );
+    await form.getByRole("button", { name: "Settings for agent 1" }).click();
     assert.equal(
-      await modelValue(form.getByLabel("Model for agent 1", { exact: true })),
+      await modelValue(page.getByLabel("Model for agent 1", { exact: true })),
       "gpt-6-astra",
     );
+    await chooseSetupValue(
+      page.getByRole("radiogroup", {
+        name: "Account for agent 1 provider",
+        exact: true,
+      }),
+      "claude",
+    );
+    await expect(
+      page.getByLabel("Account for agent 1", { exact: true }),
+    ).toHaveAttribute("data-value", "codex");
+    await expect(page.locator(".setup-account")).toHaveCount(3);
+    await chooseSetupValue(
+      page.getByRole("radiogroup", {
+        name: "Account for agent 1 provider",
+        exact: true,
+      }),
+      "codex",
+    );
+    await page.keyboard.press("Escape");
+    await form.getByRole("button", { name: "Settings for agent 2" }).click();
     assert.equal(
-      await modelValue(form.getByLabel("Model for agent 2", { exact: true })),
+      await modelValue(page.getByLabel("Model for agent 2", { exact: true })),
       "opus",
     );
     assert.match(
-      await form.getByLabel("Model for agent 2", { exact: true }).innerText(),
+      await page.getByLabel("Model for agent 2", { exact: true }).innerText(),
       /Opus 5.5/,
     );
+    await page.keyboard.press("Escape");
     await form.getByLabel("Chat name").fill("Architecture discussion");
-    for (const width of [1100, 375]) {
+    const screenshots = join(tmpdir(), "refresh-shared-screenshots");
+    await mkdir(screenshots, { recursive: true });
+    for (const [profile, width, colorScheme] of [
+      ["dark", 1100, "dark"],
+      ["light", 1100, "light"],
+      ["mobile", 390, "dark"],
+    ]) {
       await page.setViewportSize({ width, height: 950 });
+      await page.emulateMedia({ colorScheme });
+      await page.evaluate((scheme) => {
+        document.documentElement.setAttribute(
+          "data-mantine-color-scheme",
+          scheme,
+        );
+      }, colorScheme);
       assert.equal(
         await page.evaluate(
           () => document.documentElement.scrollWidth <= innerWidth,
@@ -162,9 +249,20 @@ test("radio create browser", async ({ page: runnerPage }) => {
         true,
       );
       await page.screenshot({
-        path: join(tmpdir(), `studio-radio-create-${width}.png`),
-        fullPage: true,
+        path: join(screenshots, `${profile}-shared.png`),
       });
+      await form.getByRole("button", { name: "Settings for agent 1" }).click();
+      await expect(
+        page.getByLabel("Account for agent 1", { exact: true }),
+      ).toBeVisible();
+      await expect(page.locator(".shared-create-picker")).toBeInViewport({
+        ratio: 1,
+      });
+      await expect(page.locator(".setup-account")).toHaveCount(4);
+      await page.screenshot({
+        path: join(screenshots, `${profile}-shared-picker.png`),
+      });
+      await page.keyboard.press("Escape");
     }
     await page.setViewportSize({ width: 1100, height: 950 });
     await create.click();
@@ -176,6 +274,18 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.waitForFunction(() => window.opened === "radio:direct");
     assert.equal(requests.length, 2);
     assert.deepEqual(requests[0], requests[1]);
+    const { request_id, ...body } = requests[0];
+    assert.match(request_id, /^[0-9a-f-]{36}$/);
+    assert.deepEqual(body, {
+      action: "radio",
+      radio_action: "create",
+      path: "/p",
+      name: "Architecture discussion",
+      participants: [
+        { account_key: "codex", model: "gpt-6-astra" },
+        { account_key: "claude", model: "opus" },
+      ],
+    });
     assert.equal(await page.locator(".sidebar-row").count(), 1);
     assert.equal(await page.locator(".peer-team").count(), 0);
     assert.equal(
@@ -203,17 +313,36 @@ test("radio create browser", async ({ page: runnerPage }) => {
     await page.getByRole("button", { name: "Refresh", exact: true }).click();
     await form.waitFor({ state: "detached" });
     assert.equal(requests.length, posted);
-    await page
-      .getByRole("button", { name: "Options for project Project" })
-      .click();
+    const projectOptions = page.getByRole("button", {
+      name: "Options for project Project",
+    });
+    await projectOptions.locator("..").hover();
+    await projectOptions.click();
     await page.getByRole("menuitem", { name: "New shared chat" }).click();
-    assert.equal(
-      await form.getByLabel("Project", { exact: true }).inputValue(),
-      "/p",
+    await expect(create).toBeEnabled();
+    await form.getByRole("button", { name: "Settings for agent 1" }).click();
+    await page.locator('[data-account-key="extra0"]').click();
+    await expect(
+      page.getByLabel("Model for agent 1", { exact: true }),
+    ).toHaveAttribute("data-value", "gpt-6-astra");
+    await page.getByRole("option", { name: "Luna 6", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await form.getByRole("button", { name: "Settings for agent 2" }).click();
+    await chooseSetupValue(
+      page.getByLabel("Reasoning for agent 2", { exact: true }),
+      "high",
     );
+    await page.keyboard.press("Escape");
+    await create.click();
+    await form.waitFor({ state: "detached" });
+    assert.equal(requests.at(-1).path, "/p");
+    assert.deepEqual(requests.at(-1).participants, [
+      { account_key: "extra0", model: "gpt-6-luna" },
+      { account_key: "claude", model: "opus", effort: "high" },
+    ]);
     expect(errors).toEqual([]);
     console.log(
-      `PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh, one sidebar row, ordinary chat and project entry. Screenshots ${tmpdir()}/studio-radio-create-{1100,375}.png`,
+      `PASS direct shared creation, two account/model selections, exact retry after reload, acknowledged refresh, one sidebar row, ordinary chat and project entry. Screenshots ${screenshots}`,
     );
   } finally {
     await server.close();

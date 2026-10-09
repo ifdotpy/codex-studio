@@ -7,6 +7,8 @@ isolate_supervisor_environment()
 import importlib.util
 import json
 from pathlib import Path
+import traceback
+import threading
 import unittest
 from unittest.mock import patch
 import uuid
@@ -29,6 +31,9 @@ class WakeupContract(unittest.TestCase):
 
     def calls(self):
         return [params for method, params in self.runtime.server.calls if method == 'turn/start']
+
+    def calls_for(self, agent):
+        return [params for params in self.calls() if params.get('threadId') == agent.get('threadId')]
 
     def set_single(self, lead):
         current = self.runtime.agent(lead['id'])
@@ -209,10 +214,16 @@ class WakeupContract(unittest.TestCase):
 
 
 
-    def hold_start(self):
+    def hold_start(self, agent=None):
         captured = []
         original = self.runtime.start
-        with patch.object(self.runtime, 'start', side_effect=lambda *args: captured.append(args)):
+        def capture_target_start(*args):
+            if agent is None or args[0]['id'] == agent['id']:
+                captured.append(args)
+                return None
+            return original(*args)
+
+        with patch.object(self.runtime, 'start', side_effect=capture_target_start):
             self.runtime.dispatch()
             f.eventually(lambda: bool(captured))
         return original, captured[0]
@@ -260,15 +271,36 @@ class WakeupContract(unittest.TestCase):
 
     def test_reserved_exact_work_decision_retires_only_decided_result(self):
         lead = self.start(self.lead())
+        start_submissions = []
+        original_submit = self.runtime.server.submit
+
+        def trace_turn_start(method, params):
+            if method == 'turn/start' and params.get('threadId') == lead.get('threadId'):
+                start_submissions.append({
+                    'thread': threading.current_thread().name,
+                    'threadId': params.get('threadId'),
+                    'clientUserMessageId': params.get('clientUserMessageId'),
+                    'input': params.get('input'),
+                    'runtimeFrames': [
+                        f'{frame.filename}:{frame.lineno}:{frame.name}'
+                        for frame in traceback.extract_stack()
+                        if Path(frame.filename).name == 'codex_runtime.py'
+                    ],
+                })
+            return original_submit(method, params)
+
+        submit_patch = patch.object(self.runtime.server, 'submit', side_effect=trace_turn_start)
+        submit_patch.start()
+        self.addCleanup(submit_patch.stop)
         worker = self.worker(lead)
         self.complete(lead)
         first = self.submit(self.task(lead, worker), worker)
         second = self.submit(self.task(lead, worker), worker)
-        original, args = self.hold_start()
+        original, args = self.hold_start(lead)
         self.decide(first, lead, lead['id'])
-        before = len(self.calls())
+        before = len(self.calls_for(lead))
         original(*args)
-        self.assertEqual(len(self.calls()), before)
+        self.assertEqual(len(self.calls_for(lead)), before, start_submissions)
         statuses = {row['id']: row['status'] for row in self.events(lead, 'work_review')}
         self.assertEqual(statuses['work-result:' + first['results'][-1]['id']], 'stored_only')
         self.assertEqual(statuses['work-result:' + second['results'][-1]['id']], 'pending')

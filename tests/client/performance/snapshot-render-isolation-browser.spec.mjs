@@ -59,12 +59,18 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     window.EventSource = class extends NativeEventSource {
       constructor(...args) {
         super(...args);
+        window.activeResourceStream = this;
         this.addEventListener("resources", (event) => {
           window.resourceFrames.push(JSON.parse(event.data));
+          window.latestResourceFrameSource = this;
         });
       }
     };
     window.renderCounts = {};
+    window.modelWork = {};
+    window.__studioSidebarModelProbe = (kind, count) => {
+      window.modelWork[kind] = (window.modelWork[kind] || 0) + count;
+    };
     window.__studioPromptComposerRenderProbe = (component, id) => {
       const key = id ? `${component}:${id}` : component;
       window.renderCounts[key] = (window.renderCounts[key] || 0) + 1;
@@ -86,9 +92,11 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
   };
   const counts = () => page.evaluate(() => ({ ...window.renderCounts }));
   const frames = () => page.evaluate(() => window.resourceFrames);
+  const modelWork = () => page.evaluate(() => ({ ...window.modelWork }));
   const reset = () =>
     page.evaluate(() => {
       window.renderCounts = {};
+      window.modelWork = {};
     });
   try {
     await page.goto(origin);
@@ -101,19 +109,27 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
       .fill("Keep this draft while other agents update.");
     // The idle prefetch pump mounts transcript subscriptions after 1000 ms.
     // Wait for their stream baseline and completed reads before measuring
-    // entity changes. A sleep can count startup reconciliation as a rename.
+    // entity changes. Require the current source because an older baseline
+    // can precede a failed replacement stream and its pending reconnect.
     await expect
-      .poll(async () =>
-        (await frames()).some(
-          (event) =>
-            event.reason === "initial" &&
-            snapshot.threads.every((agent) =>
-              event.resources.some(
-                (resource) =>
-                  resource.kind === "transcript" &&
-                  resource.agentId === agent.id,
-              ),
-            ),
+      .poll(() =>
+        page.evaluate(
+          (ids) => {
+            const event = window.resourceFrames.at(-1);
+            return (
+              window.activeResourceStream?.readyState === EventSource.OPEN &&
+              window.latestResourceFrameSource ===
+                window.activeResourceStream &&
+              event?.reason === "initial" &&
+              ids.every((id) =>
+                event.resources.some(
+                  (resource) =>
+                    resource.kind === "transcript" && resource.agentId === id,
+                ),
+              )
+            );
+          },
+          snapshot.threads.map((agent) => agent.id),
         ),
       )
       .toBe(true);
@@ -141,7 +157,11 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     const firstMeasuredFrame = (await frames()).length;
     for (let i = 0; i < 6; i++) await rename(other, `Other changed ${i}`);
     const unrelated = await counts();
-    console.log(JSON.stringify({ idle, unrelated }));
+    const unrelatedModelWork = await modelWork();
+    expect(unrelatedModelWork["catalog-row"]).toBeGreaterThan(0);
+    expect(unrelatedModelWork["order-compare"] || 0).toBe(0);
+    expect(unrelatedModelWork["search-row"] || 0).toBe(0);
+    console.log(JSON.stringify({ idle, unrelated, unrelatedModelWork }));
     // No baseline or reconnect can explain renders in this measured interval.
     const measuredFrames = (await frames()).slice(firstMeasuredFrame);
     expect(measuredFrames.length).toBeGreaterThan(0);
@@ -164,6 +184,10 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
     await reset();
     await rename(workers[0], "Worker changed");
     const affected = await counts();
+    const workerModelWork = await modelWork();
+    expect(workerModelWork["catalog-row"]).toBeGreaterThan(0);
+    expect(workerModelWork["order-compare"] || 0).toBe(0);
+    expect(workerModelWork["search-row"] || 0).toBe(0);
     expect(affected[`team-row:${workers[0].id}`]).toBeGreaterThan(0);
     for (const worker of workers.slice(1))
       expect(affected[`team-row:${worker.id}`] || 0).toBe(0);

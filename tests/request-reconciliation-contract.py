@@ -212,6 +212,10 @@ class Archives(unittest.TestCase):
         self.assertEqual(self.rt.calls, [('reconcile', 'worker')])
 
     def test_unknown_mutation_still_blocks_archive_and_recover_does_not_erase_it(self):
+        with self.rt.db() as db:
+            worker = self.rt.agent('worker', db)
+            worker.update(status='running', inFlight=True)
+            self.rt.put(db, 'agents', worker)
         self.record('orchestration_monitor', 'Native response lost')
         self.assertFalse(self.call('inspect')['canArchive'])
         self.assertEqual(self.call('recover')['requests']['unknown'], ['old-account:old-thread:request'])
@@ -232,7 +236,7 @@ class OutputReads(unittest.TestCase):
         with self.rt.db() as db:
             db.execute('CREATE TABLE runtime_items(id TEXT PRIMARY KEY,agent TEXT,record TEXT)')
             item = {'id': 'lead:exec-old', 'title': 'commandExecution', 'truncated': True,
-                'text': json.dumps({'status': 'completed', 'exitCode': 0, 'aggregatedOutput': 'Verified output\n' * 1000})}
+                'text': json.dumps({'status': 'completed', 'exitCode': 0, 'aggregatedOutput': 'Verified output\n' * 3000})}
             db.execute('INSERT INTO runtime_items VALUES (?,?,?)', (item['id'], 'lead', json.dumps(item)))
             actor = self.rt.checked_actor(db, 'lead')
             actor.update(accountKey='new-account', threadId='new-thread')
@@ -245,9 +249,9 @@ class OutputReads(unittest.TestCase):
         self.assertTrue(first['truncated'])
         self.assertEqual(first['outcome'], 'unknown')
         self.assertEqual(first['exitCode'], 0)
-        self.assertEqual(first['nextOffset'], 3000)
-        self.assertEqual(second['offset'], 3000)
-        self.assertEqual(first['text'] + second['text'], ('Verified output\n' * 1000)[:6000])
+        self.assertEqual(first['nextOffset'], 30000)
+        self.assertEqual(second['offset'], 30000)
+        self.assertEqual(first['text'] + second['text'], 'Verified output\n' * 3000)
         absent = self.rt.model_read('lead', {'output_ref': 'lead:exec-old', 'contains': 'missing'})
         self.assertTrue(absent['truncated'])
         with self.assertRaisesRegex(ValueError, 'not owned'):

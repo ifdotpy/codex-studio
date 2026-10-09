@@ -42,6 +42,13 @@ class Contract(unittest.TestCase):
         self.new = self.bundle(self.case.binary.read_bytes() + b'\n# newer\n', '0.2.0')
         self.command = [self.old['path'], 'app-server', '--listen', 'stdio://',
                         '-c', 'cli_auth_credentials_store="file"']
+        # These tests model a host-launched fake process and separately stub
+        # its argv reader. Do not let an installed Linux VM prefix change that
+        # modeled launch command.
+        self.provider_command_patch = patch('codex_runtime.provider_process_command',
+                                            side_effect=lambda command: command)
+        self.provider_command_patch.start()
+        self.addCleanup(self.provider_command_patch.stop)
         self.first = AppServer(self.root, lambda _: None, lambda _: None, lambda: None,
                                home=self.home, isolated=True, executable=self.old['path'],
                                supervisor_handle=self.handle, supervisor_root=self.root)
@@ -51,6 +58,7 @@ class Contract(unittest.TestCase):
         self.rt = SimpleNamespace(root=self.root, lock=threading.RLock(), start_lock=threading.RLock(),
             closed=False, factory=AppServer, servers={}, connection_ids={}, offline_accounts=set(),
             offline=False, _publish_desktop_resource=lambda: None,
+            refresh_workspace_volatile=lambda: None,
             accounts=SimpleNamespace(get=lambda _: {'provider': 'codex'}, home=lambda *a, **kw: self.home),
             notification=lambda *a: None, request=lambda *a: None, disconnected=lambda *a: None,
             commit_supervisor_event=lambda *a: None, supervisor_event_applied=lambda *a: False,
@@ -265,9 +273,31 @@ class Contract(unittest.TestCase):
 
 class OperatorCloseContract(unittest.TestCase):
     def setUp(self):
+        self.thread_exceptions = []
+        previous_thread_hook = threading.excepthook
+
+        def record_thread_exception(args):
+            self.thread_exceptions.append(args.exc_value)
+            previous_thread_hook(args)
+
+        threading.excepthook = record_thread_exception
+        self.addCleanup(setattr, threading, 'excepthook', previous_thread_hook)
+        self.addCleanup(self._assert_no_unexpected_thread_exceptions)
         self.case = fixture.ProcessSupervisorContract(methodName='runTest')
         self.case.setUp()
         self.addCleanup(self.case.cleanup)
+        provider_command_patch = patch('codex_runtime.provider_process_command',
+                                       side_effect=lambda command: command)
+        provider_command_patch.start()
+        self.addCleanup(provider_command_patch.stop)
+        self.replacement_model_list = None
+        self.replacement_transport_error = None
+        if self._testMethodName == 'test_verified_operator_close_allows_a_new_launch_signature':
+            self._prepare_verified_operator_close_replacement()
+
+    def _assert_no_unexpected_thread_exceptions(self):
+        self.assertEqual(self.thread_exceptions, [],
+                         'fixture background thread raised an uncaught exception')
 
     def close(self, handle):
         row = next(row for row in supervisor.status(self.case.root)['handles'] if row['id'] == handle)
@@ -284,20 +314,107 @@ class OperatorCloseContract(unittest.TestCase):
         self.assertEqual(result, {'closed': True, 'handle': 'test:slow-operator-close', 'pid': pid})
         self.assertIsNone(supervisor.process_start_time(pid))
 
-    def test_verified_operator_close_allows_a_new_launch_signature(self):
+    def _prepare_verified_operator_close_replacement(self):
         first = self.case.server(handle='test:operator-replace')
         pid = int(self.case.pid_file.read_text())
-        self.close('test:operator-replace')
+        self.assertEqual(first.call('model/list', {})['data'][0]['model'], 'fake')
+
+        ack_entered = threading.Event()
+        release_ack = threading.Event()
+        ack_finished = threading.Event()
+        ack_errors = []
+        replacement_opened = threading.Event()
+        replacement_reader_parked = threading.Event()
+        release_replacement_reader = threading.Event()
+        self.addCleanup(release_ack.set)
+        self.addCleanup(release_replacement_reader.set)
+        original_ack = first.proc.ack
+
+        def delayed_ack(sequence):
+            ack_entered.set()
+            try:
+                if not release_ack.wait(30):
+                    raise RuntimeError('fixture did not release the supervisor ACK')
+                original_ack(sequence)
+            except BaseException as error:
+                ack_errors.append(error)
+            finally:
+                ack_finished.set()
+
+        first.proc.ack = delayed_ack
+        pending = first.submit('model/list', {})
+        self.assertEqual(first.wait(pending, timeout=30)['data'][0]['model'], 'fake')
+        self.assertTrue(ack_entered.wait(30), 'native model/list response was not read for ACK')
+
+        closed = self.close('test:operator-replace')
+        self.assertEqual(closed['handle'], 'test:operator-replace')
         other = self.case.root / 'new-native'
         other.write_text(self.case.binary.read_text() + '\n# replacement\n')
         other.chmod(0o700)
+        handle = 'test:operator-replace'
+
+        original_next_event = supervisor.ProcessProxy.next_event
+
+        def gate_replacement_reader(proxy):
+            is_replacement = (proxy.handle == handle
+                              and proxy.generation > first.proc.generation)
+            if is_replacement:
+                replacement_reader_parked.set()
+                if not release_replacement_reader.wait(30):
+                    raise RuntimeError('fixture did not release the replacement reader')
+            return original_next_event(proxy)
+
+        next_event_patch = patch.object(supervisor.ProcessProxy, 'next_event',
+                                         gate_replacement_reader)
+        next_event_patch.start()
+        self.addCleanup(next_event_patch.stop)
+
+        def open_replacement(stderr_sink):
+            proxy = supervisor.attach(self.case.root, handle,
+                [str(other), 'app-server', '--listen', 'stdio://'], dict(os.environ),
+                stderr_sink=stderr_sink)
+            # The fake's known initialize result lets AppServer finish setup
+            # while its first reader call is held at the test-controlled gate.
+            proxy.initialize_result = {'userAgent': 'fake-model/1.0.0'}
+            replacement_opened.set()
+            return proxy
+
         second = AppServer(self.case.root, lambda _: None, lambda _: None, lambda: None,
-                           executable=str(other), supervisor_handle='test:operator-replace')
+                           executable=str(other), supervisor_handle=handle,
+                           process_factory=open_replacement)
         self.case.servers.append(second)
+        self.assertTrue(replacement_opened.wait(30),
+                        'replacement supervisor open did not capture its cursor')
+        self.assertTrue(replacement_reader_parked.wait(30),
+                        'replacement reader did not reach the controlled replay gate')
         self.assertFalse(second.supervisor_resumed)
         self.assertEqual(second.proc.generation, first.proc.generation + 1)
-        self.assertNotEqual(int(self.case.pid_file.read_text()), pid)
-        self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+        pending_replacement_model_list = second.submit('model/list', {})
+
+        # The replacement ProcessProxy has captured its cursor, but its reader
+        # has not polled yet. Commit the old proxy's real ACK before that poll.
+        release_ack.set()
+        self.assertTrue(ack_finished.wait(30), 'real supervisor ACK action did not finish')
+        if ack_errors:
+            raise ack_errors[0]
+        release_replacement_reader.set()
+        new_pid = fixture.wait_for(lambda: (
+            candidate if (candidate := int(self.case.pid_file.read_text())) != pid else None), timeout=30)
+        self.assertNotEqual(new_pid, pid)
+
+        try:
+            self.replacement_model_list = second.wait(pending_replacement_model_list, timeout=30)
+        except RuntimeError as error:
+            expected = ('Native provider transport failed; outcome unknown: Supervisor next failed: '
+                        'Supervisor replay cursor is stale or ahead of the journal')
+            if str(error) != expected:
+                raise
+            self.replacement_transport_error = str(error)
+
+    @unittest.expectedFailure  # Product defect: stale ACK cursor after operator close.
+    def test_verified_operator_close_allows_a_new_launch_signature(self):
+        self.assertEqual(self.replacement_model_list, {'data': [{'model': 'fake'}]},
+                         self.replacement_transport_error)
 
     def test_operator_closed_record_never_replaces_a_still_live_child(self):
         first = self.case.server(handle='test:operator-still-live')

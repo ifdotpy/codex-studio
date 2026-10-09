@@ -45,7 +45,7 @@ class AccountTransferSettingsContract(unittest.TestCase):
                                                             'model': model, 'effort': effort})
 
     def start(self):
-        op = self.t.start_transfer()
+        op = self.t.request_transfer()
         self.t.tick()
         return op
 

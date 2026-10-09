@@ -1,17 +1,18 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { components } from "../generated/api";
+import type { ResourceVersion } from "../sync/resourceEvents";
 
 type ResourceRef = components["schemas"]["ResourceRef"];
 
 const { watchers, resumeListeners } = vi.hoisted(() => ({
-  watchers: new Map<string, () => void>(),
+  watchers: new Map<string, (version?: ResourceVersion) => void>(),
   resumeListeners: new Set<() => void>(),
 }));
 
 vi.mock("../sync/resourceEvents", () => ({
   watchResourceChanges: (
     resource: ResourceRef,
-    callback: () => void,
+    callback: (version?: ResourceVersion) => void,
   ): (() => void) => {
     const key = JSON.stringify(resource);
     watchers.set(key, callback);
@@ -30,10 +31,10 @@ import { watchResourceReads } from "./watchResourceReads";
 const terminals: ResourceRef = { kind: "terminals" };
 const limits: ResourceRef = { kind: "limits", accountKey: "default" };
 const output: ResourceRef = { kind: "terminal", terminalId: "terminal-1" };
-const notify = (resource: ResourceRef) => {
+const notify = (resource: ResourceRef, version?: ResourceVersion) => {
   const callback = watchers.get(JSON.stringify(resource));
   if (!callback) throw new Error("Resource watcher is not registered");
-  callback();
+  callback(version);
 };
 
 describe("watchResourceReads", () => {
@@ -61,6 +62,36 @@ describe("watchResourceReads", () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(displayed).toEqual([20, 80]);
     expect(read).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("passes the newest resource version through a coalesced read", async () => {
+    let finish!: () => void;
+    const read = vi
+      .fn<(version?: ResourceVersion) => Promise<void>>()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            finish = resolve;
+          }),
+      )
+      .mockResolvedValue(undefined);
+    const stop = watchResourceReads(limits, read, vi.fn());
+
+    notify(limits, { epoch: "workspace", revision: 1 });
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(1));
+    notify(limits, { epoch: "workspace", revision: 2 });
+    finish();
+
+    await vi.waitFor(() => expect(read).toHaveBeenCalledTimes(2));
+    expect(read.mock.calls[0]?.[0]).toEqual({
+      epoch: "workspace",
+      revision: 1,
+    });
+    expect(read.mock.calls[1]?.[0]).toEqual({
+      epoch: "workspace",
+      revision: 2,
+    });
     stop();
   });
 

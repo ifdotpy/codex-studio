@@ -340,7 +340,7 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     (await studioSettings.getByRole("tab").allTextContents()).map((label) =>
       label.trim(),
     ),
-    ["Accounts", "Appearance", "Federation", "Hotkeys"],
+    ["Accounts", "Appearance", "Federation", "Servers", "Linux VM", "Hotkeys"],
     "Global Studio settings exposes each available settings tab",
   );
   await studioSettings
@@ -350,8 +350,9 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     .getByRole("tab", { name: "Appearance", exact: true })
     .click();
   await studioSettings
-    .getByLabel("Studio theme", { exact: true })
-    .selectOption("dark");
+    .getByRole("radiogroup", { name: "Studio theme", exact: true })
+    .getByRole("radio", { name: "Dark", exact: true })
+    .check();
   await page.waitForFunction(
     () => document.documentElement.dataset.mantineColorScheme === "dark",
   );

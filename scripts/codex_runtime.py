@@ -50,6 +50,7 @@ from codex_startup_memory import mark as startup_memory_mark
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_lock_metrics import runtime_lock
 from codex_usage_resume import UsageResumeMixin, _auth_error
+from codex_scheduler_wake import SchedulerWake, record_needs_dispatch
 from codex_safety_buffering import active as safety_retry_active
 from codex_native_errors import NativeRpcError, SUPPORTED_REQUESTS, error_message, native_thread_block, assert_native_thread_open, THREAD_BLOCK_MESSAGE, refresh_native_limits
 
@@ -1525,11 +1526,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         self.preparations = {}
         self.monitor_threads = set()
         self.offline = False
-        self.changed = threading.Event()
+        self.changed: threading.Event = SchedulerWake()
         self._committed_resource_changes: dict[str, ResourceRef] = {}
         self._committed_resource_overflow = False
         self._committed_resource_lock = threading.Lock()
         self.closed = False
+        self._close_event = threading.Event()
         self._fast_delivery_enabled = False
         self._wal_keeper = None
         self._shutdown_writers_drained = False
@@ -1658,6 +1660,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 CREATE INDEX IF NOT EXISTS runtime_monitor_status ON runtime_monitors(json_extract(record,'$.status'),json_extract(record,'$.created'));
                 CREATE INDEX IF NOT EXISTS runtime_monitor_agent_status ON runtime_monitors(
                     json_extract(record,'$.agent'),json_extract(record,'$.status'));
+                CREATE INDEX IF NOT EXISTS runtime_monitor_stall_due ON runtime_monitors(
+                    COALESCE(json_extract(record,'$.activityAt'),json_extract(record,'$.created'),1e99)+
+                    COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800))
+                    WHERE json_extract(record,'$.status')='running';
                 CREATE TABLE IF NOT EXISTS runtime_requests (id TEXT PRIMARY KEY, record TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_tool_results (id TEXT PRIMARY KEY, result TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS runtime_compactions (id TEXT PRIMARY KEY, agent TEXT NOT NULL);
@@ -1849,6 +1855,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def _cleanup_failed_initialization(self, original_error):
         errors = []
         self.closed = True
+        self._close_event.set()
         self.changed.set()
         with self.start_lock:
             servers = list({id(server): server for server in [
@@ -2027,6 +2034,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         resource_changes[db] = {}
         resource_overflow = local.__dict__.setdefault("after_commit_resource_overflow", {})
         resource_overflow[db] = False
+        dispatch_changes = local.__dict__.setdefault("after_commit_dispatch_changes", {})
+        dispatch_changes[db] = False
         if has_events:
             def stage_event_resource(agent_id):
                 if isinstance(agent_id, str) and agent_id:
@@ -2123,6 +2132,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             analytics[db] = {"captures": [], "bytes": 0, "overflow": 0}
             resource_changes[db] = {}
             resource_overflow[db] = False
+            dispatch_changes[db] = False
 
         db.commit = commit_analytics
         db.rollback = rollback_analytics
@@ -2138,6 +2148,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self._queue_staged_resource_changes(resource_changes, resource_overflow, db)
             resource_changes.pop(db, None)
             resource_overflow.pop(db, None)
+            dispatch_changes.pop(db, None)
             captures = analytics.pop(db)
             self.schedule_analytics_captures(captures["captures"], overflow=captures["overflow"])
             if getattr(local, "agent_cache_dirty", False):
@@ -2154,6 +2165,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             analytics.pop(db, None)
             resource_changes.pop(db, None)
             resource_overflow.pop(db, None)
+            dispatch_changes.pop(db, None)
             # An explicit commit inside the context can already have made work visible.
             self.changed.set()
             raise
@@ -2274,21 +2286,33 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     def _queue_staged_resource_changes(self, staged, overflowed, db):
         changes = staged.get(db)
         overflow = bool(overflowed.get(db))
-        if not changes and not overflow:
+        local = self.__dict__.get("_callback_db")
+        dispatch_changes = getattr(local, "after_commit_dispatch_changes", {})
+        dispatch_needed = bool(dispatch_changes.get(db))
+        dispatch_changes[db] = False
+        if not changes and not overflow and not dispatch_needed:
             return
         staged[db] = {}
         overflowed[db] = False
         with self._committed_resource_lock:
             if overflow:
                 self._committed_resource_overflow = True
-            for key, resource in changes.items():
+            for key, resource in (changes or {}).items():
                 if key not in self._committed_resource_changes and len(self._committed_resource_changes) >= MAX_QUEUED_RESOURCE_CHANGES:
                     self._committed_resource_overflow = True
                     break
                 self._committed_resource_changes[key] = resource
         # `schedule` drains this exact queue. Its ordinary timeout is not a
         # resource scan and this wake avoids adding notification latency.
-        self.changed.set()
+        resource_only = not dispatch_needed and not overflow and all(
+            resource.root.kind in {"transcript", "task", "tasks", "desktop"}
+            for resource in (changes or {}).values()
+        )
+        if resource_only and isinstance(self.changed, SchedulerWake):
+            self.changed.set_resources()
+        else:
+            # Event queues and unknown resource kinds retain their immediate work wake.
+            self.changed.set()
 
     def _publish_committed_resource_changes(self):
         # Detach first: commits queued after this snapshot stay pending for the
@@ -3308,6 +3332,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         previous_row = db.execute(f"SELECT record FROM runtime_{table} WHERE id=?", (record["id"],)).fetchone()
         previous = json.loads(previous_row[0]) if previous_row else None
         changed = previous != record
+        if changed and record_needs_dispatch(table, previous, record):
+            local = self.__dict__.get("_callback_db")
+            dispatch_changes = getattr(local, "after_commit_dispatch_changes", {})
+            if db in dispatch_changes:
+                dispatch_changes[db] = True
         db.execute(f"INSERT INTO runtime_{table}(id,record) VALUES (?,?) ON CONFLICT(id) DO UPDATE SET record=excluded.record",
                    (record["id"], json.dumps(record)))
         if table in {"agents", "tool_requests", "monitors", "requests", "work"}:
@@ -6092,7 +6121,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             while not self.closed:
                 timeout = 1 if first_tick else min(1, max(0, min(deadlines.values()) - time.monotonic()))
                 woke = self.changed.wait(timeout)
-                self.changed.clear()
+                if isinstance(self.changed, SchedulerWake):
+                    work_woke = self.changed.consume_dispatch()
+                else:
+                    # Live patches and caller fixtures can retain the original Event.
+                    self.changed.clear()
+                    work_woke = woke
                 if self.closed:
                     break
                 service = self.__dict__.get('_cross_server_service')
@@ -6113,8 +6147,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 for name, interval, run in phases:
                     if self.closed:
                         break
-                    if (interval and time.monotonic() < deadlines[name]
-                            and not (name == "dispatch" and woke)):
+                    periodic_due = not interval or time.monotonic() >= deadlines[name]
+                    if not periodic_due and not (name == "dispatch" and work_woke):
                         continue
                     try:
                         run()
@@ -6129,7 +6163,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     else:
                         phase_errors.pop(name, None)
                     finally:
-                        if interval:
+                        if interval and (name != "dispatch" or periodic_due):
                             # Completion-based deadlines avoid catch-up loops after slow phases.
                             deadlines[name] = time.monotonic() + interval
                 self.scheduler_error = next(iter(phase_errors.values()), None)
@@ -6163,6 +6197,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             backfill_turn_item_links(db)
 
     def runtime_maintenance_tick(self):
+        from codex_task_recovery import queue_task_recovery
+        queue_task_recovery(self)
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
@@ -9627,7 +9663,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         now = time.time()
         probes = []
         with self.lock, self.db() as db:
-            for row in db.execute("SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running'"):
+            for row in db.execute(
+                    "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='running' "
+                    "AND COALESCE(json_extract(record,'$.activityAt'),json_extract(record,'$.created'),1e99)+"
+                    "COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800)<=? "
+                    "AND COALESCE(json_extract(record,'$.stallTimeoutSeconds'),1800)<>0 "
+                    "AND COALESCE(json_extract(record,'$.activityGeneration'),0)>"
+                    "COALESCE(json_extract(record,'$.stallWakeGeneration'),-1) AND ("
+                    "json_extract(record,'$.stallProbeGeneration') IS NOT "
+                    "COALESCE(json_extract(record,'$.activityGeneration'),0) OR "
+                    "COALESCE(json_extract(record,'$.stallProbeStarted'),?)+90<=?)", (now, now, now)):
                 m = json.loads(row[0])
                 timeout = m.get("stallTimeoutSeconds", 1800)
                 generation = m.get("activityGeneration", 0)
@@ -10977,6 +11022,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     capture_restart(agent)
                     self.put(db, "agents", agent)
             self.closed = True
+        self._close_event.set()
         with self.ui_condition:
             self.ui_condition.notify_all()
         self.changed.set()

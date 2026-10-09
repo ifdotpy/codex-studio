@@ -384,8 +384,24 @@ class RulesMixin:
         with self.read_db() as db:
             read_owner = owner_reader(db)
             for (raw,) in db.execute(
-                    "SELECT record FROM runtime_rules WHERE json_extract(record,'$.status')='active' "
-                    "AND NOT COALESCE(json_extract(record,'$.inFlight'),0) ORDER BY rowid").fetchall():
+                    "SELECT r.record FROM runtime_rules r LEFT JOIN runtime_agents a "
+                    "ON a.id=json_extract(r.record,'$.agent') "
+                    "WHERE json_extract(r.record,'$.status')='active' "
+                    "AND NOT COALESCE(json_extract(r.record,'$.inFlight'),0) AND ("
+                    "json_extract(r.record,'$.kind')='low_workers' OR ("
+                    "json_extract(r.record,'$.kind')<>'event' AND json_extract(r.record,'$.nextAt')<=?) OR ("
+                    "json_extract(r.record,'$.kind')='file' "
+                    "AND COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),1800)<>0 "
+                    "AND COALESCE(json_extract(r.record,'$.fileGeneration'),0)>"
+                    "COALESCE(json_extract(r.record,'$.stallWakeGeneration'),-1) "
+                    "AND COALESCE(json_extract(r.record,'$.fileActivityAt'),"
+                    "json_extract(r.record,'$.created'),?)+"
+                    "COALESCE(json_extract(r.record,'$.stallTimeoutSeconds'),1800)<=?) OR "
+                    # A stopped owner still pauses a future or event-only watch on this tick.
+                    "a.id IS NULL OR json_extract(a.record,'$.deletedAt') IS NOT NULL OR "
+                    "NOT COALESCE(json_extract(a.record,'$.autoWake'),0) OR "
+                    "json_extract(a.record,'$.epoch') IS NOT json_extract(r.record,'$.epoch')) "
+                    "ORDER BY r.rowid", (now, now, now)).fetchall():
                 r = json.loads(raw)
                 if r["status"] == "active" and not r.get("inFlight"):
                     a = read_owner(r["agent"])

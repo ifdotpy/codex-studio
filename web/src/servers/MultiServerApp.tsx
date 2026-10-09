@@ -362,9 +362,12 @@ export default function MultiServerApp() {
       }
     };
     window.addEventListener("storage", apply);
+    // Local App writes do not emit a storage event in this window.
+    window.addEventListener("studio-preferences-change", apply);
     window.addEventListener("keydown", key);
     return () => {
       window.removeEventListener("storage", apply);
+      window.removeEventListener("studio-preferences-change", apply);
       window.removeEventListener("keydown", key);
     };
   }, [preferences.sidebarShortcut, toggleSidebar]);

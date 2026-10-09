@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Agent } from "../types";
 import {
   formatTokenRate,
@@ -7,8 +7,10 @@ import {
   subscribeTokenRate,
   tweenTokenRate,
   workerRateKey,
+  watchTokenRateInterest,
 } from "../usage/tokenRate";
 import type { TokenRate as Rate } from "../usage/tokenRate";
+import { useVisualActivity } from "../hooks/useVisualActivity";
 
 import "./TokenRate.css";
 
@@ -19,6 +21,19 @@ export default function TokenRate({
   agent: Agent;
   variant?: "footer" | "worker";
 }) {
+  const [visualRef, visualActive] = useVisualActivity<HTMLElement>();
+  const observeRate = useCallback(
+    (element: HTMLSpanElement | null) => {
+      // Empty worker meters are display:none. Their visible metadata row must
+      // keep the subscription active until the first rate arrives.
+      visualRef(
+        element && variant === "worker"
+          ? element.parentElement || element
+          : element,
+      );
+    },
+    [visualRef, variant],
+  );
   const scope =
     variant === "worker"
       ? workerRateKey(agent.rootId || "", agent.id)
@@ -38,10 +53,18 @@ export default function TokenRate({
   const [shown, setShown] = useState(0);
   const current = useRef(0);
   const previousTurn = useRef("");
-  useEffect(
-    () => subscribeTokenRate(scope, (value) => setSample({ id: scope, value })),
-    [scope],
-  );
+  useEffect(() => {
+    if (!visualActive) return;
+    const stopRate = subscribeTokenRate(scope, (value) =>
+      setSample({ id: scope, value }),
+    );
+    const stopInterest =
+      variant === "footer" ? watchTokenRateInterest() : undefined;
+    return () => {
+      stopInterest?.();
+      stopRate();
+    };
+  }, [scope, visualActive, variant]);
   useEffect(() => {
     const media = window.matchMedia("(prefers-reduced-motion: reduce)");
     const update = () => setMotionReduced(media.matches);
@@ -64,6 +87,7 @@ export default function TokenRate({
   const target = visible ? rate.rate : 0;
   const turn = `${agent.id}:${variant === "worker" ? rate?.turnId || "" : agent.turnId || rate?.turnId || ""}`;
   useEffect(() => {
+    if (!visualActive) return;
     // The first sample of a new turn must not tween from the previous turn.
     if (
       previousTurn.current !== turn ||
@@ -87,9 +111,11 @@ export default function TokenRate({
     };
     frame = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(frame);
-  }, [target, turn, motionReduced, visible]);
+  }, [target, turn, motionReduced, visible, visualActive]);
   return (
     <span
+      ref={observeRate}
+      data-visual-active={visualActive}
       className="token-rate"
       data-testid="token-rate"
       data-variant={variant}

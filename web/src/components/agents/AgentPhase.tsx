@@ -19,6 +19,7 @@ import {
   type ChatWaitState,
 } from "../chat-status/chatStatusModel";
 import "./provider-activity.css";
+import { useVisualActivityRef } from "../../hooks/useVisualActivity";
 
 export default function AgentPhase({
   agent,
@@ -29,6 +30,7 @@ export default function AgentPhase({
   connection: string;
   wait?: ChatWaitState;
 }) {
+  const visualRef = useVisualActivityRef<HTMLDivElement>();
   if (!agent) return null;
   const safety = agent.nativeSafetyBuffering;
   if (
@@ -130,6 +132,7 @@ export default function AgentPhase({
   const details = errorDetails(nativeError?.additionalDetails);
   return (
     <div
+      ref={visualRef}
       className={`agent-phase ${(active && !waiting) || liveWait ? "active" : ""}${connection === "reconnecting" ? " studio-recovery-banner" : ""}`}
       role="status"
       data-phase={phase}
