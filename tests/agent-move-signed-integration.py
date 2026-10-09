@@ -793,6 +793,25 @@ class Moves(f.SignedIntegration):
         self.assertNotIn('source-only-secret', message)
         self.assertNotIn('target-only-secret', message)
         self.assertNotIn('CLI version differs', message)
+
+    def test_external_catalog_refusal_names_missing_target_server_through_signed_caller(self):
+        self.claude_source()
+        target = self.b.runtime.server
+        original = target.call
+        def refuse(method, params, timeout=60):
+            if method == 'claude/movePreflight':
+                raise NativeRpcError({'code': -32000, 'message': 'raw-credential-secret', 'data': {
+                    'moveRefusal': {'kind': 'external_tools', 'sourceNames': ['anarlog', 'claude.ai Claude Docs'],
+                        'targetNames': ['anarlog'], 'changedNames': ['claude.ai Claude Docs']}}})
+            return original(method, params, timeout)
+        with patch.object(target, 'call', side_effect=refuse):
+            with self.assertRaisesRegex(ValueError, 'external MCP catalog is unavailable or differs') as refused:
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'external-catalog-detail'}, 'external-catalog-detail')
+        self.assertIn('target names [anarlog]', str(refused.exception))
+        self.assertIn('changed definitions [claude.ai Claude Docs]', str(refused.exception))
+        self.assertNotIn('raw-credential-secret', str(refused.exception))
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
     def test_refusal_keeps_unstructured_claude_native_errors_unknown(self):

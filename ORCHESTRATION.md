@@ -1074,10 +1074,16 @@ The result records this approval and its cache-loss warning.
 Claude requires the same provider account and organization.
 Claude uses SDK `systemPrompt.snapshot=true` and `excludeDynamicSections=true`.
 Claude also requires the same OS and matching Claude CLI and SDK versions on both servers.
-Studio verifies the saved native `prompt_snapshot`, model, and ordered Studio tool schemas.
+Studio accepts native snapshot schemas under `schema` or `input_schema`.
+It selects the latest snapshot after the last compaction and requires complete tool schemas.
+Deferred tool records stay unchanged in the native conversation history.
+Studio compares the current ordered Studio tool schemas on both servers.
 Identical CLI and SDK versions with identical Studio query options prove the builtin catalog.
 The result names this proof method. Target user, project, and local settings are excluded.
-External MCP snapshots refuse until Studio can verify their target catalogs.
+Studio reads external MCP catalogs with `tools/list`, without model input or tool calls.
+It compares tool names, descriptions, schemas, and order.
+The target loads only the required local MCP configuration and the same account's selected Claude connectors.
+Credentials stay on each server. Missing or different catalogs refuse with names only.
 The move receipt records cached input and cache creation tokens from the first target turn.
 A mismatch names both versions and tells the caller to update the target.
 Studio does not upgrade a CLI during a move.

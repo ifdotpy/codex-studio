@@ -56,7 +56,7 @@ def claude_tool_refusal(data: Any) -> str | None:
             return None
         names[field] = ', '.join(diagnostic_name(value) for value in values) or '(none)'
     if refusal['kind'] == 'external_tools':
-        return f'External MCP tool snapshots are not supported yet. Source tools [{names["sourceNames"]}]. Their target schemas cannot be verified'
+        return f'The external MCP catalog is unavailable or differs. Source names [{names["sourceNames"]}]; target names [{names["targetNames"]}]; changed definitions [{names["changedNames"]}]'
     if refusal['kind'] == 'builtin_tools':
         return f'The target CLI does not offer saved builtin tools [{names["changedNames"]}]. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]'
     return f'The effective target Studio tool definitions differ in names, schemas, or order. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]; changed definitions [{names["changedNames"]}]'
@@ -340,7 +340,8 @@ class AgentMoves:
                      'accept_cache_loss': args.get('accept_cache_loss') is True,
                      'capabilities': self._capabilities(agent), 'model': agent['model']}
         if preflight['provider'] == 'claude':
-            preflight['claudeProof'] = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=20)
+            # An idle source may need the bounded SDK metadata connection before tools/list.
+            preflight['claudeProof'] = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=90)
         target = self._exchange(server, 'move_validate', preflight, identity(key, 'validate'))
         result = {'requestId': key, 'agentId': agent['id'], 'server': server, 'cwd': cwd,
                   'status': 'accepted', 'accountKey': target['accountKey'],
@@ -560,7 +561,7 @@ class AgentMoves:
         self.runtime.loaded.discard(agent['id'])
         folder = self._folder(operation['id'])
         if agent.get('provider') == 'claude':
-            exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=20)
+            exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=90)
             export_claude(Path(exported['path']), folder / 'native.zip')
             bridge_session = exported['session']
             proof = bridge_session.get('moveProof')

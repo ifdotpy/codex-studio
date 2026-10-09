@@ -45,6 +45,15 @@ import {
   studioToolCatalog,
 } from "./move.mjs";
 
+import {
+  externalAliases,
+  externalCatalog,
+  targetExternalCatalog,
+  externalRefusal,
+  serverAlias,
+} from "./move-external.mjs";
+const externalConfigs = new Map();
+
 const providerOptions = JSON.parse(process.env.STUDIO_CLAUDE_OPTIONS || "{}");
 const STUDIO_INPUT_NAMESPACE = "8d95e191-763a-4ee2-a462-7d27f981f138";
 function nativeUserMessageId(id) {
@@ -208,7 +217,11 @@ const settings = (s) => ({
     ...process.env,
     ...(s.moveProof
       ? {
-          ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+          ENABLE_CLAUDEAI_MCP_SERVERS: s.moveProof.externalCatalog?.some(
+            (server) => server.claudeAI,
+          )
+            ? "true"
+            : "false",
           CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
         }
       : {}),
@@ -350,7 +363,7 @@ async function verifiedAccount(
     return fresh.account;
   }
 }
-async function probe(cwd, read, phase = "metadata") {
+async function probe(cwd, read, phase = "metadata", external = false) {
   const startedAt = Date.now();
   const deadline = startedAt + INITIALIZATION_TIMEOUT_MS;
   let release;
@@ -370,11 +383,11 @@ async function probe(cwd, read, phase = "metadata") {
       abortController: controller,
       settings: { disableAllHooks: true },
       mcpServers: {},
-      strictMcpConfig: true,
+      strictMcpConfig: !external,
       allowedTools: [],
       env: {
         ...process.env,
-        ENABLE_CLAUDEAI_MCP_SERVERS: "false",
+        ENABLE_CLAUDEAI_MCP_SERVERS: external ? "true" : "false",
         CLAUDE_CODE_AUTO_CONNECT_IDE: "0",
       },
     },
@@ -576,14 +589,67 @@ function studioTools(s, getTurn) {
   });
 }
 
+async function currentExternalProof(s, proof) {
+  const expected = proof.externalCatalog || s.moveProof?.externalCatalog;
+  const aliases = expected
+    ? expected.map((server) => server.alias)
+    : externalAliases(proof);
+  if (!aliases.length) return { catalogs: [], configs: {} };
+  if (expected) {
+    try {
+      return await targetExternalCatalog(s.cwd, expected);
+    } catch (error) {
+      if (error.data?.moveRefusal) throw error;
+      throw externalRefusal(aliases, [], aliases);
+    }
+  }
+  const read = async (q) => {
+    let statuses = await q.mcpServerStatus();
+    for (const alias of aliases) {
+      const server = statuses.find((row) => serverAlias(row.name) === alias);
+      if (server?.status === "pending") await q.reconnectMcpServer(server.name);
+    }
+    statuses = await q.mcpServerStatus();
+    const result = await externalCatalog(statuses, s.cwd, aliases);
+    return result;
+  };
+  try {
+    const active = queries.get(s.id);
+    return active?.q
+      ? await read(active.q)
+      : await probe(s.cwd, read, "teleport_catalog", true);
+  } catch (error) {
+    if (error.data?.moveRefusal) throw error;
+    throw externalRefusal(aliases, [], aliases);
+  }
+}
+async function movedExternalConfigs(s) {
+  if (!s.moveProof?.externalCatalog?.length) return {};
+  const key = s.moveProof.optionsHash + ":" + s.cwd;
+  if (!externalConfigs.has(key)) await proofOptions(s, s.moveProof);
+  return externalConfigs.get(key);
+}
 async function proofOptions(s, proof) {
   const compiled = await studioToolCatalog(
     studioTools(s, () => null),
     (s.dynamicTools || []).length,
   );
-  const tools = verifyToolProof(proof, compiled);
+  const baseline = proof.compiledTools || s.moveProof?.compiledTools;
+  const tools = verifyToolProof(
+    { ...proof, ...(baseline ? { compiledTools: baseline } : {}) },
+    compiled,
+  );
+  const external = await currentExternalProof(s, proof);
   const options = {
     tools,
+    ...(proof.inlineTools === false
+      ? {
+          studioCatalogHash: createHash("sha256")
+            .update(JSON.stringify(compiled))
+            .digest("hex"),
+        }
+      : {}),
+    ...(external.catalogs.length ? { externalCatalog: external.catalogs } : {}),
     disallowedTools: ["Agent"],
     settingSources: [],
     strictMcpConfig: true,
@@ -599,13 +665,19 @@ async function proofOptions(s, proof) {
     },
     extraArgs: providerOptions.extraArgs || {},
   };
+  const optionsHash = createHash("sha256")
+    .update(JSON.stringify(options))
+    .digest("hex");
+  externalConfigs.set(optionsHash + ":" + s.cwd, external.configs);
   return {
     ...proof,
+    ...(proof.inlineTools === false ? { compiledTools: compiled } : {}),
+    ...(external.catalogs.length ? { externalCatalog: external.catalogs } : {}),
     options,
-    optionsHash: createHash("sha256")
-      .update(JSON.stringify(options))
-      .digest("hex"),
-    proofMethod: "saved_snapshot_and_identical_studio_options",
+    optionsHash,
+    proofMethod: external.catalogs.length
+      ? "saved_snapshot_and_current_ordered_mcp_catalogs"
+      : "saved_snapshot_and_identical_studio_options",
   };
 }
 // Codex continues a thread on turn/start without input; Claude needs text.
@@ -931,7 +1003,10 @@ async function startSession(s, active, p) {
         },
         canUseTool: (name, input, options) =>
           permissions(s, active.turn, name, input, options),
-        mcpServers: { studio: studioTools(s, () => active.turn) },
+        mcpServers: {
+          ...(await movedExternalConfigs(s)),
+          studio: studioTools(s, () => active.turn),
+        },
         supportedDialogKinds: ["resume_return"],
         onUserDialog: async (value, options) => {
           if (value.dialogKind !== "resume_return" || !active.turn)

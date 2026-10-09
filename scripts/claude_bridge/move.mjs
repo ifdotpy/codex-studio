@@ -10,29 +10,73 @@ const require = createRequire(import.meta.url);
 const run = promisify(execFile);
 export const movePrompt = { snapshot: true, excludeDynamicSections: true };
 
+const toolSchema = (entry) => entry?.input_schema ?? entry?.schema;
+const completeTool = (entry) =>
+  typeof entry?.name === "string" &&
+  entry.name.length > 0 &&
+  toolSchema(entry) !== null &&
+  typeof toolSchema(entry) === "object" &&
+  !Array.isArray(toolSchema(entry));
+const normalizeTool = ({ schema, ...entry }) => ({
+  ...entry,
+  input_schema: entry.input_schema ?? schema,
+});
+
 export async function savedPromptProof(file, session) {
   const bytes = await fs.readFile(file);
   if (bytes.length > 256 * 1024 * 1024 || bytes.at(-1) !== 10)
     throw new Error("The complete native snapshot history is unavailable");
   let snapshot;
+  const deferred = new Map();
+  const activeNames = new Set();
   for (const line of bytes.toString("utf8").trimEnd().split("\n")) {
     const row = JSON.parse(line);
     if (row.sessionId && row.sessionId !== (session.nativeId || session.id))
       throw new Error("The native snapshot session identity differs");
+    if (row.type === "system" && row.subtype === "compact_boundary") {
+      snapshot = undefined;
+      deferred.clear();
+      activeNames.clear();
+    }
     if (row.type === "attachment" && row.attachment?.type === "prompt_snapshot")
       snapshot = row.attachment;
+    if (
+      row.type === "attachment" &&
+      row.attachment?.type === "deferred_tools_record"
+    ) {
+      if (!Array.isArray(row.attachment.entries))
+        throw new Error("The saved deferred tool schemas are incomplete");
+      for (const entry of row.attachment.entries) {
+        if (!completeTool(entry))
+          throw new Error("The saved deferred tool schemas are incomplete");
+        deferred.set(entry.name, entry);
+        activeNames.add(entry.name);
+      }
+    }
+    if (
+      row.type === "attachment" &&
+      row.attachment?.type === "deferred_tools_delta"
+    ) {
+      for (const key of ["removedNames", "addedNames"])
+        if (
+          row.attachment[key] !== undefined &&
+          (!Array.isArray(row.attachment[key]) ||
+            !row.attachment[key].every(
+              (name) => typeof name === "string" && name,
+            ))
+        )
+          throw new Error("The saved deferred tool names are incomplete");
+      for (const name of row.attachment.removedNames || [])
+        activeNames.delete(name);
+      for (const name of row.attachment.addedNames || []) activeNames.add(name);
+    }
   }
   if (
     !Array.isArray(snapshot?.systemPrompt) ||
     !snapshot.systemPrompt.length ||
     !snapshot.systemPrompt.every((text) => typeof text === "string") ||
     !Array.isArray(snapshot.tools) ||
-    !snapshot.tools.every(
-      (entry) =>
-        typeof entry.name === "string" &&
-        entry.input_schema &&
-        typeof entry.input_schema === "object",
-    )
+    !snapshot.tools.every(completeTool)
   )
     throw new Error(
       "The session has no verified saved prompt snapshot with complete ordered tool schemas",
@@ -41,7 +85,14 @@ export async function savedPromptProof(file, session) {
     snapshotHash: createHash("sha256")
       .update(JSON.stringify(snapshot))
       .digest("hex"),
-    tools: snapshot.tools,
+    tools: snapshot.tools.map(normalizeTool),
+    ...(snapshot.inlineTools === false
+      ? {
+          deferredTools: [...deferred.values()],
+          activeDeferredNames: [...activeNames],
+          inlineTools: false,
+        }
+      : {}),
     session: Object.fromEntries(
       [
         "model",
@@ -80,7 +131,19 @@ export function verifyToolProof(proof, studio, offered) {
   const builtin = proof.tools.filter(
     (entry) => !entry.name.startsWith("mcp__"),
   );
-  const mcp = proof.tools.filter((entry) => entry.name.startsWith("mcp__"));
+  if (proof.inlineTools === false)
+    for (const name of proof.activeDeferredNames || [])
+      if (
+        !name.startsWith("mcp__") &&
+        !builtin.some((entry) => entry.name === name)
+      )
+        builtin.push({ name });
+  // Deferred schemas remain transcript input. Only inline schemas define the
+  // frozen API tool prefix. Compare the current compiled catalog separately.
+  const mcp =
+    proof.inlineTools === false
+      ? proof.compiledTools || studio
+      : proof.tools.filter((entry) => entry.name.startsWith("mcp__"));
   if (mcp.some((entry) => !entry.name.startsWith("mcp__studio__")))
     throw refusal(
       "External MCP tool snapshots are not supported yet. Source tools [" +
