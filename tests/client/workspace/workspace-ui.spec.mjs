@@ -85,6 +85,30 @@ test("workspace ui", async ({ browser: _browser }) => {
     const get = async (path) => (await fetch(origin + path)).json();
     const initial = await readTestState(origin);
     const lead = initial.runtime.agents.find((a) => a.name === "Release lead");
+    const otherChat = initial.runtime.agents.find(
+      (agent) => agent.name === "Other project",
+    );
+    assert.ok(lead && otherChat, "fixture exposes both chats");
+    const taskTime = Date.now() / 1000;
+    const workspaceTask = {
+      id: "workspace-ui-active-command",
+      agent: lead.id,
+      status: "running",
+      kind: "command",
+      type: "commandExecution",
+      name: "commandExecution",
+      command: "fixture command --workspace-ui",
+      cwd: root,
+      processId: "5174",
+      created: taskTime,
+    };
+    const otherChatTask = {
+      ...workspaceTask,
+      id: "workspace-ui-other-chat-command",
+      agent: otherChat.id,
+      command: "fixture command --other-chat",
+      created: taskTime + 1,
+    };
     const post = async (path, body) => {
       const r = await fetch(origin + path, {
         method: "POST",
@@ -103,24 +127,19 @@ test("workspace ui", async ({ browser: _browser }) => {
     const errors = [];
     const resourceRequests = [];
     const annotationRequests = [];
-    const taskFeedResponses = [];
+    let mainDocumentNavigations = 0;
     const planNotModified = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/resources")
         resourceRequests.push(request.url());
+      if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+        mainDocumentNavigations++;
       if (
         url.pathname === "/api/workspace" &&
         url.searchParams.get("view") === "annotations"
       )
         annotationRequests.push(request.url());
-    });
-    page.on("response", (response) => {
-      if (
-        new URL(response.url()).pathname === "/api/workspace/tasks" &&
-        response.status() === 200
-      )
-        taskFeedResponses.push(response);
     });
     page.on("response", (response) => {
       if (
@@ -607,10 +626,55 @@ test("workspace ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
+    for (const task of [workspaceTask, otherChatTask])
+      proc.stdin.write(
+        JSON.stringify({ method: "fixture/task", params: task }) + "\n",
+      );
     await page.locator("#tasks-toggle").click();
+    await page.getByRole("heading", { name: "Current activity" }).waitFor();
     await poll(
-      () => taskFeedResponses.length > 0,
-      "task drawer uses incremental feed",
+      () =>
+        page
+          .locator('[data-task="workspace-ui-active-command"]')
+          .count()
+          .then((count) => count === 1),
+      "task drawer displays selected chat's active command from entity sync",
+    );
+    assert.equal(
+      await page
+        .locator('[data-task="workspace-ui-other-chat-command"]')
+        .count(),
+      0,
+      "task drawer excludes another chat's command",
+    );
+    assert.equal(
+      await page.getByText("1 active", { exact: true }).count(),
+      1,
+      "task count is scoped to the selected chat",
+    );
+    const taskNavigationCount = mainDocumentNavigations;
+    proc.stdin.write(
+      JSON.stringify({
+        method: "fixture/task",
+        params: {
+          ...workspaceTask,
+          status: "completed",
+          finished: workspaceTask.created + 1,
+        },
+      }) + "\n",
+    );
+    await poll(
+      async () =>
+        (await page
+          .locator('[data-task="workspace-ui-active-command"]')
+          .count()) === 0 &&
+        (await page.getByText("0 active", { exact: true }).count()) === 1,
+      "task completion updates the open drawer from entity sync",
+    );
+    assert.equal(
+      mainDocumentNavigations,
+      taskNavigationCount,
+      "task update does not reload the selected chat",
     );
     await page.keyboard.press("Escape");
     assert.deepEqual(

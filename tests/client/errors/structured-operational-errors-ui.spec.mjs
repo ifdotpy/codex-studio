@@ -50,7 +50,7 @@ test("Structured operational errors ui", async ({
     component=React.createElement(Requests,{requests:[request],allRequests:[request],scope:'fixture',agents:[agent],refresh,notify:noop});
    }
    if(which==='message') component=React.createElement(UserMessages,{data:{...snapshot,runtime:{...snapshot.runtime,complaints:[{id:'message',leadId:'lead',author:'lead',authorName:'Lead',recipient:'user',title:'User check',created:1,version:1}]}},refresh,notify:noop});
-   if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'tool',agent:'lead',kind:'tool',name:'dynamicToolCall',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
+   if(which==='background') component=React.createElement(BackgroundTasks,{opened:true,close:noop,data:{...snapshot,runtime:{...snapshot.runtime,tasks:[{id:'command',agent:'lead',kind:'command',name:'commandExecution',command:'fixture command --fail',status:'running',created:1,error:value,stdinError:value}]}},leadId:'lead',openAgent:noop,refresh,notify:noop});
    if(which==='capacity') component=React.createElement(CapacityRetry,{agentId:'lead',retry:{id:'retry',status:'scheduled',dueAt:Date.now()/1000+100,reason:value}});
    if(which==='safety') component=React.createElement(SafetyBuffering,{agent:{...agent,nativeSafetyRetry:{epoch:0,accountKey:'default',turnId:'turn',stage:'failed',error:value}}});
    if(which==='dictation') {
@@ -143,32 +143,14 @@ test("Structured operational errors ui", async ({
         return route.fulfill({ status: 503, json: { error: messageFailure } });
       if (url.pathname === "/api/panel" && getFailure !== undefined)
         return route.fulfill({ status: 503, json: getFailure });
-      if (url.pathname === "/api/workspace/tasks")
-        return route.fulfill({
-          json: {
-            tasks: [
-              {
-                id: "tool",
-                agent: "lead",
-                kind: "tool",
-                name: "dynamicToolCall",
-                status: "running",
-                created: 1,
-              },
-            ],
-            cursor: { updated: 1, id: "tool" },
-            hasMore: false,
-            nextBefore: null,
-            reset: false,
-          },
-        });
       if (url.pathname === "/api/task")
         return route.fulfill({
           json: {
-            id: "tool",
+            id: "command",
             agent: "lead",
-            kind: "tool",
-            name: "dynamicToolCall",
+            kind: "command",
+            name: "commandExecution",
+            command: "fixture command --fail",
             status: "running",
             created: 1,
             error: value,
@@ -207,7 +189,7 @@ test("Structured operational errors ui", async ({
           .getByRole("button", { name: "Dictation", exact: true })
           .click();
       if (which === "background")
-        await page.locator('[data-task="tool"]').click();
+        await page.locator('[data-task="command"]').click();
       try {
         await page
           .getByText("Structured operation failed", { exact: true })
