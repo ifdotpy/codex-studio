@@ -13,6 +13,31 @@ const {
 } = require("./restart-environment.cjs");
 const runFile = promisify(execFile);
 
+function backendScripts(resources) {
+  const packaged = path.join(resources, "scripts");
+  const development = path.join(
+    resources,
+    "workspaces/runtime/apps/server/src",
+  );
+  if (fs.existsSync(path.join(development, "codex-canvas"))) return development;
+  if (
+    fs.existsSync(path.join(packaged, "codex-canvas")) ||
+    fs.existsSync(path.join(resources, "studio-install.json"))
+  )
+    return packaged;
+  return path.join(resources, "workspaces/runtime/apps/server/src");
+}
+
+function rendererIndex(resources) {
+  const development = path.join(
+    resources,
+    "workspaces/client/apps/web/dist/index.html",
+  );
+  return fs.existsSync(development)
+    ? development
+    : path.join(resources, "web/dist/index.html");
+}
+
 function atomicJSON(filename, data) {
   fs.mkdirSync(path.dirname(filename), { recursive: true });
   const temporary = `${filename}.${process.pid}.tmp`;
@@ -182,8 +207,8 @@ async function assertRecoveryBootoutSafe({
   let health;
   try {
     const script = path.resolve(
-      resources,
-      "scripts/codex_process_supervisor.py",
+      backendScripts(resources),
+      "codex_process_supervisor.py",
     );
     const result = await run(python, [
       "-B",
@@ -208,7 +233,10 @@ async function assertRecoveryBootoutSafe({
     );
 }
 async function ensureSupervisorAgent({ files, python, resources, uid, run }) {
-  const script = path.resolve(resources, "scripts/codex_process_supervisor.py");
+  const script = path.resolve(
+    backendScripts(resources),
+    "codex_process_supervisor.py",
+  );
   fs.accessSync(script, fs.constants.R_OK);
   fs.mkdirSync(path.dirname(files.supervisorPlist), { recursive: true });
   const nextPlist = supervisorLaunchAgent({
@@ -338,8 +366,8 @@ async function configureRecovery({
   const codex = executable("codex", launchEnv);
   for (const filename of [
     supervisor,
-    path.join(resources, "scripts/codex-canvas"),
-    path.join(resources, "web/dist/index.html"),
+    path.join(backendScripts(resources), "codex-canvas"),
+    rendererIndex(resources),
   ])
     fs.accessSync(filename, fs.constants.R_OK);
   const environment = {};

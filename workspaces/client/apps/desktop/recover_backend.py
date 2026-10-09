@@ -18,6 +18,24 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def backend_scripts(resources):
+    """Resolve either packaged resource names or the relocated source tree."""
+    root = Path(resources)
+    packaged = root / "scripts"
+    development = root / "workspaces" / "runtime" / "apps" / "server" / "src"
+    if (development / "codex-canvas").is_file():
+        return development
+    if (packaged / "codex-canvas").is_file() or (root / "studio-install.json").is_file():
+        return packaged
+    return root / "workspaces" / "runtime" / "apps" / "server" / "src"
+
+
+def renderer_dist(resources):
+    root = Path(resources)
+    development = root / "workspaces" / "client" / "apps" / "web" / "dist"
+    return development if (development / "index.html").is_file() else root / "web" / "dist"
+
+
 def identity(port, state, timeout=5):
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
@@ -37,7 +55,7 @@ def identity(port, state, timeout=5):
 
 def backend_process_arguments(pid, resources):
     """Reuse the packaged native process reader without parsing display text."""
-    scripts = (Path(resources) / "scripts").resolve()
+    scripts = backend_scripts(resources).resolve()
     sys.path.insert(0, str(scripts))
     try:
         import codex_process_supervisor
@@ -51,7 +69,7 @@ def backend_process_arguments(pid, resources):
 def verify_backend_process(data, config):
     """Prove the reported PID is the packaged backend listening on this port."""
     pid = data["pid"]
-    script = (Path(config["resources"]) / "scripts/codex-canvas").resolve()
+    script = (backend_scripts(config["resources"]) / "codex-canvas").resolve()
     try:
         arguments = backend_process_arguments(pid, config["resources"])
     except (OSError, ValueError, RuntimeError, ImportError) as error:
@@ -131,7 +149,7 @@ def supervisor_tick(config, state, child=None):
     """Probe the separately supervised owner without taking over its lifecycle."""
     if config.get("supervisorEnabled") is not True:
         return child, "disabled"
-    script = Path(config["resources"]) / "scripts/codex_process_supervisor.py"
+    script = backend_scripts(config["resources"]) / "codex_process_supervisor.py"
     if not script.is_file():
         raise RuntimeError("Supervisor mode is enabled but its packaged script is missing.")
     check = [config["python"], "-B", str(script), "--status-json", "--state", str(state)]
@@ -166,8 +184,8 @@ def tick(config, state, child=None, supervisor_fallback=False):
     if not lease_available(state):
         return None, "waiting for runtime owner"
     resources = Path(config["resources"])
-    script = resources / "scripts/codex-canvas"
-    if not script.is_file() or not (resources / "web/dist/index.html").is_file():
+    script = backend_scripts(resources) / "codex-canvas"
+    if not script.is_file() or not (renderer_dist(resources) / "index.html").is_file():
         raise RuntimeError("The installed backend or web assets are unavailable.")
     env = launch_environment(config, state, supervisor_fallback=supervisor_fallback)
     with (state / "canvas.log").open("ab", buffering=0) as log:
@@ -254,7 +272,7 @@ def run(filename, interval=5):
                     fallback_exited = (fallback_pid is not None and fallback_start is not None
                                        and process_start_time(fallback_pid) != fallback_start)
                     if fallback_exited:
-                        script = Path(config["resources"]) / "scripts/codex_process_supervisor.py"
+                        script = backend_scripts(config["resources"]) / "codex_process_supervisor.py"
                         subprocess.run([config["python"], "-B", str(script), "--finish-fallback",
                                         "--state", str(state)], check=True, timeout=3,
                                        stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)

@@ -16,15 +16,18 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const python = execFileSync(
-  "python3",
-  ["-c", "import sys; print(sys.executable)"],
-  {
+const root = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../..",
+);
+const serverSource = path.join(root, "workspaces/runtime/apps/server/src");
+const desktopSource = path.join(root, "workspaces/client/apps/desktop");
+const python =
+  process.env.CODEX_AGENTS_PYTHON ||
+  execFileSync("python3", ["-c", "import sys; print(sys.executable)"], {
     encoding: "utf8",
-  },
-).trim();
-const supervisorScript = path.join(root, "scripts/codex_process_supervisor.py");
+  }).trim();
+const supervisorScript = path.join(serverSource, "codex_process_supervisor.py");
 const { configureRecovery, recoveryPaths, trackDesktopRecovery } =
   createRequire(import.meta.url)("./recovery.cjs");
 
@@ -74,7 +77,7 @@ test("desktop and recovery lifecycle changes preserve an active supervisor owner
   ])
     writeFileSync(
       path.join(resources, "scripts", filename),
-      readFileSync(path.join(root, "scripts", filename)),
+      readFileSync(path.join(serverSource, filename)),
     );
   writeFileSync(path.join(resources, "web/dist/index.html"), "fixture");
 
@@ -225,7 +228,7 @@ test("desktop and recovery lifecycle changes preserve an active supervisor owner
     const probeScript = `
 import importlib.util, pathlib, subprocess
 from unittest.mock import patch
-spec = importlib.util.spec_from_file_location('recovery', ${JSON.stringify(path.join(root, "desktop/recover_backend.py"))})
+spec = importlib.util.spec_from_file_location('recovery', ${JSON.stringify(path.join(desktopSource, "recover_backend.py"))})
 module = importlib.util.module_from_spec(spec); spec.loader.exec_module(module)
 config = {'supervisorEnabled': True, 'python': ${JSON.stringify(python)}, 'codex': '/usr/bin/true', 'resources': ${JSON.stringify(resources)}}
 with patch.object(module.subprocess, 'run', side_effect=subprocess.TimeoutExpired(['probe'], 2)), patch.object(module.subprocess, 'Popen') as spawn:
@@ -260,7 +263,7 @@ with patch.object(module.subprocess, 'run', side_effect=subprocess.TimeoutExpire
       python,
       [
         "-B",
-        path.join(root, "desktop/recover_backend.py"),
+        path.join(desktopSource, "recover_backend.py"),
         "--config",
         recoveryConfig,
       ],

@@ -13,8 +13,8 @@ import time
 import uuid
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = Path(__file__).resolve().parents[6]
+sys.path.insert(0, str(ROOT / 'workspaces/runtime/apps/server/src'))
 from codex_linux_vm import Client, Settings, LinuxVMError, _GIB
 import codex_linux_vm
 
@@ -113,7 +113,11 @@ def prove(client, temporary):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--guest-dir', type=Path, default=ROOT / 'vm/guest')
+    parser.add_argument(
+        '--guest-dir',
+        type=Path,
+        default=ROOT / 'workspaces/runtime/apps/vm-guest',
+    )
     parser.add_argument('--existing-state', type=Path)
     parser.add_argument('--helper', type=Path)
     parser.add_argument('--state-dir', type=Path)

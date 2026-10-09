@@ -26,6 +26,15 @@ const {
   apiPython,
   backendExitStatus,
 } = createRequire(import.meta.url)("./backend.cjs");
+const repositoryRoot = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../../../..",
+);
+const serverSource = path.join(
+  repositoryRoot,
+  "workspaces/runtime/apps/server/src",
+);
+
 const state = "/unused-studio-state";
 const record = {
   application: "codex-agents",
@@ -363,17 +372,12 @@ test("recovery and desktop attach to the same independently launched supervisor"
   await new Promise((resolve) => portServer.listen(0, "127.0.0.1", resolve));
   const port = portServer.address().port;
   await new Promise((resolve) => portServer.close(resolve));
-  const resources = path.resolve(
-    path.dirname(fileURLToPath(import.meta.url)),
-    "..",
-  );
-  const python = execFileSync(
-    "python3",
-    ["-c", "import sys; print(sys.executable)"],
-    {
+  const resources = repositoryRoot;
+  const python =
+    process.env.CODEX_AGENTS_PYTHON ||
+    execFileSync("python3", ["-c", "import sys; print(sys.executable)"], {
       encoding: "utf8",
-    },
-  ).trim();
+    }).trim();
   const recoveryConfig = path.join(canonicalState, "background-recovery.json");
   writeFileSync(
     recoveryConfig,
@@ -400,7 +404,7 @@ test("recovery and desktop attach to the same independently launched supervisor"
       python,
       [
         "-B",
-        path.join(resources, "scripts/codex_process_supervisor.py"),
+        path.join(serverSource, "codex_process_supervisor.py"),
         "--state",
         canonicalState,
       ],
@@ -415,7 +419,10 @@ test("recovery and desktop attach to the same independently launched supervisor"
     );
     recovery = spawn(python, [
       "-B",
-      path.join(resources, "desktop/recover_backend.py"),
+      path.join(
+        repositoryRoot,
+        "workspaces/client/apps/desktop/recover_backend.py",
+      ),
       "--config",
       recoveryConfig,
     ]);
@@ -476,7 +483,7 @@ test("recovery and desktop attach to the same independently launched supervisor"
         python,
         [
           "-B",
-          path.join(resources, "scripts/codex_process_supervisor.py"),
+          path.join(serverSource, "codex_process_supervisor.py"),
           "--status-json",
           "--state",
           canonicalState,
@@ -616,10 +623,7 @@ test("the backend build matches the Python source identity", () => {
         path.join(packageRoot, directory, "ignored.py"),
         "VALUE = 1\n",
       );
-    const scripts = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../scripts",
-    );
+    const scripts = serverSource;
     const pythonBuild = () =>
       execFileSync(
         process.env.CODEX_AGENTS_PYTHON || "python3",
@@ -661,10 +665,7 @@ test("backend source identity rejects package symlinks in both implementations",
       path.join(packageRoot, "linked.py"),
     );
     assert.throws(() => backendBuild(root), /symlink/i);
-    const scripts = path.resolve(
-      path.dirname(fileURLToPath(import.meta.url)),
-      "../scripts",
-    );
+    const scripts = serverSource;
     const result = spawnSync(
       process.env.CODEX_AGENTS_PYTHON || "python3",
       [
@@ -726,16 +727,23 @@ test("a source install does not rewrite the identity of an existing Python proce
     copyFileSync(
       path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),
-        "../scripts/codex_backend_identity.py",
+        path.join(serverSource, "codex_backend_identity.py"),
       ),
       path.join(root, "scripts/codex_backend_identity.py"),
     );
     copyFileSync(
       path.resolve(
         path.dirname(fileURLToPath(import.meta.url)),
-        "../scripts/codex_source_inventory.py",
+        path.join(serverSource, "codex_source_inventory.py"),
       ),
       path.join(root, "scripts/codex_source_inventory.py"),
+    );
+    copyFileSync(
+      path.resolve(
+        path.dirname(fileURLToPath(import.meta.url)),
+        path.join(serverSource, "codex_layout.py"),
+      ),
+      path.join(root, "scripts/codex_layout.py"),
     );
     const initial = backendBuild(root);
     const result = JSON.parse(

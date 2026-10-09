@@ -844,7 +844,7 @@ async function start() {
   }
   backendResources = app.isPackaged
     ? path.join(process.resourcesPath, "workspace")
-    : path.resolve(__dirname, "..");
+    : path.resolve(__dirname, "../../../..");
   if (recoverySupported) {
     try {
       if (!isInstalledApplication(app.getAppPath()))
