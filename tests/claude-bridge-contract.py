@@ -249,6 +249,22 @@ class Bridge(unittest.TestCase):
         self.thread = self.call('thread/start', {'cwd':str(root),'dynamicTools':[{'name':'echo','description':'Echo',
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
 
+    def test_studio_registration_keeps_each_session_teleport_name_after_resume(self):
+        for name in ('orchestration_move', 'orchestration_teleport'):
+            with self.subTest(name=name):
+                definition = {'name': name, 'description': 'Fixed session definition',
+                    'inputSchema': {'type': 'object', 'properties': {'text': {'type': 'string'}}, 'required': ['text']}}
+                self.thread = self.call('thread/start', {'cwd': str(self.root),
+                    'dynamicTools': [definition]})['thread']['id']
+                for index in range(2):
+                    self.notifications = []
+                    self.turn('tool', name + str(index))
+                    self.assertEqual(self.completed()['status'], 'completed')
+                    requests = [row['params'] for row in self.notifications if row.get('method') == 'item/tool/call']
+                    self.assertEqual([request['tool'] for request in requests], [name])
+                    self.call('thread/unsubscribe', {'threadId': self.thread})
+                    self.call('thread/resume', {'threadId': self.thread, 'dynamicTools': [definition]})
+
     def test_native_snapshot_deferred_and_external_catalog_move_through_the_bridge(self):
         self.turn('hello', 'native-format-source')
         self.completed()
