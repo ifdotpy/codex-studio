@@ -87,13 +87,13 @@ def validate(payload: dict[str, Any], *, allow_foreign_windows_path: bool = Fals
             'timeout': timeout, 'output_limit': limit}
 
 
-def windows_batch_argv(command: list[str], environment: dict[str, str]) -> list[str]:
-    """Run a batch shim through cmd.exe with arguments protected from shell syntax."""
+def windows_batch_command_line(command: list[str], environment: dict[str, str]) -> str | None:
+    """Build the raw CreateProcess command line needed for a quoted cmd.exe call."""
     if os.name != 'nt':
-        return command
+        return None
     target = shutil.which(command[0], path=environment.get('PATH')) or command[0]
     if PureWindowsPath(target).suffix.casefold() not in {'.cmd', '.bat'}:
-        return command
+        return None
     if any(any(ord(char) < 32 or char in '"%!\r\n' for char in value) for value in command):
         raise ValueError('Batch command arguments cannot contain quotes, %, !, or control characters')
     comspec = environment.get('COMSPEC')
@@ -101,7 +101,9 @@ def windows_batch_argv(command: list[str], environment: dict[str, str]) -> list[
         root = environment.get('SystemRoot', r'C:\Windows')
         comspec = str(Path(root) / 'System32' / 'cmd.exe')
     quoted = ' '.join('"' + value + '"' for value in [target, *command[1:]])
-    return [comspec, '/d', '/s', '/c', '"' + quoted + '"']
+    # Popen(list) applies Windows argv escaping, which cmd.exe interprets as
+    # literal backslashes before quotes. Supply the exact CreateProcess line.
+    return '"' + comspec + '" /d /s /c "' + quoted + '"'
 
 
 @dataclass
@@ -572,8 +574,9 @@ class ServerExec:
         argv = (monitor_command(None, p['command'], p['cwd'], config={
             'shell_environment_policy': {'set': p['env']}})
             if isinstance(p['command'], str) else p['command'])
+        windows_command_line = None
         if os.name == 'nt':
-            argv = windows_batch_argv(argv, {**os.environ, **p['env']})
+            windows_command_line = windows_batch_command_line(argv, {**os.environ, **p['env']})
         record = {'handle': key, 'serverId': self.service.server_id, 'status': 'starting',
                   'startedAt': time.time(), 'finishedAt': None, 'exitCode': None, 'signal': None,
                   'duration': None, 'timedOut': False, 'outputLimit': p['output_limit']}
@@ -586,6 +589,8 @@ class ServerExec:
         config = {'payload': p, 'argv': argv, 'record': record, 'launchEnv': dict(os.environ),
                   'markerSecret': secrets.token_hex(32),
                   'adapter': [executable, '-B', str(Path(__file__).resolve()), '--child', str(config_path)]}
+        if windows_command_line is not None:
+            config['windowsCommandLine'] = windows_command_line
         with self.lock:
             if self.closed or self.runtime.closed:
                 raise ValueError('The command service is closed')
@@ -797,7 +802,7 @@ def child(config_path: Path) -> None:
         threading.Thread(target=inputs, daemon=True).start()
         environment = {**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': secret}
         if os.name == 'nt':
-            process = subprocess.Popen(config['argv'], cwd=p['cwd'], env=environment,
+            process = subprocess.Popen(config.get('windowsCommandLine') or config['argv'], cwd=p['cwd'], env=environment,
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 creationflags=int(getattr(subprocess, 'CREATE_SUSPENDED', 0x4))
                 | int(getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x200)))
