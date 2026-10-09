@@ -123,6 +123,23 @@ for (const [platform, userAgent] of mobileBrowsers) {
           timeout: 10_000,
         })
         .toBe("Release lead");
+      await expect
+        .poll(
+          () =>
+            page
+              .locator("#messages")
+              .evaluate((root) =>
+                root.scrollHeight > root.clientHeight + 1
+                  ? Math.abs(
+                      root.scrollHeight - root.clientHeight - root.scrollTop,
+                    )
+                  : Number.POSITIVE_INFINITY,
+              ),
+          {
+            message: "The initial transcript settles at the following position",
+          },
+        )
+        .toBeLessThan(1);
       const geometry = () =>
         page.evaluate(() => {
           const root = document.querySelector("#root").getBoundingClientRect();
@@ -218,10 +235,16 @@ for (const [platform, userAgent] of mobileBrowsers) {
             .height,
           minimumInput: (() => {
             const input = document.querySelector("#message");
-            const previous = input.style.height;
-            input.style.removeProperty("height");
-            const height = input.getBoundingClientRect().height;
-            if (previous) input.style.height = previous;
+            const measurement = input.cloneNode();
+            measurement.style.position = "fixed";
+            measurement.style.visibility = "hidden";
+            measurement.style.left = "-10000px";
+            measurement.style.top = "0";
+            measurement.style.height = "auto";
+            measurement.style.width = `${input.getBoundingClientRect().width}px`;
+            input.parentElement.append(measurement);
+            const height = measurement.getBoundingClientRect().height;
+            measurement.remove();
             return height;
           })(),
           scrollHeight: document.querySelector("#message").scrollHeight,
