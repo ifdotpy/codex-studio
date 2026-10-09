@@ -7,7 +7,14 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { test, expect } from "../playwright.mjs";
+import {
+  API_SCHEMA_HASH_HEADER,
+  apiSchemaHandshakeSse,
+  protocol3SseEvent,
+  readApiSchemaHash,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("queue-mutation-deadline-browser @performance", async ({
   page: fixturePage,
@@ -83,8 +90,33 @@ test("queue-mutation-deadline-browser @performance", async ({
       }),
     );
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: { workspaceId } }),
+      route.fulfill({
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        json: { workspaceId },
+      }),
     );
+    await page.route("**/api/sync/stream*", (route) => {
+      const url = new URL(route.request().url());
+      const resources = JSON.parse(url.searchParams.get("resources") || "[]");
+      return route.fulfill({
+        contentType: "text/event-stream",
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+        body: apiSchemaHandshakeSse(
+          protocol3SseEvent("resources", {
+            epoch: "queue-deadline-fixture",
+            protocol: 3,
+            reason: "initial",
+            resources,
+            resourceVersions: resources.map((resource) => ({
+              resource,
+              revision: 1,
+            })),
+            revision: 1,
+            workspaceId,
+          }),
+        ),
+      });
+    });
     await page.route(/\/api\/queue(?:\?.*)?$/, (route) => {
       if (route.request().method() !== "POST")
         return route.fulfill({

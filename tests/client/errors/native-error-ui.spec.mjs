@@ -536,9 +536,13 @@ test("native error ui", async ({ page: runnerPage }) => {
     ]) {
       await start("Check policy explanation");
       fail(failure);
+      const policyTitle =
+        failure.codexErrorInfo === "cyberPolicy"
+          ? "Cybersecurity policy refusal"
+          : "This content can't be shown";
       await page
         .locator(".native-error.info")
-        .getByText("This content can't be shown", { exact: true })
+        .getByText(policyTitle, { exact: true })
         .waitFor();
       await poll(
         async () =>

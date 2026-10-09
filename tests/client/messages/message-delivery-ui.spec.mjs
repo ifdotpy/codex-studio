@@ -123,10 +123,10 @@ test("remove message button remains reachable by pointer", async ({ page }) => {
   test.setTimeout(30_000);
   page.setDefaultTimeout(10_000);
   const { message, hit, box } = await setupUncertainRemovePointer(page);
-  assert.equal(hit, "Quote message");
   test.fail(
     "Known delivery-control overlap; see tests/client/status/msg-known-failures.md.",
   );
+  assert.equal(hit, "Quote message");
   await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
   await message.waitFor({ state: "hidden", timeout: 1000 });
 });
@@ -866,6 +866,11 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await remove.focus();
       await page.keyboard.press("Enter");
       await row(dismissedText).waitFor({ state: "hidden" });
+      assert.deepEqual(
+        mutations.slice(mutationsBeforeRemoval),
+        [],
+        `${mode}: dismissal does not mutate server state or cancel delivery`,
+      );
       assert.equal(
         await input.inputValue(),
         dismissedText,
@@ -1013,11 +1018,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
       assert.equal(
         await page.locator(`[data-message="${otherChatReceipt.id}"]`).count(),
         0,
-      );
-      assert.deepEqual(
-        mutations.slice(mutationsBeforeRemoval),
-        [],
-        `${mode}: dismissal does not mutate server state or cancel delivery`,
       );
       assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
       await context.close();

@@ -337,8 +337,8 @@ test("Account settings errors", async ({ browser }) => {
       assert.equal(limitsReads, readsBeforeChange + 1);
       assert.equal(
         await limits.getByText(/80%\s*left/).count(),
-        2,
-        "typed notification displays recovered primary and weekly limits",
+        3,
+        "typed notification displays the account summary and recovered primary and weekly limits",
       );
       assert.equal(
         await limits.getByText(failure.message, { exact: true }).count(),
@@ -360,7 +360,11 @@ test("Account settings errors", async ({ browser }) => {
         .first()
         .waitFor();
       assert.equal(limitsReads, readsBeforeReconnect + 1);
-      assert.equal(await limits.getByText(/80%\s*left/).count(), 2);
+      assert.equal(
+        await limits.getByText(/80%\s*left/).count(),
+        3,
+        "reconnected limits include the account summary and recovered primary and weekly limits",
+      );
       await page.keyboard.press("Escape");
       for (const section of ["rules", "changes", "tools"]) {
         await page.evaluate((value) => window.showSurface(value), section);

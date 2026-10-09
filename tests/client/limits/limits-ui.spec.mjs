@@ -375,9 +375,9 @@ test("limits-ui", async ({ page: fixturePage }) => {
   if ((await toggle().getAttribute("aria-expanded")) !== "true")
     await toggle().click();
   await details().waitFor();
-  await expect(details().locator(".account-limits-heading p")).toHaveText(
-    "Fixture",
-  );
+  await expect(
+    details().locator(".account-limits-selected-name strong"),
+  ).toHaveText("Fixture");
   assert.doesNotMatch(
     await details().innerText(),
     /CodexBar|coverage unverified|ChatGPT bill|Costs as of/,
@@ -722,7 +722,10 @@ test("limits-ui", async ({ page: fixturePage }) => {
   await toggle().click();
   await details().locator(".account-limit-group").nth(1).waitFor();
   assert.equal(await details().locator(".account-limit-group").count(), 2);
-  assert.doesNotMatch(await details().innerText(), /Codex/);
+  const unrelatedNames = await details()
+    .locator(".account-limit-group > header > strong")
+    .allTextContents();
+  assert.deepEqual(unrelatedNames, ["Another model", "Other model"]);
 
   limits = {
     data: {
@@ -797,7 +800,9 @@ test("limits-ui", async ({ page: fixturePage }) => {
   await details().waitFor();
   assert.equal(await details().getByRole("progressbar").count(), 0);
   assert.match(await details().innerText(), /has not supplied/);
-  assert.match(await details().innerText(), /Estimate unavailable/);
+  await expect(details().locator(".account-cost-caption")).toHaveText(
+    "Estimate unavailable",
+  );
   assert.doesNotMatch(
     await details().innerText(),
     /unknown-astra|Scanner unavailable/,
