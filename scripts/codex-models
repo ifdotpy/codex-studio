@@ -1,0 +1,15 @@
+#!/usr/bin/env python3
+"""Compatibility exec shim for the relocated runtime command."""
+import os
+from pathlib import Path
+import sys
+
+
+# Installed command links may reach this file through one or more symlinks.
+project = Path(__file__).resolve().parents[1]
+source = project / "workspaces" / "runtime" / "apps" / "server" / "src" / "codex-models"
+arguments = [sys.executable]
+if sys.dont_write_bytecode:
+    arguments.append("-B")
+arguments.extend((str(source), *sys.argv[1:]))
+os.execv(sys.executable, arguments)
