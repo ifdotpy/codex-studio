@@ -452,7 +452,7 @@ The search control above the transcript searches the current chat.
 
 On a phone, **Add project** opens the server's folder list.
 The first **New chat** opens this list when no project exists.
-When no last-opened chat is saved, Studio opens the managed lead with the newest explicit update; timestamp ties use ascending chat ID. If no lead has an update timestamp, it opens the oldest-created lead, with chat ID breaking creation-time ties. A saved mobile or desktop selection keeps priority.
+When no last-opened chat is saved, Studio opens the managed lead with the most recent activity (`updated`, then `created`, then zero); timestamp ties use ascending chat ID. Saved mobile or desktop selections keep priority.
 **Plan** shows only the plan reported by the agent. Use **Change plan in chat**
 to send instructions. Historical saved plan text remains in storage.
 

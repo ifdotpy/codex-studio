@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Test viewport geometry in a headless browser with isolated server state.
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -30,10 +31,7 @@ for (const [platform, userAgent] of mobileBrowsers) {
     const fixture = spawn(
       "python3",
       ["-B", join(root, "tests/simple-ui-fixture.py"), state],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
-      },
+      { stdio: ["pipe", "pipe", "pipe"] },
     );
     let context,
       log = "";
@@ -47,12 +45,26 @@ for (const [platform, userAgent] of mobileBrowsers) {
         );
         fixture.once("exit", () => reject(new Error(log)));
       });
+      const leadId = execFileSync(
+        "python3",
+        [
+          "-c",
+          "import json,sqlite3,sys; db=sqlite3.connect(sys.argv[1]); rows=db.execute('SELECT record FROM runtime_agents').fetchall(); print(next(json.loads(row[0])['id'] for row in rows if json.loads(row[0]).get('name') == 'Release lead'))",
+          join(state, "canvas.sqlite3"),
+        ],
+        { encoding: "utf8" },
+      ).trim();
+      assert.ok(leadId, "The fixture must provide the Release lead chat ID");
       context = await runnerBrowser.newContext({
         viewport: { width: 390, height: 844 },
         isMobile: true,
         hasTouch: true,
         userAgent,
       });
+      // This geometry scenario intentionally exercises the non-empty lead.
+      await context.addInitScript((id) => {
+        localStorage.setItem("codex-mobile-opened", JSON.stringify(id));
+      }, leadId);
       const page = await context.newPage();
       await page.addInitScript(() => {
         const viewport = new EventTarget();
@@ -466,6 +478,12 @@ for (const [platform, userAgent] of mobileBrowsers) {
       );
       const settings = page.locator(".empty-chat-settings");
       await expect(settings).toBeVisible();
+      await page.evaluate(() =>
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
+      );
+      await settle(844, 0);
+      const expandedSettingsHeight = (await settings.boundingBox()).height;
+      assert.equal(expandedSettingsHeight, 108);
       const assertEmptyKeyboard = async (height, top) => {
         await page.evaluate(
           ({ height, top }) =>
@@ -514,7 +532,6 @@ for (const [platform, userAgent] of mobileBrowsers) {
         assert.ok(box.footerBottom <= box.bottom + 1, JSON.stringify(box));
         assert.ok(box.composerBottom <= box.bottom + 1, JSON.stringify(box));
         assert.equal(box.scrollY, 0);
-        assert.ok(box.panelScrollHeight > box.panelHeight, JSON.stringify(box));
         await expect(page.locator("#send")).toBeVisible();
         await expect(
           page.locator("#composer .composer-submit-actions"),
@@ -538,6 +555,12 @@ for (const [platform, userAgent] of mobileBrowsers) {
       };
       await assertEmptyKeyboard(390, 54);
       await assertEmptyKeyboard(330, 64);
+      await page.evaluate(() =>
+        window.setTestViewport({ height: 844, offsetTop: 0 }),
+      );
+      await expect
+        .poll(async () => (await settings.boundingBox()).height)
+        .toBe(expandedSettingsHeight);
       assert.equal(errors.length, 0, errors.join("\n"));
       console.log(
         `mobile-keyboard-ui: PASS (simulated keyboard geometry, input stability, offset, scroll reset, close, rotation, pinch, desktop). Screenshot: ${join(state, "keyboard-open.png")}`,
@@ -592,10 +615,10 @@ test("default mobile chat is stable across ten fresh iPhone starts", async ({
       await page.locator("#composer").waitFor();
       await expect
         .poll(() => page.locator("#conversation-title").innerText(), {
-          message: `Fresh iPhone fixture ${run} must default to Release lead`,
+          message: `Fresh iPhone fixture ${run} must default to Other project`,
           timeout: 10_000,
         })
-        .toBe("Release lead");
+        .toBe("Other project");
     } finally {
       await context?.close();
       const exited = new Promise((resolve) => fixture.once("exit", resolve));

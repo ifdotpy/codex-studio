@@ -5,7 +5,7 @@ import {
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
   countProjectChats,
-  defaultLead,
+  mostRecentActivity,
   isVisibleSidebarAgent,
   type SidebarOrder,
   type SidebarOverrides,
@@ -246,19 +246,26 @@ describe("incremental sidebar catalog", () => {
 });
 
 describe("App catalog", () => {
-  it("selects the most recently updated lead with an ID tie-break", () => {
-    const release = agent("release", { created: 1, updated: 8 });
-    const other = agent("other", { created: 3, updated: 8 });
-    const older = agent("older", { created: 9, updated: 7 });
-    expect(defaultLead([older, other, release])?.id).toBe("other");
-    expect(defaultLead([release, older, other])?.id).toBe("other");
+  it("selects the most recent activity with a stable ID tie-break", () => {
     expect(
-      defaultLead([
-        agent("later", { created: 4 }),
-        agent("first", { created: 2 }),
+      mostRecentActivity([
+        agent("created", { created: 100 }),
+        agent("updated", { created: 1, updated: 50 }),
       ])?.id,
-    ).toBe("first");
-    expect(defaultLead([])).toBeUndefined();
+    ).toBe("created");
+    expect(
+      mostRecentActivity([
+        agent("z", { created: 10 }),
+        agent("a", { created: 10 }),
+      ])?.id,
+    ).toBe("a");
+    expect(
+      mostRecentActivity([
+        agent("z", { created: undefined, updated: undefined }),
+        agent("a", { created: undefined, updated: undefined }),
+      ])?.id,
+    ).toBe("a");
+    expect(mostRecentActivity([])).toBeUndefined();
   });
 
   it("retains another tree and updates membership, source order and root selection", () => {

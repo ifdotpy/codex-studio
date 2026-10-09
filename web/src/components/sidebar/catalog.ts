@@ -32,24 +32,27 @@ export function isVisibleSidebarAgent(
   );
 }
 
-/** Prefer latest explicit update; without update timestamps, prefer the oldest lead. */
-export function defaultLead(leads: Agent[]) {
-  const hasUpdates = leads.some((lead) => lead.updated != null);
-  let selected: Agent | undefined;
-  for (const lead of leads) {
+/** Select the most recent activity, with ascending ID for timestamp ties. */
+export function mostRecentActivity<
+  T extends {
+    id: string;
+    updated?: number | null;
+    created?: number | null;
+  },
+>(rows: T[]) {
+  let selected: T | undefined;
+  for (const row of rows) {
     if (!selected) {
-      selected = lead;
+      selected = row;
       continue;
     }
-    const updated = hasUpdates ? (lead.updated ?? 0) : -(lead.created ?? 0);
-    const selectedUpdated = hasUpdates
-      ? (selected.updated ?? 0)
-      : -(selected.created ?? 0);
+    const updated = row.updated ?? row.created ?? 0;
+    const selectedUpdated = selected.updated ?? selected.created ?? 0;
     if (
       updated > selectedUpdated ||
-      (updated === selectedUpdated && lead.id < selected.id)
+      (updated === selectedUpdated && row.id < selected.id)
     )
-      selected = lead;
+      selected = row;
   }
   return selected;
 }
