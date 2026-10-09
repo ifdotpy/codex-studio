@@ -11,11 +11,13 @@ test("Ux request recovery browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "studio-ux-request-recovery-"));
-  const entry = join(root, "web/__request-recovery.jsx");
+  const entry = join(root, "workspaces/client/apps/web/__request-recovery.jsx");
   const source = `
   import React from 'react';
   import {createRoot} from 'react-dom/client';

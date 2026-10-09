@@ -17,11 +17,15 @@ test("Shell ux ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(300_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
     },

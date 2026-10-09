@@ -13,12 +13,17 @@ test("Browser access notice ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(repo, "web/package.json"));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "browser-access-notice-vite-"));
   const screenshot = join(tmpdir(), "codex-browser-access-notice.png");
-  const entry = join(repo, "web/__browser-access-notice-fixture.jsx");
+  const entry = join(
+    repo,
+    "workspaces/client/apps/web/__browser-access-notice-fixture.jsx",
+  );
   const source = `
   import React, {useState} from 'react';
   import {createRoot} from 'react-dom/client';

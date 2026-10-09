@@ -12,7 +12,7 @@ test(
     context: runnerContext,
   }) => {
     test.setTimeout(300_000);
-    const root = join(import.meta.dirname, "../../../web");
+    const root = join(import.meta.dirname, "../../");
     const require = createRequire(join(root, "package.json"));
     const { createServer } = await import(require.resolve("vite"));
     const server = await createServer({

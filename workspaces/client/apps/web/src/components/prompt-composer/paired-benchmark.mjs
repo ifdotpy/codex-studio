@@ -10,30 +10,26 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const BASELINE_REVISION = "e681bcc618d9ea4f4a0799de3fa81d01eee92687";
 const commandTimeoutMs = 90_000;
 const benchmarkGlobalTimeoutMs = 360_000;
 const benchmarkCommandTimeoutMs = 390_000;
-const repo = dirname(
-  dirname(dirname(dirname(dirname(fileURLToPath(import.meta.url))))),
-);
-const tests = join(repo, "tests");
-const web = join(repo, "web");
-const playwrightCli = join(web, "node_modules/@playwright/test/cli.js");
+const repo = fileURLToPath(new URL("../../../../../../../", import.meta.url));
+const web = join(repo, "workspaces/client/apps/web");
+const tests = join(web, "tests");
 const playwrightConfig = join(web, "playwright.config.ts");
 const requiredPaths = [
   join(web, "dist/index.html"),
-  playwrightCli,
   playwrightConfig,
-  join(tests, "client/playwright.mjs"),
+  join(tests, "playwright.mjs"),
   join(web, "src/components/prompt-composer/renderProbe.ts"),
-  join(tests, "simple-ui-fixture.py"),
-  join(tests, "runtime-contract.py"),
-  join(tests, "client/performance/draft-render-performance-browser.spec.mjs"),
-  join(tests, "client/performance/ui-responsiveness-browser.spec.mjs"),
+  join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+  join(repo, "workspaces/runtime/apps/server/tests/runtime-contract.py"),
+  join(tests, "performance/draft-render-performance-browser.spec.mjs"),
+  join(tests, "performance/ui-responsiveness-browser.spec.mjs"),
 ];
 const missingPaths = requiredPaths.filter((path) => !existsSync(path));
 if (missingPaths.length)
@@ -102,9 +98,9 @@ async function prepareBaseline() {
       "--no-cone",
       "/web/**",
       "/web/playwright.config.ts",
-      "/tests/client/performance/draft-render-performance-browser.spec.mjs",
-      "/tests/client/performance/ui-responsiveness-browser.spec.mjs",
-      "/tests/client/playwright.mjs",
+      "/tests/performance/draft-render-performance-browser.spec.mjs",
+      "/tests/performance/ui-responsiveness-browser.spec.mjs",
+      "/tests/playwright.mjs",
       "/tests/simple-ui-fixture.py",
       "/tests/runtime-contract.py",
       "/scripts/claude_bridge/**",
@@ -119,14 +115,14 @@ async function prepareBaseline() {
     repo,
   );
   await symlink(
-    join(repo, "web/node_modules"),
+    join(web, "node_modules"),
     join(baselineWeb, "node_modules"),
     "dir",
   );
   const probeDir = join(baselineWeb, "src/components/prompt-composer");
   await mkdir(probeDir, { recursive: true });
   await copyFile(
-    join(repo, "web/src/components/prompt-composer/renderProbe.ts"),
+    join(web, "src/components/prompt-composer/renderProbe.ts"),
     join(probeDir, "renderProbe.ts"),
   );
   await insertOnce(
@@ -163,19 +159,19 @@ async function prepareBaseline() {
   );
   command("npm", ["run", "build"], baselineWeb);
 
-  const baselinePerformanceTests = join(baseline, "tests/client/performance");
+  const baselinePerformanceTests = join(baseline, "tests/performance");
   await mkdir(baselinePerformanceTests, { recursive: true });
   for (const name of [
     "draft-render-performance-browser.spec.mjs",
     "ui-responsiveness-browser.spec.mjs",
   ])
     await copyFile(
-      join(tests, "client/performance", name),
+      join(tests, "performance", name),
       join(baselinePerformanceTests, name),
     );
   await copyFile(
-    join(tests, "client/playwright.mjs"),
-    join(baseline, "tests/client/playwright.mjs"),
+    join(tests, "playwright.mjs"),
+    join(baseline, "tests/playwright.mjs"),
   );
   await copyFile(
     join(web, "playwright.config.ts"),
@@ -185,16 +181,17 @@ async function prepareBaseline() {
 
 function runCurrentSpec(spec) {
   command(
-    process.execPath,
+    "pnpm",
     [
-      playwrightCli,
+      "exec",
+      "playwright",
       "test",
       "--config",
       playwrightConfig,
       "--project=performance",
       "--global-timeout",
       String(benchmarkGlobalTimeoutMs),
-      join(tests, "client/performance", spec),
+      join(tests, "performance", spec),
     ],
     web,
     { PLAYWRIGHT_INCLUDE_SPECIAL: "1" },
@@ -213,7 +210,7 @@ function runBaselineSpec(spec) {
       "--project=performance",
       "--global-timeout",
       String(benchmarkGlobalTimeoutMs),
-      join(baseline, "tests/client/performance", spec),
+      join(baseline, "tests/performance", spec),
     ],
     baselineWeb,
     {

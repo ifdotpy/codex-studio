@@ -6,14 +6,11 @@ test("Draft recovery", async ({ context: testContext }) => {
   test.setTimeout(180_000);
   // Real IndexedDB. Fail local writes, reload, and recover without losing text.
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();

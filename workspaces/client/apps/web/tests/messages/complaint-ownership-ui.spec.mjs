@@ -6,10 +6,14 @@ import { test } from "../playwright.mjs";
 
 test("Complaint ownership", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Current message recipient, history, and response delivery through the real component.
   const repo = testRepo;
-  const require = createRequire(join(repo, "web/package.json"));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const harness = `
   import React from 'react';

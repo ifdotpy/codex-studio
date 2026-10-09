@@ -3,7 +3,7 @@ import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
 // Production UI with isolated files and recorded transcript fixtures. No model calls.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import assert from "node:assert/strict";
 test("Turn History Ui", async ({
@@ -11,9 +11,7 @@ test("Turn History Ui", async ({
   context: _testContext,
   page: testPage,
 }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-turn-history-"));
   const report = join(
     directory,
@@ -30,7 +28,11 @@ test("Turn History Ui", async ({
   );
   const proc = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), directory],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      directory,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let page,

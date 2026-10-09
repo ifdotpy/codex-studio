@@ -8,10 +8,14 @@ import { test, browserExecutablePath } from "../playwright.mjs";
 
 test("Scroll restart", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Exercise the real scroll hook across a browser reload and delayed history load.
   const repo = testRepo;
-  const require = createRequire(join(repo, "web/package.json"));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { chromium, webkit } = require("playwright-core");
   const browserType = process.env.BROWSER === "webkit" ? webkit : chromium;
   const { createServer } = await import(require.resolve("vite"));

@@ -14,7 +14,7 @@ export default defineConfig({
         plugins: [
           storybookTest({
             configDir: resolve(configDirectory),
-            storybookScript: "npm run storybook -- --no-open",
+            storybookScript: "pnpm run storybook -- --no-open",
           }),
         ],
         test: {

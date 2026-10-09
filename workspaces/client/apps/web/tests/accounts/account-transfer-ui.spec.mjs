@@ -9,7 +9,7 @@ import {
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, extname } from "node:path";
+import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 test("Account Transfer Ui", async ({
   browser: _testBrowser,
@@ -33,9 +33,7 @@ test("Account Transfer Ui", async ({
     },
   };
 
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "codex-accounts-ui-"));
   const accounts = [
     {
@@ -331,7 +329,8 @@ test("Account Transfer Ui", async ({
       return json({ items: [], sessions: [] });
     try {
       const path = join(
-        process.env.STUDIO_WEB_DIST || join(root, "web/dist"),
+        process.env.STUDIO_WEB_DIST ||
+          join(root, "workspaces/client/apps/web/dist"),
         url.pathname === "/" ? "index.html" : url.pathname,
       );
       const file = await readFile(path);

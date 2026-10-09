@@ -10,10 +10,10 @@ test("Dictation ui", async ({
 }) => {
   test.setTimeout(180_000);
   const require = createRequire(
-    new URL("../../../web/package.json", import.meta.url),
+    new URL("../..//package.json", import.meta.url),
   );
   const { createServer } = await import(require.resolve("vite"));
-  const root = resolve(import.meta.dirname, "../../../web");
+  const root = resolve(import.meta.dirname, "../../");
   const server = await createServer({
     configFile: false,
     root,

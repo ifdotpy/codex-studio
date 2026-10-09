@@ -7,7 +7,7 @@ reads application and agent state through the server HTTP API; the server owns
 persistent state, execution, and native provider access. Keep permission and
 request identity rules intact for actions that write state. Match checks to the
 changed interface, and use the focused composer check with
-`npm run test:skill-autocomplete` for skill completion changes.
+`pnpm run test:skill-autocomplete` for skill completion changes.
 
 React and TypeScript components, built with Vite. Mantine provides controls,
 menus, dialogs, drawers, and the shared theme. Lucide provides icons. The Python server owns agents,
@@ -18,9 +18,9 @@ SQLite, message delivery, and command monitors.
 From this directory:
 
 ```bash
-npm ci
-npm run build
-../scripts/codex-canvas
+pnpm install --frozen-lockfile
+pnpm run build
+../../../runtime/apps/server/src/codex-canvas
 ```
 
 Open <http://127.0.0.1:4620>. The server serves `dist/`.
@@ -32,26 +32,26 @@ The server reports a missing build instead of serving an older client.
 Keep the Python server on port 4620. Start Vite in another terminal:
 
 ```bash
-npm run dev
+pnpm run dev
 ```
 
-Vite proxies `/api` to the local Python server. `npm run build` checks TypeScript
-and creates the production bundle. `npm test` builds that bundle and checks it in
+Vite proxies `/api` to the local Python server. `pnpm run build` checks TypeScript
+and creates the production bundle. `pnpm test` builds that bundle and checks it in
 a separate headless Chrome process against an isolated server and database.
 Set `CHROME_BIN` if Chrome uses another executable path.
 
 ## Component workbench
 
 Storybook runs inside this package and reads stories colocated with components
-under `src/`. Start the local workbench with `npm run storybook`, create its
-static bundle with `npm run build-storybook`, and run story interaction tests in
-headless Chromium with `CHROME_BIN=/path/to/chromium npm run test:storybook`.
+under `src/`. Start the local workbench with `pnpm run storybook`, create its
+static bundle with `pnpm run build-storybook`, and run story interaction tests in
+headless Chromium with `CHROME_BIN=/path/to/chromium pnpm run test:storybook`.
 The Storybook config and package scripts disable telemetry. The Vitest addon
 runs each story's play function in a local browser; no hosted Storybook service
 is used. Keep story props typed from the component or a small typed harness, and
 include representative keyboard and disabled/loading states for interactive UI.
 
-`npm run test:prompt-composer` remains the production composer regression check.
+`pnpm run test:prompt-composer` remains the production composer regression check.
 It verifies the actual prompt input and draft subscription path independently
 from the isolated Storybook stories.
 
@@ -198,7 +198,7 @@ The current turn shows tool calls by default, including completed commands while
 the agent thinks. Manual collapse remains available. Turn completion preserves
 the visible calls; older commands stay hidden when history is reopened.
 
-`tests/client/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
+`tests/chat/live-chat-ui.spec.mjs` injects app-server notifications into an isolated runtime.
 It tests the real HTTP stream and React interface without model inference.
 
 ## Orchestration workspace
@@ -274,13 +274,13 @@ when that permission is absent. Browser notification delivery depends on system 
 Backend regression commands run from the repository root:
 
 ```bash
-python3 -B tests/runtime-contract.py
-python3 -B tests/canvas-contract.py
-python3 -B tests/user-tasks-contract.py
-python3 -B tests/workspace-contract.py
-python3 -B tests/workspace-races.py
-python3 -B tests/workspace-protocol.py
-python3 -B tests/workspace-native-turn.py
+python3 -B workspaces/runtime/apps/server/tests/runtime-contract.py
+python3 -B workspaces/runtime/apps/server/tests/canvas-contract.py
+python3 -B workspaces/runtime/apps/server/tests/user-tasks-contract.py
+python3 -B workspaces/runtime/apps/server/tests/workspace-contract.py
+python3 -B workspaces/runtime/apps/server/tests/workspace-races.py
+python3 -B workspaces/runtime/apps/server/tests/workspace-protocol.py
+python3 -B workspaces/runtime/apps/server/tests/workspace-native-turn.py
 ```
 
 The last two checks use the installed Codex binary with temporary state. The native
@@ -336,6 +336,6 @@ this receipt. Review an unconfirmed outcome before sending another instruction.
 Targeted checks:
 
 ```sh
-python3 tests/connection-recovery-contract.py
-npm --prefix web run test:browser -- disconnect-recovery-ui.spec.mjs
+python3 workspaces/runtime/apps/server/tests/connection-recovery-contract.py
+pnpm --filter codex-agents-web run test:browser -- disconnect-recovery-ui.spec.mjs
 ```

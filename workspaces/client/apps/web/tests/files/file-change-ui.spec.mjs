@@ -12,19 +12,25 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 test("File change", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production transcript and result renderers with isolated saved messages. No inference.
 
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
+  const { chromium, webkit } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
   const mobile = engine === webkit || process.env.MOBILE === "1";
   const directory = await mkdtemp(join(tmpdir(), "studio-file-change-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), directory],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      directory,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
     },

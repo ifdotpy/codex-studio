@@ -6,14 +6,23 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Chat scope", async ({ context }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Real fixture, HTTP API, and headless browser. No model calls or user state.
 
   const project = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-chat-scope-"));
   const proc = spawn(
     "python3",
-    ["-B", join(project, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(
+        project,
+        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
+      ),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

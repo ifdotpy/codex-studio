@@ -3,20 +3,20 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { test, expect } from "../playwright.mjs";
 
 test("dialog-drafts-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "dialog-drafts-vite-"));
-  const entry = join(repo, "web/__ux-fixture.jsx");
+  const entry = join(repo, "workspaces/client/apps/web/__ux-fixture.jsx");
   const source = `
   import React, {useState} from 'react';
   import {createRoot} from 'react-dom/client';

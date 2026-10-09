@@ -20,11 +20,12 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   browser,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const oldHash = readApiSchemaHash();
   const nextHash = "f".repeat(64);
   assert.notEqual(nextHash, oldHash);
-  const distDirectory = process.env.P6_DIST_DIR || join(root, "web/dist");
+  const distDirectory =
+    process.env.P6_DIST_DIR || join(root, "workspaces/client/apps/web/dist");
   const assetDirectory = join(distDirectory, "assets");
   const assetNames = await readdir(assetDirectory);
   const hashAssets = async () =>
@@ -56,7 +57,11 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
   await pageSession.send("Network.setCacheDisabled", { cacheDisabled: true });
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -511,20 +516,27 @@ test("a real built renderer uses a new projection cache and preserves drafts", a
     assert.deepEqual(
       distAssetsAfter,
       distAssetsBefore,
-      "web/dist/assets remains byte-identical; the spec only serves rewritten response bodies",
+      "workspaces/client/apps/web/dist/assets remains byte-identical; the spec only serves rewritten response bodies",
     );
-    console.log("web/dist/assets unchanged sha256:", distAssetsDigest());
+    console.log(
+      "workspaces/client/apps/web/dist/assets unchanged sha256:",
+      distAssetsDigest(),
+    );
   }
 });
 
 test("different build collection sets share only drafts and outbox", async ({
   browser,
 }) => {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-legacy-projection-size-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -574,20 +586,17 @@ test("different build collection sets share only drafts and outbox", async ({
     "fixture has a representative legacy cache",
   );
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: {
       host: "127.0.0.1",
       port: 0,
       fs: {
         allow: [
-          fileURLToPath(new URL("../../../web", import.meta.url)),
+          fileURLToPath(new URL("../../", import.meta.url)),
           fileURLToPath(new URL("../../..", import.meta.url)),
         ],
       },

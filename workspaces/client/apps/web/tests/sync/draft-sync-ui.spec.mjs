@@ -5,7 +5,7 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { DRAFT_SYNC_TIMING_MS } from "../../../web/src/sync/draftSyncTiming.mjs";
+import { DRAFT_SYNC_TIMING_MS } from "../..//src/sync/draftSyncTiming.mjs";
 
 test("Draft sync ui", async ({
   browser: testBrowser,
@@ -13,11 +13,15 @@ test("Draft sync ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-draft-sync-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },
@@ -837,11 +841,15 @@ test("Draft sync ui", async ({
 
 test("Draft sync resume preserves a pending conflict", async ({ page }) => {
   test.setTimeout(90_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-draft-conflict-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },

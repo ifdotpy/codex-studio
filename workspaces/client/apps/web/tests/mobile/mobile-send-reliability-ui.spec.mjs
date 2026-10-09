@@ -10,20 +10,24 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("mobile-send-reliability-ui", async ({ browser }) => {
   test.setTimeout(120_000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-mobile-send-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), temporary],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      temporary,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
     },

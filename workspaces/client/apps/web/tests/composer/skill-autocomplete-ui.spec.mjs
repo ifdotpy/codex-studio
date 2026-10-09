@@ -6,14 +6,20 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production composer against an isolated runtime and delayed skill endpoint.
 
   const repo = testRepo;
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-autocomplete-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   const contexts = [];

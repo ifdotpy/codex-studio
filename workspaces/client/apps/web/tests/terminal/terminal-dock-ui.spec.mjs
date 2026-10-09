@@ -18,7 +18,9 @@ import { join, extname } from "node:path";
 import { createRequire } from "node:module";
 test("Terminal dock", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Terminal UI transport fixture; Python terminal contracts exercise actual PTYs.
   const skill = testRepo;
   const workspaceId = "1234567890abcdef1234567890abcdef";
@@ -64,9 +66,9 @@ test("Terminal dock", async () => {
       if (changed.length) writeResourceEvent(stream, "change", changed);
     }
   };
-  const { chromium } = createRequire(join(skill, "web/package.json"))(
-    "playwright-core",
-  );
+  const { chromium } = createRequire(
+    join(skill, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const root = await mkdtemp(join(tmpdir(), "codex-terminal-dock-"));
   const server = createServer(async (req, res) => {
     try {
@@ -120,7 +122,11 @@ test("Terminal dock", async () => {
         );
         return;
       }
-      const path = join(skill, "web/dist", name === "/" ? "index.html" : name);
+      const path = join(
+        skill,
+        "workspaces/client/apps/web/dist",
+        name === "/" ? "index.html" : name,
+      );
       res.setHeader(
         "Content-Type",
         { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[
@@ -709,7 +715,11 @@ test("Terminal dock", async () => {
   const liveRoot = await mkdtemp(join(tmpdir(), "codex-terminal-live-"));
   const fixture = spawn(
     process.env.CODEX_AGENTS_PYTHON || "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), liveRoot],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      liveRoot,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let fixtureLog = "",

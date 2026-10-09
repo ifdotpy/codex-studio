@@ -10,7 +10,7 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   test,
-} from "../../../tests/client/playwright.mjs";
+} from "../../tests/playwright.mjs";
 
 for (const writerTab of [0, 1]) {
   test(`projection reset fences an accepted write from tab ${writerTab + 1}`, async ({

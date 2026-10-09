@@ -2,12 +2,12 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "../../../../tests/client/playwright.mjs";
+import { test, expect } from "../../../tests/playwright.mjs";
 
 test("progress cache retains good content through a panel read error", async ({
   browser,
 }) => {
-  const repo = join(import.meta.dirname, "../../../..");
+  const repo = join(import.meta.dirname, "../../../../../../../");
   const webRoot = join(repo, "web");
   const require = createRequire(join(webRoot, "package.json"));
   const { createServer } = await import(require.resolve("vite"));

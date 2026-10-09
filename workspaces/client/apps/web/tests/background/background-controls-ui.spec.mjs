@@ -14,7 +14,9 @@ import { tmpdir } from "node:os";
 import { join, extname } from "node:path";
 test("Background controls", async ({ context }) => {
   test.setTimeout(60000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Browser contract for process controls. The HTTP transport is a deterministic fixture.
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-background-controls-"));
@@ -36,7 +38,11 @@ test("Background controls", async ({ context }) => {
       if (syncFixture && handleEntitySyncFixtureRequest(req, res, syncFixture))
         return;
       const name = new URL(req.url, "http://localhost").pathname;
-      const path = join(skill, "web/dist", name === "/" ? "index.html" : name);
+      const path = join(
+        skill,
+        "workspaces/client/apps/web/dist",
+        name === "/" ? "index.html" : name,
+      );
       res.setHeader(
         "Content-Type",
         { ".js": "text/javascript", ".css": "text/css", ".html": "text/html" }[

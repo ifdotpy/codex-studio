@@ -14,15 +14,18 @@ import {
   modelOptions,
   modelValue,
   selectModel,
-} from "../../model-picker.mjs";
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 import { test } from "../playwright.mjs";
-import { setupControl, setupToggle } from "../../setup-controls.mjs";
+import {
+  setupControl,
+  setupToggle,
+} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 
 test("Daybreak settings", async ({ context }) => {
   test.setTimeout(180_000);
   // Exercise the real settings component without a backend or model request.
 
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-daybreak-settings-"));

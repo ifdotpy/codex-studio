@@ -9,14 +9,14 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, expect } from "../playwright.mjs";
-import { chooseSetupValue } from "../../setup-controls.mjs";
+import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 
 // Production components with isolated HTTP responses. No live account or model request.
 test("unified agent picker roles, accounts and project/shared flows", async ({
   browser,
 }) => {
   test.setTimeout(180000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-unified-picker-vite-"));
