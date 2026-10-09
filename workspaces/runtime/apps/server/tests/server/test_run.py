@@ -17,6 +17,8 @@ import time
 import unittest
 from unittest import mock
 
+SERVER_APP_BOOTSTRAP = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(SERVER_APP_BOOTSTRAP / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 ROOT = REPOSITORY_ROOT
