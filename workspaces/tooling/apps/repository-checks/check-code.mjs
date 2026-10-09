@@ -13,7 +13,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
-const defaultRoot = path.resolve(scriptDirectory, "..");
+const defaultRoot = path.resolve(scriptDirectory, "../../../..");
 const mode = process.argv[2];
 const check = process.argv[3];
 const repositoryRoot = defaultRoot;
@@ -69,7 +69,9 @@ function main() {
     mode !== "staged" ||
     (check !== undefined && check !== "lint" && check !== "format")
   ) {
-    throw new Error("Usage: node scripts/check-code.mjs staged [lint|format]");
+    throw new Error(
+      "Usage: node workspaces/tooling/apps/repository-checks/check-code.mjs staged [lint|format]",
+    );
   }
 
   const selectedPaths = getPaths();
@@ -109,24 +111,23 @@ function main() {
       );
     }
 
-    const packageDirectory = path.join(repositoryRoot, "node_modules");
-    const oxlint = path.join(packageDirectory, "oxlint", "bin", "oxlint");
-    const oxfmt = path.join(packageDirectory, "oxfmt", "bin", "oxfmt");
+    const binDirectory = path.join(repositoryRoot, "node_modules", ".bin");
+    const oxlint = path.join(binDirectory, "oxlint");
+    const oxfmt = path.join(binDirectory, "oxfmt");
     if (
       (lintPaths.length > 0 && !existsSync(oxlint)) ||
       (formatPaths.length > 0 && !existsSync(oxfmt))
     ) {
       throw new Error(
-        "Oxlint/Oxfmt dependencies are missing; install them with `npm ci` before committing.",
+        "Oxlint/Oxfmt dependencies are missing; install them with `pnpm install --frozen-lockfile` before committing.",
       );
     }
 
     if (lintPaths.length > 0) {
       console.log("Checking staged JavaScript/TypeScript with Oxlint...");
       const status = run(
-        process.execPath,
+        oxlint,
         [
-          oxlint,
           "--deny-warnings",
           "--disable-nested-config",
           ...lintPaths.map((relativePath) =>
@@ -141,9 +142,8 @@ function main() {
     if (formatPaths.length > 0) {
       console.log("Checking staged supported text files with Oxfmt...");
       const status = run(
-        process.execPath,
+        oxfmt,
         [
-          oxfmt,
           "--check",
           "--disable-nested-config",
           ...formatPaths.map((relativePath) =>
