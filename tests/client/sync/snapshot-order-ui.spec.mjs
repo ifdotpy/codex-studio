@@ -12,7 +12,10 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-test("snapshot-order-ui", async ({ page: fixturePage }) => {
+async function runSnapshotOrderUi(
+  fixturePage,
+  { checkRequestAnchor = false } = {},
+) {
   test.setTimeout(45_000);
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -177,14 +180,96 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   // The real Mantine loading state must not translate the button label.
   const card = page.locator('[data-request="async-question"]');
   await card.getByRole("button", { name: "Answer", exact: true }).click();
-  await card
-    .getByRole("textbox", { name: "Which scope?" })
-    .fill("Only this fixture");
   const answer = card.getByRole("button", {
     name: "Send answer",
     exact: true,
   });
   const label = answer.locator(".mantine-Button-inner");
+  const answerForm = card.locator(".request-answer-form");
+  await answerForm.waitFor({ state: "visible" });
+  await page.waitForFunction(
+    () => {
+      const root = document.querySelector("#messages");
+      const card = document.querySelector('[data-request="async-question"]');
+      const form = card?.querySelector(".request-answer-form");
+      const label = card?.querySelector(
+        ".request-answer-actions .mantine-Button-inner",
+      );
+      if (
+        !root ||
+        !card ||
+        !form ||
+        !label ||
+        root.querySelectorAll("[data-message]").length === 0
+      )
+        return false;
+      const rect = (node) => {
+        const { x, y, width, height } = node.getBoundingClientRect();
+        return [x, y, width, height];
+      };
+      const current = [
+        root.scrollTop,
+        root.scrollHeight,
+        ...rect(card),
+        ...rect(form),
+        ...rect(label),
+      ];
+      const state = (window.__snapshotOrderOpenStable ??= {
+        previous: null,
+        frames: 0,
+      });
+      state.frames =
+        state.previous &&
+        current.every(
+          (value, index) => Math.abs(value - state.previous[index]) < 0.1,
+        )
+          ? state.frames + 1
+          : 0;
+      state.previous = current;
+      return state.frames >= 2;
+    },
+    undefined,
+    { polling: "raf", timeout: 10000 },
+  );
+  if (checkRequestAnchor) {
+    const position = await page.evaluate(() => {
+      const root = document.querySelector("#messages");
+      const card = document.querySelector('[data-request="async-question"]');
+      const form = card?.querySelector(".request-answer-form");
+      if (!root || !card || !form)
+        throw new Error("Answer form is not mounted");
+      const rootRect = root.getBoundingClientRect();
+      const cardRect = card.getBoundingClientRect();
+      const formRect = form.getBoundingClientRect();
+      return {
+        scrollTop: root.scrollTop,
+        root: {
+          top: rootRect.top,
+          bottom: rootRect.bottom,
+          height: root.clientHeight,
+        },
+        card: { top: cardRect.top, bottom: cardRect.bottom },
+        form: { top: formRect.top, bottom: formRect.bottom },
+        topOffset: cardRect.top - rootRect.top,
+        formBottomGap: rootRect.bottom - formRect.bottom,
+      };
+    });
+    test.fail(
+      true,
+      "Opening an answer should anchor the request card 12px below the transcript viewport top; the settled card misses that anchor and clips the reply form.",
+    );
+    assert.ok(
+      Math.abs(position.topOffset - 12) <= 1 && position.formBottomGap >= 0,
+      `Opened request remains anchored with its full reply form visible: ${JSON.stringify(position)}`,
+    );
+    return;
+  }
+  await card
+    .getByRole("textbox", { name: "Which scope?" })
+    .fill("Only this fixture");
+  await page.evaluate(() => {
+    window.__snapshotOrderOpenStable = { previous: null, frames: 0 };
+  });
   // Record every frame around the transition so a geometry failure tells us
   // whether the answer fields, preceding content, or transcript scroll moved.
   await page.evaluate(() => {
@@ -257,14 +342,54 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     };
     requestAnimationFrame(tick);
   });
-  // Wait for the label's y, width, and height to settle across two frames.
-  await answer.scrollIntoViewIfNeeded();
-  await page.evaluate(() => {
-    const record = window.__snapshotOrderLabelFrames;
-    record.phase = "settling";
-    record.stableFrames = 0;
-    record.previous = null;
-  });
+  // Baseline only after the open transition and filled form are geometrically stable.
+  await page.waitForFunction(
+    () => {
+      const root = document.querySelector("#messages");
+      const label = document.querySelector(
+        '[data-request="async-question"] .request-answer-actions .mantine-Button-inner',
+      );
+      const form = document.querySelector(
+        '[data-request="async-question"] .request-answer-form',
+      );
+      if (
+        !root ||
+        !label ||
+        !form ||
+        root.querySelectorAll("[data-message]").length === 0
+      )
+        return false;
+      const formRect = form.getBoundingClientRect();
+      const rootRect = root.getBoundingClientRect();
+      if (
+        formRect.height <= 0 ||
+        formRect.bottom <= rootRect.top ||
+        formRect.top >= rootRect.bottom
+      )
+        return false;
+      const labelRect = label.getBoundingClientRect();
+      const current = [
+        root.scrollTop,
+        root.scrollHeight,
+        labelRect.x,
+        labelRect.y,
+        labelRect.width,
+        labelRect.height,
+      ];
+      const state = window.__snapshotOrderOpenStable;
+      state.frames =
+        state.previous &&
+        current.every(
+          (value, index) => Math.abs(value - state.previous[index]) < 0.1,
+        )
+          ? state.frames + 1
+          : 0;
+      state.previous = current;
+      return state.frames >= 2;
+    },
+    undefined,
+    { polling: "raf", timeout: 10000 },
+  );
   await page.waitForFunction(
     () => window.__snapshotOrderLabelFrames?.stableFrames >= 1,
     undefined,
@@ -456,9 +581,11 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
       "Obsolete responses do not regroup the confirmed worker",
     );
     assert.equal(
-      await page.locator("#error").count(),
+      await page
+        .getByText("Obsolete snapshot failure", { exact: true })
+        .count(),
       0,
-      "An obsolete error does not replace a successful snapshot",
+      "An obsolete session failure does not surface its stale error",
     );
   }
 
@@ -480,4 +607,9 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   console.log(
     `PASS: delayed credential success and error cannot revert newer replicated data; current errors remain visible; loading button label stays fixed. ${evidence}`,
   );
-});
+}
+
+test("snapshot-order-ui", async ({ page }) => runSnapshotOrderUi(page));
+
+test("snapshot-order-ui request anchor @client", async ({ page }) =>
+  runSnapshotOrderUi(page, { checkRequestAnchor: true }));
