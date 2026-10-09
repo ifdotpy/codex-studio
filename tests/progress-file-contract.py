@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -87,6 +88,16 @@ class ProgressContract(unittest.TestCase):
         self.assertEqual(self.runtime.get_panel("first"), edited)
         path.unlink()
         self.assertEqual(self.runtime.get_panel("first"), missing)
+
+    def test_windows_path_provision_branch_uses_the_agent_directory(self):
+        import codex_progress
+
+        expected = self.root / "progress" / "first"
+        expected.mkdir(parents=True)
+        with patch.object(codex_progress, "_directory", return_value=nullcontext(expected)):
+            path = provision_progress(self.root, "first")
+        self.assertEqual(path, expected / "PROGRESS.md")
+        self.assertTrue(path.is_file())
 
     def test_agent_isolation_and_identity_checked_before_file_read(self):
         for key in ("first", "second"):

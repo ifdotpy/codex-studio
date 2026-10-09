@@ -73,7 +73,7 @@ def provision_progress(state_dir, agent_id):
                     raise ValueError("PROGRESS.md must be a regular file")
             else:
                 try:
-                    verify_handle_within_directory(descriptor, agent)
+                    verify_handle_within_directory(descriptor, directory)
                 finally:
                     os.close(descriptor)
                 protect_temp_file(target)

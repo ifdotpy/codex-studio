@@ -9,6 +9,7 @@ import sys
 import tempfile
 import threading
 import unittest
+from types import SimpleNamespace
 from contextlib import contextmanager
 from unittest.mock import patch
 
@@ -18,6 +19,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from codex_native_input_projection import _open_rollout, accepted_turns
 from codex_progress import provision_progress, read_progress
 from codex_private_paths import reject_reparse_path
+import codex_private_paths
 import codex_progress_layout as layout
 
 tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
@@ -137,6 +139,7 @@ class WindowsRuntimePathsContract(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary) / "state"
+            state.mkdir()
             path = provision_progress(state, "worker_1")
             outside = Path(temporary) / "outside"
             outside.mkdir()
@@ -249,6 +252,29 @@ class WindowsRuntimePathsContract(unittest.TestCase):
             feedback = layout.layout_path(state, "worker_1")
             self.assertEqual(feedback.stat().st_mode & 0o222, 0)
             self.assertEqual(read_progress(state, "worker_1")["revision"], current["revision"])
+
+
+class PrivatePathPosixMockContract(unittest.TestCase):
+    def test_nested_components_are_checked_cumulatively(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary) / "state"
+            target = root / "one" / "two" / "rollout.jsonl"
+            target.parent.mkdir(parents=True)
+            target.write_text("ok", encoding="utf-8")
+            reject_reparse_path(root, target)
+
+            for component in (root, root / "one", root / "one" / "two", target):
+                original_lstat = Path.lstat
+
+                def marked(path, *, selected=component):
+                    info = original_lstat(path)
+                    if path == selected:
+                        return SimpleNamespace(st_file_attributes=0x400, st_mode=info.st_mode)
+                    return info
+
+                with patch.object(Path, "lstat", marked):
+                    with self.assertRaisesRegex(ValueError, "reparse point"):
+                        reject_reparse_path(root, target)
 
 
 if __name__ == "__main__":

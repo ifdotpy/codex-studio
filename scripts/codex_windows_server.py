@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Iterator
 import uuid
 
 _configured_root = os.environ.get("CODEX_STUDIO_SOURCE_DIR")
@@ -20,6 +22,38 @@ sys.path.insert(0, str(_module_root / "scripts"))
 
 from codex_private_paths import ensure_private_dir, protect_temp_file
 from codex_state import state_dir
+
+
+@contextlib.contextmanager
+def _control_sequence_lock(state: Path) -> Iterator[None]:
+    from codex_file_lock import LOCK_EX, LOCK_UN, flock
+
+    path = state / "windows-server-control-sequence.lock"
+    with path.open("a+b") as stream:
+        flock(stream, LOCK_EX)
+        try:
+            yield
+        finally:
+            flock(stream, LOCK_UN)
+
+
+def _next_control_sequence(state: Path) -> int:
+    path = state / "windows-server-control-sequence"
+    with _control_sequence_lock(state):
+        try:
+            current = int(path.read_text(encoding="ascii"))
+        except FileNotFoundError:
+            current = 0
+        if current < 0:
+            raise ValueError("Invalid Windows server control sequence")
+        sequence = current + 1
+        temporary = path.with_suffix(".tmp")
+        with temporary.open("w", encoding="ascii", newline="\n") as stream:
+            stream.write(str(sequence))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+        return sequence
 
 
 def _source_root(configured: str | None) -> Path:
@@ -70,7 +104,8 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
         raise ValueError("Unknown Windows server control action")
     ensure_private_dir(state)
     request_id = uuid.uuid4().hex
-    payload = {"requestId": request_id, "action": action}
+    payload = {"requestId": request_id, "action": action,
+               "sequence": _next_control_sequence(state)}
     if source_root is not None:
         payload["sourceRoot"] = str(_source_root(source_root))
     fd, temporary_name = tempfile.mkstemp(prefix="windows-server-control-", suffix=".tmp", dir=state)
@@ -93,7 +128,16 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
 
 
 def _read_control_request(state: Path, previous_request: str | None) -> dict[str, str] | None:
-    for request_path in sorted(state.glob("windows-server-control-request-*.json")):
+    candidates = []
+    for request_path in state.glob("windows-server-control-request-*.json"):
+        try:
+            value = json.loads(request_path.read_text(encoding="utf-8"))
+            sequence = value.get("sequence") if isinstance(value, dict) else None
+            if type(sequence) is int and sequence > 0:
+                candidates.append((sequence, request_path))
+        except (OSError, UnicodeError, json.JSONDecodeError):
+            continue
+    for _, request_path in sorted(candidates, key=lambda item: item[0]):
         request_id = request_path.stem.removeprefix("windows-server-control-request-")
         claim_path = request_path.with_suffix(".claim")
         try:
@@ -103,9 +147,11 @@ def _read_control_request(state: Path, previous_request: str | None) -> dict[str
         try:
             value = json.loads(claim_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeError, json.JSONDecodeError):
+            _write_control_result(state, request_id, "unknown", "Claimed request data was unreadable.")
             claim_path.unlink(missing_ok=True)
             continue
         if not isinstance(value, dict):
+            _write_control_result(state, request_id, "unknown", "Claimed request data was invalid.")
             claim_path.unlink(missing_ok=True)
             continue
         value_id = value.get("requestId")
@@ -113,24 +159,39 @@ def _read_control_request(state: Path, previous_request: str | None) -> dict[str
         source_root = value.get("sourceRoot")
         if (not isinstance(value_id, str) or value_id != request_id or value_id == previous_request
                 or action not in {"stop-backend", "restart-backend", "stop-all"}
+                or type(value.get("sequence")) is not int or value["sequence"] <= 0
                 or (source_root is not None and not isinstance(source_root, str))):
+            _write_control_result(state, request_id, "unknown", "Claimed request fields were invalid.")
             claim_path.unlink(missing_ok=True)
             continue
-        claim_path.unlink(missing_ok=True)
-        return {"requestId": value_id, "action": action, "sourceRoot": source_root or ""}
+        return {"requestId": value_id, "action": action, "sourceRoot": source_root or "",
+                "sequence": str(value["sequence"]), "claimPath": str(claim_path)}
     return None
 
 
-def _write_control_result(state: Path, request_id: str, result: str) -> None:
+def _write_control_result(state: Path, request_id: str, result: str, detail: str | None = None) -> None:
     path = state / f"windows-server-control-{request_id}.json"
     fd, temporary_name = tempfile.mkstemp(prefix="windows-server-result-", suffix=".tmp", dir=state)
     temporary = Path(temporary_name)
     protect_temp_file(temporary)
     with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-        json.dump({"requestId": request_id, "result": result}, stream, separators=(",", ":"))
+        receipt = {"requestId": request_id, "result": result}
+        if detail is not None:
+            receipt["detail"] = detail
+        json.dump(receipt, stream, separators=(",", ":"))
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(temporary, path)
+
+
+def _recover_control_claims(state: Path) -> None:
+    for claim in state.glob("windows-server-control-request-*.claim"):
+        request_id = claim.stem.removeprefix("windows-server-control-request-")
+        receipt = state / f"windows-server-control-{request_id}.json"
+        if not receipt.exists():
+            _write_control_result(state, request_id, "unknown",
+                                  "Runner exited after claiming the request; action was not replayed.")
+        claim.unlink(missing_ok=True)
 
 
 def _stop_backend(process: subprocess.Popen[bytes]) -> None:
@@ -178,6 +239,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
 
     origin = validate_origin(origin)
     ensure_private_dir(state)
+    _recover_control_claims(state)
     os.environ.update(_child_env(root, state, origin))
     sys.path.insert(0, str(root / "scripts"))
     from codex_process_supervisor import status
@@ -196,7 +258,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
     backend_enabled = True
     handled_request: str | None = None
     pending_request: dict[str, str] | None = None
-    stop_all_request: str | None = None
+    stop_all_request: dict[str, str] | None = None
     try:
         try:
             status(state)
@@ -217,7 +279,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
             if request is not None:
                 handled_request = request["requestId"]
                 if request["action"] == "stop-all":
-                    stop_all_request = handled_request
+                    stop_all_request = request
                     stopping.set()
                     break
                 if request["sourceRoot"]:
@@ -234,6 +296,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                 backend_enabled = request["action"] != "stop-backend"
                 result = "backend-stopped" if not backend_enabled else "backend-restarted"
                 _write_control_result(state, handled_request, result)
+                Path(request["claimPath"]).unlink(missing_ok=True)
                 delay = 0.0
                 continue
             if not backend_enabled:
@@ -286,7 +349,9 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                 output.write((json.dumps({"event": "backend_exit", "returnCode": backend.poll()})
                               + "\n").encode("utf-8"))
         if stop_all_request:
-            _write_control_result(state, stop_all_request, "stopped-all")
+            request_id = stop_all_request["requestId"]
+            _write_control_result(state, request_id, "stopped-all")
+            Path(stop_all_request["claimPath"]).unlink(missing_ok=True)
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
 

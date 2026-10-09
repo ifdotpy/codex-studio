@@ -6,6 +6,7 @@ import json
 import os
 import queue
 import selectors
+import signal
 import subprocess
 import threading
 import time
@@ -31,9 +32,31 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
         env.pop("CODEX_API_KEY", None)
         command.extend(["-c", 'cli_auth_credentials_store="file"'])
     deadline = time.monotonic() + timeout
-    proc = subprocess.Popen(command, env=env, stdin=subprocess.PIPE,
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            start_new_session=True)
+    job = None
+    creationflags = 0
+    if os.name == "nt":
+        from codex_windows_supervisor import CREATE_SUSPENDED, assign_process, create_job, resume_process
+
+        job = create_job()
+        creationflags = CREATE_SUSPENDED
+    try:
+        proc = subprocess.Popen(command, env=env, stdin=subprocess.PIPE,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                start_new_session=os.name != "nt", creationflags=creationflags)
+        if job is not None:
+            try:
+                assign_process(proc, job)
+                resume_process(proc)
+            except BaseException:
+                job.terminate()
+                job.close()
+                proc.kill()
+                proc.wait(timeout=2)
+                raise
+    except BaseException:
+        if job is not None and job.handle:
+            job.close()
+        raise
     windows_readers = os.name == "nt"
     selector = None
     output_chunks: queue.Queue[tuple[str, bytes | None]] | None = None
@@ -204,12 +227,25 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
         if selector is not None:
             selector.close()
         stop_readers.set()
-        if proc.poll() is None:
-            proc.terminate()
+        if job is not None:
+            try:
+                job.terminate()
+                job.wait_empty(timeout=1)
+            finally:
+                job.close()
+        else:
+            try:
+                os.killpg(proc.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
             try:
                 proc.wait(timeout=.5)
             except subprocess.TimeoutExpired:
-                proc.kill()
+                pass
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
         try:
             proc.wait(timeout=1)
         except subprocess.TimeoutExpired:
@@ -224,7 +260,7 @@ def read_model_catalog(home, *, executable, isolated, current=lambda: True, time
             except OSError:
                 pass
         for thread in (*windows_threads, *writer_threads):
-            thread.join(timeout=1)
+            thread.join(timeout=.5)
 
 
 def submit_model_catalog(home, *, executable, isolated, current):

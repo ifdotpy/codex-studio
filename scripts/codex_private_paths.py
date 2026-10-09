@@ -120,7 +120,11 @@ def reject_reparse_path(root: str | Path, target: str | Path, *, allow_missing: 
         relative = path.relative_to(base)
     except ValueError as error:
         raise ValueError("Path is outside its private root") from error
-    components = (base, *(base / part for part in relative.parts))
+    components = [base]
+    current = base
+    for part in relative.parts:
+        current = current / part
+        components.append(current)
     missing = False
     for component in components:
         if missing:
@@ -132,7 +136,7 @@ def reject_reparse_path(root: str | Path, target: str | Path, *, allow_missing: 
                 raise
             missing = True
             continue
-        if os.name == "nt" and getattr(info, "st_file_attributes", 0) & 0x400:
+        if getattr(info, "st_file_attributes", 0) & 0x400:
             raise ValueError("Private path must not contain a reparse point")
         if component != path and not component.is_dir():
             raise ValueError("Private path parent must be a directory")

@@ -28,6 +28,7 @@ from codex_catalog import ModelCatalogCache, CatalogPending, runtime_catalog
 
 PROGRAM = r'''
 import json, os, sys, time
+import subprocess
 from pathlib import Path
 home = Path(os.environ['CODEX_HOME'])
 (home / 'pid').write_text(str(os.getpid()))
@@ -46,6 +47,10 @@ for line in sys.stdin:
   result = {}
  else:
   if mode == 'hang':
+   time.sleep(20)
+  if mode == 'descendant':
+   child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])
+   (home / 'descendant-pid').write_text(str(child.pid))
    time.sleep(20)
   if mode == 'delay':
    time.sleep(.12)
@@ -155,6 +160,25 @@ class ReaderContract(unittest.TestCase):
             self.read(timeout=1)
         self.assertLess(time.monotonic() - started, 3)
         self.assert_reaped()
+
+    @unittest.skipIf(os.name == 'nt', 'POSIX process group contract')
+    def test_timeout_kills_descendants_that_inherit_catalog_pipes(self):
+        (self.home / 'mode').write_text('descendant')
+        with self.assertRaises(TimeoutError):
+            self.read(timeout=2)
+        pid = int((self.home / 'descendant-pid').read_text())
+        deadline = time.monotonic() + 2
+        while time.monotonic() < deadline:
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            status = Path(f'/proc/{pid}/stat')
+            if status.exists() and status.read_text().split(') ', 1)[1].startswith('Z'):
+                break
+            time.sleep(.05)
+        else:
+            self.fail('catalog descendant remained alive after timeout')
 
     @unittest.skipUnless(os.name == 'nt', 'Windows pipe contract')
     def test_windows_pipe_timeout_stops_all_reader_and_writer_threads(self):

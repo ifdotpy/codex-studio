@@ -16,6 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 from codex_worktree_creation import create_worker_worktree
 from codex_windows_server import _read_control_request, _write_control_request
+from codex_windows_server import _recover_control_claims, _write_control_result
 
 WINDOWS = os.name == "nt"
 skip_posix = unittest.skipUnless(WINDOWS, "Windows server contract")
@@ -23,6 +24,43 @@ if WINDOWS:
     tempfile.tempdir = str(Path.home() / "studio-dev" / "tmp")
     Path(tempfile.tempdir).mkdir(parents=True, exist_ok=True)
     os.environ.setdefault("PYTHONIOENCODING", "utf-8")
+
+
+class ControlRequestPosixContract(unittest.TestCase):
+    def test_claim_remains_until_receipt_and_unreceipted_claim_recovers_as_unknown(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            request_id = _write_control_request(state, "stop-backend")
+            request = _read_control_request(state, None)
+            self.assertEqual(request["requestId"], request_id)
+            claim = Path(request["claimPath"])
+            self.assertTrue(claim.exists())
+            _write_control_result(state, request_id, "backend-stopped")
+            claim.unlink()
+
+            second_id = _write_control_request(state, "restart-backend")
+            second = _read_control_request(state, request_id)
+            _recover_control_claims(state)
+            self.assertFalse(Path(second["claimPath"]).exists())
+            receipt = json.loads((state / f"windows-server-control-{second_id}.json").read_text())
+            self.assertEqual(receipt["result"], "unknown")
+            self.assertIn("not replayed", receipt["detail"])
+
+    def test_requests_are_claimed_in_monotonic_sequence_order(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            first_id = _write_control_request(state, "stop-backend")
+            second_id = _write_control_request(state, "restart-backend")
+            stop_id, restart_id = "f" * 32, "0" * 32
+            for old_id, new_id in ((first_id, stop_id), (second_id, restart_id)):
+                request_path = state / f"windows-server-control-request-{old_id}.json"
+                payload = json.loads(request_path.read_text())
+                payload["requestId"] = new_id
+                request_path.unlink()
+                (state / f"windows-server-control-request-{new_id}.json").write_text(json.dumps(payload))
+            first = _read_control_request(state, None)
+            second = _read_control_request(state, first["requestId"])
+            self.assertEqual([first["requestId"], second["requestId"]], [stop_id, restart_id])
 
 
 def _wait_until(check, timeout=60):
@@ -336,6 +374,13 @@ class WindowsServerContract(unittest.TestCase):
             subprocess.run(["git", "-C", str(worktree), "add", "--", str(output)], check=True)
             subprocess.run(["git", "-C", str(worktree), "commit", "-m", "fixture worker result"],
                            check=True, capture_output=True, timeout=20)
+            saved = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD"],
+                                            text=True).strip()
+            self.assertTrue(saved)
+            subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(worktree)],
+                           check=True, capture_output=True, timeout=30)
+            subprocess.run(["git", "-C", str(root), "branch", "-D", branch], check=True,
+                           capture_output=True, timeout=20)
 
     def test_checkout_timeout_terminates_descendants_that_hold_output_pipes(self):
         from codex_worktree_creation import _run_checkout
@@ -355,12 +400,6 @@ class WindowsServerContract(unittest.TestCase):
             self.assertLess(time.monotonic() - started, 4)
             pid = int(child_pid.read_text(encoding="ascii"))
             self.assertFalse(_process_commandline(pid))
-            saved = subprocess.check_output(["git", "-C", str(worktree), "rev-parse", "HEAD"], text=True).strip()
-            self.assertTrue(saved)
-            subprocess.run(["git", "-C", str(root), "worktree", "remove", "--force", str(worktree)],
-                           check=True, capture_output=True, timeout=30)
-            subprocess.run(["git", "-C", str(root), "branch", "-D", branch], check=True,
-                           capture_output=True, timeout=20)
 
 
 if __name__ == "__main__":
