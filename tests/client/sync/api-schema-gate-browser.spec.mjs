@@ -715,7 +715,7 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
       sessionStorage.setItem("schema-gate-handshake", "silent"),
     );
     await page.evaluate(() =>
-      sessionStorage.setItem("schema-gate-strip-api-hash", "0"),
+      sessionStorage.setItem("schema-gate-strip-api-hash", "1"),
     );
     const silentOpenBaseline = await page.evaluate(
       () => window.__schemaGateStreamOpens || 0,

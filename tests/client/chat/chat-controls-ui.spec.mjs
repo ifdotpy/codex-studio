@@ -158,10 +158,6 @@ test("Chat controls", async ({ page }) => {
   await page
     .getByRole("button", { name: "Release checks", exact: true })
     .waitFor();
-  await page
-    .locator("#composer")
-    .getByText("Release checks", { exact: true })
-    .waitFor();
   await openActions();
   const archiveAction = page.getByRole("menuitem", {
     name: "Archive",

@@ -843,7 +843,6 @@ const snapshotOnlyAgentKeys = new Set([
   "activeTools",
   "compactionsObservedOnly",
   "complaintsPresented",
-  "cyberAccessProgram",
   "events",
   "executionSettingsAccountKey",
   "maxAgents",
@@ -1220,10 +1219,10 @@ export function handleEntitySyncFixtureRequest(request, response, fixture) {
   const identity = syncIdentityFixture(fixture.workspaceId);
   const json = (value) => {
     response.setHeader("Content-Type", "application/json");
+    response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     response.end(JSON.stringify(value));
   };
   if (url.pathname === "/api/sync/identity") {
-    response.setHeader(API_SCHEMA_HASH_HEADER, readApiSchemaHash());
     json(identity);
     return true;
   }

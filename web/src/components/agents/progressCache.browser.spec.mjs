@@ -2,7 +2,11 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test, expect } from "../../../../tests/client/playwright.mjs";
+import {
+  FIXTURE_OPTIMIZE_DEPS,
+  test,
+  expect,
+} from "../../../../tests/client/playwright.mjs";
 
 test("progress cache retains good content through a panel read error", async ({
   browser,
@@ -18,7 +22,7 @@ test("progress cache retains good content through a panel read error", async ({
     root: webRoot,
     cacheDir,
     server: { host: "127.0.0.1", port: 0 },
-    optimizeDeps: { noDiscovery: true },
+    optimizeDeps: { ...FIXTURE_OPTIMIZE_DEPS },
     plugins: [
       {
         name: "progress-cache-error-fixture",

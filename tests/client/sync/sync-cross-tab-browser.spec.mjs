@@ -2,7 +2,12 @@
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 
-import { test, expect, apiSchemaHandshakeSse } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  apiSchemaHeaders,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("sync-cross-tab-browser @performance", async ({
   browser: fixtureBrowser,
@@ -29,6 +34,12 @@ test("sync-cross-tab-browser @performance", async ({
   const streamResources = new Map();
   const revisions = new Map();
   let unchangedReconnectBaseline = false;
+  const setJsonHeaders = (response) => {
+    for (const [name, value] of Object.entries(
+      apiSchemaHeaders({ "Content-Type": "application/json" }),
+    ))
+      response.setHeader(name, value);
+  };
   const sendResourceEvent = (response, currentWorkspace, reason, resources) => {
     const revision = (revisions.get(currentWorkspace) || 0) + 1;
     revisions.set(currentWorkspace, revision);
@@ -90,11 +101,11 @@ test("sync-cross-tab-browser @performance", async ({
       res.end("<!doctype html><title>Cross tab sync</title>");
     } else if (path === "/api/sync/identity") {
       const currentWorkspace = workspaceFor(req);
-      res.setHeader("Content-Type", "application/json");
+      setJsonHeaders(res);
       res.end(JSON.stringify({ workspaceId: currentWorkspace }));
     } else if (path === "/api/sync/pull") {
       const currentWorkspace = workspaceFor(req);
-      res.setHeader("Content-Type", "application/json");
+      setJsonHeaders(res);
       res.end(
         JSON.stringify({
           workspaceId: currentWorkspace,
@@ -106,7 +117,7 @@ test("sync-cross-tab-browser @performance", async ({
       const currentWorkspace = workspaceFor(req);
       streamsOpened++;
       res.writeHead(200, {
-        "Content-Type": "text/event-stream",
+        ...apiSchemaHeaders({ "Content-Type": "text/event-stream" }),
         "Cache-Control": "no-cache",
         Connection: "keep-alive",
       });
