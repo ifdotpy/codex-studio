@@ -201,7 +201,14 @@ test("chat-navigation-ui", async ({ page: fixturePage }) => {
   await page
     .getByRole("button", { name: "Chat settings", exact: true })
     .click();
-  await page.locator("#project").click();
+  const chatSettings = page.getByRole("dialog", {
+    name: "Chat settings",
+    exact: true,
+  });
+  await chatSettings.locator(".chat-settings-more summary").click();
+  await chatSettings
+    .getByRole("button", { name: "Choose project folder", exact: true })
+    .click();
   const picker = page.getByRole("dialog", {
     name: "Choose project folder",
     exact: true,

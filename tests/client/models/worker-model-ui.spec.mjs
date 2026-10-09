@@ -142,8 +142,9 @@ test("Worker model", async () => {
           .getByRole("group", { name: "Agent role" })
           .getByRole("button", { name: role, exact: true })
           .click();
-        panel = page.getByRole("dialog", { name, exact: true });
-        await panel.waitFor({ state: "visible" });
+        await panel
+          .getByRole("listbox", { name: "Default subagent model" })
+          .waitFor({ state: "visible" });
       }
       assert.ok(await settings.isVisible(), "Chat settings remain open");
       assert.ok(await panel.isVisible(), "Model settings dialog is visible");
@@ -215,6 +216,7 @@ test("Worker model", async () => {
     );
     await selectModel(selector, "ui-only");
     await page
+      .getByRole("dialog", { name: "Subagent settings", exact: true })
       .getByText("This model is not available for this account", {
         exact: true,
       })
@@ -321,7 +323,7 @@ test("Worker model", async () => {
     await page.keyboard.press("Escape");
     await openSettings("Subagent defaults");
     const defaults = page.getByRole("dialog", {
-      name: "Subagent defaults",
+      name: "Main agent settings",
       exact: true,
     });
     assert.equal(

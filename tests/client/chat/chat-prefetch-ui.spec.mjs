@@ -4,6 +4,8 @@ import {
   expect,
   spawnFixture as spawn,
   apiSchemaHandshakeSse,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   readTestState,
 } from "../playwright.mjs";
 // Production App and real RxDB. Only the isolated fixture receives requests.
@@ -255,6 +257,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
         identities.push(workspaceId);
         return route.fulfill({
           json: { workspaceId, ...(legacySync ? {} : { chatState: true }) },
+          headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
         });
       }
       if (url.pathname === "/api/transcript/stream") {
@@ -506,6 +509,10 @@ test("chat prefetch ui @performance", async ({ browser }) => {
                 request.onsuccess = () => resolve(request.result);
                 request.onerror = () => reject(request.error);
               });
+              if (!db.objectStoreNames.length) {
+                db.close();
+                return false;
+              }
               const tx = db.transaction([...db.objectStoreNames], "readonly");
               const stored = await Promise.all(
                 [...db.objectStoreNames].map(
@@ -581,6 +588,15 @@ test("chat prefetch ui @performance", async ({ browser }) => {
     };
     const selected = () => page.locator("#conversation-title").innerText();
     const marker = (tag) => page.locator(`[data-message="${tag}-39"]:visible`);
+    await page.addInitScript(
+      ({ stateDir, chatId }) => {
+        localStorage.setItem(
+          `codex-desktop-opened:${stateDir}`,
+          JSON.stringify(chatId),
+        );
+      },
+      { stateDir: original.stateDir, chatId: a.id },
+    );
     await page.goto(streamOrigin);
     await until(() => !!releaseA, "The first foreground request must start");
     const selectedBeforeForegroundRelease = await selected();
@@ -902,9 +918,14 @@ test("chat prefetch ui @performance", async ({ browser }) => {
               request.onsuccess = () => resolve(request.result);
               request.onerror = () => reject(request.error);
             });
-            const tx = db.transaction([...db.objectStoreNames], "readonly");
+            const stores = [...db.objectStoreNames];
+            if (stores.length === 0) {
+              db.close();
+              return false;
+            }
+            const tx = db.transaction(stores, "readonly");
             const matches = await Promise.all(
-              [...db.objectStoreNames].map(
+              stores.map(
                 (store) =>
                   new Promise((resolve) => {
                     const query = tx.objectStore(store).getAll();
@@ -923,7 +944,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
             return matches.some(Boolean);
           },
           {
-            databaseName: `rxdb-dexie-studio${workspaceId}--0--projections`,
+            databaseName: `rxdb-dexie-studio-entity-projection-${workspaceId}-${readApiSchemaHash()}--0--projections`,
             documentId: `transcript:${b.id}`,
             sequence: 305,
           },

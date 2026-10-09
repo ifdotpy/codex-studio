@@ -1,7 +1,12 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  installApiSchemaFixtureHeaders,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
-import { mkdtemp } from "node:fs/promises";
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Skill autocomplete", async ({ browser: testBrowser }) => {
@@ -11,16 +16,27 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
 
   const repo = testRepo;
   const evidence = await mkdtemp(join(tmpdir(), "studio-skill-autocomplete-"));
+  const codexHome = join(evidence, "codex-home");
+  await mkdir(codexHome, { recursive: true });
+  await writeFile(
+    join(codexHome, "config.toml"),
+    '[plugins."chrome@openai-bundled"]\nenabled = false\n',
+  );
   const fixture = spawn(
     "python3",
     ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
-    { stdio: ["ignore", "pipe", "pipe"] },
+    {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, CODEX_HOME: codexHome },
+    },
   );
   const contexts = [];
   const newPage = async (options) => {
     const context = await testBrowser.newContext(options);
     contexts.push(context);
-    return context.newPage();
+    const page = await context.newPage();
+    installApiSchemaFixtureHeaders(page);
+    return page;
   };
   let log = "";
   fixture.stderr.on("data", (data) => (log += data));
@@ -213,6 +229,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     });
     await page.waitForTimeout(50);
     assert.equal(await page.locator("#skill-suggestions").count(), 0);
+    await page.locator(`[data-chat="${lead.id}"]`).click();
+    await page.waitForFunction(() =>
+      document
+        .querySelector("#conversation-title")
+        ?.textContent.includes("Release lead"),
+    );
     await composer.fill("$re");
     const review = page.getByRole("option", { name: /review Review a change/ });
     await review.waitFor();
@@ -248,11 +270,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.fill("");
     await composer.fill("before $plugin-management:plugin-wrong suffix");
     await composer.evaluate((element) => {
-      const caret = element.value.indexOf("-wrong") + 1;
+      const caret = element.value.indexOf("-wrong");
       element.focus();
       element.setSelectionRange(caret, caret);
       element.dispatchEvent(new Event("select", { bubbles: true }));
     });
+    await composer.press("ArrowRight");
     await page
       .getByRole("option", { name: /plugin-management:plugin-management/ })
       .waitFor();
@@ -356,11 +379,12 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     // Click selection keeps the textarea focused and replaces only the token.
     await composer.fill("before $rel after");
     await composer.evaluate((element) => {
-      const caret = element.value.indexOf(" after");
+      const caret = element.value.indexOf("$rel") + 2;
       element.focus();
       element.setSelectionRange(caret, caret);
       element.dispatchEvent(new Event("select", { bubbles: true }));
     });
+    await composer.press("ArrowRight");
     const release = page.getByRole("option", {
       name: /release Prepare a release/,
     });
@@ -457,7 +481,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
     await composer.press("Escape");
     await composer.fill("");
     const refreshedCatalog = deferred();
-    gates.set(other.id, refreshedCatalog);
+    gates.set(lead.id, refreshedCatalog);
     await composer.fill("$r");
     await page.getByText("Loading skills…", { exact: true }).waitFor();
     await composer.press("Tab");
@@ -473,7 +497,7 @@ test("Skill autocomplete", async ({ browser: testBrowser }) => {
       .waitFor();
     assert.deepEqual(
       skillRequests,
-      [lead.id, other.id],
+      [lead.id, lead.id],
       "reopening after expiry refreshes the scoped catalog",
     );
 

@@ -40,6 +40,7 @@ async function setupNarrowComposer(browser) {
   const page = await browser.newPage({
     viewport: { width: 1440, height: 960 },
   });
+  installApiSchemaFixtureHeaders(page);
   await page.route("**/api/transcript/stream?*", (route) =>
     route.fulfill({
       contentType: "text/event-stream",
@@ -116,9 +117,10 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
     for (const width of [1440, 900, 390]) {
       const transcript = structuredClone(originalTranscript);
       const page = await browser.newPage({
-        viewport: { width: 1440, height: 960 },
+        viewport: { width, height: 960 },
       });
       pages.add(page);
+      installApiSchemaFixtureHeaders(page);
       page.setDefaultTimeout(12000);
       let queue = [],
         pendingSend,
@@ -158,38 +160,120 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       });
       await page.goto(origin);
       if (width === 390) {
+        await page.locator("#sidebar-toggle").click();
         await page.locator(`[data-chat="${lead.id}"]`).waitFor();
         await page.locator(`[data-chat="${lead.id}"]`).click();
-        await page.locator("#sidebar-toggle").click();
-        await page.locator("#sidebar").waitFor({ state: "hidden" });
-        await page.setViewportSize({ width, height: 960 });
+        await page.locator("#sidebar-toggle").waitFor({
+          state: "visible",
+        });
+        await page.waitForFunction(
+          () =>
+            document
+              .querySelector("#sidebar-toggle")
+              ?.getAttribute("aria-expanded") === "false",
+        );
+        await page.waitForFunction(
+          () => !document.querySelector('[data-fixed="true"]'),
+        );
       } else {
-        await page.setViewportSize({ width, height: 960 });
         await page.locator(`[data-chat="${lead.id}"]`).click();
       }
+      await expect(page.locator("#conversation-title")).toHaveText(lead.name);
       await page.locator("#composer").waitFor();
       assert.equal(
         await page.locator("#stop").count(),
         0,
         "Stop is absent while idle",
       );
-      await page.locator("#message").fill("Check this task");
       await page.waitForFunction(() => {
-        const message = document.querySelector("#message");
-        const send = document.querySelector("#send");
+        const composer = document.querySelector("#composer");
+        const transcript = document.querySelector("#messages");
         return (
-          message?.value === "Check this task" &&
-          send &&
-          !send.disabled &&
-          !document.querySelector("#send-state").textContent
+          document.querySelector(".empty-chat") &&
+          document.querySelector(".empty-chat-settings") &&
+          !composer?.querySelector(".composer-context-row") &&
+          !composer?.querySelector(".composer-context-values") &&
+          transcript?.querySelectorAll("[data-message]").length === 0
         );
       });
+      await page.locator("#message").fill("");
+      await page.waitForFunction(
+        () => document.querySelector("#message")?.value === "",
+      );
+      await page.evaluate(() => {
+        window.settledEmptyComposerFrame = null;
+        window.settledEmptyComposerStableFrames = 0;
+      });
+      await page.waitForFunction(() => {
+        const composer = document.querySelector("#composer");
+        const rect = composer?.getBoundingClientRect();
+        if (!rect) return false;
+        const current = [rect.x, rect.y, rect.width, rect.height];
+        const previous = window.settledEmptyComposerFrame;
+        window.settledEmptyComposerStableFrames =
+          previous &&
+          current.every(
+            (value, index) => Math.abs(value - previous[index]) <= 0.1,
+          )
+            ? window.settledEmptyComposerStableFrames + 1
+            : 0;
+        window.settledEmptyComposerFrame = current;
+        return window.settledEmptyComposerStableFrames >= 3;
+      });
+      const settledIdle = await page.evaluate(() => {
+        const composer = document
+          .querySelector("#composer")
+          .getBoundingClientRect();
+        const settings = document
+          .querySelector(".empty-chat-settings")
+          .getBoundingClientRect();
+        return {
+          y: composer.y,
+          height: composer.height,
+          settings: {
+            x: settings.x,
+            y: settings.y,
+            width: settings.width,
+            height: settings.height,
+            bottom: settings.bottom,
+          },
+        };
+      });
+      const settledIdleHeights = { 1440: 101.19, 900: 101.19, 390: 121.78 };
+      assert.equal(
+        await page.locator("#message").inputValue(),
+        "",
+        `${width}px first-send fixture starts with an empty draft`,
+      );
+      assert.ok(
+        Math.abs(settledIdle.height - settledIdleHeights[width]) <= 0.5,
+        `${width}px settled empty-chat composer height: ${settledIdle.height} vs ${settledIdleHeights[width]}px (±0.5px)`,
+      );
+      assert.ok(
+        settledIdle.settings.y >= settledIdle.y + settledIdle.height - 0.5,
+        `${width}px empty-chat settings sit below the settled composer: ${JSON.stringify(settledIdle)}`,
+      );
+      let postSendGeometry;
+      const geometrySelectors = [
+        "#composer",
+        ...(width <= 760 ? [] : ["#conversation-title"]),
+        "#message",
+        ".composer-bar",
+        ".attach-button",
+        ...(width <= 760 ? [] : [".dictation-trigger"]),
+        "#send",
+        ...(width <= 760 ? [] : [".usage-footer"]),
+      ];
+      await page.waitForFunction(
+        (selectors) =>
+          selectors.every((selector) => document.querySelector(selector)),
+        geometrySelectors,
+      );
       const boxes = (target = page) =>
         target.evaluate((mobile) => {
           const result = {};
           for (const selector of [
             "#composer",
-            ".composer-context-row",
             ...(mobile ? [] : ["#conversation-title"]),
             "#message",
             ".composer-bar",
@@ -206,9 +290,9 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           }
           return result;
         }, width <= 760);
-      let baseline = await boxes();
+      let baseline;
       const waitForStableGeometry = async (target = page) => {
-        const selectors = Object.keys(baseline);
+        const selectors = geometrySelectors;
         await target.evaluate(() => {
           window.composerGeometryFrame = null;
         });
@@ -229,6 +313,17 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         await waitForStableGeometry();
         const current = await boxes();
         measurements.push({ width, label, boxes: current });
+        if (
+          postSendGeometry &&
+          ["sending", "starting", "running"].includes(label)
+        ) {
+          for (const key of ["y", "height"])
+            assert.ok(
+              Math.abs(current["#composer"][key] - postSendGeometry[key]) <=
+                0.5,
+              `${width}px composer ${key} stays fixed from send through ${label}: ${postSendGeometry[key]} -> ${current["#composer"][key]} (±0.5px)`,
+            );
+        }
         const mobileQueueReflow = width === 390 && label === "queue appears";
         for (const [selector, box] of Object.entries(baseline))
           for (const key of width === 390
@@ -279,6 +374,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
             );
         }
       };
+      await waitForStableGeometry();
+      baseline = await boxes();
       const updatePhase = async (next) => {
         await setComposerFixturePhase(page, fixture, lead, next);
       };
@@ -293,21 +390,26 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         });
       await page.evaluate(() => {
         const composer = document.querySelector("#composer");
-        window.firstSendComposerHeights = [
-          composer.getBoundingClientRect().height,
-        ];
+        const rect = composer.getBoundingClientRect();
+        window.firstSendComposerGeometry = [{ y: rect.y, height: rect.height }];
         window.firstSendComposerTransitionDone = false;
         let stableFrames = 0;
-        let previous = window.firstSendComposerHeights[0];
+        let previous = window.firstSendComposerGeometry[0];
         const started = performance.now();
         const sample = () => {
-          const height = composer.getBoundingClientRect().height;
-          window.firstSendComposerHeights.push(height);
+          const rect = composer.getBoundingClientRect();
+          const current = { y: rect.y, height: rect.height };
+          window.firstSendComposerGeometry.push(current);
           stableFrames =
-            Math.abs(height - previous) < 0.1 ? stableFrames + 1 : 0;
-          previous = height;
+            Math.abs(current.height - previous.height) <= 0.1 &&
+            Math.abs(current.y - previous.y) <= 0.1
+              ? stableFrames + 1
+              : 0;
+          previous = current;
           if (
-            (!document.querySelector(".composer-context-values") &&
+            (!document.querySelector(".empty-chat-settings") &&
+              document.querySelector(".composer-context-row") &&
+              !document.querySelector(".composer-context-values") &&
               stableFrames >= 2) ||
             performance.now() - started >= 10_000
           ) {
@@ -317,6 +419,18 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
           requestAnimationFrame(sample);
         };
         requestAnimationFrame(sample);
+      });
+      await page.locator("#message").fill("");
+      await page.locator("#message").fill("Check this task");
+      await page.waitForFunction(() => {
+        const message = document.querySelector("#message");
+        const send = document.querySelector("#send");
+        return (
+          message?.value === "Check this task" &&
+          send &&
+          !send.disabled &&
+          !document.querySelector("#send-state").textContent
+        );
       });
       await page.locator("#send").click();
       await waitForSend();
@@ -329,48 +443,127 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         { timeout: 12_000 },
       );
       const firstSend = await boxes();
+      postSendGeometry = {
+        y: firstSend["#composer"].y,
+        height: firstSend["#composer"].height,
+      };
+      assert.equal(
+        await page.locator(".empty-chat-settings").count(),
+        0,
+        "the dedicated empty-chat settings leave when the first message is sent",
+      );
+      assert.equal(
+        await page.locator(".composer-context-row").count(),
+        1,
+        "main agent settings move into the composer after the first message",
+      );
       assert.equal(
         await page.locator(".composer-context-values").count(),
         0,
-        "the empty-chat account and project context is removed after first send (81bc27a5)",
+        "empty-chat account and project labels leave after the first message",
       );
-      const composerHeightChange =
-        baseline["#composer"].height - firstSend["#composer"].height;
-      const contextRowHeightChange =
-        baseline[".composer-context-row"].height -
-        firstSend[".composer-context-row"].height;
       const transition = await page.evaluate(
-        () => window.firstSendComposerHeights,
+        () => window.firstSendComposerGeometry,
       );
-      const roundedTransition = transition.map(Math.round);
-      assert.equal(
-        roundedTransition[0],
-        Math.round(baseline["#composer"].height),
-        `${width}px first-send sample starts at the empty-chat baseline`,
+      console.log(
+        "FIRST-SEND GEOMETRY",
+        JSON.stringify({
+          width,
+          settledIdle,
+          postSend: firstSend["#composer"],
+          geometry: transition,
+        }),
       );
-      assert.ok(
-        roundedTransition.every(
-          (height, index) =>
-            index === 0 || height <= roundedTransition[index - 1],
-        ),
-        `${width}px first-send composer never grows during the context change: ${JSON.stringify(roundedTransition)}`,
-      );
-      assert.equal(
-        roundedTransition.filter(
-          (height, index) =>
-            index > 0 && height !== roundedTransition[index - 1],
-        ).length,
-        1,
-        `${width}px first-send composer shrinks in one transition: ${JSON.stringify(roundedTransition)}`,
-      );
-      assert.equal(
-        roundedTransition.at(-1),
-        Math.round(firstSend["#composer"].height),
-      );
-      assert.ok(
-        composerHeightChange > 0,
-        `${width}px first send removes the empty-chat context values and shrinks composer once (row height delta ${contextRowHeightChange}px)`,
-      );
+      const firstSendHeights = transition.map(({ height }) => height);
+      const firstSendYs = transition.map(({ y }) => y);
+      expect
+        .soft(
+          Math.abs(firstSendHeights[0] - settledIdle.height) <= 0.1,
+          `${width}px first-send sample starts from the settled empty-chat height`,
+        )
+        .toBe(true);
+      const expectedPostSendHeights = {
+        1440: 101.19,
+        900: 141.19,
+        390: 169.78,
+      };
+      expect
+        .soft(
+          Math.abs(
+            firstSend["#composer"].height - expectedPostSendHeights[width],
+          ) <= 0.5,
+          `${width}px post-send composer height from the two-row message field, toolbar, and context row: ${firstSend["#composer"].height} vs ${expectedPostSendHeights[width]}px (±0.5px)`,
+        )
+        .toBe(true);
+      const changedGeometryFrames = [];
+      const heightChangedFrames = [];
+      const yChangedFrames = [];
+      transition.forEach((geometry, index) => {
+        if (index === 0) return;
+        const previous = transition[index - 1];
+        const heightChanged = Math.abs(geometry.height - previous.height) > 0.1;
+        const yChanged = Math.abs(geometry.y - previous.y) > 0.1;
+        if (heightChanged) heightChangedFrames.push(index);
+        if (yChanged) yChangedFrames.push(index);
+        if (heightChanged || yChanged) changedGeometryFrames.push(index);
+      });
+      const settingsSpaceBelowComposer =
+        settledIdle.settings.bottom - (settledIdle.y + settledIdle.height);
+      const expectedYDelta =
+        settingsSpaceBelowComposer -
+        (expectedPostSendHeights[width] - settledIdle.height);
+      const expectedHeightTransitions =
+        Math.abs(expectedPostSendHeights[width] - settledIdle.height) > 0.5
+          ? 1
+          : 0;
+      const expectedYTransitions = Math.abs(expectedYDelta) > 0.5 ? 1 : 0;
+      expect
+        .soft(
+          Math.abs(
+            firstSend["#composer"].y +
+              firstSend["#composer"].height -
+              settledIdle.settings.bottom,
+          ) <= 0.5,
+          `${width}px post-send composer bottom aligns with the former empty-chat settings bottom: ${JSON.stringify({ idleComposer: settledIdle, postComposer: firstSend["#composer"], expectedBottom: settledIdle.settings.bottom })}`,
+        )
+        .toBe(true);
+      expect
+        .soft(
+          Math.abs(firstSend["#composer"].y - settledIdle.y - expectedYDelta) <=
+            0.5,
+          `${width}px composer y delta equals external settings space minus composer height delta: ${JSON.stringify({ expectedYDelta, actualYDelta: firstSend["#composer"].y - settledIdle.y, settingsSpaceBelowComposer, idleHeight: settledIdle.height, postHeight: firstSend["#composer"].height })}`,
+        )
+        .toBe(true);
+      expect
+        .soft(
+          heightChangedFrames.length === expectedHeightTransitions &&
+            yChangedFrames.length === expectedYTransitions,
+          `${width}px first-send height/y transition counts follow the measured layout: ${JSON.stringify({ heights: firstSendHeights, ys: firstSendYs, heightChangedFrames, yChangedFrames, expectedHeightTransitions, expectedYTransitions })}`,
+        )
+        .toBe(true);
+      expect
+        .soft(
+          expectedHeightTransitions === 0 ||
+            JSON.stringify(heightChangedFrames) ===
+              JSON.stringify(yChangedFrames),
+          `${width}px first-send height and y changes occur in the same frame when height changes: ${JSON.stringify({ heightChangedFrames, yChangedFrames, geometry: transition })}`,
+        )
+        .toBe(true);
+      expect
+        .soft(
+          changedGeometryFrames.length ===
+            Math.max(expectedHeightTransitions, expectedYTransitions),
+          `${width}px first-send settled-to-post-send geometry has no second transition: ${JSON.stringify(transition)}`,
+        )
+        .toBe(true);
+      expect
+        .soft(
+          Math.abs(firstSendHeights.at(-1) - firstSend["#composer"].height) <=
+            0.1 &&
+            Math.abs(firstSendYs.at(-1) - firstSend["#composer"].y) <= 0.1,
+          `${width}px first-send geometry sample reaches the measured post-send geometry`,
+        )
+        .toBe(true);
       baseline = await boxes();
       await stable("sending");
       await pendingSend.fulfill({
@@ -438,6 +631,11 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await comparisonPage
         .locator('[data-message="first-send-steady-state"]')
         .waitFor();
+      await comparisonPage.waitForFunction(
+        (selectors) =>
+          selectors.every((selector) => document.querySelector(selector)),
+        geometrySelectors,
+      );
       await waitForStableGeometry(comparisonPage);
       const nonEmptyChat = await boxes(comparisonPage);
       for (const [selector, box] of Object.entries(postFirstSendSteady))
@@ -571,7 +769,14 @@ test("390px composer setup reaches the selected empty chat and starting phase", 
       await page.locator("#conversation-title").innerText(),
       lead.name,
     );
-    assert.equal(await page.locator(".composer-context-values").count(), 1);
+    const emptyChatSettings = page.locator(".empty-chat-settings");
+    await emptyChatSettings.waitFor();
+    await expect(
+      emptyChatSettings.getByText("Model", { exact: true }),
+    ).toBeVisible();
+    await expect(
+      emptyChatSettings.getByText("Workers", { exact: true }),
+    ).toBeVisible();
     await setComposerFixturePhase(page, fixture, lead, "starting");
     await page.locator("#stop:not(:disabled)").waitFor();
   } finally {
