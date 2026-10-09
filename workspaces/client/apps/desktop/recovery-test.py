@@ -15,6 +15,8 @@ from unittest.mock import call, patch
 import fcntl
 
 HERE = Path(__file__).resolve().parent
+REPOSITORY_ROOT = HERE.parents[3]
+SERVER_SOURCE = REPOSITORY_ROOT / "workspaces/runtime/apps/server/src"
 spec = importlib.util.spec_from_file_location("recovery", HERE / "recover_backend.py")
 recovery = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(recovery)
@@ -43,9 +45,15 @@ class RecoveryTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="studio-supervisor-test-", dir="/tmp")
         self.state = Path(self.temp.name).resolve()
+        source_link = self.state / "workspaces/runtime/apps/server/src"
+        source_link.parent.mkdir(parents=True)
+        source_link.symlink_to(SERVER_SOURCE, target_is_directory=True)
+        renderer = self.state / "workspaces/client/apps/web/dist"
+        renderer.mkdir(parents=True)
+        (renderer / "index.html").write_text("fixture")
         self.config = {"version": 1, "enabled": True, "stateDir": str(self.state),
                        "port": free_port(), "python": sys.executable,
-                       "codex": "/usr/bin/true", "resources": str(HERE.parent),
+                       "codex": "/usr/bin/true", "resources": str(self.state),
                        "environment": {"CODEX_CANVAS_CWD": str(self.state / "workspace")}}
         self.child = None
         self.supervisors = []
@@ -99,6 +107,9 @@ class RecoveryTest(unittest.TestCase):
 
     def test_packaged_backend_path_with_spaces_uses_exact_arguments(self):
         resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        (resources / "scripts").mkdir(parents=True)
+        (resources / "scripts/codex-canvas").write_text("fixture")
+        (resources / "studio-install.json").write_text('{"mode":"combined"}')
         config = {**self.config, "resources": str(resources)}
         script = str((resources / "scripts/codex-canvas").resolve())
         pid = 12345
@@ -112,6 +123,9 @@ class RecoveryTest(unittest.TestCase):
 
     def test_split_display_path_cannot_claim_the_packaged_backend(self):
         resources = self.state / "Codex Studio.app" / "Contents" / "Resources" / "workspace"
+        (resources / "scripts").mkdir(parents=True)
+        (resources / "scripts/codex-canvas").write_text("fixture")
+        (resources / "studio-install.json").write_text('{"mode":"combined"}')
         config = {**self.config, "resources": str(resources)}
         script = str((resources / "scripts/codex-canvas").resolve())
         with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, *script.split()]), \
@@ -121,7 +135,7 @@ class RecoveryTest(unittest.TestCase):
         output.assert_not_called()
 
     def test_matching_arguments_do_not_replace_the_listener_pid_guard(self):
-        script = str((Path(self.config["resources"]) / "scripts/codex-canvas").resolve())
+        script = str((recovery.backend_scripts(self.config["resources"]) / "codex-canvas").resolve())
         with patch.object(recovery, "backend_process_arguments", return_value=[sys.executable, script]), \
                 patch.object(recovery.subprocess, "check_output", return_value="54321"):
             with self.assertRaisesRegex(RuntimeError, "does not own the configured listener"):
@@ -157,7 +171,7 @@ class RecoveryTest(unittest.TestCase):
         config = {
             "supervisorEnabled": True,
             "python": sys.executable,
-            "resources": str(HERE.parent),
+            "resources": str(self.state),
             "codex": "/usr/bin/true",
         }
         probe_error = subprocess.TimeoutExpired(["status"], 2)
@@ -173,7 +187,7 @@ class RecoveryTest(unittest.TestCase):
         supervisor_log = self.state / "supervisor-owner.log"
         with supervisor_log.open("w") as output:
             owner = subprocess.Popen(
-                [sys.executable, "-B", str(HERE.parent / "scripts/codex_process_supervisor.py"),
+                [sys.executable, "-B", str(SERVER_SOURCE / "codex_process_supervisor.py"),
                  "--state", str(self.state)],
                 stdout=output,
                 stderr=output,

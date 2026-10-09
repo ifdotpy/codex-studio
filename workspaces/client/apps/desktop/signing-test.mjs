@@ -102,7 +102,7 @@ if (process.argv.includes("--unlock-contract")) {
   const app = path.join(root, "Probe.app");
   const scripts = path.join(app, "Contents/Resources/workspace/scripts");
   const repositoryScripts = fileURLToPath(
-    new URL("../scripts", import.meta.url),
+    new URL("../../../runtime/apps/server/src", import.meta.url),
   );
   const lease = path.join(scripts, ".studio-update.lock");
   try {

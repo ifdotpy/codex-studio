@@ -15,7 +15,18 @@ const contentTypes = {
 async function startUiHost({ resources, port = 4621 }) {
   if (!Number.isInteger(port) || port < 0 || port > 65535)
     throw new Error("Invalid UI port.");
-  const root = await fs.realpath(path.join(resources, "web/dist"));
+  const packagedRoot = path.join(resources, "web/dist");
+  const developmentRoot = path.join(
+    resources,
+    "workspaces/client/apps/web/dist",
+  );
+  let root;
+  try {
+    await fs.access(path.join(developmentRoot, "index.html"));
+    root = await fs.realpath(developmentRoot);
+  } catch {
+    root = await fs.realpath(packagedRoot);
+  }
   await fs.access(path.join(root, "index.html"));
   const server = http.createServer(async (request, response) => {
     response.setHeader("X-Content-Type-Options", "nosniff");

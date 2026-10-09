@@ -119,7 +119,14 @@ function backendSources(scripts) {
 }
 
 function backendBuild(resources) {
-  const scripts = path.join(resources, "scripts");
+  const packagedScripts = path.join(resources, "scripts");
+  const developmentScripts = path.join(
+    resources,
+    "workspaces/runtime/apps/server/src",
+  );
+  const scripts = fs.existsSync(path.join(developmentScripts, "codex-canvas"))
+    ? developmentScripts
+    : packagedScripts;
   const sources = backendSources(scripts);
   if (!sources.some(([name]) => name === "codex-canvas"))
     throw new Error("The backend entry point is missing.");
@@ -234,7 +241,7 @@ function apiPython(resources, env = process.env) {
     if (hasApi(fallback)) return fallback;
   } catch {}
   throw new Error(
-    "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. Run `python3 scripts/install-cli.py` to prepare the managed environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter.",
+    "No Python 3.11+ interpreter has FastAPI, Pydantic, Uvicorn, and HTTPX. Run `python3 workspaces/runtime/apps/server/src/install-cli.py` to prepare the managed environment, or set CODEX_AGENTS_PYTHON to an equipped interpreter.",
   );
 }
 async function identity(
@@ -341,10 +348,26 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
       owned: false,
     };
   const launchEnv = savedLaunchEnvironment(env, saved, canonicalState);
-  const script = path.join(resources, "scripts/codex-canvas");
+  const packagedScripts = path.join(resources, "scripts");
+  const developmentScripts = path.join(
+    resources,
+    "workspaces/runtime/apps/server/src",
+  );
+  const scripts = fs.existsSync(path.join(developmentScripts, "codex-canvas"))
+    ? developmentScripts
+    : packagedScripts;
+  const packagedRenderer = path.join(resources, "web/dist");
+  const developmentRenderer = path.join(
+    resources,
+    "workspaces/client/apps/web/dist",
+  );
+  const renderer = fs.existsSync(path.join(developmentRenderer, "index.html"))
+    ? developmentRenderer
+    : packagedRenderer;
+  const script = path.join(scripts, "codex-canvas");
   if (
     !fs.existsSync(script) ||
-    !fs.existsSync(path.join(resources, "web/dist/index.html"))
+    !fs.existsSync(path.join(renderer, "index.html"))
   )
     throw new Error(
       "Desktop assets are missing. Run the web build before starting or packaging desktop.",
@@ -360,10 +383,7 @@ async function ensureBackend({ resources, port = 4620, env = process.env }) {
   );
   const codex = executable("codex", launchEnv);
   if (supervisorMode) {
-    const supervisor = path.join(
-      resources,
-      "scripts/codex_process_supervisor.py",
-    );
+    const supervisor = path.join(scripts, "codex_process_supervisor.py");
     if (!fs.existsSync(supervisor))
       throw new Error(
         "Supervisor mode is enabled but its packaged script is missing.",

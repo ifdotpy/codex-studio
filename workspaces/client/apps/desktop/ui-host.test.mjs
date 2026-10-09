@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { expect, test } from "vitest";
 import { createRequire } from "node:module";
 import { mkdtemp, mkdir, writeFile, rm, symlink } from "node:fs/promises";
@@ -47,6 +48,28 @@ test("UI-only host serves assets without backend resources and refuses API and o
     await expect(
       startUiHost({ resources: root, port: Number(new URL(host.origin).port) }),
     ).rejects.toThrow("EADDRINUSE");
+  } finally {
+    await host.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("UI host discovers the relocated development renderer", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "studio-ui-relocated-"));
+  const development = path.join(
+    root,
+    "workspaces/client/apps/web/dist/index.html",
+  );
+  const packaged = path.join(root, "web/dist/index.html");
+  await mkdir(path.dirname(development), { recursive: true });
+  await mkdir(path.dirname(packaged), { recursive: true });
+  await writeFile(development, "<h1>Development renderer</h1>");
+  await writeFile(packaged, "<h1>Packaged renderer</h1>");
+  const host = await startUiHost({ resources: root, port: 0 });
+  try {
+    const response = await fetch(host.origin);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /Development renderer/);
   } finally {
     await host.close();
     await rm(root, { recursive: true, force: true });

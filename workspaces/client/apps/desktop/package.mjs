@@ -7,33 +7,55 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root = path.dirname(fileURLToPath(import.meta.url));
+const repositoryRoot = path.resolve(root, "../../../..");
 const packageOutput = path.resolve(
   process.env.CODEX_DESKTOP_PACKAGE_OUT || path.join(root, "dist"),
 );
 const uiOnly =
   process.argv.includes("--ui-only") ||
   process.env.CODEX_DESKTOP_UI_ONLY === "1";
-const identity = signingIdentity();
-await access(path.join(root, "../web/dist/index.html"));
+const hostPlatform = process.platform;
+const hostArchitecture = process.arch;
+if (!uiOnly && hostPlatform !== "darwin")
+  throw new Error("A full desktop artifact currently requires macOS.");
+if (uiOnly && !["darwin", "linux"].includes(hostPlatform))
+  throw new Error("UI-only desktop packaging supports macOS and Linux.");
+const identity = hostPlatform === "darwin" ? signingIdentity() : undefined;
+const rendererDist = path.join(
+  repositoryRoot,
+  "workspaces/client/apps/web/dist",
+);
+const backendSource = path.join(
+  repositoryRoot,
+  "workspaces/runtime/apps/server/src",
+);
+const bridgeSource = path.join(
+  repositoryRoot,
+  "workspaces/providers/apps/claude-bridge",
+);
+await access(path.join(rendererDist, "index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
-  const speech = path.join(stage, "studio-speech");
-  execFileSync("xcrun", [
-    "swiftc",
-    path.join(root, "native/speech.swift"),
-    "-O",
-    "-o",
-    speech,
-    "-Xlinker",
-    "-sectcreate",
-    "-Xlinker",
-    "__TEXT",
-    "-Xlinker",
-    "__info_plist",
-    "-Xlinker",
-    path.join(root, "native/speech-info.plist"),
-  ]);
-  signCode(speech, identity);
+  let speech;
+  if (hostPlatform === "darwin") {
+    speech = path.join(stage, "studio-speech");
+    execFileSync("xcrun", [
+      "swiftc",
+      path.join(root, "native/speech.swift"),
+      "-O",
+      "-o",
+      speech,
+      "-Xlinker",
+      "-sectcreate",
+      "-Xlinker",
+      "__TEXT",
+      "-Xlinker",
+      "__info_plist",
+      "-Xlinker",
+      path.join(root, "native/speech-info.plist"),
+    ]);
+    signCode(speech, identity);
+  }
   const linuxVM = uiOnly
     ? undefined
     : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
@@ -41,50 +63,83 @@ try {
   await mkdir(path.join(resources, "web"), { recursive: true });
   if (!uiOnly) {
     await cp(
-      path.join(root, "../requirements.txt"),
+      path.join(repositoryRoot, "requirements.txt"),
       path.join(resources, "requirements.txt"),
     );
-    await cp(path.join(root, "../scripts"), path.join(resources, "scripts"), {
+    await cp(
+      path.join(repositoryRoot, "workspaces/runtime/apps/server/prompts"),
+      path.join(resources, "prompts"),
+      { recursive: true },
+    );
+    await cp(backendSource, path.join(resources, "scripts"), {
       recursive: true,
       filter: (source) =>
+        path.basename(source) !== ".studio-update.lock" &&
         !source.includes("__pycache__") &&
         !source.includes("/node_modules") &&
         !source.endsWith(".pyc"),
     });
     execFileSync(
-      "npm",
+      "pnpm",
       [
-        "--prefix",
-        ".",
-        "ci",
-        "--ignore-scripts",
-        "--no-bin-links",
-        "--omit=optional",
-        "--no-audit",
-        "--no-fund",
+        "--filter",
+        "studio-claude-bridge",
+        "--prod",
+        "deploy",
+        path.join(resources, "scripts/claude_bridge"),
       ],
+      { cwd: repositoryRoot, stdio: "inherit" },
+    );
+    await cp(
+      bridgeSource,
+      path.join(resources, "workspaces/providers/apps/claude-bridge"),
       {
-        cwd: path.join(resources, "scripts/claude_bridge"),
-        stdio: "inherit",
+        recursive: true,
+        filter: (source) =>
+          path.basename(source) !== "node_modules" &&
+          !source.includes("/node_modules/") &&
+          path.basename(source) !== "dist" &&
+          path.basename(source) !== "coverage",
       },
     );
-    await cp(path.join(root, "../vm/guest"), path.join(resources, "vm/guest"), {
-      recursive: true,
-      filter: (source) =>
-        !source.includes("__pycache__") && !source.endsWith(".pyc"),
-    });
+    for (const [source, destination] of [
+      ["package.json", "package.json"],
+      ["pnpm-workspace.yaml", "pnpm-workspace.yaml"],
+      ["pnpm-lock.yaml", "pnpm-lock.yaml"],
+      ["patches/rxdb@17.5.0.patch", "patches/rxdb@17.5.0.patch"],
+    ]) {
+      const target = path.join(resources, destination);
+      await mkdir(path.dirname(target), { recursive: true });
+      await cp(path.join(repositoryRoot, source), target);
+    }
+    await cp(
+      path.join(repositoryRoot, "workspaces/runtime/apps/vm-guest"),
+      path.join(resources, "vm/guest"),
+      {
+        recursive: true,
+        filter: (source) =>
+          !source.includes("__pycache__") && !source.endsWith(".pyc"),
+      },
+    );
   }
-  await cp(path.join(root, "../web/dist"), path.join(resources, "web/dist"), {
+  await cp(rendererDist, path.join(resources, "web/dist"), {
     recursive: true,
   });
   if (!uiOnly) {
     await cp(
-      path.join(root, "../.agents/skills"),
+      path.join(repositoryRoot, ".agents/skills"),
       path.join(resources, ".agents/skills"),
       { recursive: true },
     );
-    for (const document of ["README.md", "CLI.md", "ORCHESTRATION.md"]) {
-      await cp(path.join(root, "..", document), path.join(resources, document));
+    for (const [source, destination] of [
+      ["README.md", "README.md"],
+      ["docs/cli.md", "CLI.md"],
+      ["docs/orchestration.md", "ORCHESTRATION.md"],
+    ]) {
+      await cp(
+        path.join(repositoryRoot, source),
+        path.join(resources, destination),
+      );
     }
   }
   await writeFile(
@@ -95,11 +150,13 @@ try {
     dir: root,
     name: "Codex Studio",
     executableName: "Codex Studio",
-    icon: path.join(root, "assets/codex-studio.icns"),
+    ...(hostPlatform === "darwin"
+      ? { icon: path.join(root, "assets/codex-studio.icns") }
+      : {}),
     appBundleId: "local.codex.agents",
     appCategoryType: "public.app-category.developer-tools",
-    platform: "darwin",
-    arch: "arm64",
+    platform: hostPlatform === "darwin" ? "darwin" : "linux",
+    arch: hostPlatform === "darwin" ? "arm64" : hostArchitecture,
     electronVersion: "44.2.0",
     out: packageOutput,
     overwrite: true,
@@ -107,7 +164,7 @@ try {
     prune: true,
     extraResource: [
       resources,
-      speech,
+      ...(speech ? [speech] : []),
       ...(uiOnly ? [] : [linuxVM, path.join(root, "recover_backend.py")]),
     ],
     extendInfo: {
@@ -130,8 +187,10 @@ try {
     ],
   });
   for (const directory of output) {
-    const application = path.join(directory, "Codex Studio.app");
-    signApplication(application, identity);
+    if (hostPlatform === "darwin") {
+      const application = path.join(directory, "Codex Studio.app");
+      signApplication(application, identity);
+    }
   }
   console.log(output.join("\n"));
 } finally {
