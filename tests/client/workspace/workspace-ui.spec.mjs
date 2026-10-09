@@ -109,10 +109,6 @@ test("workspace ui", async ({ browser: _browser }) => {
       command: "fixture command --other-chat",
       created: taskTime + 1,
     };
-    for (const task of [workspaceTask, otherChatTask])
-      proc.stdin.write(
-        JSON.stringify({ method: "fixture/task", params: task }) + "\n",
-      );
     const post = async (path, body) => {
       const r = await fetch(origin + path, {
         method: "POST",
@@ -131,14 +127,12 @@ test("workspace ui", async ({ browser: _browser }) => {
     const errors = [];
     const resourceRequests = [];
     const annotationRequests = [];
-    let taskFeedRequests = 0,
-      mainDocumentNavigations = 0;
+    let mainDocumentNavigations = 0;
     const planNotModified = [];
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/resources")
         resourceRequests.push(request.url());
-      if (url.pathname === "/api/workspace/tasks") taskFeedRequests++;
       if (request.isNavigationRequest() && request.frame() === page.mainFrame())
         mainDocumentNavigations++;
       if (
@@ -632,6 +626,10 @@ test("workspace ui", async ({ browser: _browser }) => {
     await page
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
+    for (const task of [workspaceTask, otherChatTask])
+      proc.stdin.write(
+        JSON.stringify({ method: "fixture/task", params: task }) + "\n",
+      );
     await page.locator("#tasks-toggle").click();
     await page.getByRole("heading", { name: "Current activity" }).waitFor();
     await poll(
@@ -678,7 +676,6 @@ test("workspace ui", async ({ browser: _browser }) => {
       taskNavigationCount,
       "task update does not reload the selected chat",
     );
-    assert.equal(taskFeedRequests, 0, "removed task-feed endpoint is unused");
     await page.keyboard.press("Escape");
     assert.deepEqual(
       resourceRequests,

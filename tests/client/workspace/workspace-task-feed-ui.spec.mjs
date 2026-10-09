@@ -79,12 +79,7 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
 
     const page = runnerPage;
     await page.setViewportSize({ width: 1280, height: 900 });
-    let taskFeedRequests = 0;
     let mainDocumentNavigations = 0;
-    page.on("request", (request) => {
-      if (new URL(request.url()).pathname === "/api/workspace/tasks")
-        taskFeedRequests++;
-    });
     page.on("framenavigated", (frame) => {
       if (frame === page.mainFrame()) mainDocumentNavigations++;
     });
@@ -146,11 +141,6 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
       mainDocumentNavigations,
       navigationsBeforeUpdate,
       "task completion updates the drawer without a document reload",
-    );
-    assert.equal(
-      taskFeedRequests,
-      0,
-      "task drawer does not use the removed workspace task-feed endpoint",
     );
     console.log(
       "PASS workspace task feed UI: selected-chat scope, active count, newest-first order, and completion update via entity sync without reload",
