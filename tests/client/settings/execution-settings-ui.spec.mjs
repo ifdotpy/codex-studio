@@ -263,6 +263,7 @@ test("execution settings ui", async ({ browser: _browser }) => {
       const row = (await state()).find((a) => a.id === lead.id);
       return (row.pendingSettings?.model || row.model) === lead.model;
     });
+    await waitFor(async () => (await modelValue(leadModel)) === lead.model);
     assert.equal(await modelValue(leadModel), lead.model);
     const leadReasoning = setupControl(
       page.getByLabel("Main agent reasoning", { exact: true }),
@@ -473,7 +474,14 @@ test("execution settings ui", async ({ browser: _browser }) => {
       lead.id,
       (body) => body.worker_defaults?.effort === "high",
     );
-    await defaultReasoning.selectOption("high");
+    const highReasoningOption = dialog
+      .getByRole("radiogroup", {
+        name: "Default subagent reasoning",
+        exact: true,
+      })
+      .getByText("High", { exact: true });
+    await highReasoningOption.waitFor({ state: "visible" });
+    await highReasoningOption.click();
     assert.ok((await higherWorkerReasoningSaved).ok());
     await waitFor(() => defaultReasoning.isEnabled());
     const lowReasoningSaved = settingsResponse(

@@ -50,6 +50,7 @@ test("mobile loading ui", async ({ browser: _browser }) => {
   const useWebKit = test.info().project.use.browserName === "webkit";
   const dir = await mkdtemp(join(tmpdir(), "studio-mobile-loading-"));
   await cp(join(repo, "web/dist"), join(dir, "dist"), { recursive: true });
+  const bytes = await initialShellGzipBytes(join(dir, "dist"));
   const worker = await readFile(join(dir, "dist/studio-sw.js"), "utf8");
   const config = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
   const nextBuild = config.build + "-update";

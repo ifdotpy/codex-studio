@@ -407,6 +407,10 @@ test("account project ui", async ({ browser: _browser }) => {
       .getByRole("button", { name: "Edit name for personal@example.com" })
       .waitFor();
     await page.getByRole("button", { name: "Close", exact: true }).click();
+    const chatSettings = page.getByRole("dialog", {
+      name: "Chat settings",
+      exact: true,
+    });
     const mainSettings = page.getByRole("dialog", {
       name: "Main agent settings",
       exact: true,
@@ -416,21 +420,29 @@ test("account project ui", async ({ browser: _browser }) => {
       exact: true,
     });
     const openSettings = async () => {
-      if (!(await mainSettings.isVisible()))
+      if (!(await chatSettings.isVisible()))
         await page
+          .getByRole("button", { name: "Chat settings", exact: true })
+          .click();
+      await chatSettings.waitFor({ state: "visible" });
+      if (!(await mainSettings.isVisible()))
+        await chatSettings
           .getByRole("button", { name: "Main agent settings", exact: true })
-          .first()
           .click();
       await mainSettings.waitFor({ state: "visible" });
       await picker.waitFor();
     };
     const closeSettings = async () => {
       if (await mainSettings.isVisible())
-        await page
+        await chatSettings
           .getByRole("button", { name: "Main agent settings", exact: true })
-          .first()
           .click();
       await mainSettings.waitFor({ state: "hidden" });
+      if (await chatSettings.isVisible())
+        await chatSettings
+          .getByRole("button", { name: "Close", exact: true })
+          .click();
+      await chatSettings.waitFor({ state: "hidden" });
     };
     const studioSettings = page.getByTestId("studio-settings");
     const openStudioAccounts = async () => {
