@@ -23,9 +23,12 @@ class Services(unittest.TestCase):
         self.state.mkdir()
         self.resources = self.root / 'resources'
         for name in ('codex_process_supervisor.py', 'codex-canvas', 'codex-supervisor'):
-            file = self.resources / 'scripts' / name
+            file = self.resources / 'workspaces/runtime/apps/server/src' / name
             file.parent.mkdir(parents=True, exist_ok=True)
             file.touch()
+        recovery = self.resources / 'workspaces/client/apps/desktop/recover_backend.py'
+        recovery.parent.mkdir(parents=True, exist_ok=True)
+        recovery.touch()
         self.config = {'version': 1, 'stateDir': str(self.state), 'resources': str(self.resources),
                        'python': sys.executable, 'port': 4720, 'codex': '/usr/bin/codex',
                        'enabled': True, 'supervisorEnabled': False, 'environment': {'CODEX_HOME': '/private/profile'}}
@@ -75,6 +78,9 @@ class Services(unittest.TestCase):
         self.assertIn('ExecStartPre=', backend)
         self.assertIn('"wait"', backend)
         self.assertIn('CODEX_HOME=/private/profile', backend)
+        self.assertIn(str(self.resources / 'workspaces/runtime/apps/server/src/codex_process_supervisor.py'), supervisor)
+        self.assertIn(str(self.resources / 'workspaces/runtime/apps/server/src/codex-supervisor'), backend)
+        self.assertIn(str(self.resources / 'workspaces/runtime/apps/server/src/codex-canvas'), backend)
         self.assertNotIn('PartOf=', supervisor)
         self.assertNotIn('BindsTo=', backend)
         self.assertNotIn('Requires=', backend)
@@ -118,7 +124,7 @@ class Services(unittest.TestCase):
         with patch.object(sys, 'platform', 'linux'), patch.object(service, 'desktop', return_value=current), \
                 patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '123')) as run, patch.object(Path, 'home', return_value=self.root), \
                 patch('codex_process_supervisor.process_start_time', return_value='birth'), \
-                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'scripts/codex-canvas')]), \
+                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'workspaces/runtime/apps/server/src/codex-canvas')]), \
                 patch.object(service, 'wait_ready', return_value={'pid': 456, 'handles': ['live']}), \
                 patch.object(service, 'idle') as idle:
             result = service.enable(self.resources, self.state, 4720)
@@ -132,7 +138,7 @@ class Services(unittest.TestCase):
         with patch.object(sys, 'platform', 'linux'), patch.object(service, 'desktop', return_value=current), \
                 patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '123')) as run, \
                 patch('codex_process_supervisor.process_start_time', return_value='birth'), \
-                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'scripts/codex-canvas')]), \
+                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'workspaces/runtime/apps/server/src/codex-canvas')]), \
                 patch.object(service, 'health', return_value={'handles': ['live']}):
             with self.assertRaisesRegex(RuntimeError, 'empty supervisor handle journal'):
                 service.enable(self.resources, self.state, 4720)
@@ -145,7 +151,7 @@ class Services(unittest.TestCase):
         with patch.object(sys, 'platform', 'linux'), patch.object(service, 'desktop', return_value=current), \
                 patch.object(service, 'run', return_value=subprocess.CompletedProcess([], 0, '456')) as run, \
                 patch('codex_process_supervisor.process_start_time', return_value='birth'), \
-                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'scripts/codex-canvas')]):
+                patch('codex_process_supervisor.process_launch_command', return_value=[str(self.resources / 'workspaces/runtime/apps/server/src/codex-canvas')]):
             with self.assertRaisesRegex(RuntimeError, 'not owned by codex-studio.service'):
                 service.enable(self.resources, self.state, 4720)
         self.assertEqual(len(run.call_args_list), 1)
@@ -160,6 +166,61 @@ class Services(unittest.TestCase):
             result = service.enable(self.resources, self.state, 4720)
         self.assertTrue(result['supervisorMode'])
         kill.assert_not_called()
+
+    def test_pre_move_resources_keep_their_existing_service_launcher_paths(self) -> None:
+        legacy = self.root / 'legacy'
+        for name in ('codex_process_supervisor.py', 'codex-canvas', 'codex-supervisor'):
+            path = legacy / 'scripts' / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch()
+        units = service.linux_units(legacy, self.state, '/usr/bin/python3', 4720)
+        supervisor, backend = (units[name].decode() for name in
+                               ('codex-studio-supervisor.service', 'codex-studio.service'))
+        self.assertIn(str(legacy / 'scripts/codex_process_supervisor.py'), supervisor)
+        self.assertIn(str(legacy / 'scripts/codex-supervisor'), backend)
+        self.assertIn(str(legacy / 'scripts/codex-canvas'), backend)
+
+    def test_packaged_workspace_resources_keep_their_launcher_and_recovery_paths(self) -> None:
+        resources = self.root / 'Contents/Resources/workspace'
+        scripts = resources / 'scripts'
+        scripts.mkdir(parents=True)
+        for name in ('codex_process_supervisor.py', 'codex-canvas', 'codex-supervisor'):
+            (scripts / name).touch()
+        recovery = resources.parent / 'recover_backend.py'
+        recovery.touch()
+        self.assertEqual(service._runtime_source(resources), scripts)
+        self.assertEqual(service._recovery_script(resources), recovery)
+        units = service.linux_units(resources, self.state, '/usr/bin/python3', 4720)
+        supervisor = units['codex-studio-supervisor.service'].decode()
+        backend = units['codex-studio.service'].decode()
+        self.assertIn(str(scripts / 'codex_process_supervisor.py'), supervisor)
+        self.assertIn(str(scripts / 'codex-supervisor'), backend)
+        self.assertIn(str(scripts / 'codex-canvas'), backend)
+
+    def test_new_macos_launch_agents_use_relocated_source_paths(self) -> None:
+        registered: set[str] = set()
+
+        def run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
+            if arguments[1] == 'print':
+                label = arguments[2].rsplit('/', 1)[-1]
+                if label not in registered:
+                    raise subprocess.CalledProcessError(113, arguments)
+            elif arguments[1] == 'bootstrap':
+                registered.add(Path(arguments[3]).stem)
+            return subprocess.CompletedProcess(arguments, 0, '')
+
+        config = self.config | {'supervisorEnabled': True}
+        with patch.object(service, 'run', run), patch.object(Path, 'home', return_value=self.root):
+            service.install_macos(self.resources, self.state, sys.executable, config)
+
+        agents = self.root / 'Library/LaunchAgents'
+        jobs = [plistlib.loads(path.read_bytes()) for path in agents.glob('*.plist')]
+        supervisor = next(job for job in jobs if '.supervisor.' in job['Label'])
+        recovery = next(job for job in jobs if '.recovery.' in job['Label'])
+        self.assertIn(str(self.resources / 'workspaces/runtime/apps/server/src/codex_process_supervisor.py'),
+                      supervisor['ProgramArguments'])
+        self.assertIn(str(self.resources / 'workspaces/client/apps/desktop/recover_backend.py'),
+                      recovery['ProgramArguments'])
 
 
 if __name__ == '__main__':

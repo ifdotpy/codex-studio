@@ -19,6 +19,16 @@ MAX_INPUT = 1024 * 1024
 MAX_OUTPUT = 64 * 1024 * 1024
 
 
+def runtime_source_dir() -> Path:
+    """Resolve checkout modules on the host and the stable install path in a VM."""
+    guest_file = Path(__file__).resolve()
+    for parent in guest_file.parents:
+        source = parent / "workspaces/runtime/apps/server/src"
+        if (source / "codex_process_supervisor.py").is_file():
+            return source
+    return guest_file.parent.parent.parent / "scripts"
+
+
 class GuestError(Exception):
     def __init__(self, code: str, message: str):
         super().__init__(message)

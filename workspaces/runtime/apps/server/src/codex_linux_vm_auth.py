@@ -126,7 +126,12 @@ def refresh_claude(account):
     env = subscription_env(account)
     env['STUDIO_CLAUDE_BIN'] = installed(account) or 'claude'
     env['STUDIO_CLAUDE_ACCOUNT'] = account.get('email') or ''
-    script = Path(__file__).with_name('claude_bridge') / 'refresh-auth.mjs'
+    from codex_layout import CLAUDE_BRIDGE_ROOT
+    script = CLAUDE_BRIDGE_ROOT / 'refresh-auth.mjs'
+    if not script.is_file():
+        script = Path(__file__).resolve().parent / 'claude_bridge' / 'refresh-auth.mjs'
+    if not script.is_file():
+        raise FileNotFoundError('The Claude bridge refresh entrypoint is unavailable.')
     deadline = time.monotonic() + 90
     process = subprocess.Popen([node, str(script)], env=env, stdin=subprocess.PIPE,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)

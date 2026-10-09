@@ -226,7 +226,8 @@ def main(path):
     # A reboot leaves the same lease and socket files, with a dead owner.
     lease = Path(health["state"]) / "native" / "supervisor.lock"
     saved_owner = json.loads(lease.read_text())
-    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+    from common import runtime_source_dir
+    sys.path.insert(0, str(runtime_source_dir()))
     from codex_process_supervisor import process_start_time
     assert process_start_time(saved_owner["pid"]) == saved_owner["startTime"]
     os.kill(saved_owner["pid"], signal.SIGTERM)

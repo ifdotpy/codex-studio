@@ -6,7 +6,8 @@ from pathlib import Path
 import sys
 import threading
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+from common import runtime_source_dir
+sys.path.insert(0, str(runtime_source_dir()))
 import codex_workspace_images as images
 import codex_workspace_linux as linux
 

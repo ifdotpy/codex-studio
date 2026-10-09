@@ -16,7 +16,8 @@ $env:CODEX_AGENTS_STATE_DIR = $config.stateDir
 if ($Action -eq 'RestartBackend') {
     if (-not $SourceRoot) { throw 'RestartBackend requires -SourceRoot.' }
     $SourceRoot = (Resolve-Path -LiteralPath $SourceRoot).Path
-    if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot 'scripts\codex_canvas.py'))) {
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceRoot 'workspaces\runtime\apps\server\src\codex_canvas.py')) -and
+        -not (Test-Path -LiteralPath (Join-Path $SourceRoot 'scripts\codex_canvas.py'))) {
         throw "SourceRoot is not a Studio source tree: $SourceRoot"
     }
     $config.sourceRoot = $SourceRoot

@@ -32,11 +32,22 @@ def verify_recovery():
         resources = Path(config["resources"])
         python = Path(config["python"])
         codex = Path(config["codex"])
-        helper = resources.parent / "recover_backend.py"
+        runtime_source = resources / "workspaces/runtime/apps/server/src"
+        if not runtime_source.is_dir():
+            runtime_source = resources / "scripts"
+        desktop_source = resources / "workspaces/client/apps/desktop"
+        if not desktop_source.is_dir():
+            desktop_source = resources / "desktop"
+        web_source = resources / "workspaces/client/apps/web"
+        if not web_source.is_dir():
+            web_source = resources / "web"
+        helper = desktop_source / "recover_backend.py"
+        if not helper.is_file():
+            helper = resources.parent / "recover_backend.py"
         if (not resources.is_absolute() or not python.is_absolute() or not codex.is_absolute()
                 or not os.access(python, os.X_OK) or not os.access(codex, os.X_OK)
-                or not helper.is_file() or not (resources / "scripts/codex-canvas").is_file()
-                or not (resources / "web/dist/index.html").is_file()):
+                or not helper.is_file() or not (runtime_source / "codex-canvas").is_file()
+                or not (web_source / "dist/index.html").is_file()):
             raise ValueError("saved recovery paths are unavailable")
         label = "local.codex.agents.recovery." + hashlib.sha256(str(state).encode()).hexdigest()[:16]
         plist_path = Path.home() / "Library/LaunchAgents" / (label + ".plist")

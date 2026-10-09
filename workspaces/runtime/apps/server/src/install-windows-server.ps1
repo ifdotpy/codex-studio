@@ -1,5 +1,5 @@
 param(
-    [string]$SourceRoot = (Split-Path -Parent $PSScriptRoot),
+    [string]$SourceRoot = (Join-Path $PSScriptRoot '..\..\..\..\..'),
     [string]$Python = (Join-Path $env:USERPROFILE 'studio-dev\venv\Scripts\python.exe')
 )
 
@@ -25,8 +25,9 @@ function Get-ServeProxy($ServeStatus, [string]$HostName, [int]$Port) {
     return $root.Value.Proxy
 }
 
-if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'scripts\codex_canvas.py'))) {
-    throw "Source root has no scripts\codex_canvas.py: $sourceRoot"
+if (-not (Test-Path -LiteralPath (Join-Path $sourceRoot 'workspaces\runtime\apps\server\src\codex_canvas.py')) -and
+    -not (Test-Path -LiteralPath (Join-Path $sourceRoot 'scripts\codex_canvas.py'))) {
+    throw "Source root has no relocated server entrypoint: $sourceRoot"
 }
 if (-not (Test-Path -LiteralPath $python)) {
     throw "Python was not found: $python"

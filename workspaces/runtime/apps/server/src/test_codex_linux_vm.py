@@ -15,6 +15,7 @@ import time
 import unittest
 from unittest.mock import patch, Mock
 
+from codex_layout import VM_GUEST_ROOT
 import codex_linux_vm as vm
 
 
@@ -253,6 +254,11 @@ class ClientTests(unittest.TestCase):
     def test_recovery_seed_keeps_provider_pins_and_changes_boot_identity(self):
         (self.directory / 'image.json').write_text('{"codex":"0.160.1","claude":"2.1.291"}')
         (self.directory / 'console.log').write_text('previous failure')
+        providers = self.directory / 'providers'
+        bridge = providers / 'apps' / 'claude-bridge'
+        bridge.mkdir(parents=True)
+        (bridge / 'package.json').write_text('{}')
+        (bridge / 'bridge.mjs').write_text('// bridge fixture')
         def make_iso(argv, **options):
             seed = Path(argv[-1])
             self.assertIn('instance-id: studio-linux-',(seed / 'meta-data').read_text())
@@ -262,7 +268,7 @@ class ClientTests(unittest.TestCase):
             self.assertIn('@anthropic-ai/claude-code@2.1.291',script)
             Path(argv[-2]).write_bytes(b'new seed')
             return ''
-        with patch.object(vm,'_run',side_effect=make_iso):
+        with patch.object(vm, 'PROVIDERS_ROOT', providers), patch.object(vm,'_run',side_effect=make_iso):
             self.client._refresh_provision_seed(time.monotonic()+10)
         self.assertEqual((self.directory / 'seed.iso').read_bytes(),b'new seed')
         identity = json.loads((self.directory / 'provision-seed.json').read_text())['instanceId']
@@ -303,24 +309,32 @@ class ClientTests(unittest.TestCase):
         self.assertNotIn('\n', message)
 
     def test_payload_excludes_cache_and_credentials(self):
-        guest = self.directory / 'vm/guest'
+        guest = self.directory / 'vm-guest'
         guest.mkdir(parents=True)
         (guest / 'install.sh').write_text('true')
         (guest / 'credentials.json').write_text('not a runtime file')
         cache = guest / '__pycache__'
         cache.mkdir()
         (cache / 'bad.pyc').write_text('cache')
-        scripts = self.directory / 'scripts'
+        scripts = self.directory / 'runtime-src'
         scripts.mkdir()
         for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
             (scripts / name).write_text('# runtime')
-        bridge = scripts / 'claude_bridge'
+        bridge = self.directory / 'bridge'
         bridge.mkdir()
-        (bridge / 'package-lock.json').write_text('{}')
-        config = vm._cloud_config(guest, '1.2.3', '4.5.6')
+        (bridge / 'package.json').write_text('{}')
+        (bridge / 'bridge.mjs').write_text('console.log("bridge");')
+        config = vm._cloud_config(guest, '1.2.3', '4.5.6', runtime_source=scripts,
+                                  bridge_source=bridge)
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 11)
+        bridge_root = '/opt/codex-studio/workspaces/providers/apps/claude-bridge/'
+        self.assertIn(bridge_root + 'bridge.mjs', paths)
+        self.assertIn(bridge_root + 'package.json', paths)
+        self.assertIn('/opt/codex-studio/pnpm-workspace.yaml', paths)
+        self.assertIn('/opt/codex-studio/pnpm-lock.yaml', paths)
+        self.assertIn('/opt/codex-studio/patches/rxdb@17.5.0.patch', paths)
+        self.assertEqual(len(paths), 16)
         self.assertNotIn('credentials', json.dumps(config))
 
 
@@ -345,20 +359,31 @@ class ProvisionTests(unittest.TestCase):
             capture_output=True, timeout=5,
             env={**os.environ, 'PATH':str(self.root) + ':' + os.environ['PATH']})
 
-    def test_retry_uses_longer_bounded_npm_deadline_and_backoff(self):
-        self.helper('sleep', 'echo "$*" >> "'+str(self.root / 'backoff')+'"\n')
-        self.helper('timeout', 'echo "$*" >> "'+str(self.root / 'limits')+'"\n'
-                    'if [ ! -f "'+str(self.root / 'attempt')+'" ]; then touch "'+str(self.root / 'attempt')+'"; exit 124; fi\n'
-                    'test "$2" -gt 180\n')
-        self.helper('codex', 'exit 1\n')
-        section = self.script[self.script.index('stage codex\n'):self.script.index('stage claude\n')]
-        result = self.run_helpers('download() { return 44; }\n' + section)
+    def test_bridge_dependencies_install_in_guest_from_pinned_workspace_lock(self):
+        bridge_section = self.script[self.script.index('stage claude-bridge\n'):
+                                     self.script.index('stage codex\n')]
+        self.assertIn('pnpm@12.10.1', bridge_section)
+        self.assertIn('install --frozen-lockfile --prod --ignore-scripts', bridge_section)
+        self.assertIn('--filter studio-claude-bridge --os=linux --cpu=arm64 --libc=glibc', bridge_section)
+        self.assertIn('ln -sfn "$bridge_workspace" "$bridge"', bridge_section)
+        self.assertIn('/opt/codex-studio/claude_bridge', bridge_section)
+
+    def test_legacy_guest_bridge_is_preserved_without_live_path_swap(self):
+        bridge_section = self.script[self.script.index('stage claude-bridge\n'):
+                                     self.script.index('stage codex\n')]
+        guest = self.root / 'guest'
+        old_bridge = guest / 'claude_bridge'
+        (old_bridge / 'node_modules').mkdir(parents=True)
+        old_source = old_bridge / 'bridge.mjs'
+        old_source.write_text('// npm-installed legacy bridge')
+        executable = self.root / 'pnpm'
+        executable.write_text('#!/bin/bash\necho unexpected pnpm call >&2; exit 99\n')
+        executable.chmod(0o700)
+        result = self.run_helpers(bridge_section.replace('/opt/codex-studio', str(guest)))
         self.assertEqual(result.returncode, 0, result.stderr)
-        limits = (self.root / 'limits').read_text().splitlines()
-        self.assertEqual(len(limits), 2)
-        self.assertTrue(all(line.startswith('--kill-after=5 600 npm install') for line in limits))
-        self.assertEqual((self.root / 'backoff').read_text(), '10\n')
-        self.assertIn('attempt=2', result.stdout)
+        self.assertEqual(old_source.read_text(), '// npm-installed legacy bridge')
+        self.assertTrue((old_bridge / 'node_modules').is_dir())
+        self.assertFalse(old_bridge.is_symlink())
 
     def test_download_retry_records_size_and_elapsed_time(self):
         self.helper('sleep', 'true\n')
@@ -404,9 +429,20 @@ class ProvisionTests(unittest.TestCase):
         self.assertEqual(vm._provision_info(console)['state'],'ready')
 
     def test_runtime_payload_imports_without_host_source_modules(self):
-        config = vm._cloud_config(Path(__file__).resolve().parents[1] / 'vm/guest', '0.160.1', '2.1.291')
+        config = vm._cloud_config(VM_GUEST_ROOT, '0.160.1', '2.1.291')
         payload = self.root / 'scripts'
         payload.mkdir()
+        bridge_root = '/opt/codex-studio/workspaces/providers/apps/claude-bridge/'
+        bridge_paths = {entry['path'] for entry in config['write_files']
+                        if entry['path'].startswith(bridge_root)}
+        self.assertIn(bridge_root + 'bridge.mjs', bridge_paths)
+        self.assertIn(bridge_root + 'package.json', bridge_paths)
+        self.assertTrue(any(path.endswith('.mjs') for path in bridge_paths))
+        self.assertFalse(any(path.endswith('.test.mjs') for path in bridge_paths))
+        script = next(entry['content'] for entry in config['write_files']
+                      if entry['path'] == '/opt/codex-studio/provision.sh')
+        self.assertIn('--os=linux --cpu=arm64 --libc=glibc', script)
+        self.assertIn('pnpm@12.10.1', script)
         for entry in config['write_files']:
             if entry['path'].startswith('/opt/codex-studio/scripts/'):
                 (payload / Path(entry['path']).name).write_bytes(gzip.decompress(base64.b64decode(entry['content'])))
