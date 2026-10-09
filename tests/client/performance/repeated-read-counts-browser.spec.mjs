@@ -93,10 +93,14 @@ async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
     page.on("request", (request) => {
       const url = new URL(request.url());
       if (url.pathname === "/api/sync/stream") {
-        streamOpens.push({
+        const attempt = {
           at: Date.now(),
           url: `${url.pathname}${url.search}`,
-        });
+          status: null,
+          networkError: false,
+          failure: null,
+        };
+        streamOpens.push(attempt);
       }
       if (measured.has(url.pathname))
         requestTimeline.push({
@@ -108,6 +112,47 @@ async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
       const key = `${url.pathname}${url.search}`;
       counts.set(key, (counts.get(key) || 0) + 1);
     });
+    const latestPendingStream = (url) =>
+      [...streamOpens]
+        .reverse()
+        .find((attempt) => attempt.url === url && attempt.status === null);
+    page.on("response", (response) => {
+      const url = new URL(response.url());
+      if (url.pathname !== "/api/sync/stream") return;
+      const attempt = latestPendingStream(`${url.pathname}${url.search}`);
+      if (attempt) attempt.status = response.status();
+    });
+    page.on("requestfailed", (request) => {
+      const url = new URL(request.url());
+      if (url.pathname !== "/api/sync/stream") return;
+      const attempt = latestPendingStream(`${url.pathname}${url.search}`);
+      if (attempt) {
+        attempt.networkError = true;
+        attempt.failure = request.failure()?.errorText || "network error";
+      }
+    });
+    const streamAccounting = (attempts) => {
+      const latestByUrl = new Map();
+      const logical = [];
+      const retries = [];
+      const failed = [];
+      for (const attempt of attempts) {
+        const previous = latestByUrl.get(attempt.url);
+        const retry =
+          previous &&
+          (previous.networkError ||
+            (previous.status !== null && previous.status >= 500));
+        if (retry) retries.push(attempt);
+        else logical.push(attempt);
+        if (
+          attempt.networkError ||
+          (attempt.status !== null && attempt.status >= 500)
+        )
+          failed.push(attempt);
+        latestByUrl.set(attempt.url, attempt);
+      }
+      return { logical, retries, failed };
+    };
     const snapshot = () => Object.fromEntries([...counts].sort());
     const streamSummary = (entries) =>
       entries.map(({ at, url }) => {
@@ -257,7 +302,7 @@ async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
       .map(({ url }) => url)
       .filter((url) => priorStreamUrls.has(url));
     console.log(
-      `SEND_FLOW ${JSON.stringify({ loadStreams: streamSummary(loadStreams), otherStreams: streamSummary(otherStreams), backStreams: streamSummary(backStreams), sendStreams: streamSummary(sendStreams), sendRequests })}`,
+      `SEND_FLOW ${JSON.stringify({ loadStreams: streamSummary(loadStreams), loadStreamAccounting: Object.fromEntries(Object.entries(streamAccounting(loadStreams)).map(([kind, attempts]) => [kind, streamSummary(attempts)])), otherStreams: streamSummary(otherStreams), otherStreamAccounting: Object.fromEntries(Object.entries(streamAccounting(otherStreams)).map(([kind, attempts]) => [kind, streamSummary(attempts)])), backStreams: streamSummary(backStreams), backStreamAccounting: Object.fromEntries(Object.entries(streamAccounting(backStreams)).map(([kind, attempts]) => [kind, streamSummary(attempts)])), sendStreams: streamSummary(sendStreams), failedStreamAttemptCount: streamOpens.filter((attempt) => attempt.networkError || (attempt.status !== null && attempt.status >= 500)).length, failedStreamAttempts: streamOpens.filter((attempt) => attempt.networkError || (attempt.status !== null && attempt.status >= 500)).map(({ at, url, status, networkError, failure }) => ({ at, url, status, networkError, failure })), sendRequests })}`,
     );
 
     // Verify a real resource event updates the catalog rendered by the model picker.
@@ -323,32 +368,35 @@ async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
     // Stage one unlocks state/drafts, stage two adds typed resources (including terminals) and the foreground transcript,
     // and stage three adds prefetched transcripts once the chat list is available.
     if (!modelOnly) {
+      const loadAccounting = streamAccounting(loadStreams);
+      const otherAccounting = streamAccounting(otherStreams);
+      const backAccounting = streamAccounting(backStreams);
       assert.ok(
-        loadStreams.length <= 3,
-        "startup should use at most three stream configurations",
+        loadAccounting.logical.length <= 3,
+        "startup should use at most three logical stream configurations",
       );
       assert.equal(
-        new Set(loadStreams.map(({ url }) => url)).size,
-        loadStreams.length,
-        "load must not reopen an identical stream URL",
+        new Set(loadAccounting.logical.map(({ url }) => url)).size,
+        loadAccounting.logical.length,
+        "load must not reopen an identical healthy stream URL",
       );
       assert.ok(
-        otherStreams.length <= 2,
+        otherAccounting.logical.length <= 2,
         "opening another chat should use at most two distinct subscription stages",
       );
       assert.equal(
-        new Set(otherStreams.map(({ url }) => url)).size,
-        otherStreams.length,
-        "chat navigation must not reopen an identical stream URL",
+        new Set(otherAccounting.logical.map(({ url }) => url)).size,
+        otherAccounting.logical.length,
+        "chat navigation must not reopen an identical healthy stream URL",
       );
       assert.ok(
-        backStreams.length <= 2,
+        backAccounting.logical.length <= 2,
         "returning to the chat should use at most two distinct subscription stages",
       );
       assert.equal(
-        new Set(backStreams.map(({ url }) => url)).size,
-        backStreams.length,
-        "return navigation must not reopen an identical stream URL",
+        new Set(backAccounting.logical.map(({ url }) => url)).size,
+        backAccounting.logical.length,
+        "return navigation must not reopen an identical healthy stream URL",
       );
     }
     const routeKind = (key) =>

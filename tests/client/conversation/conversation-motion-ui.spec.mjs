@@ -309,6 +309,25 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         (selector) => document.querySelector(selector).value === "",
         composerSelector,
       );
+      const expectedLatestRowId = `${lead.id}:${sentBody.id}`;
+      await page
+        .locator(`${rootSelector} [data-message="${expectedLatestRowId}"]`)
+        .waitFor({ state: "attached" });
+      await page.locator(rootSelector).evaluate(
+        (root) =>
+          new Promise((resolve) => {
+            let previousHeight = -1;
+            let stableFrames = 0;
+            const sample = () => {
+              const height = root.scrollHeight;
+              stableFrames = height === previousHeight ? stableFrames + 1 : 0;
+              previousHeight = height;
+              if (stableFrames >= 2) resolve(undefined);
+              else requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }),
+      );
       await afterPaint(page, rootSelector);
       assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
       // The shared EventSource stays open for the lifetime of this tab, so
@@ -698,11 +717,64 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         root.scrollTop = 0;
       });
       await latest.waitFor();
-      await page.waitForTimeout(700);
+      await page.locator(rootSelector).evaluate(
+        (root) =>
+          new Promise((resolve) => {
+            let previousHeight = -1;
+            let stableFrames = 0;
+            const sample = () => {
+              const height = root.scrollHeight;
+              stableFrames = height === previousHeight ? stableFrames + 1 : 0;
+              previousHeight = height;
+              if (stableFrames >= 2) resolve(undefined);
+              else requestAnimationFrame(sample);
+            };
+            requestAnimationFrame(sample);
+          }),
+      );
       await page.locator(rootSelector).evaluate((root) => {
         root.scrollTop = root.scrollHeight;
       });
-      await latest.waitFor({ state: "detached" });
+      const bottomAfterScroll = await page
+        .locator(rootSelector)
+        .evaluate((root) => ({
+          scrollTop: root.scrollTop,
+          scrollHeight: root.scrollHeight,
+          clientHeight: root.clientHeight,
+          gap: root.scrollHeight - root.scrollTop - root.clientHeight,
+        }));
+      assert.ok(
+        bottomAfterScroll.gap < 2,
+        `programmatic Latest scroll reaches the bottom (${JSON.stringify(bottomAfterScroll)})`,
+      );
+      await latest.waitFor({ state: "detached" }).catch(async (error) => {
+        const state = await page
+          .locator(rootSelector)
+          .evaluate((root, selector) => {
+            const button = document.querySelector(selector);
+            const bounds = button?.getBoundingClientRect();
+            const hit = bounds
+              ? document.elementFromPoint(
+                  bounds.x + bounds.width / 2,
+                  bounds.y + bounds.height / 2,
+                )
+              : null;
+            const lastRow = [...root.querySelectorAll("[data-message]")].at(-1);
+            return {
+              scrollTop: root.scrollTop,
+              scrollHeight: root.scrollHeight,
+              clientHeight: root.clientHeight,
+              gap: root.scrollHeight - root.scrollTop - root.clientHeight,
+              latestVisible: !!button && bounds.height > 0,
+              latestCenterHit: hit?.outerHTML?.slice(0, 250) ?? null,
+              lastRenderedRowId: lastRow?.getAttribute("data-message") ?? null,
+            };
+          }, `${conversationSelector} #jump-latest`);
+        throw new Error(
+          `Latest control did not detach after reaching bottom: ${JSON.stringify(state)}`,
+          { cause: error },
+        );
+      });
       items.push({
         id: `tail-${width}`,
         role: "assistant",
