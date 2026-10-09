@@ -21,6 +21,7 @@ agent skill, not this application skill.
 
 The [approved Rust migration and workspace specification](plans/rust-workspaces.md)
 defines migration boundaries and acceptance gates. Issue #37 tracks completion.
+For an existing checkout, see the [layout relocation procedure](relocating-installation.md).
 
 In the left sidebar, open a project's menu and select **New team** to group
 independent chats. Select at least two chats from that project. Each chat keeps

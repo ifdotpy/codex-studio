@@ -26,6 +26,8 @@ owns its package commands; see the workspace guides below.
 - [Client](workspaces/client/README.md): web renderer and Electron desktop app.
 - [Tooling](workspaces/tooling/README.md): repository checks and commit hooks.
 - [Documentation](docs): product, operator, design, testing, and verification pages.
+- [Move an existing installation](docs/relocating-installation.md) while
+  preserving its state directory and active work.
 - [Workspace migration specification](docs/plans/rust-workspaces.md) and
   [tracking issue #37](https://github.com/ifdotpy/codex-studio/issues/37).
 
