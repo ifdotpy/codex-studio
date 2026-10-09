@@ -26,6 +26,14 @@ FEDERATION_PATHS = frozenset({
     "/api/federation/v1/pair", "/api/federation/v1/status",
     "/api/federation/v1/message", "/api/federation/v1/pull",
 })
+FRAME_ACCOUNT_MUTATION_PATHS = frozenset({
+    "/api/accounts/login",
+    "/api/accounts/login/cancel",
+    "/api/accounts/claude/login",
+    "/api/accounts/claude/add",
+    "/api/accounts/claude/login/code",
+    "/api/accounts/claude/login/cancel",
+})
 DEFAULT_BODY_LIMIT = 262_144
 ASSET_BODY_LIMIT = 28 * 1024 * 1024
 VOICE_AUDIO_BODY_LIMIT = 6 * 1024 * 1024
@@ -161,6 +169,54 @@ class RequestBoundary:
         federation = method == "POST" and path in FEDERATION_PATHS
         write = method not in {"GET", "HEAD", "OPTIONS"}
         renderer_hash = headers.get(API_SCHEMA_HASH_HEADER)
+        frame_account_origin = self._frame_account_origin(scope, headers)
+        if method == "OPTIONS" and frame_account_origin:
+            requested_method = (headers.get("access-control-request-method") or "").upper()
+            requested_headers = {
+                item.strip().lower()
+                for item in (headers.get("access-control-request-headers") or "").split(",")
+                if item.strip()
+            }
+            allowed_headers = {
+                "content-type",
+                "x-canvas-token",
+                API_SCHEMA_HASH_HEADER.lower(),
+                "x-studio-request-id",
+            }
+            if requested_method != "POST" or not requested_headers <= allowed_headers:
+                await _reject(send, 403, "The frame request is not allowed")
+                return
+            await send({
+                "type": "http.response.start",
+                "status": 204,
+                "headers": [
+                    (b"access-control-allow-origin", frame_account_origin.encode()),
+                    (b"access-control-allow-methods", b"POST, OPTIONS"),
+                    (b"access-control-allow-headers", ", ".join(sorted(allowed_headers)).encode()),
+                    (b"access-control-max-age", b"600"),
+                    (b"vary", b"Origin"),
+                ],
+            })
+            await send({"type": "http.response.body", "body": b""})
+            return
+        if frame_account_origin:
+            raw_send = send
+
+            async def frame_cors_send(message: Message) -> None:
+                if message["type"] == "http.response.start":
+                    existing = [
+                        (name, value)
+                        for name, value in message.get("headers", [])
+                        if name.lower() not in {b"access-control-allow-origin", b"vary"}
+                    ]
+                    existing.extend([
+                        (b"access-control-allow-origin", frame_account_origin.encode()),
+                        (b"vary", b"Origin"),
+                    ])
+                    message = {**message, "headers": existing}
+                await raw_send(message)
+
+            send = frame_cors_send
         if not self._trusted(scope, headers, write=write, federation=federation):
             error = "Local origin and session token required" if write else "Local origin required"
             await _reject(send, 403, error)
@@ -333,6 +389,14 @@ class RequestBoundary:
             return True
         extensions = scope.get("extensions", {})
         unix_transport = bool(extensions.get("studio.unix_socket"))
+        frame_account_origin = self._frame_account_origin(scope, headers)
+        if frame_account_origin:
+            method = scope.get("method", "GET").upper()
+            if method == "OPTIONS":
+                return True
+            return method == "POST" and secrets.compare_digest(
+                headers.get("x-canvas-token", "") or "", self.context.token
+            )
         if federation and unix_transport:
             return False
         if unix_transport:
@@ -373,3 +437,28 @@ class RequestBoundary:
         if write and not federation:
             return secrets.compare_digest(headers.get("x-canvas-token", "") or "", self.context.token)
         return True
+
+    def _frame_account_origin(self, scope: Scope, headers: HeaderView) -> str | None:
+        if scope.get("path") not in FRAME_ACCOUNT_MUTATION_PATHS:
+            return None
+        if any(headers.get_all(name) for name in ("x-forwarded-for", "x-forwarded-host", "x-forwarded-proto")):
+            return None
+        client = scope.get("client")
+        try:
+            if not client or not ipaddress.ip_address(str(client[0])).is_loopback:
+                return None
+        except ValueError:
+            return None
+        server = scope.get("server")
+        port = int(server[1]) if server and server[1] else 0
+        origins = headers.get_all("origin")
+        hosts = headers.get_all("host")
+        origin = origins[0] if len(origins) == 1 else None
+        if not origin or not re.fullmatch(
+            rf"http://studio-[a-z2-7]{{1,50}}(?:\.[a-z2-7]{{1,50}})*\.localhost:{port}",
+            origin,
+        ):
+            return None
+        if len(hosts) != 1 or hosts[0].casefold() != origin.removeprefix("http://").casefold():
+            return None
+        return origin

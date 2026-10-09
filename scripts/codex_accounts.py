@@ -3,6 +3,7 @@
 import base64
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -674,6 +675,22 @@ class AccountStore:
                 # Completion may arrive before the request's acknowledgement.
                 if receipt["status"] not in {"ready", "duplicate", "cancelled", "error"}:
                     receipt.update(status="pending", **{k: response[k] for k in ("loginId", "verificationUrl", "userCode")})
+                    expiry = response.get("expiresAt")
+                    expires_in = response.get("expiresIn")
+                    if (
+                        expiry is None
+                        and isinstance(expires_in, (int, float))
+                        and math.isfinite(expires_in)
+                        and expires_in > 0
+                    ):
+                        expiry = time.time() + expires_in
+                    if (
+                        isinstance(expiry, (int, float))
+                        and not isinstance(expiry, bool)
+                        and math.isfinite(expiry)
+                        and expiry > time.time()
+                    ):
+                        receipt["expiresAt"] = expiry
                 self._save()
         except Exception:
             with self.lock:

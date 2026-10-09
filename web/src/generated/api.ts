@@ -2431,6 +2431,8 @@ export interface components {
       email?: string | null;
       /** Error */
       error?: string | null;
+      /** Expiresat */
+      expiresAt?: number | null;
       /** Loginid */
       loginId?: string | null;
       /** Requestid */
@@ -4980,8 +4982,8 @@ export interface components {
       email?: string | null;
       /** Label */
       label?: string | null;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeBackgroundTask */
     ClaudeBackgroundTask: {
@@ -4994,15 +4996,15 @@ export interface components {
     };
     /** ClaudeCancelRequest */
     ClaudeCancelRequest: {
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeCodeRequest */
     ClaudeCodeRequest: {
       /** Code */
       code: string;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeCommand */
     ClaudeCommand: {
@@ -5251,8 +5253,8 @@ export interface components {
     ClaudeStartRequest: {
       /** Account Key */
       account_key: string;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeStopTaskResponse */
     ClaudeStopTaskResponse: {
@@ -5283,6 +5285,8 @@ export interface components {
       email?: string | null;
       /** Error */
       error?: string | null;
+      /** Expiresat */
+      expiresAt?: number | null;
       /** Loginid */
       loginId?: string | null;
       /** Reauthaccountkey */
@@ -6798,8 +6802,8 @@ export interface components {
       email?: string | null;
       /** Label */
       label?: string | null;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ManagedMessageBody */
     ManagedMessageBody: {
@@ -10774,6 +10778,24 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
+    /** SummaryAccount */
+    SummaryAccount: {
+      /** Email */
+      email?: string | null;
+      /** Isdefault */
+      isDefault: boolean;
+      /** Label */
+      label: string;
+      /** Plan */
+      plan?: string | null;
+      /**
+       * Provider
+       * @enum {string}
+       */
+      provider: "codex" | "claude";
+      /** Status */
+      status: string;
+    };
     /** SummaryAlert */
     SummaryAlert: {
       /** Body */
@@ -12140,6 +12162,8 @@ export interface components {
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
+      /** Accounts */
+      accounts?: components["schemas"]["SummaryAccount"][];
       /** Agentsrunning */
       agentsRunning: number;
       /** Alerts */

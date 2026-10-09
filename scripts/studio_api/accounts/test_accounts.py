@@ -652,6 +652,7 @@ class AccountsRouterTests(unittest.TestCase):
             "requestId": str(uuid4()), "accountKey": "default", "status": "pending",
             "loginId": "native-login", "verificationUrl": "https://auth.openai.com/device",
             "userCode": "TEST-CODE", "createdAt": 12.5, "email": "person@example.invalid",
+            "expiresAt": 90.5,
             "reauthAccountKey": "default", "expectedAccountId": "private-account-id",
         }
         context = ApiContext.for_schema()
@@ -659,11 +660,12 @@ class AccountsRouterTests(unittest.TestCase):
         app = FastAPI()
         app.include_router(create_router(context))
         with patch.object(self.store, "start_login", return_value=result):
-            response = TestClient(app).post("/api/accounts/login", json={"request_id": result["requestId"]})
+            response = TestClient(app).post("/api/accounts/login", json={"login_id": result["requestId"]})
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(response.json()["requestId"], result["requestId"])
         self.assertEqual(response.json()["userCode"], "TEST-CODE")
         self.assertEqual(response.json()["email"], "person@example.invalid")
+        self.assertEqual(response.json()["expiresAt"], 90.5)
         self.assertNotIn("expectedAccountId", response.json())
         self.assertNotIn("reauthAccountKey", response.json())
 
@@ -692,10 +694,10 @@ class AccountsRouterTests(unittest.TestCase):
         request_id = str(uuid4())
         with patch("codex_claude_login.manager", return_value=service):
             response = self.client.post("/api/accounts/claude/add", json={
-                "request_id": request_id, "email": " person@example.invalid ", "label": " Work ",
+                "login_id": request_id, "email": " person@example.invalid ", "label": " Work ",
             })
             invalid = self.client.post("/api/accounts/claude/add", json={
-                "request_id": str(uuid4()), "unexpected": True,
+                "login_id": str(uuid4()), "unexpected": True,
             })
         self.assertEqual(response.status_code, 200, response.text)
         self.assertEqual(service.started, ("person@example.invalid", "Work", request_id))

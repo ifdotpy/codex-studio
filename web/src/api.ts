@@ -91,7 +91,7 @@ export type GetOptions<Path extends PathsFor<"get">> = ApiGetOptions<
   ApiOptions,
   ApiReadMetadata
 >;
-export type PostOptions = ApiOptions;
+export type PostOptions = ApiOptions & { requestId?: string };
 export type GetResult<Path extends PathsFor<"get">> = ApiSuccessBodyFor<
   Operation<Path, "get">
 >;
@@ -581,7 +581,7 @@ export async function post<Path extends PathsFor<"post">>(
   options: PostOptions = {},
 ): Promise<PostResult<Path>> {
   if (schemaMismatch) throw new ApiSchemaMismatchError();
-  const mutation = await beginServerMutation(path, body);
+  const mutation = await beginServerMutation(path, body, options.requestId);
   const timeoutMs = options.timeoutMs ?? (mutation ? 15000 : undefined);
   const controller = requestController(options, timeoutMs);
   let responseRejected = false;
@@ -770,4 +770,14 @@ export function save(key: string, value: unknown) {
   } catch {
     /* Server data remains available if browser storage is full. */
   }
+}
+export function stableRequestId(key: string): string {
+  const savedId = saved<string>(`request-id:${key}`, "");
+  if (savedId) return savedId;
+  const requestId = crypto.randomUUID();
+  save(`request-id:${key}`, requestId);
+  return requestId;
+}
+export function clearStableRequestId(key: string) {
+  save(`request-id:${key}`, null);
 }

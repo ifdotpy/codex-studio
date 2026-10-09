@@ -2,7 +2,18 @@ import { serverViewId } from "./environment";
 import { serverLocalStorage } from "./storage";
 // Only unresolved writes retain this identity. Explicit operation identities
 // remain the caller's source of truth, including sends, uploads and creation.
-export async function beginServerMutation(path: string, body: unknown) {
+export async function beginServerMutation(
+  path: string,
+  body: unknown,
+  explicitRequestId?: string,
+) {
+  if (explicitRequestId)
+    return {
+      requestId: explicitRequestId,
+      finish() {},
+      unknown() {},
+      reject(_status: number, _body: unknown) {},
+    };
   if (!serverViewId || serverViewId === "local") return null;
   const value =
     body && typeof body === "object" ? (body as Record<string, unknown>) : {};

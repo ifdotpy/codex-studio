@@ -52,9 +52,9 @@ test("claude login ui", async ({ page: runnerPage }) => {
       const body = req.method() === "POST" ? req.postDataJSON() : {};
       if (url.pathname === "/api/accounts/claude/login") {
         if (req.method() === "POST") {
-          starts.push(body.request_id);
+          starts.push(body.login_id);
           receipt = {
-            requestId: body.request_id,
+            requestId: body.login_id,
             accountKey: "claude",
             status: "pending",
             verificationUrl: "https://claude.ai/oauth/authorize?fixture=1",

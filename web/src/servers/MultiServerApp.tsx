@@ -17,6 +17,7 @@ import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
 import { fetchServerSummary } from "./summary";
 import { bindShellTransport } from "./shellTransport";
+import { serverCredentialAdapter } from "./transport";
 import {
   localServer,
   readServers,
@@ -64,7 +65,10 @@ export default function MultiServerApp() {
     ? selected
     : servers[0]?.id || "";
   const [manager, setManager] = useState(uiOnly && !paired.length);
+  const managerRef = useRef(manager);
+  managerRef.current = manager;
   const [managerTab, setManagerTab] = useState("servers");
+  const restoreManagerAfterFrameDialog = useRef(false);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -299,6 +303,10 @@ export default function MultiServerApp() {
             return;
           const opened = navigation[server.id]?.opened || null;
           applyNavigationRef.current(server.id, { ...value, opened });
+          setAccountsByServer((old) => ({
+            ...old,
+            [server.id]: value.accounts,
+          }));
           setStatus((old) => ({ ...old, [server.id]: "live" }));
           setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
           delay = 30000;
@@ -339,6 +347,10 @@ export default function MultiServerApp() {
           setNavigation((old) => ({
             ...old,
             [server.id]: { ...old[server.id], ...value },
+          }));
+          setAccountsByServer((old) => ({
+            ...old,
+            [server.id]: value.accounts,
           }));
           setStatus((old) => ({ ...old, [server.id]: "live" }));
           setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
@@ -420,7 +432,7 @@ export default function MultiServerApp() {
     );
   }, [preferences, setColorScheme]);
   useEffect(() => {
-    const receive = (event: MessageEvent) => {
+    const receive = async (event: MessageEvent) => {
       const id =
         event.data?.serverId ||
         [...frames.current].find(
@@ -433,7 +445,50 @@ export default function MultiServerApp() {
         event.source !== frames.current.get(id)?.contentWindow
       )
         return;
-      if (
+      if (event.data.kind === "studio-server-frame-credential-request") {
+        if (
+          event.data.serverId !== id ||
+          typeof event.data.correlation !== "string"
+        )
+          return;
+        try {
+          const frame = frames.current.get(id);
+          if (!frame?.isConnected || frame.contentWindow !== event.source)
+            return;
+          const server =
+            id === "local"
+              ? localServer()
+              : serversRef.current.find((row) => row.id === id);
+          if (!server) throw new Error("The server is no longer paired.");
+          const adapter = serverCredentialAdapter();
+          if (!adapter.frameSigningCredential)
+            throw new Error("Frame signing is unavailable.");
+          const credential = await adapter.frameSigningCredential(server);
+          if (frames.current.get(id) !== frame || !frame.isConnected) return;
+          frame.contentWindow?.postMessage(
+            {
+              kind: "studio-server-frame-credential-result",
+              serverId: id,
+              correlation: event.data.correlation,
+              credential: { serverId: id, ...credential },
+            },
+            event.origin,
+          );
+        } catch (error) {
+          const frame = frames.current.get(id);
+          if (frame?.contentWindow !== event.source || !frame.isConnected)
+            return;
+          frame.contentWindow?.postMessage(
+            {
+              kind: "studio-server-frame-credential-result",
+              serverId: id,
+              correlation: event.data.correlation,
+              error: (error as Error).message,
+            },
+            event.origin,
+          );
+        }
+      } else if (
         event.data.kind === "studio-server-activity" &&
         typeof event.data.busy === "boolean"
       ) {
@@ -441,6 +496,17 @@ export default function MultiServerApp() {
         state.known = true;
         if (state.activity !== event.data.busy) state.idleSince = Date.now();
         state.activity = event.data.busy;
+      } else if (event.data.kind === "studio-server-account-dialog") {
+        if (typeof event.data.opened !== "boolean") return;
+        if (event.data.opened) {
+          if (managerRef.current) {
+            restoreManagerAfterFrameDialog.current = true;
+            setManager(false);
+          }
+        } else if (restoreManagerAfterFrameDialog.current) {
+          restoreManagerAfterFrameDialog.current = false;
+          setManager(true);
+        }
       } else if (event.data.kind === "studio-server-open-settings") {
         setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
@@ -597,8 +663,16 @@ export default function MultiServerApp() {
               servers={servers}
               accountsByServer={accountsByServer}
               statuses={status}
-              startAccount={(id, command) => send(id, command)}
-              accountAction={(id, command) => send(id, command)}
+              startAccount={(id, command) => {
+                restoreManagerAfterFrameDialog.current = manager;
+                setManager(false);
+                send(id, command);
+              }}
+              accountAction={(id, command) => {
+                restoreManagerAfterFrameDialog.current = manager;
+                setManager(false);
+                send(id, command);
+              }}
             />
           </Tabs.Panel>
           <Tabs.Panel value="servers" pt="md">

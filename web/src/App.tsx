@@ -309,6 +309,26 @@ export default function App() {
   };
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
+  const accountModalOpenRef = useRef(false);
+  const externalFrameAccountDialog = useRef(false);
+  const updateAccountModalOpen = useCallback((opened: boolean) => {
+    const changed = accountModalOpenRef.current !== opened;
+    accountModalOpenRef.current = opened;
+    setAccountModalOpen(opened);
+    if (changed && serverViewId && window.parent !== window)
+      window.parent.postMessage(
+        {
+          kind: "studio-server-account-dialog",
+          serverId: serverViewId,
+          opened,
+        },
+        serverParentOrigin,
+      );
+    if (!opened && changed && externalFrameAccountDialog.current) {
+      externalFrameAccountDialog.current = false;
+      setStudioSettingsOpen(false);
+    }
+  }, []);
   const [claudeLoginKey, setClaudeLoginKey] = useState("");
   const [codexLoginKey, setCodexLoginKey] = useState("");
   const [serverAccountCommand, setServerAccountCommand] = useState<Extract<
@@ -1766,6 +1786,7 @@ export default function App() {
         command.action === "account-sign-in" ||
         command.action === "account-action"
       ) {
+        externalFrameAccountDialog.current = true;
         setServerAccountCommand(command);
         setStudioSettingsTab("accounts");
         setStudioSettingsOpen(true);
@@ -2707,7 +2728,7 @@ export default function App() {
                 <Accounts
                   managerOnly
                   dialogsOnly
-                  onModalOpenChange={setAccountModalOpen}
+                  onModalOpenChange={updateAccountModalOpen}
                   state={accounts}
                   onError={notify}
                   externalCommand={serverAccountCommand}

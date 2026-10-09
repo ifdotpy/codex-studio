@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sys
 import threading
+import time
 import unittest
 import uuid
 from unittest.mock import patch
@@ -30,7 +31,16 @@ class LoginContract(fixture.AccountsContract):
 
     def response(self, key):
         return {"type": "chatgptDeviceCode", "loginId": key,
-                "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "TEST-CODE"}
+                "verificationUrl": "https://auth.openai.com/codex/device", "userCode": "TEST-CODE",
+                "expiresIn": 90}
+
+    def test_device_code_expiry_is_persisted_for_the_ui(self):
+        before = time.time()
+        result = self.store.start_login(
+            self.runtime(lambda key, *_: self.response(key)), str(uuid.uuid4()))
+        self.assertEqual(result["status"], "pending")
+        self.assertGreaterEqual(result["expiresAt"], before + 89)
+        self.assertLessEqual(result["expiresAt"], time.time() + 90)
 
     def test_start_reply_lost_is_reconciled_after_restart_without_replay(self):
         calls = []

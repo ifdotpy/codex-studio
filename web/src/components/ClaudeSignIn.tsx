@@ -1,6 +1,16 @@
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get, post, save, saved, type PostResult } from "../api";
+import {
+  clearStableRequestId,
+  errorText,
+  get,
+  post,
+  save,
+  saved,
+  stableRequestId,
+  type PostResult,
+} from "../api";
+import { copyText } from "../clipboard/clipboard";
 import type { Account } from "./Accounts";
 import { watchResourceReads } from "./watchResourceReads";
 
@@ -47,6 +57,7 @@ export default function ClaudeSignIn({
   const [code, setCode] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
+  const [copied, setCopied] = useState(false);
   const lock = useRef(false);
   const refreshed = useRef("");
   const ready = useRef(onReady);
@@ -101,25 +112,31 @@ export default function ClaudeSignIn({
         setReceipt(null);
       }
       const submittedCode = code.trim();
-      if (action === "code") setCode("");
+      const mutationKey = `${storageKey}:${id}:${action}`;
+      const requestOptions = {
+        timeoutMs: 30000,
+        requestId: stableRequestId(mutationKey),
+      };
       const result =
         action === "start"
           ? await post(
               "/api/accounts/claude/login",
-              { request_id: id, account_key: account.id },
-              { timeoutMs: 30000 },
+              { login_id: id, account_key: account.id },
+              requestOptions,
             )
           : action === "code"
             ? await post(
                 "/api/accounts/claude/login/code",
-                { request_id: id, code: submittedCode },
-                { timeoutMs: 30000 },
+                { login_id: id, code: submittedCode },
+                requestOptions,
               )
             : await post(
                 "/api/accounts/claude/login/cancel",
-                { request_id: id },
-                { timeoutMs: 30000 },
+                { login_id: id },
+                requestOptions,
               );
+      clearStableRequestId(mutationKey);
+      if (action === "code") setCode("");
       store(result, id);
     } catch (failure) {
       setError(errorText(failure));
@@ -158,14 +175,32 @@ export default function ClaudeSignIn({
               </p>
             )}
             {url && (
-              <Button
-                component="a"
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open Claude sign-in
-              </Button>
+              <Group>
+                <Button
+                  component="a"
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open Claude sign-in
+                </Button>
+                <Button
+                  variant="default"
+                  disabled={!!busy}
+                  onClick={() =>
+                    void (async () => {
+                      try {
+                        await copyText(url);
+                        setCopied(true);
+                      } catch (failure) {
+                        setError(errorText(failure));
+                      }
+                    })()
+                  }
+                >
+                  {copied ? "Link copied" : "Copy link"}
+                </Button>
+              </Group>
             )}
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in URL.</p>

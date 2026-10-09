@@ -1,9 +1,18 @@
 import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
-import { errorText, get, post, type PostResult } from "../api";
+import { errorText, get, post, save, saved, type PostResult } from "../api";
+import { copyText } from "../clipboard/clipboard";
 import { watchResourceReads } from "./watchResourceReads";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
+type SavedFlow = {
+  requestId: string;
+  startRequestId: string;
+  codeRequestId?: string;
+  cancelRequestId?: string;
+  label: string;
+  email: string;
+};
 
 function allowedUrl(value?: string | null) {
   try {
@@ -25,38 +34,67 @@ export default function ClaudeAddSignIn({
   label,
   email,
   serverLabel,
+  scope,
+  opened,
   onClose,
   onReady,
 }: {
   label: string;
   email: string;
   serverLabel: string;
+  scope: string;
+  opened: boolean;
   onClose: () => void;
   onReady: () => unknown;
 }) {
-  const [requestId, setRequestId] = useState("");
+  const storageKey = `claude-add-sign-in:${scope}`;
+  const [flow, setFlow] = useState<SavedFlow | null>(() =>
+    saved<SavedFlow | null>(storageKey, null),
+  );
+  const requestId = flow?.requestId || "";
   const [receipt, setReceipt] = useState<Receipt | null>(null);
   const [expectedEmail, setExpectedEmail] = useState(email);
   const [code, setCode] = useState("");
+  const [copied, setCopied] = useState(false);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState("");
   const lock = useRef(false);
   const readyRequest = useRef("");
-  const start = async (emailHint = expectedEmail) => {
+  const persistFlow = (next: SavedFlow) => {
+    save(storageKey, next);
+    setFlow(next);
+  };
+  const start = async (emailHint = expectedEmail, forceNew = false) => {
     if (lock.current) return;
     lock.current = true;
     setBusy("start");
     setError("");
-    const id = crypto.randomUUID();
-    setRequestId(id);
+    const canResume =
+      !forceNew &&
+      flow &&
+      (!receipt || ["starting", "pending"].includes(receipt.status));
+    const next: SavedFlow = canResume
+      ? flow
+      : {
+          requestId: crypto.randomUUID(),
+          startRequestId: crypto.randomUUID(),
+          label: label.trim() || "Claude Code",
+          email: emailHint.trim(),
+        };
+    persistFlow(next);
     setReceipt(null);
     try {
-      const result = await post("/api/accounts/claude/add", {
-        request_id: id,
-        label: label.trim() || "Claude Code",
-        ...(emailHint.trim() ? { email: emailHint.trim() } : {}),
-      });
+      const result = await post(
+        "/api/accounts/claude/add",
+        {
+          login_id: next.requestId,
+          label: next.label,
+          ...(next.email ? { email: next.email } : {}),
+        },
+        { requestId: next.startRequestId },
+      );
       setReceipt(result);
+      setExpectedEmail(next.email);
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -65,22 +103,29 @@ export default function ClaudeAddSignIn({
     }
   };
   const run = async (action: "code" | "cancel") => {
-    if (lock.current || !requestId) return;
+    if (lock.current || !requestId || !flow) return;
     lock.current = true;
     setBusy(action);
     setError("");
     const submitted = code.trim();
-    if (action === "code") setCode("");
+    const requestField =
+      action === "code" ? "codeRequestId" : "cancelRequestId";
+    const mutationId = flow[requestField] || crypto.randomUUID();
+    const nextFlow = { ...flow, [requestField]: mutationId };
+    persistFlow(nextFlow);
     try {
       const result = await post(
         action === "code"
           ? "/api/accounts/claude/login/code"
           : "/api/accounts/claude/login/cancel",
         action === "code"
-          ? { request_id: requestId, code: submitted }
-          : { request_id: requestId },
+          ? { login_id: requestId, code: submitted }
+          : { login_id: requestId },
+        { requestId: mutationId },
       );
       setReceipt(result);
+      if (action === "code") setCode("");
+      persistFlow({ ...nextFlow, [requestField]: undefined });
     } catch (failure) {
       setError(errorText(failure));
     } finally {
@@ -126,6 +171,8 @@ export default function ClaudeAddSignIn({
     };
   }, [onReady, receipt?.status, requestId]);
   const url = allowedUrl(receipt?.verificationUrl);
+  const displayLabel = flow?.label || label;
+  const displayEmail = flow?.email || expectedEmail || email;
   const wrong = !!receipt?.error?.includes("different Claude account");
   const expired = !!receipt?.error?.includes("expired");
   const invalid = !!receipt?.error?.includes("rejected");
@@ -138,14 +185,14 @@ export default function ClaudeAddSignIn({
         : error || receipt?.error || "";
   return (
     <Modal
-      opened
+      opened={opened}
       onClose={onClose}
-      title={`Sign in to Claude · ${label}`}
+      title={`Sign in to Claude · ${displayLabel}`}
       centered
     >
       <Stack gap="sm">
         <TextInput label="Server" value={serverLabel} readOnly />
-        {expectedEmail && <p>Sign in as {expectedEmail}.</p>}
+        {displayEmail && <p>Sign in as {displayEmail}.</p>}
         {receipt?.status === "ready" ? (
           <p role="status">
             Signed in as {receipt.email || email || "Claude account"}.
@@ -153,14 +200,32 @@ export default function ClaudeAddSignIn({
         ) : (
           <>
             {url && (
-              <Button
-                component="a"
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
-              >
-                Open sign-in page
-              </Button>
+              <Group>
+                <Button
+                  component="a"
+                  href={url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                >
+                  Open sign-in page
+                </Button>
+                <Button
+                  variant="default"
+                  disabled={!!busy}
+                  onClick={() =>
+                    void (async () => {
+                      try {
+                        await copyText(url);
+                        setCopied(true);
+                      } catch (failure) {
+                        setError(errorText(failure));
+                      }
+                    })()
+                  }
+                >
+                  {copied ? "Link copied" : "Copy link"}
+                </Button>
+              </Group>
             )}
             {receipt?.verificationUrl && !url && (
               <p role="alert">Claude returned an unsupported sign-in link.</p>
@@ -196,7 +261,7 @@ export default function ClaudeAddSignIn({
             receipt?.status === "error" ||
             receipt?.status === "cancelled" ? (
               <Button
-                onClick={() => void start()}
+                onClick={() => void start(displayEmail)}
                 loading={busy === "start"}
                 disabled={!!busy}
               >
@@ -221,7 +286,7 @@ export default function ClaudeAddSignIn({
                 variant="default"
                 onClick={() => {
                   setExpectedEmail(receipt.email!);
-                  void start(receipt.email!);
+                  void start(receipt.email!, true);
                 }}
                 disabled={!!busy}
               >

@@ -1,6 +1,15 @@
 import { serverViewId, isolatedServerView } from "./environment";
 import { viewServer, type StudioServer } from "./registry";
 
+const LOCAL_FRAME_ACCOUNT_MUTATIONS = new Set([
+  "/api/accounts/login",
+  "/api/accounts/login/cancel",
+  "/api/accounts/claude/login",
+  "/api/accounts/claude/add",
+  "/api/accounts/claude/login/code",
+  "/api/accounts/claude/login/cancel",
+]);
+
 // Pairing owns credentials and signing. This boundary never puts a credential
 // in a URL, snapshot, project row, or navigation message.
 export type PairAttemptIdentity = {
@@ -9,11 +18,18 @@ export type PairAttemptIdentity = {
   origin: string;
   inviteId?: string;
 };
+export type FrameSigningCredential = {
+  clientId: string;
+  privateKey: CryptoKey;
+};
 export interface ServerCredentialAdapter {
   hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean>;
   pair(origin: string, code: string, requestId: string): Promise<StudioServer>;
   fetch(server: StudioServer, request: Request): Promise<Response>;
   forget(server: StudioServer): Promise<void>;
+  frameSigningCredential?(
+    server: StudioServer,
+  ): Promise<FrameSigningCredential>;
 }
 let credentials: ServerCredentialAdapter | undefined;
 export function setServerCredentialAdapter(adapter: ServerCredentialAdapter) {
@@ -30,6 +46,12 @@ export function apiOrigin() {
     : (globalThis.location?.origin ?? "http://localhost");
 }
 export function serverFetch(request: Request) {
+  if (
+    serverViewId === "local" &&
+    request.method === "POST" &&
+    LOCAL_FRAME_ACCOUNT_MUTATIONS.has(new URL(request.url).pathname)
+  )
+    return globalThis.fetch(request);
   if (!serverViewId || (serverViewId === "local" && !isolatedServerView))
     return globalThis.fetch(request);
   const server = viewServer(serverViewId);

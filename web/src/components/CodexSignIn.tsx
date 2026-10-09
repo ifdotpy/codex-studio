@@ -1,6 +1,7 @@
 import { Modal } from "@mantine/core";
 import type { Account, useAccounts } from "./Accounts";
 import AccountSignIn from "./AccountSignIn";
+import { post } from "../api";
 
 export default function CodexSignIn({
   account,
@@ -23,6 +24,14 @@ export default function CodexSignIn({
         key={`${state.scope}:${account.id}`}
         state={state}
         targetAccount={account}
+        onConnected={async (connected) => {
+          if (connected.disconnected)
+            state.setData(
+              await post("/api/accounts/reconnect", {
+                account_key: connected.id,
+              }),
+            );
+        }}
       />
     </Modal>
   );

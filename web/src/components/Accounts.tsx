@@ -843,7 +843,15 @@ export default function Accounts({
           scope={state.scope}
           serverLabel={externalServerLabel || undefined}
           onClose={() => setClaudeLogin(null)}
-          onReady={state.refresh}
+          onReady={async () => {
+            if (claudeLogin.disconnected)
+              state.setData(
+                await post("/api/accounts/reconnect", {
+                  account_key: claudeLogin.id,
+                }),
+              );
+            else await state.refresh();
+          }}
         />
       )}
       {!managerOnly &&

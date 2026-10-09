@@ -34,6 +34,16 @@ export async function fixture(label, signed = false, accountRows = null) {
     { clientId: "old-ui", label: "Old UI", status: "paired" },
   ];
   const writes = [];
+  const accountWrites = [];
+  const accountLogins = new Map();
+  const savedAccounts = accountRows || [
+    {
+      id: "default",
+      label: "Fixture",
+      provider: "codex",
+      status: "ready",
+    },
+  ];
   const accessRequests = [];
   let discoveredPeers = [];
   let autoPair = true;
@@ -151,11 +161,24 @@ export async function fixture(label, signed = false, accountRows = null) {
         return;
       }
       nonces.add(h["x-studio-nonce"]);
-      if (body.requestId || body.request_id)
-        assert.equal(
-          h["x-studio-request-id"],
-          body.requestId || body.request_id,
-        );
+      if (body.requestId || body.request_id || body.login_id) {
+        if (url.pathname.startsWith("/api/accounts/")) {
+          accountWrites.push({
+            path: url.pathname,
+            requestId: h["x-studio-request-id"],
+            loginId: body.login_id || body.request_id,
+            code: body.code,
+          });
+          assert.notEqual(
+            h["x-studio-request-id"],
+            body.login_id || body.request_id,
+          );
+        } else
+          assert.equal(
+            h["x-studio-request-id"],
+            body.requestId || body.request_id,
+          );
+      }
     }
     if (url.pathname === "/api/monitor/log") {
       response.writeHead(200, {
@@ -220,6 +243,14 @@ export async function fixture(label, signed = false, accountRows = null) {
               },
             ]
           : [],
+        accounts: savedAccounts.map((account) => ({
+          provider: account.provider || "codex",
+          email: account.email || null,
+          plan: account.plan || null,
+          status: account.disconnected ? "signedOut" : account.status,
+          label: account.label || "Account",
+          isDefault: !!account.isDefault,
+        })),
       });
       return;
     }
@@ -289,23 +320,110 @@ export async function fixture(label, signed = false, accountRows = null) {
       return;
     }
     if (url.pathname === "/api/accounts") {
-      const accounts = accountRows || [
-        {
-          id: "default",
-          label: "Fixture",
-          provider: "codex",
-          status: "ready",
-        },
-      ];
       json({
-        accounts: accounts.map((account) => ({
+        accounts: savedAccounts.map((account) => ({
           ...account,
           isDefault: account.isDefault || false,
         })),
         defaultAccountKey:
-          accounts.find((account) => account.isDefault)?.id || "default",
+          savedAccounts.find((account) => account.isDefault)?.id || "default",
         archivedAccounts: [],
-        logins: [],
+        logins: [...accountLogins.values()],
+      });
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/add") {
+      const id = body.login_id;
+      const receipt = {
+        requestId: id,
+        accountKey: id,
+        status: "pending",
+        verificationUrl: "https://claude.com/cai/oauth/authorize?state=fake",
+      };
+      accountLogins.set(id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login") {
+      const receipt = accountLogins.get(url.searchParams.get("request_id"));
+      json(
+        receipt || { error: "Unknown fake Claude login" },
+        receipt ? 200 : 404,
+      );
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login/code") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = {
+        ...previous,
+        status: "ready",
+        email: previous?.email || "new@example.test",
+        plan: "Max",
+      };
+      accountLogins.set(body.login_id, receipt);
+      savedAccounts.push({
+        id: body.login_id,
+        label: "New Claude",
+        provider: "claude",
+        email: receipt.email,
+        plan: receipt.plan,
+        status: "ready",
+        isDefault: false,
+      });
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login/cancel") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = { ...previous, status: "cancelled" };
+      accountLogins.set(body.login_id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/login") {
+      const id = body.login_id;
+      const account = savedAccounts.find((row) => row.id === body.account_key);
+      const receipt = account
+        ? {
+            requestId: id,
+            accountKey: account.id,
+            resolvedAccountKey: account.id,
+            reauthAccountKey: account.id,
+            status: "ready",
+            email: account.email,
+          }
+        : {
+            requestId: id,
+            accountKey: id,
+            loginId: `fake-${id}`,
+            status: "pending",
+            userCode: "FAKE-CODE",
+            verificationUrl: "https://auth.openai.com/codex/device",
+            expiresAt: Date.now() / 1000 + 90,
+          };
+      accountLogins.set(id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/login/cancel") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = { ...previous, status: "cancelled" };
+      accountLogins.set(body.login_id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/reconnect") {
+      const account = savedAccounts.find((row) => row.id === body.account_key);
+      if (account) {
+        account.disconnected = false;
+        account.status = "ready";
+      }
+      json({
+        accounts: savedAccounts,
+        defaultAccountKey:
+          savedAccounts.find((row) => row.isDefault)?.id || "default",
+        archivedAccounts: [],
+        logins: [...accountLogins.values()],
       });
       return;
     }
@@ -385,6 +503,10 @@ export async function fixture(label, signed = false, accountRows = null) {
     origin: `http://127.0.0.1:${server.address().port}`,
     invitation,
     writes,
+    accountWrites,
+    accounts() {
+      return savedAccounts;
+    },
     pairs,
     accessRequests,
     staleSettingsReceipts(value) {

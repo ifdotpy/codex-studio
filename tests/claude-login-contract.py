@@ -505,7 +505,7 @@ os._exit(0)
             headers = {'Origin':origin, 'X-Canvas-Token':token}
             path = '/api/accounts/claude/login'
             rid = str(uuid.uuid4())
-            body = {'account_key':'claude-test', 'request_id':rid}
+            body = {'account_key':'claude-test', 'login_id':rid}
             for route in [path, path + '/code', path + '/cancel']:
                 self.assertEqual(request(route, body)[0], 403)
                 self.assertEqual(request(route, body, {**headers,'Origin':'https://evil.invalid'})[0],403)
@@ -516,7 +516,7 @@ os._exit(0)
             self.assertEqual(status,200)
             self.assertEqual(receipt['accountKey'],'claude-test')
             self.assertEqual(request(path + '?request_id=' + rid)[0],200)
-            self.assertEqual(request(path + '/cancel', {'request_id':rid}, headers)[1]['status'],'cancelled')
+            self.assertEqual(request(path + '/cancel', {'login_id':rid}, headers)[1]['status'],'cancelled')
         finally:
             server.shutdown()
             thread.join(timeout=5)

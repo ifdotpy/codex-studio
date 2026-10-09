@@ -28,6 +28,7 @@ test("accounts settings show per-server state and provider choices", async ({
       email: "person@example.test",
       plan: "Plus",
       status: "signedOut",
+      disconnected: true,
     },
     {
       id: "remote-claude",
@@ -45,7 +46,9 @@ test("accounts settings show per-server state and provider choices", async ({
   await context.addInitScript(
     ({ destinations }) => {
       window.__studioAccountMessages = [];
+      window.__studioMessages = [];
       window.addEventListener("message", (event) => {
+        if (window === window.top) window.__studioMessages.push(event.data);
         if (event.data?.kind === "studio-server-accounts")
           window.__studioAccountMessages.push(event.data);
       });
@@ -204,4 +207,107 @@ test("accounts settings show per-server state and provider choices", async ({
       .frameLocator('iframe[title="Studio on Remote"]')
       .getByRole("dialog", { name: /Sign in to Claude · New Claude/ }),
   ).toBeVisible();
+  await expect(settings).toBeHidden();
+  const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
+  const claudeSignIn = remoteFrame.getByRole("dialog", {
+    name: /Sign in to Claude · New Claude/,
+  });
+  await claudeSignIn.getByRole("button", { name: "Start sign-in" }).click();
+  await expect(claudeSignIn.getByLabel("Paste code")).toBeVisible();
+  await expect(
+    claudeSignIn.getByRole("button", { name: "Copy link" }),
+  ).toBeVisible();
+  await page.setViewportSize({ width: 1280, height: 900 });
+  await page.emulateMedia({ colorScheme: "light" });
+  await claudeSignIn.screenshot({
+    path: resolve(screenshots, "accounts-claude-signin-light.png"),
+  });
+  await page.emulateMedia({ colorScheme: "dark" });
+  await claudeSignIn.screenshot({
+    path: resolve(screenshots, "accounts-claude-signin-dark.png"),
+  });
+  await page.emulateMedia({ colorScheme: "light" });
+  await page.setViewportSize({ width: 390, height: 844 });
+  await claudeSignIn.screenshot({
+    path: resolve(screenshots, "accounts-claude-signin-mobile.png"),
+  });
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  const submittedCode = "FAKE-CLAUDE-CODE#FAKE-STATE";
+  await claudeSignIn.getByLabel("Paste code").fill(submittedCode);
+  await claudeSignIn.getByRole("button", { name: "Finish sign-in" }).click();
+  await expect(claudeSignIn).toContainText("Signed in as new@example.test");
+  expect(remote.accountWrites).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        path: "/api/accounts/claude/add",
+        loginId: expect.any(String),
+      }),
+      expect.objectContaining({
+        path: "/api/accounts/claude/login/code",
+        loginId: expect.any(String),
+        code: submittedCode,
+      }),
+    ]),
+  );
+  const claudeWrites = remote.accountWrites.filter((write) =>
+    write.path.startsWith("/api/accounts/claude/"),
+  );
+  expect(claudeWrites).toHaveLength(2);
+  expect(new Set(claudeWrites.map((write) => write.requestId)).size).toBe(2);
+  expect(
+    JSON.stringify(await page.evaluate(() => window.__studioMessages)),
+  ).not.toContain(submittedCode);
+  await claudeSignIn
+    .getByRole("button", { name: "Close", exact: true })
+    .last()
+    .click();
+  await expect(settings).toBeVisible();
+  await accounts
+    .getByRole("button", { name: "Add account", exact: true })
+    .click();
+  const codexAdd = page.getByRole("dialog", { name: "Add account" });
+  await codexAdd.getByRole("button", { name: /Codex.*one-time code/ }).click();
+  await codexAdd.getByLabel("Server").click();
+  await page.getByRole("option", { name: "Remote" }).click();
+  await codexAdd.getByLabel("Name").fill("New Codex");
+  await codexAdd.getByRole("button", { name: "Continue" }).click();
+  const codexSignIn = remoteFrame.getByRole("dialog", {
+    name: /Sign in to Codex · New Codex/,
+  });
+  await codexSignIn
+    .getByRole("button", { name: "Sign in", exact: true })
+    .click();
+  await expect(
+    codexSignIn.getByRole("button", { name: "Cancel sign-in" }),
+  ).toBeVisible();
+  await codexSignIn.screenshot({
+    path: resolve(screenshots, "accounts-codex-signin-light.png"),
+  });
+  await codexSignIn.getByRole("button", { name: "Cancel sign-in" }).click();
+  await expect(codexSignIn).toContainText("Sign-in cancelled.");
+  const codexWrites = remote.accountWrites.filter((write) =>
+    ["/api/accounts/login", "/api/accounts/login/cancel"].includes(write.path),
+  );
+  expect(codexWrites).toHaveLength(2);
+  expect(new Set(codexWrites.map((write) => write.requestId)).size).toBe(2);
+  await codexSignIn
+    .getByRole("button", { name: "Close", exact: true })
+    .last()
+    .click();
+  await expect(settings).toBeVisible();
+  await work.getByRole("button", { name: /Remote · sign in again/ }).click();
+  const reconnect = remoteFrame.getByRole("dialog", {
+    name: /Sign in to Codex · person@example.test · Remote/,
+  });
+  await reconnect.getByRole("button", { name: "Start sign-in" }).click();
+  await expect(reconnect).toContainText("Sign-in restored.");
+  await expect
+    .poll(
+      () =>
+        remote.accounts().find((account) => account.id === "remote-codex")
+          ?.disconnected,
+    )
+    .toBe(false);
+  await reconnect.getByLabel("Close").click();
+  await expect(settings).toBeVisible();
 });

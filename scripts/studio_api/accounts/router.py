@@ -153,7 +153,7 @@ def _codex_login_response(value: JsonValue) -> JsonValue:
         return value
     allowed = {
         "requestId", "accountKey", "status", "loginId", "verificationUrl", "userCode",
-        "error", "resolvedAccountKey", "email", "createdAt",
+        "error", "resolvedAccountKey", "email", "createdAt", "expiresAt",
     }
     return {key: item for key, item in value.items() if key in allowed}
 
@@ -235,10 +235,10 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = _runtime(context)
         service = _claude_login(runtime)
         try:
-            before = service.status(body.request_id)
+            before = service.status(body.login_id)
         except ValueError:
             before = None
-        result = service.start(body.account_key, body.request_id)
+        result = service.start(body.account_key, body.login_id)
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
@@ -247,10 +247,10 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = _runtime(context)
         service = _claude_login(runtime)
         try:
-            before = service.status(body.request_id)
+            before = service.status(body.login_id)
         except ValueError:
             before = None
-        result = service.start_add(body.email, body.label, body.request_id)
+        result = service.start_add(body.email, body.label, body.login_id)
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
@@ -258,8 +258,8 @@ def create_router(context: ApiContext) -> APIRouter:
     def claude_login_code(request: Request, body: Annotated[ClaudeCodeRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
-        before = service.status(body.request_id)
-        result = service.code(body.request_id, body.code)
+        before = service.status(body.login_id)
+        result = service.code(body.login_id, body.code)
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
@@ -267,8 +267,8 @@ def create_router(context: ApiContext) -> APIRouter:
     def claude_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
         service = _claude_login(runtime)
-        before = service.status(body.request_id)
-        result = service.cancel(body.request_id)
+        before = service.status(body.login_id)
+        result = service.cancel(body.login_id)
         _publish_login_if_changed(runtime, before, result)
         return context.send(request, result)
 
@@ -306,7 +306,7 @@ def create_router(context: ApiContext) -> APIRouter:
     def account_login_cancel(request: Request, body: Annotated[ClaudeCancelRequest, Body()]) -> Response:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
-        result = _codex_login_response(runtime.accounts.cancel_login(runtime, body.request_id))
+        result = _codex_login_response(runtime.accounts.cancel_login(runtime, body.login_id))
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)
 
@@ -348,7 +348,7 @@ def create_router(context: ApiContext) -> APIRouter:
         runtime = _runtime(context)
         before = _accounts_before(runtime)
         result = _codex_login_response(runtime.accounts.start_login(
-            runtime, body.request_id, body.account_key, body.email, body.label,
+            runtime, body.login_id, body.account_key, body.email, body.label,
         ))
         _publish_accounts_if_changed(runtime, before)
         return context.send(request, result)

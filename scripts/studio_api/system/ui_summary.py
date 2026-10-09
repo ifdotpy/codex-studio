@@ -5,7 +5,9 @@ import json
 import platform
 import sqlite3
 from collections.abc import Callable
-from typing import ContextManager
+from typing import ContextManager, Literal
+
+from pydantic import Field
 
 from studio_api.models import ContractModel
 
@@ -37,6 +39,15 @@ class SummaryAlert(ContractModel):
     target: SummaryTarget
 
 
+class SummaryAccount(ContractModel):
+    provider: Literal["codex", "claude"]
+    email: str | None = None
+    plan: str | None = None
+    status: str
+    label: str
+    isDefault: bool
+
+
 class UiSummaryResponse(ContractModel):
     ready: bool
     busy: bool
@@ -45,12 +56,16 @@ class UiSummaryResponse(ContractModel):
     projects: list[SummaryProject]
     chats: list[SummaryChat]
     alerts: list[SummaryAlert]
+    accounts: list[SummaryAccount] = Field(default_factory=list)
 
 
-def read_summary(connect: Callable[[], ContextManager[sqlite3.Connection]]) -> UiSummaryResponse:
+def read_summary(
+    connect: Callable[[], ContextManager[sqlite3.Connection]],
+    accounts: list[SummaryAccount] | None = None,
+) -> UiSummaryResponse:
     result = UiSummaryResponse(
         ready=False, busy=False, system=platform.system(), agentsRunning=0,
-        projects=[], chats=[], alerts=[],
+        projects=[], chats=[], alerts=[], accounts=accounts or [],
     )
     # Use the durable entity projection. Do not pull, initialize stores, or write read receipts.
     with connect() as db:

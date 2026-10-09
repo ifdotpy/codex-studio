@@ -76,6 +76,7 @@ class CodexLoginReceipt(ContractModel):
     createdAt: float | None = None
     reauthAccountKey: str | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    expiresAt: float | None = None
 
 
 class AccountLoginResponse(ResponseModel):
@@ -89,6 +90,7 @@ class AccountLoginResponse(ResponseModel):
     resolvedAccountKey: str | None = None
     email: str | None = None
     createdAt: float | None = None
+    expiresAt: float | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
@@ -343,7 +345,7 @@ class AccountNameRequest(RequiredAccountKeyRequest):
 
 
 class LoginRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     account_key: str | None = None
     email: str | None = Field(default=None, max_length=320)
     label: str | None = Field(default=None, min_length=1, max_length=32)
@@ -360,12 +362,12 @@ class LoginRequest(ContractModel):
 
 
 class ClaudeStartRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     account_key: str
 
 
 class ClaudeAddStartRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     email: str | None = Field(default=None, max_length=320)
     label: str | None = Field(default=None, min_length=1, max_length=32)
 
@@ -381,12 +383,12 @@ class ClaudeAddStartRequest(ContractModel):
 
 
 class ClaudeCodeRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     code: str = Field(min_length=1, max_length=4096)
 
 
 class ClaudeCancelRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
 
 
 class ClaudeProfileRequest(ContractModel):

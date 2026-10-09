@@ -34,11 +34,15 @@ export default function AccountAddDialog({
     setFlow(!!intent?.provider);
   }, [intent, opened]);
   const serverLabel = intent?.serverLabel || "This computer";
+  const close = () => {
+    setFlow(false);
+    onClose();
+  };
   return (
     <>
       <Modal
         opened={opened && !flow}
-        onClose={onClose}
+        onClose={close}
         title="Add account"
         centered
       >
@@ -82,7 +86,7 @@ export default function AccountAddDialog({
             description="Studio checks that you sign in with this account."
           />
           <div className="account-add-dialog-actions">
-            <Button variant="default" onClick={onClose}>
+            <Button variant="default" onClick={close}>
               Cancel
             </Button>
             <Button
@@ -95,10 +99,10 @@ export default function AccountAddDialog({
           </div>
         </Stack>
       </Modal>
-      {flow && provider === "codex" && (
+      {opened && flow && provider === "codex" && (
         <Modal
-          opened
-          onClose={onClose}
+          opened={opened}
+          onClose={close}
           title={`Sign in to Codex · ${label || "Codex"}`}
           centered
         >
@@ -112,12 +116,14 @@ export default function AccountAddDialog({
           </Stack>
         </Modal>
       )}
-      {flow && provider === "claude" && (
+      {opened && flow && provider === "claude" && (
         <ClaudeAddSignIn
           label={label || "Claude Code"}
           email={email}
           serverLabel={serverLabel}
-          onClose={onClose}
+          scope={state.scope || "local"}
+          opened={opened}
+          onClose={close}
           onReady={state.refresh}
         />
       )}

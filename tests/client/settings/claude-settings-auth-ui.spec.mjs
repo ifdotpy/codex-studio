@@ -113,7 +113,7 @@ test("claude settings auth ui", async ({ browser: _browser }) => {
         if (req.method() === "POST") {
           loginStarts.push(body);
           receipt = {
-            requestId: body.request_id,
+            requestId: body.login_id,
             accountKey: body.account_key,
             status: "pending",
             verificationUrl: "https://claude.ai/oauth/authorize?fixture=1",

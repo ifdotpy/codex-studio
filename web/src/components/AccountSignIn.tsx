@@ -2,7 +2,15 @@ import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { errorText, post, save, saved, type PostResult } from "../api";
+import {
+  clearStableRequestId,
+  errorText,
+  post,
+  save,
+  saved,
+  stableRequestId,
+  type PostResult,
+} from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
 
@@ -30,6 +38,7 @@ export default function AccountSignIn({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [now, setNow] = useState(() => Date.now() / 1000);
   const [expectedEmail, setExpectedEmail] = useState(emailHint || "");
   const lock = useRef(false);
   const reported = useRef("");
@@ -91,18 +100,20 @@ export default function AccountSignIn({
             ? requestId
             : crypto.randomUUID();
       remember(id);
+      const mutationKey = `${storageKey}:${id}:start`;
       const result = await post(
         "/api/accounts/login",
         {
-          request_id: id,
+          login_id: id,
           ...(targetAccount ? { account_key: targetAccount.id } : {}),
           ...(!targetAccount && (emailOverride || expectedEmail)
             ? { email: emailOverride || expectedEmail }
             : {}),
           ...(!targetAccount && label ? { label } : {}),
         },
-        { timeoutMs: 30000 },
+        { timeoutMs: 30000, requestId: stableRequestId(mutationKey) },
       );
+      clearStableRequestId(mutationKey);
       store({ ...result, requestId: id });
       setCopied(false);
       await state.refresh();
@@ -110,13 +121,18 @@ export default function AccountSignIn({
   const cancel = () =>
     run("cancel", async () => {
       if (!receipt) return;
+      const mutationKey = `${storageKey}:${receipt.requestId}:cancel`;
       store(
         await post(
           "/api/accounts/login/cancel",
-          { request_id: receipt.requestId },
-          { timeoutMs: 15000 },
+          { login_id: receipt.requestId },
+          {
+            timeoutMs: 15000,
+            requestId: stableRequestId(mutationKey),
+          },
         ),
       );
+      clearStableRequestId(mutationKey);
       await state.refresh();
     });
   let url: string | null = null;
@@ -134,6 +150,14 @@ export default function AccountSignIn({
     /* A pending native response may have no URL yet. */
   }
   const connected = ["ready", "duplicate"].includes(receipt?.status || "");
+  useEffect(() => {
+    if (!receipt?.expiresAt || !active(receipt.status)) return;
+    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
+  }, [receipt?.expiresAt, receipt?.status]);
+  const expirySeconds = receipt?.expiresAt
+    ? Math.max(0, Math.ceil(receipt.expiresAt - now))
+    : null;
   return (
     <section
       className="account-add"
@@ -223,6 +247,13 @@ export default function AccountSignIn({
                     Open sign-in page
                   </Button>
                   <small role="status">Waiting for sign-in…</small>
+                  {expirySeconds !== null && (
+                    <small role="timer" aria-label="Code expiry countdown">
+                      {expirySeconds === 0
+                        ? "Code expired"
+                        : `Code expires in ${Math.floor(expirySeconds / 60)}:${String(expirySeconds % 60).padStart(2, "0")}`}
+                    </small>
+                  )}
                 </>
               ) : (
                 <p role="status">
