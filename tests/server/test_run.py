@@ -115,7 +115,7 @@ class ServerSuiteRunner(unittest.TestCase):
         self.assertEqual(categories["tests/tool-parity.py"], "native")
         self.assertEqual(categories["tests/linux-vm-auth-native.py"], "vm")
         self.assertEqual(categories["tests/linux-vm-studio-native.py"], "vm")
-        self.assertEqual(categories["tests/linux-vm-runtime-contract.py"], "safe")
+        self.assertEqual(categories["tests/vm-agents-contract.py"], "safe")
         self.assertIn("vm", RUNNER.OPT_IN)
         self.assertEqual(categories["tests/time-awareness.py"], "safe")
         source_roots = (

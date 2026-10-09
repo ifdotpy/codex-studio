@@ -57,6 +57,7 @@ Recover the saved receipt before deciding whether an uncertain operation needs a
   ask again about a point that already has an answer.
 - Work in the workspace the lead selected for this worker.
 - For `image` and `worktree`, edit only that isolated workspace.
+- For `layr`, edit only your owned VM line. Submit its exact layr state ID.
 - For `shared`, the lead assigned work in the selected source folder. Edit the
   files in that assignment there.
 - Reviewers use shared access as read-only.

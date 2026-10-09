@@ -49,6 +49,10 @@ class ControlledRuntime(f.Runtime):
         super().__init__(*args, **kwargs)
         self.image_workspace_support = lambda _repo: (False, "disabled in protocol fixture")
 
+    def new_lead(self, data):
+        # Native protocol fixtures do not provision a VM or use live credentials.
+        return super().new_lead({'workspaceMode': 'worktree', **data})
+
     def schedule(self):
         while not self.closed:
             self.changed.wait(0.05)

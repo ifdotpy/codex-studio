@@ -246,23 +246,6 @@ class WorkspaceCopyTests(unittest.TestCase):
         self.assertFalse((root / 'scanned').is_symlink())
         self.assertEqual(list(scan_victim.iterdir()), [])
 
-    def test_linux_folder_copy_keeps_destination_symlinks_private(self):
-        if shutil.which('rsync') is None:
-            self.skipTest('requires rsync')
-        import codex_workspace_linux as linux
-
-        source = self.root / 'linux-source'
-        target = self.root / 'linux-target'
-        source.mkdir()
-        target.mkdir()
-        victim = self.root / 'linux-victim'
-        victim.write_bytes(b'keep')
-        (source / 'file').write_bytes(b'new copy')
-        (target / 'file').symlink_to(victim)
-        linux._copy_folder(source, target)
-        self.assertFalse((target / 'file').is_symlink())
-        self.assertEqual((target / 'file').read_bytes(), b'new copy')
-        self.assertEqual(victim.read_bytes(), b'keep')
 
     def test_macos_root_event_does_not_rescan_without_must_scan_flag(self):
         import codex_workspace_macos as macos
@@ -356,45 +339,6 @@ class WorkspaceCopyTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, 'staging mount disappeared'):
             images._require_base_space({'mount': mount})
 
-    def test_linux_copy_stops_its_process_when_the_check_fails(self):
-        import codex_workspace_linux as linux
-
-        class FakeProcess:
-            def __init__(self):
-                self.returncode = None
-                self.stopped = False
-
-            def poll(self):
-                return self.returncode
-
-            def wait(self, timeout=None):
-                if not self.stopped:
-                    raise subprocess.TimeoutExpired('rsync', timeout)
-                self.returncode = -15
-                return self.returncode
-
-            def terminate(self):
-                self.stopped = True
-
-            def kill(self):
-                self.stopped = True
-
-        source = self.root / 'linux-abort-source'
-        target = self.root / 'linux-abort-target'
-        source.mkdir()
-        process = FakeProcess()
-        checks = 0
-
-        def check():
-            nonlocal checks
-            checks += 1
-            if checks == 2:
-                raise RuntimeError('disk floor reached')
-
-        with mock.patch.object(linux.subprocess, 'Popen', return_value=process):
-            with self.assertRaisesRegex(RuntimeError, 'disk floor reached'):
-                linux._copy_folder(source, target, check=check)
-        self.assertTrue(process.stopped)
 
     def test_macos_copy_stops_both_processes_when_the_check_fails(self):
         import codex_workspace_macos as macos

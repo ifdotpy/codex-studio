@@ -96,11 +96,7 @@ def _cleanup_image_workspace(rt: "Runtime", agent_id: str) -> dict[str, "Any"]:
                 current.update(imageWorkspacePhase='archiving',
                                cleanedImageWorkspace=saved)  # type: ignore[call-arg]  # typed-update
                 rt.put(db, 'agents', current)
-        if agent.get('environment') == 'linux':
-            from codex_linux_workspaces import dispose
-            removed = dispose(rt, agent_id)
-        else:
-            removed = archive_workspace(agent_id)
+        removed = archive_workspace(agent_id)
         saved = {**saved, 'phase': 'archived',
                  'freedBytes': removed.get('freedBytes', 0)}
         with rt.lock, rt.db() as db:

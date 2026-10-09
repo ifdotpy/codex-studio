@@ -1,5 +1,5 @@
 import { accountCanStart } from "../accountName";
-import { NativeSelect, TextInput } from "@mantine/core";
+import { TextInput } from "@mantine/core";
 import { AccountTiles } from "./AccountTiles";
 import { ActionButton, SettingsRow } from "./ui/primitives";
 import "./project-settings.css";
@@ -30,9 +30,6 @@ export default function ProjectAccount({
     project?.accountKeys || [project?.accountKey || defaultAccountKey],
   );
   const [workerBase, setWorkerBase] = useState(project?.workerBaseRef || "");
-  const [environment, setEnvironment] = useState(
-    project?.workerEnvironment || "host",
-  );
   const selectableKeys = keys.filter((accountKey) => {
     const account = accounts.accounts.find((item) => item.id === accountKey);
     return accountCanStart(account);
@@ -40,7 +37,6 @@ export default function ProjectAccount({
   const displayedKey = selectableKeys.includes(key) ? key : "";
   const save = useProjectSave("/api/projects", saved);
   const saveWorkerBase = useProjectSave("/api/projects", saved);
-  const saveEnvironment = useProjectSave("/api/projects", saved);
   const activeAccounts = accounts.accounts;
   const archivedMemberships = (accounts.archivedAccounts || []).filter(
     (account) => keys.includes(account.id),
@@ -49,7 +45,6 @@ export default function ProjectAccount({
   const ready = accountCanStart(selected);
   const revision = useRef(project?.accountRevision || 0);
   const workerBaseRevision = useRef(project?.workerBaseRevision || 0);
-  const environmentRevision = useRef(project?.workerEnvironmentRevision || 0);
   const accountsChanged =
     key !== (project?.accountKey || defaultAccountKey) ||
     JSON.stringify(keys) !==
@@ -58,8 +53,6 @@ export default function ProjectAccount({
       );
   const workerBaseChanged =
     workerBase.trim() !== (project?.workerBaseRef || "");
-  const environmentChanged =
-    environment !== (project?.workerEnvironment || "host");
   return (
     <div className="project-settings">
       <p className="project-settings-path" title={path}>
@@ -193,66 +186,6 @@ export default function ProjectAccount({
             disabled={saveWorkerBase.frozen && !saveWorkerBase.retryLabel}
           >
             {saveWorkerBase.retryLabel || "Save"}
-          </ActionButton>
-        )}
-      </form>
-      <form
-        className="project-settings-group"
-        onSubmit={(event) => {
-          event.preventDefault();
-          if (
-            saveEnvironment.pending ||
-            (saveEnvironment.frozen && !saveEnvironment.retryLabel)
-          )
-            return;
-          if (!saveEnvironment.frozen && !environmentChanged) return;
-          void saveEnvironment.submit({
-            action: "set_worker_environment",
-            path,
-            environment,
-            expected_revision: environmentRevision.current,
-          });
-        }}
-      >
-        <SettingsRow
-          label={
-            <label htmlFor="project-worker-environment">
-              Worker environment
-            </label>
-          }
-        >
-          <NativeSelect
-            id="project-worker-environment"
-            aria-label="Default worker environment"
-            aria-description="New workers use this environment. Leads and reviewers use the host."
-            value={environment}
-            disabled={saveEnvironment.pending || saveEnvironment.frozen}
-            onChange={(event) =>
-              setEnvironment(event.currentTarget.value as "host" | "linux")
-            }
-            data={[
-              { value: "host", label: "Host" },
-              { value: "linux", label: "Linux VM" },
-            ]}
-          />
-        </SettingsRow>
-        {saveEnvironment.error && <p role="alert">{saveEnvironment.error}</p>}
-        {(saveEnvironment.frozen || environmentChanged) && (
-          <ActionButton
-            aria-label="Save worker environment"
-            actionRole={
-              accountsChanged ||
-              save.frozen ||
-              workerBaseChanged ||
-              saveWorkerBase.frozen
-                ? "secondary"
-                : "primary"
-            }
-            type="submit"
-            loading={saveEnvironment.pending}
-            disabled={saveEnvironment.frozen && !saveEnvironment.retryLabel}
-          >
-            {saveEnvironment.retryLabel || "Save"}
           </ActionButton>
         )}
       </form>

@@ -81,7 +81,7 @@ def tick(runtime):
             from codex_linux_workspaces import client
             with runtime.read_db() as db:
                 accounts = {agent.get('accountKey', 'default') for agent in runtime.records(db, 'agents')
-                            if agent.get('environment') == 'linux' and (agent.get('imageWorkspaceReady') or agent.get('layrReady'))
+                            if agent.get('environment') == 'linux' and agent.get('layrReady')
                             and not agent.get('deletedAt')}
             for account in accounts:
                 hashes = runtime.__dict__.setdefault('linux_credential_hashes', {})

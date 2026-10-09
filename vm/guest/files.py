@@ -1,4 +1,4 @@
-"""Read bounded file chunks, with identity checks, inside a workspace namespace."""
+"""Read bounded file chunks, with identity checks, as the line owner."""
 import base64
 import hashlib
 import json

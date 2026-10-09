@@ -109,6 +109,7 @@ def flush_turns(runtime: Any, agent: Mapping[str, Any]) -> None:
             latest.setdefault("layrTurnSaves", {})[turn] = {
                 "status": "saved", "stateId": result["stateId"],
             }
+            latest["layrStateId"] = result["stateId"]
             latest.pop("layrError", None)
             latest.pop("layrTurnRetryAt", None)
             runtime.put(db, "agents", latest)
@@ -180,6 +181,7 @@ def merge_result(runtime: Any, lead: Mapping[str, Any], owner: Mapping[str, Any]
 
 
 def dispose(runtime: Any, agent: Mapping[str, Any]) -> dict[str, Any]:
+    flush_turns(runtime, agent)
     return request(runtime, "agent.release" if agent.get("isLead") else "line.remove", {"agentId": agent["id"]},
                    "layr-remove:" + agent["id"] + ":" + str(agent["epoch"]))
 

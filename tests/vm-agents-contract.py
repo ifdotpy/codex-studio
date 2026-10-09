@@ -4,6 +4,7 @@ from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
 import copy
+import json
 import ast
 import importlib.util
 import os
@@ -12,12 +13,12 @@ import shutil
 import sys
 import subprocess
 import tempfile
-from types import ModuleType
+from types import ModuleType, MethodType
 import unittest
 from unittest.mock import patch
 import uuid
 
-spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('linux-vm-runtime-contract.py'))
+spec = importlib.util.spec_from_file_location('vm_fixture', Path(__file__).with_name('vm-native-fixture.py'))
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_vm_agents import flush_turns, prepare, spawn_spec, workspace_mode
@@ -146,6 +147,7 @@ class VmAgents(unittest.TestCase):
         reviewer = self.runtime.prepare(self.worker(lead, reviewer=True))
         self.assertNotEqual(worker['layrLine'], lead['layrLine'])
         self.assertTrue(self.guest.lines[reviewer['id']]['readOnly'])
+        self.assertNotIn('host_exec', {t['name'] for t in self.runtime.tool_definitions(reviewer)})
         self.assertEqual(self.runtime.turn_permissions(reviewer)['sandboxPolicy']['type'], 'readOnly')
         self.assertEqual(len(self.guest.starts), 3)
         for start in self.guest.starts:
@@ -244,6 +246,14 @@ class VmAgents(unittest.TestCase):
         self.assertEqual(calls[0][1]['cwd'], lead['cwd'])
         self.runtime.dynamic(message, 'default', connection)
         self.assertEqual(len(calls), 1)
+        reviewer = self.runtime.prepare(self.worker(lead, reviewer=True))
+        for action in ('execute', 'status', 'cancel'):
+            denied = copy.deepcopy(message)
+            denied['params'].update(threadId=reviewer['threadId'], callId='reviewer-' + action)
+            denied['params']['arguments']['action'] = action
+            self.runtime.dynamic(denied, 'default', self.runtime.agent_connection(reviewer))
+            self.assertFalse(self.runtime.reply.call_args.args[0]['result']['success'])
+            self.assertEqual(len(calls), 1)
 
     def test_vm_monitors_use_guest_shell_without_mac_sdk_paths(self):
         from codex_shell import monitor_command
@@ -256,6 +266,10 @@ class VmAgents(unittest.TestCase):
             spawn_spec(lead, {'environment': 'host'})
         with self.assertRaises(ValueError):
             spawn_spec(lead, {'workspace': 'worktree'})
+        self.runtime.multi_server = unittest.mock.Mock(side_effect=AssertionError('No remote caller'))
+        for args in ({'server': 'remote', 'agents': []}, {'agents': [{'server': 'remote'}]}):
+            with self.assertRaisesRegex(ValueError, 'chat server'):
+                self.runtime.spawn_agents(lead, args, 'vm-remote-rejected')
         with patch('codex_vm_agents.platform.system', return_value='Linux'):
             self.assertEqual(workspace_mode({}, creation=True), 'worktree')
             for mode in ('layr', 'image'):
@@ -268,10 +282,13 @@ class VmAgents(unittest.TestCase):
             'dea97695539198295d481b5f9c3b35515b1b5610:scripts/codex_runtime.py'], text=True)
         tree = ast.parse(source)
         runtime_class = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == 'Runtime')
-        constructor = next(node for node in runtime_class.body if isinstance(node, ast.FunctionDef) and node.name == 'new_thread_params')
+        original_methods = [node for node in runtime_class.body if isinstance(node, ast.FunctionDef)
+                            and node.name in {'new_thread_params', 'role_guidance', 'tool_definitions'}]
         import codex_runtime
         namespace = dict(vars(codex_runtime))
-        exec(compile(ast.Module(body=[constructor], type_ignores=[]), '<pre-vm-constructor>', 'exec'), namespace)
+        namespace['TOOLS'] = json.loads((Path(codex_runtime.__file__).resolve().parents[1] /
+            '.agents/skills/codex-workspace/references/native-tools.json').read_text())
+        exec(compile(ast.Module(body=original_methods, type_ignores=[]), '<pre-vm-runtime>', 'exec'), namespace)
         before = namespace['new_thread_params']
         lead = self.runtime.new_lead({'cwd': str(self.project), 'workspaceMode': 'worktree'})
         for provider in ('codex', 'claude'):
@@ -287,9 +304,14 @@ class VmAgents(unittest.TestCase):
                     original_role = subprocess.check_output(['git', 'show',
                         'dea97695539198295d481b5f9c3b35515b1b5610:' + role_file], text=True).strip()
                     self.assertIn('\n' + original_role + '\n[End Studio role skill]', role_text)
-                    actor['nativeRoleGuidance'] = role_text
-                    original = before(self.runtime, copy.deepcopy(actor))
-                    actor['nativeToolDefinitions'] = copy.deepcopy(original['dynamicTools'])
+                    read_text = Path.read_text
+                    role_path = Path(codex_runtime.__file__).resolve().parents[1] / role_file
+                    def historical_text(path, *args, **kwargs):
+                        return original_role if path == role_path else read_text(path, *args, **kwargs)
+                    with patch.object(Path, 'read_text', historical_text), \
+                         patch.object(self.runtime, 'role_guidance', namespace['role_guidance'].__func__), \
+                         patch.object(self.runtime, 'tool_definitions', MethodType(namespace['tool_definitions'], self.runtime)):
+                        original = before(self.runtime, copy.deepcopy(actor))
                     actual = self.runtime.new_thread_params(actor)
                     self.assertEqual(actual['developerInstructions'].encode(), original['developerInstructions'].encode())
                     self.assertEqual(actual['dynamicTools'], original['dynamicTools'])

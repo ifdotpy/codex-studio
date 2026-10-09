@@ -11,14 +11,13 @@ Type=notify
 User=studio
 Group=studio
 Environment=HOME=/home/studio
-Environment=CODEX_WORKSPACE_STORE=/var/lib/codex-studio/workspaces
 WorkingDirectory=@REPO@
 ExecStart=/usr/bin/python3 @REPO@/vm/guest/service.py
 Restart=on-failure
 RestartSec=2
 TimeoutStartSec=15
 TimeoutStopSec=10
-# Detached provider owners and mount namespaces survive a service restart.
+# Detached provider owners survive a service restart.
 KillMode=process
 UMask=0077
 NoNewPrivileges=true

@@ -357,7 +357,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
     if not (guest_dir / 'install.sh').is_file():
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
     scripts = guest_dir.parents[1] / 'scripts'
-    for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py',
+    for name in ['codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
                  'codex_private_paths.py']:
         source = scripts / name
@@ -711,7 +711,7 @@ class Client:
             raise LinuxVMError('Guest request IDs must have 1 to 128 characters.')
         if not 0 < timeout <= 3600:
             raise LinuxVMError('Guest request timeout must be between 0 and 3600 seconds.')
-        if method in {'workspace.startBase', 'workspace.create', 'upload.begin', 'upload.commit', 'sync.push'}:
+        if method in {'project.import', 'line.branch', 'upload.begin', 'upload.commit', 'sync.push'}:
             _require_space(self.state_dir, create=False)
         sent = False
         deadline = time.monotonic() + timeout

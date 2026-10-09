@@ -194,12 +194,6 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         project.workerBaseRevision++;
         return json(project);
       }
-      if (body.action === "set_worker_environment") {
-        assert.equal(body.expected_revision, project.workerEnvironmentRevision);
-        project.workerEnvironment = body.environment;
-        project.workerEnvironmentRevision++;
-        return json(project);
-      }
       assert.equal(body.expected_revision, project.accountRevision);
       project.accountKey = body.account_key;
       project.accountKeys = body.account_keys;
@@ -330,7 +324,7 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
       });
       if (width === 390) {
         await dialog
-          .getByLabel("Default worker environment")
+          .getByLabel("Default worker base ref")
           .scrollIntoViewIfNeeded();
         await page.screenshot({
           path: join(evidence, "mobile-project-settings-bottom.png"),
@@ -376,6 +370,10 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
     assert.equal(projects[0].accountKey, "work");
     assert.ok(!projects[0].accountKeys.includes("other"));
     await openProject();
+    assert.equal(
+      await dialog.getByLabel("Default worker environment").count(),
+      0,
+    );
     await dialog.getByLabel("Default worker base ref").fill(" origin/main ");
     await dialog
       .getByRole("button", { name: "Save worker base", exact: true })
@@ -387,21 +385,6 @@ test("project settings rows and requests", async ({ browser: _browser }) => {
         action: "set_worker_base",
         path: "/tmp/fixture",
         base_ref: "origin/main",
-        expected_revision: 1,
-      },
-    );
-    await openProject();
-    await dialog.getByLabel("Default worker environment").selectOption("linux");
-    await dialog
-      .getByRole("button", { name: "Save worker environment", exact: true })
-      .click();
-    await dialog.waitFor({ state: "hidden" });
-    assert.deepEqual(
-      bodies.filter((item) => item.path === "/api/projects").at(-1).body,
-      {
-        action: "set_worker_environment",
-        path: "/tmp/fixture",
-        environment: "linux",
         expected_revision: 1,
       },
     );

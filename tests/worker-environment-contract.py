@@ -37,23 +37,21 @@ class WorkerEnvironment(unittest.TestCase):
             'action': 'set_worker_environment', 'path': str(path or self.project),
             'environment': environment, 'expected_revision': revision})
 
-    def test_host_default_and_explicit_override(self):
+    def test_native_environment_and_removed_linux_override(self):
         self.assertEqual(select(self.runtime, {}, str(self.project)), 'host')
-        self.save('linux')
-        self.assertEqual(select(self.runtime, {}, str(self.nested)), 'linux')
         self.assertEqual(select(self.runtime, {'environment': 'host'}, str(self.nested)), 'host')
-        self.assertEqual(select(self.runtime, {'environment': 'linux'}, str(self.root)), 'linux')
+        for role in ('implementer', 'reviewer'):
+            with self.assertRaisesRegex(ValueError, 'Choose a layr chat'):
+                select(self.runtime, {'role': role, 'environment': 'linux'}, str(self.project))
+        with self.assertRaisesRegex(ValueError, 'Choose a layr chat'):
+            self.save('linux')
+        self.assertEqual(self.runtime.projects()['items'], [])
 
-    def test_nearest_project_can_override_linux_with_host(self):
-        self.save('linux')
-        self.save('host', path=self.nested)
+    def test_stored_linux_project_setting_does_not_route_native_chat(self):
+        with self.runtime.lock, self.runtime.db() as db:
+            self.runtime.put(db, 'projects', {'id': str(self.project), 'path': str(self.project),
+                'name': 'Project', 'workerEnvironment': 'linux'})
         self.assertEqual(select(self.runtime, {}, str(self.nested)), 'host')
-
-    def test_reviewer_keeps_host_and_rejects_explicit_linux(self):
-        self.save('linux')
-        self.assertEqual(select(self.runtime, {'role': 'reviewer'}, str(self.project)), 'host')
-        with self.assertRaisesRegex(ValueError, 'Reviewers must use the host'):
-            select(self.runtime, {'role': 'reviewer', 'environment': 'linux'}, str(self.project))
 
     def test_invalid_values_leave_projects_unchanged(self):
         for environment in (None, '', 'darwin', False, [], {}):
@@ -65,22 +63,14 @@ class WorkerEnvironment(unittest.TestCase):
                 self.save('linux', revision)
         self.assertEqual(self.runtime.projects()['items'], [])
 
-    def test_retry_is_exact_and_stale_change_is_rejected(self):
-        saved = self.save('linux')
+    def test_legacy_host_setting_receipt_is_still_exact(self):
+        saved = self.save('host')
         self.assertEqual(saved['workerEnvironmentRevision'], 1)
-        self.assertEqual(self.save('linux'), saved)
+        self.assertEqual(self.save('host'), saved)
         with self.assertRaisesRegex(ValueError, 'changed'):
-            self.save('host')
-        self.assertEqual(self.save('host', 1)['workerEnvironmentRevision'], 2)
-
-    def test_settings_are_projected_and_preserved_by_account_write(self):
-        saved = self.save('linux')
+            self.save('host', 3)
         projected = project_entity('project', saved)
-        self.assertEqual(projected['workerEnvironment'], 'linux')
-        self.assertEqual(projected['workerEnvironmentRevision'], 1)
-        changed = self.runtime.projects({'action': 'set_account', 'path': str(self.project),
-                                        'account_key': 'default', 'expected_revision': 0})
-        self.assertEqual(changed['workerEnvironment'], 'linux')
+        self.assertEqual(projected['workerEnvironment'], 'host')
 
 
 if __name__ == '__main__':

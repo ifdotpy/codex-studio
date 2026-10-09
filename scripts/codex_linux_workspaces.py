@@ -1,16 +1,11 @@
 """Studio lifecycle and provider routing for guest-owned Linux workspaces."""
 from __future__ import annotations
 
-import base64
-import hashlib
 import json
 from pathlib import Path
 import threading
 import uuid
 
-from codex_linux_workspace_sync import archive_source
-
-_LOCKS = {}
 _GATE = threading.Lock()
 
 
@@ -35,66 +30,11 @@ def _load(path):
     return json.loads(path.read_text()) if path.exists() else {}
 
 
-def guest_root(source):
-    return '/var/lib/codex-studio/projects/' + hashlib.sha256(str(Path(source).resolve()).encode()).hexdigest()
-
-
-def build_base(runtime, source):
-    source = str(Path(source).resolve())
-    with _GATE:
-        lock = _LOCKS.setdefault((str(runtime.root), source), threading.Lock())
-    with lock:
-        remote = client(runtime)
-        remote.ensure_running()
-        directory = runtime.root / 'linux-vm' / 'sources' / hashlib.sha256(source.encode()).hexdigest()
-        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        state_path = directory / 'state.json'
-        state = _load(state_path)
-        pending = state.get('pending')
-        archive = directory / 'source.tar.gz'
-        if pending is None:
-            metadata = archive_source(source, archive, state.get('baseline'))
-            pending = {**metadata, 'uploadId': uuid.uuid4().hex, 'root': guest_root(source)}
-            state['pending'] = pending
-            _save(state_path, state)
-        identity = pending['uploadId']
-        begin = {key: pending[key] for key in ('uploadId', 'root', 'totalBytes', 'sha256', 'mode', 'deletePaths')}
-        remote.request('upload.begin', begin, request_id=identity + ':begin', timeout=30)
-        with archive.open('rb') as stream:
-            sequence = 0
-            while data := stream.read(512 * 1024):
-                remote.request('upload.chunk', {'uploadId': identity, 'seq': sequence,
-                    'data': base64.b64encode(data).decode('ascii')},
-                    request_id=identity + ':chunk:' + str(sequence), timeout=30)
-                sequence += 1
-        remote.request('upload.commit', {'uploadId': identity}, request_id=identity + ':commit', timeout=1810)
-        result = remote.request('workspace.startBase', {'root': pending['root'], 'timeoutSeconds': 1800},
-                                request_id=identity + ':base', timeout=1810)
-        if result.get('state') != 'ready':
-            raise RuntimeError(result.get('error') or 'The Linux workspace base is not ready')
-        state.update(baseline={'repositories': pending['repositories']})
-        state.pop('pending', None)
-        _save(state_path, state)
-        archive.unlink(missing_ok=True)
-        return result
-
-
-def create(runtime, source, agent_id):
-    return client(runtime).request('workspace.create', {'root': guest_root(source), 'agentId': agent_id},
-                                   request_id='workspace-create:' + agent_id, timeout=1810)
-
-
 def ensure(runtime, agent):
-    if agent.get("executionMode") == "vm":
-        from codex_vm_agents import ensure as ensure_layr
-        return ensure_layr(runtime, agent)
-    result = client(runtime).request('workspace.status', {'agentId': agent['id']}, timeout=20)
-    rows = result.get('workspaces', [])
-    if len(rows) != 1:
-        raise RuntimeError('The Linux workspace does not exist; its result remains unavailable')
-    # Creation also restores an archived mount. The guest engine preserves its snapshot.
-    return client(runtime).request('workspace.create', {'root': guest_root(agent['imageWorkspaceRepo']),
-        'agentId': agent['id']}, request_id=str(uuid.uuid4()), timeout=1810)
+    from codex_vm_agents import ensure as ensure_layr
+    if agent.get('executionMode') != 'vm':
+        raise ValueError('This legacy VM image workspace is unsupported. Create a layr chat.')
+    return ensure_layr(runtime, agent)
 
 
 def prefix(agent):
@@ -104,24 +44,14 @@ def prefix(agent):
 
 
 def dispose(runtime, agent_id, *, remove=False):
-    remote = client(runtime)
+    from codex_vm_agents import dispose as dispose_layr
     agent = runtime.agent(agent_id)
-    if agent.get('executionMode') == 'vm':
-        from codex_vm_agents import dispose as dispose_layr
-        server = runtime.__dict__.get('linux_servers', {}).pop(agent_id, None)
-        if server is not None:
-            server.close()
-        return dispose_layr(runtime, agent)
+    if agent.get('executionMode') != 'vm':
+        raise ValueError('This legacy VM image workspace is unsupported. Create a layr chat.')
     server = runtime.__dict__.get('linux_servers', {}).pop(agent_id, None)
     if server is not None:
         server.close()
-    handle = 'linux-worker:' + agent_id
-    providers = remote.request('provider.list', timeout=20).get('providers', [])
-    if any(row.get('handle') == handle and row.get('state') in ('running', 'starting', 'lost') for row in providers):
-        remote.request('provider.stop', {'handle': handle}, request_id=str(uuid.uuid4()), timeout=30)
-    method = 'workspace.remove' if remove else 'workspace.archive'
-    return remote.request(method, {'agentId': agent_id},
-                          request_id=('remove:' if remove else 'archive:') + agent_id + ':' + str(agent['epoch']), timeout=130)
+    return dispose_layr(runtime, agent)
 
 
 def connect_agent(runtime, agent):
@@ -227,7 +157,7 @@ def resources(runtime):
         try:
             guest = remote.request('health', timeout=15)
             result.update(disk=guest.get('disk'), memory=guest.get('memory'))
-            result['workspaces'] = remote.request('workspace.status', timeout=20).get('workspaces', [])
+            result['providers'] = remote.request('provider.list', timeout=20).get('providers', [])
         except Exception as error:
             result['errorType'] = type(error).__name__
     return result

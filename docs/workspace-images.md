@@ -6,8 +6,8 @@ folder. Git supports base index refresh and staged-index deltas.
 ## Scope
 
 - macOS uses an APFS clone of a base image and attaches it read-write with `--nobrowse`.
-- Linux uses overlayfs. The lower layer is a frozen base version. The upper layer is private to
-  one agent.
+- Image workspaces require macOS ASIF. Linux servers use Git worktrees.
+- Layr chats run the lead and all agents in the VM on owned lines.
 - Windows is not supported. Callers use the existing workspace fallback there.
 - The engine does not add a process sandbox or change agent permissions.
 
@@ -43,9 +43,7 @@ Files ignored by Git stay at the base version when they change after base creati
 without a root Git repository use `rsync -a --delete`, with the workspace store and root
 `.worktrees` excluded. Nested repositories still receive Git index handling.
 
-On macOS, the APFS clone keeps file inode and ctime data from the base volume. On Linux, the
-overlay may keep or remap lower-layer inode data depending on filesystem and `xino` behavior;
-measure this on the target filesystem before relying on first-status timing.
+The APFS clone keeps file inode and ctime data from the base volume.
 
 ## Modules
 
@@ -53,7 +51,6 @@ measure this on the target filesystem before relying on first-status timing.
 | -------------------------------------- | --------------------------------------------------------------------- |
 | `scripts/codex_workspace_images.py`    | Public API, store, state, locks, base versions, and lifecycle.        |
 | `scripts/codex_workspace_macos.py`     | APFS images, copy and delta operations, attach, detach, and size.     |
-| `scripts/codex_workspace_linux.py`     | Base folders, `rsync` deltas, overlay mounts, detach, and size.       |
 | `scripts/codex_runtime.py` and callers | Workspace selection, agent paths, archive, restore, and disk reports. |
 
 ## Store
@@ -64,7 +61,6 @@ The default store is `~/.local/state/codex-agents/workspaces`. Set
 - `bases/<folder-key>/` stores base versions and `base.json`.
 - `agents/<agent-id>/` stores the agent layer and `agent.json`.
 - `mnt/<agent-id>/` is the attached or mounted image. The copied folder is at `repo/`.
-- Linux also stores namespace state in `linux-namespace.json`.
 
 State files are JSON and use atomic writes. A base build is limited to one per folder. A failed
 base can retry after five minutes. The caller can request an immediate retry with
@@ -87,8 +83,7 @@ base can retry after five minutes. The caller can request an immediate retry wit
   the mount, detaches it, and deletes the image and state.
 - `workspace_bytes(agent_id)` and `base_bytes(root)` report private bytes.
 - `list_workspaces()` includes archived workspaces.
-- `exec_prefix()` returns the command prefix needed to access a Linux mount. It is empty on
-  macOS.
+- `exec_prefix()` returns an empty list for macOS ASIF workspaces.
 
 Archive is reversible: call `ensure_mounted` to attach the same copy again. Remove deletes it.
 The `force` argument to remove is retained for API compatibility. Removal always stops mount
@@ -131,15 +126,3 @@ source Git status 5.365 s, path copy 0.618 s, index entry reads 0.610 s, and ind
 handling 1.857 s. The first status took 4.013 s. The clean start took 10.104 s, and its first
 status took 4.661 s. The fixture took 823.811 s. Neither staged start mirrored the Git
 directory or restatted paths. The HEAD did not change, so no HEAD diff ran.
-
-Linux measurement, OrbStack Ubuntu 24.04, Git 2.43, btrfs, one run:
-
-| Tracked files | No staged change | After source `git add` |
-| ------------: | ---------------: | ---------------------: |
-|        50,000 |          0.359 s |                0.014 s |
-|       200,000 |          2.307 s |                0.122 s |
-
-The test copied files into a btrfs base, refreshed its index, snapshotted the base, then mounted
-an overlay workspace. The sampled file kept the same inode and ctime in the base, snapshot, and
-overlay. The device number changed at each layer. The source and workspace `git status
---porcelain=v2` output matched in both staged cases.

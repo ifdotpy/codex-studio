@@ -165,32 +165,9 @@ def main(path):
     repeated, repeated_events = client.call("exec", long_params, "long-exec:" + identity)
     assert (repeated, repeated_events) == (long_result, long_events)
     assert client.exec(["cat", marker], root) == b"once"
-    base, _ = client.call("workspace.startBase", {"root": root})
-    assert base["state"] == "ready", base
-    agent = "linux-" + identity
-    workspace, _ = client.call("workspace.create", {"root": root, "agentId": agent})
-    cwd = workspace["path"]
-    client.exec(["python3", "-c", "open('hello','w').write('worker\\n')"], cwd, agent)
-    client.exec(["git", "add", "hello"], cwd, agent)
-    client.exec(["git", "-c", "user.name=Contract", "-c", "user.email=contract@example.invalid", "commit", "-qm", "Worker"], cwd, agent)
-    commit = client.exec(["git", "rev-parse", "HEAD"], cwd, agent).decode().strip()
-    client.exec(["git", "bundle", "create", "result.bundle", "HEAD"], cwd, agent)
-    info, _ = client.call("file.stat", {"agentId": agent, "path": cwd + "/result.bundle"})
-    bundle = bytearray()
-    while len(bundle) < info["bytes"]:
-        chunk, _ = client.call("file.read", {"agentId": agent, "path": cwd + "/result.bundle", "token": info["token"],
-                                            "offset": len(bundle), "maxBytes": 65536})
-        bundle.extend(base64.b64decode(chunk["data"]))
-    assert hashlib.sha256(bundle).hexdigest() == info["sha256"]
-    with tempfile.TemporaryDirectory() as temporary:
-        fetched = Path(temporary)
-        (fetched / "result.bundle").write_bytes(bundle)
-        subprocess.run(["git", "init", "-q", str(fetched)], check=True, timeout=10)
-        subprocess.run(["git", "-C", str(fetched), "fetch", "-q", str(fetched / "result.bundle"), "HEAD"], check=True, timeout=10)
-        actual = subprocess.check_output(["git", "-C", str(fetched), "rev-parse", "FETCH_HEAD"], timeout=10).decode().strip()
-        assert actual == commit
+    cwd, agent = root, None
     source = "import sys,time; print('ready',flush=True); time.sleep(90)"
-    provider, _ = client.call("provider.start", {"argv": ["python3", "-u", "-c", source], "cwd": cwd, "agentId": agent})
+    provider, _ = client.call("provider.start", {"argv": ["python3", "-u", "-c", source], "cwd": cwd})
     handle = provider["handle"]
     before, events = client.call("provider.attach", {"handle": handle, "waitMs": 5000})
     assert any(event["event"] == "output" for event in events)
@@ -202,7 +179,7 @@ def main(path):
     assert not events
     client.call("provider.stop", {"handle": handle})
     native_params = {"argv": ["python3", "-u", "-c", "import json,sys\nfor line in sys.stdin:\n r=json.loads(line)\n if 'id' in r: print(json.dumps({'id':r['id'],'result':{'proof':'same'}}),flush=True)"],
-                     "cwd": cwd, "agentId": agent, "transport": "native", "handle": "contract:" + identity}
+                     "cwd": cwd, "transport": "native", "handle": "contract:" + identity}
     native, _ = client.call("provider.start", native_params)
     write = {"handle": native["handle"], "action": "write", "operationId": "initialize", "nativeId": 7,
              "message": {"id": 7, "method": "initialize", "params": {}}}
@@ -274,15 +251,12 @@ def main(path):
     next_event, _ = client.call("provider.rpc", {"handle": handle, "action": "next", "cursor": descriptor["sequence"]})
     assert next_event["event"] is None
     client.call("provider.stop", {"handle": handle})
-    client.call("workspace.archive", {"agentId": agent})
-    client.call("workspace.remove", {"agentId": agent})
     floor_proved = asyncio.run(disk_floor_proof(health["state"]))
-    print(json.dumps({"uid": health["uid"], "filesystem": health["filesystem"], "commit": commit,
-                      "fetchMatched": True, "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
+    print(json.dumps({"uid": health["uid"], "filesystem": health["filesystem"],  "serviceRestartPreservedPid": True, "nativeRestartInitAckRemap": True,
                       "longExecSeconds": round(long_elapsed, 2), "longExecReconnectReplay": True,
                       "deadNativeSocketRecovered": True, "largeNativeEventBytes": len(payload),
                       "largeNativeReattachAck": True, "compressedUploadFloor": floor_proved,
-                      "uploadLinkObjects": True, "symlinkParentWritesRejected": True, "archiveRemoved": True}))
+                      "uploadLinkObjects": True, "symlinkParentWritesRejected": True}))
 
 
 if __name__ == "__main__":

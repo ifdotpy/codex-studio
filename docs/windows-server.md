@@ -126,8 +126,8 @@ Keep their private writes under the same Windows ACL policy.
 
 `codex_workspace_images.py` uses image and mount helpers and is not a Windows
 workspace backend. Select the existing Git worktree fallback for native Windows
-workers. `codex_workspace_linux.py` and its `fcntl`, overlay, `chmod`, and
-`setsid` calls run inside the WSL2 guest only. `codex_linux_vm.py` and the
+workers. Image workspaces require macOS ASIF. Linux servers use Git worktrees.
+
 Apple Virtualization Framework stay unsupported on Windows. Audit the import
 graph so a native Windows server does not import these modules at startup.
 
@@ -199,7 +199,7 @@ steps. Do not run the Python server as administrator.
 - Image workspaces. Native Windows workers use Git worktrees.
 - The Apple Virtualization Framework Linux VM. Use the separate WSL2 Studio
   server for Linux workers on `kukuka-win`.
-- macOS Keychain, launchd, and Linux overlay mounts in the native host process.
+- macOS Keychain and launchd in the native host process.
   Keep them behind their platform adapters.
 
 ## Effort estimate

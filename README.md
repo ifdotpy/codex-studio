@@ -60,6 +60,18 @@ workers whose provider matches the destination. Workers on another provider stay
 on their current account. New workers use the team's destination account and
 provider-compatible defaults.
 
+Chat creation selects `workspaceMode`.
+
+| Mode       | Platform        | Agent workspace                                     |
+| ---------- | --------------- | --------------------------------------------------- |
+| `layr`     | macOS, default  | Lead and agents in the Linux VM on owned layr lines |
+| `image`    | macOS           | Native agents in ASIF images                        |
+| `worktree` | macOS and Linux | Native agents in Git worktrees                      |
+
+The first layr chat imports the project once. Later chats reuse the VM main line.
+The Mac folder stays separate. Export a copy only on request.
+See [VM chats](docs/linux-vm-workspaces.md) and [ASIF images](docs/workspace-images.md).
+
 ## Setup
 
 Requirements: Python 3.11 or later, Node.js 22.15 or later, and the signed-in Codex CLI.

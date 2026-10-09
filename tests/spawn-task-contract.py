@@ -26,7 +26,9 @@ class SpawnTask(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.rt = f.ControlledRuntime(Path(self.tmp.name), f.f.FakeServer)
         self.rt.catalog = lambda account='default': copy.deepcopy(f.CATALOG)
-        self.lead = self.rt.new_lead({'cwd': self.tmp.name})
+        self.addCleanup(patch.stopall)
+        patch('codex_worker_workspace.platform.system', return_value='Darwin').start()
+        self.lead = self.rt.new_lead({'cwd': self.tmp.name, 'workspaceMode': 'worktree'})
         self.task = self.rt.work_action(self.lead['id'], {'action': 'create', 'title': 'Count folders'})
 
     def tearDown(self):
@@ -191,8 +193,8 @@ class SpawnTask(unittest.TestCase):
             ({'cwd': str(plain), 'workspace': 'worktree'}, 'requires a Git repository'),
             ({'cwd': str(plain), 'workspace': 'image'}, 'unavailable: backend unavailable'),
             ({'cwd': str(repo), 'workspace': 'shared', 'base_ref': 'main'}, 'cannot be used'),
-            ({'cwd': str(repo), 'workspace': 'worktree', 'environment': 'linux'}, 'requires workspace "image"'),
-            ({'cwd': str(repo), 'workspace': 'shared', 'environment': 'linux'}, 'requires workspace "image"'),
+            ({'cwd': str(repo), 'workspace': 'worktree', 'environment': 'linux'}, 'Choose a layr chat'),
+            ({'cwd': str(repo), 'workspace': 'shared', 'environment': 'linux'}, 'Choose a layr chat'),
             ({'cwd': str(repo), 'workspace': 'shared', 'role': 'reviewer'}, 'reviewers use the shared folder'),
             ({'cwd': str(repo), 'workspace': 'none'}, 'workspace must be'),
         ]

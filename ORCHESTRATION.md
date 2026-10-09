@@ -509,38 +509,34 @@ agents in the team. `CODEX_CANVAS_CONCURRENCY` sets the server-wide cap, default
 maximum 64. Lead turns have priority when a slot becomes free.
 Lowering a limit does not interrupt existing turns.
 
-`orchestration_spawn` accepts `cwd`, absolute or relative to the lead's folder. The default
-is the lead's folder. On supported platforms, an implementer receives an image copy of the
-Git root that contains `cwd`, or of `cwd` when it is outside Git. The copy includes
-uncommitted changes. Multi agent mode starts the image base build. Before sealing the base,
-Studio applies one change-detection pass and refreshes each copied Git index. Git workspaces
-use HEAD differences, current status paths, and paths that were dirty when the base was made.
-Studio reads source status once per known repository and reuses that snapshot. It finds new
-nested repositories from dirty directory paths. It reads only candidate staged paths when an
-index changes. It skips index parsing when the index fingerprint matches.
-It mirrors Git directories with `rsync -a --delete`, excluding `index`, only when refs or Git
-metadata change. It copies newly staged objects by object ID. Plain folders use
-`rsync -a --delete`. Git-ignored files changed after
-base creation stay at the base version. These Git operations do not change the user's Git
-metadata. Studio does not stage, commit, replay, or collect agent changes. Agent Git settings
-stay at their defaults. Until the base is ready, the worker has read-only access, whatever the
-YOLO setting. Studio then switches the worker
-to the copy path and sends a notice with the path and copy time. Unsupported platforms use a
-Git worktree when the folder is in Git, or the original folder otherwise.
-Set `workspace` per implementer to choose `image`, `worktree`, or `shared`.
-Omit it to keep the current defaults. Use `image` for isolated work that needs
-uncommitted changes. macOS uses ASIF; Linux uses an overlay. Use `worktree` for
-a fast task from a committed Git base; it requires a Git repository and does
-not copy uncommitted changes. Use `shared` only when you deliberately want the
-worker to edit the selected folder. Reviewers always use the shared folder with
-read-only access. `environment: "linux"` selects the Linux toolchain and
-requires `workspace: "image"`. Use `server` for another paired machine; its
-`cwd` must be absolute. Unsupported combinations return an error before workers
-are created.
+Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
+Mac servers default to `layr`. Linux servers support `worktree` only.
 
-The worker chat badge shows `ASIF` for a macOS image, `VM` for a Linux virtual
-machine, `WT` for a Git worktree, or `SHARED` for the selected folder. Hover or
-focus the badge to see the full name and workspace path.
+| Chat mode  | Environment                         | Worker workspace         |
+| ---------- | ----------------------------------- | ------------------------ |
+| `layr`     | Studio Linux VM, including the lead | Separate owned layr line |
+| `image`    | Native macOS                        | ASIF image               |
+| `worktree` | Native host                         | Git worktree             |
+
+Workers inherit the chat mode. `orchestration_spawn` accepts `cwd` within the
+lead's workspace. Native workers can select `workspace: "image"`, `"worktree"`,
+or deliberate `"shared"` edits. Images require macOS and include uncommitted
+changes. Worktrees use a committed Git base. Linux image requests fall back to
+worktrees with a clear message. Native reviewers use the selected folder with
+read-only access. Layr reviewers use separate read-only lines.
+Use `server` and an absolute remote `cwd` for native work on a paired machine.
+
+The first layr chat imports the source once. Later chats reuse the VM main line.
+The Mac folder stays separate. Studio saves a state after each agent turn.
+Workers submit an exact layr state ID. Acceptance merges that state with
+`layr merge <line> --expect <state>`. Archive removes the worker line.
+The host keeps credential refresh. Guest profiles receive access credentials only.
+See [layr VM chats](docs/linux-vm-workspaces.md) and
+[macOS images](docs/workspace-images.md) for their lifecycle and checks.
+
+The chat badge shows `LAYR`, `ASIF`, or `WT` for the selected mode.
+Native shared workers show `SHARED`. Hover or focus the badge for its path.
+
 On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
 200,000 files with no staged source change. After source `git add`, it took 3.757 s and
 10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s
@@ -550,16 +546,18 @@ mirror Git metadata or restat paths. The base build took 361.245 s, including 87
 copy and 223.949 s for index handling. These step times overlap.
 The base-copy worker now splits nested directory trees into balanced tar shards. This fixed the
 earlier 443.842 s 50,000-file build, which had put nearly all payload files in one shard.
-An agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
+A native agent can set `base_ref` to a branch, tag, or commit. Studio gives the requested ref and
 resolved commit to the worker in its first input. The worker checks it out. Studio does not
 run Git checkpoints or collect worker changes inside image copies. The worker result includes
 the copy path, source path, copy time, and confirmation that uncommitted changes were copied.
 Ask the worker to commit on a named branch. Integrate its changes by reading files from the
 copy or fetching the branch, for example `git fetch <path> <branch>`.
 Only the lead creates agents. Unfinished work of a failed or deleted worker returns to ready.
-Reviewers use the chosen folder. They have a read-only sandbox when YOLO is off.
-The lead owns review and integration. The runtime never merges worker changes.
-The archive action detaches and retains an image workspace, or removes a safe Git worktree.
+Native reviewers use the chosen folder. Their sandbox is read-only when YOLO is off.
+VM reviewers always use read-only lines.
+The lead owns review and integration. Acceptance merges a reviewed VM state.
+The runtime does not merge native worker changes.
+Archive retains a macOS image, removes a safe Git worktree, or removes a layr worker line.
 
 Creating ready work with an assigned worker queues one `work_ready` event.
 Changing the owner or releasing blocked work also notifies the assigned worker.
@@ -994,25 +992,23 @@ visible to the caller. Ambiguous and unknown IDs return candidate full IDs.
 The shared Studio skill documents the workspace bridge for existing native threads.
 Tests: `tests/agent-management-contract.py`.
 
-### Linux VM workers
+### Layr VM chats
 
-Use `environment: "linux"` for an implementer in `orchestration_spawn`.
-The project settings provide a default. The lead and reviewers stay on the host.
-Linux workers wait for their base before the first provider turn. Their copy
-includes the source Git state and uncommitted files. Commit results on a named
-branch. The worker result contains its guest path and a host fetch command.
-Fetch places the result in `FETCH_HEAD`; review it before merging.
+Create a chat with `workspaceMode: "layr"` on a Mac server.
+The lead and all workers run in the Studio Linux VM.
+The first chat imports the source once. Later chats use the same VM main line.
+The Mac source folder stays separate. Export only on the user's request.
 
-The guest receives access tokens only. The host owns OAuth refresh.
-If an access token expires before sync, check the host sign-in.
-Resume the worker after a successful token sync. Preserve uncertain input receipts.
-
-Archive closes an idle guest provider and retains its snapshot. Restore returns
-the worker paused. Studio shutdown keeps native guest processes alive.
-A VM disconnect leaves native outcomes unknown. Do not repeat an uncertain
-operation with a new request ID. `maintenance_report` includes VM disk and
-memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
-See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
+Each worker has its own layr line and Linux user. Reviewers have read-only lines.
+Studio saves a state after every turn. Submit the exact layr state ID.
+Acceptance merges the reviewed state with `--expect`. Archive removes the worker line.
+Removed VM workers cannot restore a deleted line.
+The guest receives access credentials only. The host keeps account refresh.
+Studio shutdown keeps native guest processes alive.
+A disconnect does not prove that an operation failed. Preserve its exact request ID.
+`maintenance_report` includes VM disk and memory data.
+Change VM limits only while the VM is stopped.
+See [layr VM chats](docs/linux-vm-workspaces.md) for the protocol and checks.
 
 ### Teleport your execution to another server
 

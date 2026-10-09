@@ -72,7 +72,7 @@ class ClientTests(unittest.TestCase):
         applied = []
         guest = Guest(self.directory, lambda channel, request: applied.append(request['id']))
         with self.assertRaises(vm.LinuxVMError) as error:
-            self.client.request('workspace.remove', {}, request_id='remove-once')
+            self.client.request('line.remove', {}, request_id='remove-once')
         guest.finish()
         self.assertTrue(error.exception.uncertain)
         self.assertEqual(applied, ['remove-once'])
@@ -117,7 +117,7 @@ class ClientTests(unittest.TestCase):
     def test_invalid_json_response_preserves_uncertainty(self):
         guest = Guest(self.directory, lambda channel, request: channel.sendall(b'not-json\n'))
         with self.assertRaises(vm.LinuxVMError) as error:
-            self.client.request('workspace.archive', {'agentId': 'one'})
+            self.client.request('line.remove', {'agentId': 'one'})
         guest.finish()
         self.assertTrue(error.exception.uncertain)
 
@@ -312,7 +312,7 @@ class ClientTests(unittest.TestCase):
         (cache / 'bad.pyc').write_text('cache')
         scripts = self.directory / 'scripts'
         scripts.mkdir()
-        for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
+        for name in ['codex_process_supervisor.py', 'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py', 'codex_private_paths.py']:
             (scripts / name).write_text('# runtime')
         bridge = scripts / 'claude_bridge'
         bridge.mkdir()
@@ -320,7 +320,7 @@ class ClientTests(unittest.TestCase):
         config = vm._cloud_config(guest, '1.2.3', '4.5.6')
         paths = [entry['path'] for entry in config['write_files']]
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
-        self.assertEqual(len(paths), 11)
+        self.assertEqual(len(paths), 9)
         self.assertNotIn('credentials', json.dumps(config))
 
 
@@ -411,7 +411,7 @@ class ProvisionTests(unittest.TestCase):
             if entry['path'].startswith('/opt/codex-studio/scripts/'):
                 (payload / Path(entry['path']).name).write_bytes(gzip.decompress(base64.b64decode(entry['content'])))
         code = ('import sys;sys.path.insert(0,' + repr(str(payload)) + ');'
-                'import codex_workspace_images,codex_workspace_linux,codex_process_supervisor')
+                'import codex_process_supervisor')
         result = subprocess.run([__import__('sys').executable,'-I','-c',code],capture_output=True,text=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stderr)
 

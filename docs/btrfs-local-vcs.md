@@ -18,7 +18,7 @@ so models learn it quickly, and it has equal convenience. It does not take the n
 1. The utility is `layr`, with git-like commands and its own implementation. It is not installed as
    `git` (changed on 2026-10-09 from a drop-in `git` replacement). Real git stays available for the
    remote bridge and for tools that call it.
-2. Platform: btrfs on Linux, and the Studio Linux VM on macOS
+2. Platform: btrfs in the Studio Linux VM on macOS. Layr on Linux hosts comes later
    ([Linux VM workspaces](linux-vm-workspaces.md)). APFS (macOS projects such as Xcode) is
    deferred. Windows is not supported.
 3. Snapshot rules and metadata design: as in this document.
@@ -30,9 +30,9 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    share. There is no mirror copy. `layr export` makes a normal copy on request, and backups use
    `btrfs send` and the remote (changed on 2026-10-09: first from "the Mac folder is the source of
    truth", then from a one-way mirror, to remove sync and the extra copy).
-7. The current work continues: the image workspace engine ([image workspaces](workspace-images.md),
-   overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
-   detector). The utility later replaces their internals behind the same public API.
+7. Chat creation selects `layr`, `image`, or `worktree`. On macOS, `layr` is the default.
+   Layr runs the lead and all agents in the VM. Native image workspaces use macOS ASIF only.
+   Native Git worktrees remain available. Linux servers use worktrees until host layr support arrives.
 8. No staged rollout: all parts of the utility are built together.
 9. All agents run in the VM: the lead, workers and reviewers. The Mac is reached only through the
    general `host_exec` tool, for work that needs macOS (Xcode builds and tests, signing, simulators).
@@ -348,18 +348,15 @@ privileged helper.
 
 ## Linux hosts without btrfs
 
-| Option                               | How                                                                            | Root                                       | Capabilities                                |
-| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------ | ------------------------------------------- |
-| **btrfs on a loop file**             | a sparse file in the Studio store, `mkfs.btrfs`, mounted through a loop device | once, at setup (a systemd mount unit)      | all btrfs functions                         |
-| btrfs partition or disk              | a separate partition for the Studio store                                      | at setup                                   | all btrfs functions, no extra layer         |
-| VM, as on macOS                      | KVM with QEMU, Firecracker or cloud-hypervisor                                 | no, but access to `/dev/kvm` (group `kvm`) | all, like macOS                             |
-| ZFS host                             | ZFS snapshot, clone and `zfs send`                                             | delegation with `zfs allow`                | the same as btrfs, as a second backend      |
-| ext4 or XFS without any of the above | overlayfs, as in the current workspace engine                                  | no                                         | layers only: no state history and no `send` |
+| Option                               | How                                                                            | Root                                       | Capabilities                           |
+| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------ | -------------------------------------- |
+| **btrfs on a loop file**             | a sparse file in the Studio store, `mkfs.btrfs`, mounted through a loop device | once, at setup (a systemd mount unit)      | all btrfs functions                    |
+| btrfs partition or disk              | a separate partition for the Studio store                                      | at setup                                   | all btrfs functions, no extra layer    |
+| VM, as on macOS                      | KVM with QEMU, Firecracker or cloud-hypervisor                                 | no, but access to `/dev/kvm` (group `kvm`) | all, like macOS                        |
+| ZFS host                             | ZFS snapshot, clone and `zfs send`                                             | delegation with `zfs allow`                | the same as btrfs, as a second backend |
+| ext4 or XFS without any of the above | Git worktrees until host layr support arrives                                  | no                                         | Git history                            |
 
-Containers do not add btrfs. Docker and Podman on ext4 store layers with overlay2. A rootless
-container cannot mount btrfs: the kernel allows only some file systems in a user namespace (for
-example tmpfs, overlay and FUSE). A privileged container is the loop option with the rights of the
-container engine.
+Containers do not provide btrfs storage. A loop file or a separate btrfs disk is still required.
 
 With the loop option, the main line lives in the btrfs store on the same machine. The user can read
 it at its path directly, or through a read-only bind mount at a convenient place. `layr export`
@@ -396,8 +393,8 @@ Findings:
 - Default: direct I/O off, because cold metadata reads matter more for git and search than large
   writes. Measure again on a real ext4 host before release.
 
-Recommendation: the loop file by default; the VM when root is not allowed but KVM is; overlayfs as
-the reduced mode; a ZFS backend only when users on ZFS appear.
+Future host options: a loop file with root setup, or a VM with KVM access.
+Until host layr support arrives, Linux servers use Git worktrees.
 
 ## Prototype results (2026-10-09)
 
@@ -547,6 +544,5 @@ Measurements:
 
 Later:
 
-- Replace overlayfs with writable snapshots for Linux workspaces
-  ([image workspaces](workspace-images.md) uses overlayfs today).
+- Layr on Linux hosts.
 - APFS backend (deferred).

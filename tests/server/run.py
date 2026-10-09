@@ -149,6 +149,7 @@ EXPENSIVE_SUITES = frozenset({
 })
 NON_TESTS = {
     "tests/test_isolation.py": "shared fixture helper",
+    "tests/vm-native-fixture.py": "shared VM provider fixture helper",
     "tests/mobile-startup-fixture.py": "browser fixture helper",
     "tests/mobile-usability-fixture.py": "browser fixture helper",
     "tests/runtime-read-lock-fixture.py": "runtime fixture helper",

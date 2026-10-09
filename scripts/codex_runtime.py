@@ -211,11 +211,11 @@ TOOLS = [
          {"agent_id": TEXT}, ["agent_id"]),
     tool("orchestration_spawn", "Delegate a batch to managed agents. Returns immediately. "
          "Each child completion wakes you, even after your final answer. Use these agents "
-         "instead of native subagents. Implementers receive an image workspace when supported and a Git worktree otherwise. "
+         "instead of native subagents. Workers inherit the chat workspace mode. "
          "reviewers share your directory read-only. Never poll for their completion. "
          "Default: gpt-6-luna with high reasoning, unless the user sets team defaults. "
-         "environment=linux runs an implementer in the shared Linux VM. The project default applies when omitted. "
-         "Linux tasks wait for their base before the first provider turn. Reviewers stay on the host. "
+         "Native image workspaces use macOS ASIF only. "
+         "Linux servers use Git worktrees. Layr chats run all agents in the VM. "
          "Choose model and effort for each task. Codex and Claude can delegate to each other. "
          "Studio selects a connected account that offers the model; optional account_key selects it explicitly. "
          "effort=null uses that model's native default.",
@@ -224,7 +224,7 @@ TOOLS = [
                  "role": {"type": "string", "enum": ["implementer", "reviewer"]},
                  "model": TEXT, "account_key": TEXT, "effort": {"type": ["string", "null"]},
                  "workspace": {"type": "string", "enum": ["image", "worktree", "shared"]},
-                 "environment": {"type": "string", "enum": ["host", "linux"]},
+                 "environment": {"type": "string", "enum": ["host"]},
                  "fast_mode": {"type": "boolean"}, "base_ref": {"type": "string", "maxLength": 1024}}, "required": ["name", "prompt"],
              "additionalProperties": False}}}, ["agents"]),
     tool("orchestration_send", "Assign a new or revised instruction to an existing descendant, "
@@ -3542,13 +3542,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          + (', '.join(candidates) if candidates else 'none'))
 
     def connect_agent(self, agent):
-        if agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")):
+        if agent.get("environment") == "linux" and agent.get("layrReady"):
             from codex_linux_workspaces import connect_agent
             return connect_agent(self, agent)
         return self.connect(agent.get("accountKey", "default"))
 
     def agent_connection(self, agent):
-        if agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")):
+        if agent.get("environment") == "linux" and agent.get("layrReady"):
             return self.__dict__.get("linux_connection_ids", {}).get(agent["id"])
         return self.connection_ids.get(agent.get("accountKey", "default"))
 
@@ -3569,7 +3569,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if linux_id is not None:
             return [agent for agent in agents if agent["id"] == linux_id]
         return [agent for agent in agents if not (
-            agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))]
+            agent.get("environment") == "linux" and agent.get("layrReady"))]
 
     def connect(self, account_key="default", *, for_login=False):
         if self.closed:
@@ -3918,7 +3918,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = mode_fields(json.loads(row[0]))
                 if ((agent_id is not None and agent["id"] != agent_id)
                         or (agent_id is None and agent.get("environment") == "linux"
-                            and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))):
+                            and agent.get("layrReady"))):
                     continue
                 if agent.get("deletedAt"):
                     continue
@@ -3970,7 +3970,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 owner = self.agent(record.get("agent"), db) if record.get("agent") else None
                 if owner and ((agent_id is not None and owner["id"] != agent_id)
                         or (agent_id is None and owner.get("environment") == "linux"
-                            and (owner.get("imageWorkspaceReady") or owner.get("layrReady")))):
+                            and owner.get("layrReady"))):
                     continue
                 if (not owner or owner.get("accountKey", "default") != account_key
                         or owner.get("epoch") != receipt.get("epoch")
@@ -4005,7 +4005,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = mode_fields(json.loads(row[0]))
                 if ((agent_id is not None and agent["id"] != agent_id)
                         or (agent_id is None and agent.get("environment") == "linux"
-                            and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))):
+                            and agent.get("layrReady"))):
                     continue
                 marker = agent.get("restartRecovery") or {}
                 if (agent.get("accountKey", "default") != account_key or agent.get("deletedAt")
@@ -4021,14 +4021,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Resolve restart receipts before the canvas API can expose interrupted state."""
         with self.db() as db:
             pending = [a for a in self.pending_restart_agents(db) if not a.get("deletedAt")]
-            linux = [a for a in pending if a.get("environment") == "linux" and (a.get("imageWorkspaceReady") or a.get("layrReady"))]
+            linux = [a for a in pending if a.get("environment") == "linux" and a.get("layrReady")]
             monitors = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' "
                 "AND json_extract(record,'$.reattachRecovery.status')='running' "
                 "AND json_type(record,'$.operation')='object'")]
         for monitor in monitors:
             owner = self.agent(monitor.get("agent"))
-            if (owner.get("environment") == "linux" and (owner.get("imageWorkspaceReady") or owner.get("layrReady"))
+            if (owner.get("environment") == "linux" and owner.get("layrReady")
                     and not owner.get("deletedAt") and owner not in linux):
                 linux.append(owner)
         for agent in linux:
@@ -4620,7 +4620,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 active, finished = team_capacity_counts(self.team_agents(db, root["id"]), root["id"])
                 if active >= root["maxAgents"]:
                     raise ValueError(f"Team active agent limit reached; {finished} finished agents. Use archive_finished to free stored records.")
-            cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
+            cwd = (str(data.get("cwd") or p["cwd"]) if p and vm_execution else
+                   str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve()))
             if (not (p and p.get("executionMode") == "vm") and not Path(cwd).is_dir()) or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
             concurrency = data.get("concurrency", DEFAULT_SUBAGENT_CONCURRENCY)
@@ -5362,7 +5363,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         lead = bool(actor.get("isLead"))
         federation_enabled = self.federation().enabled()
         definitions = []
-        for definition in TOOLS:
+        definitions_source = TOOLS
+        if actor.get("threadId") and actor.get("executionMode") != "vm":
+            path = Path(__file__).resolve().parents[1] / ".agents/skills/codex-workspace/references/native-tools.json"
+            definitions_source = json.loads(path.read_text())
+        for definition in definitions_source:
             if definition['name'] == 'orchestration_move':
                 from codex_session_tools import session_tool_name, TELEPORT
                 if session_tool_name(actor) == TELEPORT:
@@ -5420,8 +5425,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     fields = definition["inputSchema"]["properties"]["agents"]["items"]["properties"]
                     fields["workspace"]["enum"] = ["layr"]
                     fields["environment"]["enum"] = ["linux"]
+                    fields.pop("server", None)
+                    definition["inputSchema"]["properties"].pop("server", None)
             import importlib
-            definitions.append(importlib.import_module("codex_host_exec").tool_definition())
+            if actor.get("role") != "reviewer":
+                definitions.append(importlib.import_module("codex_host_exec").tool_definition())
         return definitions
 
     @staticmethod
@@ -5442,6 +5450,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if not content:
             raise ValueError(f"Studio role skill {name} is empty. Update the installed Studio workspace")
         shared = path.parent.parent / "codex-workspace" / "SKILL.md"
+        if actor.get("executionMode") == "vm":
+            path = Path("/opt/codex-studio/.agents/skills") / name / "SKILL.md"
+            shared = path.parent.parent / "codex-workspace" / "SKILL.md"
         return f"[Studio role skill: {name}]\nSource: {path}\nShared tool guidance: {shared}\n{content}\n[End Studio role skill]"
 
     def turn_permissions(self, a):
@@ -5492,22 +5503,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return False, str(error)
 
     def start_image_base(self, repo_root, agent_id=None, *, retry_failed=False):
-        if agent_id and self.agent(agent_id).get("environment") == "linux":
-            from codex_linux_workspaces import build_base
-            with self.lock:
-                if agent_id in self._image_base_callback_agents:
-                    return None
-                self._image_base_callback_agents.add(agent_id)
-            future = self.pool.submit(build_base, self, repo_root)
-            def complete(done):
-                try:
-                    status = done.result()
-                except Exception as error:
-                    status = {"state": "failed", "error": str(error)}
-                self.pool.submit(self.image_base_completed, agent_id, status)
-            self.__dict__.setdefault("linux_base_futures", {})[agent_id] = future
-            future.add_done_callback(complete)
-            return future
         from codex_workspace_images import start_base_build
         callback = None
         if agent_id:
@@ -5532,7 +5527,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 (agent.get("imageWorkspaceRepo"), agent["id"])
                 for agent in self.records(db, "agents")
                 if (not agent.get("deletedAt") and agent.get("imageWorkspace")
-                    and not (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
+                    and not agent.get("imageWorkspaceReady")
                     and agent.get("imageWorkspacePhase") == "read_only")
             ]
         for repo, agent_id in pending:
@@ -5568,34 +5563,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
             self.complete_image_workspace(agent_id, status)
 
-    def _linux_host_image_fallback(self, db, agent, message):
-        if agent.get("environment") != "linux":
-            return False
-        supported, _reason = self.image_workspace_support(agent["imageWorkspaceRepo"])
-        if not supported:
-            return False
-        from codex_worker_workspace import image_backend
-        agent.update(environment="host", imageWorkspace=True, imageWorkspacePhase="read_only",
-                     workspaceBackend=image_backend("host"),
-                     imageWorkspaceBaseState="building", imageWorkspaceError=str(message)[:1200],
-                     worktree=False, worktreeWarning=None, error=None)
-        self._image_base_callback_agents.discard(agent["id"])
-        self.loaded.discard(agent["id"])
-        self.put(db, "agents", agent)
-        notice = ("[Studio workspace fallback] " + str(message)[:800]
-                  + ". Studio will create a host image workspace with the user's uncommitted changes.")
-        self.parent_event(db, agent, "image-workspace-fallback", notice, recovery=True)
-        self.pool.submit(self._send_image_workspace_notice, agent["id"], notice,
-                         "image-workspace-fallback:" + agent["id"])
-        self.pool.submit(self._start_host_image_fallback, agent["id"], agent["imageWorkspaceRepo"])
-        self.changed.set()
-        return True
 
-    def _start_host_image_fallback(self, agent_id, repo):
-        try:
-            self.start_image_base(repo, agent_id, retry_failed=True)
-        except Exception as error:
-            self.image_base_completed(agent_id, {"state": "failed", "error": str(error)})
 
     def hold_failed_explicit_image(self, db, agent, message):
         if (not agent.get("workspaceModeExplicit") or agent.get("workspaceMode") != "image"):
@@ -5624,7 +5592,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if (agent.get("deletedAt") or not agent.get("imageWorkspace")
-                        or (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
+                        or agent.get("imageWorkspaceReady")
                         or agent.get("imageWorkspacePhase") != "read_only"):
                     return
                 repo = agent.get("imageWorkspaceRepo")
@@ -5632,8 +5600,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Image workspace repository is missing")
                 if status.get("state") != "ready":
                     message = status.get("error") or "Image workspace base build failed"
-                    if self._linux_host_image_fallback(db, agent, message):
-                        return
                     if self.hold_failed_explicit_image(db, agent, message):
                         return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
@@ -5657,11 +5623,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     return
             from codex_workspace_images import create_workspace, exec_prefix
             workspace_attempted = True
-            if agent.get("environment") == "linux":
-                from codex_linux_workspaces import create
-                workspace = create(self, repo, agent_id)
-            else:
-                workspace = create_workspace(repo, agent_id)
+            workspace = create_workspace(repo, agent_id)
             cwd = Path(workspace["path"]) / agent.get("imageWorkspaceSubpath", ".")
             check_prefix = self.workspace_exec_prefix({**agent, "cwd": str(cwd)})
             exists = subprocess.run([*check_prefix, "test", "-d", str(cwd)],
@@ -5706,8 +5668,6 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
-                    if self._linux_host_image_fallback(db, agent, error):
-                        return
                     if self.hold_failed_explicit_image(db, agent, error):
                         return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
@@ -5771,23 +5731,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 self.put(db, "agents", agent)
 
     def workspace_exec_prefix(self, agent):
-        if agent.get("environment") == "linux":
+        if agent.get("executionMode") == "vm":
             from codex_linux_workspaces import prefix
             return prefix(agent)
         from codex_workspace_images import exec_prefix
         return exec_prefix()
 
     def ensure_image_workspace(self, agent):
-        if agent.get("environment") == "linux":
-            from codex_linux_workspaces import ensure
-            return ensure(self, agent)
         from codex_workspace_images import ensure_mounted
         return ensure_mounted(agent["id"])
 
     def remove_image_workspace(self, agent_id):
-        if self.agent(agent_id).get("environment") == "linux":
-            from codex_linux_workspaces import dispose
-            return dispose(self, agent_id, remove=True)
         from codex_workspace_images import remove_workspace
         return remove_workspace(agent_id)
 
@@ -6052,13 +6006,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if a.get("executionMode") == "vm":
             from codex_vm_agents import prepare
             a = prepare(self, a)
-        if a.get("environment") == "linux" and a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
-            future = self.start_image_base(a["imageWorkspaceRepo"], a["id"])
-            if future is None:
-                future = self.__dict__.get("linux_base_futures", {}).get(a["id"])
-            if future is not None:
-                raise PreparationPending(future, "The Linux VM workspace base is pending; no provider input was sent")
-            raise ValueError("The Linux VM workspace base is pending")
+        if a.get("environment") == "linux" and a.get("executionMode") != "vm":
+            raise ValueError("This legacy VM image workspace is unsupported. Create a layr chat.")
         server = self.connect_agent(a)
         startup_memory_mark("prepare-connected")
         from codex_native_release import reconcile_unknown
@@ -7407,15 +7356,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if created else None)
         result.update(source=agent.get("imageWorkspaceRepo"),
                       state=(agent.get("imageWorkspaceBaseState")
-                             or ("ready" if (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
+                             or ("ready" if agent.get("imageWorkspaceReady")
                                  else "building" if phase == "read_only" else phase)),
                       takenAt=taken_at,
                       includesUncommittedChanges=mode in {"image", "shared"})
-        if agent.get("environment") == "linux":
-            import shlex
-            result["environment"] = "linux"
-            result["fetchCommand"] = "python3 scripts/codex_linux_vm_fetch.py " + " ".join(
-                shlex.quote(str(value)) for value in (agent["id"], agent.get("cwd", ""), "BRANCH", "--cwd", agent.get("imageWorkspaceRepo", "")))
         if agent.get("imageWorkspaceError"):
             result["error"] = agent["imageWorkspaceError"]
         return result
@@ -8379,6 +8323,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     def spawn_agents(self, actor, args, key):
         """Commit the entire batch, initial events, and receipt together."""
+        if actor.get("executionMode") == "vm" and (
+                args.get("server") or any(spec.get("server") for spec in args.get("agents", []) if isinstance(spec, dict))):
+            raise ValueError("VM chat workers must run on the chat server")
         if (args.get('server') or any(spec.get('server') for spec in (args.get('agents') or []) if isinstance(spec, dict))):
             service = self.multi_server()
             targets = {spec.get('server', args.get('server')) for spec in args.get('agents', []) if isinstance(spec, dict)}
@@ -8454,7 +8401,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         from codex_worker_base import resolve_worker_base
                         base_cache[cache_key] = resolve_worker_base(git_repo, selected_base_ref)
                     base = base_cache[cache_key]
-                if use_image and environment != "linux":
+                if use_image:
                     try:
                         started = self.start_image_base(workspace_root)
                         if isinstance(started, dict) and started.get("state") == "failed":
@@ -8740,8 +8687,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 elif name == "orchestration_servers":
                     value = self.multi_server().tools(a, args, key)
                 elif name == "host_exec":
-                    if a.get("executionMode") != "vm":
-                        raise ValueError("host_exec is available only in a layr chat")
+                    if a.get("executionMode") != "vm" or a.get("role") == "reviewer":
+                        raise ValueError("host_exec requires a writable layr agent")
                     import importlib
                     value = importlib.import_module("codex_host_exec").run_tool(self, a, args, key)
                 elif name in {'orchestration_move', 'orchestration_teleport'}:

@@ -19,10 +19,8 @@ from codex_linux_vm import Client, Settings, LinuxVMError, _GIB
 import codex_linux_vm
 
 
-def command(client, argv, cwd='/home/studio', *, agent_id=None):
+def command(client, argv, cwd='/home/studio'):
     params = {'argv': argv, 'cwd': cwd, 'timeoutSeconds': 120}
-    if agent_id:
-        params['agentId'] = agent_id
     stdout = bytearray()
     stderr = bytearray()
     result = None
@@ -42,34 +40,6 @@ def prove(client, temporary):
     metrics['versions'] = json.loads(command(client, ['python3', '-c',
         'import subprocess,json;print(json.dumps({k:subprocess.check_output(v,text=True).strip() for k,v in '
         '{"codex":["codex","--version"],"claude":["claude","--version"],"node":["node","--version"]}.items()}))']))
-    root = '/var/lib/codex-studio/projects/proof-' + uuid.uuid4().hex
-    command(client, ['python3', '-c',
-        'import pathlib,subprocess,sys; p=pathlib.Path(sys.argv[1]);p.mkdir();(p/"base.txt").write_text("base\\n");'
-        'subprocess.run(["git","init","-b","main",str(p)],check=True,stdout=subprocess.DEVNULL);'
-        'subprocess.run(["git","-C",str(p),"-c","user.name=VM Test","-c","user.email=vm@example.invalid","add","."],check=True);'
-        'subprocess.run(["git","-C",str(p),"-c","user.name=VM Test","-c","user.email=vm@example.invalid","commit","-m","Base"],check=True,stdout=subprocess.DEVNULL)', root],
-        cwd='/var/lib/codex-studio/projects')
-    start = time.monotonic()
-    base = client.request('workspace.startBase', {'root': root, 'timeoutSeconds': 180}, timeout=200)
-    assert base['state'] == 'ready', base
-    agent = 'native-proof-' + uuid.uuid4().hex
-    workspace = client.request('workspace.create', {'root': root, 'agentId': agent, 'timeoutSeconds': 180}, timeout=200)
-    metrics['workspaceSeconds'] = round(time.monotonic() - start, 3)
-    script = ('import pathlib,subprocess,json,base64; p=pathlib.Path.cwd();(p/"agent.txt").write_text("guest commit\\n");'
-        'subprocess.run(["git","add","."],check=True);'
-        'subprocess.run(["git","-c","user.name=VM Test","-c","user.email=vm@example.invalid","commit","-m","Guest result"],check=True,stdout=subprocess.DEVNULL);'
-        'subprocess.run(["git","bundle","create","result.bundle","--all"],check=True);'
-        'print(json.dumps({"commit":subprocess.check_output(["git","rev-parse","HEAD"],text=True).strip(),"bundle":base64.b64encode(pathlib.Path("result.bundle").read_bytes()).decode()}))')
-    result = json.loads(command(client, ['python3', '-c', script], cwd=workspace['path'], agent_id=agent))
-    bundle = temporary / 'result.bundle'
-    bundle.write_bytes(base64.b64decode(result['bundle']))
-    repository = temporary / 'fetched'
-    subprocess.run(['git', 'init', str(repository)], check=True, capture_output=True, timeout=10)
-    subprocess.run(['git', '-C', str(repository), 'fetch', str(bundle), 'refs/heads/main'], check=True, capture_output=True, timeout=10)
-    fetched = subprocess.check_output(['git', '-C', str(repository), 'rev-parse', 'FETCH_HEAD'], text=True, timeout=10).strip()
-    assert fetched == result['commit'], (fetched, result)
-    metrics['fetchedCommit'] = fetched
-    client.request('workspace.remove', {'agentId': agent}, timeout=150)
     provider = client.request('provider.start', {'argv': ['python3', '-u', '-c',
         'import sys;print("READY",flush=True);print(sys.stdin.readline().strip(),flush=True)'], 'cwd': '/home/studio'})
     pid = metrics['status']['pid']

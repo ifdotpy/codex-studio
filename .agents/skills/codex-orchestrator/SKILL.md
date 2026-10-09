@@ -39,17 +39,21 @@ with `high` reasoning by default. Override both fields in `orchestration_spawn`
 when the task needs another choice. Codex and Claude workers can share a team.
 Honor the user's explicit model or account constraints.
 
-Choose `workspace` per implementer when isolation matters. Use `image` for
-isolated edits that need uncommitted changes. macOS uses ASIF; Linux uses an
-overlay. Use `worktree` for a fast task from a committed Git base. Use `shared`
-only for deliberate edits in the selected folder. Omit the field to keep current
-defaults. Reviewers use the shared folder with read-only access. Use
-`environment: "linux"` for Linux toolchains. Use `server` to run work on another
-paired machine, with an absolute remote `cwd`.
+Chat creation selects `workspaceMode`: `layr`, `image`, or `worktree`.
+Mac servers default to `layr`. Linux servers support `worktree` only.
 
-Read the badge in each worker chat: `ASIF` is a macOS image, `VM` is a Linux
-virtual machine, `WT` is a Git worktree, and `SHARED` is the selected folder.
-Hover or focus the badge to read the full name and workspace path.
+| Chat mode  | Agent environment | Worker workspace         |
+| ---------- | ----------------- | ------------------------ |
+| `layr`     | Studio Linux VM   | Separate owned layr line |
+| `image`    | Native macOS      | ASIF image               |
+| `worktree` | Native host       | Git worktree             |
+
+Workers inherit the chat mode. In a native chat, use `workspace` to select
+`image`, `worktree`, or deliberate `shared` edits. Image workspaces require macOS.
+A native reviewer uses the selected folder with read-only access.
+A layr reviewer uses a read-only line in the VM.
+Use the layr reference for VM state IDs, exact-state review, and acceptance.
+Use `server` with an absolute remote `cwd` for a native worker on a paired machine.
 
 Define each implementation assignment with:
 

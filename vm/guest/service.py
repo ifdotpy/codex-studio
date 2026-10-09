@@ -23,10 +23,9 @@ from common import (GuestError, MAX_LINE, PORT, PROTOCOL, atomic_bytes,
 from native import Native
 from upload import Uploads, sha, tree_space
 
-READ_METHODS = {"health", "workspace.status", "provider.attach", "provider.list", "provider.rpc",
+READ_METHODS = {"health", "provider.attach", "provider.list", "provider.rpc",
                 "upload.begin", "upload.chunk", "upload.commit", "file.stat", "file.read"}
-METHODS = READ_METHODS | {"exec", "sync.push", "workspace.startBase", "workspace.create",
-                          "workspace.archive", "workspace.remove", "provider.start", "provider.write",
+METHODS = READ_METHODS | {"exec", "sync.push", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
 LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.progress", "layr.provider.list", "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
 LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
@@ -61,8 +60,8 @@ class Service:
         self.environment = {key: value for key, value in os.environ.items()
                             if key in {"PATH", "LANG", "TZ", "TERM", "USER", "LOGNAME", "SHELL",
                                        "SSL_CERT_FILE", "SSL_CERT_DIR"} or key.startswith("LC_")
-                            or key.startswith("CODEX_WORKSPACE_")}
-        self.environment.update(HOME=str(self.home), CODEX_WORKSPACE_STORE=str(self.store))
+                            }
+        self.environment.update(HOME=str(self.home))
 
     def close(self):
         self.db.close()
@@ -141,41 +140,7 @@ class Service:
             raise GuestError("output_limit", "The guest helper exceeded its output limit")
         return process.returncode, stdout
 
-    async def workspace(self, method, params):
-        if method in {"workspace.archive", "workspace.remove", "workspace.create"}:
-            async with bounded_lock(self.agent_locks, params.get("agentId", "missing")):
-                return await self.workspace_guarded(method, params)
-        return await self.workspace_guarded(method, params)
 
-    async def workspace_guarded(self, method, params):
-        values = dict(params)
-        if "root" in values:
-            values["root"] = str(self.path(values["root"], projects_only=True))
-        if "agentId" in values:
-            agent = identifier(values["agentId"])
-            require(all(char.isascii() and (char.isalnum() or char in "-_") for char in agent),
-                    "agentId must contain ASCII letters, digits, hyphens, or underscores")
-        if method in {"workspace.startBase", "workspace.create"}:
-            require("root" in values, "The workspace root is required")
-            timeout = number(values.get("timeoutSeconds"), 1800, 1, 1800)
-            values["timeoutSeconds"] = timeout
-        else:
-            timeout = 15 if method == "workspace.status" else 120
-        if method in {"workspace.create", "workspace.archive", "workspace.remove"}:
-            require("agentId" in values, "The workspace agentId is required")
-        if method in {"workspace.archive", "workspace.remove"}:
-            require(not any(row.get("agentId") == values["agentId"] and row["state"] in {"starting", "running", "lost"}
-                            for row in self.list_providers()), "A provider still uses this workspace")
-        root = values.get("root", "agent:" + str(values.get("agentId", "status")))
-        async with bounded_lock(self.root_locks, root):
-            code, output = await self.worker("workspace.py", {"method": method, "params": values}, timeout)
-        marker = b"GUEST_RESULT:"
-        if marker not in output:
-            raise GuestError("internal", "The workspace engine returned no result")
-        result = json.loads(output.rsplit(marker, 1)[1])
-        if code or "error" in result:
-            raise GuestError("internal", "The workspace engine failed: " + str(result.get("error", "unknown error"))[:1000])
-        return result["result"]
 
     async def launch_config(self, params):
         argv = params.get("argv")
@@ -190,19 +155,8 @@ class Service:
         require("HOME" not in env or env["HOME"] == str(self.home), "HOME must identify the service user's home")
         environment = {**self.environment, **env}
         agent = params.get("agentId")
-        if agent:
-            status = await self.workspace("workspace.status", {"agentId": agent})
-            require(len(status["workspaces"]) == 1, "The workspace agentId does not exist")
-            workspace_path = Path(status["workspaces"][0].get("path", ""))
-            require(cwd.is_relative_to(workspace_path), "The command cwd is outside its workspace")
-
-        else:
-            require(cwd.is_dir(), "The command cwd does not exist")
-        if agent:
-            # The stable wrapper enters the current namespace only on a new
-            # launch. A reattach preserves the original native launch signature.
-            argv = [sys.executable, str(Path(__file__).with_name("namespace_exec.py")), agent, str(cwd), *argv]
-            cwd = self.home
+        require(not agent, "Choose a layr chat for an agent command")
+        require(cwd.is_dir(), "The command cwd does not exist")
         return {"argv": argv, "cwd": str(cwd), "env": environment, "agentId": agent}
 
     async def start(self, request_id, params, *, execute=False):
@@ -219,9 +173,11 @@ class Service:
         directory = self.providers / (str(uuid.uuid5(uuid.NAMESPACE_URL, "native:" + handle)) if native else handle)
         if directory.exists() and not native:
             raise GuestError("outcome_unknown", "The provider launch directory already exists")
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
-        import codex_workspace_images as images
-        floor = images._minimum_free_bytes(images._AGENT_MIN_FREE_ENV, images._DEFAULT_AGENT_MIN_FREE_BYTES)
+        try:
+            floor = int(os.environ.get("CODEX_WORKSPACE_AGENT_MIN_FREE_BYTES", str(5 * 1024**3)))
+        except ValueError:
+            raise GuestError("invalid_params", "The provider free-space floor must be an integer") from None
+        require(floor >= 0, "The provider free-space floor must not be negative")
         if shutil.disk_usage(self.state).free < floor + 80 * 1024**2:
             raise GuestError("busy", "The data disk has insufficient free space for the provider journal")
         private_dir(directory)
@@ -388,28 +344,8 @@ class Service:
         root = next(root for root in (self.projects, self.store, self.home) if path.is_relative_to(root))
         values = {**params, "method": method, "path": str(path), "allowedRoot": str(root)}
         timeout = 300 if method == "file.stat" else 15
-        if params.get("agentId"):
-            status = await self.workspace("workspace.status", {"agentId": params["agentId"]})
-            require(len(status["workspaces"]) == 1, "The workspace does not exist")
-            root = Path(status["workspaces"][0]["path"])
-            require(path.is_relative_to(root), "The file path is outside its workspace")
-            values["allowedRoot"] = str(root)
-            # The namespace wrapper executes a maintained file reader, not a shell.
-            config = await self.launch_config({"argv": [sys.executable, str(Path(__file__).with_name("files.py"))],
-                                               "cwd": str(root), "agentId": params["agentId"]})
-            process = await asyncio.create_subprocess_exec(sys.executable, str(Path(__file__).with_name("deadline.py")),
-                str(timeout), *config["argv"], cwd=config["cwd"], env=config["env"],
-                stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-            try:
-                output, _ = await asyncio.wait_for(process.communicate(json.dumps(values).encode()), timeout + 6)
-            except asyncio.TimeoutError as exc:
-                process.kill()
-                await asyncio.wait_for(process.wait(), 5)
-                raise GuestError("timeout", "The file read exceeded its deadline") from exc
-            if process.returncode in {124, 125}:
-                raise GuestError("timeout", "The file reader exceeded its deadline or size limit")
-        else:
-            _, output = await self.worker("files.py", values, timeout)
+        require(not params.get("agentId"), "The layr agent association does not exist")
+        _, output = await self.worker("files.py", values, timeout)
         result = json.loads(output)
         if "error" in result:
             raise GuestError(result["error"]["code"], result["error"]["message"])
@@ -461,8 +397,6 @@ class Service:
                     "memory": self.memory()}
         if method.startswith("file."):
             return await self.file(method, params)
-        if method.startswith("workspace."):
-            return await self.workspace(method, params)
         if method.startswith("upload."):
             return await self.uploads.run(method, params, self.apply_upload)
         if method == "sync.push":
@@ -686,7 +620,7 @@ async def serve(args):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--state", type=Path, default=Path("/var/lib/codex-studio/guest"))
-    parser.add_argument("--store", type=Path, default=Path("/var/lib/codex-studio/workspaces"))
+    parser.add_argument("--store", type=Path, default=Path("/var/lib/codex-studio/guest"))
     parser.add_argument("--projects", type=Path, default=Path("/var/lib/codex-studio/projects"))
     parser.add_argument("--unix-socket", type=Path, help="Use a private Unix socket for integration tests")
     asyncio.run(serve(parser.parse_args()))
