@@ -1,6 +1,7 @@
 import {
   apiSchemaHeaders,
   entityPullFixture,
+  playwrightScratchRoot,
   readFixtureSyncContract,
   readTestState,
   stubEntityState,
@@ -10,11 +11,10 @@ import {
 // Production HTTP policy and renderer. External image responses are isolated fixtures.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("markdown image http ui", async ({ page: runnerPage }) => {
   const repo = new URL("../../../", import.meta.url).pathname;
-  const root = await mkdtemp(join(tmpdir(), "studio-image-http-"));
+  const root = await mkdtemp(join(playwrightScratchRoot, "studio-image-http-"));
   const fixture = spawn("python3", [
     "-B",
     join(repo, "tests/simple-ui-fixture.py"),
@@ -98,6 +98,8 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
     await page.waitForTimeout(300);
     assert.deepEqual(requests, [], "No external image request before consent");
     await load.click();
+    const remoteImage = page.locator('img[alt="Remote"]');
+    await remoteImage.scrollIntoViewIfNeeded();
     await page.waitForFunction(() => {
       const image = document.querySelector('img[alt="Remote"]');
       return image?.complete && image.naturalWidth === 1;
@@ -107,6 +109,7 @@ test("markdown image http ui", async ({ page: runnerPage }) => {
       .getByRole("button", { name: "Preview Remote", exact: true })
       .click();
     await page.getByRole("dialog").waitFor();
+    await page.locator(".image-viewer img").scrollIntoViewIfNeeded();
     await page.waitForFunction(
       () => document.querySelector(".image-viewer img")?.naturalWidth === 1,
     );

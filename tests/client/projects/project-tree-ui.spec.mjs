@@ -324,9 +324,29 @@ test("project tree ui", async ({ page: runnerPage }) => {
       pinnedId,
       "Pins precede manually ordered chats",
     );
-    const row = chatButton(pinnedId).locator("..");
+    const restingId = await page.locator(".sidebar-row").evaluateAll((rows) => {
+      const row = rows.find(
+        (candidate) => !candidate.classList.contains("selected"),
+      );
+      return row?.querySelector("[data-chat]")?.getAttribute("data-chat");
+    });
+    assert.ok(
+      restingId,
+      "A non-selected chat row is available for hover checks",
+    );
+    const selectedRow = page.locator(".sidebar-row.selected");
+    if (await selectedRow.count())
+      assert.equal(
+        await selectedRow
+          .locator(".row-actions")
+          .evaluate((el) => getComputedStyle(el).opacity),
+        "1",
+        "Selected rows keep their actions visible",
+      );
+    const row = chatButton(restingId).locator("..");
     await page.locator("#chat-search").focus();
-    await page.mouse.move(1100, 100);
+    const mainBox = await page.locator("main").boundingBox();
+    await page.mouse.move(mainBox.x + mainBox.width / 2, mainBox.y + 80);
     const resting = await row.locator(".row-copy").boundingBox();
     assert.equal(
       await row
@@ -334,13 +354,14 @@ test("project tree ui", async ({ page: runnerPage }) => {
         .evaluate((el) => getComputedStyle(el).opacity),
       "0",
     );
-    await chatButton(pinnedId).hover();
+    await chatButton(restingId).hover();
     const hovering = await row.locator(".row-copy").boundingBox();
     assert.ok(
       resting.width >= hovering.width + 40,
       "Hidden controls return title space",
     );
-    await page.mouse.move(1100, 100);
+    const main = await page.locator("main").boundingBox();
+    await page.mouse.move(main.x + main.width / 2, main.y + 80);
     const nonMenuActions = group("assistant").locator(
       '.project-tree-action:not([aria-haspopup="menu"])',
     );

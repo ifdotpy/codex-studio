@@ -2,10 +2,14 @@
 // Test viewport geometry in a headless browser with isolated server state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { expect, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  expect,
+  playwrightScratchRoot,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 const mobileBrowsers = [
   [
@@ -26,7 +30,9 @@ for (const [platform, userAgent] of mobileBrowsers) {
     const root = dirname(
       dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
     );
-    const state = await mkdtemp(join(tmpdir(), "codex-mobile-keyboard-"));
+    const state = await mkdtemp(
+      join(playwrightScratchRoot, "codex-mobile-keyboard-"),
+    );
     const fixture = spawn(
       "python3",
       ["-B", join(root, "tests/simple-ui-fixture.py"), state],
@@ -402,7 +408,7 @@ test.describe("Usage footer clearance on small mobile viewports", () => {
       dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
     );
     const state = await mkdtemp(
-      join(tmpdir(), "codex-mobile-footer-clearance-"),
+      join(playwrightScratchRoot, "codex-mobile-footer-clearance-"),
     );
     const fixture = spawn(
       "python3",

@@ -26,6 +26,8 @@ import {
 
 const playwrightScratch = choosePlaywrightScratchRoot();
 process.env.TMPDIR = playwrightScratch.root;
+process.env.TMP = playwrightScratch.root;
+process.env.TEMP = playwrightScratch.root;
 process.env.CODEX_PLAYWRIGHT_SCRATCH_PARENT = playwrightScratch.root;
 if (playwrightScratch.ownedRoot)
   process.once("exit", () => {
@@ -48,6 +50,7 @@ const require = createRequire(
   fileURLToPath(new URL("../../web/package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
+export const playwrightScratchRoot = playwrightScratch.root;
 const fixtureViteCaches = new Set();
 process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
@@ -715,6 +718,19 @@ export function spawnFixture(command, args, options) {
       join(codexHome, "config.toml"),
       '[plugins."chrome@openai-bundled"]\nenabled = false\n',
     );
+  // Use synthetic local status metadata so renderer fixtures are independent
+  // of host credentials. Signed-out fixtures opt out with
+  // CODEX_PLAYWRIGHT_SIGNED_OUT=1; this token is never sent to a provider.
+  if (ownsCodexHome && options?.env?.CODEX_PLAYWRIGHT_SIGNED_OUT !== "1")
+    writeFileSync(
+      join(codexHome, "auth.json"),
+      JSON.stringify({
+        tokens: {
+          account_id: "playwright-fixture-account",
+          access_token: "playwright-fixture-only-token",
+        },
+      }),
+    );
   const child = spawn(
     isPythonCommand(command) ? fixturePythonCommand : command,
     args,
@@ -724,6 +740,8 @@ export function spawnFixture(command, args, options) {
         ...process.env,
         ...options?.env,
         TMPDIR: playwrightScratch.root,
+        TMP: playwrightScratch.root,
+        TEMP: playwrightScratch.root,
         HOME: home,
         CODEX_HOME: codexHome,
         XDG_STATE_HOME: state,

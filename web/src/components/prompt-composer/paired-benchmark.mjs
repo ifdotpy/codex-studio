@@ -40,8 +40,14 @@ if (missingPaths.length)
   throw new Error(
     `Paired prompt composer benchmark is missing: ${missingPaths.join(", ")}`,
   );
+const scratchRoot =
+  process.env.PLAYWRIGHT_SCRATCH_ROOT ||
+  process.env.TMPDIR ||
+  process.env.TMP ||
+  process.env.TEMP ||
+  tmpdir();
 const temporaryRoot = await mkdtemp(
-  join(tmpdir(), "studio-prompt-composer-pair-"),
+  join(scratchRoot, "studio-prompt-composer-pair-"),
 );
 const baseline = join(temporaryRoot, "baseline");
 const baselineWeb = join(baseline, "web");

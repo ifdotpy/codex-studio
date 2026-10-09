@@ -5,6 +5,7 @@ import {
   installApiSchemaFixtureHeaders,
   entityPullFixtureForRequest,
   apiSchemaHeaders,
+  playwrightScratchRoot,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -12,7 +13,6 @@ import {
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
-import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createHash, randomUUID } from "node:crypto";
@@ -120,7 +120,9 @@ async function runUiResponsiveness({
 }) {
   test.setTimeout(300_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const dir = await mkdtemp(join(tmpdir(), "studio-ui-responsiveness-"));
+  const dir = await mkdtemp(
+    join(playwrightScratchRoot, "studio-ui-responsiveness-"),
+  );
   const staticDir = join(dir, "dist");
   await cp(
     process.env.RESPONSIVENESS_DIST || join(repo, "web/dist"),
@@ -803,7 +805,9 @@ test(
   async ({ browser }) => {
     test.setTimeout(120_000);
     const repo = fileURLToPath(new URL("../../../", import.meta.url));
-    const dir = await mkdtemp(join(tmpdir(), "studio-ui-history-return-"));
+    const dir = await mkdtemp(
+      join(playwrightScratchRoot, "studio-ui-history-return-"),
+    );
     await cp(
       process.env.RESPONSIVENESS_DIST || join(repo, "web/dist"),
       join(dir, "dist"),

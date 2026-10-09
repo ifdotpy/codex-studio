@@ -14,6 +14,8 @@ process.env.MIMALLOC_ALLOW_LARGE_OS_PAGES ??= "0";
 process.env.CODEX_PLAYWRIGHT_SELECTED_WORKERS = String(workerLimit);
 const playwrightScratch = choosePlaywrightScratchRoot(process.env, workerLimit);
 process.env.TMPDIR = playwrightScratch.root;
+process.env.TMP = playwrightScratch.root;
+process.env.TEMP = playwrightScratch.root;
 process.env.CODEX_PLAYWRIGHT_SCRATCH_PARENT = playwrightScratch.root;
 if (playwrightScratch.ownedRoot)
   process.once("exit", () =>
