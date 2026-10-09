@@ -649,14 +649,20 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         `Latest stays in place while pressed (${idle.x} to ${pressed.x})`,
       );
       await page.mouse.up();
-      await page.waitForFunction((selector) => {
-        const root = document.querySelector(selector);
-        return (
-          root && root.scrollHeight - root.scrollTop - root.clientHeight < 2
-        );
-      }, rootSelector);
       await afterPaint(page, rootSelector);
-      assert.ok((await gap()) < 2, "Latest resumes following");
+      const latestState = await page.locator(rootSelector).evaluate((root) => {
+        const button = document.querySelector("#jump-latest");
+        return {
+          scrollTop: root.scrollTop,
+          scrollHeight: root.scrollHeight,
+          clientHeight: root.clientHeight,
+          gap: root.scrollHeight - root.scrollTop - root.clientHeight,
+          buttonVisible: !!button && button.getBoundingClientRect().height > 0,
+          buttonText: button?.textContent,
+        };
+      });
+      console.log(`MOTION_LATEST_STATE ${JSON.stringify(latestState)}`);
+      assert.ok(latestState.gap < 2, "Latest resumes following");
       // Momentum or a scrollbar drag reaches the bottom without recent input.
       await page.locator(rootSelector).evaluate((root) => {
         root.scrollTop = 0;
