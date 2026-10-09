@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt
+from pydantic import AfterValidator, ConfigDict, Field, StrictBool, StrictInt, field_validator
 
 from studio_api.models import ContractModel, ContractStrEnum, JsonValue, ResponseModel
 from studio_api.sync.models import RoomEntityDto, RoomRadio, RoomRadioActive, SidebarOrderDto
@@ -72,10 +72,12 @@ class CodexLoginReceipt(ContractModel):
     verificationUrl: str | None = None
     userCode: str | None = None
     error: str | None = None
+    email: str | None = None
     resolvedAccountKey: str | None = None
     createdAt: float | None = None
     reauthAccountKey: str | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
+    expiresAt: float | None = None
 
 
 class AccountLoginResponse(ResponseModel):
@@ -87,6 +89,9 @@ class AccountLoginResponse(ResponseModel):
     userCode: str | None = None
     error: str | None = None
     resolvedAccountKey: str | None = None
+    email: str | None = None
+    createdAt: float | None = None
+    expiresAt: float | None = None
     __pydantic_extra__: dict[str, JsonValue] = Field(init=False)
 
 
@@ -95,6 +100,8 @@ class ClaudeLoginReceipt(ContractModel):
     accountKey: str
     status: Literal["starting", "pending", "ready", "cancelled", "error"]
     email: str | None = None
+    plan: str | None = None
+    codeSubmitted: bool | None = None
     verificationUrl: str | None = None
     error: str | None = None
     chatsRefreshed: bool | None = None
@@ -114,6 +121,8 @@ class ClaudeLoginResponse(ResponseModel):
     accountKey: str
     status: Literal["starting", "pending", "ready", "cancelled", "error"]
     email: str | None = None
+    plan: str | None = None
+    codeSubmitted: bool | None = None
     verificationUrl: str | None = None
     error: str | None = None
     chatsRefreshed: bool | None = None
@@ -359,22 +368,50 @@ class AccountNameRequest(RequiredAccountKeyRequest):
 
 
 class LoginRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     account_key: str | None = None
+    email: str | None = Field(default=None, max_length=320)
+    label: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("email", "label")
+    @classmethod
+    def _strip_login_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value cannot be blank")
+        return cleaned
 
 
 class ClaudeStartRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     account_key: str
 
 
+class ClaudeAddStartRequest(ContractModel):
+    login_id: RequestUUID
+    email: str | None = Field(default=None, max_length=320)
+    label: str | None = Field(default=None, min_length=1, max_length=32)
+
+    @field_validator("email", "label")
+    @classmethod
+    def _strip_optional_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("Value cannot be blank")
+        return cleaned
+
+
 class ClaudeCodeRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
     code: str = Field(min_length=1, max_length=4096)
 
 
 class ClaudeCancelRequest(ContractModel):
-    request_id: RequestUUID
+    login_id: RequestUUID
 
 
 class ClaudeProfileRequest(ContractModel):

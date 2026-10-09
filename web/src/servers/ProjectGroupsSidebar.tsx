@@ -15,6 +15,7 @@ export default function ProjectGroupsSidebar({
   servers,
   statuses,
   reachability,
+  serverAliases = {},
   current,
   query,
   send,
@@ -23,6 +24,7 @@ export default function ProjectGroupsSidebar({
   servers: StudioServer[];
   statuses: Record<string, ResourceConnectionState>;
   reachability?: Record<string, string | null | undefined>;
+  serverAliases?: Record<string, string>;
   current: string;
   query: string;
   send: (server: string, command: ServerCommand) => void;
@@ -42,7 +44,8 @@ export default function ProjectGroupsSidebar({
   const aliases = Object.fromEntries(
     servers.map((server) => [
       server.id,
-      server.alias ||
+      serverAliases[server.id] ||
+        server.alias ||
         (server.id === "local"
           ? "MAC"
           : server.label

@@ -298,6 +298,127 @@ class CoreResponseTests(unittest.TestCase):
         self.assertFalse(boundary._trusted(base, HeaderView([(b"host", b"studio-ojsw233umu.localhost:46000"), (b"x-forwarded-host", b"public.ts.net")]), write=False, federation=False))
         self.assertFalse(boundary._trusted(base, headers, write=True, federation=False))
 
+    def test_loopback_frame_alias_can_post_only_account_auth_mutations(self) -> None:
+        context = ApiContext.for_schema()
+        context.remote = SimpleNamespace(request_origin=lambda *_args: None)
+        origin = "http://studio-ojsw233umu.localhost:46000"
+        delegated: list[str] = []
+
+        async def delegate(scope: object, _receive: object, send: object) -> None:
+            delegated.append("called")
+            await send({"type": "http.response.start", "status": 200, "headers": []})
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        boundary = RequestBoundary(delegate, context)
+
+        async def invoke(method: str, path: str, extra: list[tuple[bytes, bytes]] = ()) -> list[dict[str, object]]:
+            headers = [
+                (b"host", origin.removeprefix("http://").encode()),
+                (b"origin", origin.encode()),
+                *extra,
+            ]
+            body = b'{"login_id":"login-1","code":"test"}' if method == "POST" else b""
+            if body:
+                headers.extend([
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode()),
+                    (b"x-canvas-token", context.token.encode()),
+                ])
+            messages: list[dict[str, object]] = []
+
+            async def receive() -> dict[str, object]:
+                return {"type": "http.request", "body": body, "more_body": False}
+
+            async def send(message: dict[str, object]) -> None:
+                messages.append(message)
+
+            scope = {
+                "type": "http",
+                "method": method,
+                "path": path,
+                "headers": headers,
+                "client": ("127.0.0.1", 50000),
+                "server": ("127.0.0.1", 46000),
+            }
+            await boundary(scope, receive, send)
+            return messages
+
+        preflight = asyncio.run(invoke(
+            "OPTIONS",
+            "/api/accounts/claude/login/code",
+            [
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type,x-canvas-token"),
+            ],
+        ))
+        self.assertEqual(preflight[0]["status"], 204)
+        self.assertIn((b"access-control-allow-origin", origin.encode()), preflight[0]["headers"])
+        response = asyncio.run(invoke("POST", "/api/accounts/claude/login/code"))
+        self.assertEqual(response[0]["status"], 200)
+        self.assertIn((b"access-control-allow-origin", origin.encode()), response[0]["headers"])
+        self.assertEqual(delegated, ["called"])
+        denied = asyncio.run(invoke("POST", "/api/messages"))
+        self.assertEqual(denied[0]["status"], 403)
+        mismatched_host = asyncio.run(invoke("POST", "/api/accounts/claude/login/code", [
+            (b"host", b"127.0.0.1:46000"),
+        ]))
+        self.assertEqual(mismatched_host[0]["status"], 403)
+        wrong_token = asyncio.run(invoke("POST", "/api/accounts/claude/login/code", [
+            (b"x-canvas-token", b"wrong-token"),
+        ]))
+        self.assertEqual(wrong_token[0]["status"], 403)
+        workspace_preflight = asyncio.run(invoke(
+            "OPTIONS",
+            "/api/accounts/claude/login/code",
+            [
+                (b"access-control-request-method", b"POST"),
+                (b"access-control-request-headers", b"content-type,x-canvas-token,x-canvas-workspace"),
+            ],
+        ))
+        self.assertEqual(workspace_preflight[0]["status"], 403)
+        forwarded = asyncio.run(invoke("POST", "/api/accounts/claude/login/code", [
+            (b"x-forwarded-host", b"studio-ojsw233umu.localhost:46000"),
+        ]))
+        self.assertEqual(forwarded[0]["status"], 403)
+        self.assertEqual(delegated, ["called"])
+
+    def test_production_frame_middleware_allows_same_origin_account_mutation(self) -> None:
+        from fastapi import FastAPI
+
+        context = ApiContext.for_schema()
+        context.api_schema_hash = "frame-schema"
+        context.remote = SimpleNamespace(request_origin=lambda *_args: None)
+        app = FastAPI()
+        app.add_middleware(RequestBoundary, context=context)
+
+        @app.post("/api/accounts/claude/add", response_model=JsonValue)
+        async def add_account(request: Request) -> Response:
+            return context.send(request, {"requestId": "frame-add", "status": "pending"})
+
+        origin = "http://studio-ojsw233umu.localhost:46000"
+        with TestClient(
+            app,
+            base_url=origin,
+            client=("127.0.0.1", 50000),
+            raise_server_exceptions=False,
+        ) as client:
+            response = client.post(
+                "/api/accounts/claude/add",
+                json={"login_id": "frame-add", "label": "Frame"},
+                headers={
+                    "Origin": origin,
+                    "X-Canvas-Token": context.token,
+                    API_SCHEMA_HASH_HEADER: "frame-schema",
+                    "X-Studio-Request-Id": "frame-add",
+                },
+            )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["requestId"], "frame-add")
+        self.assertEqual(response.headers["access-control-allow-origin"], origin)
+        self.assertEqual(response.headers[API_SCHEMA_HASH_HEADER.lower()], "frame-schema")
+        self.assertIn("connect-src 'self'", response.headers["content-security-policy"])
+
     def test_actual_loopback_frame_alias_loads_html_but_cannot_read_local_session(self) -> None:
         from codex_remote import RemoteAccess
         from studio_api.app import create_app

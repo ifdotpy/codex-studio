@@ -8,6 +8,14 @@ import { saved } from "../api";
 import type { LocationProject } from "./projectLocations";
 import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
+export type ServerAccount = {
+  provider: "codex" | "claude";
+  email: string | null;
+  plan: string | null;
+  status: string;
+  label: string;
+  isDefault: boolean;
+};
 export type ServerNavigation = {
   projects: (Omit<LocationProject, "id"> & { id?: string })[];
   chats: {
@@ -30,6 +38,8 @@ export type ServerNavigation = {
   }[];
   ready: boolean;
   busy?: boolean;
+  system?: string;
+  agentsRunning?: number;
   alerts: DesktopAlert[];
   opened: string | null;
   error: string;
@@ -48,6 +58,22 @@ export type ServerCommand =
   | { action: "settings"; tab?: StudioSettingsTab }
   | { action: "search"; query: string; requestId: string }
   | { action: "notifications"; agentId: string; itemId?: string }
+  | {
+      action: "account-sign-in";
+      provider: "codex" | "claude";
+      email: string | null;
+      label: string;
+      serverLabel: string;
+      forceAdd?: boolean;
+    }
+  | {
+      action: "account-action";
+      operation: "rename" | "default" | "disconnect" | "remove";
+      provider: "codex" | "claude";
+      email: string | null;
+      label: string;
+      nextLabel?: string;
+    }
   | { action: "focus" };
 export function navigationSnapshot(
   data: Snapshot | null,
@@ -161,6 +187,24 @@ export function isServerCommand(value: unknown): value is ServerCommand {
     );
   if (command.action === "notifications")
     return typeof command.agentId === "string";
+  if (command.action === "account-sign-in")
+    return (
+      (command.provider === "codex" || command.provider === "claude") &&
+      (command.email === null || typeof command.email === "string") &&
+      typeof command.label === "string" &&
+      typeof command.serverLabel === "string" &&
+      (command.forceAdd === undefined || typeof command.forceAdd === "boolean")
+    );
+  if (command.action === "account-action")
+    return (
+      ["rename", "default", "disconnect", "remove"].includes(
+        String(command.operation),
+      ) &&
+      (command.provider === "codex" || command.provider === "claude") &&
+      (command.email === null || typeof command.email === "string") &&
+      typeof command.label === "string" &&
+      (command.nextLabel === undefined || typeof command.nextLabel === "string")
+    );
   return command.action === "open"
     ? typeof command.id === "string" && !!command.id
     : command.action === "new-chat"

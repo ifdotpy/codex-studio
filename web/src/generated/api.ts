@@ -21,6 +21,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/accounts/claude/add": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Claude Add Start */
+    post: operations["claude_add_start_api_accounts_claude_add_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/accounts/claude/login": {
     parameters: {
       query?: never;
@@ -2434,8 +2451,14 @@ export interface components {
       _syncEntitiesAfter?: number | null;
       /** Accountkey */
       accountKey: string;
+      /** Createdat */
+      createdAt?: number | null;
+      /** Email */
+      email?: string | null;
       /** Error */
       error?: string | null;
+      /** Expiresat */
+      expiresAt?: number | null;
       /** Loginid */
       loginId?: string | null;
       /** Requestid */
@@ -5030,6 +5053,15 @@ export interface components {
       /** Turnid */
       turnId?: string | null;
     };
+    /** ClaudeAddStartRequest */
+    ClaudeAddStartRequest: {
+      /** Email */
+      email?: string | null;
+      /** Label */
+      label?: string | null;
+      /** Login Id */
+      login_id: string;
+    };
     /** ClaudeBackgroundTask */
     ClaudeBackgroundTask: {
       /** Description */
@@ -5041,15 +5073,15 @@ export interface components {
     };
     /** ClaudeCancelRequest */
     ClaudeCancelRequest: {
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeCodeRequest */
     ClaudeCodeRequest: {
       /** Code */
       code: string;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeCommand */
     ClaudeCommand: {
@@ -5120,10 +5152,14 @@ export interface components {
       accountKey: string;
       /** Chatsrefreshed */
       chatsRefreshed?: boolean | null;
+      /** Codesubmitted */
+      codeSubmitted?: boolean | null;
       /** Email */
       email?: string | null;
       /** Error */
       error?: string | null;
+      /** Plan */
+      plan?: string | null;
       /** Requestid */
       requestId: string;
       /**
@@ -5294,8 +5330,8 @@ export interface components {
     ClaudeStartRequest: {
       /** Account Key */
       account_key: string;
-      /** Request Id */
-      request_id: string;
+      /** Login Id */
+      login_id: string;
     };
     /** ClaudeStopTaskResponse */
     ClaudeStopTaskResponse: {
@@ -5322,8 +5358,12 @@ export interface components {
       accountKey: string;
       /** Createdat */
       createdAt?: number | null;
+      /** Email */
+      email?: string | null;
       /** Error */
       error?: string | null;
+      /** Expiresat */
+      expiresAt?: number | null;
       /** Loginid */
       loginId?: string | null;
       /** Reauthaccountkey */
@@ -6839,8 +6879,12 @@ export interface components {
     LoginRequest: {
       /** Account Key */
       account_key?: string | null;
-      /** Request Id */
-      request_id: string;
+      /** Email */
+      email?: string | null;
+      /** Label */
+      label?: string | null;
+      /** Login Id */
+      login_id: string;
     };
     /** ManagedMessageBody */
     ManagedMessageBody: {
@@ -10973,6 +11017,24 @@ export interface components {
       /** Waitingfor */
       waitingFor?: components["schemas"]["JsonValue"][] | null;
     };
+    /** SummaryAccount */
+    SummaryAccount: {
+      /** Email */
+      email?: string | null;
+      /** Isdefault */
+      isDefault: boolean;
+      /** Label */
+      label: string;
+      /** Plan */
+      plan?: string | null;
+      /**
+       * Provider
+       * @enum {string}
+       */
+      provider: "codex" | "claude";
+      /** Status */
+      status: string;
+    };
     /** SummaryAlert */
     SummaryAlert: {
       /** Body */
@@ -12374,6 +12436,10 @@ export interface components {
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
+      /** Accounts */
+      accounts?: components["schemas"]["SummaryAccount"][];
+      /** Agentsrunning */
+      agentsRunning: number;
       /** Alerts */
       alerts: components["schemas"]["SummaryAlert"][];
       /** Busy */
@@ -12384,6 +12450,8 @@ export interface components {
       projects: components["schemas"]["SummaryProject"][];
       /** Ready */
       ready: boolean;
+      /** System */
+      system: string;
     };
     /** UnavailableAccount */
     UnavailableAccount: {
@@ -13234,6 +13302,91 @@ export interface operations {
       };
       /** @description Local origin and session token required */
       403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Input validation errors are returned as HTTP 400 */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content?: never;
+      };
+    };
+  };
+  claude_add_start_api_accounts_claude_add_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["ClaudeAddStartRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ClaudeLoginResponse"];
+        };
+      };
+      /** @description Invalid request or operation failed */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Local origin and session token required */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description The server workspace changed. Reload before sending. */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Invalid request size */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
         headers: {
           [name: string]: unknown;
         };

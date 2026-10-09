@@ -11,7 +11,7 @@ import {
   useMantineColorScheme,
   Tabs,
 } from "@mantine/core";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
 import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
 import { projectChatCommand } from "./projectChatCommand";
@@ -19,6 +19,7 @@ import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
 import { fetchServerSummary } from "./summary";
 import { bindShellTransport } from "./shellTransport";
+import { serverCredentialAdapter } from "./transport";
 import {
   localServer,
   readServers,
@@ -30,6 +31,8 @@ import {
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 import ServerManager from "./ServerManager";
+import ServerAccountsPanel from "./ServerAccountsPanel";
+import type { ServerAccount } from "./navigation";
 import {
   studioPreferencesStorageKey,
   parseStudioPreferences,
@@ -52,7 +55,10 @@ export default function MultiServerApp() {
     }
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
-  const servers = uiOnly ? paired : [localServer(), ...paired];
+  const servers = useMemo(
+    () => (uiOnly ? paired : [localServer(), ...paired]),
+    [paired],
+  );
   const [selected, setSelected] = useState(
     () =>
       localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
@@ -61,6 +67,10 @@ export default function MultiServerApp() {
     ? selected
     : servers[0]?.id || "";
   const [manager, setManager] = useState(uiOnly && !paired.length);
+  const managerRef = useRef(manager);
+  managerRef.current = manager;
+  const [managerTab, setManagerTab] = useState("servers");
+  const restoreManagerAfterFrameDialog = useRef(false);
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
@@ -73,6 +83,9 @@ export default function MultiServerApp() {
   const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
     {},
   );
+  const [accountsByServer, setAccountsByServer] = useState<
+    Record<string, ServerAccount[]>
+  >({});
   const [lastSeen, setLastSeen] = useState<Record<string, number>>({});
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -163,23 +176,10 @@ export default function MultiServerApp() {
   const publishPreferences = (value: unknown) => {
     for (const [id, frame] of frames.current)
       frame.contentWindow?.postMessage(
-        {
-          kind: "studio-server-preferences",
-          serverId: id,
-          preferences: value,
-          aliases: Object.fromEntries(
-            serversRef.current.map((server) => [
-              server.id,
-              server.alias || "MAC",
-            ]),
-          ),
-        },
+        { kind: "studio-server-preferences", serverId: id, preferences: value },
         new URL(frame.src).origin,
       );
   };
-  useEffect(() => {
-    publishPreferences(preferencesRef.current);
-  }, [paired]);
   const select = useCallback((id: string) => {
     mount(id);
     life(id).idleSince = Date.now();
@@ -307,6 +307,10 @@ export default function MultiServerApp() {
             return;
           const opened = navigation[server.id]?.opened || null;
           applyNavigationRef.current(server.id, { ...value, opened });
+          setAccountsByServer((old) => ({
+            ...old,
+            [server.id]: value.accounts,
+          }));
           setStatus((old) => ({ ...old, [server.id]: "live" }));
           setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
           delay = 30000;
@@ -334,6 +338,38 @@ export default function MultiServerApp() {
       for (const controller of controllers) controller.abort();
     };
   }, [unloaded, paired]);
+  useEffect(() => {
+    if (!manager || managerTab !== "servers") return;
+    const controllers = new Set<AbortController>();
+    let stopped = false;
+    for (const server of servers) {
+      const controller = new AbortController();
+      controllers.add(controller);
+      void fetchServerSummary(server, controller.signal)
+        .then((value) => {
+          if (stopped || controller.signal.aborted) return;
+          setNavigation((old) => ({
+            ...old,
+            [server.id]: { ...old[server.id], ...value },
+          }));
+          setAccountsByServer((old) => ({
+            ...old,
+            [server.id]: value.accounts,
+          }));
+          setStatus((old) => ({ ...old, [server.id]: "live" }));
+          setLastSeen((old) => ({ ...old, [server.id]: Date.now() / 1000 }));
+        })
+        .catch(() => {
+          if (!stopped)
+            setStatus((old) => ({ ...old, [server.id]: "offline" }));
+        })
+        .finally(() => controllers.delete(controller));
+    }
+    return () => {
+      stopped = true;
+      controllers.forEach((controller) => controller.abort());
+    };
+  }, [manager, managerTab, servers]);
   useEffect(() => {
     const stored = (event: StorageEvent) => {
       if (event.key === SERVER_REGISTRY_KEY || event.key === null)
@@ -400,7 +436,7 @@ export default function MultiServerApp() {
     );
   }, [preferences, setColorScheme]);
   useEffect(() => {
-    const receive = (event: MessageEvent) => {
+    const receive = async (event: MessageEvent) => {
       const id =
         event.data?.serverId ||
         [...frames.current].find(
@@ -413,7 +449,50 @@ export default function MultiServerApp() {
         event.source !== frames.current.get(id)?.contentWindow
       )
         return;
-      if (
+      if (event.data.kind === "studio-server-frame-credential-request") {
+        if (
+          event.data.serverId !== id ||
+          typeof event.data.correlation !== "string"
+        )
+          return;
+        try {
+          const frame = frames.current.get(id);
+          if (!frame?.isConnected || frame.contentWindow !== event.source)
+            return;
+          const server =
+            id === "local"
+              ? localServer()
+              : serversRef.current.find((row) => row.id === id);
+          if (!server) throw new Error("The server is no longer paired.");
+          const adapter = serverCredentialAdapter();
+          if (!adapter.frameSigningCredential)
+            throw new Error("Frame signing is unavailable.");
+          const credential = await adapter.frameSigningCredential(server);
+          if (frames.current.get(id) !== frame || !frame.isConnected) return;
+          frame.contentWindow?.postMessage(
+            {
+              kind: "studio-server-frame-credential-result",
+              serverId: id,
+              correlation: event.data.correlation,
+              credential: { serverId: id, ...credential },
+            },
+            event.origin,
+          );
+        } catch (error) {
+          const frame = frames.current.get(id);
+          if (frame?.contentWindow !== event.source || !frame.isConnected)
+            return;
+          frame.contentWindow?.postMessage(
+            {
+              kind: "studio-server-frame-credential-result",
+              serverId: id,
+              correlation: event.data.correlation,
+              error: (error as Error).message,
+            },
+            event.origin,
+          );
+        }
+      } else if (
         event.data.kind === "studio-server-activity" &&
         typeof event.data.busy === "boolean"
       ) {
@@ -428,6 +507,17 @@ export default function MultiServerApp() {
         const command =
           target && projectChatCommand(navigationRef.current[id], event.data);
         if (target && command) send(target.id, command);
+      } else if (event.data.kind === "studio-server-account-dialog") {
+        if (typeof event.data.opened !== "boolean") return;
+        if (event.data.opened) {
+          if (managerRef.current) {
+            restoreManagerAfterFrameDialog.current = true;
+            setManager(false);
+          }
+        } else if (restoreManagerAfterFrameDialog.current) {
+          restoreManagerAfterFrameDialog.current = false;
+          setManager(true);
+        }
       } else if (event.data.kind === "studio-server-open-settings") {
         setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
@@ -469,6 +559,34 @@ export default function MultiServerApp() {
         state.ready = value.ready;
         if (value.ready) readyFrames.current.add(id);
         applyNavigationRef.current(id, value);
+      } else if (event.data.kind === "studio-server-accounts") {
+        if (
+          !Array.isArray(event.data.accounts) ||
+          event.data.accounts.length > 500
+        )
+          return;
+        const accounts: ServerAccount[] = [];
+        for (const row of event.data.accounts) {
+          if (
+            !row ||
+            (row.provider !== "codex" && row.provider !== "claude") ||
+            (row.email !== null && typeof row.email !== "string") ||
+            (row.plan !== null && typeof row.plan !== "string") ||
+            typeof row.status !== "string" ||
+            typeof row.label !== "string" ||
+            typeof row.isDefault !== "boolean"
+          )
+            return;
+          accounts.push({
+            provider: row.provider,
+            email: row.email,
+            plan: row.plan,
+            status: row.status,
+            label: row.label,
+            isDefault: row.isDefault,
+          });
+        }
+        setAccountsByServer((old) => ({ ...old, [id]: accounts }));
       } else if (
         event.data.kind === "studio-server-status" &&
         [
@@ -502,15 +620,17 @@ export default function MultiServerApp() {
     const same = old.find((row) => row.id === server.id);
     if (same && same.origin !== server.origin)
       throw new Error("This server identity belongs to another address.");
-    writeServers([
-      ...old.filter((row) => row.id !== server.id),
-      { ...server, alias: server.alias || same?.alias },
-    ]);
+    writeServers([...old.filter((row) => row.id !== server.id), server]);
     if (focus) select(server.id);
   };
   const remove = (server: StudioServer) => {
     writeServers(readServers().filter((row) => row.id !== server.id));
     pending.current.delete(server.id);
+    setAccountsByServer((old) => {
+      const next = { ...old };
+      delete next[server.id];
+      return next;
+    });
   };
   const management = (
     <ServerManager
@@ -524,6 +644,8 @@ export default function MultiServerApp() {
       }
       statuses={status}
       lastSeen={lastSeen}
+      navigation={navigation}
+      accountsByServer={accountsByServer}
     />
   );
   const settings = (
@@ -536,15 +658,34 @@ export default function MultiServerApp() {
     >
       <div className="studio-settings-panel" data-testid="studio-settings">
         <Tabs
-          value="servers"
+          value={managerTab}
           className="studio-settings-tabs"
           onChange={(tab) => {
-            if (!isStudioSettingsTab(tab) || tab === "servers") return;
+            if (!isStudioSettingsTab(tab)) return;
+            setManagerTab(tab);
+            if (tab === "accounts" || tab === "servers") return;
             setManager(false);
             send(current, { action: "settings", tab });
           }}
         >
-          <StudioSettingsTabs serversOnly={!servers.length} />
+          <StudioSettingsTabs />
+          <Tabs.Panel value="accounts" pt="md">
+            <ServerAccountsPanel
+              servers={servers}
+              accountsByServer={accountsByServer}
+              statuses={status}
+              startAccount={(id, command) => {
+                restoreManagerAfterFrameDialog.current = manager;
+                setManager(false);
+                send(id, command);
+              }}
+              accountAction={(id, command) => {
+                restoreManagerAfterFrameDialog.current = manager;
+                setManager(false);
+                send(id, command);
+              }}
+            />
+          </Tabs.Panel>
           <Tabs.Panel value="servers" pt="md">
             {management}
           </Tabs.Panel>
@@ -628,6 +769,7 @@ export default function MultiServerApp() {
           navigation={navigation}
           servers={servers}
           statuses={status}
+          serverAliases={discovery.snapshot?.aliases}
           reachability={Object.fromEntries(
             (discovery.snapshot?.servers || []).map((server) => [
               server.id,

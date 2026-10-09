@@ -4,13 +4,13 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, cast
+from typing import TYPE_CHECKING, Callable, Literal, cast
 
 from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from fastapi.responses import Response
 
 from studio_api.models import ErrorResponse, JsonValue
-from .ui_summary import UiSummaryResponse, read_summary
+from .ui_summary import SummaryAccount, UiSummaryResponse, read_summary
 from .models import (
     DesktopQuery,
     DesktopResponse,
@@ -48,7 +48,38 @@ def create_router(context: ApiContext) -> APIRouter:
                 yield db
             finally:
                 db.close()
-        return context.send(request, read_summary(connect).model_dump(mode="json"))
+        public_accounts: list[SummaryAccount] = []
+        runtime = getattr(context, "runtime", None)
+        if runtime is not None:
+            snapshot = runtime.accounts.snapshot(refresh=False)
+            default_key = snapshot.get("defaultAccountKey")
+            for account in snapshot.get("accounts", []):
+                if not isinstance(account, dict):
+                    continue
+                provider = account.get("provider") or "codex"
+                if provider not in {"codex", "claude"}:
+                    continue
+                label = account.get("label")
+                status = account.get("status")
+                public_accounts.append(
+                    SummaryAccount(
+                        provider=cast(Literal["codex", "claude"], provider),
+                        email=account.get("email")
+                        if isinstance(account.get("email"), str)
+                        else None,
+                        plan=account.get("plan")
+                        if isinstance(account.get("plan"), str)
+                        else None,
+                        status="signedOut"
+                        if account.get("disconnected")
+                        else status if isinstance(status, str) else "error",
+                        label=label if isinstance(label, str) else "Account",
+                        isDefault=account.get("id") == default_key,
+                    )
+                )
+        return context.send(
+            request, read_summary(connect, public_accounts).model_dump(mode="json")
+        )
 
     def linux_vm_configuration(values: LinuxVMSettings | None = None) -> dict[str, JsonValue]:
         try:

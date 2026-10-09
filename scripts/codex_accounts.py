@@ -3,9 +3,11 @@
 import base64
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
+import shutil
 import tempfile
 import threading
 import uuid
@@ -140,7 +142,7 @@ class AccountStore:
             raise ValueError("Unknown Codex account")
         return self.data["accounts"][key]
 
-    def refresh(self, key):
+    def refresh(self, key, verified_metadata=None):
         import copy
         for _ in range(2):
             with self.lock:
@@ -149,7 +151,9 @@ class AccountStore:
                     return {k: v for k, v in row.items() if not k.startswith("_")}
                 provider, home = row.get("provider"), row.get("home")
                 claude_options = copy.deepcopy(row.get("claudeOptions"))
-            if provider == "claude":
+            if provider == "claude" and verified_metadata is not None:
+                metadata = verified_metadata
+            elif provider == "claude":
                 from codex_claude import auth_metadata as claude_auth
                 metadata = claude_auth(claude_options)
             else:
@@ -339,8 +343,11 @@ class AccountStore:
                 self._save()
         return self.snapshot()
 
-    def reconnect(self, key):
-        self.get(key)
+    def reconnect(self, key, verified_metadata=None):
+        if verified_metadata is None:
+            self.get(key)
+        else:
+            self.refresh(key, verified_metadata=verified_metadata)
         with self.lock:
             row = self._row(key)
             if row.get("status") != "ready":
@@ -385,13 +392,13 @@ class AccountStore:
             self._save()
             return key
 
-    def register_claude(self, options=None, label=None):
+    def register_claude(self, options=None, label=None, verified_metadata=None):
         """Register native config without copying credentials or starting sign-in."""
         from codex_claude import profile_options, auth_metadata as claude_auth, installed
         options = profile_options(options)
         if not installed(options):
             raise ValueError("The Claude Code executable is missing")
-        metadata = claude_auth(options, force=True)
+        metadata = verified_metadata if verified_metadata is not None else claude_auth(options, force=True)
         if metadata["status"] != "ready":
             raise ValueError("Sign in to this Claude Code configuration with a subscription first")
         identity = json.dumps({k: options.get(k, "") for k in ("binaryPath", "configDir")}, sort_keys=True)
@@ -452,6 +459,19 @@ class AccountStore:
             }
             self._save()
             return key
+
+    def find_claude_config(self, config_dir):
+        """Return the registered account for this exact native config path."""
+        from codex_claude import profile_options
+        target = profile_options({'configDir': config_dir}).get('configDir')
+        with self.lock:
+            for key, row in self.data['accounts'].items():
+                if row.get('provider') != 'claude':
+                    continue
+                options = profile_options(row.get('claudeOptions'))
+                if options.get('configDir') == target:
+                    return {**row, 'id': key}
+        return None
 
     def update_claude(self, key, options, label=None):
         """Update launch settings; native identity paths need a separate profile."""
@@ -543,7 +563,7 @@ class AccountStore:
         with self.lock:
             pending = {request: receipt["accountKey"]
                        for request, receipt in self.data.setdefault("logins", {}).items()
-                       if receipt.get("status") not in {"ready", "duplicate", "cancelled"}}
+                       if receipt.get("status") not in {"ready", "duplicate", "cancelled", "error"}}
         for key in dict.fromkeys(pending.values()):
             self.refresh(key)
         with self.lock:
@@ -572,6 +592,19 @@ class AccountStore:
                     continue
                 if row.get("status") != "ready":
                     continue
+                expected_email = receipt.get("emailHint")
+                actual_email = row.get("email")
+                if expected_email and actual_email and actual_email.casefold() != expected_email.casefold():
+                    receipt.update(
+                        status="error",
+                        email=actual_email,
+                        error=f"A different account signed in. Expected {expected_email}.",
+                    )
+                    home = Path(row.get("home", "")).resolve()
+                    if home.parent == self.root.resolve() and home.name == "login-" + request:
+                        shutil.rmtree(home, ignore_errors=True)
+                    self.data["accounts"].pop(key, None)
+                    continue
                 duplicate = next((other for other, value in self.data["accounts"].items()
                                   if other != key and not value.get("duplicateOf")
                                   and value.get("status") == "ready" and row.get("accountId")
@@ -585,12 +618,14 @@ class AccountStore:
                     self.data["accounts"][duplicate].pop("deleted", None)
                     self.data["accounts"][key].update(status="duplicate", duplicateOf=duplicate)
                 else:
-                    self.data["accounts"][key]["label"] = row.get("email") or "Codex account"
+                    self.data["accounts"][key]["label"] = (
+                        receipt.get("requestedLabel") or row.get("email") or "Codex account"
+                    )
             if json.dumps(self.data, sort_keys=True) != before:
                 self._save()
             return [dict(r) for r in self.data["logins"].values()]
 
-    def start_login(self, runtime, request, account_key=None):
+    def start_login(self, runtime, request, account_key=None, email=None, label=None):
         try:
             request = str(uuid.UUID(request))
         except (ValueError, TypeError, AttributeError):
@@ -600,7 +635,9 @@ class AccountStore:
         with self.lock:
             previous = self.data["logins"].get(request)
             if previous:
-                if previous.get("reauthAccountKey") != account_key:
+                if (previous.get("reauthAccountKey") != account_key
+                        or previous.get("emailHint") != email
+                        or previous.get("requestedLabel") != label):
                     raise ValueError("This sign-in request belongs to a different account")
                 return dict(previous)
             if account_key is not None:
@@ -613,10 +650,16 @@ class AccountStore:
                 key = account_key
             else:
                 key = self._login_profile(request)
+                if label:
+                    self.data["accounts"][key]["label"] = label
             self.data["logins"][request] = {
                 "requestId": request, "accountKey": key,
                 "status": "starting", "createdAt": time.time(),
             }
+            if account_key is None:
+                self.data["logins"][request].update(
+                    emailHint=email, requestedLabel=label,
+                )
             if account_key is not None:
                 self.data["logins"][request].update(reauthAccountKey=key, expectedAccountId=row["accountId"], email=row.get("email"))
             self._save()
@@ -635,6 +678,22 @@ class AccountStore:
                 # Completion may arrive before the request's acknowledgement.
                 if receipt["status"] not in {"ready", "duplicate", "cancelled", "error"}:
                     receipt.update(status="pending", **{k: response[k] for k in ("loginId", "verificationUrl", "userCode")})
+                    expiry = response.get("expiresAt")
+                    expires_in = response.get("expiresIn")
+                    if (
+                        expiry is None
+                        and isinstance(expires_in, (int, float))
+                        and math.isfinite(expires_in)
+                        and expires_in > 0
+                    ):
+                        expiry = time.time() + expires_in
+                    if (
+                        isinstance(expiry, (int, float))
+                        and not isinstance(expiry, bool)
+                        and math.isfinite(expiry)
+                        and expiry > time.time()
+                    ):
+                        receipt["expiresAt"] = expiry
                 self._save()
         except Exception:
             with self.lock:

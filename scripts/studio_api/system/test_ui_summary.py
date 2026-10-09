@@ -67,5 +67,37 @@ class UiSummaryTests(unittest.TestCase):
                 response = client.get("/api/ui-summary")
                 self.assertEqual(response.status_code, 200)
                 self.assertTrue(response.json()["busy"])
-                self.assertEqual(set(response.json()), {"ready", "busy", "projects", "chats", "alerts"})
+                self.assertEqual(set(response.json()), {
+                    "ready", "busy", "system", "agentsRunning", "projects", "chats", "alerts", "accounts",
+                })
+                self.assertEqual(response.json()["accounts"], [])
+                self.assertEqual(response.json()["agentsRunning"], 1)
                 self.assertEqual(client.post("/api/ui-summary", json={}).status_code, 405)
+
+    def test_actual_route_returns_only_public_account_metadata(self) -> None:
+        from types import SimpleNamespace
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+        from starlette.responses import JSONResponse
+        from .router import create_router
+        from studio_api.context import ApiContext
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "canvas.sqlite3"
+            with sqlite3.connect(path) as db:
+                db.execute("CREATE TABLE sync_entities(collection TEXT,id TEXT,payload TEXT,deleted INTEGER)")
+            rows = [{"id": "claude-a", "provider": "claude", "email": "a@example.invalid",
+                     "plan": "Max", "status": "ready", "label": "Claude A", "disconnected": True,
+                     "home": "/private/home", "accountId": "secret"}]
+            runtime = SimpleNamespace(accounts=SimpleNamespace(snapshot=lambda *, refresh: {
+                "accounts": rows, "defaultAccountKey": "claude-a"}))
+            context = SimpleNamespace(canvas=SimpleNamespace(db=path), runtime=runtime,
+                                      send=lambda _request, value: JSONResponse(value))
+            app = FastAPI()
+            app.include_router(create_router(cast(ApiContext, context)))
+            with TestClient(app) as client:
+                response = client.get("/api/ui-summary")
+                self.assertEqual(response.status_code, 200)
+                self.assertEqual(response.json()["accounts"], [{
+                    "provider": "claude", "email": "a@example.invalid", "plan": "Max",
+                    "status": "signedOut", "label": "Claude A", "isDefault": True,
+                }])

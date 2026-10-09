@@ -27,6 +27,7 @@ import {
 import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
 import ServerAliasEditor from "./ServerAliasEditor";
 import { serverCredentialAdapter } from "./transport";
+import type { ServerNavigation, ServerAccount } from "./navigation";
 export default function ServerManager({
   servers,
   add,
@@ -35,6 +36,8 @@ export default function ServerManager({
   localEnabled,
   statuses = {},
   lastSeen = {},
+  navigation = {},
+  accountsByServer = {},
 }: {
   servers: StudioServer[];
   add: (server: StudioServer) => void;
@@ -43,6 +46,8 @@ export default function ServerManager({
   localEnabled: boolean;
   statuses?: Record<string, ResourceConnectionState>;
   lastSeen?: Record<string, number>;
+  navigation?: Record<string, ServerNavigation>;
+  accountsByServer?: Record<string, ServerAccount[]>;
 }) {
   const [origin, setOrigin] = useState("");
   const [code, setCode] = useState("");
@@ -86,58 +91,53 @@ export default function ServerManager({
         </ActionButton>
       )}
       <SettingsSection title="Servers">
-        {serverRows(servers, discovery.snapshot?.servers || [], statuses).map(
-          ({ server, peer, registered, status }) => {
-            const seen =
-              peer?.lastSeen ??
-              lastSeen[server.id] ??
-              (server.id === "local" ? discovery.checkedAt : null);
-            const name =
-              server.id === "local" && discovery.snapshot?.localLabel
-                ? `${discovery.snapshot.localLabel} (this computer)`
-                : server.label;
-            return (
-              <div key={server.id} data-settings-server={server.id}>
-                <SettingsSection
-                  title={
-                    <Group gap="xs">
-                      <span>{name}</span>
+        <div className="server-card-grid">
+          {serverRows(servers, discovery.snapshot?.servers || [], statuses).map(
+            ({ server, peer, registered, status }) => {
+              const seen =
+                peer?.lastSeen ??
+                lastSeen[server.id] ??
+                (server.id === "local" ? discovery.checkedAt : null);
+              const name =
+                server.id === "local" && discovery.snapshot?.localLabel
+                  ? `${discovery.snapshot.localLabel} (this computer)`
+                  : server.label;
+              const summary = navigation[server.id];
+              const accounts = accountsByServer[server.id] || [];
+              const codexCount = accounts.filter(
+                (account) => account.provider === "codex",
+              ).length;
+              const claudeCount = accounts.length - codexCount;
+              const displayStatus =
+                status === "Revoked"
+                  ? "Revoked"
+                  : status === "Discovered"
+                    ? "Discovered"
+                    : statuses[server.id] === "live" || server.id === "local"
+                      ? "Active"
+                      : "Unreachable";
+              const system =
+                summary?.system === "Darwin"
+                  ? "macOS"
+                  : summary?.system || "OS unavailable";
+              const host = new URL(
+                server.id === "local"
+                  ? discovery.snapshot?.localOrigin || server.origin
+                  : server.origin,
+              ).host;
+              return (
+                <article
+                  key={server.id}
+                  data-settings-server={server.id}
+                  className="server-settings-card"
+                >
+                  <header className="server-settings-card-header">
+                    <div>
+                      <h3>{name}</h3>
                       <Badge size="xs" color={colors[status]} variant="light">
-                        {status}
+                        {displayStatus}
                       </Badge>
-                    </Group>
-                  }
-                  help={
-                    <Text
-                      size="xs"
-                      c="dimmed"
-                      style={{ overflowWrap: "anywhere" }}
-                    >
-                      {server.id === "local"
-                        ? discovery.snapshot?.localOrigin || server.origin
-                        : server.origin}
-                      {" · "}
-                      {seen == null ? (
-                        "Last seen unavailable"
-                      ) : (
-                        <>
-                          Last seen{" "}
-                          <Tooltip
-                            label={localDateTime(new Date(seen * 1000))}
-                            events={{ hover: true, focus: true, touch: true }}
-                          >
-                            <time
-                              tabIndex={0}
-                              dateTime={new Date(seen * 1000).toISOString()}
-                            >
-                              {relativeSeen(seen)}
-                            </time>
-                          </Tooltip>
-                        </>
-                      )}
-                    </Text>
-                  }
-                  action={
+                    </div>
                     <Group gap="xs" justify="flex-end">
                       {server.id !== "local" && registered && (
                         <ActionButton
@@ -204,8 +204,48 @@ export default function ServerManager({
                         </ActionButton>
                       )}
                     </Group>
-                  }
-                >
+                  </header>
+                  <dl className="server-settings-facts">
+                    <div>
+                      <dt>Host</dt>
+                      <dd>
+                        {system} · {host}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Accounts</dt>
+                      <dd>
+                        Codex {codexCount} · Claude {claudeCount}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Agents running</dt>
+                      <dd>
+                        {summary?.agentsRunning ?? (summary?.busy ? 1 : 0)}
+                      </dd>
+                    </div>
+                    <div>
+                      <dt>Seen</dt>
+                      <dd>
+                        {seen == null ? (
+                          "Unavailable"
+                        ) : (
+                          <Tooltip label={localDateTime(new Date(seen * 1000))}>
+                            <time
+                              dateTime={new Date(seen * 1000).toISOString()}
+                            >
+                              {relativeSeen(seen)}
+                            </time>
+                          </Tooltip>
+                        )}
+                      </dd>
+                    </div>
+                  </dl>
+                  <small>
+                    {server.id === "local"
+                      ? discovery.snapshot?.localOrigin || server.origin
+                      : server.origin}
+                  </small>
                   {(registered || server.id === "local" || peer?.paired) && (
                     <ServerAliasEditor
                       value={
@@ -249,11 +289,11 @@ export default function ServerManager({
                       }}
                     />
                   )}
-                </SettingsSection>
-              </div>
-            );
-          },
-        )}
+                </article>
+              );
+            },
+          )}
+        </div>
       </SettingsSection>
       <Text size="xs" c="dimmed">
         Removal affects this UI. Revoke a manual UI connection in that server's

@@ -1,21 +1,48 @@
 import ErrorDescription from "./ErrorDescription";
 import { Button } from "@mantine/core";
 import { Check, Copy, ExternalLink, Plus, RefreshCw, X } from "lucide-react";
-import { useRef, useState } from "react";
-import { errorText, post, save, saved, type PostResult } from "../api";
+import { useEffect, useRef, useState } from "react";
+import {
+  clearStableRequestId,
+  errorText,
+  post,
+  save,
+  saved,
+  stableRequestId,
+  type PostResult,
+} from "../api";
 import type { Account, useAccounts } from "./Accounts";
 import { copyText } from "../clipboard/clipboard";
 
 export type LoginReceipt = PostResult<"/api/accounts/login">;
 const active = (status?: string) =>
   ["starting", "pending", "uncertain"].includes(status || "");
+export function deviceCodeCountdownSeconds(
+  expiresAt: unknown,
+  now: number,
+): number | null {
+  if (
+    typeof expiresAt !== "number" ||
+    !Number.isFinite(expiresAt) ||
+    expiresAt <= 0 ||
+    !Number.isFinite(now)
+  )
+    return null;
+  return Math.max(0, Math.ceil(expiresAt - now));
+}
 
 export default function AccountSignIn({
   state,
   targetAccount,
+  emailHint,
+  label,
+  onConnected,
 }: {
   state: ReturnType<typeof useAccounts>;
   targetAccount?: Account;
+  emailHint?: string;
+  label?: string;
+  onConnected?: (account: Account) => void;
 }) {
   const storageKey = `account-sign-in:${state.scope || "local"}${targetAccount ? `:${targetAccount.id}` : ""}`;
   const [requestId, setRequestId] = useState(() =>
@@ -24,7 +51,10 @@ export default function AccountSignIn({
   const [busy, setBusy] = useState("");
   const [error, setError] = useState("");
   const [copied, setCopied] = useState(false);
+  const [now, setNow] = useState(() => Date.now() / 1000);
+  const [expectedEmail, setExpectedEmail] = useState(emailHint || "");
   const lock = useRef(false);
+  const reported = useRef("");
   const receipts = (state.data.logins || []).filter(
     (r) => r.reauthAccountKey === targetAccount?.id,
   );
@@ -34,6 +64,17 @@ export default function AccountSignIn({
   const account = state.data.accounts.find(
     (a) => a.id === receipt?.resolvedAccountKey,
   );
+  useEffect(() => {
+    if (
+      account &&
+      receipt &&
+      ["ready", "duplicate"].includes(receipt.status) &&
+      reported.current !== receipt.requestId
+    ) {
+      reported.current = receipt.requestId;
+      onConnected?.(account);
+    }
+  }, [account, onConnected, receipt]);
   const remember = (id: string) => {
     save(storageKey, id);
     setRequestId(id);
@@ -62,7 +103,7 @@ export default function AccountSignIn({
       setBusy("");
     }
   };
-  const start = () =>
+  const start = (emailOverride?: string) =>
     run("start", async () => {
       // Keep the identity when the HTTP reply is lost, including across reloads.
       const id =
@@ -72,14 +113,20 @@ export default function AccountSignIn({
             ? requestId
             : crypto.randomUUID();
       remember(id);
+      const mutationKey = `${storageKey}:${id}:start`;
       const result = await post(
         "/api/accounts/login",
         {
-          request_id: id,
+          login_id: id,
           ...(targetAccount ? { account_key: targetAccount.id } : {}),
+          ...(!targetAccount && (emailOverride || expectedEmail)
+            ? { email: emailOverride || expectedEmail }
+            : {}),
+          ...(!targetAccount && label ? { label } : {}),
         },
-        { timeoutMs: 30000 },
+        { timeoutMs: 30000, requestId: stableRequestId(mutationKey) },
       );
+      clearStableRequestId(mutationKey);
       store({ ...result, requestId: id });
       setCopied(false);
       await state.refresh();
@@ -87,13 +134,18 @@ export default function AccountSignIn({
   const cancel = () =>
     run("cancel", async () => {
       if (!receipt) return;
+      const mutationKey = `${storageKey}:${receipt.requestId}:cancel`;
       store(
         await post(
           "/api/accounts/login/cancel",
-          { request_id: receipt.requestId },
-          { timeoutMs: 15000 },
+          { login_id: receipt.requestId },
+          {
+            timeoutMs: 15000,
+            requestId: stableRequestId(mutationKey),
+          },
         ),
       );
+      clearStableRequestId(mutationKey);
       await state.refresh();
     });
   let url: string | null = null;
@@ -111,6 +163,18 @@ export default function AccountSignIn({
     /* A pending native response may have no URL yet. */
   }
   const connected = ["ready", "duplicate"].includes(receipt?.status || "");
+  useEffect(() => {
+    if (
+      !receipt ||
+      deviceCodeCountdownSeconds(receipt?.expiresAt, Date.now() / 1000) ===
+        null ||
+      !active(receipt.status)
+    )
+      return;
+    const timer = setInterval(() => setNow(Date.now() / 1000), 1000);
+    return () => clearInterval(timer);
+  }, [receipt?.expiresAt, receipt?.status]);
+  const expirySeconds = deviceCodeCountdownSeconds(receipt?.expiresAt, now);
   return (
     <section
       className="account-add"
@@ -122,7 +186,9 @@ export default function AccountSignIn({
           <p>
             {targetAccount
               ? `Use ${targetAccount.email || targetAccount.label}. Your chats keep this account.`
-              : "Use a separate login and account limits."}
+              : expectedEmail
+                ? `Studio checks that you sign in as ${expectedEmail}.`
+                : "Use a separate login and account limits."}
           </p>
         </div>
         <Button
@@ -198,6 +264,13 @@ export default function AccountSignIn({
                     Open sign-in page
                   </Button>
                   <small role="status">Waiting for sign-in…</small>
+                  {expirySeconds !== null && (
+                    <small role="timer" aria-label="Code expiry countdown">
+                      {expirySeconds === 0
+                        ? "Code expired"
+                        : `Code expires in ${Math.floor(expirySeconds / 60)}:${String(expirySeconds % 60).padStart(2, "0")}`}
+                    </small>
+                  )}
                 </>
               ) : (
                 <p role="status">
@@ -245,6 +318,27 @@ export default function AccountSignIn({
           {error}
         </p>
       )}
+      {!targetAccount &&
+        receipt?.status === "error" &&
+        receipt.error?.includes("different account") &&
+        receipt.email && (
+          <div className="account-wrong-identity" role="alert">
+            <p>
+              You signed in as {receipt.email}. This account expects{" "}
+              {expectedEmail}. Studio did not save the sign-in.
+            </p>
+            <Button
+              variant="default"
+              disabled={!!busy}
+              onClick={() => {
+                setExpectedEmail(receipt.email!);
+                void start(receipt.email!);
+              }}
+            >
+              Keep {receipt.email}
+            </Button>
+          </div>
+        )}
     </section>
   );
 }

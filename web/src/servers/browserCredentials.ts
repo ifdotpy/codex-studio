@@ -1,5 +1,10 @@
 import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
 import {
+  isRemoteServerView,
+  serverParentOrigin,
+  serverViewId,
+} from "./environment";
+import {
   parseInvitation,
   pairedServer,
   publicKeyPem,
@@ -57,6 +62,20 @@ async function record<T>(
   });
 }
 export class BrowserServerCredentials implements ServerCredentialAdapter {
+  async frameSigningCredential(server: StudioServer) {
+    const credential = await record<Credential | undefined>(
+      "readonly",
+      (store) => store.get(server.credentialId!),
+    );
+    if (
+      !credential ||
+      credential.origin !== server.origin ||
+      credential.serverId !== server.id ||
+      credential.clientId !== server.credentialId
+    )
+      throw new Error("The server key is unavailable. Pair this UI again.");
+    return { clientId: credential.clientId, privateKey: credential.privateKey };
+  }
   async hasPairAttempt(attempt: PairAttemptIdentity) {
     const draft = await record<Credential | undefined>("readonly", (store) =>
       store.get(`pair:${attempt.requestId}`),
@@ -167,6 +186,19 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       !["GET", "POST", "HEAD"].includes(request.method)
     )
       throw new Error("The request does not belong to this server.");
+    if (isRemoteServerView && serverViewId === server.id) {
+      const { clientId, privateKey } =
+        await requestFrameSigningCredential(server);
+      return fetch(
+        await signedRequest(
+          request,
+          server.id,
+          clientId,
+          privateKey,
+          await requestIdentity(request),
+        ),
+      );
+    }
     const credential = await record<Credential | undefined>(
       "readonly",
       (store) => store.get(server.credentialId!),
@@ -198,4 +230,71 @@ export class BrowserServerCredentials implements ServerCredentialAdapter {
       return store.delete(server.credentialId!);
     });
   }
+}
+
+const frameCredentials = new Map<
+  string,
+  Promise<{ clientId: string; privateKey: CryptoKey }>
+>();
+function requestFrameSigningCredential(server: StudioServer) {
+  const current = frameCredentials.get(server.id);
+  if (current) return current;
+  const pending = new Promise<{ clientId: string; privateKey: CryptoKey }>(
+    (resolve, reject) => {
+      const correlation = crypto.randomUUID();
+      const timer = setTimeout(
+        () => finish(new Error("The server key request timed out.")),
+        5000,
+      );
+      const finish = (
+        error?: Error,
+        value?: { clientId: string; privateKey: CryptoKey },
+      ) => {
+        clearTimeout(timer);
+        window.removeEventListener("message", receive);
+        if (error) {
+          frameCredentials.delete(server.id);
+          reject(error);
+        } else if (value) resolve(value);
+      };
+      const receive = (event: MessageEvent) => {
+        if (
+          event.source !== window.parent ||
+          event.origin !== serverParentOrigin ||
+          event.data?.kind !== "studio-server-frame-credential-result" ||
+          event.data?.serverId !== server.id ||
+          event.data?.correlation !== correlation
+        )
+          return;
+        if (typeof event.data.error === "string") {
+          finish(new Error(event.data.error));
+          return;
+        }
+        const value = event.data.credential;
+        if (
+          !value ||
+          value.serverId !== server.id ||
+          value.clientId !== server.credentialId ||
+          !value.privateKey ||
+          value.privateKey.type !== "private" ||
+          value.privateKey.extractable
+        ) {
+          finish(new Error("The server key response is invalid."));
+          return;
+        }
+        finish(undefined, value);
+      };
+      window.addEventListener("message", receive);
+      window.parent.postMessage(
+        {
+          kind: "studio-server-frame-credential-request",
+          serverId: server.id,
+          correlation,
+        },
+        serverParentOrigin,
+      );
+    },
+  );
+  frameCredentials.set(server.id, pending);
+  return pending;
 }

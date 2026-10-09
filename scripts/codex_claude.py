@@ -172,6 +172,23 @@ def auth_metadata(profile=None, force=False):
     return dict(result)
 
 
+def auth_metadata_from_output(returncode, stdout):
+    """Parse a completed native status check without starting a process."""
+    result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+    try:
+        data = json.loads(stdout)
+        if returncode == 0 and data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
+            identity = data.get('email')
+            if not isinstance(identity, str) or not identity:
+                raise ValueError('Missing account identity')
+            result.update(status='ready', accountId='claude:' + identity,
+                          email=identity, plan=data.get('subscriptionType'),
+                          _credentialIdentity='claude:' + identity)
+    except (ValueError, TypeError, AttributeError):
+        result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='parser')
+    return result
+
+
 def transport(root, profile=None):
     executable = installed(profile)
     configured_node = os.environ.get('STUDIO_NODE_BIN')

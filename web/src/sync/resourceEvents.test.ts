@@ -101,6 +101,7 @@ class Channel {
 
 describe("shared resource event transport", () => {
   afterEach(() => {
+    vi.clearAllTimers();
     vi.resetModules();
     vi.restoreAllMocks();
     vi.useRealTimers();

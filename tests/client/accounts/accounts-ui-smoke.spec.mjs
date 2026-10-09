@@ -285,7 +285,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(lead);
     }
     if (url.pathname === "/api/accounts/login") {
-      const previous = logins.find((r) => r.requestId === body.request_id);
+      const previous = logins.find((r) => r.requestId === body.login_id);
       if (previous) return json(previous);
       const id = body.account_key || `signed-in-${logins.length}`;
       if (!body.account_key)
@@ -296,7 +296,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           status: "pending",
         });
       const receipt = {
-        requestId: body.request_id,
+        requestId: body.login_id,
         accountKey: id,
         ...(body.account_key ? { reauthAccountKey: id } : {}),
         loginId: id,
@@ -308,7 +308,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       return json(receipt);
     }
     if (url.pathname === "/api/accounts/login/cancel") {
-      const receipt = logins.find((r) => r.requestId === body.request_id);
+      const receipt = logins.find((r) => r.requestId === body.login_id);
       receipt.status = "cancelled";
       if (!receipt.reauthAccountKey)
         accounts.splice(
@@ -389,7 +389,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
           failClaudeRollback = false;
           claudeSession.controlOperation = {
             turnId: body.turn_id,
-            requestId: body.request_id,
+            requestId: body.login_id,
           };
           res.statusCode = 503;
           return json({ error: "Rollback receipt is not available yet." });
@@ -403,7 +403,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
     if (url.pathname === "/api/accounts/claude/login") {
       if (req.method === "POST") {
         const receipt = {
-          requestId: body.request_id,
+          requestId: body.login_id,
           accountKey: body.account_key,
           status: "pending",
           verificationUrl: "https://claude.ai/oauth/authorize",
@@ -548,7 +548,7 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       );
       assert.equal(
         bodies.filter((r) => r.path === "/api/accounts/login").at(-1).body
-          .request_id,
+          .login_id,
         id,
       );
       await page.reload();

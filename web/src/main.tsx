@@ -9,8 +9,9 @@ import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import App from "./App";
 import MultiServerApp from "./servers/MultiServerApp";
-import { shellCredentialBridge } from "./servers/shellTransport";
 import { isServerView } from "./servers/environment";
+import { isRemoteServerView } from "./servers/environment";
+import { shellCredentialBridge } from "./servers/shellTransport";
 import "./servers/servers.css";
 import UIErrorBoundary from "./components/UIErrorBoundary";
 import { theme } from "./theme";
@@ -24,9 +25,11 @@ const nativeCredentials = nativeCredentialBridge();
 setServerCredentialAdapter(
   nativeCredentials
     ? new DesktopServerCredentials(nativeCredentials)
-    : isServerView && window.parent !== window
-      ? new DesktopServerCredentials(shellCredentialBridge())
-      : new BrowserServerCredentials(),
+    : isRemoteServerView
+      ? new BrowserServerCredentials()
+      : isServerView && window.parent !== window
+        ? new DesktopServerCredentials(shellCredentialBridge())
+        : new BrowserServerCredentials(),
 );
 if (isServerView) document.documentElement.dataset.serverView = "true";
 

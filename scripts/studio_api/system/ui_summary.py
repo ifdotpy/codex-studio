@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import json
+import platform
 import sqlite3
 from collections.abc import Callable
-from typing import ContextManager
+from typing import ContextManager, Literal
+
+from pydantic import Field
 
 from studio_api.models import ContractModel
 from studio_api.sync.models import ProjectLocationDto, ProjectAliasDto
@@ -54,16 +57,34 @@ class SummaryAlert(ContractModel):
     target: SummaryTarget
 
 
+class SummaryAccount(ContractModel):
+    provider: Literal["codex", "claude"]
+    email: str | None = None
+    plan: str | None = None
+    status: str
+    label: str
+    isDefault: bool
+
+
 class UiSummaryResponse(ContractModel):
     ready: bool
     busy: bool
+    system: str
+    agentsRunning: int
     projects: list[SummaryProject]
     chats: list[SummaryChat]
     alerts: list[SummaryAlert]
+    accounts: list[SummaryAccount] = Field(default_factory=list)
 
 
-def read_summary(connect: Callable[[], ContextManager[sqlite3.Connection]]) -> UiSummaryResponse:
-    result = UiSummaryResponse(ready=False, busy=False, projects=[], chats=[], alerts=[])
+def read_summary(
+    connect: Callable[[], ContextManager[sqlite3.Connection]],
+    accounts: list[SummaryAccount] | None = None,
+) -> UiSummaryResponse:
+    result = UiSummaryResponse(
+        ready=False, busy=False, system=platform.system(), agentsRunning=0,
+        projects=[], chats=[], alerts=[], accounts=accounts or [],
+    )
     # Use the durable entity projection. Do not pull, initialize stores, or write read receipts.
     with connect() as db:
         db.execute("PRAGMA query_only=ON")
@@ -83,6 +104,7 @@ def read_summary(connect: Callable[[], ContextManager[sqlite3.Connection]]) -> U
     projects = {str(row["path"]): SummaryProject.model_validate({key: row[key] for key in SummaryProject.model_fields if key in row})
                 for row in values.get("project", []) if row.get("path")}
     agents = {str(row["id"]): row for row in values.get("agent", []) if row.get("id") and not row.get("deletedAt")}
+    result.agentsRunning = sum(bool(row.get("inFlight")) for row in agents.values())
     team_members: set[str] = set()
     for project in values.get("project", []):
         teams = project.get("peerTeams")

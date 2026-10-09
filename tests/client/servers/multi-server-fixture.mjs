@@ -11,7 +11,17 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 const root = fileURLToPath(new URL("../../../", import.meta.url));
 const workspaceId = "b".repeat(32);
-export async function fixture(label, signed = false, options = {}) {
+export async function fixture(
+  label,
+  signed = false,
+  accountRowsOrOptions = null,
+) {
+  const options = Array.isArray(accountRowsOrOptions)
+    ? {}
+    : accountRowsOrOptions || {};
+  const accountRows = Array.isArray(accountRowsOrOptions)
+    ? accountRowsOrOptions
+    : null;
   const keys = crypto.generateKeyPairSync("ed25519");
   const publicKey = keys.publicKey
     .export({ format: "pem", type: "spki" })
@@ -34,6 +44,16 @@ export async function fixture(label, signed = false, options = {}) {
     { clientId: "old-ui", label: "Old UI", status: "paired" },
   ];
   const writes = [];
+  const accountWrites = [];
+  const accountLogins = new Map();
+  const savedAccounts = accountRows || [
+    {
+      id: "default",
+      label: "Fixture",
+      provider: "codex",
+      status: "ready",
+    },
+  ];
   const accessRequests = [];
   let discoveredPeers = [];
   let autoPair = true;
@@ -50,8 +70,6 @@ export async function fixture(label, signed = false, options = {}) {
     source: "managed",
     cwd: "/same/project",
     status: "waiting",
-    provider: "codex",
-    updated: Date.now() / 1000,
     autoWake: true,
     canSend: true,
     model: "fixture-model",
@@ -153,11 +171,24 @@ export async function fixture(label, signed = false, options = {}) {
         return;
       }
       nonces.add(h["x-studio-nonce"]);
-      if (body.requestId || body.request_id)
-        assert.equal(
-          h["x-studio-request-id"],
-          body.requestId || body.request_id,
-        );
+      if (body.requestId || body.request_id || body.login_id) {
+        if (url.pathname.startsWith("/api/accounts/")) {
+          accountWrites.push({
+            path: url.pathname,
+            requestId: h["x-studio-request-id"],
+            loginId: body.login_id || body.request_id,
+            code: body.code,
+          });
+          assert.notEqual(
+            h["x-studio-request-id"],
+            body.login_id || body.request_id,
+          );
+        } else
+          assert.equal(
+            h["x-studio-request-id"],
+            body.requestId || body.request_id,
+          );
+      }
     }
     if (options.handle?.({ request, url, body, json, snapshot })) return;
     if (url.pathname === "/api/monitor/log") {
@@ -200,17 +231,34 @@ export async function fixture(label, signed = false, options = {}) {
       json({
         ready: true,
         busy: !!agent.inFlight,
-        projects: [{ path: "/same/project", name: `${label} project` }],
-        chats: [
-          {
-            id: agent.id,
-            name: agent.name,
-            path: agent.cwd,
-            archived: false,
-            status: agent.status,
-            unread,
-          },
-        ],
+        system: "Darwin",
+        agentsRunning: agent.inFlight ? 1 : 0,
+        projects: snapshot.runtime.projects,
+        chats: snapshot.threads
+          .filter(
+            (chat) =>
+              chat.source === "managed" &&
+              chat.isLead &&
+              !chat.deletedAt &&
+              !chat.sharedRoomId,
+          )
+          .map((chat) => ({
+            id: chat.id,
+            name: chat.name,
+            path: chat.cwd || "",
+            archived: !!chat.archived,
+            status: chat.status || "",
+            unread: chat.id === agent.id ? unread : false,
+            serverId: chat.serverId || null,
+            projectId: chat.projectId || null,
+            projectServerId: chat.projectServerId || null,
+            provider: chat.provider || null,
+            updated: chat.updated || null,
+            created: chat.created || null,
+            inFlight: !!chat.inFlight,
+            pinned: !!chat.pinned,
+            team: false,
+          })),
         alerts: unread
           ? [
               {
@@ -221,6 +269,14 @@ export async function fixture(label, signed = false, options = {}) {
               },
             ]
           : [],
+        accounts: savedAccounts.map((account) => ({
+          provider: account.provider || "codex",
+          email: account.email || null,
+          plan: account.plan || null,
+          status: account.disconnected ? "signedOut" : account.status,
+          label: account.label || "Account",
+          isDefault: !!account.isDefault,
+        })),
       });
       return;
     }
@@ -291,17 +347,109 @@ export async function fixture(label, signed = false, options = {}) {
     }
     if (url.pathname === "/api/accounts") {
       json({
-        accounts: [
-          {
-            id: "default",
-            label: "Fixture",
-            provider: "codex",
-            status: "ready",
-          },
-        ],
-        defaultAccountKey: "default",
+        accounts: savedAccounts.map((account) => ({
+          ...account,
+          isDefault: account.isDefault || false,
+        })),
+        defaultAccountKey:
+          savedAccounts.find((account) => account.isDefault)?.id || "default",
         archivedAccounts: [],
-        logins: [],
+        logins: [...accountLogins.values()],
+      });
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/add") {
+      const id = body.login_id;
+      const receipt = {
+        requestId: id,
+        accountKey: id,
+        status: "pending",
+        verificationUrl: "https://claude.com/cai/oauth/authorize?state=fake",
+      };
+      accountLogins.set(id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login") {
+      const receipt = accountLogins.get(url.searchParams.get("request_id"));
+      json(
+        receipt || { error: "Unknown Claude sign-in request" },
+        receipt ? 200 : 404,
+      );
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login/code") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = {
+        ...previous,
+        status: "ready",
+        email: previous?.email || "new@example.test",
+        plan: "Max",
+      };
+      accountLogins.set(body.login_id, receipt);
+      savedAccounts.push({
+        id: body.login_id,
+        label: "New Claude",
+        provider: "claude",
+        email: receipt.email,
+        plan: receipt.plan,
+        status: "ready",
+        isDefault: false,
+      });
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/claude/login/cancel") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = { ...previous, status: "cancelled" };
+      accountLogins.set(body.login_id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/login") {
+      const id = body.login_id;
+      const account = savedAccounts.find((row) => row.id === body.account_key);
+      const receipt = account
+        ? {
+            requestId: id,
+            accountKey: account.id,
+            resolvedAccountKey: account.id,
+            reauthAccountKey: account.id,
+            status: "ready",
+            email: account.email,
+          }
+        : {
+            requestId: id,
+            accountKey: id,
+            loginId: `fake-${id}`,
+            status: "pending",
+            userCode: "FAKE-CODE",
+            verificationUrl: "https://auth.openai.com/codex/device",
+            expiresAt: Date.now() / 1000 + 90,
+          };
+      accountLogins.set(id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/login/cancel") {
+      const previous = accountLogins.get(body.login_id);
+      const receipt = { ...previous, status: "cancelled" };
+      accountLogins.set(body.login_id, receipt);
+      json(receipt);
+      return;
+    }
+    if (url.pathname === "/api/accounts/reconnect") {
+      const account = savedAccounts.find((row) => row.id === body.account_key);
+      if (account) {
+        account.disconnected = false;
+        account.status = "ready";
+      }
+      json({
+        accounts: savedAccounts,
+        defaultAccountKey:
+          savedAccounts.find((row) => row.isDefault)?.id || "default",
+        archivedAccounts: [],
+        logins: [...accountLogins.values()],
       });
       return;
     }
@@ -382,6 +530,10 @@ export async function fixture(label, signed = false, options = {}) {
     invitation,
     snapshot,
     writes,
+    accountWrites,
+    accounts() {
+      return savedAccounts;
+    },
     pairs,
     accessRequests,
     setChats(rows) {
@@ -405,7 +557,7 @@ export async function fixture(label, signed = false, options = {}) {
           publicKey: value.publicKey,
           tailscaleUser: value.tailscaleUser,
           status,
-          ...(reachability ? { reachability } : {}),
+          reachability,
           created: 1,
           lastSeen: Math.floor(Date.now() / 1000),
           autoPair: true,
