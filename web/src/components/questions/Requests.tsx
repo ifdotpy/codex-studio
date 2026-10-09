@@ -20,6 +20,7 @@ type Props = {
   mainAgentId?: string;
   showDates?: boolean;
   onAnswerOpen?: () => void;
+  onAnswerPosition?: (node: HTMLElement) => void;
   requests: components["schemas"]["RequestEntityDto"][];
   allRequests: components["schemas"]["RequestEntityDto"][];
   scope: string;
@@ -277,6 +278,7 @@ function AnswerForm({
 function RequestCard({
   request: r,
   onAnswerOpen,
+  onAnswerPosition,
   showDates = true,
   agents,
   refresh,
@@ -297,7 +299,37 @@ function RequestCard({
   const card = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!open || !card.current) return;
-    card.current.scrollIntoView({ block: "nearest" });
+    const node = card.current;
+    const form = node.querySelector<HTMLElement>(".request-answer-form");
+    const transcript = node.closest<HTMLElement>("#messages");
+    const requests = node.closest<HTMLElement>("#requests");
+    if (!form || !transcript) return;
+    const position = () => {
+      if (requests) {
+        const cardBounds = node.getBoundingClientRect();
+        const requestsBounds = requests.getBoundingClientRect();
+        if (
+          cardBounds.top < requestsBounds.top ||
+          cardBounds.top >= requestsBounds.bottom
+        )
+          requests.scrollTop += cardBounds.top - requestsBounds.top - 12;
+      }
+      if (onAnswerPosition) onAnswerPosition(node);
+      else
+        transcript.scrollTop +=
+          node.getBoundingClientRect().top -
+          transcript.getBoundingClientRect().top -
+          12;
+    };
+    const observer = new ResizeObserver(() => position());
+    observer.observe(transcript);
+    if (requests) observer.observe(requests);
+    position();
+    const frame = requestAnimationFrame(() => position());
+    return () => {
+      cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
   }, [open]);
   const pending = useRef(false),
     mounted = useRef(true),

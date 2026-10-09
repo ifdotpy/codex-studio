@@ -558,9 +558,14 @@ p {
   display: none;
 }
 #composer {
+  --composer-visible-ratio: 0.6;
+  --composer-chrome-allowance: 69px;
+  display: flex;
+  flex-direction: column;
   width: calc(100% - 64px);
   max-width: 736px;
-  flex-shrink: 0;
+  flex-shrink: 1;
+  min-height: 0;
   margin: 8px auto 0;
   padding: 10px 12px 8px;
   background: light-dark(#f4f5f8, #26262e);
@@ -572,12 +577,20 @@ p {
 #composer:focus-within {
   border-color: light-dark(#737b8c, #636375);
 }
+.composer-bar {
+  flex-shrink: 0;
+}
 #message {
+  max-height: calc(
+    var(--mobile-viewport-height, 100dvh) * var(--composer-visible-ratio) -
+      var(--composer-chrome-allowance)
+  );
   padding: 0;
   line-height: 1.65;
   font-size: 14px;
   color: var(--text);
   overflow-y: auto;
+  flex-shrink: 1;
   resize: none;
 }
 #message::placeholder {
@@ -842,12 +855,11 @@ p {
 }
 /* Structured tasks and dialogs use Mantine controls and focus management. */
 #requests {
+  --requests-visible-ratio: 0.5;
   flex: 0 1 auto;
   min-height: 0;
-  --requests-visible-limit: 50dvh;
-  max-height: min(
-    var(--requests-visible-limit),
-    var(--requests-visible-max-height, var(--requests-visible-limit))
+  max-height: calc(
+    var(--mobile-viewport-height, 100dvh) * var(--requests-visible-ratio)
   );
   overflow: auto;
   overscroll-behavior: contain;
@@ -1840,6 +1852,7 @@ html body #root {
     scrollbar-gutter: auto;
   }
   #composer {
+    --composer-chrome-allowance: 143px;
     width: calc(100% - 16px);
     margin-bottom: 0;
     padding: 8px 10px;

@@ -33,15 +33,16 @@ chat keeps its own draft.
 
 The prompt starts at two rows and grows with its content until the composer
 reaches at most about three fifths of the visible viewport. Longer drafts scroll
-inside the textarea. The same limit applies on desktop and mobile, and uses the
-visual viewport while the on-screen keyboard is open. On short viewports, the
-field can shrink below that cap as needed to keep the send controls and usage
-footer visible. A draft of two rows or fewer keeps its input height. Keyboard
-and language-picker viewport changes do not scroll the page. The viewport hook
-continues to keep the composer inside the visible screen. Mobile model and
+inside the textarea. The same CSS limit applies on desktop and mobile, and uses
+the visual viewport while the on-screen keyboard is open. On short viewports,
+the flex layout shrinks the transcript and composer around the two-row input
+minimum to keep the send controls and usage footer visible. A draft of two rows
+or fewer keeps its input height. Keyboard and language-picker viewport changes
+do not scroll the page. The viewport hook continues to keep the composer inside
+the visible screen. Mobile model and
 account information shares one row so it does not push the send controls and
-usage footer below the keyboard. The limit ratio lives in
-[`PromptInput.tsx`](./PromptInput.tsx).
+usage footer below the keyboard. The limit ratio and approximate chrome
+allowance live in [`style.css`](../../style.css).
 `tests/client/mobile/mobile-keyboard-ui.spec.mjs` checks simulated viewport
 changes with Android and iPhone identities in the browser selected by
 `BROWSER`; it does not open a real operating-system keyboard or language

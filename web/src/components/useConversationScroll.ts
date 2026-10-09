@@ -209,6 +209,21 @@ export function useConversationScroll(id: string, ready: boolean) {
     remember();
     persist();
   };
+  const revealRequest = useCallback((node: HTMLElement) => {
+    const root = scroll.current;
+    if (!root || !root.contains(node)) return;
+    updateFollow(false);
+    anchor.current = null;
+    root.scrollTop +=
+      node.getBoundingClientRect().top - root.getBoundingClientRect().top - 12;
+    remember();
+    anchor.current = {
+      element: node,
+      offset:
+        node.getBoundingClientRect().top - root.getBoundingClientRect().top,
+    };
+    persist();
+  }, []);
   const getAnchorId = () => {
     const root = scroll.current;
     if (!root) return null;
@@ -240,6 +255,7 @@ export function useConversationScroll(id: string, ready: boolean) {
     setFollow,
     onScroll,
     remember,
+    revealRequest,
     getAnchorId,
   };
 }

@@ -81,6 +81,81 @@ test("Questions overflow", async ({ browser }) => {
 
     const card = view.locator('[data-request="overflow-question"]');
     await card.getByRole("button", { name: "Answer" }).click();
+    const messageScroller = view.locator("#messages");
+    const requestsScroller = view.locator("#requests");
+    await expect
+      .poll(() =>
+        card.evaluate((node) => {
+          const requests = document
+            .querySelector("#requests")
+            .getBoundingClientRect();
+          const bounds = node.getBoundingClientRect();
+          return bounds.top >= requests.top && bounds.top < requests.bottom;
+        }),
+      )
+      .toBe(true);
+
+    const initialScroll = await view.evaluate(() => ({
+      requests: document.querySelector("#requests").scrollTop,
+      messages: document.querySelector("#messages").scrollTop,
+    }));
+    await view.locator(".message-content").evaluate((node) => {
+      const arrivingMessage = document.createElement("div");
+      arrivingMessage.dataset.message = "fixture-arriving-message";
+      arrivingMessage.style.height = "80px";
+      node.append(arrivingMessage);
+    });
+    await expect
+      .poll(() =>
+        messageScroller.evaluate(
+          (node) => node.scrollTop < node.scrollHeight - node.clientHeight - 32,
+        ),
+      )
+      .toBe(true);
+
+    await requestsScroller.evaluate((node) => {
+      node.scrollTop = node.scrollHeight;
+    });
+    const requestsAtEnd = await view.evaluate(() => ({
+      requests: document.querySelector("#requests").scrollTop,
+      messages: document.querySelector("#messages").scrollTop,
+      bounds: document.querySelector("#requests").getBoundingClientRect(),
+    }));
+    assert.ok(requestsAtEnd.requests > initialScroll.requests);
+    assert.equal(requestsAtEnd.messages, initialScroll.messages);
+    await view.mouse.move(
+      requestsAtEnd.bounds.left + 12,
+      requestsAtEnd.bounds.bottom - 12,
+    );
+    await view.mouse.wheel(0, 500);
+    await expect
+      .poll(() => messageScroller.evaluate((node) => node.scrollTop))
+      .toBe(initialScroll.messages);
+    assert.deepEqual(
+      await view.evaluate(
+        () =>
+          getComputedStyle(document.querySelector("#requests"))
+            .overscrollBehaviorY,
+      ),
+      "contain",
+    );
+
+    await requestsScroller.evaluate((node, top) => {
+      node.scrollTop = top;
+    }, initialScroll.requests);
+    await view.setViewportSize({ width: 390, height: 844 });
+    await view.evaluate(() => window.setTestViewport({ height: 390 }));
+    await expect
+      .poll(() =>
+        card.evaluate((node) => {
+          const messages = document
+            .querySelector("#messages")
+            .getBoundingClientRect();
+          const bounds = node.getBoundingClientRect();
+          return bounds.top >= messages.top - 1 && bounds.top < messages.bottom;
+        }),
+      )
+      .toBe(true);
 
     for (const viewport of [
       { width: 1280, height: 800, visibleHeight: 800 },
@@ -252,6 +327,30 @@ test("Questions overflow", async ({ browser }) => {
       }
     }
     assert.equal(await card.getByRole("button", { name: "Send" }).count(), 1);
+
+    await view
+      .locator('[data-message="fixture-arriving-message"]')
+      .evaluate((node) => node.remove());
+    await view.setViewportSize({ width: 1280, height: 800 });
+    await view.evaluate(() => window.setTestViewport({ height: 800 }));
+    await expect
+      .poll(() => messageScroller.evaluate((node) => node.clientHeight))
+      .toBeGreaterThan(0);
+    const scrollBeforeReload = await messageScroller.evaluate(
+      (node) => node.scrollTop,
+    );
+    await view.reload();
+    await view.locator('[data-request="overflow-question"]').waitFor();
+    await expect
+      .poll(() =>
+        messageScroller.evaluate(
+          (node, savedTop) =>
+            node.scrollTop ===
+            Math.min(savedTop, node.scrollHeight - node.clientHeight),
+          scrollBeforeReload,
+        ),
+      )
+      .toBe(true);
   } finally {
     await context?.close();
     fixture.kill("SIGTERM");

@@ -142,7 +142,7 @@
   margin-top: 8px;
 }
 
-/* Questions belong to the transcript, so they cannot shrink its viewport. */
+/* Questions stay in transcript order and use their own bounded scroll region. */
 #conversation #messages #requests {
   width: 100%;
   max-width: none;
