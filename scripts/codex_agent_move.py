@@ -96,8 +96,11 @@ class AgentMoves:
         if selected is None:
             raise ValueError('No signed-in target account exists for this provider')
         warning = None
-        if any(selected.get(key) != source.get(key) for key in ('email', 'accountId')):
-            warning = 'The target account identity differs. The provider prompt cache will be lost'
+        identity_unknown = payload['provider'] == 'codex' and any(
+            not selected.get(key) or not source.get(key) for key in ('email', 'accountId'))
+        if identity_unknown or any(selected.get(key) != source.get(key) for key in ('email', 'accountId')):
+            warning = ('The provider account identity cannot be verified. The prompt cache may be lost' if identity_unknown
+                       else 'The target account identity differs. The provider prompt cache will be lost')
             if payload.get('accept_cache_loss') is not True:
                 raise ValueError('The exact target account identity is unavailable. Refusing a prompt cache reset; explicit accept_cache_loss=true is required for this move')
         if payload['provider'] == 'claude' and warning:

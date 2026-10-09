@@ -294,6 +294,9 @@ class Moves(f.SignedIntegration):
                   'tokenUsage': {'last': {'inputTokens': 100, 'cachedInputTokens': 900,
                                          'cacheWriteInputTokens': 30, 'outputTokens': 5, 'totalTokens': 1035}}}
         self.b.runtime.notification({'method': 'thread/tokenUsage/updated', 'params': params})
+        receipt = self.tool(self.b, moved, 'orchestration_request',
+            {'action': 'get', 'request_id': 'move-one'}, 'target-cache-receipt')
+        self.assertEqual(receipt['move']['firstTurnCache']['cachedInputTokens'], 900)
         status = self.a.runtime.multi_server().moves().status(moved['id'], 'move-one')
         self.assertEqual(status['firstTurnCache']['cachedInputTokens'], 900)
         self.assertEqual(status['firstTurnCache']['cacheWriteInputTokens'], 30)
@@ -302,7 +305,10 @@ class Moves(f.SignedIntegration):
     def test_review_target_uuid_owner_is_checked_during_preflight(self):
         victim = self.b.runtime.prepare(self.b.runtime.create(
             {'name': 'Victim', 'prompt': '', 'cwd': str(self.b.folder)}, draft=True))
-        attacker = {**self.lead, 'threadId': victim['threadId']}
+        with self.a.runtime.db() as db:
+            attacker = self.a.runtime.agent(self.lead['id'], db)
+            attacker['threadId'] = victim['threadId']
+            self.a.runtime.put(db, 'agents', attacker)
         with self.assertRaisesRegex(ValueError, 'native identity.*owned'):
             self.a.runtime.multi_server().moves().start(attacker,
                 {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'victim-preflight'}, 'victim-preflight')
@@ -370,6 +376,20 @@ class Moves(f.SignedIntegration):
         self.assertFalse(actor.get('executionMove'), actor.get('error'))
         self.assertEqual(actor['movedTo']['server'], self.b.server_id)
         self.assertEqual(len([1 for method, _ in self.b.runtime.server.calls if method == 'thread/resume']), 1)
+
+    def test_review_unknown_codex_account_identity_requires_explicit_approval(self):
+        source = self.a.runtime.accounts.get('default')
+        target = self.b.runtime.accounts.get('default')
+        source.update(email=None, accountId=None)
+        target.update(email=None, accountId=None)
+        service = self.a.runtime.multi_server().moves()
+        with patch.object(self.a.runtime.accounts, 'get', return_value=source), \
+             patch.object(self.b.runtime.accounts, 'get', return_value=target), \
+             patch.object(self.b.runtime.accounts, 'list', return_value=[target]):
+            with self.assertRaisesRegex(ValueError, 'account identity.*cache reset'):
+                service.start(self.lead, {'server': self.b.server_id, 'cwd': str(self.b.folder),
+                              'request_id': 'unknown-account'}, 'unknown-account')
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
     def test_review_different_codex_identity_refuses_without_explicit_approval(self):
         row = self.b.runtime.accounts.get('default')
@@ -528,7 +548,9 @@ class Moves(f.SignedIntegration):
         self.assertFalse([1 for method, _ in source.calls if method == 'thread/unsubscribe'])
         self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method in {'thread/resume', 'turn/start'}])
         service.tick()
+        f.fixture.f.eventually(lambda: not service.running, timeout=DEADLINE)
         self.assertFalse(service.running)
+        self.assertFalse([1 for method, _ in self.b.runtime.server.calls if method in {'thread/resume', 'turn/start'}])
 
     def test_crash_after_export_resumes_only_the_saved_transfer(self):
         service = self.a.runtime.multi_server().moves()
@@ -623,6 +645,16 @@ class Moves(f.SignedIntegration):
         with self.assertRaisesRegex(ValueError, 'same provider account and organization'):
             self.a.runtime.multi_server().moves().start(self.lead,
                 {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'organization-refuse'}, 'organization-refuse')
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_review_claude_cross_os_refuses_the_builtin_catalog(self):
+        self.claude_source()
+        target = self.b.runtime.multi_server().moves()
+        original = target._capabilities
+        with patch.object(target, '_capabilities', side_effect=lambda actor: {**original(actor), 'platform': 'Another OS'}):
+            with self.assertRaisesRegex(ValueError, 'OS differ.*builtin tool catalog'):
+                self.a.runtime.multi_server().moves().start(self.lead,
+                    {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'os-refuse'}, 'os-refuse')
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
     def test_review_claude_requires_saved_snapshot_and_matching_target_tools(self):

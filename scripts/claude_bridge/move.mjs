@@ -81,7 +81,7 @@ export function verifyToolProof(proof, studio, offered) {
   return builtin.map((entry) => entry.name);
 }
 
-export async function studioToolCatalog(server) {
+export async function studioToolCatalog(server, expectedToolCount) {
   const { Client } = await import("@modelcontextprotocol/sdk/client/index.js");
   const { InMemoryTransport } =
     await import("@modelcontextprotocol/sdk/inMemory.js");
@@ -91,7 +91,15 @@ export async function studioToolCatalog(server) {
     await server.instance.connect(right);
     await client.connect(left);
     if (!client.getServerCapabilities()?.tools) return [];
-    const result = await client.listTools();
+    let result;
+    try {
+      result = await client.listTools();
+    } catch (error) {
+      // The SDK advertises tools for an empty server but registers no handler.
+      // Only Studio's known empty definition list permits this exact rejection.
+      if (expectedToolCount === 0 && error.code === -32601) return [];
+      throw error;
+    }
     if (result.nextCursor)
       throw new Error("The complete Studio tool catalog is unavailable");
     return result.tools.map((entry) => ({

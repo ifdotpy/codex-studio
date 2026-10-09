@@ -189,8 +189,16 @@ test("Studio proof reads the compiled ordered MCP schemas without model input", 
   assert.deepEqual(
     await studioToolCatalog(
       createSdkMcpServer({ name: "studio", version: "1", tools: [] }),
+      0,
     ),
     [],
+  );
+  await assert.rejects(
+    studioToolCatalog(
+      createSdkMcpServer({ name: "studio", version: "1", tools: [] }),
+      1,
+    ),
+    /Method not found/,
   );
   const catalog = await studioToolCatalog(server);
   assert.deepEqual(

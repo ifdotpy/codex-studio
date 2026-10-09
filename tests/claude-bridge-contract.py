@@ -66,7 +66,7 @@ export function query({prompt,options}){
  let abort=new AbortController();
  let outputTotal=0;
  if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
- if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt})+'\n');
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt,tools:options.tools,settingSources:options.settingSources,strictMcpConfig:options.strictMcpConfig,effort:options.effort,settings:options.settings})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
   supportedModels:async()=>[
@@ -245,30 +245,43 @@ class Bridge(unittest.TestCase):
     def test_move_native_history_import_has_no_model_input_and_resumes_the_same_session(self):
         self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',
                                                 'dynamicTools': []})['thread']['id']
+        self.call('turn/start', {'threadId': self.thread, 'effort': 'low', 'serviceTier': 'priority',
+                               'input': [{'type': 'text', 'text': 'Source fixture turn'}]})
+        self.completed()
+        before_queries = (self.root / '.queries').read_bytes()
         projects = self.root / 'native-config' / 'projects' / 'source'
         projects.mkdir(parents=True)
         native = projects / (self.thread + '.jsonl')
         rows = [{'type': 'user', 'sessionId': self.thread, 'message': {'content': 'Exact native history'}},
                 {'type': 'attachment', 'sessionId': self.thread,
-                 'attachment': {'type': 'prompt_snapshot', 'systemPrompt': ['Frozen instructions'], 'tools': []}}]
+                 'attachment': {'type': 'prompt_snapshot', 'systemPrompt': ['Frozen instructions'], 'tools': [{'name': 'Bash', 'input_schema': {'type': 'object'}}]}}]
         native.write_text(''.join(json.dumps(row) + '\n' for row in rows))
         exported = self.call('claude/moveExport', {'threadId': self.thread})
-        exported['session']['started'] = True
         incoming = self.root / 'incoming.jsonl'
         incoming.write_bytes(native.read_bytes())
+        bad = json.loads(json.dumps(exported['session']))
+        bad['moveProof']['snapshotHash'] = 'wrong-snapshot'
+        with self.assertRaisesRegex(ValueError, 'snapshot differs'):
+            self.call('claude/moveImport', {'session': bad, 'cwd': str(self.root), 'path': str(incoming)})
+        self.assertEqual((self.root / '.queries').read_bytes(), before_queries)
         imported = self.call('claude/moveImport', {'session': exported['session'],
                              'cwd': str(self.root), 'path': str(incoming)})
         self.assertEqual(imported['thread']['id'], self.thread)
-        self.assertFalse((self.root / '.queries').exists())
+        self.assertEqual((self.root / '.queries').read_bytes(), before_queries)
         published = next((self.root / 'native-config' / 'projects').glob('*/*.jsonl'))
         self.assertEqual(published.read_bytes(), incoming.read_bytes())
-        turn = self.call('turn/start', {'threadId': self.thread, 'clientUserMessageId': 'move-handoff',
+        turn = self.call('turn/start', {'threadId': self.thread, 'clientUserMessageId': 'move-handoff', 'effort': 'high',
                                       'input': [{'type': 'text', 'text': 'Continue here'}]})['turn']['id']
         self.assertEqual(self.completed()['id'], turn)
         query = json.loads((self.root / '.queries').read_text().splitlines()[-1])
         self.assertEqual(query['resume'], self.thread)
         self.assertTrue(query['systemPrompt']['snapshot'])
         self.assertTrue(query['systemPrompt']['excludeDynamicSections'])
+        self.assertEqual(query['settingSources'], [])
+        self.assertTrue(query['strictMcpConfig'])
+        self.assertEqual(query['tools'], ['Bash'])
+        self.assertEqual(query['effort'], 'low')
+        self.assertTrue(query['settings']['fastMode'])
         exported = self.call('claude/moveExport', {'threadId': self.thread})
         self.assertEqual(exported['session'].get('nativeId', exported['session']['id']), self.thread)
         self.assertEqual(exported['session']['turns'], [])

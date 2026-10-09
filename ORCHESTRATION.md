@@ -1066,7 +1066,7 @@ and organization to retain the prompt cache.
 Codex retains the native session ID, full history, instructions, model,
 reasoning settings, and ordered tool definitions.
 Codex preflight requires the same native version, OS, and MCP tool catalog.
-A different Codex account refuses by default.
+A different or unknown Codex account identity refuses by default.
 Only explicit `accept_cache_loss=true` approves cache loss for that move.
 The result records this approval and its cache-loss warning.
 Claude requires the same provider account and organization.

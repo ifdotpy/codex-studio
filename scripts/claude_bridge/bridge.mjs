@@ -536,7 +536,10 @@ function studioTools(s, getTurn) {
 }
 
 async function proofOptions(s, proof) {
-  const compiled = await studioToolCatalog(studioTools(s, () => null));
+  const compiled = await studioToolCatalog(
+    studioTools(s, () => null),
+    (s.dynamicTools || []).length,
+  );
   const tools = verifyToolProof(proof, compiled);
   const options = {
     tools,
