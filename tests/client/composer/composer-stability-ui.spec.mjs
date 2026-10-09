@@ -114,6 +114,7 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
       await page.setViewportSize({ width, height: 960 });
       await page.goto(origin);
       await page.locator("#composer").waitFor();
+      if (width > 760) await page.locator(".terminal-dock").waitFor();
       const chatStorageKey =
         width <= 760
           ? "codex-mobile-opened"
@@ -467,6 +468,8 @@ test("composer-stability-ui", async ({ browser: fixtureBrowser }) => {
         openedChat.name,
       );
       await queueRequested;
+      if (width > 760) await page.locator(".terminal-dock").waitFor();
+      await page.locator("#stop:not(:disabled)").waitFor();
       await waitForStableGeometry();
       // Reload restores the running turn before queue rendering; establish the
       // post-reload geometry, then verify the queue response itself is stable.
