@@ -191,6 +191,12 @@ class ResourcePublicationTests(unittest.IsolatedAsyncioTestCase):
             runtime._committed_resource_lock = threading.Lock()
             runtime.rate_limits = {"data": None, "at": None, "error": None}
             runtime.rate_limits_by_account = {}
+            runtime.servers = {}
+            runtime.offline_accounts = set()
+            runtime.closed = False
+            with runtime.db() as db:
+                from codex_sync_entities import put as sync_entity_put
+                sync_entity_put(db, "workspace", "current", {})
             runtime.connection_current = lambda *_args: True
             runtime.analytics_safe = lambda *_args, **_kwargs: None
             runtime.schedule_analytics_captures = lambda *_args, **_kwargs: None
