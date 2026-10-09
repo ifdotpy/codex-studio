@@ -58,8 +58,12 @@ class HostExec:
                 channel.close()
 
     async def broker(self, method: str, params: dict[str, Any], phase: str) -> dict[str, Any]:
+        from common import GuestError
         from layr_admin_client import admin_request
-        return await admin_request(request_key(params["operationId"], phase), method, params)
+        try:
+            return await admin_request(request_key(params["operationId"], phase), method, params)
+        except GuestError as exc:
+            raise HostExecError(exc.code, str(exc)) from exc
 
     async def manifest(self, method: str, params: dict[str, Any], phase: str, *, broker: bool = False) -> dict[str, Any]:
         result: dict[str, Any] = {}

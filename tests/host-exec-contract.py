@@ -257,6 +257,14 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.slots.collect_batches), 1)
         self.assertEqual(len(self.slots.collect_batches[0]), 140)
 
+    async def test_broker_error_keeps_its_code(self):
+        from common import GuestError
+        module = SimpleNamespace(admin_request=AsyncMock(side_effect=GuestError("lease_lost", "No lease")))
+        with patch.dict(sys.modules, {"layr_admin_client": module}):
+            with self.assertRaises(HostExecError) as caught:
+                await HostExec.broker(self.guest, "host.slot.forget", {"operationId": "lost"}, "forget")
+        self.assertEqual(caught.exception.code, "lease_lost")
+
     async def test_layr_merge_conflict_report_survives_code_one(self):
         marker = "conflicts (the line also changed these paths):\n\tmain.swift (content: markers written)\n"
         child = SimpleNamespace(returncode=1, communicate=AsyncMock(return_value=(marker.encode(), b"")))
