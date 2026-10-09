@@ -14,7 +14,8 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import { post, ApiError, errorText, save, saved } from "../../../api";
+import { ApiError, errorText } from "../../../api";
+import { useSidebarBackend, type SidebarBackend } from "../../sidebar/services";
 import type { paths } from "../../../generated/api";
 import type { Agent, PeerTeam } from "../../../types";
 import type { Project } from "../../ProjectOrganization";
@@ -57,6 +58,8 @@ export function PeerTeamGroup({
   reorder?: HTMLAttributes<HTMLElement>;
   drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
+  const backend = useRef(useSidebarBackend()).current;
+  const { post, saved, save } = backend;
   const requestKey = `studio-radio-open:${scope}:${team.id}`;
   const [request, setRequest] = useState<RadioRequest | null>(() =>
     saved<RadioRequest | null>(requestKey, null),
@@ -201,6 +204,8 @@ export function PeerTeamForm({
   refresh?: () => Promise<void>;
   close: () => void;
 }) {
+  const backend = useRef(useSidebarBackend()).current;
+  const { post } = backend;
   const [name, setName] = useState(team?.name || "");
   const [members, setMembers] = useState(team?.members || []);
   const [error, setError] = useState("");
@@ -381,7 +386,10 @@ export function PeerTeamForm({
 export function usePeerTeamMove(
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
+  ownerForProject?: (path: string) => SidebarBackend,
 ) {
+  const defaultBackend = useSidebarBackend();
+  const requestBackend = useRef<SidebarBackend | null>(null);
   const request = useRef<PeerTeamRequest | null>(null);
   const committed = useRef(false);
   const running = useRef(false);
@@ -390,6 +398,7 @@ export function usePeerTeamMove(
   const [rejected, setRejected] = useState(false);
   const clear = () => {
     request.current = null;
+    requestBackend.current = null;
     committed.current = false;
     setError("");
     setRejected(false);
@@ -401,7 +410,11 @@ export function usePeerTeamMove(
     setError("");
     try {
       if (!committed.current) {
-        await post("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        const backend = requestBackend.current;
+        if (!backend) throw new Error("The team server is unavailable.");
+        await backend.post("/api/peer-teams", request.current, {
+          timeoutMs: 15000,
+        });
         committed.current = true;
       }
       await refresh?.();
@@ -423,6 +436,7 @@ export function usePeerTeamMove(
   const move = (project: Project, member: string, teamId: string | null) => {
     if (request.current) return;
     if (typeof project.path !== "string") return;
+    requestBackend.current = ownerForProject?.(project.path) || defaultBackend;
     request.current = {
       action: "move",
       path: project.path,

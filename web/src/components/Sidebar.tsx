@@ -1,6 +1,9 @@
-import { writePreferenceEdit } from "../sync/uiPreferenceStore";
-import { useSyncedVisualState } from "../sync/useSyncedVisualState";
-import { serverLocalStorage as localStorage } from "../servers/storage";
+import {
+  localSidebarServices,
+  SidebarBackendProvider,
+  useSidebarVisualState,
+  type SidebarServices,
+} from "./sidebar/services";
 import {
   Fragment,
   useEffect,
@@ -30,7 +33,7 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import { post, errorText, saved } from "../api";
+import { errorText } from "../api";
 import type { paths } from "../generated/api";
 import "./sidebar-projects.css";
 import { useSidebarOrder } from "./useSidebarOrder";
@@ -70,7 +73,8 @@ type WithoutOrganizationId<Request> = Request extends { id: string }
   ? Omit<Request, "id">
   : never;
 type OrganizationData = WithoutOrganizationId<OrganizationRequest>;
-type Props = {
+export type SidebarProps = {
+  services?: SidebarServices;
   data: Snapshot;
   opened: string | null;
   lead?: Agent;
@@ -112,7 +116,22 @@ export function projectSearchLabel(
     (typeof legacyProjectName === "string" ? legacyProjectName : "")
   );
 }
-export default function Sidebar(p: Props) {
+export default function Sidebar(p: SidebarProps) {
+  const services = p.services || localSidebarServices;
+  return (
+    <SidebarBackendProvider value={services.cache}>
+      <SidebarContents {...p} services={services} />
+    </SidebarBackendProvider>
+  );
+}
+
+function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
+  const services = p.services;
+  const {
+    saved,
+    storage: localStorage,
+    editPreference: writePreferenceEdit,
+  } = services.cache;
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
   const aliases = useServerAliases(readServerAliases);
@@ -127,6 +146,7 @@ export default function Sidebar(p: Props) {
     runtime?.sidebarOrder ?? undefined,
     p.refresh,
     p.notify,
+    services,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);
@@ -158,7 +178,7 @@ export default function Sidebar(p: Props) {
     setConversion(null);
   };
   const compactKey = `codex-project-compact:${p.data.stateDir}`;
-  const [compactProjects, setCompactProjects] = useSyncedVisualState<
+  const [compactProjects, setCompactProjects] = useSidebarVisualState<
     Record<string, boolean>
   >(compactKey, {});
   const setCompactProject = (path: string, value: boolean) => {
@@ -187,7 +207,9 @@ export default function Sidebar(p: Props) {
         })),
     [runtime?.projects],
   );
-  const teamMove = usePeerTeamMove(p.refresh, p.notify);
+  const teamMove = usePeerTeamMove(p.refresh, p.notify, (path) =>
+    services.owner({ kind: "project", path }),
+  );
   const [dialog, setDialog] = useState<{
     title: string;
     path: string;
@@ -228,7 +250,7 @@ export default function Sidebar(p: Props) {
   const folderKey = (path: string, id: string) =>
     JSON.stringify([path, "folder", id]);
   const projectKey = `codex-project-tree:${p.data.stateDir}`;
-  const [collapsed, setCollapsed] = useSyncedVisualState<
+  const [collapsed, setCollapsed] = useSidebarVisualState<
     Record<string, boolean>
   >(projectKey, {});
 
@@ -255,7 +277,9 @@ export default function Sidebar(p: Props) {
     if (hasOptimistic)
       setOverrides((old) => ({ ...old, [id]: { ...old[id], ...optimistic } }));
     try {
-      await post("/api/organization", { id, ...data });
+      await services
+        .owner({ kind: "chat", id })
+        .post("/api/organization", { id, ...data });
       if (hasOptimistic) void p.refresh?.();
       else await p.refresh?.();
       return true;
@@ -616,7 +640,7 @@ export default function Sidebar(p: Props) {
             serverViewId ||
             "local"
         ] ||
-        aliases[serverViewId || "local"] ||
+        aliases[services.serverForChat(row.id)] ||
         "MAC"
       }
       indicator={p.indicators.get(row.id)}
@@ -706,72 +730,76 @@ export default function Sidebar(p: Props) {
     const key = JSON.stringify([group.path, "team", team.id]);
     const closed = !!collapsed[key] && !query;
     return (
-      <PeerTeamGroup
+      <SidebarBackendProvider
         key={team.id}
-        itemId={teamKey(group.path, team.id)}
-        team={team}
-        roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
-        scope={p.data.stateDir}
-        openRoom={p.open}
-        refresh={p.refresh}
-        reorder={sorting.bindings(
-          itemGroup(group.path),
-          teamKey(group.path, team.id),
-          itemIds(group),
-        )}
-        drop={sorting.dropBindings(
-          `peer-team:${team.id}`,
-          (source) => {
-            const chat = catalog.byId.get(source.id);
-            return !!(
-              chat &&
-              source.group === chatGroup(chat) &&
-              chat.cwd === group.path &&
-              !teamMembers.includes(chat.id) &&
-              !teamMove.blocked() &&
-              !organizationLock.current
-            );
-          },
-          ({ id }) => teamMove.move(group, id, team.id),
-        )}
-        closed={closed}
-        toggle={() => toggleProject(key)}
-        edit={() =>
-          setTeamDialog({
-            path: group.path,
-            id: team.id,
-            action: "save",
-          })
-        }
-        dissolve={() =>
-          setTeamDialog({
-            path: group.path,
-            id: team.id,
-            action: "delete",
-          })
-        }
+        value={services.owner({ kind: "project", path: group.path })}
       >
-        <div className="peer-team-chats">
-          {(runtime?.rooms || [])
-            .filter(
-              (r) =>
-                r.radio?.teamId === team.id && (!closed || r.id === p.opened),
-            )
-            .map((r) => (
-              <UnstyledButton
-                key={r.id}
-                className="peer-team-shared-chat"
-                aria-current={r.id === p.opened ? "page" : undefined}
-                onClick={() => p.open(r.id)}
-              >
-                Shared chat
-              </UnstyledButton>
-            ))}
-          {(closed ? members.filter((a) => a.id === p.opened) : members).map(
-            renderRow,
+        <PeerTeamGroup
+          itemId={teamKey(group.path, team.id)}
+          team={team}
+          roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
+          scope={p.data.stateDir}
+          openRoom={p.open}
+          refresh={p.refresh}
+          reorder={sorting.bindings(
+            itemGroup(group.path),
+            teamKey(group.path, team.id),
+            itemIds(group),
           )}
-        </div>
-      </PeerTeamGroup>
+          drop={sorting.dropBindings(
+            `peer-team:${team.id}`,
+            (source) => {
+              const chat = catalog.byId.get(source.id);
+              return !!(
+                chat &&
+                source.group === chatGroup(chat) &&
+                chat.cwd === group.path &&
+                !teamMembers.includes(chat.id) &&
+                !teamMove.blocked() &&
+                !organizationLock.current
+              );
+            },
+            ({ id }) => teamMove.move(group, id, team.id),
+          )}
+          closed={closed}
+          toggle={() => toggleProject(key)}
+          edit={() =>
+            setTeamDialog({
+              path: group.path,
+              id: team.id,
+              action: "save",
+            })
+          }
+          dissolve={() =>
+            setTeamDialog({
+              path: group.path,
+              id: team.id,
+              action: "delete",
+            })
+          }
+        >
+          <div className="peer-team-chats">
+            {(runtime?.rooms || [])
+              .filter(
+                (r) =>
+                  r.radio?.teamId === team.id && (!closed || r.id === p.opened),
+              )
+              .map((r) => (
+                <UnstyledButton
+                  key={r.id}
+                  className="peer-team-shared-chat"
+                  aria-current={r.id === p.opened ? "page" : undefined}
+                  onClick={() => p.open(r.id)}
+                >
+                  Shared chat
+                </UnstyledButton>
+              ))}
+            {(closed ? members.filter((a) => a.id === p.opened) : members).map(
+              renderRow,
+            )}
+          </div>
+        </PeerTeamGroup>
+      </SidebarBackendProvider>
     );
   };
   const renderProjectChats = (
@@ -893,13 +921,15 @@ export default function Sidebar(p: Props) {
                           onClick={async () => {
                             if (!requireProjectSupport()) return;
                             try {
-                              await post("/api/projects", {
-                                action: "remove_folder",
-                                path: group.path,
-                                folder_id: folder.id,
-                                expected_revision:
-                                  group.organizationRevision || 0,
-                              });
+                              await services
+                                .owner({ kind: "project", path: group.path })
+                                .post("/api/projects", {
+                                  action: "remove_folder",
+                                  path: group.path,
+                                  folder_id: folder.id,
+                                  expected_revision:
+                                    group.organizationRevision || 0,
+                                });
                               await p.refresh?.();
                             } catch (error) {
                               p.notify?.(errorText(error));
@@ -1176,10 +1206,12 @@ export default function Sidebar(p: Props) {
                           <Menu.Item
                             onClick={async () => {
                               try {
-                                await post("/api/projects", {
-                                  action: "remove",
-                                  path: group.path,
-                                });
+                                await services
+                                  .owner({ kind: "project", path: group.path })
+                                  .post("/api/projects", {
+                                    action: "remove",
+                                    path: group.path,
+                                  });
                                 await p.refresh?.();
                               } catch (error) {
                                 p.notify?.(errorText(error));
@@ -1203,16 +1235,23 @@ export default function Sidebar(p: Props) {
                       </UnstyledButton>
                     </p>
                   ) : (
-                    <PeerTeamForm
-                      key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
-                      project={group}
-                      team={peerTeams.find((t) => t.id === teamDialog.id)}
-                      teams={peerTeams}
-                      agents={agents}
-                      action={teamDialog.action}
-                      refresh={p.refresh}
-                      close={() => setTeamDialog(null)}
-                    />
+                    <SidebarBackendProvider
+                      value={services.owner({
+                        kind: "project",
+                        path: group.path,
+                      })}
+                    >
+                      <PeerTeamForm
+                        key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
+                        project={group}
+                        team={peerTeams.find((t) => t.id === teamDialog.id)}
+                        teams={peerTeams}
+                        agents={agents}
+                        action={teamDialog.action}
+                        refresh={p.refresh}
+                        close={() => setTeamDialog(null)}
+                      />
+                    </SidebarBackendProvider>
                   ))}
                 {!isCollapsed && (
                   <div className="project-chats">
@@ -1239,7 +1278,8 @@ export default function Sidebar(p: Props) {
                                   )?.provider || undefined
                                 }
                                 alias={
-                                  aliases[serverViewId || "local"] || "MAC"
+                                  aliases[services.serverForChat(room.id)] ||
+                                  "MAC"
                                 }
                               />
                             </span>
@@ -1314,18 +1354,22 @@ export default function Sidebar(p: Props) {
         closeOnClickOutside={false}
       >
         {conversion && (
-          <ConvertChatForm
-            key={`${conversion.source.id}:${conversion.target.id}`}
-            project={conversion.project}
-            source={conversion.source}
-            target={conversion.target}
-            scope={p.data.stateDir}
-            saved={async () => {
-              await p.refresh?.();
-              p.open(conversion.target.id);
-              setConversion(null);
-            }}
-          />
+          <SidebarBackendProvider
+            value={services.owner({ kind: "chat", id: conversion.source.id })}
+          >
+            <ConvertChatForm
+              key={`${conversion.source.id}:${conversion.target.id}`}
+              project={conversion.project}
+              source={conversion.source}
+              target={conversion.target}
+              scope={p.data.stateDir}
+              saved={async () => {
+                await p.refresh?.();
+                p.open(conversion.target.id);
+                setConversion(null);
+              }}
+            />
+          </SidebarBackendProvider>
         )}
       </Modal>
       <Modal
@@ -1336,18 +1380,29 @@ export default function Sidebar(p: Props) {
         {dialog &&
           (dialogAvailable && dialogProject ? (
             dialogAgent ? (
-              <MoveChatForm
-                project={dialogProject}
-                agent={dialogAgent}
-                saved={savedProject}
-              />
+              <SidebarBackendProvider
+                value={services.owner({ kind: "chat", id: dialogAgent.id })}
+              >
+                <MoveChatForm
+                  project={dialogProject}
+                  agent={dialogAgent}
+                  saved={savedProject}
+                />
+              </SidebarBackendProvider>
             ) : (
-              <ProjectNameForm
-                project={dialogProject}
-                folder={dialog.folder === "new" ? "new" : dialogFolder}
-                parentId={dialog.parentId}
-                saved={savedProject}
-              />
+              <SidebarBackendProvider
+                value={services.owner({
+                  kind: "project",
+                  path: dialogProject.path,
+                })}
+              >
+                <ProjectNameForm
+                  project={dialogProject}
+                  folder={dialog.folder === "new" ? "new" : dialogFolder}
+                  parentId={dialog.parentId}
+                  saved={savedProject}
+                />
+              </SidebarBackendProvider>
             )
           ) : (
             <p role="alert">
