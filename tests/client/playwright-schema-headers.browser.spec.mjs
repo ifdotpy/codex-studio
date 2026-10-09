@@ -8,15 +8,21 @@ import {
 } from "./playwright.mjs";
 
 async function assertOneApiFulfillment(page, explicitHash) {
-  let apiFulfillments = 0;
+  let apiHandlerCalls = 0;
+  let apiFulfillCalls = 0;
+  let apiResponses = 0;
+  page.on("response", (response) => {
+    if (new URL(response.url()).pathname === "/api/probe") apiResponses++;
+  });
   await page.route("http://schema-header-fixture.test/**", async (route) => {
     const url = new URL(route.request().url());
     if (!url.pathname.startsWith("/api/"))
       return route.fulfill({ contentType: "text/html", body: "fixture" });
-    apiFulfillments++;
+    apiHandlerCalls++;
     const headers = explicitHash
       ? { [API_SCHEMA_HASH_HEADER]: explicitHash }
       : {};
+    apiFulfillCalls++;
     await route.fulfill({ status: 200, headers, body: "ok" });
   });
   await page.goto("http://schema-header-fixture.test/");
@@ -24,11 +30,9 @@ async function assertOneApiFulfillment(page, explicitHash) {
     const response = await fetch("/api/probe");
     return response.headers.get("x-studio-api-schema");
   });
-  assert.equal(
-    apiFulfillments,
-    1,
-    "the spec route fulfills the API request once",
-  );
+  assert.equal(apiHandlerCalls, 1, "the spec API route handler runs once");
+  assert.equal(apiFulfillCalls, 1, "the spec calls fulfill exactly once");
+  assert.equal(apiResponses, 1, "the browser receives one API response");
   return receivedHash;
 }
 

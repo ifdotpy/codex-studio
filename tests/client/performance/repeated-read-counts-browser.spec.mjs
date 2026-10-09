@@ -18,7 +18,10 @@ const measured = new Set([
   "/api/costs",
 ]);
 
-async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
+async function repeatedReadCountsScenario(
+  browser,
+  { modelOnly = false, accountsOnly = false } = {},
+) {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -196,6 +199,21 @@ async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
     const loadStreams = [...streamOpens];
     const loadSettledAt = Date.now();
     await captureNewResourceEvents();
+    if (accountsOnly) {
+      const count = load["/api/accounts"] || 0;
+      const invalidations = resourceEvents.filter(
+        ({ at, event }) =>
+          at >= loadStartedAt &&
+          at <= loadSettledAt &&
+          event.reason === "change" &&
+          event.resources.some((resource) => resource.kind === "accounts"),
+      ).length;
+      assert.ok(
+        count <= 1 + invalidations,
+        `page load read /api/accounts ${count} times with ${invalidations} matching resource changes`,
+      );
+      return [];
+    }
 
     counts.clear();
     const otherChat = page
@@ -485,4 +503,15 @@ test("model catalog reads stay within invalidation counts @performance", async (
       `model catalog reads exceeded 1 + matching invalidations: ${JSON.stringify(check)}`,
     );
   }
+});
+
+test("account catalog reads stay within invalidation counts @performance", async ({
+  browser,
+}) => {
+  test.fixme(
+    true,
+    "intermittent duplicate /api/accounts read during initial load; see tests/client/KNOWN-FAILURES.md",
+  );
+  test.setTimeout(180_000);
+  await repeatedReadCountsScenario(browser, { accountsOnly: true });
 });
