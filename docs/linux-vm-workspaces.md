@@ -9,7 +9,7 @@ workspaces ([workspace-images.md](workspace-images.md)), because Xcode and Swift
 1. Studio runs its own Linux VM with Apple `Virtualization.framework` through a signed native
    helper. No dependency on OrbStack, Docker or Lima.
 2. One long-lived VM for all Linux agents. Agents get btrfs snapshots inside the VM, through the
-   existing Linux backend (`scripts/codex_workspace_linux.py`).
+   existing Linux backend (`workspaces/runtime/apps/server/src/codex_workspace_linux.py`).
 3. The code lives inside the VM. The base is copied once; later changes use the existing change
    detector (git status and HEAD diff, rsync for folders without git), not FSEvents.
 4. Agents (Codex and Claude, Linux builds) run inside the VM. Studio on the Mac talks to a guest
@@ -26,17 +26,17 @@ workspaces ([workspace-images.md](workspace-images.md)), because Xcode and Swift
 
 ## Components and owners
 
-| Component          | Files                                                                                                                                                | Content                                                                                                                                                                                            |
-| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| VM host            | `desktop/native/linux-vm/` (Swift), `desktop/package.mjs`, `desktop/signing.mjs`, `scripts/codex_linux_vm.py`                                        | Helper binary: create, start, stop, status of the VM; disk images; vsock and NAT; image download with checksum; first-boot provisioning; resource limits; Python client                            |
-| Guest service      | `vm/guest/` (Python, runs in the VM), provisioning scripts                                                                                           | vsock JSON-RPC: exec with streaming, file and tree sync, workspace engine calls (base, create, archive, remove), provider process supervision (start, stdio relay, stop), credential files, health |
-| Studio integration | `scripts/codex_runtime.py`, `scripts/codex_workspace_images.py` callers, provider launch, `scripts/codex_agent_management.py`, settings UI in `web/` | Spawn option and project default, base build into the VM, remote provider processes, credentials sync, result fetch, archive and removal, disk and RAM reporting, docs                             |
+| Component          | Files                                                                                                                                                                                                                                                        | Content                                                                                                                                                                                            |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| VM host            | `workspaces/client/apps/desktop/native/linux-vm/` (Swift), `workspaces/client/apps/desktop/package.mjs`, `workspaces/client/apps/desktop/signing.mjs`, `workspaces/runtime/apps/server/src/codex_linux_vm.py`                                                | Helper binary: create, start, stop, status of the VM; disk images; vsock and NAT; image download with checksum; first-boot provisioning; resource limits; Python client                            |
+| Guest service      | `workspaces/runtime/apps/vm-guest/` (Python, runs in the VM), provisioning scripts                                                                                                                                                                           | vsock JSON-RPC: exec with streaming, file and tree sync, workspace engine calls (base, create, archive, remove), provider process supervision (start, stdio relay, stop), credential files, health |
+| Studio integration | `workspaces/runtime/apps/server/src/codex_runtime.py`, `workspaces/runtime/apps/server/src/codex_workspace_images.py` callers, provider launch, `workspaces/runtime/apps/server/src/codex_agent_management.py`, settings UI in `workspaces/client/apps/web/` | Spawn option and project default, base build into the VM, remote provider processes, credentials sync, result fetch, archive and removal, disk and RAM reporting, docs                             |
 
 ## Guest protocol, version 1
 
 The guest listens on vsock port **4050**, only. The host helper relays each client
 connection through `~/.local/state/codex-agents/linux-vm/guest.sock` (mode 0600).
-`scripts/codex_linux_vm.py` owns `ensure_running()`, `status()`, `stop()`, settings,
+`workspaces/runtime/apps/server/src/codex_linux_vm.py` owns `ensure_running()`, `status()`, `stop()`, settings,
 and `connect()`. Studio uses that client and this protocol.
 
 Each UTF-8 line contains one JSON object. The maximum line size is 2 MiB.
@@ -219,7 +219,7 @@ provider input, Studio records the error and uses the existing host workspace
 fallback. A lost VM after provider input interrupts the worker with an unknown
 turn result. Studio does not replay that input or create a replacement VM.
 
-`scripts/codex_linux_workspaces.py` uses `codex_linux_vm.connect()`. The host
+`workspaces/runtime/apps/server/src/codex_linux_workspaces.py` uses `codex_linux_vm.connect()`. The host
 helper owns the VM and socket. Studio has no separate socket or VM process.
 Source archives use the existing Git HEAD and status detector. The first upload
 contains the source tree, Git metadata, the index, and uncommitted files. Later
@@ -270,7 +270,7 @@ the worker after a successful host token sync. Studio does not replay a turn
 whose provider input outcome is unknown.
 
 When no host Claude process runs, Studio starts an unsubmitted host SDK query
-through `scripts/claude_bridge/refresh-auth.mjs`. The native host CLI performs
+through `workspaces/providers/apps/claude-bridge/refresh-auth.mjs`. The native host CLI performs
 its existing OAuth refresh under its own store locks. The query stays open
 until the refreshed token is saved. It verifies the account before completion.
 It sends no user prompt or model request. A token within 15 seconds of that
@@ -320,7 +320,7 @@ Worker results contain the guest path and a host fetch command. Commit the resul
 on a named branch. Run the fetch command from the host checkout:
 
 ```sh
-python3 scripts/codex_linux_vm_fetch.py AGENT_ID GUEST_PATH BRANCH --cwd HOST_REPO
+python3 workspaces/runtime/apps/server/src/codex_linux_vm_fetch.py AGENT_ID GUEST_PATH BRANCH --cwd HOST_REPO
 ```
 
 The command creates a Git bundle in the guest Git directory. It reads bounded
@@ -351,7 +351,7 @@ Contract tests use a fake guest and the maintained native supervisor. They test
 Studio spawn, the base wait, native process reuse, host connection isolation,
 credential changes, upload response loss, and a real Git bundle fetch. Real VM
 checks require the host helper and guest service from their component branches.
-`tests/linux-vm-studio-native.py` uses an already provisioned, isolated VM. It
+`workspaces/runtime/apps/server/tests/linux-vm-studio-native.py` uses an already provisioned, isolated VM. It
 checks the Studio caller, source deltas, a native Codex model commit, native
 process reuse after a Runtime restart, result fetch, archive, restore, removal,
 and resource reports. Use `--claude` to check a native Claude model turn with
@@ -361,11 +361,11 @@ and its refresh locks. It checks that both guest profiles have no refresh token.
 Use the state directory and helper path of an already running test VM:
 
 ```sh
-python3 scripts/codex_python.py --exec tests/linux-vm-studio-native.py \
+python3 workspaces/runtime/apps/server/src/codex_python.py --exec workspaces/runtime/apps/server/tests/linux-vm-studio-native.py \
   --state-dir /tmp/studio-vm-check --helper /tmp/studio-linux-vm --claude
 ```
 
-`tests/linux-vm-auth-native.py` uses fake tokens and a local HTTPS service.
+`workspaces/runtime/apps/server/tests/linux-vm-auth-native.py` uses fake tokens and a local HTTPS service.
 It checks an expired Linux Claude token, zero guest OAuth refresh requests,
 an idle host native refresh and store write, and a successful retry after sync.
 It uses no real account token or paid model request. Run it with the same
@@ -380,7 +380,7 @@ The guest listens on vsock port 4050. The helper relays each guest connection th
 `~/.local/state/codex-agents/linux-vm/guest.sock`. The socket has mode `0600`.
 The helper accepts connections from the same macOS user only.
 
-`scripts/codex_linux_vm.py` provides these functions:
+`workspaces/runtime/apps/server/src/codex_linux_vm.py` provides these functions:
 
 - `ensure_running(settings=None, timeout=3600)` creates the VM when needed and waits for guest health.
 - `status()` returns the VM state, process ID, resource settings, allocated disk bytes, and free host bytes.
@@ -435,17 +435,17 @@ A healthy guest continues without a reboot.
 If Linux setup fails before the first input, Studio starts a host image workspace when the host supports images.
 The host copy includes the user's uncommitted files.
 Otherwise, Studio uses a Git worktree or the original folder outside Git.
-The guest component supplies `vm/guest/install.sh`. The host copies that component into
+The guest component supplies `workspaces/runtime/apps/vm-guest/install.sh`. The host copies that component into
 `/opt/codex-studio/vm/guest` in the cloud-init seed. No credentials enter the seed.
 
 To build and sign the helper from a checkout:
 
 ```sh
-node desktop/native/linux-vm/build.mjs /tmp/studio-linux-vm
-CODEX_LINUX_VM_HELPER=/tmp/studio-linux-vm python3 scripts/codex_linux_vm.py start
+node workspaces/client/apps/desktop/native/linux-vm/build.mjs /tmp/studio-linux-vm
+CODEX_LINUX_VM_HELPER=/tmp/studio-linux-vm python3 workspaces/runtime/apps/server/src/codex_linux_vm.py start
 ```
 
-`desktop/package.mjs` includes the helper and guest payload. The helper has the
+`workspaces/client/apps/desktop/package.mjs` includes the helper and guest payload. The helper has the
 `com.apple.security.virtualization` entitlement. A backend exit does not stop it.
 A separate helper lease prevents two VMs from opening the same disks.
 The helper keeps the latest 1 MiB of guest console output for boot diagnostics.
@@ -459,7 +459,7 @@ The guest install script resizes the btrfs data filesystem on each boot.
 Run the native host proof from the checkout:
 
 ```sh
-python3 -B desktop/native/linux-vm/test.py
+python3 -B workspaces/client/apps/desktop/native/linux-vm/test.py
 ```
 
 The proof creates isolated temporary disks. It checks boot, CLI versions, a btrfs
