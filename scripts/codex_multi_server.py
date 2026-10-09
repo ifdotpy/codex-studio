@@ -312,6 +312,10 @@ class MultiServerService:
           action TEXT NOT NULL, created REAL NOT NULL);
         CREATE TABLE IF NOT EXISTS runtime_access_local_alias (
           id INTEGER PRIMARY KEY CHECK(id=1), alias TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_name_targets (
+          id TEXT PRIMARY KEY, server TEXT NOT NULL, label TEXT NOT NULL);
+        CREATE TABLE IF NOT EXISTS runtime_access_name_requests (
+          id TEXT PRIMARY KEY, label TEXT NOT NULL, actor TEXT NOT NULL, applied INTEGER NOT NULL);
         CREATE TABLE IF NOT EXISTS runtime_access_alias_requests (
           id TEXT PRIMARY KEY, server TEXT NOT NULL, alias TEXT NOT NULL);
         """)
@@ -368,34 +372,7 @@ class MultiServerService:
                 pair = self.crypto.call("generate")
                 value = {"serverId": uuid.uuid4().hex, "publicKey": pair["publicKey"],
                          "privateKey": pair["privateKey"], "label": "Studio server"}
-                fd, temporary = tempfile.mkstemp(prefix="identity-", dir=directory)
-                try:
-                    if os.name == "nt":
-                        from codex_private_paths import verify_handle_within_directory
-
-                        try:
-                            verify_handle_within_directory(fd, directory)
-                        except (OSError, ValueError) as error:
-                            os.close(fd)
-                            raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
-                    with os.fdopen(fd, "w") as stream:
-                        stream.write(_json(value))
-                        stream.flush()
-                        os.fsync(stream.fileno())
-                    if os.name == "nt":
-                        from codex_private_paths import protect_temp_file
-
-                        protect_temp_file(temporary)
-                    os.replace(temporary, path)
-                    if os.name != "nt":
-                        directory_fd = os.open(directory, os.O_RDONLY)
-                        try:
-                            os.fsync(directory_fd)
-                        finally:
-                            os.close(directory_fd)
-                finally:
-                    if os.path.exists(temporary):
-                        os.unlink(temporary)
+                self._store_identity(value)
             flags = os.O_RDONLY | (os.O_NOFOLLOW if os.name != "nt" else 0)
             fd = os.open(path, flags)
             if os.name == "nt":
@@ -422,7 +399,119 @@ class MultiServerService:
                     raise AccessError(503, "credential_invalid", "The server credential file is invalid")
                 _id(value.get("serverId"), "server credential ID")
                 self._identity = value
+            self._recover_name()
             return self._identity
+
+    def _store_identity(self, value: dict[str, Any]) -> None:
+        directory = self.runtime.root / "multi-server"
+        path = directory / "identity.json"
+        if directory.is_symlink() or path.is_symlink():
+            raise AccessError(503, "credential_permissions", "The credential path must not be a symbolic link.")
+        if os.name == "nt":
+            from codex_private_paths import reject_reparse_path, ensure_private_dir
+            reject_reparse_path(self.runtime.root, path, allow_missing=True)
+            ensure_private_dir(directory)
+        elif directory.stat().st_mode & 0o077 or (path.exists() and path.stat().st_mode & 0o077):
+            raise AccessError(503, "credential_permissions", "The credential path requires owner-only access.")
+        fd, temporary = tempfile.mkstemp(prefix="identity-", dir=directory)
+        try:
+            if os.name == "nt":
+                from codex_private_paths import verify_handle_within_directory
+
+                try:
+                    verify_handle_within_directory(fd, directory)
+                except (OSError, ValueError) as error:
+                    os.close(fd)
+                    raise AccessError(503, "credential_permissions", "The credential file is outside its private directory") from error
+            with os.fdopen(fd, "w") as stream:
+                stream.write(_json(value))
+                stream.flush()
+                os.fsync(stream.fileno())
+            if os.name == "nt":
+                from codex_private_paths import protect_temp_file
+
+                protect_temp_file(temporary)
+            os.replace(temporary, path)
+            if os.name != "nt":
+                directory_fd = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+
+    @staticmethod
+    def validate_name(label: object) -> str:
+        import unicodedata
+        if (not isinstance(label, str) or not 1 <= len(label) <= 80
+                or label != label.strip()
+                or any(unicodedata.category(character).startswith("C")
+                       or (character.isspace() and character != " ") for character in label)):
+            raise AccessError(400, "invalid_label", "Use 1 to 80 visible characters without outer spaces.")
+        return label
+
+    def _recover_name(self) -> None:
+        assert self._identity is not None
+        with self._write() as db:
+            row = db.execute("SELECT id,label,actor FROM runtime_access_name_requests WHERE applied=0 ORDER BY rowid LIMIT 1").fetchone()
+            if row is None:
+                return
+            value = {**self._identity, "label": row[1]}
+            self._store_identity(value)
+            self._identity = value
+            db.execute("UPDATE runtime_access_name_requests SET applied=1 WHERE id=?", (row[0],))
+            self._audit(db, value["serverId"], "name", row[2])
+
+    def rename(self, label: str, request_id: str, actor: str) -> dict[str, Any]:
+        label = self.validate_name(label)
+        _id(request_id, "request ID")
+        with self.lock:
+            self.server_aliases()
+            self._recover_name()
+            with self._write() as db:
+                saved = db.execute("SELECT label FROM runtime_access_name_requests WHERE id=?", (request_id,)).fetchone()
+                if saved and saved[0] != label:
+                    raise AccessError(409, "request_conflict", "The request ID has different content.")
+                if not saved:
+                    db.execute("INSERT INTO runtime_access_name_requests VALUES(?,?,?,0)", (request_id, label, actor))
+            self._recover_name()
+            return self.identity()
+
+    def set_server_name(self, server_id: str, label: str, request_id: str, actor: str) -> dict[str, Any]:
+        _id(server_id, "server ID")
+        self.validate_name(label)
+        _id(request_id, "request ID")
+        target = "local" if server_id in ("local", self.local_server_id) else server_id
+        if target != "local":
+            self.paired_server(target)
+        with self._write() as db:
+            saved = db.execute("SELECT server,label FROM runtime_access_name_targets WHERE id=?", (request_id,)).fetchone()
+            if saved and (saved[0], saved[1]) != (target, label):
+                raise AccessError(409, "request_conflict", "The request ID has different content.")
+            if not saved:
+                db.execute("INSERT INTO runtime_access_name_targets VALUES(?,?,?)", (request_id, target, label))
+        if target == "local":
+            self.rename(label, request_id, actor)
+        else:
+            self.request(server_id, "POST", "/api/multi-server/v1/name",
+                                  {"label": label, "requestId": request_id}, request_id)
+            result = self.request(server_id, "GET", "/api/multi-server/v1/status", None, uuid.uuid4().hex)
+            self.refresh_peer_identity(server_id, result)
+        return self.snapshot()
+
+    def refresh_peer_identity(self, server_id: str, identity: dict[str, Any]) -> None:
+        if identity.get("serverId") != server_id:
+            raise AccessError(403, "server_mismatch", "The server response identity does not match the paired server.")
+        label = self.validate_name(identity.get("label"))
+        with self._write() as db:
+            peer = _record(db.execute("SELECT record FROM runtime_access_clients WHERE id=?", (server_id,)).fetchone())
+            if (not peer or peer.get("status") != "paired" or peer.get("kind") != "server"
+                    or peer.get("publicKey") != identity.get("publicKey")):
+                raise AccessError(403, "server_mismatch", "The server response identity does not match the paired server.")
+            if peer.get("label") != label:
+                db.execute("UPDATE runtime_access_clients SET record=json_set(record,'$.label',?) WHERE id=?", (label, server_id))
 
     @property
     def local_server_id(self) -> str:

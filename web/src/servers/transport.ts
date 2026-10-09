@@ -22,9 +22,20 @@ export type FrameSigningCredential = {
   clientId: string;
   privateKey: CryptoKey;
 };
+export type AutomaticPairApproval = {
+  localServerId: string;
+  serverId: string;
+  generation: string;
+  inviteRequestId: string;
+};
 export interface ServerCredentialAdapter {
   hasPairAttempt(attempt: PairAttemptIdentity): Promise<boolean>;
-  pair(origin: string, code: string, requestId: string): Promise<StudioServer>;
+  pair(
+    origin: string,
+    code: string,
+    requestId: string,
+    approval?: AutomaticPairApproval,
+  ): Promise<StudioServer>;
   fetch(server: StudioServer, request: Request): Promise<Response>;
   forget(server: StudioServer): Promise<void>;
   frameSigningCredential?(

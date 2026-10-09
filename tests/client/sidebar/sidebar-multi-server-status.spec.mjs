@@ -49,7 +49,7 @@ test("paired sidebar shows the chat provider and server alias", async ({
       },
       { origin: remote.invitation.origin, target: remote.origin },
     );
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=combined");
     await page.locator("#message").waitFor();
     await page
       .getByRole("button", { name: "Studio settings", exact: true })

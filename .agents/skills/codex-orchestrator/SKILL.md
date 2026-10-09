@@ -161,9 +161,12 @@ to the user and tell the subagent that the decision remains pending.
 Native tool permission requests still require the real user approval when the
 permission system requires it. Your decision cannot replace that approval.
 
-## Move the lead or a worker
+## Teleport the lead or a worker
 
-Each agent can call `orchestration_move` to move its own execution.
+Each new session can call `orchestration_teleport` to teleport its own execution.
+Older sessions keep `orchestration_move` and its exact definition and role text.
+Studio saves the name when it creates the native session.
+The name stays the same after a teleport. This change preserves the old prompt cache.
 Prepare the target folder with Git first. Supply an absolute `cwd` and a stable
 request ID. Finish the current turn after acceptance.
 Existing children keep their servers and report through the remote-parent channel.

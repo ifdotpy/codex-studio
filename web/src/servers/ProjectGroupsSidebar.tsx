@@ -1,3 +1,5 @@
+import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Menu, Modal } from "@mantine/core";
 import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
@@ -34,8 +36,9 @@ export default function ProjectGroupsSidebar({
 }) {
   const groups = useMemo(() => logicalProjects(navigation), [navigation]);
   const [choosing, setChoosing] = useState<LogicalProject | null>(null);
-  const [compact, setCompact] = useState<Record<string, boolean>>(() =>
-    saved("studio-logical-project-compact", {}),
+  const [compact, setCompact] = useSyncedVisualState<Record<string, boolean>>(
+    "studio-logical-project-compact",
+    {},
   );
   const [legacyCompact] = useState<Record<string, boolean>>(() =>
     saved("studio-server-project-compact-v1", {}),
@@ -141,8 +144,13 @@ export default function ProjectGroupsSidebar({
               query={query}
               setCompact={(value) => {
                 const next = { ...compact, [project.key]: value };
-                setCompact(next);
-                save("studio-logical-project-compact", next);
+                setCompact(
+                  writePreferenceEdit(
+                    "studio-logical-project-compact",
+                    compact,
+                    next,
+                  ),
+                );
               }}
               open={(chat) =>
                 send(chat.serverId || project.owner, {

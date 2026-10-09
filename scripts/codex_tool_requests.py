@@ -80,6 +80,13 @@ def request_read_only(tool: str, args: "JsonObject") -> bool:
 
 def request_result_outcome(record: "ToolRequestRecord", result: "JsonObject") -> str:
     if result.get("success") is True:
+        if record.get('tool') == 'orchestration_servers':
+            try:
+                paired = json.loads(result['contentItems'][0]['text'])
+            except (KeyError, IndexError, TypeError, ValueError):
+                paired = None
+            if isinstance(paired, dict) and paired.get('outcome') in {'applied', 'not_applied', 'unknown'}:
+                return str(paired['outcome'])
         return "applied"
     if result.get("success") is not False:
         return "unknown"
@@ -228,14 +235,14 @@ class RequestMixin:
         params, args = _arguments(message)
         call = str(params.get("callId", message.get("id")))
         name, identity_args = params.get("tool"), args
-        if (name in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move"}
+        if (name in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"}
                 and not (name == "orchestration_servers" and identity_args.get("action") == "receipt")
                 and "request_id" in identity_args):
             request_id = identity_args["request_id"]
             if (not isinstance(request_id, str) or not 1 <= len(request_id) <= 200
                     or request_id != request_id.strip() or any(ord(c) < 32 for c in request_id)):
                 raise ValueError("Supply request_id with 1 to 200 characters and no surrounding whitespace")
-            call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:", "orchestration_servers": "server:", "orchestration_move": "move:"}[name] + request_id
+            call = {"orchestration_spawn": "spawn:", "orchestration_send": "send:", "orchestration_review": "review:", "orchestration_servers": "server:", "orchestration_move": "move:", "orchestration_teleport": "move:"}[name] + request_id
         return _prefix(account_key, params.get("threadId")) + call
 
     def tool_request(self: "RequestRuntime", key: str | None, db: "sqlite3.Connection | None" = None) -> "ToolRequestRecord | None":
@@ -326,6 +333,8 @@ class RequestMixin:
             record = self.tool_request(key, db)
             if record and (record["signature"] != signature or record["agent"] != actor["id"]):
                 raise ValueError("This request id has different content")
+            if record:
+                record = self._refresh_tool_request(db, record)
             call_id = str(params.get("callId", message.get("id")))
             if not record:
                 now = time.time()
@@ -351,7 +360,7 @@ class RequestMixin:
                     record["reservationDelayMs"] = max(0, now - dispatched) * 1000
                     if "wireReceivedAt" in record:
                         record["callbackQueueDelayMs"] = max(0, dispatched - received) * 1000
-                if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move"} and "request_id" in identity_args:
+                if identity_tool in {"orchestration_spawn", "orchestration_send", "orchestration_review", "orchestration_servers", "orchestration_move", "orchestration_teleport"} and "request_id" in identity_args:
                     record["request_id"] = identity_args["request_id"]
                 self.put(db, "tool_requests", record)
                 cached = self.tool_result(db, key)
@@ -434,6 +443,9 @@ class RequestMixin:
                               record: "ToolRequestRecord") -> "ToolRequestRecord":
         from codex_payloads import resolve_record, state_root
         record = resolve_record(state_root(self), record)
+        from codex_project_locations import refresh_tool_receipt
+        if refresh_tool_receipt(self, db, record):
+            return self.tool_request(record['id'], db) or record
         if record["outcome"] not in {"applied", "not_applied"}:
             result = self.tool_result(db, record["id"]) or record.get("result")
             if isinstance(result, dict):
@@ -556,8 +568,9 @@ class RequestMixin:
                 if action == 'get' and actor.get('movedFrom'):
                     move = self.multi_server().moves().status(actor_id, str(request_id))
                     if 'acceptance' in move:
+                        from codex_session_tools import session_tool_name
                         return {'id': request_id, 'stage': 'complete', 'outcome': 'applied',
-                                'tool': 'orchestration_move', 'operationResult': move['acceptance'], 'move': move}
+                                'tool': session_tool_name(actor), 'operationResult': move['acceptance'], 'move': move}
                 return {"id": request_id, "stage": "not_found", "outcome": "unknown",
                         "message": "No receipt found. This does not prove that the operation did not execute."}
             record = self._refresh_tool_request(db, record)
@@ -578,6 +591,6 @@ class RequestMixin:
                 # current registry state, not the state when creation committed.
                 result["agents"] = self._request_agent_states(db, record)
                 result["registryObservedAt"] = time.time()
-            if action == "get" and record.get("tool") == "orchestration_move":
+            if action == "get" and record.get("tool") in {"orchestration_move", "orchestration_teleport"}:
                 result["move"] = self.multi_server().moves().status(actor_id, record.get("request_id") or record["id"])
             return result

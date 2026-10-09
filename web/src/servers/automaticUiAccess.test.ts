@@ -4,6 +4,7 @@ import {
   type AutomaticAccessAttempt,
 } from "./automaticUiAccess";
 import type { DiscoverySnapshot } from "./discoveryModel";
+import { PairingNotAppliedError } from "./pairing";
 const invitation = {
   protocol: 1 as const,
   inviteId: "invite",
@@ -299,6 +300,60 @@ it("keeps the same identity when an uncertain pair outlives its invitation", asy
     s.adapter.invite.mock.calls[1],
   );
   expect(s.adapter.pair.mock.calls[0]).toEqual(s.adapter.pair.mock.calls[1]);
+});
+it("renews an expired attempt when native credentials prove the gesture failure never sent it", async () => {
+  const s = setup();
+  s.adapter.pair.mockRejectedValueOnce(
+    new Error("Use a desktop button or keyboard action."),
+  );
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "desktop button",
+  );
+  const old = [...s.records.values()][0];
+  s.adapter.invite.mockResolvedValue({ ...invitation, expires: 3000 });
+  await new AutomaticUiAccess(
+    s.store,
+    {
+      ...s.adapter,
+      hasPairAttempt: async () => false,
+    },
+    () => 2000000,
+  ).reconcile(snapshot);
+  expect(s.adapter.invite.mock.calls[1][1]).not.toBe(old.inviteRequestId);
+  expect(s.adapter.pair.mock.calls[1][2]).not.toBe(old.pairRequestId);
+});
+it("preserves an expired attempt when native credentials still hold its unknown result", async () => {
+  const s = setup();
+  s.adapter.pair.mockRejectedValueOnce(new TypeError("Pair response lost"));
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "Pair response lost",
+  );
+  await new AutomaticUiAccess(
+    s.store,
+    {
+      ...s.adapter,
+      hasPairAttempt: async () => true,
+    },
+    () => 2000000,
+  ).reconcile(snapshot);
+  expect(s.adapter.pair.mock.calls[0]).toEqual(s.adapter.pair.mock.calls[1]);
+});
+it("requests a new invitation only after the native server confirms the old pair was not applied", async () => {
+  const s = setup();
+  s.adapter.pair.mockRejectedValueOnce(new PairingNotAppliedError());
+  await expect(s.controller.reconcile(snapshot)).rejects.toThrow(
+    "invitation is unavailable",
+  );
+  expect(s.records.size).toBe(0);
+  await new AutomaticUiAccess(s.store, s.adapter, () => 100000).reconcile(
+    snapshot,
+  );
+  expect(s.adapter.invite.mock.calls[0][1]).not.toBe(
+    s.adapter.invite.mock.calls[1][1],
+  );
+  expect(s.adapter.pair.mock.calls[0][2]).not.toBe(
+    s.adapter.pair.mock.calls[1][2],
+  );
 });
 
 it("does not mark pairing as uncertain when its final peer check fails before the send", async () => {

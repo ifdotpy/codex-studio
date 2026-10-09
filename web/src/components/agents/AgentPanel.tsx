@@ -1,3 +1,4 @@
+import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import { serverLocalStorage as localStorage } from "../../servers/storage";
 import {
   useEffect,
@@ -228,16 +229,11 @@ function ProgressDisplay({
     layout: ProgressLayout;
   } | null>(null);
   const [expanded, setExpanded] = useState(false);
-  // This device's workspace choice applies across chats to preserve chat space.
   const preferenceKey = `codex-progress-hidden:${stateDir}`;
-  const [hiddenChoice, setHiddenChoice] = useState<boolean | null>(() => {
-    try {
-      const stored = localStorage.getItem(preferenceKey);
-      return stored === "true" ? true : stored === "false" ? false : null;
-    } catch {
-      return null;
-    }
-  });
+  const [hiddenChoice, setHiddenChoice] = useSyncedVisualState<boolean | null>(
+    preferenceKey,
+    null,
+  );
   const [narrow, setNarrow] = useState(
     () => window.matchMedia("(max-width: 760px)").matches,
   );

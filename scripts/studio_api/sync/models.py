@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Annotated, Literal
 from pydantic import ConfigDict, Field, TypeAdapter, field_validator, model_validator
 
+from studio_api.sync.preferences import UiPreferencesDto
 from studio_api.models import (
     ContractModel,
     ContractStrEnum,
@@ -1237,6 +1238,7 @@ class EntityCollection(ContractStrEnum):
     EVENT = "event"
     WORK = "work"
     WORKSPACE = "workspace"
+    UI_PREFERENCES = "uiPreferences"
 
 
 class SyncAgentEntityPayload(ContractModel):
@@ -1323,6 +1325,12 @@ class SyncWorkspaceEntityPayload(ContractModel):
     value: WorkspaceEntityDto
 
 
+class SyncUiPreferencesEntityPayload(ContractModel):
+    collection: Literal[EntityCollection.UI_PREFERENCES]
+    id: str
+    value: UiPreferencesDto
+
+
 SyncEntityPayload = Annotated[
     SyncAgentEntityPayload
     | SyncRoomEntityPayload
@@ -1337,7 +1345,8 @@ SyncEntityPayload = Annotated[
     | SyncEdgeEntityPayload
     | SyncEventEntityPayload
     | SyncWorkEntityPayload
-    | SyncWorkspaceEntityPayload,
+    | SyncWorkspaceEntityPayload
+    | SyncUiPreferencesEntityPayload,
     Field(discriminator="collection"),
 ]
 

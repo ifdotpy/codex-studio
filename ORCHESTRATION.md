@@ -1014,9 +1014,14 @@ operation with a new request ID. `maintenance_report` includes VM disk and
 memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
 See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
 
-### Move your execution to another server
+### Teleport your execution to another server
 
-`orchestration_move` moves the caller, whether it is a lead or a worker.
+`orchestration_teleport` teleports the caller, whether it is a lead or a worker.
+New native sessions use this name. Existing sessions keep `orchestration_move`
+with its byte-identical definition and role text. Studio saves the name before
+native creation and retains it through teleports and lost replies.
+`orchestration_request` reads receipts under either name.
+This change does not cause a prompt cache miss for an existing session.
 Prepare the target folder first with Git and server command tools.
 Supply `server` (a paired server ID or `local`), an absolute `cwd`, and a stable
 `request_id`. You can also supply `account_key` and a short `note`.
@@ -1068,16 +1073,39 @@ and organization to retain the prompt cache.
 Codex retains the native session ID, full history, instructions, model,
 reasoning settings, and ordered tool definitions.
 Codex preflight requires the same native version, OS, and MCP tool catalog.
+The catalog proof compares tool names, descriptions, input and output schemas, titles, and Codex Apps connector metadata.
+It also compares server information (name and version).
+Resource lists, resource template lists, authentication status, and runtime status do not define the prompt catalog.
+Studio does not include these fields in the catalog hash.
+Codex preflight reads MCP initialization instructions without model input or tool calls.
+If both servers expose these instructions, their hashes must match.
+The result records `mcpProofLevels` for each server:
+
+- `initialize_instructions`: both servers supplied matching initialization instructions.
+- `server_info_fallback`: a reader cannot reach one server with its available credentials or configuration.
+  Tool definitions and server information still must match. This fallback does not refuse a teleport by itself.
+  This level does not prove that server instructions match.
+
+The first target turn's cache counters show actual provider cache reuse.
+The field selection follows Codex 0.162.0 [tool conversion](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/tools/src/mcp_tool.rs),
+[namespace construction](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/core/src/tools/handlers/mcp.rs),
+and [MCP initialization](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/codex-mcp/src/rmcp_client.rs).
 A different or unknown Codex account identity refuses by default.
 Only explicit `accept_cache_loss=true` approves cache loss for that move.
 The result records this approval and its cache-loss warning.
 Claude requires the same provider account and organization.
 Claude uses SDK `systemPrompt.snapshot=true` and `excludeDynamicSections=true`.
 Claude also requires the same OS and matching Claude CLI and SDK versions on both servers.
-Studio verifies the saved native `prompt_snapshot`, model, and ordered Studio tool schemas.
+Studio accepts native snapshot schemas under `schema` or `input_schema`.
+It selects the latest snapshot after the last compaction and requires complete tool schemas.
+Deferred tool records stay unchanged in the native conversation history.
+Studio compares the current ordered Studio tool schemas on both servers.
 Identical CLI and SDK versions with identical Studio query options prove the builtin catalog.
 The result names this proof method. Target user, project, and local settings are excluded.
-External MCP snapshots refuse until Studio can verify their target catalogs.
+Studio reads external MCP catalogs with `tools/list`, without model input or tool calls.
+It compares tool names, descriptions, schemas, and order.
+The target loads only the required local MCP configuration and the same account's selected Claude connectors.
+Credentials stay on each server. Missing or different catalogs refuse with names only.
 The move receipt records cached input and cache creation tokens from the first target turn.
 A mismatch names both versions and tells the caller to update the target.
 Studio does not upgrade a CLI during a move.

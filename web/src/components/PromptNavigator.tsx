@@ -1,7 +1,9 @@
+import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useSyncedVisualState } from "../sync/useSyncedVisualState";
 import { ActionIcon, Button, Popover, TextInput } from "@mantine/core";
 import { Bookmark, ListTree, Search } from "lucide-react";
 import { useEffect, useMemo, useState, type RefObject } from "react";
-import { syncGet, errorText, save, saved, type GetResult } from "../api";
+import { syncGet, errorText, type GetResult } from "../api";
 import type { Message } from "../types";
 import "./prompt-navigation.css";
 
@@ -34,9 +36,9 @@ export default function PromptNavigator({
   const [activeId, setActiveId] = useState("");
   const [opened, setOpened] = useState(false);
   const [query, setQuery] = useState("");
-  const [bookmarks, setBookmarks] = useState<Record<string, boolean>>(() =>
-    saved(storageKey, {}),
-  );
+  const [bookmarks, setBookmarks] = useSyncedVisualState<
+    Record<string, boolean>
+  >(storageKey, {});
   const [onlySaved, setOnlySaved] = useState(false);
   const [search, setSearch] = useState<{
     query: string;
@@ -147,8 +149,7 @@ export default function PromptNavigator({
     const next = { ...bookmarks };
     if (next[id]) delete next[id];
     else next[id] = true;
-    setBookmarks(next);
-    save(storageKey, next);
+    setBookmarks(writePreferenceEdit(storageKey, bookmarks, next));
   };
   return (
     <nav

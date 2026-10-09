@@ -60,7 +60,7 @@ GZIP_LEVEL = 3
 REFERRER_POLICY = "no-referrer"
 CONTENT_SECURITY_POLICY = (
     "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
-    "connect-src 'self' https://api.openai.com https://*.ts.net; "
+    "connect-src 'self' https://api.openai.com https://*.ts.net:*; "
     "img-src 'self' data: blob: https: http:; "
     "media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; "
     "frame-ancestors 'none'; base-uri 'none'"

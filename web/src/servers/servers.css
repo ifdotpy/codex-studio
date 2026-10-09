@@ -33,6 +33,19 @@
   justify-content: space-between;
   gap: 8px;
 }
+.server-settings-card-header {
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+.server-settings-card-header > div:first-child {
+  flex: 1 1 180px;
+  min-width: 0;
+  justify-content: flex-start;
+  flex-wrap: wrap;
+}
+.server-settings-card-header > div:last-child:not(:first-child) {
+  flex: 0 0 auto;
+}
 .server-settings-card-header h3 {
   margin: 0;
   font-size: 15px;
@@ -251,7 +264,7 @@
 .server-mobile-toggle {
   display: none;
 }
-html[data-server-view] #sidebar {
+html[data-server-view]:not([data-server-navigation="classic"]) #sidebar {
   display: none;
 }
 html[data-server-view][data-server-projects] #sidebar {
@@ -301,4 +314,24 @@ html[data-server-view] .workspace {
 .server-sidebar {
   font-size: var(--studio-sidebar-font-size);
   font-family: var(--studio-font-family);
+}
+
+.multi-server-shell[data-navigation="classic"] {
+  flex-direction: column;
+  padding-top: 0;
+}
+.server-switcher {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  flex-shrink: 0;
+  background: var(--sidebar);
+  border-bottom: 1px solid var(--line);
+}
+.server-switcher .mantine-NativeSelect-root {
+  width: min(260px, calc(100% - 40px));
+}
+.multi-server-shell[data-navigation="classic"] .server-views {
+  min-height: 0;
 }

@@ -8,6 +8,7 @@ const require = createRequire(import.meta.url);
 const {
   createServerCredentials,
   canonicalRequest,
+  serveOrigin,
 } = require("./server-credentials.cjs");
 const safeStorage = {
   isEncryptionAvailable: () => true,
@@ -19,7 +20,7 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
   const invitation = {
     protocol: 1,
     serverId: "server-a",
-    origin: "https://computer.tailnet.ts.net",
+    origin: "https://computer.tailnet.ts.net:8443",
     inviteId: "invite",
     token: "token-secret",
     publicKey: "server-public-key",
@@ -120,6 +121,14 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
         requestId: "read-other",
       }),
     ).rejects.toThrow("does not belong");
+    await expect(
+      adapter.request({
+        serverId: server.id,
+        credentialId: server.credentialId,
+        url: "https://computer.tailnet.ts.net/api/session",
+        requestId: "read-other-port",
+      }),
+    ).rejects.toThrow("does not belong");
     expect(await adapter.owns(server.id)).toBe(true);
     const bytes = await readFile(
       path.join(root, "paired-servers.json"),
@@ -129,6 +138,111 @@ test("pair retry keeps its key and body, signs exact bytes and refuses another s
     expect(bytes).not.toContain("token-secret");
     await adapter.forget(server.id);
     expect(await adapter.owns(server.id)).toBe(false);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+test("Serve HTTPS ports retain the host, credential, and path restrictions", () => {
+  expect(serveOrigin("https://computer.tailnet.ts.net:8443/")).toBe(
+    "https://computer.tailnet.ts.net:8443",
+  );
+  expect(serveOrigin("https://computer.tailnet.ts.net:443/")).toBe(
+    "https://computer.tailnet.ts.net",
+  );
+  for (const origin of [
+    "http://computer.tailnet.ts.net:8443",
+    "https://computer.tailnet.ts.net:0",
+    "https://computer.tailnet.ts.net:65536",
+    "https://computer.tailnet.ts.net.attacker.test:8443",
+    "https://user:secret@computer.tailnet.ts.net:8443",
+    "https://computer.tailnet.ts.net:8443/path",
+    "https://computer.tailnet.ts.net:8443/?token=secret",
+    "https://computer.tailnet.ts.net:8443/#fragment",
+  ])
+    expect(() => serveOrigin(origin)).toThrow();
+});
+test("a confirmed unavailable invitation releases only its rejected attempt and coalesces concurrent retries", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "studio-rejected-invite-"));
+  const invitation = {
+    protocol: 1,
+    serverId: "remote",
+    origin: "https://remote.tailnet.ts.net",
+    inviteId: "old",
+    token: "secret",
+    publicKey: "key",
+    tailscaleUser: "owner",
+  };
+  let respond;
+  const pending = new Promise((resolve) => {
+    respond = resolve;
+  });
+  const calls = [];
+  let reject = true;
+  const adapter = createServerCredentials({
+    profile: root,
+    safeStorage,
+    fetchRequest: async (request) => {
+      const body = await request.clone().json();
+      calls.push(body);
+      if (reject) return pending;
+      return Response.json({
+        ...invitation,
+        inviteId: body.inviteId,
+        clientId: body.clientId,
+        paired: true,
+      });
+    },
+  });
+  try {
+    const input = {
+      origin: invitation.origin,
+      invitation,
+      requestId: "old-request",
+    };
+    const first = adapter.pair(input);
+    const duplicate = adapter.pair(input);
+    expect(first).toBe(duplicate);
+    await expect(
+      adapter.pair({
+        ...input,
+        invitation: { ...invitation, inviteId: "other" },
+      }),
+    ).rejects.toThrow("another pairing attempt");
+    respond(
+      Response.json(
+        {
+          error: "The invitation is expired or was already used",
+          code: "invite_unavailable",
+        },
+        { status: 403 },
+      ),
+    );
+    await expect(first).rejects.toMatchObject({ code: "invite_unavailable" });
+    expect(calls).toHaveLength(1);
+    expect(
+      await adapter.hasPairAttempt({
+        origin: invitation.origin,
+        serverId: "remote",
+        requestId: "old-request",
+        inviteId: "old",
+      }),
+    ).toBe(false);
+    reject = false;
+    await adapter.pair({
+      ...input,
+      invitation: { ...invitation, inviteId: "new" },
+      requestId: "new-request",
+    });
+    expect(calls).toHaveLength(2);
+    expect(calls[1].clientId).not.toBe(calls[0].clientId);
+    expect(
+      await adapter.hasPairAttempt({
+        origin: invitation.origin,
+        serverId: "remote",
+        requestId: "new-request",
+        inviteId: "new",
+      }),
+    ).toBe(true);
   } finally {
     await rm(root, { recursive: true, force: true });
   }

@@ -1165,6 +1165,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/multi-server/v1/name": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Rename Server */
+    post: operations["rename_server_api_multi_server_v1_name_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/multi-server/v1/pair": {
     parameters: {
       query?: never;
@@ -1176,6 +1193,23 @@ export interface paths {
     put?: never;
     /** Pair */
     post: operations["pair_api_multi_server_v1_pair_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/multi-server/v1/status": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    /** Server Status */
+    get: operations["server_status_api_multi_server_v1_status_get"];
+    put?: never;
+    post?: never;
     delete?: never;
     options?: never;
     head?: never;
@@ -1623,6 +1657,23 @@ export interface paths {
     put?: never;
     /** Notify */
     post: operations["notify_api_sync_notify_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/sync/preferences": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Push Preferences */
+    post: operations["push_preferences_api_sync_preferences_post"];
     delete?: never;
     options?: never;
     head?: never;
@@ -2229,7 +2280,8 @@ export interface components {
         | "auto_pair"
         | "unrevoke"
         | "settings"
-        | "alias";
+        | "alias"
+        | "name";
       /** Actorid */
       actorId: string;
       /** Clientid */
@@ -8162,6 +8214,37 @@ export interface components {
       /** Version */
       version: number;
     };
+    /** PreferenceField */
+    PreferenceField: {
+      /** Timestamp */
+      timestamp: number;
+      value: components["schemas"]["JsonValue"];
+      /** Writer */
+      writer: string;
+    };
+    /** PreferencePushRequest */
+    PreferencePushRequest: {
+      /** Fields */
+      fields?: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
+      /**
+       * Scope
+       * @enum {string}
+       */
+      scope: "user" | "server";
+    };
+    /** PreferencePushResponse */
+    PreferencePushResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Fields */
+      fields: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
+    };
     /**
      * ProcessKind
      * @enum {string}
@@ -9156,6 +9239,13 @@ export interface components {
       request_id?: string | null;
       /** Status */
       status?: ("pending" | "applied" | "failed") | null;
+    };
+    /** RenameServer */
+    RenameServer: {
+      /** Label */
+      label: string;
+      /** Requestid */
+      requestId: string;
     };
     /** RequestEntityDto */
     RequestEntityDto: {
@@ -10370,6 +10460,23 @@ export interface components {
       /** Tailscaleuser */
       tailscaleUser: string | null;
     };
+    /** ServerIdentityResponse */
+    ServerIdentityResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Label */
+      label: string;
+      /** Origin */
+      origin: string | null;
+      /** Publickey */
+      publicKey: string;
+      /** Serverid */
+      serverId: string;
+      /** Tailscaleuser */
+      tailscaleUser: string | null;
+    };
     /** ServerOperationRequest */
     ServerOperationRequest: {
       /** Action */
@@ -10493,6 +10600,20 @@ export interface components {
       action: "alias";
       /** Alias */
       alias: string;
+      /** Requestid */
+      requestId: string;
+      /** Serverid */
+      serverId: string;
+    };
+    /** SetServerName */
+    SetServerName: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      action: "name";
+      /** Label */
+      label: string;
       /** Requestid */
       requestId: string;
       /** Serverid */
@@ -11283,7 +11404,8 @@ export interface components {
       | components["schemas"]["SyncEdgeEntityPayload"]
       | components["schemas"]["SyncEventEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
-      | components["schemas"]["SyncWorkspaceEntityPayload"];
+      | components["schemas"]["SyncWorkspaceEntityPayload"]
+      | components["schemas"]["SyncUiPreferencesEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -11463,6 +11585,17 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["TaskEntityDto"];
+    };
+    /** SyncUiPreferencesEntityPayload */
+    SyncUiPreferencesEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "uiPreferences";
+      /** Id */
+      id: string;
+      value: components["schemas"]["UiPreferencesDto"];
     };
     /** SyncWorkEntityPayload */
     SyncWorkEntityPayload: {
@@ -12435,6 +12568,13 @@ export interface components {
       requestId: string;
       /** Serverid */
       serverId: string;
+    };
+    /** UiPreferencesDto */
+    UiPreferencesDto: {
+      /** Fields */
+      fields?: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
@@ -18221,7 +18361,8 @@ export interface operations {
           | components["schemas"]["UiInvite"]
           | components["schemas"]["SetAccessSettings"]
           | components["schemas"]["UnrevokeServer"]
-          | components["schemas"]["SetServerAlias"];
+          | components["schemas"]["SetServerAlias"]
+          | components["schemas"]["SetServerName"];
       };
     };
     responses: {
@@ -18734,6 +18875,147 @@ export interface operations {
       };
     };
   };
+  rename_server_api_multi_server_v1_name_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["RenameServer"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ServerIdentityResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unauthorized */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description JSON required */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Too Many Requests */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bad Gateway */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gateway Timeout */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
   pair_api_multi_server_v1_pair_post: {
     parameters: {
       query?: never;
@@ -18830,6 +19112,125 @@ export interface operations {
       };
       /** @description JSON required */
       415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Too Many Requests */
+      429: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Bad Gateway */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Service Unavailable */
+      503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gateway Timeout */
+      504: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  server_status_api_multi_server_v1_status_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ServerIdentityResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unauthorized */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Gone */
+      410: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
         headers: {
           [name: string]: unknown;
         };
@@ -20986,6 +21387,111 @@ export interface operations {
       };
       /** @description Service Unavailable */
       503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  push_preferences_api_sync_preferences_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PreferencePushRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PreferencePushResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unsupported Media Type */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Upgrade Required */
+      426: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal Server Error */
+      500: {
         headers: {
           [name: string]: unknown;
         };

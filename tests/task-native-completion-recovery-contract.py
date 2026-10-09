@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 import sqlite3
 import tempfile
+import queue
 import unittest
 from unittest.mock import patch
 
@@ -18,6 +19,8 @@ spec = importlib.util.spec_from_file_location('task_recovery_fixture',
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 import codex_task_recovery as recovery
+from codex_native_errors import NativeRpcError
+from codex_native_tools import _local_idle
 from codex_agent_management import _blockers
 from codex_sync_entities import sync_task_window
 
@@ -123,6 +126,211 @@ class NativeTaskRecovery(unittest.TestCase):
             function, args = self.jobs.pop(0)
             function(*args)
         return scheduled
+
+    def absent_command(self, *, native_item=True):
+        task = self.task(processId='opaque-native-session')
+        if native_item:
+            self.native(task, status='inProgress', processId=task['processId'])
+        with self.runtime.db() as db:
+            db.execute('INSERT INTO runtime_completed_turns VALUES (?)',
+                       (task['agent'] + ':' + task['turnId'],))
+        self.server.pending = {}
+        self.server.callbacks = queue.Queue()
+        self.server.clock_replies = queue.Queue()
+        self.terminals = {'data': [], 'nextCursor': None}
+        self.native_status = 'idle'
+        self.absence_calls = []
+        self.absence_hook = None
+        call = self.server.call
+        def native_state(method, params, timeout=60):
+            if method not in {'thread/read', 'thread/backgroundTerminals/list'}:
+                return call(method, params, timeout)
+            self.assertFalse(self.runtime.lock._is_owned())
+            self.absence_calls.append((method, copy.deepcopy(params)))
+            if self.absence_hook:
+                self.absence_hook(method, params)
+            if method == 'thread/read':
+                return {'thread': {'id': 'fixture-thread', 'status': {'type': self.native_status}}}
+            if isinstance(self.terminals, Exception):
+                raise self.terminals
+            return copy.deepcopy(self.terminals)
+        self.server.call = native_state
+        return task
+
+    def test_absent_native_session_becomes_lost_without_exit_success_or_replay(self):
+        task = self.absent_command()
+        agent = copy.deepcopy(self.runtime.agent(task['agent']))
+        calls = list(self.server.calls)
+        with self.runtime.read_db() as db:
+            events = [tuple(row) for row in db.execute('SELECT * FROM runtime_events')]
+            budget = [tuple(row) for row in db.execute('SELECT * FROM runtime_budget_usage')]
+            self.assertEqual(_local_idle(self.runtime, db, 'default', self.server)[1],
+                             'Waiting for a command or request receipt')
+        with patch('os.kill', side_effect=AssertionError('Native process IDs are opaque')):
+            self.assertTrue(self.run_check())
+        saved = self.saved('tasks', task['id'])
+        self.assertEqual(saved['status'], 'lost')
+        self.assertIn('unknown', saved['error'])
+        self.assertIsNone(saved.get('exitCode'))
+        self.assertEqual(saved['tail'], task['tail'])
+        self.assertEqual(self.saved('items', task['id'])['toolStatus'], 'lost')
+        self.assertEqual(self.runtime.agent(task['agent']), agent)
+        self.assertEqual(self.server.calls, calls)
+        with self.runtime.read_db() as db:
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM runtime_events')], events)
+            self.assertEqual([tuple(row) for row in db.execute('SELECT * FROM runtime_budget_usage')], budget)
+            value = json.loads(db.execute("SELECT payload FROM sync_entities WHERE collection='task' AND id=?",
+                                         (task['id'],)).fetchone()[0])['value']
+            self.assertEqual(value['status'], 'lost')
+            self.assertIsNone(_local_idle(self.runtime, db, 'default', self.server)[1])
+        self.assertEqual({method for method, _ in self.absence_calls},
+                         {'thread/read', 'thread/backgroundTerminals/list'})
+
+    def test_missing_native_item_uses_terminal_absence_without_claiming_completion(self):
+        task = self.absent_command(native_item=False)
+        self.native_status = 'notLoaded'
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'lost')
+
+    def test_native_session_presence_uses_both_item_and_process_identity(self):
+        task = self.absent_command()
+        for item_id, process_id in ((task['itemId'], task['processId']),
+                                    ('different-item', task['processId']),
+                                    (task['itemId'], 'different-process')):
+            with self.subTest(item=item_id, process=process_id):
+                self.terminals = {'data': [{'itemId': item_id, 'processId': process_id}], 'nextCursor': None}
+                self.assertTrue(self.run_check(30))
+                self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+
+    def test_absence_requires_idle_thread_complete_turn_and_valid_native_reads(self):
+        task = self.absent_command()
+        variants = [TimeoutError('Native terminal read timed out'), {'data': None},
+                    {'data': [{}]}, {'data': [], 'nextCursor': 'repeated'}]
+        for terminals in variants:
+            self.terminals = terminals
+            self.assertTrue(self.run_check(30))
+            self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.terminals = {'data': [], 'nextCursor': None}
+        self.native_status = 'active'
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.native_status = 'idle'
+        with self.runtime.db() as db:
+            db.execute('DELETE FROM runtime_completed_turns')
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+
+    def test_live_request_active_owner_and_changed_source_prevent_absence_proof(self):
+        task = self.absent_command()
+        self.server.pending['live-request'] = concurrent.futures.Future()
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.server.pending.clear()
+        self.update(status='running', inFlight=True, turnId='new-turn')
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.update(status='completed', inFlight=False, turnId=None)
+        self.absence_hook = lambda method, params: self.update(epoch=self.agent['epoch'] + 1)
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+
+    def test_event_barrier_receives_completion_before_any_absence_check(self):
+        task = self.absent_command()
+        barrier = self.server.after_events
+        def completion(callback):
+            self.runtime.notification({'method': 'item/completed', 'params': {
+                'threadId': 'fixture-thread', 'turnId': task['turnId'], 'item': {
+                    'id': task['itemId'], 'type': 'commandExecution', 'status': 'completed', 'exitCode': 0}}})
+            barrier(callback)
+        self.server.after_events = completion
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'completed')
+
+    def test_malformed_item_history_never_proves_absence_but_unsupported_method_can(self):
+        task = self.absent_command()
+        for page in ({'data': None}, {'data': [] , 'nextCursor': 3},
+                     TimeoutError('Native item read timed out'),
+                     NativeRpcError({'code': -32000, 'message': 'Native history error'})):
+            self.pages[('old-turn', None)] = page
+            self.assertTrue(self.run_check(30))
+            self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.pages[('old-turn', None)] = NativeRpcError({'code': -32601, 'message': 'Method not found'})
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'lost')
+
+    def test_full_terminal_pagination_protects_live_session_on_later_page(self):
+        task = self.absent_command()
+        def pages(method, params):
+            if method == 'thread/backgroundTerminals/list':
+                self.terminals = ({'data': [], 'nextCursor': 'second'} if not params.get('cursor')
+                    else {'data': [{'itemId': task['itemId'], 'processId': task['processId']}], 'nextCursor': None})
+        self.absence_hook = pages
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.assertEqual([p.get('cursor') for m, p in self.absence_calls
+                          if m == 'thread/backgroundTerminals/list'], [None, 'second'])
+        self.absence_hook = lambda method, params: setattr(self, 'terminals',
+            {'data': [], 'nextCursor': 'second'} if not params.get('cursor') else {'data': [], 'nextCursor': None})
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'lost')
+
+    def test_absence_does_not_follow_copied_history_or_change_during_native_read(self):
+        task = self.absent_command()
+        self.update(accountHistory=[{'at': 2, 'accountKey': 'old-account', 'threadId': 'old-thread'}])
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.update(accountHistory=None)
+        def pending(method, params):
+            if method == 'thread/backgroundTerminals/list':
+                self.server.pending['live-request'] = concurrent.futures.Future()
+        self.absence_hook = pending
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.server.pending.clear()
+        def replace(method, params):
+            self.runtime.connection_ids['default'] = 'different-connection'
+        self.absence_hook = replace
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+
+    def test_changed_task_and_pending_events_preserve_unknown_native_command(self):
+        task = self.absent_command()
+        self.server.callbacks.put('pending-event')
+        with patch.object(recovery.threading.Event, 'wait', return_value=False):
+            self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+        self.server.callbacks.get_nowait()
+        self.server.callbacks.task_done()
+        def output(method, params):
+            if method == 'thread/backgroundTerminals/list':
+                saved = self.saved('tasks', task['id'])
+                saved['tail'] = 'New output'
+                with self.runtime.db() as db:
+                    self.runtime.put(db, 'tasks', saved)
+        self.absence_hook = output
+        self.assertTrue(self.run_check(30))
+        self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
+
+    def test_unavailable_terminal_list_preserves_other_exact_native_results(self):
+        absent = self.absent_command()
+        exact = self.task('exact')
+        self.native(exact)
+        self.terminals = TimeoutError('Native terminal state is unavailable')
+        self.assertTrue(self.run_check())
+        self.assertEqual(self.saved('tasks', absent['id'])['status'], 'running')
+        self.assertEqual(self.saved('tasks', exact['id'])['status'], 'completed')
+
+    def test_absence_requires_unique_matching_native_item_identity(self):
+        task = self.absent_command()
+        entry = copy.deepcopy(self.pages[('old-turn', None)]['data'][0])
+        variants = [[entry, entry], [{**entry, 'turnId': 'different-turn'}],
+                    [{**entry, 'threadId': 'different-thread'}],
+                    [{**entry, 'item': {**entry['item'], 'type': 'dynamicToolCall'}}],
+                    [{**entry, 'item': {**entry['item'], 'processId': 'different-process'}}]]
+        for entries in variants:
+            self.pages[('old-turn', None)] = {'data': entries, 'nextCursor': None}
+            self.assertTrue(self.run_check(30))
+            self.assertEqual(self.saved('tasks', task['id'])['status'], 'running')
 
     def test_exact_historical_command_exits_update_tasks_and_feed_without_replay(self):
         success = self.task('success')

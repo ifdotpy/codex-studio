@@ -1,5 +1,16 @@
 import { serverStorageName } from "./environment";
 
+type StorageWriteObserver = (
+  key: string,
+  value: string | null,
+  previous: string | null,
+  storage: Storage,
+) => void;
+let writeObserver: StorageWriteObserver | undefined;
+export function observeStorageWrites(observer: StorageWriteObserver) {
+  writeObserver = observer;
+}
+
 export function scopedStorage(
   storage: () => Storage,
   prefix: string,
@@ -28,10 +39,14 @@ export function scopedStorage(
       return storage().getItem(shared.has(key) ? key : prefix + key);
     },
     setItem(key, value) {
+      const previous = this.getItem(key);
       storage().setItem(shared.has(key) ? key : prefix + key, value);
+      writeObserver?.(key, value, previous, this);
     },
     removeItem(key) {
+      const previous = this.getItem(key);
       storage().removeItem(shared.has(key) ? key : prefix + key);
+      writeObserver?.(key, null, previous, this);
     },
     clear() {
       if (prefix) keys().forEach((key) => storage().removeItem(key));

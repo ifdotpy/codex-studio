@@ -68,10 +68,12 @@ export function createCatalogCache({
   }
 
   return {
-    peek() {
-      if (closed || !fresh())
-        throw new Error("Fresh Claude account proof is unavailable");
-      return confirmed.value;
+    readPassive() {
+      if (closed || !confirmed)
+        return Promise.reject(
+          new Error("Fresh Claude account proof is unavailable"),
+        );
+      return fresh() ? Promise.resolve(confirmed.value) : refresh(true);
     },
     read() {
       if (closed)

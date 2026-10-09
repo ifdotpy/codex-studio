@@ -164,7 +164,7 @@ async function openFixtures(page, context, local, remote) {
     },
     { destination: remote.origin, source: remote.invitation.origin },
   );
-  await page.goto(local.origin);
+  await page.goto(local.origin + "/?studio-navigation=combined");
 }
 
 test("project folders, remote browse, and New chat server choice", async ({
@@ -207,7 +207,7 @@ test("project folders, remote browse, and New chat server choice", async ({
     });
     await expect(remoteCard).toHaveAttribute("aria-pressed", "true");
     const localCard = dialog.getByRole("button", {
-      name: /This computer.*Active.*chrompile/,
+      name: /Local.*Active.*chrompile/,
     });
     await localCard.click();
     await expect(localCard).toHaveAttribute("aria-pressed", "true");
@@ -230,7 +230,7 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const frame = page.frameLocator('iframe[title="Studio on This computer"]');
+    const frame = page.frameLocator('iframe[title="Studio on Local"]');
     const folders = frame.getByRole("dialog", {
       name: "Project settings",
       exact: true,
@@ -266,7 +266,7 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "Add project", exact: true })
       .boundingBox();
     const frameBounds = await page
-      .locator('iframe[title="Studio on This computer"]')
+      .locator('iframe[title="Studio on Local"]')
       .boundingBox();
     expect(footer.y + footer.height).toBeLessThanOrEqual(
       frameBounds.y + frameBounds.height,
@@ -307,7 +307,7 @@ test("bound local New chat lets the logical project choose its account", async (
       .click();
     const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
     await dialog
-      .getByRole("button", { name: /This computer.*Active.*chrompile/ })
+      .getByRole("button", { name: /Local.*Active.*chrompile/ })
       .click();
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })
@@ -338,7 +338,7 @@ test("project folder menu keeps the SidebarRow icon size", async ({
       .getByRole("button", { name: "Options for project attar", exact: true })
       .click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const frame = page.frameLocator('iframe[title="Studio on This computer"]');
+    const frame = page.frameLocator('iframe[title="Studio on Local"]');
     const button = frame.getByRole("button", {
       name: "Options for folder /Projects/chrompile",
       exact: true,
@@ -378,7 +378,7 @@ test("offline paired server is disabled in all project choices", async ({
       .locator(".server-sidebar")
       .getByRole("button", { name: "Add project", exact: true })
       .click();
-    const frame = page.frameLocator('iframe[title="Studio on This computer"]');
+    const frame = page.frameLocator('iframe[title="Studio on Local"]');
     const add = frame.getByRole("dialog", { name: "Add project", exact: true });
     await add.getByLabel("Server", { exact: true }).click();
     await expect(

@@ -7,6 +7,8 @@ import copy
 import hashlib
 import importlib.util
 import json
+import os
+from contextlib import contextmanager
 from pathlib import Path
 import sys
 import tempfile
@@ -18,7 +20,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 import codex_native_tools as native_tools
 from codex_native_binary import APPROVAL_REVISION, REQUIRED_COMPANIONS, bundle_digest
-from codex_native_runtime import NativeRuntimeUpdates
+from codex_native_runtime import NativeRuntimeUpdates, executable_for
 from codex_runtime import Runtime as ProductionRuntime
 
 spec = importlib.util.spec_from_file_location("native_tools_fixture", ROOT / "tests/native-tools-contract.py")
@@ -68,8 +70,13 @@ class Runtime(fixture.Runtime):
     request = ProductionRuntime.request
     disconnected = ProductionRuntime.disconnected
 
+    def refresh_workspace_volatile(self):
+        with self.db() as db:
+            self.sync_workspace_volatile(db)
+
     def __init__(self, root):
         super().__init__(root)
+        self.factory = Native
         self.server = Native(self)
         self.servers = {"default": self.server}
         self.offline_accounts = set()
@@ -141,6 +148,323 @@ class Contract(unittest.TestCase):
         self.assertIn("chat-1", self.rt.loaded)
         self.assertFalse(native_tools.account_reserved(self.rt, "default"))
         self.assertIn("waiting", str(self.manager.status()).lower())
+
+    def orphan_tool_flags(self, **changes):
+        agent = {"id": "deleted-worker", "accountKey": "default", "status": "paused",
+                 "threadId": None, "inFlight": False, "epoch": 1, "deletedAt": 1,
+                 "activeTools": [{"id": "parent-spawn", "type": "dynamicToolCall",
+                                  "name": "orchestration_spawn"}]}
+        agent.update(changes)
+        with self.rt.db() as db:
+            self.rt.put(db, "agents", agent)
+        return agent
+
+    def test_rotation_ignores_orphan_tool_flags_on_deleted_workers(self):
+        deleted = self.orphan_tool_flags()
+        archived = self.orphan_tool_flags(id="archived-worker", deletedAt=None, agentArchive={"epoch": 1})
+        with self.rt.db() as db:
+            self.rt.put(db, "tool_requests", {"id": "parent-spawn", "agent": "chat-1",
+                                             "stage": "completed", "outcome": "applied"})
+        with self.supervised() as (_, closes):
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(self.old.close_count, 1)
+        self.assertEqual(len(self.spawned), 1)
+        self.assertIs(self.rt.servers["default"], self.spawned[0])
+        self.assertEqual(self.rt.agent(deleted["id"]), deleted)
+        self.assertEqual(self.rt.agent(archived["id"]), archived)
+        self.assertIn("thread/backgroundTerminals/list", [method for method, _ in self.old.calls])
+
+    def test_orphan_tool_flags_with_owned_records_still_block_rotation(self):
+        self.orphan_tool_flags()
+        for table, state in (("tool_requests", {"stage": "queued"}),
+                             ("tool_requests", {"stage": "failed", "outcome": "unknown"}),
+                             ("monitors", {"status": "running"}),
+                             ("monitors", {"status": "completed"}),
+                             ("tasks", {"status": "running"}),
+                             ("tasks", {"status": "completed"})):
+            with self.subTest(table=table, state=state):
+                with self.rt.db() as db:
+                    self.rt.put(db, table, {"id": "worker-record", "agent": "deleted-worker", **state})
+                self.assert_waiting()
+                with self.rt.db() as db:
+                    db.execute(f"DELETE FROM runtime_{table} WHERE id='worker-record'")
+
+    def test_tool_flags_without_orphan_identity_still_block_rotation(self):
+        for changes in ({"deletedAt": None}, {"threadId": "worker-thread"},
+                        {"inFlight": True}, {"status": "running"},
+                        {"workspaceOperation": "workspace"}, {"accountTransferId": "transfer"}):
+            with self.subTest(changes=changes):
+                self.orphan_tool_flags(**changes)
+                self.assert_waiting()
+
+    def test_orphan_tool_flags_do_not_bypass_native_work(self):
+        self.orphan_tool_flags()
+        self.old.background = [{"id": "live-command"}]
+        self.assert_waiting()
+        self.assertIn("thread/backgroundTerminals/list", [method for method, _ in self.old.calls])
+
+    @contextmanager
+    def supervised(self, *, close_error=None):
+        self.old.pid = 101
+        state = {'signature': 'accepted-launch', 'pid': 101, 'identity_pid': 101,
+                 'start_time': 'exact-start', 'generation': 1, 'closed_at': None,
+                 'sequence': 0, 'acknowledged': 0}
+        closes = []
+
+        def close(root, handle, pid, started, signature, **kwargs):
+            self.assertEqual((root, handle, pid, started, signature),
+                             (self.rt.root, 'account:default', 101, 'exact-start', 'accepted-launch'))
+            self.assertFalse(self.rt.lock._is_owned())
+            self.assertTrue(native_tools.account_reserved(self.rt, 'default'))
+            self.assertNotEqual(self.rt.connection_ids['default'], 'connection-1')
+            closes.append(kwargs)
+            state['closed_at'] = 1
+            if close_error:
+                raise close_error
+            return {'closed': True}
+
+        def detach():
+            self.assertFalse(self.rt.lock._is_owned())
+            self.old.close_count += 1
+
+        with patch.dict(os.environ, {'CODEX_AGENTS_SUPERVISOR_MODE': '1'}), \
+                patch('codex_process_supervisor.supervisor_launch_snapshot', side_effect=lambda *_: dict(state)), \
+                patch('codex_process_supervisor.process_start_time',
+                      side_effect=lambda _: None if state['closed_at'] else 'exact-start'), \
+                patch('codex_process_supervisor.admin_close_handle', side_effect=close), \
+                patch.object(self.old, 'close', side_effect=detach):
+            yield state, closes
+
+    def test_supervised_idle_rotation_preserves_history_and_reports_versions(self):
+        before, history = self.rt.agent('chat-1'), self.rt.path.read_bytes()
+        with self.supervised() as (_, closes):
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(self.rt.agent('chat-1'), before)
+        self.assertEqual(self.rt.path.read_bytes(), history)
+        account = self.manager.status()['accounts']['default']
+        self.assertEqual((account['status'], account['version'], account['targetVersion']),
+                         ('current', '0.2.0', '0.2.0'))
+        from studio_api.system.models import NativeAccountUpdate
+        NativeAccountUpdate.model_validate(account)
+        logged = json.loads(self.manager.path.with_name('rotations.jsonl').read_text())
+        self.assertEqual((logged['account'], logged['sourceVersion'], logged['targetVersion']),
+                         ('default', '0.1.0', '0.2.0'))
+
+    def test_supervised_active_turn_and_unmanaged_native_work_refuse_rotation(self):
+        with self.supervised() as (_, closes):
+            self.change_agent(status='running', inFlight=True)
+            self.assert_waiting()
+            self.change_agent(status='complete', inFlight=False)
+            self.old.extra['unmanaged'] = 'active'
+            self.assert_waiting()
+            self.assertEqual(closes, [])
+            self.old.extra['unmanaged'] = 'idle'
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+
+    def test_supervised_admission_is_blocked_until_the_replacement_is_published(self):
+        def check_admission(_):
+            with self.assertRaisesRegex(ValueError, 'update is in progress'):
+                ProductionRuntime.connect(self.rt, 'default')
+            with self.assertRaisesRegex(ValueError, 'Input remains queued'):
+                ProductionRuntime.prepare_locked(self.rt, self.rt.agent('chat-1'))
+        self.on_spawn = check_admission
+        with self.supervised() as (_, closes):
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertFalse(native_tools.account_reserved(self.rt, 'default'))
+        self.assertEqual(self.manager.status()['accounts']['default']['status'], 'current')
+
+    def test_supervised_identity_or_activity_change_at_event_barrier_refuses(self):
+        with self.supervised() as (state, closes):
+            def barrier(callback):
+                state['signature'] = 'different-launch'
+                callback()
+            self.old.after_events = barrier
+            self.manager.check()
+            self.assertEqual(closes, [])
+            state['signature'] = 'accepted-launch'
+            self.old.after_events = lambda callback: (self.change_agent(inFlight=True), callback())
+            self.manager.check()
+            self.assertEqual(closes, [])
+        self.assertEqual(self.spawned, [])
+
+    def test_supervised_lost_close_reply_reads_the_receipt_without_another_close(self):
+        with self.supervised(close_error=TimeoutError('Reply lost')) as (_, closes):
+            self.manager.check()
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(len(self.spawned), 1)
+        self.assertEqual(self.manager.status()['accounts']['default']['status'], 'current')
+
+    def test_supervised_crash_after_close_reconnects_without_repeating_the_close(self):
+        class BackendCrash(BaseException):
+            pass
+        self.spawn_error = BackendCrash()
+        with self.supervised() as (_, closes):
+            with self.assertRaises(BackendCrash):
+                self.manager.check()
+            self.assertEqual(len(closes), 1)
+            saved = json.loads(self.manager.path.read_text())
+            self.assertEqual(saved['accounts']['default']['rotation']['phase'], 'closed')
+            self.spawn_error = None
+            self.manager = NativeRuntimeUpdates(self.rt, discover=lambda: [self.candidate],
+                                                approve=self.approve, spawn=self.spawn)
+            self.manager.check()
+        self.assertEqual(len(closes), 1)
+        self.assertEqual(len(self.spawned), 1)
+        allowed = {'model/list', 'thread/loaded/list', 'thread/read',
+                   'thread/queue/list', 'thread/backgroundTerminals/list'}
+        self.assertTrue(all(method in allowed for native in (self.old, *self.spawned)
+                            for method, _ in native.calls))
+
+    def test_supervised_unknown_close_blocks_input_across_backend_restart(self):
+        with self.supervised() as (state, closes):
+            with patch('codex_process_supervisor.admin_close_handle', side_effect=TimeoutError('No receipt')):
+                self.manager.check()
+            self.assertEqual(closes, [])
+            self.assertTrue(native_tools.account_reserved(self.rt, 'default'))
+            with self.assertRaisesRegex(ValueError, 'update is in progress'):
+                ProductionRuntime.connect(self.rt, 'default')
+            restarted = NativeRuntimeUpdates(self.rt)
+            restarted._load_selected()
+            self.rt.native_runtime_updates = restarted
+            with patch.object(restarted, 'maybe_check'), patch.object(restarted, 'selected', return_value=self.selected), \
+                    patch('codex_native_runtime.retained_executable', return_value=None) as retain:
+                with self.assertRaisesRegex(ValueError, 'close outcome is unknown'):
+                    executable_for(self.rt, account_key='default', home=self.rt.home)
+                retain.assert_not_called()
+                state['closed_at'] = 1
+                self.assertEqual(executable_for(self.rt, account_key='default', home=self.rt.home), self.selected)
+            self.assertEqual(json.loads(restarted.path.read_text())['accounts']['default']['rotation']['phase'], 'closed')
+
+    def test_supervised_unknown_close_retry_reads_only_without_repeating_the_close(self):
+        with self.supervised():
+            with patch('codex_process_supervisor.admin_close_handle', side_effect=TimeoutError('No receipt')) as close:
+                self.manager.check()
+                self.assertEqual(close.call_count, 1)
+                self.manager.check()
+                self.assertEqual(close.call_count, 1)
+            self.assertTrue(native_tools.account_reserved(self.rt, 'default'))
+            self.assertEqual(self.spawned, [])
+
+    def test_supervised_second_native_check_refuses_work_started_after_the_barrier(self):
+        def barrier(callback):
+            self.old.extra['unmanaged-after-barrier'] = 'active'
+            callback()
+        self.old.after_events = barrier
+        with self.supervised() as (_, closes):
+            self.manager.check()
+        self.assertEqual(closes, [])
+        self.assertEqual(self.spawned, [])
+        self.assertIs(self.rt.servers['default'], self.old)
+
+    def test_supervised_named_account_spawn_uses_the_shared_supervisor_root(self):
+        self.rt.commit_supervisor_event = Mock()
+        self.rt.supervisor_event_applied = Mock()
+        with patch('codex_runtime.AppServer') as factory:
+            self.manager._spawn('named', self.selected, (Mock(), Mock(), Mock()))
+        self.assertEqual(factory.call_args.args[0], self.rt.root / 'account-servers' / 'named')
+        self.assertEqual(factory.call_args.kwargs['supervisor_root'], self.rt.root)
+        self.assertEqual(factory.call_args.kwargs['supervisor_handle'], 'account:named')
+
+    def test_supervised_reconnect_after_crash_reports_current_during_an_active_turn(self):
+        self.spawn_error = RuntimeError('The backend stopped after close')
+        with self.supervised() as (state, closes):
+            self.manager.check()
+            self.assertEqual(len(closes), 1)
+            current = Native(self.rt, replacement=True)
+            current.pid, current.generation = 202, 2
+            current.native_binary = copy.deepcopy(self.selected)
+            self.rt.servers['default'] = self.rt.server = current
+            state.update(pid=202, identity_pid=202, generation=2, closed_at=None)
+            self.rt.offline_accounts.clear()
+            self.change_agent(status='running', inFlight=True)
+            before = self.rt.agent('chat-1')
+            self.manager.check()
+        self.assertEqual(self.manager.status()['accounts']['default']['status'], 'current')
+        self.assertEqual(self.rt.agent('chat-1'), before)
+        self.assertEqual(current.close_count, 0)
+        self.assertEqual(current.calls, [])
+        self.assertEqual(len(closes), 1)
+
+    def test_review_final_journal_fence_refuses_unread_or_unacknowledged_events(self):
+        for sequence, acknowledged in ((2, 0), (2, 1)):
+            with self.subTest(sequence=sequence, acknowledged=acknowledged), self.supervised() as (state, closes):
+                self.old.after_events = lambda callback: (state.update(sequence=sequence, acknowledged=acknowledged), callback())
+                self.manager.check()
+                self.assertEqual(closes, [])
+                self.assertEqual(self.spawned, [])
+                self.assertEqual(self.rt.connection_ids['default'], 'connection-1')
+                self.assertIs(self.rt.server, self.old)
+                self.assertIn('journal', self.manager.status()['accounts']['default']['reason'])
+
+    def test_review_close_intent_save_failure_preserves_the_old_connection(self):
+        save = self.manager._save
+        failed = []
+        def fail_intent():
+            rotation = self.manager.state['accounts'].get('default', {}).get('rotation', {})
+            if rotation.get('phase') == 'closing' and not failed:
+                failed.append(True)
+                raise OSError('The close intent could not be saved')
+            return save()
+        with self.supervised() as (_, closes), patch.object(self.manager, '_save', side_effect=fail_intent):
+            self.manager.check()
+        self.assertEqual(failed, [True])
+        self.assertEqual(self.rt.connection_ids['default'], 'connection-1')
+        self.assertEqual(closes, [])
+        self.assertEqual(self.spawned, [])
+        self.assertFalse(native_tools.account_reserved(self.rt, 'default'))
+        self.assertIs(ProductionRuntime.connect(self.rt, 'default'), self.old)
+
+    def test_review_concurrent_save_cannot_restore_an_older_phase(self):
+        entered, release, second_attempt, second_done = (threading.Event() for _ in range(4))
+        errors = []
+        replace = os.replace
+        self.manager.state['accounts']['default'] = {'rotation': {'phase': 'closing'}}
+        def delayed(source, destination):
+            if Path(destination) == self.manager.path and threading.current_thread().name == 'older-save':
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('The test did not release the older save')
+            return replace(source, destination)
+        def older():
+            try:
+                self.manager._save()
+            except BaseException as error:
+                errors.append(error)
+        def newer():
+            second_attempt.set()
+            try:
+                with self.manager.lock:
+                    self.manager.state['accounts']['default']['rotation']['phase'] = 'closed'
+                self.manager._save()
+            except BaseException as error:
+                errors.append(error)
+            finally:
+                second_done.set()
+        with patch('codex_native_runtime.os.replace', side_effect=delayed):
+            first = threading.Thread(target=older, name='older-save')
+            second = threading.Thread(target=newer, name='newer-save')
+            first.start()
+            try:
+                self.assertTrue(entered.wait(2))
+                second.start()
+                self.assertTrue(second_attempt.wait(2))
+                second_done.wait(1)
+            finally:
+                release.set()
+                first.join(3)
+                if second.ident is not None:
+                    second.join(3)
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(errors, [])
+        saved = json.loads(self.manager.path.read_text())
+        self.assertEqual(saved['accounts']['default']['rotation']['phase'], 'closed')
 
     def test_idle_swap_preserves_chat_native_identity_history_and_receipts(self):
         before = self.rt.agent("chat-1")

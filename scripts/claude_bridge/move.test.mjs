@@ -265,3 +265,119 @@ test("Studio proof reads the compiled ordered MCP schemas without model input", 
   changed[0].input_schema.properties.cwd.type = "number";
   assert.throws(() => verifyToolProof({ tools: catalog }, changed), /schemas/);
 });
+
+// Structure from the real e2187ecb native attachment. Prompt text is redacted.
+test("native prompt snapshots use schema and keep deferred records separate", async () => {
+  const root = await fs.mkdtemp(
+    path.join(os.tmpdir(), "claude-native-snapshot-"),
+  );
+  const file = path.join(root, "native.jsonl");
+  const session = { id: randomUUID(), model: "default", dynamicTools: [] };
+  const row = (attachment) =>
+    JSON.stringify({ type: "attachment", sessionId: session.id, attachment }) +
+    "\n";
+  const snapshot = {
+    type: "prompt_snapshot",
+    systemPrompt: Array.from({ length: 13 }, () => "[redacted]"),
+    tools: [
+      {
+        name: "Bash",
+        description: "[redacted]",
+        schema: {
+          type: "object",
+          properties: { command: { type: "string" } },
+          required: ["command"],
+        },
+      },
+    ],
+    cliPrefix: "[redacted]",
+    reminderFold: false,
+    systemTurns: true,
+    toolChangeHeader: true,
+    inlineTools: false,
+    keptReminders: true,
+    echoWireToolInputs: true,
+    contextRendering: "announced",
+  };
+  const deferred = {
+    name: "mcp__studio__orchestration_move",
+    description: "[redacted]",
+    input_schema: {
+      type: "object",
+      properties: { cwd: { type: "string" } },
+      required: ["cwd"],
+    },
+    eager_input_streaming: true,
+    defer_loading: true,
+  };
+  const bytes =
+    row({ type: "prompt_snapshot", systemPrompt: ["[old redacted]"] }) +
+    row({ type: "deferred_tools_record", entries: [deferred] }) +
+    row(snapshot);
+  try {
+    await fs.writeFile(file, bytes);
+    const proof = await savedPromptProof(file, session);
+    assert.deepEqual(
+      proof.tools,
+      snapshot.tools.map(({ schema, ...entry }) => ({
+        ...entry,
+        input_schema: schema,
+      })),
+    );
+    assert.deepEqual(proof.deferredTools, [deferred]);
+    assert.equal(await fs.readFile(file, "utf8"), bytes);
+    await fs.appendFile(
+      file,
+      row({ type: "prompt_snapshot", systemPrompt: ["[new incomplete]"] }),
+    );
+    await assert.rejects(
+      savedPromptProof(file, session),
+      /verified saved prompt snapshot/,
+    );
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});
+
+test("deferred schemas stay historical while the current ordered catalog is frozen", () => {
+  const current = [
+    {
+      name: "mcp__studio__new",
+      description: "Current",
+      input_schema: { type: "object" },
+    },
+  ];
+  const proof = {
+    inlineTools: false,
+    tools: [{ name: "Bash", input_schema: { type: "object" } }],
+    deferredTools: [
+      { name: "mcp__studio__old", input_schema: { type: "object" } },
+    ],
+  };
+  assert.deepEqual(verifyToolProof(proof, current), ["Bash"]);
+  assert.deepEqual(
+    verifyToolProof({ ...proof, compiledTools: current }, current),
+    ["Bash"],
+  );
+  assert.throws(
+    () => verifyToolProof({ ...proof, compiledTools: current }, []),
+    /tool definitions differ/,
+  );
+  assert.deepEqual(
+    verifyToolProof(
+      {
+        ...proof,
+        activeDeferredNames: ["Monitor", "Bash", "mcp__studio__old"],
+      },
+      current,
+    ),
+    ["Bash", "Monitor"],
+  );
+  assert.throws(
+    () =>
+      verifyToolProof({ ...proof, activeDeferredNames: ["Monitor"] }, current, [
+        "Bash",
+      ]),
+    /does not offer.*Monitor/,
+  );
+});

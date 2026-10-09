@@ -1,7 +1,8 @@
-import { parseInvitation } from "./pairing";
+import { parseInvitation, PairingNotAppliedError } from "./pairing";
 import type { PairInvitation } from "./pairing";
 import type { StudioServer } from "./registry";
 import type { DiscoveredServer, DiscoverySnapshot } from "./discoveryModel";
+import type { AutomaticPairApproval, PairAttemptIdentity } from "./transport";
 export type AutomaticAccessAttempt = {
   localServerId: string;
   serverId: string;
@@ -20,7 +21,13 @@ export interface AutomaticAccessStore {
 }
 export interface AutomaticAccessAdapter {
   invite(server: DiscoveredServer, requestId: string): Promise<PairInvitation>;
-  pair(origin: string, code: string, requestId: string): Promise<StudioServer>;
+  pair(
+    origin: string,
+    code: string,
+    requestId: string,
+    approval?: AutomaticPairApproval,
+  ): Promise<StudioServer>;
+  hasPairAttempt?(attempt: PairAttemptIdentity): Promise<boolean>;
   current(): Promise<DiscoverySnapshot | null>;
   existing(): StudioServer[];
   add(server: StudioServer): void;
@@ -116,6 +123,28 @@ export class AutomaticUiAccess {
           }
           let attempt = await this.store.read(key);
           if (
+            attempt &&
+            (attempt.localServerId !== snapshot.localServerId ||
+              attempt.serverId !== peer.id ||
+              attempt.origin !== peer.origin ||
+              attempt.generation !== peer.generation)
+          )
+            throw new Error(
+              "The saved access request belongs to another server.",
+            );
+          if (attempt?.pairStarted && this.adapter.hasPairAttempt) {
+            const started = await this.adapter.hasPairAttempt({
+              origin: attempt.origin,
+              serverId: attempt.serverId,
+              requestId: attempt.pairRequestId,
+              inviteId: attempt.invitation?.inviteId,
+            });
+            if (!started) {
+              attempt = { ...attempt, pairStarted: false };
+              await this.store.save(key, attempt);
+            }
+          }
+          if (
             attempt?.invitation &&
             !attempt.pairStarted &&
             attempt.invitation.expires <= this.now() / 1000
@@ -134,15 +163,6 @@ export class AutomaticUiAccess {
             };
             await this.store.save(key, attempt);
           }
-          if (
-            attempt.localServerId !== snapshot.localServerId ||
-            attempt.serverId !== peer.id ||
-            attempt.origin !== peer.origin ||
-            attempt.generation !== peer.generation
-          )
-            throw new Error(
-              "The saved access request belongs to another server.",
-            );
           // Recover the same secret from the server. Only metadata enters this store.
           const checked = parseInvitation(
             JSON.stringify(
@@ -202,11 +222,24 @@ export class AutomaticUiAccess {
               "The invitation expired before pairing. Retry with a new invitation.",
             );
           }
-          const server = await this.adapter.pair(
-            peer.origin,
-            JSON.stringify(checked),
-            attempt.pairRequestId,
-          );
+          let server: StudioServer;
+          try {
+            server = await this.adapter.pair(
+              peer.origin,
+              JSON.stringify(checked),
+              attempt.pairRequestId,
+              {
+                localServerId: attempt.localServerId,
+                serverId: attempt.serverId,
+                generation: attempt.generation,
+                inviteRequestId: attempt.inviteRequestId,
+              },
+            );
+          } catch (error) {
+            if (error instanceof PairingNotAppliedError)
+              await this.store.remove(key);
+            throw error;
+          }
           if (!(await this.currentlyEligible(snapshot.localServerId, peer)))
             return;
           if (server.id !== peer.id || server.origin !== peer.origin)

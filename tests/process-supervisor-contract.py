@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Private-state process-supervisor contracts with a deterministic fake model."""
 import json
+import importlib.util
 import os
 from pathlib import Path
 import signal
@@ -28,6 +29,10 @@ from codex_process_supervisor import finish_fallback, process_start_time, status
 import codex_process_supervisor as process_supervisor
 import recover_backend
 
+rotation_spec = importlib.util.spec_from_file_location('runtime_rotation_fixture', ROOT / 'tests/native-runtime-updates-contract.py')
+rotation_fixture = importlib.util.module_from_spec(rotation_spec)
+rotation_spec.loader.exec_module(rotation_fixture)
+
 FAKE_NATIVE = r'''#!/usr/bin/env python3
 import base64, json, os, sys, time
 from pathlib import Path
@@ -47,6 +52,12 @@ for line in sys.stdin:
         if not Path(os.environ['FAKE_NATIVE_INITIALIZED']).exists():
             continue
         result={'data':[{'model':'fake'}]}
+    elif method == 'thread/loaded/list':
+        result={'data':['idle-thread','unmanaged-thread'],'nextCursor':None}
+    elif method == 'thread/read':
+        result={'thread':{'id':request['params']['threadId'],'status':{'type':'idle'}}}
+    elif method in ('thread/queue/list','thread/backgroundTerminals/list'):
+        result={'data':[]}
     elif method == 'burst':
         for delta in ['a', 'b', 'c', 'd', 'e', 'f']:
             print(json.dumps({'method':'item/agentMessage/delta','params':{'threadId':'thread','turnId':'burst-turn','itemId':request['params']['itemId'],'delta':delta}}),flush=True)
@@ -772,6 +783,157 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(second.proc.generation, 2)
         self.assertNotEqual(int(self.pid_file.read_text()), old_pid)
         self.assertEqual(second.call('model/list', {})['data'][0]['model'], 'fake')
+
+    def rotation_runtime(self):
+        rt = rotation_fixture.Runtime(self.root)
+        old = self.server()
+        old.native_binary = {'version': '0.1.0', 'bundleSha256': 'old-bundle'}
+        rt.servers['default'] = rt.server = old
+        wait_for(lambda: not old.pending and not old.callbacks.unfinished_tasks)
+        replacement_binary = self.root / 'new-native'
+        replacement_binary.write_text(self.binary.read_text() + '\n# approved replacement\n')
+        replacement_binary.chmod(0o700)
+        selected = {'path': str(replacement_binary), 'version': '0.2.0',
+                    'bundleSha256': 'new-bundle', 'sha256': 'new'}
+
+        def spawn(account, approved, callbacks):
+            self.assertEqual(account, 'default')
+            with self.assertRaisesRegex(ValueError, 'update is in progress'):
+                Runtime.connect(rt, account)
+            process = AppServer(self.root, *callbacks, executable=approved['path'],
+                                supervisor_handle='account:default', supervisor_root=self.root)
+            self.servers.append(process)
+            return process
+
+        manager = rotation_fixture.NativeRuntimeUpdates(rt, discover=lambda: [{'path': str(replacement_binary)}],
+                                                        approve=lambda *_: selected, spawn=spawn)
+        self.addCleanup(manager.close)
+        return rt, old, selected, manager
+
+    def test_guarded_account_rotation_closes_only_the_idle_account_and_keeps_history(self):
+        rt, old, selected, manager = self.rotation_runtime()
+        other = self.server(handle='test:other-account')
+        before, history = rt.agent('chat-1'), rt.path.read_bytes()
+        old_pid, other_pid = old.proc.native_pid, other.proc.native_pid
+        with rt.db() as db:
+            active = rt.agent('chat-1', db)
+            active.update(status='running', inFlight=True)
+            rt.put(db, 'agents', active)
+        manager.check()
+        self.assertIs(rt.server, old)
+        self.assertIsNotNone(process_start_time(old_pid))
+        with rt.db() as db:
+            rt.put(db, 'agents', before)
+        manager.check()
+        self.assertEqual(manager.status()['accounts']['default']['status'], 'current', manager.status())
+        self.assertIsNone(process_start_time(old_pid))
+        self.assertIsNotNone(process_start_time(other_pid))
+        self.assertNotEqual(rt.server.proc.native_pid, old_pid)
+        self.assertEqual(rt.server.native_binary, selected)
+        self.assertEqual(rt.agent('chat-1'), before)
+        self.assertEqual(rt.path.read_bytes(), history)
+        self.assertEqual(rt.server.call('model/list', {})['data'][0]['model'], 'fake')
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('initialize'), 3)  # Old, unrelated, replacement.
+        self.assertNotIn('turn/start', methods)
+        manager.check()
+        self.assertEqual(rt.server.proc.native_pid, rt.servers['default'].proc.native_pid)
+
+    def test_guarded_account_rotation_recovers_a_lost_close_reply_without_another_kill(self):
+        rt, old, _, manager = self.rotation_runtime()
+        close = process_supervisor.admin_close_handle
+
+        def lost_reply(*args, **kwargs):
+            close(*args, **kwargs)
+            raise TimeoutError('The committed close reply was lost')
+
+        with patch.object(process_supervisor, 'admin_close_handle', side_effect=lost_reply) as calls:
+            manager.check()
+            manager.check()
+        self.assertEqual(calls.call_count, 1)
+        self.assertEqual(manager.status()['accounts']['default']['status'], 'current', manager.status())
+        self.assertIsNone(process_start_time(old.proc.native_pid))
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('initialize'), 2)
+        self.assertNotIn('turn/start', methods)
+
+    def test_guarded_account_rotation_crash_after_open_reattaches_the_same_new_generation(self):
+        rt, old, _, manager = self.rotation_runtime()
+        real_spawn, opened = manager.spawn, []
+
+        class BackendCrash(BaseException):
+            pass
+
+        def crash(*args):
+            child = real_spawn(*args)
+            opened.append(child)
+            child.close()
+            raise BackendCrash()
+
+        manager.spawn = crash
+        with self.assertRaises(BackendCrash, msg=str(manager.status())):
+            manager.check()
+        new_pid = opened[0].proc.native_pid
+        self.assertIsNone(process_start_time(old.proc.native_pid))
+        manager = rotation_fixture.NativeRuntimeUpdates(rt, discover=manager.discover,
+                                                        approve=manager.approve, spawn=real_spawn)
+        self.addCleanup(manager.close)
+        wait_for(lambda: not old.pending and not old.callbacks.unfinished_tasks)
+        with patch.object(process_supervisor, 'admin_close_handle', wraps=process_supervisor.admin_close_handle) as calls:
+            manager.check()
+        calls.assert_not_called()
+        self.assertEqual(manager.status()['accounts']['default']['status'], 'current', manager.status())
+        self.assertEqual(rt.server.proc.native_pid, new_pid)
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('initialize'), 2)
+        self.assertNotIn('turn/start', methods)
+
+    def test_proxy_reads_pid_when_the_retained_supervisor_has_old_open_receipts(self):
+        call = process_supervisor.ProcessProxy.call
+
+        def legacy_open(proxy, action, **values):
+            result = call(proxy, action, **values)
+            if action == 'open':
+                result.pop('pid', None)
+            return result
+
+        with patch.object(process_supervisor.ProcessProxy, 'call', legacy_open):
+            server = self.server()
+        self.assertEqual(server.proc.native_pid, int(self.pid_file.read_text()))
+        self.assertEqual(server.call('model/list', {})['data'][0]['model'], 'fake')
+
+    def test_review_rotation_recovers_opened_version_before_a_later_selected_version(self):
+        rt, old, version_b, manager = self.rotation_runtime()
+        real_spawn, opened = manager.spawn, []
+        class BackendCrash(BaseException):
+            pass
+        def crash(*args):
+            child = real_spawn(*args)
+            opened.append(child)
+            child.close()
+            raise BackendCrash()
+        manager.spawn = crash
+        with self.assertRaises(BackendCrash):
+            manager.check()
+        pid_b = opened[0].proc.native_pid
+        version_c = dict(version_b, path=str(self.root / 'third-native'), version='0.3.0', bundleSha256='third-bundle')
+        Path(version_c['path']).write_text(self.binary.read_text() + '\n# version C\n')
+        Path(version_c['path']).chmod(0o700)
+        manager = rotation_fixture.NativeRuntimeUpdates(rt, discover=lambda: [{'path': version_c['path']}],
+            approve=lambda *_: version_c, spawn=real_spawn)
+        self.addCleanup(manager.close)
+        wait_for(lambda: not old.pending and not old.callbacks.unfinished_tasks)
+        with patch.object(process_supervisor, 'admin_close_handle', wraps=process_supervisor.admin_close_handle) as close:
+            manager.check()
+        close.assert_not_called()
+        self.assertEqual(rt.server.proc.native_pid, pid_b, manager.status())
+        self.assertEqual(rt.server.native_binary['bundleSha256'], version_b['bundleSha256'])
+        account = manager.status()['accounts']['default']
+        self.assertEqual((account['status'], account['version'], account['targetVersion']), ('waiting', '0.2.0', '0.3.0'))
+        self.assertEqual(manager.selected(), version_c)
+        methods = [json.loads(line)['method'] for line in (self.root / 'native-ops.jsonl').read_text().splitlines()]
+        self.assertEqual(methods.count('initialize'), 2)
+        self.assertNotIn('turn/start', methods)
 
     def test_operator_close_requires_exact_identity_and_closes_verified_fixture(self):
         server = self.server(handle='test:operator-close')
@@ -1596,7 +1758,6 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.assertEqual(operations.count('initialize'), 1)
         self.assertNotIn('turn/start', operations)
 
-    @unittest.expectedFailure  # Product defect: reattach rejects the verified retained Node executable.
     def test_claude_reattach_keeps_verified_node_after_automatic_discovery_changes(self):
         original_command = [process_supervisor.process_launch_command(os.getpid())[0], str(self.binary)]
         replacement = self.root / 'different-node'

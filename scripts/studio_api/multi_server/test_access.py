@@ -132,6 +132,63 @@ class AccessTests(unittest.TestCase):
         self.addCleanup(owner.stop)
         self.addCleanup(peer.stop)
 
+    def test_name_persists_replays_validates_and_preserves_keys_and_alias(self) -> None:
+        service = self.runtime.service
+        before = service.identity()
+        aliases = service.server_aliases()
+        headers = {"X-Canvas-Token": "local-token"}
+        body = {"action": "name", "serverId": "local", "label": "Lumina Mac", "requestId": "name-1"}
+        reply = self.client.post("/api/multi-server", json=body, headers=headers)
+        self.assertEqual(reply.status_code, 200, reply.text)
+        self.assertEqual(reply.json()["identity"]["label"], "Lumina Mac")
+        saved = json.loads((self.runtime.root / "multi-server" / "identity.json").read_text())
+        self.assertEqual(saved["label"], "Lumina Mac")
+        self.assertEqual(saved["serverId"], before["serverId"])
+        self.assertEqual(saved["publicKey"], before["publicKey"])
+        self.assertEqual(reply.json()["settings"]["aliases"], aliases)
+        self.assertNotIn(saved["privateKey"], reply.text)
+        self.assertEqual(self.client.post("/api/multi-server", json=body, headers=headers).status_code, 200)
+        conflict = self.client.post("/api/multi-server", json={**body, "label": "Different"}, headers=headers)
+        self.assertEqual(conflict.status_code, 409)
+        newer = {**body, "label": "Newer", "requestId": "name-2"}
+        self.assertEqual(self.client.post("/api/multi-server", json=newer, headers=headers).status_code, 200)
+        self.assertEqual(self.client.post("/api/multi-server", json=body, headers=headers).json()["identity"]["label"], "Newer")
+        service._identity = None
+        self.assertEqual(service.identity()["label"], "Newer")
+        for label in ("", " ", "outer ", " leading", "x" * 81, "line\nname", "hidden\u202ename", "tab\tname", "null\x00name", "nonbreaking\u00a0space"):
+            reply = self.client.post("/api/multi-server", json={**body, "label": label, "requestId": secrets.token_hex(8)}, headers=headers)
+            self.assertIn(reply.status_code, (400, 422), reply.text)
+        self.assertEqual(self.client.post("/api/multi-server", json={**body, "requestId": "no-token"}).status_code, 403)
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 2)
+
+    def test_name_file_failure_recovers_intent_after_restart(self) -> None:
+        service = self.runtime.service
+        before = service._keys().copy()
+        with patch.object(service, "_store_identity", side_effect=OSError("disk unavailable")):
+            with self.assertRaises(OSError):
+                service.rename("Recovered", "recover-name", "local")
+        service._identity = None
+        recovered = service.identity()
+        self.assertEqual(recovered["label"], "Recovered")
+        self.assertEqual(service._keys()["privateKey"], before["privateKey"])
+        self.assertEqual(service.rename("Recovered", "recover-name", "local")["label"], "Recovered")
+        with self.runtime.read_db() as db:
+            self.assertEqual(db.execute("SELECT count(*) FROM runtime_access_audit WHERE action='name'").fetchone()[0], 1)
+
+    def test_signed_ui_can_rename_only_its_own_server(self) -> None:
+        self.assertEqual(self.pair().status_code, 200)
+        body = {"action": "name", "serverId": "local", "label": "Owner UI", "requestId": "ui-name"}
+        raw = json.dumps(body).encode()
+        response = self.client.post("/api/multi-server", content=raw, headers=self.signed("POST", "/api/multi-server", raw, "ui-name"))
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["identity"]["label"], "Owner UI")
+        raw = json.dumps({**body, "serverId": "other", "requestId": "other-name"}).encode()
+        self.assertEqual(self.client.post("/api/multi-server", content=raw, headers=self.signed("POST", "/api/multi-server", raw, "other-name")).status_code, 403)
+        raw = json.dumps({"label": "Denied", "requestId": "ui-server-name"}).encode()
+        path = "/api/multi-server/v1/name"
+        self.assertEqual(self.client.post(path, content=raw, headers=self.signed("POST", path, raw, "ui-server-name")).status_code, 403)
+
     def test_alias_api_persists_defaults_edits_and_request_identity(self) -> None:
         headers = {"X-Canvas-Token": "local-token"}
         stored_alias = "".join(("M", "A", "C"))

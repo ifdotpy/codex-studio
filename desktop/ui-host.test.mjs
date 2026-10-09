@@ -36,6 +36,9 @@ test("UI-only host serves assets without backend resources and refuses API and o
     expect(
       (await fetch(host.origin + "/")).headers.get("Content-Security-Policy"),
     ).toContain("frame-ancestors 'none'");
+    expect(
+      (await fetch(host.origin + "/")).headers.get("Content-Security-Policy"),
+    ).toContain("connect-src 'self' https://api.openai.com https://*.ts.net:*");
     expect((await fetch(host.origin + "/api/session")).status).toBe(404);
     expect((await fetch(host.origin + "/escape.txt")).status).toBe(404);
     expect((await fetch(host.origin + "/", { method: "POST" })).status).toBe(

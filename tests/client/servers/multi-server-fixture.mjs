@@ -55,6 +55,7 @@ export async function fixture(
     },
   ];
   const accessRequests = [];
+  const aliases = { local: "MAC", [serverId]: "MAC" };
   let discoveredPeers = [];
   let autoPair = true;
   let staleSettingsReceipts = false;
@@ -280,10 +281,38 @@ export async function fixture(
       });
       return;
     }
+    if (url.pathname === "/api/multi-server/v1/status") {
+      json(invitation);
+      return;
+    }
     if (url.pathname === "/api/multi-server") {
       if (request.method === "POST") accessRequests.push(body);
-      if (["ui_invite", "discover", "settings"].includes(body.action))
-        assert.equal(request.headers["x-canvas-token"], snapshot.token);
+      if (
+        ["ui_invite", "discover", "settings", "alias", "name"].includes(
+          body.action,
+        )
+      )
+        if (body.action !== "name" || !request.headers["x-studio-client"])
+          assert.equal(request.headers["x-canvas-token"], snapshot.token);
+      if (body.action === "name") {
+        if (body.serverId === "local" || body.serverId === serverId)
+          invitation.label = body.label;
+        else {
+          const peer = discoveredPeers.find(
+            (row) => row.serverId === body.serverId,
+          );
+          if (!peer) {
+            json({ error: "Server not paired" }, 403);
+            return;
+          }
+          peer.label = peer.invitation.label = body.label;
+        }
+      }
+      if (body.action === "alias") {
+        aliases[body.serverId] = body.alias;
+        if (body.serverId === "local" || body.serverId === serverId)
+          aliases.local = aliases[serverId] = body.alias;
+      }
       if (body.action === "ui_invite") {
         const target = discoveredPeers.find(
           (row) => row.serverId === body.serverId,
@@ -325,6 +354,7 @@ export async function fixture(
         clients: accessClients,
         // An exact retry can return an earlier snapshot. GET stays current.
         settings: {
+          aliases,
           autoPair:
             staleSettingsReceipts && body.action === "settings"
               ? !autoPair
@@ -512,7 +542,7 @@ export async function fixture(
       if (url.pathname === "/")
         response.setHeader(
           "Content-Security-Policy",
-          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://api.openai.com https://*.ts.net; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors " +
+          "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self' http://127.0.0.1:* https://api.openai.com https://*.ts.net:*; img-src 'self' data: blob: https: http:; media-src 'self' blob: data:; frame-src 'self' blob: http://*.localhost:*; frame-ancestors " +
             (url.searchParams.has("studio-server")
               ? "'self' http://127.0.0.1:* http://localhost:*"
               : "'none'") +
@@ -536,6 +566,7 @@ export async function fixture(
     },
     pairs,
     accessRequests,
+    aliases,
     setChats(rows) {
       snapshot.threads = rows;
       snapshot.runtime.agents = rows;

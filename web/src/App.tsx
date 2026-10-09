@@ -1,3 +1,6 @@
+import { writePreferenceEdit } from "./sync/uiPreferenceStore";
+import { connectUiPreferences } from "./sync/uiPreferenceConnection";
+import { apiOrigin, serverFetch } from "./servers/transport";
 import { Tooltip } from "@mantine/core";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
@@ -14,6 +17,7 @@ import { useServerFrame } from "./servers/frameBridge";
 import {
   serverViewId,
   isServerView,
+  isClassicServerView,
   isRemoteServerView,
   serverParentOrigin,
 } from "./servers/environment";
@@ -128,6 +132,7 @@ import {
   parseSidebarShortcut,
   parseStudioPreferences,
   studioPreferencesStorageKey,
+  applyStudioPreferences,
   type StudioPreferences,
 } from "./studioPreferences";
 import {
@@ -309,22 +314,27 @@ export default function App() {
     useState<StudioSettingsTab>("accounts");
   const serverSettings = useServerSettings();
   useEffect(() => {
-    if (studioSettingsOpen && studioSettingsTab === "servers")
-      serverSettings?.activate();
+    if (!studioSettingsOpen) return;
+    if (
+      serverViewId &&
+      window.parent !== window &&
+      (studioSettingsTab === "accounts" || studioSettingsTab === "servers") &&
+      !externalFrameAccountDialog.current
+    ) {
+      setStudioSettingsOpen(false);
+      window.parent.postMessage(
+        {
+          kind: "studio-server-open-settings",
+          serverId: serverViewId,
+          tab: studioSettingsTab,
+        },
+        serverParentOrigin,
+      );
+    } else if (studioSettingsTab === "servers") serverSettings?.activate();
   }, [studioSettingsOpen, studioSettingsTab]);
   const activateSettingsTab = (value: string | null) => {
     if (!isStudioSettingsTab(value)) return;
     setStudioSettingsTab(value);
-    if (value === "servers") {
-      if (serverSettings) serverSettings.activate();
-      else if (serverViewId && window.parent !== window) {
-        setStudioSettingsOpen(false);
-        window.parent.postMessage(
-          { kind: "studio-server-open-settings", serverId: serverViewId },
-          serverParentOrigin,
-        );
-      }
-    }
   };
   const chatActionsButton = useRef<HTMLButtonElement>(null);
   const [accountModalOpen, setAccountModalOpen] = useState(false);
@@ -384,6 +394,10 @@ export default function App() {
       };
     }
   }, []);
+  useEffect(() => {
+    if (!isServerView) return;
+    return connectUiPreferences(apiOrigin(), serverFetch, localStorage);
+  }, []);
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
@@ -401,14 +415,18 @@ export default function App() {
   const [sidebarShortcutError, setSidebarShortcutError] = useState("");
   const updateStudioPreferences = useCallback(
     (next: StudioPreferences) => {
-      setStudioPreferences(next);
-      if (next.theme !== colorScheme) setColorScheme(next.theme);
       try {
-        localStorage.setItem(studioPreferencesStorageKey, JSON.stringify(next));
+        const value = writePreferenceEdit(
+          studioPreferencesStorageKey,
+          { ...studioPreferences },
+          { ...next },
+        );
+        setStudioPreferences(value);
+        if (value.theme !== colorScheme) setColorScheme(value.theme);
         window.dispatchEvent(new Event("studio-preferences-change"));
         if (isServerView)
           window.parent.postMessage(
-            { kind: "studio-server-preferences", preferences: next },
+            { kind: "studio-server-preferences", preferences: value },
             serverParentOrigin,
           );
         setStudioPreferencesError("");
@@ -418,7 +436,7 @@ export default function App() {
         );
       }
     },
-    [colorScheme, setColorScheme],
+    [colorScheme, setColorScheme, studioPreferences],
   );
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() =>
     saved("codex-sidebar-collapsed", false),
@@ -428,43 +446,22 @@ export default function App() {
       setColorScheme(studioPreferences.theme);
   }, [studioPreferences.theme, colorScheme, setColorScheme]);
   useEffect(() => {
-    const root = document.documentElement;
-    root.dataset.studioTypography = studioPreferences.typography;
-    root.dataset.studioContentLayout = studioPreferences.contentLayout;
-    root.style.setProperty(
-      "--studio-font-family",
-      fontFamilies[studioPreferences.fontFamily].css,
-    );
-    root.style.setProperty(
-      "--studio-sidebar-font-size",
-      `${studioPreferences.sidebarFontSize}px`,
-    );
-    root.style.setProperty(
-      "--studio-main-font-size",
-      `${studioPreferences.mainFontSize}px`,
-    );
-    if (studioPreferences.typography === "original") {
-      root.style.removeProperty("--studio-font-family");
-      root.style.removeProperty("--studio-sidebar-font-size");
-      root.style.removeProperty("--studio-main-font-size");
-    }
-    root.style.setProperty(
-      "--studio-content-width-ratio",
-      String(studioPreferences.contentWidth / 100),
-    );
+    applyStudioPreferences(studioPreferences, document.documentElement);
   }, [studioPreferences]);
   useEffect(() => {
     const preferences = (event: StorageEvent) => {
       if (event.key !== studioPreferencesStorageKey || !event.newValue) return;
       try {
-        setStudioPreferences(parseStudioPreferences(event.newValue));
+        const next = parseStudioPreferences(event.newValue);
+        setStudioPreferences(next);
+        setColorScheme(next.theme);
       } catch {}
     };
     window.addEventListener("storage", preferences);
     return () => window.removeEventListener("storage", preferences);
   }, []);
   const toggleSidebar = useCallback(() => {
-    if (isServerView) {
+    if (isServerView && !isClassicServerView) {
       window.parent.postMessage(
         { kind: "studio-server-toggle-sidebar" },
         serverParentOrigin,
@@ -816,10 +813,11 @@ export default function App() {
       })),
     [accounts.data.accounts],
   );
-  const accountServer = useMemo(
+  const cachedAccountServer = useMemo(
     () => (serverViewId ? viewServer(serverViewId) : localServer()),
     [],
   );
+  const accountServer = serverSettings?.server || cachedAccountServer;
   const accountKey =
     agent?.accountKey ||
     lead?.accountKey ||
@@ -1889,7 +1887,7 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           initialPath={target.cwd ?? undefined}
-          serverChoices={[{ id: "local", label: "This computer" }]}
+          serverChoices={[{ id: "local", label: accountServer.label }]}
           showServerSelector={false}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });

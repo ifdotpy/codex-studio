@@ -1,4 +1,8 @@
 import {
+  bootstrapPreferenceCache,
+  applyCachedPreferenceAppearance,
+} from "./sync/uiPreferenceStore";
+import {
   DesktopServerCredentials,
   nativeCredentialBridge,
 } from "./servers/desktopCredentials";
@@ -11,6 +15,7 @@ import App from "./App";
 import MultiServerApp from "./servers/MultiServerApp";
 import { isServerView } from "./servers/environment";
 import { isRemoteServerView } from "./servers/environment";
+import { isClassicServerView } from "./servers/environment";
 import { shellCredentialBridge } from "./servers/shellTransport";
 import "./servers/servers.css";
 import UIErrorBoundary from "./components/UIErrorBoundary";
@@ -21,6 +26,8 @@ import "./appearance.css";
 import "./studio-preferences.css";
 import "./visual-activity.css";
 
+bootstrapPreferenceCache();
+applyCachedPreferenceAppearance();
 const nativeCredentials = nativeCredentialBridge();
 setServerCredentialAdapter(
   nativeCredentials
@@ -32,6 +39,8 @@ setServerCredentialAdapter(
         : new BrowserServerCredentials(),
 );
 if (isServerView) document.documentElement.dataset.serverView = "true";
+if (isClassicServerView)
+  document.documentElement.dataset.serverNavigation = "classic";
 
 const container = document.getElementById("root")!;
 if (container.dataset.studioMounted !== "true") {

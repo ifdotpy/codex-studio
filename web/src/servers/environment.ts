@@ -5,6 +5,9 @@ export const serverViewId =
     ? null
     : new URLSearchParams(location.search).get("studio-server");
 export const isServerView = !!serverViewId;
+export const isClassicServerView =
+  isServerView &&
+  new URLSearchParams(location.search).get("studio-navigation") === "classic";
 export const isRemoteServerView = !!serverViewId && serverViewId !== "local";
 export const serverStorageName = (name: string) =>
   serverViewId && serverViewId !== "local"

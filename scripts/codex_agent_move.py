@@ -18,6 +18,7 @@ import uuid
 from codex_exact_history import export_codex, frozen_codex_parameters, private_write, unpack_codex, export_claude, extend_codex_history, MAX_HISTORY_BYTES
 from codex_multi_server_orchestration import encoded, identity
 from codex_native_errors import NativeRpcError
+from codex_mcp_capabilities import prompt_catalog, instruction_proofs, instruction_differences, capabilities_match, proof_levels
 
 CHUNK = 96 * 1024
 DEADLINE = 300
@@ -56,7 +57,7 @@ def claude_tool_refusal(data: Any) -> str | None:
             return None
         names[field] = ', '.join(diagnostic_name(value) for value in values) or '(none)'
     if refusal['kind'] == 'external_tools':
-        return f'External MCP tool snapshots are not supported yet. Source tools [{names["sourceNames"]}]. Their target schemas cannot be verified'
+        return f'The external MCP catalog is unavailable or differs. Source names [{names["sourceNames"]}]; target names [{names["targetNames"]}]; changed definitions [{names["changedNames"]}]'
     if refusal['kind'] == 'builtin_tools':
         return f'The target CLI does not offer saved builtin tools [{names["changedNames"]}]. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]'
     return f'The effective target Studio tool definitions differ in names, schemas, or order. Source tools [{names["sourceNames"]}]; target tools [{names["targetNames"]}]; changed definitions [{names["changedNames"]}]'
@@ -84,6 +85,8 @@ def capability_difference(provider: str, source: dict[str, Any], target: dict[st
                 changed = sorted(name for name in tool_a.keys() & tool_b.keys() if tool_a[name] != tool_b[name])
                 if changed:
                     differences.append('MCP tool definitions differ: ' + diagnostic_name(name) + '/' + ', '.join(diagnostic_name(tool) for tool in changed))
+    differences.extend('MCP server ' + diagnostic_name(name) + ' initialization instructions differ'
+                       for name in instruction_differences(source, target))
     return '. '.join(differences)
 
 def move_tools(tool: Any, text: dict[str, Any]) -> list[dict[str, Any]]:
@@ -95,6 +98,16 @@ def move_tools(tool: Any, text: dict[str, Any]) -> list[dict[str, Any]]:
         'Same account identity preserves the prompt cache. A different Codex account requires explicit accept_cache_loss=true.',
         {'server': text, 'cwd': text, 'account_key': text, 'note': text, 'request_id': text,
          'accept_cache_loss': {'type': 'boolean', 'description': 'Explicit approval for this move to a different Codex account. The provider prompt cache will be lost.'}}, ['server', 'cwd'])]
+
+
+def teleport_definition(legacy: dict[str, Any]) -> dict[str, Any]:
+    """New sessions use the new name; do not edit the legacy definition."""
+    current = copy.deepcopy(legacy)
+    current['name'] = 'orchestration_teleport'
+    current['description'] = current['description'].replace('Move your own', 'Teleport your own').replace('a move', 'a teleport')
+    current['inputSchema']['properties']['accept_cache_loss']['description'] = (
+        'Explicit approval for this teleport to a different Codex account. The provider prompt cache will be lost.')
+    return current
 
 
 class AgentMoves:
@@ -222,9 +235,11 @@ class AgentMoves:
             raise ValueError('The native version or complete MCP tool catalog is unavailable')
         if mcp.get('nextCursor'):
             raise ValueError('The complete native MCP tool catalog exceeds the move preflight limit')
+        catalog = prompt_catalog(mcp['data'])
         return {'version': native.get('version'), 'platform': platform.system(),
-                'mcp': hashlib.sha256(encoded(mcp.get('data', [])).encode()).hexdigest(),
-                'mcpCatalog': catalog_names(mcp['data'])}
+                'mcp': hashlib.sha256(encoded(catalog).encode()).hexdigest(),
+                'mcpCatalog': catalog_names(catalog),
+                'mcpProof': instruction_proofs(server, agent, mcp['data'])}
 
     def _native_owner(self, db: Any, actor: str, thread: str, account: str, provider: str) -> None:
         uuid.UUID(thread)
@@ -276,7 +291,9 @@ class AgentMoves:
             if agent.get(field):
                 raise ValueError('Finish the active context, account, settings, or workspace operation before a move')
         other_tools = [tool for tool in agent.get('activeTools', [])
-                       if tool.get('name') not in {'orchestration_move', 'mcp__studio__orchestration_move'} and tool.get('id') != key.rsplit(':', 1)[-1]]
+                       if tool.get('name') not in {'orchestration_move', 'mcp__studio__orchestration_move',
+                                                  'orchestration_teleport', 'mcp__studio__orchestration_teleport'}
+                       and tool.get('id') != key.rsplit(':', 1)[-1]]
         if other_tools:
             raise ValueError('Finish the other active tools before a move')
         if db.execute("SELECT 1 FROM runtime_tool_requests WHERE json_extract(record,'$.agent')=? "
@@ -340,13 +357,15 @@ class AgentMoves:
                      'accept_cache_loss': args.get('accept_cache_loss') is True,
                      'capabilities': self._capabilities(agent), 'model': agent['model']}
         if preflight['provider'] == 'claude':
-            preflight['claudeProof'] = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=20)
+            # An idle source may need the bounded SDK metadata connection before tools/list.
+            preflight['claudeProof'] = native.call('claude/moveProof', {'threadId': agent['threadId']}, timeout=90)
         target = self._exchange(server, 'move_validate', preflight, identity(key, 'validate'))
         result = {'requestId': key, 'agentId': agent['id'], 'server': server, 'cwd': cwd,
                   'status': 'accepted', 'accountKey': target['accountKey'],
                   'warning': target.get('warning'),
                   'cacheLossApproved': bool(target.get('warning') and args.get('accept_cache_loss') is True),
                   'cacheProof': target.get('cacheProof', 'exact_native_history_and_catalog'),
+                  **({'mcpProofLevels': target['mcpProofLevels']} if 'mcpProofLevels' in target else {}),
                   'delivery': 'Finish this turn. The next turn continues on the target server'}
         operation = {'id': key, 'side': 'source', 'agent': agent['id'], 'epoch': agent['epoch'],
                      'server': server, 'args': copy.deepcopy(args), 'fingerprint': fingerprint, 'result': result,
@@ -560,7 +579,7 @@ class AgentMoves:
         self.runtime.loaded.discard(agent['id'])
         folder = self._folder(operation['id'])
         if agent.get('provider') == 'claude':
-            exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=20)
+            exported = native.call('claude/moveExport', {'threadId': agent['threadId']}, timeout=90)
             export_claude(Path(exported['path']), folder / 'native.zip')
             bridge_session = exported['session']
             proof = bridge_session.get('moveProof')
@@ -785,9 +804,9 @@ class AgentMoves:
             account, warning = self._select_account(payload)
             with self.runtime.read_db() as db:
                 self._native_owner(db, payload['agentId'], payload['nativeThread'], account['id'], payload['provider'])
-            temporary = {'provider': payload['provider'], 'accountKey': account['id'], 'id': 'move-preflight'}
+            temporary = {'provider': payload['provider'], 'accountKey': account['id'], 'id': 'move-preflight', 'cwd': str(cwd)}
             capabilities = self._capabilities(temporary)
-            if capabilities != payload['capabilities']:
+            if not capabilities_match(capabilities, payload['capabilities']):
                 detail = capability_difference(payload['provider'], payload['capabilities'], capabilities)
                 fix = 'Update the CLI and SDK on the target to the source versions before a move' if payload['provider'] == 'claude' else 'Use the same CLI version, platform, and MCP catalog on both servers'
                 raise ValueError(detail + '. The exact prompt prefix and builtin tool catalog cannot be proved identical. ' + fix)
@@ -810,7 +829,10 @@ class AgentMoves:
             catalog = self.runtime.catalog(account['id'])
             if not any(row.get('model') == payload['model'] for row in catalog.get('data', [])):
                 raise ValueError('The target account does not offer the source model')
-            return {'accountKey': account['id'], 'accountIdentity': account_identity, 'warning': warning, 'cacheProof': cache_proof}
+            return {'accountKey': account['id'], 'accountIdentity': account_identity, 'warning': warning, 'cacheProof': cache_proof,
+                    **({'mcpProofLevels': [{'name': diagnostic_name(row['name']), 'proofLevel': row['proofLevel']}
+                                          for row in proof_levels(payload['capabilities'], capabilities)]}
+                       if payload['provider'] == 'codex' else {})}
         move = payload.get('move')
         if not isinstance(move, str):
             raise ValueError('Supply a move identity')
@@ -916,7 +938,7 @@ class AgentMoves:
         agent.update(moveImportPending=True,
                      executionMove={'id': operation['move'], 'phase': 'ready', 'server': self.service.server_id},
                      lastCompletedTurn=None, lastCompletedTurnStatus=None)
-        if self._capabilities(agent) != descriptor['preflight']['capabilities']:
+        if not capabilities_match(self._capabilities(agent), descriptor['preflight']['capabilities']):
             raise ValueError('The native tools or version changed after preflight')
         self._check_target_deadline(operation)
         if agent.get('provider') == 'claude':

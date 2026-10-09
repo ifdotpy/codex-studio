@@ -6,7 +6,7 @@ function serveOrigin(value) {
   if (
     url.protocol !== "https:" ||
     !url.hostname.endsWith(".ts.net") ||
-    url.port ||
+    url.port === "0" ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||
@@ -45,6 +45,7 @@ function createServerCredentials({
 }) {
   const filename = path.join(profile, "paired-servers.json");
   let writing = Promise.resolve();
+  const pairing = new Map();
   function secure() {
     if (
       !safeStorage.isEncryptionAvailable() ||
@@ -144,113 +145,138 @@ function createServerCredentials({
         throw new Error(
           "The saved credential belongs to another pairing attempt.",
         );
-      return !!(draft.body || draft.receipt);
+      return !!draft.receipt || (!draft.rejected && !!draft.body);
     },
-    async pair({ origin, invitation: input, requestId }) {
-      origin = serveOrigin(origin);
-      const invitation = input.invitation || input;
-      if (
-        invitation.protocol !== 1 ||
-        !invitation.inviteId ||
-        !invitation.token ||
-        !invitation.serverId ||
-        invitation.serverId === "local" ||
-        !invitation.publicKey ||
-        serveOrigin(invitation.origin) !== origin
-      )
-        throw new Error("The pairing invitation is invalid.");
-      const draft = await change((state) => {
-        if (state.drafts[requestId]) {
-          const existing = state.drafts[requestId];
-          if (
-            existing.origin !== origin ||
-            existing.serverId !== invitation.serverId ||
-            existing.inviteId !== invitation.inviteId
-          )
-            throw new Error(
+    pair(inputValue) {
+      const identity = JSON.stringify(inputValue);
+      const existing = pairing.get(inputValue.requestId);
+      if (existing) {
+        if (existing.identity !== identity)
+          return Promise.reject(
+            new Error(
               "This request identity belongs to another pairing attempt.",
-            );
-          return existing;
-        }
-        const keys = crypto.generateKeyPairSync("ed25519");
-        const clientId = crypto.randomUUID();
-        const publicKey = keys.publicKey
-          .export({ type: "spki", format: "pem" })
-          .toString();
-        const body = JSON.stringify({
-          protocol: 1,
-          inviteId: invitation.inviteId,
-          token: invitation.token,
-          clientId,
-          label: "Studio UI",
-          kind: "ui",
-          publicKey,
-          requestId,
+            ),
+          );
+        return existing.promise;
+      }
+      const promise = (async () => {
+        let { origin } = inputValue;
+        const { invitation: input, requestId } = inputValue;
+        origin = serveOrigin(origin);
+        const invitation = input.invitation || input;
+        if (
+          invitation.protocol !== 1 ||
+          !invitation.inviteId ||
+          !invitation.token ||
+          !invitation.serverId ||
+          invitation.serverId === "local" ||
+          !invitation.publicKey ||
+          serveOrigin(invitation.origin) !== origin
+        )
+          throw new Error("The pairing invitation is invalid.");
+        const draft = await change((state) => {
+          if (state.drafts[requestId]) {
+            const existing = state.drafts[requestId];
+            if (
+              existing.origin !== origin ||
+              existing.serverId !== invitation.serverId ||
+              existing.inviteId !== invitation.inviteId
+            )
+              throw new Error(
+                "This request identity belongs to another pairing attempt.",
+              );
+            return existing;
+          }
+          const keys = crypto.generateKeyPairSync("ed25519");
+          const clientId = crypto.randomUUID();
+          const publicKey = keys.publicKey
+            .export({ type: "spki", format: "pem" })
+            .toString();
+          const body = JSON.stringify({
+            protocol: 1,
+            inviteId: invitation.inviteId,
+            token: invitation.token,
+            clientId,
+            label: "Studio UI",
+            kind: "ui",
+            publicKey,
+            requestId,
+          });
+          const value = {
+            origin,
+            serverId: invitation.serverId,
+            clientId,
+            inviteId: invitation.inviteId,
+            publicKey,
+            privateKey: keys.privateKey
+              .export({ type: "pkcs8", format: "pem" })
+              .toString(),
+            body,
+          };
+          state.drafts[requestId] = value;
+          return value;
         });
-        const value = {
+        if (draft.receipt) return draft.receipt;
+        const response = await signed(
+          draft,
+          new Request(origin + "/api/multi-server/v1/pair", {
+            method: "POST",
+            body: draft.body,
+            headers: { "Content-Type": "application/json" },
+            signal: AbortSignal.timeout(15000),
+          }),
+          requestId,
+        );
+        const value = await response.json();
+        if (!response.ok) {
+          const error = new Error(
+            value.error ||
+              `Pairing failed (${response.status}). Retry the same invitation.`,
+          );
+          if (response.status === 403 && value.code === "invite_unavailable") {
+            await change((state) => {
+              state.drafts[requestId].rejected = true;
+            });
+            error.code = "invite_unavailable";
+          }
+          throw error;
+        }
+        if (
+          value.protocol !== 1 ||
+          value.paired !== true ||
+          value.serverId !== invitation.serverId ||
+          value.clientId !== draft.clientId ||
+          serveOrigin(value.origin) !== origin ||
+          value.publicKey !== invitation.publicKey ||
+          value.tailscaleUser !== invitation.tailscaleUser
+        )
+          throw new Error(
+            "The pairing response does not match the server invitation.",
+          );
+        const receipt = {
+          id: value.serverId,
           origin,
-          serverId: invitation.serverId,
-          clientId,
-          inviteId: invitation.inviteId,
-          publicKey,
-          privateKey: keys.privateKey
-            .export({ type: "pkcs8", format: "pem" })
-            .toString(),
-          body,
+          label: value.label || invitation.label || new URL(origin).hostname,
+          credentialId: draft.clientId,
         };
-        state.drafts[requestId] = value;
-        return value;
-      });
-      if (draft.receipt) return draft.receipt;
-      const response = await signed(
-        draft,
-        new Request(origin + "/api/multi-server/v1/pair", {
-          method: "POST",
-          body: draft.body,
-          headers: { "Content-Type": "application/json" },
-          signal: AbortSignal.timeout(15000),
-        }),
-        requestId,
-      );
-      const value = await response.json();
-      if (!response.ok)
-        throw new Error(
-          value.error ||
-            `Pairing failed (${response.status}). Retry the same invitation.`,
-        );
-      if (
-        value.protocol !== 1 ||
-        value.paired !== true ||
-        value.serverId !== invitation.serverId ||
-        value.clientId !== draft.clientId ||
-        serveOrigin(value.origin) !== origin ||
-        value.publicKey !== invitation.publicKey ||
-        value.tailscaleUser !== invitation.tailscaleUser
-      )
-        throw new Error(
-          "The pairing response does not match the server invitation.",
-        );
-      const receipt = {
-        id: value.serverId,
-        origin,
-        label: value.label || invitation.label || new URL(origin).hostname,
-        credentialId: draft.clientId,
-      };
-      await change((state) => {
-        state.servers[receipt.id] = {
-          ...draft,
-          body: undefined,
-          targetPublicKey: value.publicKey,
-          tailscaleUser: value.tailscaleUser,
-        };
-        state.drafts[requestId] = {
-          ...draft,
-          body: undefined,
-          privateKey: undefined,
-          receipt,
-        };
-      });
-      return receipt;
+        await change((state) => {
+          state.servers[receipt.id] = {
+            ...draft,
+            body: undefined,
+            targetPublicKey: value.publicKey,
+            tailscaleUser: value.tailscaleUser,
+          };
+          state.drafts[requestId] = {
+            ...draft,
+            body: undefined,
+            privateKey: undefined,
+            receipt,
+          };
+        });
+        return receipt;
+      })().finally(() => pairing.delete(inputValue.requestId));
+      pairing.set(inputValue.requestId, { identity, promise });
+      return promise;
     },
     async owns(serverId) {
       return !!(await read()).servers[serverId];

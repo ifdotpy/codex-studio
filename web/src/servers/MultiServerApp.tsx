@@ -1,3 +1,6 @@
+import { orderPreferenceServers } from "./preferenceServerOrder";
+import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useUiPreferenceSync } from "./useUiPreferenceSync";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
 } from "../components/StudioSettingsTabs";
@@ -10,7 +13,10 @@ import {
   Modal,
   useMantineColorScheme,
   Tabs,
+  NativeSelect,
+  ActionIcon,
 } from "@mantine/core";
+import { Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
 import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
@@ -32,6 +38,7 @@ import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 import ServerManager from "./ServerManager";
 import ServerAccountsPanel from "./ServerAccountsPanel";
+import { accountServers } from "./accountServers";
 import type { ServerAccount } from "./navigation";
 import {
   studioPreferencesStorageKey,
@@ -44,6 +51,8 @@ import type { GetResult } from "../api";
 import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
+const combinedNavigation =
+  new URLSearchParams(location.search).get("studio-navigation") === "combined";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
   const load = () => {
@@ -56,9 +65,10 @@ export default function MultiServerApp() {
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
   const servers = useMemo(
-    () => (uiOnly ? paired : [localServer(), ...paired]),
+    () => orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
     [paired],
   );
+  useUiPreferenceSync(servers);
   const [selected, setSelected] = useState(
     () =>
       localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
@@ -74,6 +84,11 @@ export default function MultiServerApp() {
   const discovery = useServerDiscovery(
     !uiOnly && ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname),
     (server) => add(server, false),
+    !uiOnly,
+  );
+  const accountsServers = useMemo(
+    () => accountServers(servers, discovery.snapshot?.servers || []),
+    [servers, discovery.snapshot],
   );
   const [navigation, setNavigation] = useState<
     Record<string, ServerNavigation>
@@ -339,7 +354,8 @@ export default function MultiServerApp() {
     };
   }, [unloaded, paired]);
   useEffect(() => {
-    if (!manager || managerTab !== "servers") return;
+    if (!manager || (managerTab !== "servers" && managerTab !== "accounts"))
+      return;
     const controllers = new Set<AbortController>();
     let stopped = false;
     for (const server of servers) {
@@ -519,18 +535,20 @@ export default function MultiServerApp() {
           setManager(true);
         }
       } else if (event.data.kind === "studio-server-open-settings") {
+        setManagerTab(event.data.tab === "accounts" ? "accounts" : "servers");
         setManager(true);
       } else if (event.data.kind === "studio-server-preferences") {
         try {
           const value = parseStudioPreferences(
             JSON.stringify(event.data.preferences),
           );
-          localStorage.setItem(
+          const next = writePreferenceEdit(
             studioPreferencesStorageKey,
-            JSON.stringify(value),
+            { ...preferences },
+            { ...value },
           );
-          setPreferences(value);
-          publishPreferences(value);
+          setPreferences(next);
+          publishPreferences(next);
         } catch {}
       } else if (event.data.kind === "studio-server-toggle-sidebar") {
         toggleSidebar();
@@ -670,13 +688,27 @@ export default function MultiServerApp() {
         >
           <StudioSettingsTabs />
           <Tabs.Panel value="accounts" pt="md">
+            {discovery.error && <p role="alert">{discovery.error}</p>}
             <ServerAccountsPanel
-              servers={servers}
+              servers={accountsServers}
               accountsByServer={accountsByServer}
-              statuses={status}
+              statuses={{
+                ...Object.fromEntries(
+                  (discovery.snapshot?.servers || [])
+                    .filter(
+                      (peer) =>
+                        peer.status === "unreachable" ||
+                        peer.reachability === "unreachable",
+                    )
+                    .map((peer) => [peer.id, "offline"]),
+                ),
+                ...status,
+              }}
               startAccount={(id, command) => {
                 restoreManagerAfterFrameDialog.current = manager;
-                setManager(false);
+                if (servers.some((server) => server.id === id))
+                  setManager(false);
+                else discovery.addAgain(id);
                 send(id, command);
               }}
               accountAction={(id, command) => {
@@ -693,10 +725,16 @@ export default function MultiServerApp() {
       </div>
     </Modal>
   );
-  if (!uiOnly && !paired.length)
+  if (
+    !uiOnly &&
+    !paired.length &&
+    accountsServers.length === servers.length &&
+    !manager
+  )
     return (
       <ServerSettingsContext.Provider
         value={{
+          server: localServer(),
           panel: management,
           activate: () => setManager(true),
           close: () => setManager(false),
@@ -714,74 +752,99 @@ export default function MultiServerApp() {
   return (
     <div
       className={`multi-server-shell ${sidebarHidden ? "server-sidebar-hidden" : ""}`}
+      data-navigation={combinedNavigation ? "combined" : "classic"}
     >
-      <Button
-        className="server-mobile-toggle"
-        onClick={() => setMobileOpen(!mobileOpen)}
-        aria-expanded={mobileOpen}
-      >
-        Servers and chats
-      </Button>
-      <aside
-        className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
-        aria-label="Servers and projects"
-      >
-        <header>
-          <strong>
-            Studio servers{" "}
-            {unread > 0 && (
-              <span aria-label={`${unread} unread chats`}>({unread})</span>
-            )}
-          </strong>
-          <Button
-            size="xs"
+      {!combinedNavigation && (
+        <div className="server-switcher">
+          <NativeSelect
+            aria-label="Studio server"
+            value={current}
+            data={servers.map((server) => ({
+              value: server.id,
+              label: server.label,
+            }))}
+            onChange={(event) => select(event.currentTarget.value)}
+          />
+          <ActionIcon
+            aria-label="Studio settings"
             variant="subtle"
             onClick={() => setManager(true)}
-            aria-label="Studio settings"
           >
-            Settings
+            <Settings size={18} />
+          </ActionIcon>
+        </div>
+      )}
+      {combinedNavigation && (
+        <>
+          <Button
+            className="server-mobile-toggle"
+            onClick={() => setMobileOpen(!mobileOpen)}
+            aria-expanded={mobileOpen}
+          >
+            Servers and chats
           </Button>
-        </header>
-        <Button variant="subtle" onClick={() => setSearchOpen(true)}>
-          Search all messages
-        </Button>
-        <TextInput
-          label="Find projects and chats"
-          value={query}
-          onChange={(event) => setQuery(event.currentTarget.value)}
-        />
-        {failure && <p role="alert">{failure}</p>}
-        {!servers.length && (
-          <p>Pair a server to open its projects and chats.</p>
-        )}
-        <Button
-          variant="subtle"
-          onClick={() =>
-            send(
-              servers.some((row) => row.id === "local") ? "local" : current,
-              { action: "add-project" },
-            )
-          }
-        >
-          Add project
-        </Button>
-        <ProjectGroupsSidebar
-          navigation={navigation}
-          servers={servers}
-          statuses={status}
-          serverAliases={discovery.snapshot?.aliases}
-          reachability={Object.fromEntries(
-            (discovery.snapshot?.servers || []).map((server) => [
-              server.id,
-              server.reachability,
-            ]),
-          )}
-          current={current}
-          query={query}
-          send={send}
-          hideOldChatsThreshold={preferences.hideOldChatsThreshold}
-        />
-      </aside>
+          <aside
+            className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
+            aria-label="Servers and projects"
+          >
+            <header>
+              <strong>
+                Studio servers{" "}
+                {unread > 0 && (
+                  <span aria-label={`${unread} unread chats`}>({unread})</span>
+                )}
+              </strong>
+              <Button
+                size="xs"
+                variant="subtle"
+                onClick={() => setManager(true)}
+                aria-label="Studio settings"
+              >
+                Settings
+              </Button>
+            </header>
+            <Button variant="subtle" onClick={() => setSearchOpen(true)}>
+              Search all messages
+            </Button>
+            <TextInput
+              label="Find projects and chats"
+              value={query}
+              onChange={(event) => setQuery(event.currentTarget.value)}
+            />
+            {failure && <p role="alert">{failure}</p>}
+            {!servers.length && (
+              <p>Pair a server to open its projects and chats.</p>
+            )}
+            <Button
+              variant="subtle"
+              onClick={() =>
+                send(
+                  servers.some((row) => row.id === "local") ? "local" : current,
+                  { action: "add-project" },
+                )
+              }
+            >
+              Add project
+            </Button>
+            <ProjectGroupsSidebar
+              navigation={navigation}
+              servers={servers}
+              statuses={status}
+              serverAliases={discovery.snapshot?.aliases}
+              reachability={Object.fromEntries(
+                (discovery.snapshot?.servers || []).map((server) => [
+                  server.id,
+                  server.reachability,
+                ]),
+              )}
+              current={current}
+              query={query}
+              send={send}
+              hideOldChatsThreshold={preferences.hideOldChatsThreshold}
+            />
+          </aside>
+        </>
+      )}
       <main className="server-views">
         {!servers.length && (
           <div className="startup">

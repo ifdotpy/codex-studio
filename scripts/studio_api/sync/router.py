@@ -16,6 +16,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.types import Receive, Scope, Send
 from pydantic import TypeAdapter, ValidationError
 
+from studio_api.sync.preferences import PreferencePushRequest, PreferencePushResponse, merge_preferences
 from studio_api.models import ErrorResponse
 from studio_api.responses import register_route_components
 from studio_api.schema import (
@@ -162,6 +163,17 @@ def _stream_response(content: AsyncIterator[bytes]) -> StreamingResponse:
 
 def create_router(context: ApiContext) -> APIRouter:
     router = APIRouter()
+
+
+    @router.post("/api/sync/preferences", response_model=PreferencePushResponse, responses=ERROR_RESPONSES)
+    def push_preferences(request: Request, body: PreferencePushRequest) -> object:
+        runtime = context.runtime
+        if runtime is None:
+            raise ValueError("Studio is not ready")
+        with runtime.db() as db:
+            result = merge_preferences(db, body)
+        return context.send(request, result.model_dump(mode="json"))
+
 
     @router.get("/api/sync/identity", response_model=SyncIdentityResponse, responses=ERROR_RESPONSES)
     def identity(request: Request) -> object:
