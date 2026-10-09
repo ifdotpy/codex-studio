@@ -289,16 +289,21 @@ export async function fixture(label, signed = false, accountRows = null) {
       return;
     }
     if (url.pathname === "/api/accounts") {
+      const accounts = accountRows || [
+        {
+          id: "default",
+          label: "Fixture",
+          provider: "codex",
+          status: "ready",
+        },
+      ];
       json({
-        accounts: accountRows || [
-          {
-            id: "default",
-            label: "Fixture",
-            provider: "codex",
-            status: "ready",
-          },
-        ],
-        defaultAccountKey: "default",
+        accounts: accounts.map((account) => ({
+          ...account,
+          isDefault: account.isDefault || false,
+        })),
+        defaultAccountKey:
+          accounts.find((account) => account.isDefault)?.id || "default",
         archivedAccounts: [],
         logins: [],
       });

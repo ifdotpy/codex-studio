@@ -116,6 +116,18 @@ export default function ServerAccountsPanel({
                       {row.provider === "claude" ? "Claude" : "Codex"}
                     </Badge>
                     <strong>{row.label || row.email || "Account"}</strong>
+                    {servers
+                      .filter((server) => row.byServer[server.id]?.isDefault)
+                      .map((server) => (
+                        <Badge
+                          key={server.id}
+                          size="xs"
+                          color="blue"
+                          variant="light"
+                        >
+                          Default · {server.label}
+                        </Badge>
+                      ))}
                     {!row.email && (
                       <span className="account-muted">Email unavailable</span>
                     )}

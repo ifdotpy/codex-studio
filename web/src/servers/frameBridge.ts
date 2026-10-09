@@ -120,6 +120,7 @@ export function useServerFrame(
       plan: account.plan,
       status: account.status,
       label: account.label,
+      isDefault: account.isDefault,
     }));
     window.parent.postMessage(
       {

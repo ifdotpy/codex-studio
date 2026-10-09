@@ -493,7 +493,8 @@ export default function MultiServerApp() {
             (row.email !== null && typeof row.email !== "string") ||
             (row.plan !== null && typeof row.plan !== "string") ||
             typeof row.status !== "string" ||
-            typeof row.label !== "string"
+            typeof row.label !== "string" ||
+            typeof row.isDefault !== "boolean"
           )
             return;
           accounts.push({
@@ -502,6 +503,7 @@ export default function MultiServerApp() {
             plan: row.plan,
             status: row.status,
             label: row.label,
+            isDefault: row.isDefault,
           });
         }
         setAccountsByServer((old) => ({ ...old, [id]: accounts }));

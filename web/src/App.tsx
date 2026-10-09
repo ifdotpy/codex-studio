@@ -718,6 +718,7 @@ export default function App() {
         plan: account.plan || null,
         status: account.disconnected ? "signedOut" : account.status,
         label: account.label,
+        isDefault: account.id === accounts.data.defaultAccountKey,
       })),
     [accounts.data.accounts],
   );

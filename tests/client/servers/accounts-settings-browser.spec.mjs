@@ -17,6 +17,7 @@ test("accounts settings show per-server state and provider choices", async ({
       email: "person@example.test",
       plan: "Plus",
       status: "ready",
+      isDefault: true,
     },
   ];
   const remoteAccounts = [
@@ -35,6 +36,7 @@ test("accounts settings show per-server state and provider choices", async ({
       email: "claude@example.test",
       plan: "Max",
       status: "ready",
+      isDefault: true,
     },
   ];
   const local = await fixture("Local", false, localAccounts);
@@ -128,6 +130,7 @@ test("accounts settings show per-server state and provider choices", async ({
     '[data-account-identity="codex:person@example.test"]',
   );
   await expect(work).toBeVisible();
+  await expect(work.getByText("Default · This computer")).toBeVisible();
   await expect(
     work.getByRole("button", { name: "✓ This computer" }),
   ).toBeVisible();
@@ -136,6 +139,11 @@ test("accounts settings show per-server state and provider choices", async ({
   ).toBeVisible();
   await expect(work.getByRole("button", { name: "+ Empty" })).toBeVisible();
   await expect(accounts.getByText("Claude personal")).toBeVisible();
+  await expect(
+    accounts
+      .locator('[data-account-identity="claude:claude@example.test"]')
+      .getByText("Default · Remote"),
+  ).toBeVisible();
 
   const screenshots = fileURLToPath(
     new URL("../../../docs/screenshots/", import.meta.url),

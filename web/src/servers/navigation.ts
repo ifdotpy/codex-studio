@@ -10,6 +10,7 @@ export type ServerAccount = {
   plan: string | null;
   status: string;
   label: string;
+  isDefault: boolean;
 };
 export type ServerNavigation = {
   projects: { path: string; name: string }[];
