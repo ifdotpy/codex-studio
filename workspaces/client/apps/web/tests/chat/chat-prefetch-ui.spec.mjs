@@ -10,17 +10,19 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("chat prefetch ui @performance", async ({ browser }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const legacySync = process.env.LEGACY_SYNC === "1";
   const dir = await mkdtemp(join(tmpdir(), "studio-chat-prefetch-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      dir,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {
@@ -118,10 +120,7 @@ test("chat prefetch ui @performance", async ({ browser }) => {
       recoveryReadStarted = false;
     let notificationRevision = 0;
     const { createServer } = await import(
-      new URL(
-        "../../../web/node_modules/vite/dist/node/index.js",
-        import.meta.url,
-      )
+      new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
     );
     server = await createServer({
       configFile: false,

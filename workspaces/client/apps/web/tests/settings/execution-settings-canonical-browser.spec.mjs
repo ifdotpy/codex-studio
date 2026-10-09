@@ -3,19 +3,25 @@ import {
   readApiSchemaHash,
   apiSchemaHandshakeSse,
 } from "../playwright.mjs";
-import { setupControl, chooseSetupValue } from "../../setup-controls.mjs";
+import {
+  setupControl,
+  chooseSetupValue,
+} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelValue, selectModel } from "../../model-picker.mjs";
+import {
+  modelValue,
+  selectModel,
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 import { test, expect } from "../playwright.mjs";
 
 test("execution settings canonical browser", async ({ page }) => {
   test.setTimeout(180000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-settings-canonical-"));

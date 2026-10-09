@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { execFileSync } from "node:child_process";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   test,
@@ -34,10 +34,10 @@ test("Background Current Browser", async ({
     },
   };
 
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-current-background-"));
   const harness = `
@@ -67,7 +67,11 @@ window.renderFixture=(data,leadId='lead',initialFocus)=>root.render(
         load(id) {
           if (
             process.env.BASELINE_SYNC_WAIT === "1" &&
-            id === join(root, "web/src/components/shell/BackgroundTasks.tsx")
+            id ===
+              join(
+                root,
+                "workspaces/client/apps/web/src/components/shell/BackgroundTasks.tsx",
+              )
           )
             return execFileSync(
               "git",

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   API_SCHEMA_HASH_HEADER,
@@ -14,10 +14,10 @@ import {
 const workspaceId = "a".repeat(32);
 
 async function createFixture(page, options = {}) {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const server = await createServer({
     configFile: false,

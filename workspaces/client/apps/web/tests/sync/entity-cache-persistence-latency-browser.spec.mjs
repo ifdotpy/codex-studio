@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, spawnFixture, test } from "../playwright.mjs";
 
@@ -9,13 +9,15 @@ test("mutation response persistence completes before its UI update", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "entity-cache-persist-latency-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";

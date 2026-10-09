@@ -1,5 +1,5 @@
 import { test, expect, spawnFixture } from "../playwright.mjs";
-import { chooseSetupValue } from "../../setup-controls.mjs";
+import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 import { mkdtemp, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,14 +8,18 @@ test("new chat chips open each role, save settings and disappear after send", as
   page,
 }) => {
   test.setTimeout(120000);
-  const root = join(import.meta.dirname, "../../..");
+  const root = join(import.meta.dirname, "../../../../../../");
   const evidence = await mkdtemp(join(tmpdir(), "studio-new-chat-settings-"));
   for (const folder of ["home", "codex", "claude"]) {
     await mkdir(join(evidence, folder));
   }
   const fixture = spawnFixture(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {

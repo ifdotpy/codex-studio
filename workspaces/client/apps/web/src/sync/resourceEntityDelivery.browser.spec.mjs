@@ -10,7 +10,7 @@ import {
   protocol3SseEvent,
   readApiSchemaHash,
   test,
-} from "../../../tests/client/playwright.mjs";
+} from "../../tests/playwright.mjs";
 
 test("state stream persists records across tabs without pulls and repairs missing ranges", async ({
   browser,

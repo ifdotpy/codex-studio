@@ -15,11 +15,15 @@ import { join } from "node:path";
 
 test("chat-status-ui", async ({ browser }) => {
   test.setTimeout(120_000);
-  const repo = join(import.meta.dirname, "../../../");
+  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-chat-status-ui-"));
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

@@ -6,7 +6,7 @@ import {
 } from "../playwright.mjs";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("Reasoning History Ui", async ({
   browser: _testBrowser,
@@ -30,13 +30,11 @@ test("Reasoning History Ui", async ({
     },
   };
 
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-reasoning-history-"));
   const child = spawn(process.env.CODEX_AGENTS_PYTHON || "python3", [
     "-B",
-    join(repo, "tests/simple-ui-fixture.py"),
+    join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
     directory,
   ]);
   let log = "";

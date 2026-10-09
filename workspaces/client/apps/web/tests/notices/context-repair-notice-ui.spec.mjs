@@ -13,11 +13,16 @@ test("Context repair notice ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(repo, "web/package.json"));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "context-repair-notice-vite-"));
-  const entry = join(repo, "web/__context-repair-notice-fixture.jsx");
+  const entry = join(
+    repo,
+    "workspaces/client/apps/web/__context-repair-notice-fixture.jsx",
+  );
   const source = `
   import React, {useState} from 'react';
   import {createRoot} from 'react-dom/client';

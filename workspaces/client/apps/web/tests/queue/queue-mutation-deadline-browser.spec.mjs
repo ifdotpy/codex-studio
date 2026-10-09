@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { test, expect } from "../playwright.mjs";
@@ -12,10 +12,10 @@ test("queue-mutation-deadline-browser @performance", async ({
   page: fixturePage,
 }) => {
   test.setTimeout(120_000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-queue-deadline-"));
   const workspaceId = "c".repeat(32);

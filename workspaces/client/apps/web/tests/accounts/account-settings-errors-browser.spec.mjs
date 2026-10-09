@@ -13,7 +13,7 @@ import {
 
 test("Account settings errors", async () => {
   test.setTimeout(45_000);
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { chromium, webkit } = require("playwright-core");
   const { createServer } = await import(require.resolve("vite"));

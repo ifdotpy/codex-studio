@@ -6,13 +6,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Large history @performance", async ({ context }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Large transcript through the production renderer. All runtime state is isolated.
   const repo = testRepo;
   const dir = await mkdtemp(join(tmpdir(), "studio-large-history-"));
   const proc = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      dir,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "",

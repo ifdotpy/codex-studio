@@ -11,11 +11,18 @@ test("Agent chat scope ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const project = fileURLToPath(new URL("../../../", import.meta.url));
+  const project = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-agent-chat-scope-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(project, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(
+        project,
+        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
+      ),
+      root,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, SCOPED_ROOMS_UI_FIXTURE: "1" },

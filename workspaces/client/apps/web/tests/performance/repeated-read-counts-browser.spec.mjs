@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "../playwright.mjs";
 import { spawnFixture as spawn } from "../playwright.mjs";
@@ -19,13 +19,15 @@ test("repeated read counts across chat navigation @performance", async ({
   browser,
 }) => {
   test.setTimeout(180_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "repeated-read-counts-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

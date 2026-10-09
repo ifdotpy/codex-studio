@@ -15,17 +15,23 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 test("Messages loading", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production UI with isolated HTTP reads. No model or user task writes.
   const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
+  const { chromium, webkit } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
   const root = await mkdtemp(join(tmpdir(), "studio-messages-loading-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

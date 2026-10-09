@@ -7,7 +7,7 @@ test("sidebar status, alias validation, and compact choices", async ({
   page,
 }, testInfo) => {
   test.setTimeout(600000);
-  const root = resolve(import.meta.dirname, "../../..");
+  const root = resolve(import.meta.dirname, "../../../../../../");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-status-"));
   const evidence =
     process.env.SIDEBAR_SCREENSHOTS || testInfo.outputPath("screenshots");

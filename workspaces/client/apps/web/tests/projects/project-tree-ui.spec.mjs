@@ -9,17 +9,15 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp, mkdir, realpath } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 test("project tree ui", async ({ page: runnerPage }) => {
   test.setTimeout(240_000);
-  const skill = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
-  const { _electron } = createRequire(join(skill, "web/package.json"))(
-    "playwright",
-  );
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const { _electron } = createRequire(
+    join(skill, "workspaces/client/apps/web/package.json"),
+  )("playwright");
   const root = await mkdtemp(join(tmpdir(), "codex-project-tree-ui-"));
   const models = [
     {
@@ -62,7 +60,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
   }));
   const proc = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

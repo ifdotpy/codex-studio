@@ -16,11 +16,15 @@ import {
 } from "../playwright.mjs";
 
 async function startColdGateFixture() {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cold-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -398,9 +402,9 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   page,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const workerPath = join(root, "web/dist/studio-sw.js");
-  const indexPath = join(root, "web/dist/index.html");
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const workerPath = join(root, "workspaces/client/apps/web/dist/studio-sw.js");
+  const indexPath = join(root, "workspaces/client/apps/web/dist/index.html");
   const originalWorker = await readFile(workerPath, "utf8");
   const originalIndex = await readFile(indexPath, "utf8");
   let workerChanged = false;
@@ -421,7 +425,11 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
   const state = await mkdtemp(join(tmpdir(), "studio-schema-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -804,11 +812,15 @@ test("a response mismatch keeps the loaded transcript and local draft while stop
 test("a stream mismatch keeps the transcript and draft while stopping every request", async ({
   page,
 }) => {
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-stream-gate-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -884,11 +896,15 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
   page,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-schema-cache-variant-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"], env: { ...process.env } },
   );
   let fixtureLog = "";
@@ -896,10 +912,7 @@ test("schema hash change uses a fresh entity cache and keeps the local draft", a
     fixtureLog += chunk;
   });
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const server = await createServer({
     configFile: false,

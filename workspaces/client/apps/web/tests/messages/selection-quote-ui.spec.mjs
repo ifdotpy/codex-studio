@@ -8,7 +8,7 @@ import {
 // Exercise real message selection and draft changes against an isolated runtime.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test.use({ hasTouch: true });
 
@@ -34,13 +34,15 @@ test("Selection Quote Ui", async ({
     },
   };
 
-  const skill = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-selection-quote-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
     },

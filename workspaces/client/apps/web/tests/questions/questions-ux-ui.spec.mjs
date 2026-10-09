@@ -3,7 +3,7 @@
 
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect, spawnFixture as spawn } from "../playwright.mjs";
 
@@ -29,13 +29,18 @@ test("Questions Ux Ui", async ({
     },
   };
 
-  const project = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const project = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-questions-ui-"));
   const proc = spawn(
     "python3",
-    ["-B", join(project, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(
+        project,
+        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
+      ),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

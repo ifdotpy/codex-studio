@@ -27,7 +27,7 @@ test("Completed Markdown Cache Browser", async ({
     },
   };
 
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const baseline = process.env.BASELINE === "1";

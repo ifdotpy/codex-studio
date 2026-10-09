@@ -8,7 +8,7 @@ import {
 // Markdown links through the real file API and isolated SQLite. No model requests.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 test("File Links Ui", async ({
   browser: _testBrowser,
@@ -32,9 +32,7 @@ test("File Links Ui", async ({
     },
   };
 
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-file-links-ui-"));
   const outsideRoot = await mkdtemp(
     join(tmpdir(), "codex-file-links-outside-"),
@@ -53,7 +51,11 @@ test("File Links Ui", async ({
   );
   const proc = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "",

@@ -8,11 +8,15 @@ test("/rename updates the sidebar without sending a message", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-rename-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {

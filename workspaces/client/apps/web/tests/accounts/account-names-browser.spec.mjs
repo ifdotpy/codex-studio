@@ -8,7 +8,7 @@ async function fixture(page, mode) {
   page.on("pageerror", (error) =>
     console.error("Account fixture:", error.message),
   );
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const evidence = await mkdtemp(join(tmpdir(), "studio-account-names-"));

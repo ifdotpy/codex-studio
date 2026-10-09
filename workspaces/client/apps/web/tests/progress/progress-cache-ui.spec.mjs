@@ -32,7 +32,7 @@ test("Progress Cache Ui", async ({
     },
   };
 
-  const repo = join(import.meta.dirname, "../../..");
+  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-progress-cache-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
     (model) => ({
@@ -47,7 +47,11 @@ test("Progress Cache Ui", async ({
   );
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

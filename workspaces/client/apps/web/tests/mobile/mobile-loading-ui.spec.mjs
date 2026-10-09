@@ -24,10 +24,12 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("mobile loading ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const useWebKit = test.info().project.use.browserName === "webkit";
   const dir = await mkdtemp(join(tmpdir(), "studio-mobile-loading-"));
-  await cp(join(repo, "web/dist"), join(dir, "dist"), { recursive: true });
+  await cp(join(repo, "workspaces/client/apps/web/dist"), join(dir, "dist"), {
+    recursive: true,
+  });
   const worker = await readFile(join(dir, "dist/studio-sw.js"), "utf8");
   const config = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
   const nextBuild = config.build + "-update";
@@ -67,7 +69,11 @@ test("mobile loading ui", async ({ browser: _browser }) => {
 
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), join(dir, "state")],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      join(dir, "state"),
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
     },
