@@ -59,6 +59,18 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.workspace-mode-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  line-height: 1.4;
+  white-space: nowrap;
+}
 .conversation-meta .agent-mode-control {
   flex-wrap: wrap;
   flex-shrink: 1;

@@ -225,6 +225,8 @@ class SyncEntityContractTests(unittest.TestCase):
 
     def test_projection_fields_come_from_models(self) -> None:
         self.assertIn("accountTransfer", AgentEntityDto.model_fields)
+        self.assertIn("workspaceMode", AgentEntityDto.model_fields)
+        self.assertIn("workspaceBackend", AgentEntityDto.model_fields)
         for field in (
             "imageWorkspace",
             "imageWorkspaceReady",
@@ -248,6 +250,8 @@ class SyncEntityContractTests(unittest.TestCase):
         image_agent = project("agent", {
             "id": "image-worker",
             "kind": "agent",
+            "workspaceMode": "image",
+            "workspaceBackend": "asif",
             "imageWorkspace": True,
             "imageWorkspaceReady": True,
             "imageWorkspacePhase": "ready",
@@ -256,6 +260,8 @@ class SyncEntityContractTests(unittest.TestCase):
             "imageWorkspaceBaseRepo": "/repo",
         })
         self.assertEqual(image_agent["imageWorkspace"], True)
+        self.assertEqual(image_agent["workspaceMode"], "image")
+        self.assertEqual(image_agent["workspaceBackend"], "asif")
         self.assertEqual(image_agent["imageWorkspacePhase"], "ready")
 
     def test_image_workspace_metadata_rejects_wrong_types_and_unknown_fields(self) -> None:

@@ -83,9 +83,14 @@ with c.runtime.lock, c.runtime.db() as db:
 # Commit the root before create() opens another database connection.
 worker_count = int(os.environ['TOKEN_RATE_WORKER_COUNT']) if os.environ.get('TOKEN_RATE_WORKER_COUNT') else 1 if os.environ.get('RICH_PREVIEW_UI_FIXTURE') else 40
 for i in range(worker_count):
-    child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component', 'role': 'reviewer',
+    child = c.runtime.create({'name': f'Worker {i:02}', 'prompt': 'Review one component',
+        'role': 'implementer' if os.environ.get('WORKSPACE_BADGE_FIXTURE') else 'reviewer',
         **({'model': 'gpt-5.6-luna'} if os.environ.get('EXECUTION_SETTINGS_CATALOG') else {})},
         parent=lead['id'], defer=True)
+    if os.environ.get('WORKSPACE_BADGE_FIXTURE'):
+        child.update(workspaceMode='image', workspaceBackend='asif', cwd=str(c.root),
+                     imageWorkspace=True, imageWorkspaceReady=False,
+                     imageWorkspaceRepo=str(c.root), worktree=False)
     with c.runtime.lock, c.runtime.db() as db:
         child['status'] = 'failed' if i == 7 else 'running' if i < 8 else 'queued' if i < 25 else 'completed'
         c.runtime.put(db, 'agents', child)

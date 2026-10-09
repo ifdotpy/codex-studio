@@ -117,6 +117,10 @@ class SpawnTask(unittest.TestCase):
         spawn = next(d for d in self.rt.tool_definitions(self.rt.agent(self.lead['id'])) if d['name'] == 'orchestration_spawn')
         self.assertIn('Default cwd for your workers: ' + self.lead['cwd'], spawn['description'])
         self.assertIn('base_ref', spawn['inputSchema']['properties']['agents']['items']['properties'])
+        self.assertEqual(
+            spawn['inputSchema']['properties']['agents']['items']['properties']['workspace']['enum'],
+            ['image', 'worktree', 'shared'],
+        )
         self.assertIn('project', spawn['description'])
         self.assertNotIn('Default cwd for your workers', next(d for d in codex_runtime_tools() if d['name'] == 'orchestration_spawn')['description'])
 
@@ -141,10 +145,65 @@ class SpawnTask(unittest.TestCase):
         value = self.spawn('repo', cwd='repo/sub')
         self.assertEqual(value['cwd'], str((repo / 'sub').resolve()))
         self.assertTrue(value['worktree'])
+        self.assertEqual((value['workspace'], self.rt.agent(value['id'])['workspaceMode']),
+                         ('worktree', 'worktree'))
         self.assertNotIn('warning', value)
         reviewer = self.spawn('reviewer', cwd=str(Path(self.tmp.name) / 'repo'), role='reviewer')
         self.assertFalse(reviewer['worktree'])
         self.assertNotIn('warning', reviewer)
+
+    def test_explicit_workspace_modes_are_saved_and_returned(self):
+        repo = Path(self.tmp.name) / 'modes'
+        repo.mkdir()
+        self.init_git(repo)
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        self.rt.start_image_base = lambda *_args, **_kwargs: {'state': 'building'}
+
+        image = self.spawn('mode-image', cwd=str(repo), workspace='image')
+        self.assertEqual(image['workspace'], 'image')
+        self.assertEqual(self.rt.agent(image['id'])['workspaceMode'], 'image')
+        self.assertTrue(self.rt.agent(image['id'])['imageWorkspace'])
+
+        worktree = self.spawn('mode-worktree', cwd=str(repo), workspace='worktree')
+        self.assertEqual(worktree['workspace'], 'worktree')
+        self.assertEqual(self.rt.agent(worktree['id'])['workspaceMode'], 'worktree')
+        self.assertTrue(self.rt.agent(worktree['id'])['worktree'])
+
+        shared = self.spawn('mode-shared', cwd=str(repo), workspace='shared')
+        self.assertEqual(shared['workspace'], 'shared')
+        self.assertEqual(self.rt.agent(shared['id'])['workspaceMode'], 'shared')
+        self.assertFalse(self.rt.agent(shared['id'])['worktree'])
+        self.assertFalse(self.rt.agent(shared['id'])['imageWorkspace'])
+        self.assertEqual(shared['cwd'], str(repo.resolve()))
+
+    def test_workspace_mode_refusals_create_no_worker(self):
+        plain = Path(self.tmp.name) / 'plain'
+        plain.mkdir()
+        repo = Path(self.tmp.name) / 'repo'
+        repo.mkdir()
+        self.init_git(repo)
+        self.rt.image_workspace_support = lambda _repo: (False, 'backend unavailable')
+        cases = [
+            ({'cwd': str(plain), 'workspace': 'worktree'}, 'requires a Git repository'),
+            ({'cwd': str(plain), 'workspace': 'image'}, 'unavailable: backend unavailable'),
+            ({'cwd': str(repo), 'workspace': 'shared', 'base_ref': 'main'}, 'cannot be used'),
+            ({'cwd': str(repo), 'workspace': 'worktree', 'environment': 'linux'}, 'requires workspace "image"'),
+            ({'cwd': str(repo), 'workspace': 'shared', 'environment': 'linux'}, 'requires workspace "image"'),
+            ({'cwd': str(repo), 'workspace': 'shared', 'role': 'reviewer'}, 'reviewers use the shared folder'),
+            ({'cwd': str(repo), 'workspace': 'none'}, 'workspace must be'),
+        ]
+        agents, events = self.count('agents'), self.count('events')
+        for index, (options, message) in enumerate(cases):
+            with self.subTest(options=options), self.assertRaisesRegex(ValueError, message):
+                self.spawn('invalid-mode-' + str(index), **options)
+        self.assertEqual((self.count('agents'), self.count('events')), (agents, events))
+
+    def test_image_workspace_is_rejected_on_windows(self):
+        self.rt.image_workspace_support = lambda _repo: (True, '')
+        with patch('codex_worker_workspace.platform.system', return_value='Windows'):
+            with self.assertRaisesRegex(ValueError, 'unavailable on Windows'):
+                self.spawn('windows-image', workspace='image')
+        self.assertEqual(self.count('agents'), 1)
 
     def test_default_folder_is_the_lead_folder_and_missing_folder_creates_nothing(self):
         self.assertEqual(self.spawn('default')['cwd'], str(Path(self.lead['cwd']).resolve()))
