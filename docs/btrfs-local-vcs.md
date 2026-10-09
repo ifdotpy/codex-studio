@@ -26,9 +26,10 @@ so models learn it quickly, and it has equal convenience. It does not take the n
    project belongs to the lead. The lead accepts a worker result after its own review, merges it
    into the main line and resolves conflicts.
 5. Export: one commit per task. The lead decides when a task goes to the remote.
-6. For Linux projects on macOS, the main line in the VM is the source of truth. A one-way mirror
-   writes it to a normal folder on the Mac (decision changed on 2026-10-09 from "the Mac folder is
-   the source of truth", to remove two-way sync).
+6. The main line in the VM is the source of truth. The Mac sees it through a read-only network
+   share. There is no mirror copy. `layr export` makes a normal copy on request, and backups use
+   `btrfs send` and the remote (changed on 2026-10-09: first from "the Mac folder is the source of
+   truth", then from a one-way mirror, to remove sync and the extra copy).
 7. The current work continues: the image workspace engine ([image workspaces](workspace-images.md),
    overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
    detector). The utility later replaces their internals behind the same public API.
@@ -107,7 +108,7 @@ The source of truth is an append-only operation log. Everything else can be rebu
   lines/<line-id>               writable snapshots
   meta/log/<machine-id>.jsonl   operation log, one file per machine
   meta/index.sqlite             query index, rebuilt from the logs
-  meta/git/                     hidden git mirror for the remote bridge and passthrough
+  meta/git/                     git object store for the remote bridge
 ```
 
 A log record contains: id (UUIDv7), machine id, operation, parent state ids, line id, btrfs
@@ -146,8 +147,10 @@ The main line of every project lives on btrfs in the Studio VM. All agents work 
 their own lines, with `layr` and Linux builds and tests running natively. No agent writes on the
 Mac directly. The Mac gets two kinds of copies:
 
-- the mirror of the main line, for the user (below);
-- build slots, for `host_exec`.
+- build slots, for `host_exec`;
+- a copy made by `layr export`, only on request.
+
+The user views files through a read-only network share (below).
 
 ### `host_exec`: macOS commands for agents in the VM
 
@@ -176,39 +179,39 @@ needs either a Virtualization.framework listener for guest connections (`setSock
 reverse requests on the existing connection, with request ids and receipts like the other guest
 calls.
 
-One-way mirror, VM to Mac:
+### Viewing from the Mac: read-only network share
 
-- After every operation that changes the main line (merge, restore, import), the utility writes the
-  changed files to a normal folder on the Mac. The change list comes from `btrfs send --no-data`,
-  so the cost is O(changes).
-- Each file is written to a temporary name and renamed into place. An intent log records the
-  pending writes, so a crash resumes or rolls back the mirror update.
-- The mirror records its main-line state id. A full verification (hash compare) runs in the
-  background at a low frequency and repairs differences from the VM.
+- The VM serves the main line over SMB (convenient in Finder) or NFS (simpler and faster). The Mac
+  mounts it without root.
+- The share is read-only. Finder and other Mac programs cannot write into the main line, for
+  example `.DS_Store` files.
+- The server listens only on the VM's internal network interface, not on the local network.
+- The share is for viewing single files. Builds on the Mac use `host_exec` slots, not the share.
+- The share is available only while the VM runs.
 
-Edits made on the Mac:
+### Export and backups
 
-- FSEvents watches the mirror folder. Files written by the mirror itself carry a token (path, size,
-  modification time, hash) and are ignored.
-- Any other change is a manual edit. Studio does not sync it automatically. It offers an explicit
-  import: the merge engine merges the mirror changes into the main line, with the mirror state id as
-  the base. The next mirror update then includes the result.
+- `layr export <folder>` writes a normal copy of a state to a folder on the Mac, for use without
+  Studio or without the VM.
+- Backups: `btrfs send` of states to another machine, or to a btrfs disk image on an external
+  disk. Every task also goes to the remote through the remote bridge. Time Machine does not back up
+  network volumes, and the VM disk image should be excluded from it.
 
-Ownership guarantees:
+### Ownership guarantees
 
-- The files are on the user's disk: the VM disk is a file in the Studio store, and the mirror is a
-  normal folder.
-- The mirror is readable without Studio, is backed up by Time Machine, and stays if Studio is
-  removed.
-- Every task also goes to the remote through the remote bridge.
+- The files are on the user's disk: the VM disk is a file in the Studio store.
+- They are visible in Finder through the share and can be exported to a normal folder at any time.
+- Every task is also on the remote.
 - The VM disk is standard btrfs and can be opened by any Linux system.
 
-Mirror rules for differences between btrfs and APFS:
+### Name rules between btrfs and APFS
+
+These rules apply to `layr export` and to `host_exec` slots:
 
 - Names that differ only in letter case, or only in Unicode normalization, cannot coexist on APFS.
-  The mirror reports them and writes neither, instead of losing one of them silently.
-- The executable bit and symbolic links are mirrored. Hard links become copies. Linux extended
-  attributes are not mirrored.
+  The copy reports them and writes neither, instead of losing one of them silently.
+- The executable bit and symbolic links are copied. Hard links become copies. Linux extended
+  attributes are not copied.
 
 ## Review
 
@@ -251,7 +254,7 @@ engine.
 
 ## Remote bridge
 
-- Import (`fetch`, `pull`): `git fetch` into the hidden mirror. The new state is a snapshot of the
+- Import (`fetch`, `pull`): `git fetch` into the project git object store. The new state is a snapshot of the
   previous imported state plus the paths from `git diff --name-only <old> <new>`. Cost O(changes).
 - Export (`push`, pull request): build the git tree from the tree of the previous export, with
   `git hash-object` only for changed paths, then `git commit-tree` and push to a branch that exists
@@ -285,11 +288,9 @@ container cannot mount btrfs: the kernel allows only some file systems in a user
 example tmpfs, overlay and FUSE). A privileged container is the loop option with the rights of the
 container engine.
 
-With the loop option, the model is the same as on macOS: the main line lives in the btrfs store, and
-a one-way mirror writes it to the user's folder on ext4 or XFS. Linux has no persistent change
-journal like FSEvents, so manual edits in the mirror are detected with inotify while Studio runs and
-with one `rsync` comparison after a restart (200,000 files: 1.2 s, measured in the Linux readiness
-checks of the research document). They are imported only on an explicit request.
+With the loop option, the main line lives in the btrfs store on the same machine. The user can read
+it at its path directly, or through a read-only bind mount at a convenient place. `layr export`
+makes a normal copy on ext4 or XFS on request. There is no mirror and no sync.
 
 Measurement, 2026-10-09: throwaway OrbStack machine (17 vCPU, 15 GB RAM), btrfs-progs 6.17.1, one
 run, `drop_caches` before each cold case. The loop file lived on the machine's own btrfs root
@@ -403,13 +404,14 @@ Design:
 - The first set of git verbs that `layr` implements.
 - Directory-level merge cases: rename against change, folder delete against a new file inside,
   symlinks, file modes.
+- Backup target and schedule for `btrfs send` (another machine or an external disk image).
 - The access model in the VM: agents own their lines; the `layr` service owns states, the log and
   metadata.
 
 Measurements:
 
 - `host_exec` with simulators, UI tests and a large Xcode project.
-- The one-way mirror at chromium scale: first write, update after a merge, background verification.
+- The read-only share: SMB against NFS for Finder use on a large tree.
 - The loop-file option on a real ext4 host.
 
 Later:
