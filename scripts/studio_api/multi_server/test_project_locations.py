@@ -324,6 +324,91 @@ class SignedProjectLocationTests(unittest.TestCase):
         self.args = {'action': 'add_location', 'project': project['id'], 'server': self.b.server_id,
                      'path': str(self.folder), 'request_id': 'signed-location'}
 
+    def lead(self) -> dict[str, Any]:
+        return cast(dict[str, Any], self.a.runtime.prepare(self.a.runtime.new_lead({'cwd': str(self.a.folder)})))
+
+    def test_lead_tool_location_receipt_uses_the_caller_request_id(self) -> None:
+        lead = self.lead()
+        result = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'add-location')
+        self.assertEqual(result['outcome'], 'applied')
+        receipt = self.case.tool(self.a, lead, 'orchestration_servers', {
+            'action': 'receipt', 'server': self.b.server_id, 'request_id': self.args['request_id']}, 'location-receipt')
+        self.assertEqual(receipt['state'], 'complete')
+        self.assertEqual(receipt['result'], result)
+
+    def test_lead_tool_retry_reads_applied_location_after_a_lost_reply(self) -> None:
+        lead = self.lead()
+        self.case.drop_action = 'add_location'
+        first = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'lost-add-location')
+        self.assertEqual(first['outcome'], 'unknown')
+        self.assertEqual(self.b.runtime.projects()['items'][0]['path'], str(self.folder))
+        self.case.drain()
+        self.assertEqual(len(self.a.runtime.projects()['items'][0]['locations']), 2)
+        before = len(self.case.actions('add_location'))
+        with patch.object(self.b.runtime, 'ensure_project', wraps=self.b.runtime.ensure_project) as apply:
+            retried = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'retry-add-location')
+            self.assertEqual(retried['outcome'], 'applied')
+            apply.assert_not_called()
+        self.assertEqual(len(self.case.actions('add_location')), before)
+        self.assertEqual(retried['requestId'], first['requestId'])
+        with self.a.runtime.read_db() as db:
+            record = self.a.runtime.tool_request_key({'params': {'threadId': lead['threadId'],
+                'tool': 'orchestration_servers', 'arguments': self.args}})
+            self.assertEqual(self.a.runtime.tool_request(record, db)['outcome'], 'applied')
+
+    def test_lead_tool_pending_location_stays_unknown_without_delivery(self) -> None:
+        lead = self.lead()
+        self.case.drop_action = 'add_location'
+        first = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'pending-add-location')
+        before = len(self.case.actions('add_location'))
+        retried = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'pending-retry')
+        self.assertEqual(retried, first)
+        self.assertEqual(first['outcome'], 'unknown')
+        self.assertEqual(len(self.case.actions('add_location')), before)
+        request = self.case.tool(self.a, lead, 'orchestration_request', {
+            'action': 'get', 'request_id': self.args['request_id']}, 'pending-tool-receipt')
+        self.assertEqual(request['outcome'], 'unknown')
+        receipt = self.case.tool(self.a, lead, 'orchestration_servers', {
+            'action': 'receipt', 'server': self.b.server_id, 'request_id': self.args['request_id']}, 'pending-paired-receipt')
+        self.assertEqual(receipt['state'], 'queued')
+        self.assertIsNone(receipt['result'])
+
+    def test_lead_tool_refused_location_resolves_without_registration(self) -> None:
+        lead = self.lead()
+        args = {**self.args, 'path': str(self.folder / 'missing')}
+        self.case.drop_action = 'add_location'
+        self.assertEqual(self.case.tool(self.a, lead, 'orchestration_servers', args, 'refused-location')['outcome'], 'unknown')
+        self.case.drain()
+        before = len(self.case.actions('add_location'))
+        result = self.case.tool(self.a, lead, 'orchestration_servers', args, 'refused-retry')
+        self.assertEqual(result['outcome'], 'not_applied')
+        self.assertEqual(len(self.case.actions('add_location')), before)
+        self.assertEqual(len(self.a.runtime.projects()['items'][0]['locations']), 1)
+        self.assertEqual(self.b.runtime.projects()['items'], [])
+        receipt = self.case.tool(self.a, lead, 'orchestration_servers', {
+            'action': 'receipt', 'server': self.b.server_id, 'request_id': args['request_id']}, 'refused-receipt')
+        self.assertEqual(receipt['result'], result)
+
+    def test_lead_tool_repairs_legacy_unknown_wrapper_after_restart(self) -> None:
+        lead = self.lead()
+        self.case.drop_action = 'add_location'
+        first = self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'legacy-location')
+        with self.a.runtime.lock, self.a.runtime.db() as db:
+            key = self.a.runtime.tool_request_key({'params': {'threadId': lead['threadId'],
+                'tool': 'orchestration_servers', 'arguments': self.args}})
+            record = self.a.runtime.tool_request(key, db)
+            record['outcome'] = 'applied'  # Earlier versions marked the unknown transport wrapper as applied.
+            self.a.runtime.put(db, 'tool_requests', record)
+        self.a.restart()
+        self.assertEqual(self.a.runtime.multi_server().deliver(first['requestId'])['outcome'], 'applied')
+        before = len(self.case.actions('add_location'))
+        request = self.case.tool(self.a, lead, 'orchestration_request', {
+            'action': 'get', 'request_id': self.args['request_id']}, 'legacy-receipt')
+        self.assertEqual(request['outcome'], 'applied')
+        self.assertEqual(json.loads(request['result']['contentItems'][0]['text'])['outcome'], 'applied')
+        self.assertEqual(self.case.tool(self.a, lead, 'orchestration_servers', self.args, 'legacy-retry')['outcome'], 'applied')
+        self.assertEqual(len(self.case.actions('add_location')), before)
+
     def test_browser_api_uses_signed_registration_without_session_token(self) -> None:
         response = self.a.client.post('/api/projects', json=self.args, headers={'X-Canvas-Token': 'test-token'})
         self.assertEqual(response.status_code, 200, response.text)

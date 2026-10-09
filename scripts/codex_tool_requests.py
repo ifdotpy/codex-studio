@@ -80,6 +80,13 @@ def request_read_only(tool: str, args: "JsonObject") -> bool:
 
 def request_result_outcome(record: "ToolRequestRecord", result: "JsonObject") -> str:
     if result.get("success") is True:
+        if record.get('tool') == 'orchestration_servers':
+            try:
+                paired = json.loads(result['contentItems'][0]['text'])
+            except (KeyError, IndexError, TypeError, ValueError):
+                paired = None
+            if isinstance(paired, dict) and paired.get('outcome') in {'applied', 'not_applied', 'unknown'}:
+                return str(paired['outcome'])
         return "applied"
     if result.get("success") is not False:
         return "unknown"
@@ -326,6 +333,8 @@ class RequestMixin:
             record = self.tool_request(key, db)
             if record and (record["signature"] != signature or record["agent"] != actor["id"]):
                 raise ValueError("This request id has different content")
+            if record:
+                record = self._refresh_tool_request(db, record)
             call_id = str(params.get("callId", message.get("id")))
             if not record:
                 now = time.time()
@@ -434,6 +443,9 @@ class RequestMixin:
                               record: "ToolRequestRecord") -> "ToolRequestRecord":
         from codex_payloads import resolve_record, state_root
         record = resolve_record(state_root(self), record)
+        from codex_project_locations import refresh_tool_receipt
+        if refresh_tool_receipt(self, db, record):
+            return self.tool_request(record['id'], db) or record
         if record["outcome"] not in {"applied", "not_applied"}:
             result = self.tool_result(db, record["id"]) or record.get("result")
             if isinstance(result, dict):
