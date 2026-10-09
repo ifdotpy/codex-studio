@@ -4,6 +4,46 @@ import {
   sourcePath,
   scope,
 } from "./sidebar-parity-fixture.mjs";
+test("the shared home heading keeps its saved collapse after reload", async ({
+  page,
+  context,
+}, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1100 });
+  const f = await sidebarParityFixture(context);
+  try {
+    const sidebar = await f.open(page);
+    const group = sidebar.getByRole("button", {
+      name: "Home project",
+      exact: true,
+    });
+    await expect(group).toHaveAttribute("aria-expanded", "true");
+    await group.click();
+    await expect(group).toHaveAttribute("aria-expanded", "false");
+    await page.reload();
+    await expect(group).toBeVisible();
+    const preferences = await page.evaluate(
+      (scope) => ({
+        local: JSON.parse(
+          localStorage.getItem("codex-project-tree:" + scope) || "{}",
+        ),
+        remote: JSON.parse(
+          localStorage.getItem(":server:remote:codex-project-tree:" + scope) ||
+            "{}",
+        ),
+      }),
+      scope,
+    );
+    await testInfo.attach("preferences-after-reload", {
+      body: JSON.stringify(preferences, null, 2),
+      contentType: "application/json",
+    });
+    expect(preferences.local[sourcePath("local")]).toBe(true);
+    expect(preferences.remote[sourcePath("remote")]).not.toBe(true);
+    await expect(group).toHaveAttribute("aria-expanded", "false");
+  } finally {
+    await f.close();
+  }
+});
 test("selecting a remote chat expands only the session view and explicit heading edits use home storage", async ({
   page,
   context,

@@ -475,13 +475,22 @@ export function mergeSidebar(
           kind === "compact"
             ? projectKey(source.id, name)
             : mapTreeKey(source.id, name);
+        const headingOwner =
+          kind === "collapsed"
+            ? projectReferences.get(mapped)?.owner
+            : undefined;
+        if (headingOwner && headingOwner !== source.id) continue;
         result[mapped] = mapped in result ? result[mapped] && value : value;
       }
     if (kind === "collapsed")
       for (const source of sources)
         for (const name of preferenceKeys.get(source.id)!.collapsed)
-          if (!values.get(source.id)?.[name])
-            result[mapTreeKey(source.id, name)] = false;
+          if (!values.get(source.id)?.[name]) {
+            const mapped = mapTreeKey(source.id, name);
+            const headingOwner = projectReferences.get(mapped)?.owner;
+            if (!headingOwner || headingOwner === source.id)
+              result[mapped] = false;
+          }
     return result;
   };
   const compact = mergeVisual(

@@ -67,8 +67,8 @@ async function prepareCapture(page, sidebar) {
       new Promise((resolve) => requestAnimationFrame(resolve));
     await frame();
     await Promise.all(
-      element
-        .getAnimations({ subtree: true })
+      element.ownerDocument
+        .getAnimations()
         .filter(
           (animation) =>
             animation.effect?.getComputedTiming().iterations !== Infinity,
