@@ -5,10 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import json
 import sqlite3
+import threading
 import time
-from typing import TYPE_CHECKING, Any, Protocol, cast
+from typing import TYPE_CHECKING, Any, Callable, Protocol, cast
 
 from codex_context_repair import _native_items
+from codex_native_errors import NativeRpcError
 from codex_payloads import resolve_record, state_root
 from codex_tool_requests import _prefix
 
@@ -28,6 +30,28 @@ ReceiptRows = tuple[tuple[str, str], ...]
 
 class HistoryServer(Protocol):
     def call(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]: ...
+    def after_events(self, callback: Callable[[], None]) -> None: ...
+
+
+class _CheckedHistory:
+    def __init__(self, server: HistoryServer):
+        self.server = server
+
+    def call(self, method: str, params: dict[str, Any], timeout: float) -> dict[str, Any]:
+        page = self.server.call(method, params, timeout=timeout)
+        cursor = page.get("nextCursor")
+        if (not isinstance(page.get("data"), list)
+                or (cursor is not None and (not isinstance(cursor, str) or not cursor))):
+            raise ValueError("Native task item page is unavailable")
+        return page
+
+
+@dataclass(frozen=True)
+class CommandAbsence:
+    source: tuple[object, ...]
+
+
+TaskProof = dict[str, Any] | CommandAbsence
 
 
 @dataclass
@@ -59,6 +83,7 @@ class TaskCheck:
     server: HistoryServer | None
     receipts: ReceiptState
     completed_receipt: dict[str, Any] | None
+    absence_source: tuple[object, ...] | None = None
 
 
 def _scope(agent: AgentRecord) -> tuple[object, ...]:
@@ -77,6 +102,33 @@ def _eligible_owner(agent: AgentRecord) -> bool:
                 and (not agent.get("contextRepairWait") or completed_owner)
                 and agent.get("status") not in {"queued", "starting"}
                 and repair.get("phase") not in REPAIR_ACTIVE)
+
+
+def _absence_source(rt: Runtime, db: sqlite3.Connection, agent: AgentRecord,
+                    task: dict[str, Any]) -> tuple[object, ...] | None:
+    if (task.get("type") != "commandExecution" or type(task.get("processId")) not in (str, int)
+            or not str(task["processId"])
+            or agent.get("inFlight") or agent.get("turnId") or agent.get("activeTools")
+            or agent.get("status") in {"running", "starting", "approval", "queued"}
+            or agent.get("accountKey", "default") in getattr(rt, "_native_runtime_reservations", {})
+            or agent.get("accountKey", "default") in getattr(rt, "_native_tools_refreshing", set())):
+        return None
+    preparation = rt.preparations.get(agent["id"])
+    if preparation and not preparation["future"].done():
+        return None
+    # A copied history does not prove that a session on its old account ended.
+    for move in agent.get("accountHistory") or []:
+        at = move.get("at")
+        if type(at) not in (int, float):
+            return None
+        if (at >= task["created"] and
+                (move.get("accountKey") != agent.get("accountKey", "default")
+                 or move.get("threadId") != agent.get("threadId"))):
+            return None
+    if not db.execute("SELECT 1 FROM runtime_completed_turns WHERE id=?",
+                      (agent["id"] + ":" + task["turnId"],)).fetchone():
+        return None
+    return (*_scope(agent), agent.get("status"), agent.get("turnId"), agent.get("inFlight"))
 
 
 def _receipt_state(db: sqlite3.Connection, agent: AgentRecord, task: dict[str, Any]) -> ReceiptState:
@@ -171,7 +223,7 @@ def queue_task_recovery(rt: Runtime) -> bool:
                     continue
                 jobs.append(TaskCheck(task, row[1], position, _scope(agent), account,
                     cast(str, agent["threadId"]), connection, server, receipts,
-                    terminal_receipt))
+                    terminal_receipt, _absence_source(rt, db, agent, task)))
         if not jobs:
             return False
         state.busy = True
@@ -196,12 +248,95 @@ def _receipt_proof(rt: Runtime, job: TaskCheck) -> dict[str, Any] | None:
             "success": result["success"], "contentItems": result.get("contentItems", [])}
 
 
-def _native_proofs(job: TaskCheck, tasks: list[TaskCheck], deadline: float) -> dict[str, dict[str, Any]]:
+def _event_barrier(server: HistoryServer, deadline: float) -> None:
+    barrier = threading.Event()
+    server.after_events(barrier.set)
+    if not barrier.wait(max(0, deadline - time.monotonic())):
+        raise TimeoutError("Native task event barrier timed out")
+    for name in ("callbacks", "clock_replies"):
+        queue = getattr(server, name, None)
+        if queue is not None:
+            with queue.all_tasks_done:
+                if not queue.all_tasks_done.wait_for(lambda: not queue.unfinished_tasks,
+                        timeout=max(0, deadline - time.monotonic())):
+                    raise TimeoutError("Native task events remain pending")
+
+
+def _quiet(server: HistoryServer | None) -> bool:
+    pending = getattr(server, "pending", None)
+    if not isinstance(pending, dict) or pending:
+        return False
+    for name in ("callbacks", "clock_replies"):
+        queue = getattr(server, name, None)
+        if queue is not None:
+            with queue.mutex:
+                if queue.unfinished_tasks:
+                    return False
+    return True
+
+
+def _absent_commands(job: TaskCheck, tasks: list[TaskCheck], deadline: float) -> dict[str, TaskProof]:
+    server = job.server
+    if server is None or not tasks or not _quiet(server):
+        return {}
+    def read(method: str, params: dict[str, Any]) -> dict[str, Any]:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Native command absence check timed out")
+        return server.call(method, params, timeout=remaining)
+    native = read("thread/read", {"threadId": job.thread, "includeTurns": False}).get("thread")
+    if (not isinstance(native, dict) or native.get("id") != job.thread
+            or native.get("status", {}).get("type") not in {"idle", "notLoaded"}):
+        return {}
+    live_items: set[str] = set()
+    live_processes: set[str] = set()
+    cursor = None
+    seen: set[str] = set()
+    while True:
+        params = {"threadId": job.thread, "limit": 100}
+        if cursor is not None:
+            params["cursor"] = cursor
+        page = read("thread/backgroundTerminals/list", params)
+        if not isinstance(page.get("data"), list):
+            raise ValueError("Native command terminal list is unavailable")
+        for terminal in page["data"]:
+            if (not isinstance(terminal, dict) or not isinstance(terminal.get("itemId"), str)
+                    or not terminal["itemId"] or not isinstance(terminal.get("processId"), str)
+                    or not terminal["processId"] or terminal.get("threadId", job.thread) != job.thread):
+                raise ValueError("Native command terminal identity is unavailable")
+            live_items.add(terminal["itemId"])
+            live_processes.add(terminal["processId"])
+        cursor = page.get("nextCursor")
+        if cursor is None:
+            break
+        if not isinstance(cursor, str) or not cursor or cursor in seen:
+            raise ValueError("Native command terminal pagination is invalid")
+        seen.add(cursor)
+    _event_barrier(server, deadline)
+    if not _quiet(server):
+        return {}
+    return {check.task["id"]: CommandAbsence(check.absence_source) for check in tasks
+            if check.absence_source is not None and check.task["itemId"] not in live_items
+            and str(check.task["processId"]) not in live_processes}
+
+
+def _native_proofs(job: TaskCheck, tasks: list[TaskCheck], deadline: float,
+                   errors: list[str]) -> dict[str, TaskProof]:
     if job.server is None or job.connection is None:
         return {}
     wanted = {check.task["itemId"] for check in tasks}
     matches: dict[str, list[dict[str, Any]]] = {}
-    entries = _native_items(job.server, job.thread, job.task["turnId"], deadline)
+    if any(check.task["type"] == "commandExecution" for check in tasks):
+        _event_barrier(job.server, deadline)
+    try:
+        entries = _native_items(_CheckedHistory(job.server), job.thread, job.task["turnId"], deadline)
+    except Exception as error:
+        cause = error.__cause__ or error
+        if not isinstance(cause, NativeRpcError) or cause.code != -32601:
+            raise
+        # An explicit unsupported method permits the idle/terminal check.
+        # A timeout or unreadable history is never evidence of absence.
+        entries = []
     for entry in entries:
         if time.monotonic() >= deadline:
             raise TimeoutError("Native task history read timed out")
@@ -215,9 +350,15 @@ def _native_proofs(job: TaskCheck, tasks: list[TaskCheck], deadline: float) -> d
             raise ValueError("Native task history changed the item identity")
         if item["id"] in wanted:
             matches.setdefault(item["id"], []).append(item)
-    proofs: dict[str, dict[str, Any]] = {}
+    proofs: dict[str, TaskProof] = {}
+    absent_candidates: list[TaskCheck] = []
     for check in tasks:
         candidates = matches.get(check.task["itemId"], [])
+        if (check.absence_source is not None and (not candidates or (len(candidates) == 1
+                and candidates[0].get("type") == "commandExecution"
+                and candidates[0].get("status") == "inProgress"
+                and str(candidates[0].get("processId", check.task["processId"])) == str(check.task["processId"])))):
+            absent_candidates.append(check)
         if len(candidates) != 1:
             continue
         item = candidates[0]
@@ -225,10 +366,15 @@ def _native_proofs(job: TaskCheck, tasks: list[TaskCheck], deadline: float) -> d
             "commandExecution", "fileChange"} else {"completed", "failed"}
         if item.get("type") == check.task["type"] and item.get("status") in terminal:
             proofs[check.task["id"]] = item
+    try:
+        proofs.update(_absent_commands(job, absent_candidates, deadline))
+    except Exception as error:
+        # An unavailable terminal list cannot erase another item's exact result.
+        errors.append(str(error))
     return proofs
 
 
-def _apply_proofs(rt: Runtime, jobs: list[TaskCheck], proofs: dict[str, dict[str, Any]]) -> int:
+def _apply_proofs(rt: Runtime, jobs: list[TaskCheck], proofs: dict[str, TaskProof]) -> int:
     if not proofs:
         return 0
     applied = 0
@@ -252,6 +398,19 @@ def _apply_proofs(rt: Runtime, jobs: list[TaskCheck], proofs: dict[str, dict[str
             row = db.execute("SELECT record FROM runtime_tasks WHERE id=?", (job.task["id"],)).fetchone()
             if not row or row[0] != job.raw or _receipt_state(db, agent, job.task) != job.receipts:
                 continue
+            if isinstance(proof, CommandAbsence):
+                if _absence_source(rt, db, agent, job.task) != proof.source or not _quiet(job.server):
+                    continue
+                task = dict(job.task)
+                task.update(status="lost", finished=time.time(),
+                            error="Native command session is absent. Exit outcome unknown; command was not replayed.")
+                rt.put(db, "tasks", task)
+                db.execute("UPDATE runtime_items SET record=json_set(record,'$.toolStatus','lost') "
+                           "WHERE id=? AND agent=? AND json_extract(record,'$.turnId')=?",
+                           (task["id"], agent["id"], task["turnId"]))
+                rt.touch_ui(agent["id"], db)
+                applied += 1
+                continue
             rt.record_task(db, agent, "item/completed",
                            {"item": proof, "turnId": job.task["turnId"]}, stale=True)
             applied += 1
@@ -259,7 +418,7 @@ def _apply_proofs(rt: Runtime, jobs: list[TaskCheck], proofs: dict[str, dict[str
 
 
 def _run_task_recovery(rt: Runtime, state: RecoveryState, jobs: list[TaskCheck]) -> None:
-    proofs: dict[str, dict[str, Any]] = {}
+    proofs: dict[str, TaskProof] = {}
     groups: dict[tuple[object, ...], list[TaskCheck]] = {}
     errors: list[str] = []
     applied = 0
@@ -290,7 +449,7 @@ def _run_task_recovery(rt: Runtime, state: RecoveryState, jobs: list[TaskCheck])
                 break
             last_attempted = group[0].position
             try:
-                proofs.update(_native_proofs(group[0], group, deadline))
+                proofs.update(_native_proofs(group[0], group, deadline, errors))
             except Exception as error:
                 errors.append(str(error))
         applied = _apply_proofs(rt, jobs, proofs)
