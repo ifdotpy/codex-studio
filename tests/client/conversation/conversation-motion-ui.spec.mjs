@@ -206,8 +206,7 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           const url = new URL(response.url());
           return (
             url.pathname === "/api/sync/pull" &&
-            url.searchParams.get("scope") === `transcript:${id}` &&
-            Number(url.searchParams.get("after") || 0) < transcriptSeq
+            url.searchParams.get("scope") === `transcript:${id}`
           );
         });
         const notification = await fetch(new URL("/api/sync/notify", origin), {

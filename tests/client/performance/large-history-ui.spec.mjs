@@ -276,6 +276,22 @@ test("Large history @performance", async ({ context }) => {
     await page
       .locator(`[data-message="result-${turns - 1}"]`)
       .waitFor({ state: "visible" });
+    await page.waitForFunction(
+      (id) => {
+        const root = [...document.querySelectorAll("#messages")].find(
+          (node) => {
+            const bounds = node.getBoundingClientRect();
+            return bounds.width > 0 && bounds.height > 0;
+          },
+        );
+        if (!root) return false;
+        root.dispatchEvent(
+          new CustomEvent("studio-history-reveal", { detail: id }),
+        );
+        return !!root.querySelector(`[data-message="${CSS.escape(id)}"]`);
+      },
+      `tool-${turns - 1}-0`,
+    );
     await page
       .locator(`[data-turn="turn-${turns - 1}"] .turn-work > summary`)
       .first()

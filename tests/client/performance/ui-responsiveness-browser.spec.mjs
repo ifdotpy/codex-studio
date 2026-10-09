@@ -497,10 +497,38 @@ test(
           firstText + suffix,
           "Streaming does not lose typed characters",
         );
+        const revealedCommentary = await page.evaluate(async () => {
+          const root = [...document.querySelectorAll("#messages")].find(
+            (node) => {
+              const bounds = node.getBoundingClientRect();
+              return bounds.width > 0 && bounds.height > 0;
+            },
+          );
+          if (!root) return 0;
+          let count = 0;
+          for (let turn = 0; turn < 30; turn++) {
+            for (let step = 0; step < 4; step++) {
+              const id = `a-text-${turn}-${step}`;
+              root.dispatchEvent(
+                new CustomEvent("studio-history-reveal", { detail: id }),
+              );
+              await new Promise((resolve) =>
+                requestAnimationFrame(() => requestAnimationFrame(resolve)),
+              );
+              if (
+                root.querySelector(
+                  `[data-message="${CSS.escape(id)}"]:not([data-lazy-message])`,
+                )
+              )
+                count++;
+            }
+          }
+          return count;
+        });
         assert.equal(
-          await page.locator('[data-message^="a-text-"]').count(),
+          revealedCommentary,
           120,
-          "Streaming retains all commentary",
+          "All commentary remains reachable through history reveal",
         );
         assert.equal(
           await page.locator('[data-message^="a-result-"]').count(),
