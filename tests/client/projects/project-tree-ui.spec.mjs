@@ -196,11 +196,9 @@ test("project tree ui", async ({ page: runnerPage }) => {
     const projectsHeading = page.locator(".projects-heading-label");
     assert.equal(await projectsHeading.textContent(), "Projects");
     assert.equal(await projectsHeading.getAttribute("aria-expanded"), null);
-    await waitFor(
-      async () =>
-        (await group("assistant").locator("[data-chat]").count()) >= 5,
-    );
     const initialChats = group("assistant").locator("[data-chat]");
+    // The list fills in after reload, so wait for the full set before counting.
+    await waitFor(async () => (await initialChats.count()) === 7);
     assert.equal(
       await initialChats.count(),
       7,
