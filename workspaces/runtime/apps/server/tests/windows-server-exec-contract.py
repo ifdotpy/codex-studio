@@ -19,9 +19,6 @@ import sys
 import time
 import unittest
 
-if os.name != 'nt':
-    raise SystemExit('This contract runs on Windows')
-
 ROOT = REPOSITORY_ROOT
 sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 spec = importlib.util.spec_from_file_location(
@@ -31,6 +28,7 @@ spec.loader.exec_module(fixture)
 Commands = fixture.Commands
 
 
+@unittest.skipUnless(os.name == 'nt', 'Windows server exec contract')
 class WindowsExecContract(unittest.TestCase):
     setUp = Commands.setUp
     stop_supervisors = Commands.stop_supervisors
