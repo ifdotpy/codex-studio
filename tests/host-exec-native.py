@@ -26,6 +26,10 @@ def frames(client, method, params, identity):
                 output.append(base64.b64decode(event["data"]).decode(errors="replace"))
         if "result" in frame:
             result = frame["result"]
+    if result is not None and not output:
+        for stream in ("stdout", "stderr"):
+            if result.get(stream):
+                output.append(base64.b64decode(result[stream], validate=True).decode(errors="replace"))
     assert result is not None and result.get("exitCode") == 0, (method, result, "".join(output)[-2000:])
     return result, "".join(output)
 
@@ -34,7 +38,7 @@ def prove(client, agent, cwd):
     identity = "host-proof-" + uuid.uuid4().hex
     source = 'print("HOST_EXEC_SWIFT_OK")\n'
     setup = 'import pathlib;pathlib.Path("host-exec-proof.swift").write_text(' + repr(source) + ')'
-    frames(client, "exec", {"agentId": agent, "cwd": cwd, "argv": ["python3", "-c", setup]}, identity + ":setup")
+    frames(client, "layr.exec", {"agentId": agent, "cwd": cwd, "argv": ["python3", "-c", setup]}, identity + ":setup")
     def host(suffix, command):
         operation = identity + ":" + suffix
         return frames(client, "host.exec", {"action": "execute", "operationId": operation, "agentId": agent,
@@ -56,7 +60,7 @@ def prove(client, agent, cwd):
     artifact = build["artifacts"][0]["path"]
     verify = 'import pathlib;assert pathlib.Path("host-exec-proof.swift").read_text().endswith("// Edit from macOS\\n");' + \
         'assert pathlib.Path(' + repr(artifact) + ').read_text()=="artifact from macOS\\n";print("SOURCE_AND_ARTIFACT_OK")'
-    _, checked = frames(client, "exec", {"agentId": agent, "cwd": cwd, "argv": ["python3", "-c", verify]}, identity + ":verify")
+    _, checked = frames(client, "layr.exec", {"agentId": agent, "cwd": cwd, "argv": ["python3", "-c", verify]}, identity + ":verify")
     warm, warm_output = host("warm", '"$HOST_EXEC_DERIVED_DATA/host-exec-proof"; printf \'%s\\n\' "$PWD"')
     assert warm["slotPath"] == build["slotPath"] == version["slotPath"], (version, build, warm)
     assert warm["derivedData"] == build["derivedData"]

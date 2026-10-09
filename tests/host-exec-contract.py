@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -309,6 +310,19 @@ class Contract(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(conflicts(["café", "cafe\u0301"]))
         self.assertTrue(conflicts(["Folder/a", "folder/b"]))
         self.assertEqual(mapped("/tmp/slot/source/file /private/tmp/slot/source/file", "/private/tmp/slot/source", "/line"), "/line/file /line/file")
+
+    def test_live_runner_accepts_final_stdout(self):
+        spec = importlib.util.spec_from_file_location("host_native_proof", ROOT / "tests/host-exec-native.py")
+        runner = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runner)
+        result = {"exitCode": 0, "stdout": base64.b64encode(b"SOURCE_AND_ARTIFACT_OK\n").decode(), "stderr": ""}
+        client = SimpleNamespace(stream=lambda *args, **kwargs: iter([{"result": result}]))
+        actual, output = runner.frames(client, "layr.exec", {}, "proof")
+        self.assertEqual(output, "SOURCE_AND_ARTIFACT_OK\n")
+        streamed = SimpleNamespace(stream=lambda *args, **kwargs: iter([
+            {"event": "output", "data": {"text": "once"}}, {"result": {**result, "stdout": base64.b64encode(b"once").decode()}}]))
+        actual, output = runner.frames(streamed, "host.exec", {}, "proof")
+        self.assertEqual(output, "once")
 
     def test_vm_gate(self):
         runtime = SimpleNamespace(agent=lambda actor: {"executionMode": "native"})
