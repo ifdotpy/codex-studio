@@ -16,6 +16,16 @@ body {
   height: 100dvh;
   overflow: hidden;
 }
+/* The desktop shell never scrolls; focus must not shift it out of view. */
+@media (min-width: 761px) {
+  html,
+  body {
+    overflow: hidden;
+  }
+  #root {
+    overflow: clip;
+  }
+}
 a {
   color: light-dark(#3e51aa, #b1bcff);
 }
@@ -744,6 +754,8 @@ p {
   background: transparent;
 }
 #workers {
+  /* Contain hidden absolute status text so rows below the fold cannot grow the page. */
+  position: relative;
   flex: 1;
   min-height: 0;
   overflow: auto;
