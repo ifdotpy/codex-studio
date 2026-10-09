@@ -1,10 +1,12 @@
 #!/usr/bin/env node
+import assert from "node:assert/strict";
 import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
-// Verify the visible task drawer follows the cursor feed while it is open.
+// Verify the visible task drawer follows task entity updates without a reload.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
 test("workspace task feed ui", async ({ page: runnerPage }) => {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
@@ -35,27 +37,56 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
     const lead = initial.runtime.agents.find(
       (agent) => agent.name === "Release lead",
     );
-    const task = {
-      id: "feed-ui-command",
-      agent: lead.id,
+    const otherChat = initial.runtime.agents.find(
+      (agent) => agent.name === "Other project",
+    );
+    assert.ok(lead && otherChat, "fixture exposes both chats");
+    const now = Date.now() / 1000;
+    const task = (id, agent, command, created) => ({
+      id,
+      agent,
       status: "running",
       kind: "command",
       type: "commandExecution",
       name: "commandExecution",
-      command: "fixture command --task-feed-ui",
+      command,
       cwd: stateDir,
       processId: "5173",
-      created: Date.now() / 1000,
-    };
-    proc.stdin.write(
-      JSON.stringify({ method: "fixture/task", params: task }) + "\n",
+      created,
+    });
+    const older = task(
+      "feed-ui-older",
+      lead.id,
+      "fixture command --older",
+      now,
     );
+    const newest = task(
+      "feed-ui-newest",
+      lead.id,
+      "fixture command --newest",
+      now + 1,
+    );
+    const other = task(
+      "feed-ui-other-chat",
+      otherChat.id,
+      "fixture command --other-chat",
+      now + 2,
+    );
+    for (const item of [older, newest, other])
+      proc.stdin.write(
+        JSON.stringify({ method: "fixture/task", params: item }) + "\n",
+      );
+
     const page = runnerPage;
     await page.setViewportSize({ width: 1280, height: 900 });
-    const feeds = [];
-    page.on("response", (response) => {
-      if (new URL(response.url()).pathname === "/api/workspace/tasks")
-        feeds.push(response.status());
+    let taskFeedRequests = 0;
+    let mainDocumentNavigations = 0;
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/workspace/tasks")
+        taskFeedRequests++;
+    });
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) mainDocumentNavigations++;
     });
     await page.goto(origin);
     await page
@@ -66,26 +97,63 @@ test("workspace task feed ui", async ({ page: runnerPage }) => {
       .getByRole("button", { name: "Chat actions", exact: true })
       .click();
     await page.locator("#tasks-toggle").click();
-    await poll(() => feeds.length > 0, "task feed request arrives");
-    await page
-      .getByRole("heading", { name: task.command, exact: true })
-      .waitFor();
+    await page.getByRole("heading", { name: "Current activity" }).waitFor();
+    await poll(
+      async () =>
+        (await page.locator('[data-task="feed-ui-newest"]').count()) === 1 &&
+        (await page.locator('[data-task="feed-ui-older"]').count()) === 1,
+      "selected chat's active tasks arrive through entity sync",
+    );
+    assert.equal(
+      await page.locator('[data-task="feed-ui-other-chat"]').count(),
+      0,
+      "tasks from another chat are excluded",
+    );
+    assert.equal(
+      await page.getByText("2 active", { exact: true }).count(),
+      1,
+      "activity count includes only the selected chat's two active commands",
+    );
+    assert.deepEqual(
+      await page
+        .locator(".tasks-rows [data-task]")
+        .evaluateAll((rows) =>
+          rows.map((row) => row.getAttribute("data-task")),
+        ),
+      ["feed-ui-newest", "feed-ui-older"],
+      "active commands are ordered newest first",
+    );
 
+    const navigationsBeforeUpdate = mainDocumentNavigations;
     proc.stdin.write(
       JSON.stringify({
         method: "fixture/task",
-        params: { ...task, status: "completed", finished: task.created + 1 },
+        params: {
+          ...newest,
+          status: "completed",
+          finished: newest.created + 1,
+        },
       }) + "\n",
     );
     await poll(
       async () =>
-        feeds.filter((status) => status === 200).length > 1 &&
-        (await page.locator('[data-task="feed-ui-command"]').count()) === 0,
-      "completed task disappears within the five-second feed refresh",
-      8,
+        (await page.locator('[data-task="feed-ui-newest"]').count()) === 0 &&
+        (await page.locator('[data-task="feed-ui-older"]').count()) === 1 &&
+        (await page.getByText("1 active", { exact: true }).count()) === 1,
+      "completed command is removed and active count updates from the entity stream",
+    );
+    assert.equal(
+      mainDocumentNavigations,
+      navigationsBeforeUpdate,
+      "task completion updates the drawer without a document reload",
+    );
+    assert.equal(
+      taskFeedRequests,
+      0,
+      "task drawer does not use the removed workspace task-feed endpoint",
     );
     console.log(
-      "PASS workspace task feed UI: initial task and completion refreshed within five seconds",
+      "PASS workspace task feed UI: selected-chat scope, active count, newest-first order, and completion update via entity sync without reload",
     );
   } catch (error) {
     await runnerPage
