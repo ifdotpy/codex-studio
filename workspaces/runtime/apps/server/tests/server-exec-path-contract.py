@@ -7,6 +7,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
+from test_isolation import isolate_supervisor_environment
+isolate_supervisor_environment()
+
 from pathlib import Path
 import os
 import sys
