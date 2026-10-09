@@ -5,6 +5,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -25,16 +26,15 @@ from studio_api.schema import (
     validate_contract_schemas,
     validate_error_responses,
 )
+from codex_layout import REPOSITORY_ROOT, WEB_ROOT
 
 
-ROOT = Path(__file__).resolve().parents[2]
-OUTPUT = ROOT / "web" / "src" / "generated" / "api.ts"
-SCHEMA_OUTPUT = ROOT / "web" / "src" / "generated" / "apiSchema.ts"
+ROOT = REPOSITORY_ROOT
+OUTPUT = WEB_ROOT / "src" / "generated" / "api.ts"
+SCHEMA_OUTPUT = WEB_ROOT / "src" / "generated" / "apiSchema.ts"
 DEFAULT_CACHE_ROOT = Path.home() / ".cache"
 CACHE_ROOT_ENV = "XDG_CACHE_HOME"
 OPENAPI_TEMP_DIRECTORY = "codex-studio-openapi-types"
-GENERATOR_PATH = ROOT / "node_modules" / ".bin" / "openapi-typescript"
-FORMATTER_PATH = ROOT / "node_modules" / ".bin" / "oxfmt"
 JSON_VALUE_TS_ALIAS = (
     "export type JsonValue = null | boolean | number | string | JsonValue[] "
     "| { [key: string]: JsonValue };"
@@ -85,11 +85,13 @@ def render(document: dict[str, JsonValue]) -> str:
             json.dumps(document, ensure_ascii=False, separators=(",", ":")) + "\n",
             encoding="utf-8",
         )
-        if not GENERATOR_PATH.is_file():
-            raise FileNotFoundError("Run npm ci to install the pinned openapi-typescript generator")
+        if shutil.which("pnpm") is None:
+            raise FileNotFoundError("Run `pnpm install --frozen-lockfile` at the repository root to install pinned API tools")
         subprocess.run(
             [
-                str(GENERATOR_PATH),
+                "pnpm",
+                "exec",
+                "openapi-typescript",
                 str(input_path),
                 "--output",
                 str(output_path),
@@ -107,14 +109,14 @@ def render(document: dict[str, JsonValue]) -> str:
     generated += "\n\n" + JSON_VALUE_TS_ALIAS + _entity_aliases(
         entities, include_sync_entity_payload
     ) + "\n"
-    if not FORMATTER_PATH.is_file():
-        raise FileNotFoundError("Run npm ci to install the pinned Oxfmt formatter")
     with tempfile.TemporaryDirectory(prefix="format-", dir=temp_root) as temp_name:
         output_path = Path(temp_name) / "api.ts"
         output_path.write_text(generated, encoding="utf-8")
         subprocess.run(
             [
-                str(FORMATTER_PATH),
+                "pnpm",
+                "exec",
+                "oxfmt",
                 "--write",
                 f"--config={ROOT / '.oxfmtrc.json'}",
                 str(output_path),
@@ -155,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         current = path.read_text(encoding="utf-8") if path.exists() else ""
         if options.check:
             if current != expected:
-                print(f"{path.relative_to(ROOT)} is stale; run npm run api:generate", file=sys.stderr)
+                print(f"{path.relative_to(ROOT)} is stale; run `pnpm --workspace-root run api:generate`", file=sys.stderr)
                 return 1
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
