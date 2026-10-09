@@ -185,6 +185,10 @@ test("project folders, remote browse, and New chat server choice", async ({
       timeout: 20000,
     });
     await expect(group.getByText("Local chat", { exact: true })).toBeVisible();
+    const projectRow = group.locator(".project-tree-toggle");
+    expect(await projectRow.getAttribute("aria-expanded")).toBeNull();
+    await projectRow.click();
+    await expect(group.getByText("Remote chat", { exact: true })).toBeVisible();
     await group
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click();
@@ -203,7 +207,7 @@ test("project folders, remote browse, and New chat server choice", async ({
     });
     await expect(remoteCard).toHaveAttribute("aria-pressed", "true");
     const localCard = dialog.getByRole("button", {
-      name: /This Mac.*Active.*chrompile/,
+      name: /This computer.*Active.*chrompile/,
     });
     await localCard.click();
     await expect(localCard).toHaveAttribute("aria-pressed", "true");
@@ -303,7 +307,7 @@ test("bound local New chat lets the logical project choose its account", async (
       .click();
     const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
     await dialog
-      .getByRole("button", { name: /This Mac.*Active.*chrompile/ })
+      .getByRole("button", { name: /This computer.*Active.*chrompile/ })
       .click();
     await dialog
       .getByRole("button", { name: "Start chat", exact: true })

@@ -13,7 +13,7 @@ MAX_CREDENTIAL_BYTES = 1024 * 1024
 def claude_keychain_service(config_dir=None):
     service = 'Claude Code-credentials'
     if config_dir:
-        # Observed with the installed Claude CLI on this Mac. Keep the
+        # Observed with the installed Claude CLI on this computer. Keep the
         # selected CLI directory string, without a trailing slash.
         service += '-' + hashlib.sha256(str(config_dir).rstrip('/').encode()).hexdigest()[:8]
     return service

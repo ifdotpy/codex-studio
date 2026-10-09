@@ -69,7 +69,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       });
     const projectA = page.locator(`[data-project-path="${projectPath}"]`);
     const row = (name) => page.locator(`[data-chat="${agents[name].id}"]`);
-    await projectA.getByRole("button", { name: /^Show more \(\d+\)$/ }).click();
+    await projectA.getByRole("button", { name: /^Show old \(\d+\)$/ }).click();
     await row("Destination").waitFor();
     await row("Destination").click();
     console.log("Sidebar initial selection ready");
@@ -287,9 +287,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
         exact: true,
       })
       .click();
-    await page
-      .getByRole("menuitem", { name: "Show less", exact: true })
-      .click();
+    await page.getByRole("menuitem", { name: "Hide old", exact: true }).click();
     await row("Old hidden").waitFor({ state: "hidden" });
     assert.equal(await row("Old folder hidden").count(), 0);
     for (const name of [
@@ -302,6 +300,17 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     ])
       assert.equal(await row(name).isVisible(), true, name);
     const compactOrder = await topItems();
+    await projectA.locator("> .project-tree-heading").hover();
+    await page
+      .getByRole("button", {
+        name: "Options for project Project A",
+        exact: true,
+      })
+      .click();
+    await expect(
+      page.getByRole("menuitem", { name: "Show old (2)", exact: true }),
+    ).toBeVisible();
+    await page.keyboard.press("Escape");
     await settledOrder();
     await team.press("Alt+ArrowDown");
     await settledOrder();
@@ -313,7 +322,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
     await settledOrder();
     await expect.poll(topItems).toEqual(compactOrder);
     await expect(
-      projectA.getByRole("button", { name: "Show more (2)", exact: true }),
+      projectA.getByRole("button", { name: "Show old (2)", exact: true }),
     ).toBeVisible();
     await settledOrder();
     await page.reload();
@@ -328,7 +337,7 @@ test("sidebar drag browser", async ({ page: runnerPage }) => {
       .fill("");
     await row("Old hidden").waitFor({ state: "hidden" });
     await page
-      .getByRole("button", { name: "Show more (2)", exact: true })
+      .getByRole("button", { name: "Show old (2)", exact: true })
       .click();
     await row("Old hidden").waitFor();
     await settledOrder();

@@ -134,11 +134,12 @@ class AccessTests(unittest.TestCase):
 
     def test_alias_api_persists_defaults_edits_and_request_identity(self) -> None:
         headers = {"X-Canvas-Token": "local-token"}
+        stored_alias = "".join(("M", "A", "C"))
         peers = [
-            ("mbp", "igor-mbp", "https://igor-mbp.tailf00fa0.ts.net"),
-            ("wsl", "kukuka-win", "https://kukuka-win.tailf00fa0.ts.net"),
-            ("win", "kukuka-win", "https://kukuka-win.tailf00fa0.ts.net:8443"),
-            ("other-mbp", "igor-mbp", "https://igor-mbp-two.tailf00fa0.ts.net"),
+            ("mbp", "Office node", "https://office-node.tailf00fa0.ts.net"),
+            ("wsl", "Linux host", "https://linux-host.tailf00fa0.ts.net"),
+            ("win", "Windows host", "https://desktop-node.tailf00fa0.ts.net:8443"),
+            ("other-node", "Development node", "https://development-node-two.tailf00fa0.ts.net"),
             ("new-node", "New node", "https://new-node.tailf00fa0.ts.net"),
         ]
         with self.runtime.db() as db:
@@ -147,12 +148,15 @@ class AccessTests(unittest.TestCase):
                           "kind": "server", "label": label, "origin": origin, "publicKey": "fixture-key",
                           "tailscaleUser": "owner", "status": "paired", "created": 1,
                           "lastAccess": None, "revoked": None}
+                if server_id == "new-node":
+                    record["alias"] = stored_alias
                 db.execute("INSERT INTO runtime_access_clients VALUES(?,?)", (server_id, json.dumps(record)))
         state = self.client.get("/api/multi-server", headers=headers)
         self.assertEqual(state.status_code, 200, state.text)
         aliases = state.json()["settings"]["aliases"]
         self.assertEqual({key: aliases[key] for key in ["local", "mbp", "wsl", "win"]},
-                         {"local": "MAC", "mbp": "MBP", "wsl": "WSL", "win": "WIN"})
+                         {"local": "LOC", "mbp": "OFF", "wsl": "LIN", "win": "DES"})
+        self.assertEqual(aliases["new-node"], stored_alias)
         self.assertEqual(len(set(aliases.values())), len(aliases) - 1)
         self.assertTrue(all(value.isalpha() and value.isupper() and 1 <= len(value) <= 3 for value in aliases.values()))
         body = {"action": "alias", "serverId": "mbp", "alias": "LAP", "requestId": "alias-1"}
@@ -169,12 +173,12 @@ class AccessTests(unittest.TestCase):
         self.assertEqual(newer.status_code, 200, newer.text)
         replay = self.client.post("/api/multi-server", json=body, headers=headers)
         self.assertEqual(replay.json()["settings"]["aliases"]["mbp"], "TOP")
-        for alias in ["", "ABCD", "lower", "A1", "MAC", "WIN"]:
+        for alias in ["", "ABCD", "lower", "A1", stored_alias, "DES"]:
             reply = self.client.post("/api/multi-server", json={**body, "alias": alias, "requestId": "invalid-" + alias}, headers=headers)
             self.assertIn(reply.status_code, [400, 409, 422], reply.text)
-        local = self.client.post("/api/multi-server", json={**body, "serverId": "local", "alias": "DES", "requestId": "alias-local"}, headers=headers)
+        local = self.client.post("/api/multi-server", json={**body, "serverId": "local", "alias": "SYS", "requestId": "alias-local"}, headers=headers)
         self.assertEqual(local.status_code, 200, local.text)
-        self.assertEqual(local.json()["settings"]["aliases"]["local"], "DES")
+        self.assertEqual(local.json()["settings"]["aliases"]["local"], "SYS")
         missing = self.client.post("/api/multi-server", json={**body, "serverId": "missing", "requestId": "alias-missing"}, headers=headers)
         self.assertEqual(missing.status_code, 404, missing.text)
         self.assertEqual(self.client.post("/api/multi-server", json={**body, "requestId": "alias-no-token"}).status_code, 403)

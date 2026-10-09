@@ -35,7 +35,7 @@ export function projectServerChoices(
 ): ProjectServerChoice[] {
   return servers.map((server) => ({
     id: server.id,
-    label: server.id === "local" ? "This Mac" : server.label,
+    label: server.id === "local" ? "This computer" : server.label,
     disabled:
       reachability[server.id] === "unreachable" ||
       ["offline", "degraded", "schema-mismatch"].includes(
@@ -46,7 +46,11 @@ export function projectServerChoices(
 export async function readProjectServers(): Promise<ProjectServerChoice[]> {
   const snapshot = await get("/api/multi-server");
   return [
-    { id: "local", serverId: snapshot.identity.serverId, label: "This Mac" },
+    {
+      id: "local",
+      serverId: snapshot.identity.serverId,
+      label: "This computer",
+    },
     ...snapshot.servers
       .filter(
         (server) =>

@@ -267,23 +267,25 @@ p {
   padding: 0 24px;
   border-bottom: 1px solid var(--line);
 }
-.desktop-mac .workspace-header,
-.desktop-mac .sidebar-header {
+.desktop-inset-titlebar .workspace-header,
+.desktop-inset-titlebar .sidebar-header {
   -webkit-app-region: drag;
 }
-.desktop-mac .workspace-header :is(button, a, input, select, [role="button"]),
-.desktop-mac .sidebar-header :is(button, a) {
+.desktop-inset-titlebar
+  .workspace-header
+  :is(button, a, input, select, [role="button"]),
+.desktop-inset-titlebar .sidebar-header :is(button, a) {
   -webkit-app-region: no-drag;
 }
-.desktop-mac .sidebar-header {
+.desktop-inset-titlebar .sidebar-header {
   height: 60px;
   padding: 20px 12px 8px;
 }
-.desktop-mac #sidebar {
+.desktop-inset-titlebar #sidebar {
   padding-top: 0;
 }
 @media (max-width: 760px) {
-  .desktop-mac .workspace-header {
+  .desktop-inset-titlebar .workspace-header {
     padding-left: 96px;
   }
 }

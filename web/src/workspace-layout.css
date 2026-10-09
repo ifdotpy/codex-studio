@@ -109,7 +109,7 @@
     flex-basis: var(--studio-sidebar-width);
     padding-inline: 16px;
   }
-  .desktop-mac .sidebar-header {
+  .desktop-inset-titlebar .sidebar-header {
     padding-inline: 0;
   }
 }
@@ -182,7 +182,7 @@
   display: none;
   list-style: none;
 }
-.desktop-mac .conversation-header-tools-summary {
+.desktop-inset-titlebar .conversation-header-tools-summary {
   -webkit-app-region: no-drag;
 }
 .conversation-header-tools-menu > summary::-webkit-details-marker {

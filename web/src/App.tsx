@@ -121,6 +121,8 @@ import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
+  MAX_HIDE_OLD_CHATS_THRESHOLD,
+  MIN_HIDE_OLD_CHATS_THRESHOLD,
   fontFamilies,
   formatSidebarShortcut,
   parseSidebarShortcut,
@@ -1879,7 +1881,7 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           initialPath={target.cwd ?? undefined}
-          serverChoices={[{ id: "local", label: "This Mac" }]}
+          serverChoices={[{ id: "local", label: "This computer" }]}
           showServerSelector={false}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
@@ -2259,6 +2261,7 @@ export default function App() {
         indicators={indicators}
         markUnread={(a) => void readState.markUnread(a)}
         markingRead={readState.marking}
+        hideOldChatsThreshold={studioPreferences.hideOldChatsThreshold}
         rename={rename}
         remove={remove}
         mobile={sidebar}
@@ -3189,6 +3192,33 @@ export default function App() {
                     </section>
                     <section className="settings-group" aria-label="Messages">
                       <h2>Messages</h2>
+                      <label className="settings-field studio-preference-toggle">
+                        <span className="settings-label">
+                          Hide old chats from{" "}
+                          {studioPreferences.hideOldChatsThreshold} chats per
+                          project
+                        </span>
+                        <TextInput
+                          aria-label="Hide old chats from N chats per project"
+                          type="number"
+                          min={MIN_HIDE_OLD_CHATS_THRESHOLD}
+                          max={MAX_HIDE_OLD_CHATS_THRESHOLD}
+                          step={1}
+                          value={studioPreferences.hideOldChatsThreshold}
+                          onChange={(event) => {
+                            const value = Number(event.currentTarget.value);
+                            if (
+                              Number.isInteger(value) &&
+                              value >= MIN_HIDE_OLD_CHATS_THRESHOLD &&
+                              value <= MAX_HIDE_OLD_CHATS_THRESHOLD
+                            )
+                              updateStudioPreferences({
+                                ...studioPreferences,
+                                hideOldChatsThreshold: value,
+                              });
+                          }}
+                        />
+                      </label>
                       <label className="settings-field studio-preference-toggle">
                         <span className="settings-label">
                           Show message avatars

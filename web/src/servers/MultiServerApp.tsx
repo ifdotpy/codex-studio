@@ -779,6 +779,7 @@ export default function MultiServerApp() {
           current={current}
           query={query}
           send={send}
+          hideOldChatsThreshold={preferences.hideOldChatsThreshold}
         />
       </aside>
       <main className="server-views">
