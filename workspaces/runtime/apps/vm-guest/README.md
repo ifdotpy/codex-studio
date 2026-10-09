@@ -26,8 +26,8 @@ The host sources are `workspaces/runtime/apps/vm-guest` and
 - `codex_records.py`
 
 Provisioning also stages the Claude bridge workspace and the pinned pnpm
-workspace metadata under `/opt/codex-studio`. The guest installs the Linux
-ARM64 production dependencies from the frozen lockfile, while
+workspace metadata under `/opt/codex-studio`. The guest installs the same
+non-optional production dependency set from the frozen lockfile, while
 `/opt/codex-studio/claude_bridge/bridge.mjs` remains the stable entrypoint.
 
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,

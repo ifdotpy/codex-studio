@@ -324,6 +324,10 @@ class ClientTests(unittest.TestCase):
         bridge.mkdir()
         (bridge / 'package.json').write_text('{}')
         (bridge / 'bridge.mjs').write_text('console.log("bridge");')
+        nested = bridge / 'node_modules' / 'nested-dependency'
+        nested.mkdir(parents=True)
+        (nested / 'package.json').write_text('{}')
+        (nested / 'dependency.mjs').write_text('throw new Error("must not ship");')
         config = vm._cloud_config(guest, '1.2.3', '4.5.6', runtime_source=scripts,
                                   bridge_source=bridge)
         paths = [entry['path'] for entry in config['write_files']]
@@ -334,6 +338,7 @@ class ClientTests(unittest.TestCase):
         self.assertIn('/opt/codex-studio/pnpm-workspace.yaml', paths)
         self.assertIn('/opt/codex-studio/pnpm-lock.yaml', paths)
         self.assertIn('/opt/codex-studio/patches/rxdb@17.5.0.patch', paths)
+        self.assertFalse(any('/claude-bridge/node_modules/' in path for path in paths))
         self.assertEqual(len(paths), 16)
         self.assertNotIn('credentials', json.dumps(config))
 
@@ -344,7 +349,7 @@ class ProvisionTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory(prefix='vm-provision-script-')
         self.root = Path(self.temp.name)
         self.addCleanup(self.temp.cleanup)
-        self.script = vm._provision_script('0.160.1', '2.1.291')
+        self.script = vm._provision_script('0.160.1', '2.1.291', vm._pnpm_version())
 
     def helper(self, name, content):
         target = self.root / name
@@ -364,26 +369,55 @@ class ProvisionTests(unittest.TestCase):
                                      self.script.index('stage codex\n')]
         self.assertIn('pnpm@12.10.1', bridge_section)
         self.assertIn('install --frozen-lockfile --prod --ignore-scripts', bridge_section)
-        self.assertIn('--filter studio-claude-bridge --os=linux --cpu=arm64 --libc=glibc', bridge_section)
-        self.assertIn('ln -sfn "$bridge_workspace" "$bridge"', bridge_section)
+        self.assertIn('--no-optional', bridge_section)
+        self.assertIn('--config.bin-links=false', bridge_section)
+        self.assertIn('find /opt/codex-studio/node_modules -type d -name .bin', bridge_section)
+        self.assertNotIn('--os=', bridge_section)
+        self.assertIn('--filter studio-claude-bridge', bridge_section)
+        self.assertIn('bridge-ready', bridge_section)
+        self.assertIn('sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-lock.yaml', bridge_section)
+        self.assertIn('"$bridge_workspace/package.json"', bridge_section)
+        self.assertIn('find /opt/codex-studio/patches -type f', bridge_section)
+        self.assertIn('/opt/codex-studio/pnpm-lock.yaml', bridge_section)
+        self.assertIn('publish_bridge', bridge_section)
+        self.assertIn('ln -sfn "$bridge_workspace" "$bridge_next"', self.script)
+        self.assertIn('renameat2', self.script)
         self.assertIn('/opt/codex-studio/claude_bridge', bridge_section)
 
-    def test_legacy_guest_bridge_is_preserved_without_live_path_swap(self):
-        bridge_section = self.script[self.script.index('stage claude-bridge\n'):
-                                     self.script.index('stage codex\n')]
+    def test_pnpm_version_follows_root_package_manager_manifest(self):
+        root = self.root / 'repository'
+        root.mkdir()
+        (root / 'package.json').write_text('{"packageManager":"pnpm@9.8.7"}')
+        version = vm._pnpm_version(root)
+        script = vm._provision_script('0.160.1', '2.1.291', version)
+        self.assertIn('pnpm@9.8.7', script)
+        (root / 'package.json').write_text('{}')
+        with self.assertRaisesRegex(vm.LinuxVMError, 'packageManager must pin pnpm'):
+            vm._pnpm_version(root)
+
+    def test_legacy_bridge_path_is_atomically_replaced_and_kept_for_running_processes(self):
+        publish = self.script[self.script.index('publish_bridge() {'):
+                              self.script.index('\nmkdir -p /var/lib/codex-studio')]
         guest = self.root / 'guest'
-        old_bridge = guest / 'claude_bridge'
-        (old_bridge / 'node_modules').mkdir(parents=True)
-        old_source = old_bridge / 'bridge.mjs'
-        old_source.write_text('// npm-installed legacy bridge')
-        executable = self.root / 'pnpm'
-        executable.write_text('#!/bin/bash\necho unexpected pnpm call >&2; exit 99\n')
-        executable.chmod(0o700)
-        result = self.run_helpers(bridge_section.replace('/opt/codex-studio', str(guest)))
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(old_source.read_text(), '// npm-installed legacy bridge')
-        self.assertTrue((old_bridge / 'node_modules').is_dir())
-        self.assertFalse(old_bridge.is_symlink())
+        legacy = guest / 'claude_bridge'
+        new_workspace = guest / 'workspaces/providers/apps/claude-bridge'
+        legacy.mkdir(parents=True)
+        (legacy / 'bridge.mjs').write_text('// current process may still read this tree')
+        (legacy / 'node_modules').mkdir()
+        new_workspace.mkdir(parents=True)
+        (new_workspace / 'bridge.mjs').write_text('// new bridge')
+        script = ('bridge=' + repr(str(legacy)) + '\n'
+                  'bridge_workspace=' + repr(str(new_workspace)) + '\n'
+                  + publish + '\n'
+                  'publish_bridge\n'
+                  'test -L "$bridge" && test "$(readlink -f "$bridge")" = "$bridge_workspace"\n'
+                  'test -s "$bridge/bridge.mjs"\n'
+                  'test -s "$(find "${bridge}.legacy."* -name bridge.mjs -print -quit)"\n')
+        result = self.run_helpers(script)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(legacy.is_symlink())
+        self.assertEqual(list(guest.glob('claude_bridge.legacy.*'))[0].joinpath('bridge.mjs').read_text(),
+                         '// current process may still read this tree')
 
     def test_download_retry_records_size_and_elapsed_time(self):
         self.helper('sleep', 'true\n')
@@ -441,7 +475,7 @@ class ProvisionTests(unittest.TestCase):
         self.assertFalse(any(path.endswith('.test.mjs') for path in bridge_paths))
         script = next(entry['content'] for entry in config['write_files']
                       if entry['path'] == '/opt/codex-studio/provision.sh')
-        self.assertIn('--os=linux --cpu=arm64 --libc=glibc', script)
+        self.assertIn('--no-optional', script)
         self.assertIn('pnpm@12.10.1', script)
         for entry in config['write_files']:
             if entry['path'].startswith('/opt/codex-studio/scripts/'):
@@ -453,7 +487,7 @@ class ProvisionTests(unittest.TestCase):
 
     def test_saved_versions_cannot_inject_shell_commands(self):
         with self.assertRaises(vm.LinuxVMError):
-            vm._provision_script('1.2.3; false', '2.1.291')
+            vm._provision_script('1.2.3; false', '2.1.291', vm._pnpm_version())
 
 if __name__ == '__main__':
     unittest.main()

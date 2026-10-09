@@ -30,14 +30,6 @@ from codex_layout import (CLAUDE_BRIDGE_ROOT, DESKTOP_ROOT, PROVIDERS_ROOT,
                          REPOSITORY_ROOT, SERVER_SOURCE_ROOT, VM_GUEST_ROOT)
 from codex_state import state_dir as studio_state_dir
 
-if not (SERVER_SOURCE_ROOT / 'codex_linux_vm.py').is_file():
-    SERVER_SOURCE_ROOT = Path(__file__).resolve().parent
-    REPOSITORY_ROOT = SERVER_SOURCE_ROOT.parent
-    CLAUDE_BRIDGE_ROOT = SERVER_SOURCE_ROOT / 'claude_bridge'
-    DESKTOP_ROOT = REPOSITORY_ROOT / 'desktop'
-    PROVIDERS_ROOT = REPOSITORY_ROOT / 'workspaces/providers'
-    VM_GUEST_ROOT = REPOSITORY_ROOT / 'vm/guest'
-
 _GIB = 1024 ** 3
 _IMAGE_URL = 'https://cloud-images.ubuntu.com/releases/noble/release-20260926/ubuntu-24.04-server-cloudimg-arm64.tar.gz'
 _IMAGE_SHA256 = '1800eb56b6b839a08c020551e16fbd8c95b2772452ecce3737a9ad25fe594126'
@@ -218,7 +210,18 @@ def _provision_info(console: Path) -> dict[str, Any]:
     return result
 
 
-def _provision_script(codex_version: str, claude_version: str, pnpm_version: str = '12.10.1') -> str:
+def _pnpm_version(root: Path = REPOSITORY_ROOT) -> str:
+    try:
+        package_manager = json.loads((root / 'package.json').read_text()).get('packageManager', '')
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LinuxVMError('The root package-manager version is unavailable.') from exc
+    match = re.fullmatch(r'pnpm@(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)', package_manager)
+    if not match:
+        raise LinuxVMError('The root packageManager must pin pnpm to an exact version.')
+    return match[1]
+
+
+def _provision_script(codex_version: str, claude_version: str, pnpm_version: str) -> str:
     # Versions become shell tokens only after validation, including during recovery.
     for version in (codex_version, claude_version, pnpm_version):
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?', version):
@@ -286,6 +289,30 @@ retry_pnpm() {
   done
   return "$code"
 }
+publish_bridge() {
+  local bridge_next="${bridge}.next.$$"
+  ln -sfn "$bridge_workspace" "$bridge_next"
+  if [ -d "$bridge" ] && [ ! -L "$bridge" ]; then
+    # Exchange names atomically: an already-running bridge keeps its old tree,
+    # while new callers see the completely installed workspace at the stable path.
+    python3 - "$bridge" "$bridge_next" <<'PY'
+import ctypes
+import os
+import sys
+
+renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+if renameat2(-100, os.fsencode(sys.argv[1]), -100, os.fsencode(sys.argv[2]), 2) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+PY
+    local legacy="${bridge}.legacy.$(date +%s).$$"
+    mv -- "$bridge_next" "$legacy"
+    echo "STUDIO_BRIDGE_LEGACY_PRESERVED: $legacy"
+  else
+    mv -Tf -- "$bridge_next" "$bridge"
+  fi
+}
 mkdir -p /var/lib/codex-studio
 stage clock
 timeout --kill-after=5 15 timedatectl set-ntp true
@@ -322,20 +349,29 @@ export npm_config_update_notifier=false
 stage claude-bridge
 bridge=/opt/codex-studio/claude_bridge
 bridge_workspace=/opt/codex-studio/workspaces/providers/apps/claude-bridge
-if [ -d "$bridge" ] && [ ! -L "$bridge" ] && [ -d "$bridge/node_modules" ]; then
-  # Keep an existing npm-installed guest in place; provision-ready VMs do not
-  # re-enter this script, and a failed legacy provision must not break its bridge.
-  test -s "$bridge/bridge.mjs"
-else
+bridge_ready=/var/lib/codex-studio/bridge-ready
+bridge_sum=$(
+  {
+    sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-lock.yaml \
+      "$bridge_workspace/package.json"
+    find /opt/codex-studio/patches -type f -print0 | sort -z | xargs -0 -r sha256sum
+  } | sha256sum | cut -d' ' -f1
+)
+if [ ! -d "$bridge_workspace/node_modules" ] || [ "$(cat "$bridge_ready" 2>/dev/null || true)" != "$bridge_sum" ] \
+    || [ ! -L "$bridge" ] || [ "$(readlink -f "$bridge" 2>/dev/null || true)" != "$bridge_workspace" ]; then
   if [ "$(pnpm --version 2>/dev/null || true)" != '@PNPM@' ]; then
     retry_npm 300 install -g --no-audit --no-fund pnpm@@PNPM@
   fi
   test "$(pnpm --version)" = '@PNPM@'
   cd /opt/codex-studio
-  retry_pnpm 600 install --frozen-lockfile --prod --ignore-scripts \
-    --filter studio-claude-bridge --os=linux --cpu=arm64 --libc=glibc
+  retry_pnpm 600 install --frozen-lockfile --prod --ignore-scripts --no-optional \
+    --config.bin-links=false \
+    --filter studio-claude-bridge
+  find /opt/codex-studio/node_modules -type d -name .bin -prune -exec rm -rf {} +
   cd /
-  ln -sfn "$bridge_workspace" "$bridge"
+  publish_bridge
+  printf '%s\n' "$bridge_sum" > "$bridge_ready.tmp"
+  mv -f -- "$bridge_ready.tmp" "$bridge_ready"
 fi
 stage codex
 echo STUDIO_PROVISION_CODEX
@@ -412,7 +448,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
     bridge = bridge_source or (PROVIDERS_ROOT / 'apps/claude-bridge')
     if not bridge.is_dir():
         raise LinuxVMError('The Claude bridge source directory is unavailable.')
-    bridge_files = sorted(path for path in bridge.rglob('*') if path.is_file() and not path.is_symlink()
+    bridge_files = sorted(path for path in bridge.iterdir() if path.is_file() and not path.is_symlink()
                           and (path.name == 'package.json' or
                                (path.suffix == '.mjs' and not path.name.endswith('.test.mjs')
                                 and path.name != 'vitest.config.mjs')))
@@ -423,14 +459,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
                       'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
     if not any(entry['path'].endswith('/claude-bridge/package.json') for entry in files):
         raise LinuxVMError('The Claude bridge package manifest is unavailable.')
-    try:
-        package_manager = json.loads((REPOSITORY_ROOT / 'package.json').read_text()).get('packageManager', '')
-    except (OSError, json.JSONDecodeError) as exc:
-        raise LinuxVMError('The root package-manager version is unavailable.') from exc
-    match = re.fullmatch(r'pnpm@(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)', package_manager)
-    if not match:
-        raise LinuxVMError('The root packageManager must pin pnpm to an exact version.')
-    script = _provision_script(codex_version, claude_version, match[1])
+    script = _provision_script(codex_version, claude_version, _pnpm_version())
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
