@@ -1,3 +1,5 @@
 # Sync browser spec known failures
 
-No confirmed product defects remain; structured provider errors were fixed by PR #25 (`8afd4232`).
+## Confirmed product defect
+
+- `sync/sync-cross-tab-browser.spec.mjs`: resumed-owner duplicate-stream assertion failed in 4/20 marker-free full-flow repeats (earlier 2/10; overlap-measurement series 1/10), after unchanged 1,500 ms wait. During one failure, streams carried `[transcript(session-one), panel(takeover-unique-panel), state]` and `[transcript(session-one), state]`. Passing repeats with convergence and the failing repeat after 11.5 seconds all had one resumed-owner stream `[transcript(session-one), state]`; this is a short-lived redundant connection with the correct final subscription. One state change while both were live produced exactly one state callback in each of eight visible tabs (6→7), no transcript callback, and zero entity pulls. No duplicate entity application was observed for that write. Separate takeover symptom: 1/10 opened two identical union-query streams (first closed 13 ms after opening; second opened 14 ms after the first), ending with one active stream. One different failure in an earlier 20-repeat run was the quiet-heartbeat assertion: one extra panel callback after the 3,500 ms quiet interval (actual 4, expected 3). `27f6ea71` remains a candidate; causality is unproven.
