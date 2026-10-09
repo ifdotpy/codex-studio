@@ -33,6 +33,7 @@ LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "li
 READ_METHODS |= LAYR_READ_METHODS
 METHODS |= LAYR_METHODS
 METHODS |= {"project.import", "share.configure"}
+METHODS |= {"host.exec", "host.configure"}
 CLIENT_IDLE_SECONDS = 60
 
 
@@ -53,6 +54,8 @@ class Service:
         self.native = Native(self.state)
         self.layr_path = self.state / "layr-associations.json"
         self.layr_agents = json.loads(self.layr_path.read_text()) if self.layr_path.exists() else {}
+        from host_exec import HostExec
+        self.host_exec = HostExec(self)
         self.active = {}
         self.operations = set()
         self.root_locks = {}
@@ -363,6 +366,10 @@ class Service:
         except (OSError, ValueError, KeyError):
             return {"totalBytes": None, "availableBytes": None}
 
+    async def host_context(self, agent_id):
+        from layr_admin_client import admin_request
+        return await admin_request(str(uuid.uuid4()), "agent.context", {"agentId": agent_id})
+
     async def dispatch(self, request_id, method, params, emit):
         async def admin_request(request_id, method, params, emit=None):
             from layr_admin_client import admin_request as forward
@@ -385,6 +392,26 @@ class Service:
             return await admin_request(request_id, "layr." + method, params, emit=emit)
         if method in {"project.ensure", "project.import", "share.configure", "share.status", "layr.health"}:
             return await admin_request(request_id, method, params, emit=emit)
+        if method in {"host.configure", "host.exec"}:
+            from host_exec_protocol import HostExecError
+            try:
+                if method == "host.configure":
+                    return self.host_exec.configure(params)
+                if params.get("action", "execute") == "execute":
+                    async def heartbeat():
+                        while True:
+                            await asyncio.sleep(15)
+                            await emit("host.heartbeat", {"operationId": params.get("operationId", request_id)})
+                    pulse = asyncio.create_task(heartbeat())
+                    try:
+                        async with bounded_lock(self.agent_locks, params.get("agentId", "missing")):
+                            return await self.host_exec.handle(request_id, params, emit)
+                    finally:
+                        pulse.cancel()
+                        await asyncio.gather(pulse, return_exceptions=True)
+                return await self.host_exec.handle(request_id, params, emit)
+            except HostExecError as exc:
+                raise GuestError(exc.code, str(exc)) from exc
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)

@@ -52,6 +52,11 @@ class ClientTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory(prefix='vm-client-')
         self.directory = Path(self.temporary.name)
         self.client = vm.Client(self.directory)
+        # Bootstrap tests have a socket fixture, not a VM host listener.
+        for hook in ('ensure_service', 'configure_guest'):
+            stub = patch('codex_host_exec.' + hook)
+            stub.start()
+            self.addCleanup(stub.stop)
 
     def tearDown(self):
         self.temporary.cleanup()
