@@ -387,6 +387,26 @@ test("product ui", async ({ browser: _browser }) => {
       .getByText("First task", { exact: true })
       .waitFor();
     await page.setViewportSize({ width: 390, height: 844 });
+    await page.waitForFunction(
+      async () => {
+        if (window.innerWidth !== 390) return false;
+        const nextFrame = () =>
+          new Promise((resolve) => requestAnimationFrame(resolve));
+        await nextFrame();
+        const first = {
+          body: document.body.scrollWidth,
+          document: document.documentElement.scrollWidth,
+        };
+        await nextFrame();
+        return (
+          window.innerWidth === 390 &&
+          first.body === document.body.scrollWidth &&
+          first.document === document.documentElement.scrollWidth
+        );
+      },
+      null,
+      { timeout: 5000 },
+    );
     assert.equal(await page.evaluate(() => document.body.scrollWidth), 390);
     await page.locator("#messages-toggle").click();
     await visibleInViewport(
