@@ -24,8 +24,9 @@ implements the commands on btrfs states and has equal convenience.
    project belongs to the lead. The lead accepts a worker result after its own review, merges it
    into the main line and resolves conflicts.
 5. Export: one commit per task. The lead decides when a task goes to the remote.
-6. For Linux projects on macOS, the folder on the Mac is the source of truth. The VM keeps a
-   synchronized copy (see "Main line on macOS").
+6. For Linux projects on macOS, the main line in the VM is the source of truth. A one-way mirror
+   writes it to a normal folder on the Mac (decision changed on 2026-10-09 from "the Mac folder is
+   the source of truth", to remove two-way sync).
 7. The current work continues: the image workspace engine ([image workspaces](workspace-images.md),
    overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
    detector). The utility later replaces their internals behind the same public API.
@@ -134,22 +135,43 @@ it can be undone too.
 
 ## Main line on macOS
 
-The lead and reviewers run on the Mac host. The main line is the project folder on the Mac. The VM
-holds a mirror line of it on btrfs, and worker lines start from states of that mirror.
+The main line of a Linux project lives on btrfs in the Studio VM. The lead and reviewers run on the
+Mac host and use the drop-in `git`, which forwards project commands to the VM utility over the
+existing guest channel.
 
-- Mac to VM: FSEvents on the project folder gives the changed paths since the last event id. Only
-  those files go to the mirror line, then a state is saved. Cost O(changes). `MustScanSubDirs`
-  falls back to a scan of that folder.
-- VM to Mac: when the lead merges a worker line, the merge runs against the mirror line. The base
-  versions come from the worker's base state, and the main-line side comes from the mirror. Only
-  the changed files are written back to the Mac folder, each with an atomic rename.
-- No echo loop: the writer records a token (path, size, modification time, content hash) for each
-  file it writes to the Mac. FSEvents events that match a token are not sent back to the VM.
-- Concurrent edits: if a Mac file changed after the merge read it, the write-back stops for that
-  path and the merge records a conflict instead of a silent overwrite.
-- The lead's `git` on the Mac is the drop-in utility. Commands for this project are forwarded to the
-  VM utility over the existing guest channel. They run on the mirror line, and their results are
-  written back as above.
+One-way mirror, VM to Mac:
+
+- After every operation that changes the main line (merge, restore, import), the utility writes the
+  changed files to a normal folder on the Mac. The change list comes from `btrfs send --no-data`,
+  so the cost is O(changes).
+- Each file is written to a temporary name and renamed into place. An intent log records the
+  pending writes, so a crash resumes or rolls back the mirror update.
+- The mirror records its main-line state id. A full verification (hash compare) runs in the
+  background at a low frequency and repairs differences from the VM.
+
+Edits made on the Mac:
+
+- FSEvents watches the mirror folder. Files written by the mirror itself carry a token (path, size,
+  modification time, hash) and are ignored.
+- Any other change is a manual edit. Studio does not sync it automatically. It offers an explicit
+  import: the merge engine merges the mirror changes into the main line, with the mirror state id as
+  the base. The next mirror update then includes the result.
+
+Ownership guarantees:
+
+- The files are on the user's disk: the VM disk is a file in the Studio store, and the mirror is a
+  normal folder.
+- The mirror is readable without Studio, is backed up by Time Machine, and stays if Studio is
+  removed.
+- Every task also goes to the remote through the remote bridge.
+- The VM disk is standard btrfs and can be opened by any Linux system.
+
+Mirror rules for differences between btrfs and APFS:
+
+- Names that differ only in letter case, or only in Unicode normalization, cannot coexist on APFS.
+  The mirror reports them and writes neither, instead of losing one of them silently.
+- The executable bit and symbolic links are mirrored. Hard links become copies. Linux extended
+  attributes are not mirrored.
 
 ## Merge engine
 
@@ -213,10 +235,11 @@ container cannot mount btrfs: the kernel allows only some file systems in a user
 example tmpfs, overlay and FUSE). A privileged container is the loop option with the rights of the
 container engine.
 
-With the loop option, the user's folder on ext4 or XFS stays the source of truth, as the Mac folder
-does on macOS. The same two-way sync applies. Linux has no persistent change journal like FSEvents,
-so the folder to store direction uses inotify while Studio runs and one `rsync` comparison after a
-restart (200,000 files: 1.2 s, measured in the Linux readiness checks of the research document).
+With the loop option, the model is the same as on macOS: the main line lives in the btrfs store, and
+a one-way mirror writes it to the user's folder on ext4 or XFS. Linux has no persistent change
+journal like FSEvents, so manual edits in the mirror are detected with inotify while Studio runs and
+with one `rsync` comparison after a restart (200,000 files: 1.2 s, measured in the Linux readiness
+checks of the research document). They are imported only on an explicit request.
 
 Measurement, 2026-10-09: throwaway OrbStack machine (17 vCPU, 15 GB RAM), btrfs-progs 6.17.1, one
 run, `drop_caches` before each cold case. The loop file lived on the machine's own btrfs root
@@ -304,7 +327,8 @@ replication between machines.
 - Which git porcelain and plumbing commands the utility implements first, and which use passthrough.
 - The passthrough repository needs an index for the current state; build it on demand and cache it
   per state.
-- Measure the two-way Mac and VM sync at chromium scale, including the echo tokens.
+- Measure the one-way mirror at chromium scale: first write, update after a merge, and the
+  background verification.
 - Directory-level merge cases listed above.
 - Replace overlayfs with writable snapshots for Linux workspaces
   ([image workspaces](workspace-images.md) uses overlayfs today).
