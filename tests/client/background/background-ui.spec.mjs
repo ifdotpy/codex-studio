@@ -150,12 +150,25 @@ test("background-ui", async ({ page: fixturePage }) => {
       0,
     );
     await poll(
-      async () => (await drawer.locator("[data-task]").count()) === 3,
-      "only tasks from the selected chat",
+      async () => (await drawer.locator("[data-task]").count()) === 2,
+      "the selected chat's command and monitor are visible",
     );
     const nativeRow = drawer
       .locator("[data-task]")
       .filter({ hasText: "npm run build" });
+    const selectedMonitorRow = drawer
+      .locator("[data-task]")
+      .filter({ hasText: "watch-fixture --tests" });
+    assert.equal(await nativeRow.count(), 1);
+    assert.equal(await selectedMonitorRow.count(), 1);
+    assert.equal(
+      await drawer
+        .locator("[data-task]")
+        .filter({ hasText: "check_deployment" })
+        .count(),
+      0,
+      "Current activity lists background commands and monitors, not tool calls",
+    );
     await nativeRow.click();
     await drawer
       .locator(".task-output")
@@ -197,14 +210,11 @@ test("background-ui", async ({ page: fixturePage }) => {
         .count(),
       0,
     );
-    assert.equal(await drawer.locator("[data-task]").count(), 3);
-    await drawer.getByLabel("Task type").selectOption("tool");
+    assert.equal(await drawer.locator("[data-task]").count(), 2);
+    await drawer.getByLabel("Task type").selectOption("command");
     assert.equal(await drawer.locator("[data-task]").count(), 1);
-    await drawer.locator(".task-input summary").click();
-    await drawer
-      .locator(".task-input pre")
-      .filter({ hasText: "staging" })
-      .waitFor();
+    await drawer.getByLabel("Task type").selectOption("monitor");
+    assert.equal(await drawer.locator("[data-task]").count(), 1);
     await drawer.getByLabel("Task type").selectOption("all");
     await drawer.getByLabel("Find a task").fill("not-a-task");
     await drawer.getByText("No matching tasks", { exact: true }).waitFor();
