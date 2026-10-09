@@ -47,7 +47,7 @@ test("Ux request recovery browser", async ({
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {

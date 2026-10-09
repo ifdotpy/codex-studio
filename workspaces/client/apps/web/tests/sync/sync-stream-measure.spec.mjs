@@ -105,7 +105,7 @@ test("Sync stream measure @performance", async () => {
       : undefined;
     server = await createServer({
       configFile: false,
-      root: join(root, "web"),
+      root: join(root, "workspaces/client/apps/web"),
       server: { host: "127.0.0.1", port: 0 },
       plugins: oldClient
         ? [

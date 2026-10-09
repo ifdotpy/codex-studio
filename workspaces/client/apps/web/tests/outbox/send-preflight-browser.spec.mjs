@@ -18,7 +18,7 @@ test("send-preflight-browser", async ({ page: fixturePage }) => {
   const temporary = await mkdtemp(join(tmpdir(), "studio-send-preflight-"));
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
     optimizeDeps: { include: ["react"] },
     server: { host: "127.0.0.1", port: 0, hmr: false },

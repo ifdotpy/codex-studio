@@ -20,7 +20,7 @@ test("terminal-input-recovery-browser", async ({ page: fixturePage }) => {
   );
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: temporary,
     optimizeDeps: {
       include: [
