@@ -168,8 +168,11 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
     await entitySync.update(snapshot, { origin: url, token: snapshot.token });
     await route.fulfill({
       json: entityMutationFixtureResponse(snapshot, {
+        id: body.request_id,
+        leadId: body.id,
         status: "pending",
         targetAccountKey: body.account_key,
+        scope: body.scope || "subagents",
       }),
     });
   });
@@ -305,14 +308,14 @@ test("settings-ux-ui", async ({ page: fixturePage }) => {
   await subagentTransferResponse;
   await defaults
     .getByRole("status")
-    .filter({ hasText: /^Saved/ })
+    .filter({ hasText: /^Account transfer accepted\./ })
     .waitFor();
   assert.equal(transferCalls, 3);
   assert.ok(transferRequests[1].request_id);
   assert.equal(transferRequests[1].request_id, transferRequests[2].request_id);
   assert.equal(transferRequests[2].account_key, "work");
   assert.equal(transferRequests[2].scope, "subagents");
-  assert.equal(await subagentAccount.getAttribute("data-value"), "work");
+  await expect(subagentAccount).toHaveAttribute("data-value", "work");
   await page.keyboard.press("Escape");
   await page
     .getByRole("dialog", { name: "Chat settings", exact: true })

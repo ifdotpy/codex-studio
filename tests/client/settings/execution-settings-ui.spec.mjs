@@ -438,13 +438,9 @@ test("execution settings ui", async ({ browser: _browser }) => {
     );
     await selectModel(defaultModel, "test-slow");
     assert.ok((await slowModelSaved).ok());
-    assert.equal(
-      await dialog
-        .getByRole("button", { name: "Fast mode", exact: true })
-        .count(),
-      0,
-      "Unsupported modes stay hidden",
-    );
+    await dialog
+      .getByRole("button", { name: "Fast mode", exact: true })
+      .waitFor({ state: "hidden" });
     await dialog
       .getByRole("status")
       .filter({ hasText: "Fast mode is unavailable and was turned off" })

@@ -364,6 +364,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
         await confirmation
           .getByRole("button", { name: "Revoke", exact: true })
           .click();
+        await expect(confirmation).toBeHidden();
         await expect(
           settings.locator("[data-settings-server=third]"),
         ).toContainText("Revoked");
@@ -445,6 +446,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
         await settings
           .getByRole("button", { name: "Close", exact: true })
           .click();
+        await expect(settings).toBeHidden();
       }
       await page.locator('[data-server="local"] .server-chat').click();
       await page

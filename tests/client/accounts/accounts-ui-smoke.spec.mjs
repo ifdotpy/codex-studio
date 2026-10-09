@@ -1858,7 +1858,10 @@ async function runAccountsUi(mode, { page: fixturePage }) {
       exact: true,
     });
     await archivedSignIn
-      .getByText("Use your Claude subscription for", { exact: false })
+      .getByText(archivedClaude.email, { exact: true })
+      .waitFor();
+    await archivedSignIn
+      .getByText("Claude subscription", { exact: true })
       .waitFor();
     await archivedSignIn
       .getByRole("button", { name: "Start sign-in", exact: true })

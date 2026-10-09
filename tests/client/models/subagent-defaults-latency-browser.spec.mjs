@@ -187,7 +187,10 @@ test("Subagent defaults latency @performance", async ({ context }) => {
         .accountKey;
     }, lead.id);
   } else {
-    await saved().waitFor();
+    await dialog
+      .getByRole("status")
+      .filter({ hasText: /^Account transfer accepted\./ })
+      .waitFor();
   }
   timings.accountSavedMs = Math.round(performance.now() - accountStart);
   if (timings.transferResponseAt)

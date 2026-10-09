@@ -4,6 +4,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { fileURLToPath } from "node:url";
 import {
   appendFileSync,
@@ -14,6 +15,7 @@ import {
   readFileSync,
   rmSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
 import { choosePlaywrightScratchRoot } from "./scratch-root.mjs";
 import { browserExecutablePath } from "./browser-executable.mjs";
@@ -680,10 +682,29 @@ export function spawnFixture(command, args, options) {
 
   const fixtureScratch = mkdtempSync(join(playwrightScratch.root, "fixture-"));
   const home = join(fixtureScratch, "home");
+  const inheritedCodexHome = options?.env?.CODEX_HOME;
+  const parentCodexHome =
+    process.env.CODEX_HOME || join(process.env.HOME || homedir(), ".codex");
+  // Callers that explicitly pass a separate CODEX_HOME own its contents. A
+  // value copied from the parent environment is not an explicit fixture
+  // profile: never expose the host's installed plugins or account config to a
+  // spawned test backend.
+  const ownsCodexHome = !(
+    typeof inheritedCodexHome === "string" &&
+    resolve(inheritedCodexHome) !== resolve(parentCodexHome)
+  );
+  const codexHome = ownsCodexHome
+    ? join(fixtureScratch, "codex-home")
+    : inheritedCodexHome;
   const state = join(fixtureScratch, "state");
   const cache = join(fixtureScratch, "cache");
-  for (const directory of [home, state, cache])
+  for (const directory of [home, codexHome, state, cache])
     mkdirSync(directory, { recursive: true });
+  if (ownsCodexHome)
+    writeFileSync(
+      join(codexHome, "config.toml"),
+      '[plugins."chrome@openai-bundled"]\nenabled = false\n',
+    );
   const child = spawn(
     isPythonCommand(command) ? fixturePythonCommand : command,
     args,
@@ -694,6 +715,7 @@ export function spawnFixture(command, args, options) {
         ...options?.env,
         TMPDIR: playwrightScratch.root,
         HOME: home,
+        CODEX_HOME: codexHome,
         XDG_STATE_HOME: state,
         XDG_CACHE_HOME: cache,
       },
