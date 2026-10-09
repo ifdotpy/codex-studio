@@ -77,7 +77,7 @@ test("accounts settings show per-server state and provider choices", async ({
       },
     },
   );
-  await page.goto(local.origin);
+  await page.goto(local.origin + "/?studio-navigation=combined");
   await page.locator("#message").waitFor();
   let pairedOneServer = false;
   const pair = async (server) => {
@@ -133,10 +133,8 @@ test("accounts settings show per-server state and provider choices", async ({
     '[data-account-identity="codex:person@example.test"]',
   );
   await expect(work).toBeVisible();
-  await expect(work.getByText("Default · This computer")).toBeVisible();
-  await expect(
-    work.getByRole("button", { name: "✓ This computer" }),
-  ).toBeVisible();
+  await expect(work.getByText("Default · Local")).toBeVisible();
+  await expect(work.getByRole("button", { name: "✓ Local" })).toBeVisible();
   await expect(
     work.getByRole("button", { name: /sign in again/ }),
   ).toBeVisible();

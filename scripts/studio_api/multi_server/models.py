@@ -15,6 +15,10 @@ class ServerIdentity(ContractModel):
     tailscaleUser: str | None
 
 
+class ServerIdentityResponse(ServerIdentity, ResponseModel):
+    pass
+
+
 class AccessInvitation(ContractModel):
     protocol: Literal[1]
     inviteId: str = Field(min_length=1, max_length=128)
@@ -81,7 +85,7 @@ class AccessAudit(ContractModel):
     sequence: int
     clientId: str
     actorId: str
-    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias"]
+    action: Literal["create_invite", "pair", "revoke", "accept_invite", "auto_pair", "unrevoke", "settings", "alias", "name"]
     created: float
 
 
@@ -131,6 +135,18 @@ class SetServerAlias(ContractModel):
     requestId: str = Field(min_length=1, max_length=128)
 
 
+class SetServerName(ContractModel):
+    action: Literal["name"]
+    serverId: str = Field(min_length=1, max_length=128)
+    label: str = Field(min_length=1, max_length=80)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
+class RenameServer(ContractModel):
+    label: str = Field(min_length=1, max_length=80)
+    requestId: str = Field(min_length=1, max_length=128)
+
+
 class UnrevokeServer(ContractModel):
     action: Literal["unrevoke"]
     clientId: str = Field(min_length=1, max_length=128)
@@ -146,7 +162,7 @@ class AutoPairRequest(ContractModel):
     requestId: str = Field(min_length=1, max_length=128)
 
 
-ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer | SetServerAlias, Field(discriminator="action")]
+ManagementRequest: TypeAlias = Annotated[CreateInvite | RevokeClient | AcceptInvite | DiscoverServers | UiInvite | SetAccessSettings | UnrevokeServer | SetServerAlias | SetServerName, Field(discriminator="action")]
 
 
 class DevicePairRequest(ContractModel):

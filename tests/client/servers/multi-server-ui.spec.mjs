@@ -448,7 +448,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       }
       await page.locator('[data-server="local"] .server-chat').click();
       await page
-        .frameLocator('iframe[title="Studio on This computer"]')
+        .frameLocator('iframe[title="Studio on Local"]')
         .locator("#message")
         .fill(`idle draft ${count}`);
       await page
@@ -496,9 +496,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       }
     }
     await page.locator('[data-server="local"] .server-chat').click();
-    const localFrame = page.frameLocator(
-      'iframe[title="Studio on This computer"]',
-    );
+    const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
     const remoteFrame = page.frameLocator('iframe[title="Studio on Remote"]');
     const timeOrigins = await Promise.all(
       page
@@ -563,7 +561,7 @@ test("one UI routes overlapping chats to two and three signed servers without re
       ),
     ).toEqual([
       "Third: Third chat: Reply ready",
-      "This computer: Local chat: Reply ready",
+      "Local: Local chat: Reply ready",
     ]);
     await remoteFrame.locator("#message").press("Control+k");
     await expect(

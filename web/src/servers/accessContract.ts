@@ -41,6 +41,7 @@ export type ServerAccessRequest =
   | { action: "discover"; requestId: string }
   | { action: "ui_invite"; serverId: string; requestId: string }
   | { action: "settings"; autoPair: boolean; requestId: string }
+  | { action: "name"; serverId: string; label: string; requestId: string }
   | { action: "alias"; serverId: string; alias: string; requestId: string };
 export type ServerAccessResponse =
   | ServerAccessState

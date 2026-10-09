@@ -803,10 +803,11 @@ export default function App() {
       })),
     [accounts.data.accounts],
   );
-  const accountServer = useMemo(
+  const cachedAccountServer = useMemo(
     () => (serverViewId ? viewServer(serverViewId) : localServer()),
     [],
   );
+  const accountServer = serverSettings?.server || cachedAccountServer;
   const accountKey =
     agent?.accountKey ||
     lead?.accountKey ||
@@ -1876,7 +1877,7 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           initialPath={target.cwd ?? undefined}
-          serverChoices={[{ id: "local", label: "This Mac" }]}
+          serverChoices={[{ id: "local", label: accountServer.label }]}
           showServerSelector={false}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
