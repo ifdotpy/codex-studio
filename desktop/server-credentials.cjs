@@ -6,7 +6,7 @@ function serveOrigin(value) {
   if (
     url.protocol !== "https:" ||
     !url.hostname.endsWith(".ts.net") ||
-    url.port ||
+    url.port === "0" ||
     url.username ||
     url.password ||
     url.pathname !== "/" ||

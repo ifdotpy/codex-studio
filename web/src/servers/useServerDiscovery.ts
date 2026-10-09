@@ -176,15 +176,17 @@ export function useServerDiscovery(
     busyRef.current = true;
     setBusy(true);
     setError("");
+    let confirmed = false;
     try {
       await management.run(request);
+      confirmed = true;
       // A retry receipt contains the original snapshot. Read the current state.
       if (loading.current) await loading.current;
       await load();
       return true;
     } catch (failure) {
       setError(errorText(failure));
-      return false;
+      return confirmed;
     } finally {
       try {
         setPending(management.pending()[0] || null);

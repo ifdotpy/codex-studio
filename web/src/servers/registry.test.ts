@@ -4,12 +4,19 @@ it("accepts only a Tailscale Serve HTTPS origin without credentials or paths", (
   expect(serveOrigin("https://computer.tailnet.ts.net/")).toBe(
     "https://computer.tailnet.ts.net",
   );
+  expect(serveOrigin("https://computer.tailnet.ts.net:8443/")).toBe(
+    "https://computer.tailnet.ts.net:8443",
+  );
+  expect(serveOrigin("https://computer.tailnet.ts.net:443/")).toBe(
+    "https://computer.tailnet.ts.net",
+  );
   for (const address of [
     "http://computer.tailnet.ts.net",
     "https://public.example",
     "https://name.ts.net.attacker.test",
     "https://user:secret@computer.tailnet.ts.net",
-    "https://computer.tailnet.ts.net:444",
+    "https://computer.tailnet.ts.net:0",
+    "https://computer.tailnet.ts.net:65536",
     "https://computer.tailnet.ts.net/path",
     "https://computer.tailnet.ts.net/?key=secret",
   ])

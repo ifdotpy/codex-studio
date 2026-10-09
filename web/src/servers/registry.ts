@@ -21,7 +21,7 @@ export function serveOrigin(value: string) {
     !url.hostname.endsWith(".ts.net") ||
     url.username ||
     url.password ||
-    url.port ||
+    url.port === "0" ||
     url.pathname !== "/" ||
     url.search ||
     url.hash
