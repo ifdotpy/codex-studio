@@ -1,3 +1,4 @@
+import { accountCanStart } from "../accountName";
 import { ProviderMark, setupAccountName } from "./AccountTiles";
 import { Button, NativeSelect, Popover, TextInput } from "@mantine/core";
 import { useEffect, useRef, useState } from "react";
@@ -44,8 +45,8 @@ function ParticipantFields({
   const catalog = useWorkerModels(value.account_key, !!value.account_key);
   const [opened, setOpened] = useState(false);
   const trigger = useRef<HTMLButtonElement>(null);
-  const readyAccounts = accounts.accounts.filter(
-    (account) => !account.disconnected && account.status === "ready",
+  const readyAccounts = accounts.accounts.filter((account) =>
+    accountCanStart(account),
   );
   const account = accounts.accounts.find(
     (item) => item.id === value.account_key,
@@ -207,9 +208,7 @@ export default function SharedChatCreate({
       "",
   );
   const [name, setName] = useState<string>(attempt?.body.name || "");
-  const readyAccounts = accounts.accounts.filter(
-    (a) => a.status === "ready" && !a.disconnected,
-  );
+  const readyAccounts = accounts.accounts.filter((a) => accountCanStart(a));
   const first =
     readyAccounts.find((a) => a.id === accounts.defaultAccountKey) ||
     readyAccounts[0];

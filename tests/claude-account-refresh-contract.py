@@ -17,6 +17,8 @@ SDK = f.SDK.replace('let abort=new AbortController();', '''let abort=new AbortCo
  const cachedAccount=fs.existsSync(options.cwd+'/.cached-account.json')
   ?JSON.parse(fs.readFileSync(options.cwd+'/.cached-account.json','utf8'))
   :{email:'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty',apiKeySource:'none'};''')
+SDK = SDK.replace("export function query({prompt,options}){", r"""export function query({prompt,options}){
+ fs.appendFileSync(options.cwd+'/.all-queries','query\n');""")
 SDK = SDK.replace("return {email:fs.existsSync(options.cwd+'/.wrong-account')?'different@example.test':'test@example.test',subscriptionType:'Claude Max',apiProvider:'firstParty'};", 'return cachedAccount;')
 SDK = SDK.replace('initializationResult:async()=>', r'''reinitialize:async()=>{
   fs.appendFileSync(options.cwd+'/.account-refreshes','fresh\n');
@@ -26,12 +28,14 @@ SDK = SDK.replace('initializationResult:async()=>', r'''reinitialize:async()=>{
    while(!fs.existsSync(options.cwd+'/.refresh-release'))await new Promise(resolve=>setTimeout(resolve,5));
   }
   if(fs.existsSync(options.cwd+'/.refresh-throw'))throw new Error('The fixture account read failed');
-  return {account:fs.existsSync(options.cwd+'/.fresh-account.json')?JSON.parse(fs.readFileSync(options.cwd+'/.fresh-account.json','utf8')):cachedAccount};
+  return {models:[{value:'haiku',displayName:'Haiku',resolvedModel:'claude-haiku-fixture'}],account:fs.existsSync(options.cwd+'/.fresh-account.json')?JSON.parse(fs.readFileSync(options.cwd+'/.fresh-account.json','utf8')):cachedAccount};
  },initializationResult:async()=>''')
 
 
 class FreshAccount(f.PreAdmission):
     def setUp(self):
+        if self._testMethodName == 'test_passive_read_and_background_refresh_never_spawn_a_query':
+            self.catalog_refresh_ms = 40
         before = f.SDK
         f.SDK = (SDK.replace('reinitialize:async()=>', 'unavailableReinitialize:async()=>')
                  if self._testMethodName == 'test_sdk_without_fresh_control_keeps_not_applied' else SDK)
@@ -39,6 +43,36 @@ class FreshAccount(f.PreAdmission):
             super().setUp()
         finally:
             f.SDK = before
+
+    def test_passive_read_and_background_refresh_never_spawn_a_query(self):
+        with self.assertRaisesRegex(ValueError, 'Fresh Claude account proof'):
+            self.call('account/read', {'passive': True})
+        self.assertFalse((self.root / 'state' / '.all-queries').exists())
+        self.call('model/list', {})
+        self.assertEqual(self.call('account/read', {'passive': True})['account']['email'], NORMAL['email'])
+        self.accounts({key: value for key, value in NORMAL.items() if key != 'email'}, NORMAL)
+        self.turn('steer', 'held-input')
+        self.wait_file(self.root / '.admitted-inputs')
+        self.wait_file(self.root / '.account-refreshes')
+        deadline = time.monotonic() + 2
+        while len(self.refreshes()) < 2 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertGreaterEqual(len(self.refreshes()), 2)
+        self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
+        self.assertEqual(len((self.root / 'state' / '.all-queries').read_text().splitlines()), 1)
+        self.assertEqual(self.call('account/read', {'passive': True})['account']['email'], NORMAL['email'])
+        self.assertEqual(self.call('model/list', {})['data'][0]['resolvedModel'], 'claude-haiku-fixture')
+        self.assertEqual(len(self.admissions()), 1)
+        (self.root / '.fresh-account.json').write_text(json.dumps({**NORMAL, 'email': 'foreign@example.test'}))
+        self.call('account/read', {'passive': True})
+        deadline = time.monotonic() + 2
+        while len(self.refreshes()) < 3 and time.monotonic() < deadline:
+            time.sleep(.01)
+        self.assertGreaterEqual(len(self.refreshes()), 3)
+        with self.assertRaisesRegex(ValueError, 'Fresh Claude account proof'):
+            self.call('account/read', {'passive': True})
+        self.assertEqual(len((self.root / '.all-queries').read_text().splitlines()), 1)
+        self.assertEqual(len(self.admissions()), 1)
 
     def accounts(self, cached, fresh):
         (self.root / '.cached-account.json').write_text(json.dumps(cached))

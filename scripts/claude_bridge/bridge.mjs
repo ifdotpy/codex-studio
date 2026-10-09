@@ -400,15 +400,51 @@ async function probe(cwd, read, phase = "metadata") {
   }
 }
 const catalogCache = createCatalogCache({
-  load: () =>
-    probe(
+  load: async (background) => {
+    const live = [...queries.values()].find((active) => active.q);
+    if (live) {
+      const q = live.q;
+      const startedAt = Date.now();
+      const deadline = startedAt + PREPARATION_TIMEOUT_MS;
+      const prior = live.accountProof;
+      if (!prior || live.accountProofQuery !== q)
+        throw new Error("Verified Claude query metadata is pending");
+      if (typeof q.reinitialize !== "function")
+        throw new Error("Fresh Claude account control is unavailable");
+      // Refresh the same process. A metadata timer must not spawn a CLI.
+      const fresh = await boundedPreparation(
+        () => q.reinitialize(),
+        deadline,
+        () => {},
+        startedAt,
+        "catalog_account_reinitialize",
+      );
+      checkAccount(fresh?.account);
+      if (
+        fresh.account.subscriptionType !== prior.subscriptionType ||
+        fresh.account.apiKeySource !== prior.apiKeySource
+      )
+        throw Object.assign(new Error("Claude subscription metadata changed"), {
+          claudeAccountValidationFailed: true,
+        });
+      if (![...queries.values()].includes(live) || live.q !== q)
+        throw new Error("Claude query changed during metadata refresh");
+      if (!Array.isArray(fresh.models))
+        throw new Error("Fresh Claude model metadata is unavailable");
+      live.accountProof = fresh.account;
+      return { models: fresh.models, account: fresh.account };
+    }
+    if (background)
+      throw new Error("No live Claude query can refresh account metadata");
+    return probe(
       null,
       async (q, account) => ({
         models: await q.supportedModels(),
         account,
       }),
       "catalog",
-    ),
+    );
+  },
   isActive: () =>
     [...queries.values()].some((active) => active.turn || active.tasks.size),
 });
@@ -954,7 +990,12 @@ async function startSession(s, active, p) {
     });
     active.q = q;
     active.toolsIdentity = JSON.stringify(s.dynamicTools || []);
-    await verifiedAccount(q, deadline, () => q.close(), startedAt);
+    const accountProof = await verifiedAccount(
+      q,
+      deadline,
+      () => q.close(),
+      startedAt,
+    );
     if (
       initial?.interrupted ||
       active.input.closed ||
@@ -974,6 +1015,8 @@ async function startSession(s, active, p) {
           },
         },
       );
+    active.accountProof = accountProof;
+    active.accountProofQuery = q;
     allowed = true;
     admit();
     active.readyResolve();
@@ -1463,7 +1506,7 @@ async function handle(method, p) {
     return {
       userAgent: "studio-claude-bridge",
       platform: process.platform,
-      capabilities: { claudeVersion: 21 },
+      capabilities: { claudeVersion: 22, passiveAccountRead: true },
     };
   if (method === "initialized") return {};
   if (method === "model/list") {
@@ -1505,7 +1548,8 @@ async function handle(method, p) {
     };
   }
   if (method === "account/read") {
-    const { account } = await catalog();
+    const { account } =
+      p.passive === true ? catalogCache.peek() : await catalog();
     return {
       account: {
         type: "claude",

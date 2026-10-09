@@ -217,7 +217,7 @@ def action(rt, body):
 def retire_idle_bridge(rt, key, account, server):
     """Retire only an idle native process; Runtime.connect holds start_lock."""
     version = getattr(server, 'initialize_result', {}).get('capabilities', {}).get('claudeVersion')
-    if version == 21 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
+    if version == 22 and getattr(server, 'provider_options', {}) == account.get('claudeOptions', {}):
         return False
 
     def eligible(db):

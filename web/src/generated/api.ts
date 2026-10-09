@@ -2348,6 +2348,8 @@ export interface components {
       accountId?: string | null;
       /** Authenticationrecovery */
       authenticationRecovery?: string | null;
+      /** Canattemptnativeproof */
+      canAttemptNativeProof?: boolean | null;
       claudeOptions?: components["schemas"]["ClaudeOptions"] | null;
       /** Deleted */
       deleted?: boolean | null;

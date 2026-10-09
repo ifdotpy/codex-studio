@@ -112,6 +112,11 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         self.binary.chmod(0o700)
         self.installed = patch('codex_claude.installed', return_value=str(self.binary))
         self.installed.start()
+        native_reader = codex_claude._auth_status
+        self.auth_reader = patch('codex_claude._auth_status',
+            side_effect=lambda executable, env, interactive=False:
+                native_reader(executable, env, interactive=True))
+        self.auth_reader.start()
         self.profile = {'provider':'claude', 'email':'expected@example.com', 'accountId':'claude:expected@example.com',
                         'claudeOptions':{'configDir':str(self.config), 'binaryPath':str(self.binary)}}
         self.rt = SimpleNamespace(root=self.root, accounts=Accounts(self.profile), lock=threading.RLock())
@@ -135,6 +140,7 @@ email = 'wrong@example.com' if code == 'wrong' else 'expected@example.com'
         time.sleep(.05)
         self.temp.cleanup()
         self.installed.stop()
+        self.auth_reader.stop()
 
     def start(self):
         rid = str(uuid.uuid4())

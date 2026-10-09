@@ -62,6 +62,7 @@ class Account(ContractModel):
     duplicateOf: str | None = None
     claudeOptions: ClaudeOptions | None = None
     authenticationRecovery: str | None = None
+    canAttemptNativeProof: bool | None = None
 
 
 class CodexLoginReceipt(ContractModel):

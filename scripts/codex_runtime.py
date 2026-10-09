@@ -1566,6 +1566,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise RuntimeError("Another canvas runtime owns this state directory")
         try:
             self.accounts = AccountStore(self.root)
+            self.accounts.native_auth_proof = self.claude_native_auth_proof
         except Exception:
             flock(self.lease, LOCK_UN)
             self.lease.close()
@@ -3575,7 +3576,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise RuntimeError("Runtime is stopped")
         account = self.accounts.get(account_key)
         provider = account.get("provider", "codex")
-        if provider == "claude" and account.get("status") != "ready":
+        native_auth_pending = (provider == "claude" and account.get("status") != "ready"
+                               and self.accounts.allow_native_auth_attempt(account_key, account))
+        if provider == "claude" and account.get("status") != "ready" and not native_auth_pending:
             raise ValueError(account.get("error") or "Sign in with claude auth login first")
         home = self.accounts.home(account_key, for_login=for_login) if self.factory is AppServer and provider != "claude" else None
         if provider == "codex":
@@ -3632,7 +3635,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         if self.factory is AppServer:
                             server = self.factory(root, *callbacks, home=home,
                                                   isolated=account_key != "default", provider=provider,
-                                                  provider_options=account if provider == "claude" else None,
+                                                  provider_options=({**account, '_nativeAuthPending': native_auth_pending}
+                                                                    if provider == "claude" else None),
                                                   executable=selected["path"] if selected else None,
                                                   supervisor_handle="account:" + account_key,
                                                   supervisor_root=self.root,
@@ -3668,6 +3672,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                             raise RuntimeError("Runtime is stopped")
                         startup_memory_mark("account-server-start:" + account_key)
             if not needs_executable:
+                if native_auth_pending and self.claude_native_auth_proof(account_key, account, passive=False) is None:
+                    raise ValueError('Cannot verify the original Claude account before task input')
                 if desktop_changed:
                     self.refresh_workspace_volatile()
                     self._publish_desktop_resource()
@@ -3675,6 +3681,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if needs_executable:
                 from codex_native_runtime import executable_for
                 selected = executable_for(self, account_key=account_key, home=home)
+
+    def claude_native_auth_proof(self, account_key, observed, *, passive=True):
+        # Passive refresh can read a live bridge, but cannot start a credential reader.
+        with self.start_lock:
+            server = self.servers.get(account_key)
+            generation = self.connection_ids.get(account_key)
+            if (self.closed or server is None or getattr(server, 'closed', False)
+                    or not self.accounts.allow_native_auth_attempt(account_key, observed)):
+                return None
+        if passive and getattr(server, 'initialize_result', {}).get('capabilities', {}).get('passiveAccountRead') is not True:
+            return None
+        proof = server.call('account/read', {'passive': True} if passive else {}, timeout=10 if passive else 65)
+        with self.start_lock:
+            if (self.closed or self.servers.get(account_key) is not server
+                    or self.connection_ids.get(account_key) != generation
+                    or getattr(server, 'closed', False)):
+                raise ValueError('The native Claude connection changed during account verification')
+            return self.accounts.confirm_native_auth(account_key, observed, proof)
 
     def _publish_desktop_resource(self) -> None:
         from studio_api.sync.resources.models import DesktopResource, ResourceRef
@@ -4560,7 +4584,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 raise ValueError("This account was deleted. Select another account for new chats")
             if account.get("disconnected"):
                 raise ValueError("Reconnect this account before creating a chat")
-            if p and account_key != p.get("accountKey", "default") and account.get("status") != "ready":
+            if (p and account_key != p.get("accountKey", "default") and account.get("status") != "ready"
+                    and not self.accounts.allow_native_auth_attempt(account_key, account)):
                 raise ValueError("Sign in to the worker account before creating a worker")
             is_lead = p is None and role == "orchestrator"
             provider = account.get("provider", "codex")

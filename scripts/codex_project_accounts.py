@@ -24,7 +24,7 @@ def set_project_accounts(runtime: "Runtime", data: dict[str, object]) -> "Projec
         raise ValueError("Supply the current project account revision")
     accounts = {key: runtime.accounts.get(key) for key in keys}
     for key in keys:
-        if accounts[key]["status"] != "ready":
+        if accounts[key]["status"] != "ready" and not runtime.accounts.allow_native_auth_attempt(key, accounts[key]):
             raise ValueError("Sign in to the selected project accounts first")
     with runtime.lock, runtime.db() as db:
         db.execute("BEGIN IMMEDIATE")
