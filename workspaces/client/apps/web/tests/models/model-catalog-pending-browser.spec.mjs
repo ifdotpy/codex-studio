@@ -44,7 +44,7 @@ test("Model Catalog Pending Browser", async ({
   );
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: temporary,
     optimizeDeps: {
       include: ["react", "react-dom/client", "react/jsx-dev-runtime"],

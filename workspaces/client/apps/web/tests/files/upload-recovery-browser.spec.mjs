@@ -16,7 +16,7 @@ test("upload recovery browser", async ({ browser }) => {
   const cache = await mkdtemp(join(tmpdir(), "studio-upload-recovery-"));
   const server = await createServer({
     configFile: false,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: { include: ["react", "react-dom/client"] },
     server: { host: "127.0.0.1", port: 0, hmr: false },

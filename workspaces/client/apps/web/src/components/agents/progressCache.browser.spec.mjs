@@ -8,7 +8,7 @@ test("progress cache retains good content through a panel read error", async ({
   browser,
 }) => {
   const repo = join(import.meta.dirname, "../../../../../../../");
-  const webRoot = join(repo, "web");
+  const webRoot = join(repo, "workspaces/client/apps/web");
   const require = createRequire(join(webRoot, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-error-"));

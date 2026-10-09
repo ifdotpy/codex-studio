@@ -66,7 +66,7 @@ test("Structured operational errors ui", async ({
   `;
   const server = await createServer({
     configFile: false,
-    root: join(root, "web"),
+    root: join(root, "workspaces/client/apps/web"),
     cacheDir: join(temporary, "vite"),
     plugins: [
       {

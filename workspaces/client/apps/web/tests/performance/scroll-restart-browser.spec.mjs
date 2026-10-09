@@ -22,7 +22,7 @@ test("Scroll restart", async () => {
   const cache = await mkdtemp(join(tmpdir(), "studio-scroll-restart-"));
   const server = await createServer({
     configFile: false,
-    root: join(repo, "web"),
+    root: join(repo, "workspaces/client/apps/web"),
     cacheDir: cache,
     optimizeDeps: {
       noDiscovery: true,

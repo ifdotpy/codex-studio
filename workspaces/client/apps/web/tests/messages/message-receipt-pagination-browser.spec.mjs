@@ -213,7 +213,7 @@ test("Message receipt pagination browser", async ({
 
     server = await createServer({
       configFile: false,
-      root: join(repo, "web"),
+      root: join(repo, "workspaces/client/apps/web"),
       cacheDir: join(temporary, "vite"),
       optimizeDeps: { include: ["rxdb", "rxjs"] },
       server: {

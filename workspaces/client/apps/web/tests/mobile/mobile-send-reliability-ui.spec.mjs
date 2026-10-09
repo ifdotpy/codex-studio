@@ -48,7 +48,7 @@ test("mobile-send-reliability-ui", async ({ browser }) => {
     const target = `http://127.0.0.1:${port}`;
     server = await createServer({
       configFile: false,
-      root: join(root, "web"),
+      root: join(root, "workspaces/client/apps/web"),
       cacheDir: join(temporary, "vite"),
       server: {
         host: "127.0.0.1",
