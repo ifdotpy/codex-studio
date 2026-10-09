@@ -14,13 +14,7 @@ const packageOutput = path.resolve(
 const uiOnly =
   process.argv.includes("--ui-only") ||
   process.env.CODEX_DESKTOP_UI_ONLY === "1";
-const hostPlatform = process.platform;
-const hostArchitecture = process.arch;
-if (!uiOnly && hostPlatform !== "darwin")
-  throw new Error("A full desktop artifact currently requires macOS.");
-if (uiOnly && !["darwin", "linux"].includes(hostPlatform))
-  throw new Error("UI-only desktop packaging supports macOS and Linux.");
-const identity = hostPlatform === "darwin" ? signingIdentity() : undefined;
+const identity = signingIdentity();
 const rendererDist = path.join(
   repositoryRoot,
   "workspaces/client/apps/web/dist",
@@ -36,26 +30,23 @@ const bridgeSource = path.join(
 await access(path.join(rendererDist, "index.html"));
 const stage = await mkdtemp(path.join(tmpdir(), "codex-desktop-package-"));
 try {
-  let speech;
-  if (hostPlatform === "darwin") {
-    speech = path.join(stage, "studio-speech");
-    execFileSync("xcrun", [
-      "swiftc",
-      path.join(root, "native/speech.swift"),
-      "-O",
-      "-o",
-      speech,
-      "-Xlinker",
-      "-sectcreate",
-      "-Xlinker",
-      "__TEXT",
-      "-Xlinker",
-      "__info_plist",
-      "-Xlinker",
-      path.join(root, "native/speech-info.plist"),
-    ]);
-    signCode(speech, identity);
-  }
+  const speech = path.join(stage, "studio-speech");
+  execFileSync("xcrun", [
+    "swiftc",
+    path.join(root, "native/speech.swift"),
+    "-O",
+    "-o",
+    speech,
+    "-Xlinker",
+    "-sectcreate",
+    "-Xlinker",
+    "__TEXT",
+    "-Xlinker",
+    "__info_plist",
+    "-Xlinker",
+    path.join(root, "native/speech-info.plist"),
+  ]);
+  signCode(speech, identity);
   const linuxVM = uiOnly
     ? undefined
     : buildLinuxVM(path.join(stage, "studio-linux-vm"), identity);
@@ -86,10 +77,20 @@ try {
         "studio-claude-bridge",
         "--prod",
         "deploy",
+        "--no-optional",
+        "--ignore-scripts",
+        "--node-linker=hoisted",
         path.join(resources, "scripts/claude_bridge"),
       ],
-      { cwd: repositoryRoot, stdio: "inherit" },
+      {
+        cwd: repositoryRoot,
+        stdio: "inherit",
+      },
     );
+    await rm(path.join(resources, "scripts/claude_bridge/node_modules/.bin"), {
+      recursive: true,
+      force: true,
+    });
     await cp(
       bridgeSource,
       path.join(resources, "workspaces/providers/apps/claude-bridge"),
@@ -150,13 +151,11 @@ try {
     dir: root,
     name: "Codex Studio",
     executableName: "Codex Studio",
-    ...(hostPlatform === "darwin"
-      ? { icon: path.join(root, "assets/codex-studio.icns") }
-      : {}),
+    icon: path.join(root, "assets/codex-studio.icns"),
     appBundleId: "local.codex.agents",
     appCategoryType: "public.app-category.developer-tools",
-    platform: hostPlatform === "darwin" ? "darwin" : "linux",
-    arch: hostPlatform === "darwin" ? "arm64" : hostArchitecture,
+    platform: "darwin",
+    arch: "arm64",
     electronVersion: "44.2.0",
     out: packageOutput,
     overwrite: true,
@@ -164,7 +163,7 @@ try {
     prune: true,
     extraResource: [
       resources,
-      ...(speech ? [speech] : []),
+      speech,
       ...(uiOnly ? [] : [linuxVM, path.join(root, "recover_backend.py")]),
     ],
     extendInfo: {
@@ -187,10 +186,8 @@ try {
     ],
   });
   for (const directory of output) {
-    if (hostPlatform === "darwin") {
-      const application = path.join(directory, "Codex Studio.app");
-      signApplication(application, identity);
-    }
+    const application = path.join(directory, "Codex Studio.app");
+    signApplication(application, identity);
   }
   console.log(output.join("\n"));
 } finally {
