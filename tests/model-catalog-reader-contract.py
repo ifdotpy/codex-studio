@@ -117,7 +117,10 @@ class ReaderContract(unittest.TestCase):
         return reader.read_model_catalog(self.home, isolated=True, executable=str(self.binary), **kwargs)
 
     def assert_reaped(self):
-        pid = int((self.home / 'pid').read_text())
+        pid_file = self.home / 'pid'
+        if not pid_file.exists():
+            return
+        pid = int(pid_file.read_text())
         if os.name == 'nt':
             import ctypes
             from ctypes import wintypes
