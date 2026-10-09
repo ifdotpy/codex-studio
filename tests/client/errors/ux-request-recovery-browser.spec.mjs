@@ -344,11 +344,18 @@ test("Ux request recovery browser", async ({
           assert.equal(text.includes("0 waiting"), false);
           assert.match(text, /History transfer in progress: 1 remaining/);
         } else if (mode === "unready") {
+          await page
+            .getByRole("status")
+            .getByText("Choose an account that is ready before you save.", {
+              exact: true,
+            })
+            .waitFor();
           assert.equal(
             await page
               .getByRole("button", { name: "Save accounts", exact: true })
-              .isEnabled(),
-            false,
+              .count(),
+            0,
+            "An unchanged unready project has no save action",
           );
           await page
             .getByRole("group", { name: "Default account for new chats" })
@@ -361,6 +368,20 @@ test("Ux request recovery browser", async ({
             true,
           );
         } else {
+          if (mode === "project-account") {
+            await page
+              .getByRole("group", {
+                name: "Accounts shown first for this project",
+              })
+              .getByRole("button", {
+                name: "Select account Expired account",
+                exact: true,
+              })
+              .click();
+            await page
+              .getByRole("button", { name: "Save accounts", exact: true })
+              .waitFor({ state: "visible" });
+          }
           const name = [
             "name",
             "confirmed",
@@ -424,7 +445,9 @@ test("Ux request recovery browser", async ({
               name:
                 mode === "confirmed"
                   ? "Refresh project"
-                  : "Retry saved request",
+                  : mode === "project-account"
+                    ? "Save accounts"
+                    : "Retry saved request",
               exact: true,
             })
             .click();
