@@ -37,6 +37,16 @@ func address(_ path: String) throws -> sockaddr_un {
     return result
 }
 
+final class HostExecListener: NSObject, VZVirtioSocketListenerDelegate {
+    weak var host: Host?
+    init(host: Host) { self.host = host }
+    func listener(_ listener: VZVirtioSocketListener, shouldAcceptNewConnection connection: VZVirtioSocketConnection) -> Bool {
+        guard let host = host, host.channels.wait(timeout: .now()) == .success else { return false }
+        DispatchQueue.global().async { host.connectHostExec(connection) }
+        return true
+    }
+}
+
 final class Host: NSObject, VZVirtualMachineDelegate {
     let directory: URL
     var vm: VZVirtualMachine?
@@ -47,6 +57,8 @@ final class Host: NSObject, VZVirtualMachineDelegate {
     var config: [String: Any] = [:]
     let channels = DispatchSemaphore(value: 64)
     let consoleQueue = DispatchQueue(label: "studio.vm.console")
+    var hostExecListener: VZVirtioSocketListener?
+    var hostExecDelegate: HostExecListener?
 
     init(directory: URL) { self.directory = directory }
     func boot() throws {
@@ -121,6 +133,14 @@ final class Host: NSObject, VZVirtualMachineDelegate {
         try configuration.validate()
         vm = VZVirtualMachine(configuration: configuration)
         vm!.delegate = self
+        if let device = vm!.socketDevices.first as? VZVirtioSocketDevice {
+            let listener = VZVirtioSocketListener()
+            let delegate = HostExecListener(host: self)
+            listener.delegate = delegate
+            hostExecListener = listener
+            hostExecDelegate = delegate
+            device.setSocketListener(listener, forPort: 4051)
+        }
         try listen(guest: false)
         try listen(guest: true)
         vm!.start { [self] result in
@@ -233,6 +253,23 @@ final class Host: NSObject, VZVirtualMachineDelegate {
                 DispatchQueue.global().async { [self] in bridge(fd, connection) }
             }
         }
+    }
+    func connectHostExec(_ connection: VZVirtioSocketConnection) {
+        let client = socket(AF_UNIX, SOCK_STREAM, 0)
+        guard client >= 0 else { connection.close(); channels.signal(); return }
+        do {
+            var addr = try address(directory.appendingPathComponent("host-exec.sock").path)
+            let connected = withUnsafePointer(to: &addr) {
+                $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                    Darwin.connect(client, $0, socklen_t(MemoryLayout<sockaddr_un>.size))
+                }
+            }
+            guard connected == 0 else { close(client); connection.close(); channels.signal(); return }
+            var timeout = timeval(tv_sec: 30, tv_usec: 0)
+            setsockopt(client, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            setsockopt(connection.fileDescriptor, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
+            bridge(client, connection)
+        } catch { close(client); connection.close(); channels.signal() }
     }
     func bridge(_ client: Int32, _ connection: VZVirtioSocketConnection) {
         defer { close(client); connection.close(); channels.signal() }
