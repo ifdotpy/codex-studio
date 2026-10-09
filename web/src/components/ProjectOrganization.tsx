@@ -23,11 +23,13 @@ export function ProjectNameForm({
   folder,
   parentId,
   saved,
+  displayPath,
 }: {
   project: Project;
   folder?: ProjectFolder | "new";
   parentId?: string;
   saved: () => Promise<void>;
+  displayPath?: string;
 }) {
   const [name, setName] = useState(
     folder === "new" ? "" : folder?.name || project.name || "",
@@ -55,7 +57,7 @@ export function ProjectNameForm({
         });
       }}
     >
-      <p className="project-directory">{project.path}</p>
+      <p className="project-directory">{displayPath || project.path}</p>
       {parentId && <p>In {folderLabel(project.folders || [], parentId)}</p>}
       <TextInput
         label={folder ? "Folder name" : "Project name"}

@@ -40,6 +40,7 @@ export type ServerNavigation = {
   }[];
   ready: boolean;
   busy?: boolean;
+  creating?: boolean;
   system?: string;
   agentsRunning?: number;
   alerts: DesktopAlert[];
@@ -51,10 +52,18 @@ export type ServerCommand =
   | {
       action: "new-chat";
       path?: string;
+      folder?: string;
       projectId?: string;
       projectServerId?: string;
     }
   | { action: "add-project" }
+  | { action: "refresh" }
+  | { action: "prepare-chat"; id: string }
+  | { action: "mark-unread"; id: string; threadId: string; turnId: string }
+  | { action: "remove-chat"; id: string; room: boolean }
+  | { action: "change-project"; id: string }
+  | { action: "project-account"; path: string }
+  | { action: "new-shared-chat"; path?: string }
   | { action: "project-folders"; projectId: string; server?: string }
   | { action: "projects" }
   | { action: "settings"; tab?: StudioSettingsTab }
@@ -179,6 +188,21 @@ export function navigationSnapshot(
 export function isServerCommand(value: unknown): value is ServerCommand {
   if (!value || typeof value !== "object") return false;
   const command = value as Record<string, unknown>;
+  if (command.action === "refresh") return true;
+  if (command.action === "prepare-chat" || command.action === "change-project")
+    return typeof command.id === "string";
+  if (command.action === "mark-unread")
+    return (
+      typeof command.id === "string" &&
+      typeof command.threadId === "string" &&
+      typeof command.turnId === "string"
+    );
+  if (command.action === "remove-chat")
+    return typeof command.id === "string" && typeof command.room === "boolean";
+  if (command.action === "project-account")
+    return typeof command.path === "string";
+  if (command.action === "new-shared-chat")
+    return command.path === undefined || typeof command.path === "string";
   if (command.action === "project-folders")
     return (
       typeof command.projectId === "string" &&
@@ -212,6 +236,7 @@ export function isServerCommand(value: unknown): value is ServerCommand {
     ? typeof command.id === "string" && !!command.id
     : command.action === "new-chat"
       ? (command.path === undefined || typeof command.path === "string") &&
+        (command.folder === undefined || typeof command.folder === "string") &&
         (command.projectId === undefined ||
           typeof command.projectId === "string") &&
         (command.projectServerId === undefined ||

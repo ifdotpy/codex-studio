@@ -19,7 +19,13 @@ import {
 import { Settings } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import App from "../App";
-import ProjectGroupsSidebar from "./ProjectGroupsSidebar";
+import CombinedServerSidebar from "./CombinedServerSidebar";
+import {
+  createMergedSidebarSelector,
+  createSidebarSourceStore,
+} from "./mergedSidebar";
+import { createSidebarRpcClient } from "./sidebarRpc";
+import { frameSidebarBackend } from "./frameSidebarBackend";
 import { projectChatCommand } from "./projectChatCommand";
 import { frameURL } from "./frameOrigin";
 import { canUnloadFrame } from "./idleFrames";
@@ -92,11 +98,14 @@ export default function MultiServerApp() {
   const [navigation, setNavigation] = useState<
     Record<string, ServerNavigation>
   >({});
+  const sidebarSources = useRef(createSidebarSourceStore());
   const navigationRef = useRef(navigation);
   navigationRef.current = navigation;
   const [status, setStatus] = useState<Record<string, ResourceConnectionState>>(
     {},
   );
+  const statusRef = useRef(status);
+  statusRef.current = status;
   const [accountsByServer, setAccountsByServer] = useState<
     Record<string, ServerAccount[]>
   >({});
@@ -127,7 +136,6 @@ export default function MultiServerApp() {
   });
   const preferencesRef = useRef(preferences);
   preferencesRef.current = preferences;
-  const [query, setQuery] = useState("");
   const [mobileOpen, setMobileOpen] = useState(false);
   const frames = useRef(new Map<string, HTMLIFrameElement>());
   const pending = useRef(new Map<string, ServerCommand>());
@@ -140,6 +148,7 @@ export default function MultiServerApp() {
   serversRef.current = servers;
   const lastSelected = useRef(current);
   const readyFrames = useRef(new Set<string>());
+  const readyWaiters = useRef(new Map<string, Set<() => void>>());
   const lifecycle = useRef(
     new Map<
       string,
@@ -225,6 +234,9 @@ export default function MultiServerApp() {
       );
   };
   const applyNavigation = (id: string, value: ServerNavigation) => {
+    sidebarSources.current.update(id, value.sidebar);
+    if (value.ready)
+      readyWaiters.current.get(id)?.forEach((resolve) => resolve());
     setNavigation((old) => ({ ...old, [id]: value }));
     if (value.ready) {
       const previous = notificationState.current.get(id);
@@ -275,6 +287,88 @@ export default function MultiServerApp() {
   };
   const applyNavigationRef = useRef(applyNavigation);
   applyNavigationRef.current = applyNavigation;
+  const ensureReady = useCallback(async (owner: string) => {
+    if (!serversRef.current.some((server) => server.id === owner))
+      throw new Error("The sidebar server is no longer paired.");
+    if (
+      frames.current.get(owner)?.isConnected &&
+      readyFrames.current.has(owner)
+    )
+      return;
+    mount(owner);
+    await new Promise<void>((resolve, reject) => {
+      const waiters = readyWaiters.current.get(owner) || new Set<() => void>();
+      const done = () => {
+        clearTimeout(timer);
+        waiters.delete(done);
+        resolve();
+      };
+      const timer = setTimeout(() => {
+        waiters.delete(done);
+        reject(new Error("The sidebar server is unavailable."));
+      }, 15000);
+      waiters.add(done);
+      readyWaiters.current.set(owner, waiters);
+    });
+  }, []);
+  const sidebarRpc = useMemo(
+    () => createSidebarRpcClient(window, frames.current, ensureReady),
+    [ensureReady],
+  );
+  useEffect(() => {
+    sidebarRpc.start();
+    return () => sidebarRpc.dispose();
+  }, [sidebarRpc]);
+  const sidebarOnline = useCallback(
+    (owner: string) =>
+      serversRef.current.some((server) => server.id === owner) &&
+      statusRef.current[owner] === "live",
+    [],
+  );
+  const sidebarBackends = useMemo(
+    () =>
+      new Map(
+        servers.map((server) => [
+          server.id,
+          frameSidebarBackend(server.id, sidebarRpc, () =>
+            sidebarOnline(server.id),
+          ),
+        ]),
+      ),
+    [servers, sidebarRpc, sidebarOnline],
+  );
+  const mergedSelector = useMemo(() => createMergedSidebarSelector(), []);
+  const mergedSidebar = useMemo(
+    () =>
+      mergedSelector(
+        sidebarSources.current.sources(
+          servers.map((server) => server.id),
+          new Set(
+            servers
+              .filter((server) => sidebarOnline(server.id))
+              .map((server) => server.id),
+          ),
+        ),
+      ),
+    [servers, navigation, status, mergedSelector, sidebarOnline],
+  );
+  const sidebarAliases = useMemo(
+    () =>
+      Object.fromEntries(
+        servers.map((server) => [
+          server.id,
+          discovery.snapshot?.aliases?.[server.id] ||
+            server.alias ||
+            (server.id === "local"
+              ? "MAC"
+              : server.label
+                  .replace(/[^a-z]/gi, "")
+                  .slice(0, 3)
+                  .toUpperCase()),
+        ]),
+      ),
+    [servers, discovery.snapshot?.aliases],
+  );
   useEffect(() => {
     const timer = setInterval(() => {
       const remove: string[] = [];
@@ -781,65 +875,51 @@ export default function MultiServerApp() {
           >
             Servers and chats
           </Button>
-          <aside
-            className={`server-sidebar ${mobileOpen ? "server-sidebar-open" : ""}`}
-            aria-label="Servers and projects"
-          >
-            <header>
-              <strong>
-                Studio servers{" "}
-                {unread > 0 && (
-                  <span aria-label={`${unread} unread chats`}>({unread})</span>
-                )}
-              </strong>
-              <Button
-                size="xs"
-                variant="subtle"
-                onClick={() => setManager(true)}
-                aria-label="Studio settings"
-              >
-                Settings
-              </Button>
-            </header>
-            <Button variant="subtle" onClick={() => setSearchOpen(true)}>
-              Search all messages
-            </Button>
-            <TextInput
-              label="Find projects and chats"
-              value={query}
-              onChange={(event) => setQuery(event.currentTarget.value)}
-            />
-            {failure && <p role="alert">{failure}</p>}
-            {!servers.length && (
-              <p>Pair a server to open its projects and chats.</p>
-            )}
-            <Button
-              variant="subtle"
-              onClick={() =>
-                send(
-                  servers.some((row) => row.id === "local") ? "local" : current,
-                  { action: "add-project" },
-                )
-              }
-            >
-              Add project
-            </Button>
-            <ProjectGroupsSidebar
-              navigation={navigation}
-              servers={servers}
-              statuses={status}
-              serverAliases={discovery.snapshot?.aliases}
-              reachability={Object.fromEntries(
-                (discovery.snapshot?.servers || []).map((server) => [
-                  server.id,
-                  server.reachability,
-                ]),
-              )}
+          {mergedSidebar.sources.length ? (
+            <CombinedServerSidebar
+              model={mergedSidebar}
+              backends={sidebarBackends}
+              online={sidebarOnline}
+              rpc={sidebarRpc}
+              aliases={sidebarAliases}
               current={current}
-              query={query}
+              navigation={navigation}
               send={send}
+              applyNavigation={(owner, value) =>
+                applyNavigationRef.current(owner, value)
+              }
+              mobile={mobileOpen}
+              hidden={sidebarHidden}
+              close={() => {
+                setMobileOpen(false);
+                setSidebarHidden(true);
+              }}
+              settings={() => setManager(true)}
+              search={() => setSearchOpen(true)}
+              notify={setFailure}
+              notice={failure}
+              unreadCount={unread}
             />
-          </aside>
+          ) : (
+            <aside className="server-sidebar" aria-label="Servers and projects">
+              <header>
+                <strong>Codex Studio</strong>
+                <Button
+                  variant="subtle"
+                  aria-label="Studio settings"
+                  onClick={() => setManager(true)}
+                >
+                  Settings
+                </Button>
+              </header>
+              <p role="status">
+                {servers.length
+                  ? "Loading chats..."
+                  : "Pair a server to open its projects and chats."}
+              </p>
+              {failure && <p role="alert">{failure}</p>}
+            </aside>
+          )}
         </>
       )}
       <main className="server-views">

@@ -287,6 +287,11 @@ html[data-server-view] .workspace {
 .server-sidebar-hidden .server-sidebar {
   display: none;
 }
+.multi-server-shell[data-navigation="combined"] > #sidebar {
+  height: 100%;
+  font-size: var(--studio-sidebar-font-size);
+  font-family: var(--studio-font-family);
+}
 .server-search-result {
   display: block;
   width: 100%;

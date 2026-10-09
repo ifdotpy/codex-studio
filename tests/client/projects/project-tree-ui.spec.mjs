@@ -184,21 +184,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
         has: page.locator(".project-tree-toggle", { hasText: name }),
       });
     await group("assistant").waitFor();
-    await waitFor(
-      async () =>
-        (await group("assistant").locator("[data-chat]").count()) >= 5,
-    );
     const initialChats = group("assistant").locator("[data-chat]");
-    assert.equal(
-      await initialChats.count(),
-      7,
+    await expect(
+      initialChats,
       "Compact projects keep all recent chats.",
-    );
-    await waitFor(
-      async () =>
-        (await group("assistant").locator("[data-chat]").count()) === 7,
-    );
-    assert.equal(await group("assistant").locator("[data-chat]").count(), 7);
+    ).toHaveCount(7);
     assert.equal(
       await group("litos").getByText("No chats", { exact: true }).count(),
       1,

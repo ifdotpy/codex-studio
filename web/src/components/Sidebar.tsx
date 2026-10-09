@@ -3,6 +3,7 @@ import {
   SidebarBackendProvider,
   useSidebarVisualState,
   type SidebarServices,
+  type SidebarTarget,
 } from "./sidebar/services";
 import {
   Fragment,
@@ -32,6 +33,7 @@ import {
   ChevronDown,
   Plus,
   X,
+  Settings,
 } from "lucide-react";
 import { errorText } from "../api";
 import type { paths } from "../generated/api";
@@ -75,8 +77,12 @@ type WithoutOrganizationId<Request> = Request extends { id: string }
 type OrganizationData = WithoutOrganizationId<OrganizationRequest>;
 export type SidebarProps = {
   services?: SidebarServices;
+  settings?: () => void;
+  notice?: string;
+  unreadCount?: number;
   data: Snapshot;
   opened: string | null;
+  selectionIdentity?: string;
   lead?: Agent;
   open: (id: string) => void;
   prepareChat?: (id: string) => void;
@@ -127,6 +133,32 @@ export default function Sidebar(p: SidebarProps) {
 
 function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const services = p.services;
+  const canEdit = (target: SidebarTarget) =>
+    services.available?.(target) ?? true;
+  const projectTarget = (
+    path: string,
+    folder?: string,
+    team?: string,
+  ): SidebarTarget => ({ kind: "project", path, folder, team });
+  const ownedProject = (
+    project: NavigableProject,
+    target: SidebarTarget,
+  ): Project => services.project?.(project.path, target) || project;
+  const ownsFolder = (
+    project: NavigableProject,
+    chat: Agent,
+    folder: ProjectFolder | null,
+  ) => {
+    if (!services.project || !folder) return true;
+    try {
+      return !!ownedProject(project, {
+        kind: "chat",
+        id: chat.id,
+      }).folders?.some((item) => item.id === folder.id);
+    } catch {
+      return false;
+    }
+  };
   const {
     saved,
     storage: localStorage,
@@ -164,14 +196,23 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     }
   };
   const closeConversion = () => {
-    if (
-      conversion &&
-      localStorage.getItem(
-        `studio-peer-convert:${p.data.stateDir}:${conversion.source.id}:${conversion.target.id}`,
-      )
-    ) {
+    try {
+      if (
+        conversion &&
+        services
+          .owner({ kind: "chat", id: conversion.source.id })
+          .storage.getItem(
+            `studio-peer-convert:${p.data.stateDir}:${conversion.source.id}:${conversion.target.id}`,
+          )
+      ) {
+        p.notify?.(
+          "Retry the saved request to confirm its result before closing.",
+        );
+        return;
+      }
+    } catch {
       p.notify?.(
-        "Retry the saved request to confirm its result before closing.",
+        "Load the chat server to check the saved request before closing.",
       );
       return;
     }
@@ -207,8 +248,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         })),
     [runtime?.projects],
   );
-  const teamMove = usePeerTeamMove(p.refresh, p.notify, (path) =>
-    services.owner({ kind: "project", path }),
+  const teamMove = usePeerTeamMove(p.refresh, p.notify, (path, member, team) =>
+    services.owner(
+      team
+        ? projectTarget(path, undefined, team)
+        : { kind: "chat", id: member },
+    ),
   );
   const [dialog, setDialog] = useState<{
     title: string;
@@ -235,6 +280,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     parentId?: string,
   ) => {
     if (!requireProjectSupport()) return;
+    if (
+      !canEdit(
+        projectTarget(project.path, folder === "new" ? parentId : folder?.id),
+      )
+    )
+      return;
     setDialog({
       title:
         folder === "new"
@@ -263,6 +314,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     Record<string, { pinned?: boolean; archived?: boolean }>
   >({});
   const organize = async (id: string, data: OrganizationData) => {
+    if (!canEdit({ kind: "chat", id })) {
+      p.notify?.("The sidebar server is offline or unavailable.");
+      return false;
+    }
     if (organizationLock.current) return false;
     organizationLock.current = true;
     setOrganizing(id);
@@ -346,20 +401,31 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
   const initialSelection = useRef<{
     opened: string;
     folder: typeof selectedFolder;
+    identity?: string;
   } | null>(null);
   useEffect(() => {
     if (!initialSelection.current) {
       if (p.opened)
-        initialSelection.current = { opened: p.opened, folder: selectedFolder };
+        initialSelection.current = {
+          opened: p.opened,
+          folder: selectedFolder,
+          identity: p.selectionIdentity,
+        };
       return;
     }
     if (
-      initialSelection.current.opened === p.opened &&
-      initialSelection.current.folder === selectedFolder
+      p.selectionIdentity !== undefined
+        ? initialSelection.current.identity === p.selectionIdentity
+        : initialSelection.current.opened === p.opened &&
+          initialSelection.current.folder === selectedFolder
     )
       return;
     initialSelection.current = p.opened
-      ? { opened: p.opened, folder: selectedFolder }
+      ? {
+          opened: p.opened,
+          folder: selectedFolder,
+          identity: p.selectionIdentity,
+        }
       : null;
     if (
       agents.some((a) => a.id === p.opened) ||
@@ -387,7 +453,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         setCollapsed(writePreferenceEdit(projectKey, collapsed, next));
       }
     }
-  }, [p.opened, selectedFolder]);
+  }, [p.opened, selectedFolder, p.selectionIdentity]);
   const teamKey = (path: string, id: string) =>
     JSON.stringify([path, "team", id]);
   const chatGroup = (agent: Agent) =>
@@ -405,6 +471,8 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
           !teamMove.blocked() &&
           !organizationLock.current &&
           chat &&
+          canEdit({ kind: "chat", id: chat.id }) &&
+          ownsFolder(project, chat, folder) &&
           source.group === chatGroup(chat) &&
           chat.cwd === project.path &&
           ((!folder && !!teamFor(chat.id)) ||
@@ -445,9 +513,12 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     );
   const orderedAgents = catalog.ordered;
   const searchSelector = useMemo(createSidebarSearchSelector, []);
+  const sourceSearchKey = services.chatPath
+    ? JSON.stringify(p.data.threads.map((row) => services.chatPath!(row.id)))
+    : "";
   const searchContext = useMemo(
     () => ({ projects, peerTeams }),
-    [projects, peerTeams],
+    [projects, peerTeams, sourceSearchKey],
   );
   const projectsByPath = useMemo(
     () => new Map(projects.map((project) => [project.path, project])),
@@ -460,7 +531,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       const legacyProjectName = "project" in a ? a.project : undefined;
       const team = catalog.byTeam.get(a.id);
       const teamName = team && team.projectPath === a.cwd ? team.name : "";
-      return `${teamName || ""} ${a.name || ""} ${a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`;
+      return `${teamName || ""} ${a.name || ""} ${services.chatPath?.(a.id) || a.cwd || ""} ${projectSearchLabel(project?.name, legacyProjectName)} ${folderLabel(project?.folders || [], a.projectFolder || "")} ${a.tail || ""}`;
     });
     // Keep the selected team member visible under a search, as before.
     const selected = catalog.byId.get(p.opened || "");
@@ -635,6 +706,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       row={row}
       selected={p.opened === row.id}
       serverAlias={
+        services.alias?.({ kind: "chat", id: row.id }) ||
         aliases[
           (row as Agent & { serverId?: string }).serverId ||
             serverViewId ||
@@ -647,42 +719,53 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
       renaming={renaming === row.id}
       name={renaming === row.id ? name : ""}
       organizing={organizing === row.id}
+      disabled={!canEdit({ kind: "chat", id: row.id })}
       compact={compact}
       markingRead={p.markingRead.has(row.id)}
-      bindings={sorting.dropBindings(
-        `convert:${row.id}`,
-        (source, event) => {
-          const chat = catalog.byId.get(source.id);
-          const box = event.currentTarget.getBoundingClientRect();
-          return !!(
-            chat &&
-            chat.id !== row.id &&
-            teamFor(chat.id) &&
-            chat.cwd === row.cwd &&
-            source.group === chatGroup(chat) &&
-            !conversion &&
-            !organizationLock.current &&
-            !teamMove.blocked() &&
-            event.clientY > box.top + box.height * 0.25 &&
-            event.clientY < box.top + box.height * 0.75
-          );
-        },
-        ({ id }) =>
-          setConversion({
-            source: catalog.byId.get(id)!,
-            target: row,
-            project: groupMap.get(row.cwd || "")!,
-          }),
-        sorting.bindings(
-          chatGroup(row),
-          row.id,
-          teamFor(row.id) || row.pinned
-            ? orderedAgents
-                .filter((a) => chatGroup(a) === chatGroup(row))
-                .map((a) => a.id)
-            : itemIds(groupMap.get(row.cwd || "")!, row.projectFolder || null),
+      bindings={{
+        ...sorting.dropBindings(
+          `convert:${row.id}`,
+          (source, event) => {
+            const chat = catalog.byId.get(source.id);
+            const box = event.currentTarget.getBoundingClientRect();
+            return !!(
+              chat &&
+              canEdit({ kind: "chat", id: chat.id }) &&
+              canEdit({ kind: "chat", id: row.id }) &&
+              services.serverForChat(chat.id) ===
+                services.serverForChat(row.id) &&
+              chat.id !== row.id &&
+              teamFor(chat.id) &&
+              chat.cwd === row.cwd &&
+              source.group === chatGroup(chat) &&
+              !conversion &&
+              !organizationLock.current &&
+              !teamMove.blocked() &&
+              event.clientY > box.top + box.height * 0.25 &&
+              event.clientY < box.top + box.height * 0.75
+            );
+          },
+          ({ id }) =>
+            setConversion({
+              source: catalog.byId.get(id)!,
+              target: row,
+              project: groupMap.get(row.cwd || "")!,
+            }),
+          sorting.bindings(
+            chatGroup(row),
+            row.id,
+            teamFor(row.id) || row.pinned
+              ? orderedAgents
+                  .filter((a) => chatGroup(a) === chatGroup(row))
+                  .map((a) => a.id)
+              : itemIds(
+                  groupMap.get(row.cwd || "")!,
+                  row.projectFolder || null,
+                ),
+          ),
         ),
-      )}
+        draggable: canEdit({ kind: "chat", id: row.id }),
+      }}
       actions={{
         prepare: () => p.prepareChat?.(row.id),
         open: () => p.open(row.id),
@@ -732,11 +815,19 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     return (
       <SidebarBackendProvider
         key={team.id}
-        value={services.owner({ kind: "project", path: group.path })}
+        value={services.owner(projectTarget(group.path, undefined, team.id))}
       >
         <PeerTeamGroup
           itemId={teamKey(group.path, team.id)}
           team={team}
+          disabled={!canEdit(projectTarget(group.path, undefined, team.id))}
+          serverAlias={
+            services.alias &&
+            services.owner(projectTarget(group.path, undefined, team.id))
+              .ownerId !== services.owner(projectTarget(group.path)).ownerId
+              ? services.alias(projectTarget(group.path, undefined, team.id))
+              : undefined
+          }
           roomId={runtime?.rooms?.find((r) => r.radio?.teamId === team.id)?.id}
           scope={p.data.stateDir}
           openRoom={p.open}
@@ -752,6 +843,11 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
               const chat = catalog.byId.get(source.id);
               return !!(
                 chat &&
+                canEdit(projectTarget(group.path, undefined, team.id)) &&
+                canEdit({ kind: "chat", id: chat.id }) &&
+                services.serverForChat(chat.id) ===
+                  services.owner(projectTarget(group.path, undefined, team.id))
+                    .ownerId &&
                 source.group === chatGroup(chat) &&
                 chat.cwd === group.path &&
                 !teamMembers.includes(chat.id) &&
@@ -883,13 +979,31 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       onClick={() => toggleProject(id)}
                     >
                       {closed ? <Folder size={16} /> : <FolderOpen size={16} />}
-                      <span>{folder.name}</span>
+                      <span>
+                        {folder.name}
+                        {services.alias &&
+                          services.owner(projectTarget(group.path, folder.id))
+                            .ownerId !==
+                            services.owner(projectTarget(group.path))
+                              .ownerId && (
+                            <ChatServerLine
+                              alias={
+                                services.alias(
+                                  projectTarget(group.path, folder.id),
+                                ) || ""
+                              }
+                            />
+                          )}
+                      </span>
                     </UnstyledButton>
                     {!archive && (
                       <ActionIcon
                         className="project-tree-action"
                         aria-label={`New chat in folder ${folder.name}`}
-                        disabled={p.creating}
+                        disabled={
+                          p.creating ||
+                          !canEdit(projectTarget(group.path, folder.id))
+                        }
                         onClick={() => {
                           if (requireProjectSupport())
                             p.newChat(group.path, folder.id);
@@ -909,20 +1023,31 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       </Menu.Target>
                       <Menu.Dropdown>
                         <Menu.Item
+                          disabled={
+                            !canEdit(projectTarget(group.path, folder.id))
+                          }
                           onClick={() => editProject(group, "new", folder.id)}
                         >
                           New subfolder
                         </Menu.Item>
-                        <Menu.Item onClick={() => editProject(group, folder)}>
+                        <Menu.Item
+                          disabled={
+                            !canEdit(projectTarget(group.path, folder.id))
+                          }
+                          onClick={() => editProject(group, folder)}
+                        >
                           Rename folder
                         </Menu.Item>
                         <Menu.Item
-                          disabled={occupied}
+                          disabled={
+                            occupied ||
+                            !canEdit(projectTarget(group.path, folder.id))
+                          }
                           onClick={async () => {
                             if (!requireProjectSupport()) return;
                             try {
                               await services
-                                .owner({ kind: "project", path: group.path })
+                                .owner(projectTarget(group.path, folder.id))
                                 .post("/api/projects", {
                                   action: "remove_folder",
                                   path: group.path,
@@ -1000,12 +1125,32 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
             <strong>Codex</strong> <span>Studio</span>
           </span>
         </a>
+        {p.unreadCount ? (
+          <span aria-label={`${p.unreadCount} unread chats`}>
+            {p.unreadCount}
+          </span>
+        ) : null}
+        {p.settings && (
+          <ActionIcon
+            variant="subtle"
+            aria-label="Studio settings"
+            title="Settings"
+            onClick={p.settings}
+          >
+            <Settings size={18} />
+          </ActionIcon>
+        )}
         {
           <ActionIcon aria-label="Close conversations" onClick={p.close}>
             <X size={20} />
           </ActionIcon>
         }
       </div>
+      {p.notice && (
+        <p role="alert" className="notice">
+          {p.notice}
+        </p>
+      )}
       <div className="sidebar-nav">
         <div className="sidebar-primary-actions">
           <Button
@@ -1108,7 +1253,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     )}
                     aria-description="Drag to reorder. Alt + Up or Down also works."
                     className="project-tree-toggle"
-                    title={group.path}
+                    title={services.displayPath?.(group.path) || group.path}
                     aria-expanded={!isCollapsed}
                     onClick={() => toggleProject(group.path)}
                   >
@@ -1124,7 +1269,9 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       className="project-tree-action"
                       aria-label={`New chat in ${group.name}`}
                       onClick={() => p.newChat(group.path || undefined)}
-                      disabled={p.creating}
+                      disabled={
+                        p.creating || !canEdit(projectTarget(group.path))
+                      }
                     >
                       <Plus size={15} />
                     </ActionIcon>
@@ -1141,11 +1288,15 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                       </Menu.Target>
                       <Menu.Dropdown>
                         <Menu.Label>Create</Menu.Label>
-                        <Menu.Item onClick={() => editProject(group, "new")}>
+                        <Menu.Item
+                          disabled={!canEdit(projectTarget(group.path))}
+                          onClick={() => editProject(group, "new")}
+                        >
                           New chat folder
                         </Menu.Item>
                         {p.newSharedChat && (
                           <Menu.Item
+                            disabled={!canEdit(projectTarget(group.path))}
                             onClick={() => p.newSharedChat?.(group.path)}
                           >
                             New shared chat
@@ -1153,6 +1304,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         )}
                         {runtime?.peerTeamsVersion === 1 && (
                           <Menu.Item
+                            disabled={!canEdit(projectTarget(group.path))}
                             onClick={() =>
                               setTeamDialog({
                                 path: group.path,
@@ -1189,21 +1341,29 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                         </Menu.Item>
                         <Menu.Divider />
                         <Menu.Label>Project settings</Menu.Label>
-                        <Menu.Item onClick={() => editProject(group)}>
+                        <Menu.Item
+                          disabled={!canEdit(projectTarget(group.path))}
+                          onClick={() => editProject(group)}
+                        >
                           Rename project
                         </Menu.Item>
                         {p.projectFolders && (
                           <Menu.Item
+                            disabled={!canEdit(projectTarget(group.path))}
                             onClick={() => p.projectFolders?.(group.path)}
                           >
                             Folders
                           </Menu.Item>
                         )}
-                        <Menu.Item onClick={() => p.projectAccount(group.path)}>
+                        <Menu.Item
+                          disabled={!canEdit(projectTarget(group.path))}
+                          onClick={() => p.projectAccount(group.path)}
+                        >
                           Project account
                         </Menu.Item>
                         {group.registered && !group.hasChats && (
                           <Menu.Item
+                            disabled={!canEdit(projectTarget(group.path))}
                             onClick={async () => {
                               try {
                                 await services
@@ -1236,17 +1396,29 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                     </p>
                   ) : (
                     <SidebarBackendProvider
-                      value={services.owner({
-                        kind: "project",
-                        path: group.path,
-                      })}
+                      value={services.owner(
+                        projectTarget(group.path, undefined, teamDialog.id),
+                      )}
                     >
                       <PeerTeamForm
                         key={`${teamDialog.path}:${teamDialog.id || "new"}:${teamDialog.action}`}
-                        project={group}
+                        project={ownedProject(
+                          group,
+                          projectTarget(group.path, undefined, teamDialog.id),
+                        )}
                         team={peerTeams.find((t) => t.id === teamDialog.id)}
                         teams={peerTeams}
-                        agents={agents}
+                        agents={agents.filter(
+                          (agent) =>
+                            services.serverForChat(agent.id) ===
+                            services.owner(
+                              projectTarget(
+                                group.path,
+                                undefined,
+                                teamDialog.id,
+                              ),
+                            ).ownerId,
+                        )}
                         action={teamDialog.action}
                         refresh={p.refresh}
                         close={() => setTeamDialog(null)}
@@ -1278,6 +1450,10 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                                   )?.provider || undefined
                                 }
                                 alias={
+                                  services.alias?.({
+                                    kind: "chat",
+                                    id: room.id,
+                                  }) ||
                                   aliases[services.serverForChat(room.id)] ||
                                   "MAC"
                                 }
@@ -1334,6 +1510,7 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
     <>
       {compact ? (
         <Drawer
+          zIndex={p.settings ? 190 : undefined}
           opened={p.mobile}
           onClose={p.close}
           size="min(360px, 100vw)"
@@ -1353,24 +1530,28 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
         title="Make chat a subagent"
         closeOnClickOutside={false}
       >
-        {conversion && (
-          <SidebarBackendProvider
-            value={services.owner({ kind: "chat", id: conversion.source.id })}
-          >
-            <ConvertChatForm
-              key={`${conversion.source.id}:${conversion.target.id}`}
-              project={conversion.project}
-              source={conversion.source}
-              target={conversion.target}
-              scope={p.data.stateDir}
-              saved={async () => {
-                await p.refresh?.();
-                p.open(conversion.target.id);
-                setConversion(null);
-              }}
-            />
-          </SidebarBackendProvider>
-        )}
+        {conversion &&
+          (p.data.threads.some((row) => row.id === conversion.source.id) &&
+          p.data.threads.some((row) => row.id === conversion.target.id) ? (
+            <SidebarBackendProvider
+              value={services.owner({ kind: "chat", id: conversion.source.id })}
+            >
+              <ConvertChatForm
+                key={`${conversion.source.id}:${conversion.target.id}`}
+                project={conversion.project}
+                source={conversion.source}
+                target={conversion.target}
+                scope={p.data.stateDir}
+                saved={async () => {
+                  await p.refresh?.();
+                  p.open(conversion.target.id);
+                  setConversion(null);
+                }}
+              />
+            </SidebarBackendProvider>
+          ) : (
+            <p>Load the chat server to retry the saved request.</p>
+          ))}
       </Modal>
       <Modal
         opened={!!dialog}
@@ -1384,20 +1565,38 @@ function SidebarContents(p: SidebarProps & { services: SidebarServices }) {
                 value={services.owner({ kind: "chat", id: dialogAgent.id })}
               >
                 <MoveChatForm
-                  project={dialogProject}
+                  project={ownedProject(dialogProject, {
+                    kind: "chat",
+                    id: dialogAgent.id,
+                  })}
                   agent={dialogAgent}
                   saved={savedProject}
                 />
               </SidebarBackendProvider>
             ) : (
               <SidebarBackendProvider
-                value={services.owner({
-                  kind: "project",
-                  path: dialogProject.path,
-                })}
+                value={services.owner(
+                  projectTarget(
+                    dialogProject.path,
+                    dialog.folder === "new" ? dialog.parentId : dialog.folder,
+                  ),
+                )}
               >
                 <ProjectNameForm
-                  project={dialogProject}
+                  project={ownedProject(
+                    dialogProject,
+                    projectTarget(
+                      dialogProject.path,
+                      dialog.folder === "new" ? dialog.parentId : dialog.folder,
+                    ),
+                  )}
+                  displayPath={services.displayPath?.(
+                    dialogProject.path,
+                    projectTarget(
+                      dialogProject.path,
+                      dialog.folder === "new" ? dialog.parentId : dialog.folder,
+                    ),
+                  )}
                   folder={dialog.folder === "new" ? "new" : dialogFolder}
                   parentId={dialog.parentId}
                   saved={savedProject}

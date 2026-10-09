@@ -151,6 +151,10 @@ export function useSidebarOrder(
       return;
     }
     const value = { ...order, [group]: next };
+    if (services.available && !services.available({ kind: "order", group })) {
+      notify?.("The sidebar server is offline or unavailable.");
+      return;
+    }
     const backend = services.owner({ kind: "order", group });
     requestBackend.current = backend;
     void send(

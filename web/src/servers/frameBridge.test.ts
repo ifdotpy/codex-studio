@@ -26,6 +26,7 @@ vi.mock("../sync/resourceEvents", () => ({
 }));
 
 import { useServerFrame } from "./frameBridge";
+import * as sidebarRpc from "./sidebarRpc";
 import { preferenceEvent } from "../sync/uiPreferenceMerge";
 import { writePreferenceEdit } from "../sync/uiPreferenceStore";
 import { defaultStudioPreferences } from "../studioPreferences";
@@ -61,6 +62,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup.forEach((stop) => stop());
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 function mount(
@@ -265,4 +267,40 @@ it("keeps navigation without sidebar data until a snapshot is available", () => 
   expect(navigationMessages()).toHaveLength(1);
   expect(navigationMessages()[0][0].navigation).toMatchObject({ ready: false });
   expect(navigationMessages()[0][0].navigation).not.toHaveProperty("sidebar");
+});
+
+it("executes sidebar requests only from the bound parent and replies with the same identity", async () => {
+  const execute = vi
+    .spyOn(sidebarRpc, "executeSidebarRequest")
+    .mockResolvedValue({ ok: true });
+  mount();
+  const request = {
+    kind: "studio-sidebar-request",
+    serverId: "remote",
+    correlation: "exact-request",
+    value: {
+      action: "post",
+      path: "/api/rename",
+      body: { id: "lead", name: "Changed", request_id: "mutation" },
+    },
+  };
+  message(null);
+  message(request, "https://untrusted.example");
+  message(request, "https://parent.example", {});
+  message({ ...request, serverId: "other" });
+  message({ ...request, correlation: null });
+  expect(execute).not.toHaveBeenCalled();
+  message(request);
+  await Promise.resolve();
+  expect(execute).toHaveBeenCalledOnce();
+  expect(execute.mock.calls[0][0]).toEqual(request.value);
+  expect(surface.parent.postMessage).toHaveBeenLastCalledWith(
+    {
+      kind: "studio-sidebar-result",
+      serverId: "remote",
+      correlation: "exact-request",
+      result: { ok: true },
+    },
+    "https://parent.example",
+  );
 });

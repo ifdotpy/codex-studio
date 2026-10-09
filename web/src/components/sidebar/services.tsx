@@ -4,10 +4,17 @@ import { serverViewId } from "../../servers/environment";
 import { serverLocalStorage } from "../../servers/storage";
 import { preferenceEvent } from "../../sync/uiPreferenceMerge";
 import { writePreferenceEdit } from "../../sync/uiPreferenceStore";
+import type { Project } from "../../types";
 
 export type SidebarTarget =
   | { kind: "chat"; id: string }
-  | { kind: "project"; path: string }
+  | {
+      kind: "project";
+      path: string;
+      folder?: string;
+      team?: string;
+      chat?: string;
+    }
   | { kind: "order"; group: string };
 
 /** One immutable server connection, including its original saved-state keys. */
@@ -26,6 +33,11 @@ export type SidebarServices = {
   owner: (target: SidebarTarget) => SidebarBackend;
   byOwner: (ownerId: string) => SidebarBackend;
   serverForChat: (id: string) => string;
+  available?: (target: SidebarTarget) => boolean;
+  project?: (path: string, target: SidebarTarget) => Project;
+  displayPath?: (path: string, target?: SidebarTarget) => string;
+  chatPath?: (id: string) => string;
+  alias?: (target: SidebarTarget) => string | undefined;
 };
 
 export function sidebarIdentity(ownerId: string, id: string): string {
