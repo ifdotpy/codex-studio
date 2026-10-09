@@ -160,10 +160,11 @@ startup files. Codex `command/exec` still applies account environment filters an
 the selected sandbox. The harness does not replace PATH with its own value.
 The monitor loads startup files when its process starts; it does not read a
 temporary native snapshot that can disappear when the agent's turn ends.
-The bottom terminal panel shows only user shells. **Background** lists commands,
-monitors, and other tools for the current chat and its descendants. It has no
-cross-team filter. Its history keeps up to 100 completed records of each type
-within that chat, plus every active record.
+The bottom terminal panel shows only user shells. **Background** lists active commands
+and command monitors for the current chat and its descendants. Tool calls remain in
+the conversation. It has no cross-team filter.
+The workspace API retains up to 100 completed task records and 100 completed
+monitor records within that chat. Active records remain available.
 
 Inbox, workspace agent choices, and attention counts use the same lead tree.
 Two chats remain separate even when they use the same account or project folder.
@@ -526,6 +527,20 @@ stay at their defaults. Until the base is ready, the worker has read-only access
 YOLO setting. Studio then switches the worker
 to the copy path and sends a notice with the path and copy time. Unsupported platforms use a
 Git worktree when the folder is in Git, or the original folder otherwise.
+Set `workspace` per implementer to choose `image`, `worktree`, or `shared`.
+Omit it to keep the current defaults. Use `image` for isolated work that needs
+uncommitted changes. macOS uses ASIF; Linux uses an overlay. Use `worktree` for
+a fast task from a committed Git base; it requires a Git repository and does
+not copy uncommitted changes. Use `shared` only when you deliberately want the
+worker to edit the selected folder. Reviewers always use the shared folder with
+read-only access. `environment: "linux"` selects the Linux toolchain and
+requires `workspace: "image"`. Use `server` for another paired machine; its
+`cwd` must be absolute. Unsupported combinations return an error before workers
+are created.
+
+The worker chat badge shows `ASIF` for a macOS image, `VM` for a Linux virtual
+machine, `WT` for a Git worktree, or `SHARED` for the selected folder. Hover or
+focus the badge to see the full name and workspace path.
 On a real Mac, default-config agent start took 2.610 s at 50,000 files and 10.104 s at
 200,000 files with no staged source change. After source `git add`, it took 3.757 s and
 10.212 s. The first `git status` took 0.983 s and 4.661 s with no staged change, and 0.844 s

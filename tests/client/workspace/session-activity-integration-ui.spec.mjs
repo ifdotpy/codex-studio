@@ -82,6 +82,14 @@ test("Session activity integration", async () => {
             command: "second active command",
             created: Date.now() / 1000,
           },
+          {
+            id: "hidden-question-tool",
+            agent: child.id,
+            status: "running",
+            kind: "tool",
+            name: "AskUserQuestion",
+            created: task.created - 1,
+          },
         ],
         monitors: [],
         requests: [],
@@ -156,6 +164,10 @@ test("Session activity integration", async () => {
     const strip = page.getByRole("region", { name: "Session activity" });
     const row = strip.locator('[data-activity-id="old-live-command"]');
     await row.waitFor();
+    assert.equal(
+      await strip.locator('[data-activity-id="hidden-question-tool"]').count(),
+      0,
+    );
     assert.match(await row.innerText(), /webcrypto-globals/);
     assert.match(await row.innerText(), /14h/);
     assert.equal(await row.locator("code").count(), 0);
@@ -238,6 +250,62 @@ test("Session activity integration", async () => {
     await page
       .getByRole("dialog", { name: /Current activity/ })
       .waitFor({ state: "hidden" });
+    const question = {
+      id: "retained-native-question",
+      agent: lead.id,
+      status: "pending",
+      method: "item/tool/requestUserInput",
+      createdAt: Date.now() / 1000,
+      params: {
+        questions: [
+          {
+            id: "0",
+            question: "Which organization owner should remain?",
+            isOther: true,
+            options: [{ label: "Keep the current owner" }],
+          },
+        ],
+      },
+    };
+    let answersSent = 0;
+    await page.route("**/api/answer", (route) => {
+      answersSent++;
+      return route.fulfill({ json: { status: "answered" } });
+    });
+    await entities.update(
+      {
+        ...entityState,
+        runtime: { ...entityState.runtime, requests: [question] },
+      },
+      publish,
+    );
+    const questionCard = page.locator(`[data-request="${question.id}"]`);
+    for (const width of [1280, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await questionCard
+        .getByText(question.params.questions[0].question, { exact: true })
+        .waitFor();
+      await questionCard.locator("[data-answer]").click();
+      const form = questionCard.getByRole("form", {
+        name: "Reply to the agent",
+      });
+      await form
+        .getByRole("button", { name: "Keep the current owner" })
+        .waitFor();
+      assert.equal(
+        await form.getByRole("button", { name: "Send answer" }).isDisabled(),
+        true,
+      );
+      await page.screenshot({ path: join(root, `question-${width}.png`) });
+      await page.keyboard.press("Escape");
+      await form.waitFor({ state: "hidden" });
+    }
+    assert.equal(
+      answersSent,
+      0,
+      "Showing the question must not choose an answer",
+    );
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.locator(`[data-chat="${other.id}"]`).click();
     await strip.waitFor({ state: "detached" });
     assert.deepEqual(errors, []);

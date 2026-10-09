@@ -55,8 +55,12 @@ Recover the saved receipt before deciding whether an uncertain operation needs a
   timeout and continue when it exits.
 - Before you ask the orchestrator, read the latest messages in the room. Do not
   ask again about a point that already has an answer.
-- Work only in your own worktree. Do not switch branches or edit files in a
-  shared clone.
+- Work in the workspace the lead selected for this worker.
+- For `image` and `worktree`, edit only that isolated workspace.
+- For `shared`, the lead assigned work in the selected source folder. Edit the
+  files in that assignment there.
+- Reviewers use shared access as read-only.
+- Do not switch branches in a shared folder.
 - Change declared state through its source of truth, for example Git. Use a
   direct change, for example `kubectl`, only as a documented break-glass step,
   and record it in your evidence.

@@ -33,6 +33,14 @@ class RoleSkillsContract(unittest.TestCase):
             params = self.runtime.new_thread_params(actor)
             self.assertIn("[Studio role skill: " + name + "]", params["developerInstructions"])
             self.assertNotIn(forbidden, params["developerInstructions"])
+            if name == "codex-subagent":
+                self.assertIn(
+                    "For `shared`, the lead assigned work in the selected source folder.",
+                    params["developerInstructions"],
+                )
+                self.assertNotIn(
+                    "edit files in a shared clone", params["developerInstructions"]
+                )
             advertised = {d["name"] for d in params["dynamicTools"]}
             context = self.runtime.model_context(actor["id"], {"topic": "tools"})
             self.assertEqual(advertised, {d["name"] for d in context["content"]})

@@ -279,14 +279,12 @@ export default function BackgroundTasks({
               { value: "all", label: "All" },
               { value: "command", label: "Commands" },
               { value: "monitor", label: "Monitors" },
-              { value: "tool", label: "Other tools" },
             ]}
             size="xs"
           />
         </div>
         <span className="tasks-filter-help">
-          Commands run in the chat. Monitors run in the background. Other tools
-          show tool results.
+          Commands run in the chat. Monitors run commands in the background.
         </span>
       </div>
       <div
@@ -485,7 +483,6 @@ function TaskDetail({
     setPending(true);
     try {
       const result = await post(path, body);
-      await refresh();
       if (
         result &&
         typeof result === "object" &&
@@ -493,6 +490,7 @@ function TaskDetail({
         result.error
       )
         throw new Error(displayError(result.error));
+      void refresh().catch((error) => notify(errorText(error)));
       return true;
     } catch (error) {
       notify(errorText(error));

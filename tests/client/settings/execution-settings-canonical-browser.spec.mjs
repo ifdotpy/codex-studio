@@ -10,7 +10,7 @@ import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelValue } from "../../model-picker.mjs";
+import { modelValue, selectModel } from "../../model-picker.mjs";
 import { test, expect } from "../playwright.mjs";
 
 test("execution settings canonical browser", async ({ page }) => {
@@ -58,20 +58,26 @@ test("execution settings canonical browser", async ({ page }) => {
         },
         load(id) {
           if (
-            process.env.BASELINE === "1" &&
+            (process.env.BASELINE === "1" ||
+              process.env.CONFIRMATION_BASELINE) &&
             id === join(root, "src/components/agents/ExecutionSettings.tsx")
           )
             return execFileSync(
               "git",
-              ["show", "5217bb9:web/src/components/ExecutionSettings.tsx"],
+              [
+                "show",
+                process.env.CONFIRMATION_BASELINE
+                  ? `${process.env.CONFIRMATION_BASELINE}:web/src/components/agents/ExecutionSettings.tsx`
+                  : "5217bb9:web/src/components/ExecutionSettings.tsx",
+              ],
               { cwd: root, encoding: "utf8" },
             );
           if (id !== entry) return;
-          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';
+          return `import React,{useState} from 'react';import {createRoot} from 'react-dom/client';import {flushSync} from 'react-dom';import {MantineProvider} from '@mantine/core';import '@mantine/core/styles.css';import {ExecutionSettings} from '/src/components/agents/ExecutionSettings.tsx';import {registerSyncEntityPersister} from '/src/api.ts';registerSyncEntityPersister(async(_workspace,documents)=>{for(const doc of documents){const row=JSON.parse(doc.payload);if(row.collection==='agent'&&row.id===window.agent.id)window.setAgent(row.value)}});
   const initial={id:'first',accountKey:'default',name:'First',source:'managed',model:'gpt-6-astra',effort:'low',fastMode:false,isLead:true,status:'idle',created:1,yoloMode:false,nextTurnSettingsSupported:true};
-  const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}]}));
-  window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferFail)throw new TypeError('Connection lost');return new Response(JSON.stringify({id:body.request_id,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
-  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshCount=0;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
+  const models=['gpt-6-astra','gpt-5.6-sol','gpt-5.6-luna','gpt-6-luna'].map(model=>({model,supportedReasoningEfforts:['low','medium','high','max'].map(reasoningEffort=>({reasoningEffort})),serviceTiers:[{id:'priority'}],availableAccessPrograms:{cyber:['standard','daybreakBlue']}}));
+  window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;const nativeFetch=window.fetch;window.fetch=async(input,options)=>{const url=input instanceof Request?new URL(input.url).pathname+new URL(input.url).search:input;options=input instanceof Request?{method:input.method,body:input.method==='GET'?undefined:await input.clone().text()}:options;if(String(url).startsWith('/api/models?')){window.catalogRequests.push(url);if(window.catalogHold)await new Promise(resolve=>window.catalogRelease=resolve);return new Response(JSON.stringify({data:String(url).includes('account_key=claude')?[{model:'claude-opus-4-6',provider:'claude',displayName:'Claude Opus 4.6',isDefault:true,supportedReasoningEfforts:[{reasoningEffort:'high'}]}]:models}),{headers:{'Content-Type':'application/json'}})}if(url=='/api/agents/account-transfer'){const body=JSON.parse(options.body);window.transfers.push(body);if(window.transferHold)await new Promise(resolve=>window.transferRelease=resolve);if(window.transferFail)throw new TypeError('Connection lost');return new Response(JSON.stringify(window.transferReply||{id:body.request_id,leadId:'first',scope:body.scope,status:'completed',targetAccountKey:body.account_key,completed:2,moved:2,total:3,_syncEntities:[{id:'entity:agent:first',seq:1,payload:JSON.stringify({collection:'agent',id:'first',value:{...window.agent,workerDefaults:{...window.agent.workerDefaults,accountKey:body.account_key}}})}],leftOnSource:[{id:'w-claude',name:'Claude worker',provider:'claude',reason:'Uses claude'}]}),{headers:{'Content-Type':'application/json'}})}if(url!='/api/conversation')return nativeFetch(url,options);window.calls.push(JSON.parse(options.body));if(window.serverAccount && window.calls.at(-1).expected_account_key!==window.serverAccount)return new Response(JSON.stringify({error:'The account changed. Select the model again'}),{status:409});if(window.hold)await new Promise(resolve=>window.release=resolve);if(window.fail==='network')throw new TypeError('Connection lost');return new Response(JSON.stringify(window.fail?{error:'Rejected'}:window.reply),{status:window.fail?409:200,headers:{'Content-Type':'application/json'}})};
+  function Fixture(){const[agent,setAgent]=useState(initial),[mount,setMount]=useState(0),[defaults,setDefaults]=useState(false);window.setAgent=value=>flushSync(()=>setAgent(value));window.agent=agent;window.reset=options=>flushSync(()=>{setAgent({...initial,...options?.agent});setDefaults(!!options?.defaults);setMount(value=>value+1);window.catalogRequests=[];window.calls=[];window.transfers=[];window.transferFail=false;window.transferHold=false;window.transferReply=null;window.catalogHold=false;window.reply=null;window.fail=null;window.hold=false;window.refreshFailure=false;window.refreshHold=false;window.refreshCount=0;window.release=null;window.refreshRelease=null;window.transferRelease=null;window.serverAccount=null;});return <MantineProvider><ExecutionSettings key={mount} agent={agent} teamDefaults={defaults} accounts={[{id:'default',label:'',email:'first@example.com',status:'ready'},{id:'second',label:'',email:'second@example.com',status:'ready'},{id:'claude',label:'Claude',provider:'claude',status:'ready'},{id:'offline',label:'Offline',status:'error'}]} team={[{id:'w1',name:'Codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w2',name:'Second codex worker',rootId:'first',provider:'codex',accountKey:'default'},{id:'w3',name:'Claude worker',rootId:'first',provider:'claude',accountKey:'claude'}]} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>{!defaults && <ExecutionSettings key={"permissions:"+mount} permissionsOnly agent={agent} catalog={{models,loading:false,error:'',retry:()=>{}}} refresh={async()=>{window.refreshCount++;if(window.refreshHold)await new Promise(resolve=>window.refreshRelease=resolve);if(window.refreshFailure)throw new Error('Snapshot unavailable')}}/>}</MantineProvider>}createRoot(document.getElementById('root')).render(<Fixture/>);`;
         },
       },
     ],
@@ -185,6 +191,302 @@ test("execution settings canonical browser", async ({ page }) => {
       );
       await value("max");
     });
+    await check("confirmed-response-before-refresh", async () => {
+      await reset();
+      await page.evaluate(() => {
+        window.reply = { ...window.agent, effort: "medium" };
+        window.refreshHold = true;
+      });
+      await effort().selectOption("high");
+      await page.waitForFunction(() => !!window.refreshRelease);
+      await value("medium");
+      assert.equal(await effort().isDisabled(), false);
+      assert.equal(await page.getByText("Saving…", { exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => window.refreshCount), 1);
+      await page.evaluate(() => {
+        window.refreshFailure = true;
+        window.refreshRelease();
+      });
+      await page
+        .getByRole("alert")
+        .filter({ hasText: "Settings saved. Snapshot unavailable" })
+        .waitFor();
+      await value("medium");
+      assert.equal(await effort().isDisabled(), false);
+    });
+    await check("server-confirmation-required", async () => {
+      await reset();
+      await page.evaluate(() => {
+        window.hold = true;
+        window.reply = { ...window.agent, effort: "medium" };
+      });
+      await effort().selectOption("high");
+      await page.waitForFunction(() => !!window.release);
+      await value("low");
+      assert.equal(await effort().isDisabled(), true);
+      assert.equal(await page.getByText("Saved", { exact: true }).count(), 0);
+      assert.equal(await page.evaluate(() => window.refreshCount), 0);
+      await page.evaluate(() => window.release());
+      await value("medium");
+      assert.equal(await effort().isDisabled(), false);
+    });
+    await check("model-and-modes-confirmation-required", async () => {
+      for (const field of ["model", "fastMode", "daybreakEnabled"]) {
+        await reset();
+        const target = field === "model" ? "gpt-5.6-sol" : true;
+        await page.evaluate(
+          ({ field, target }) => {
+            window.hold = true;
+            window.refreshHold = true;
+            window.reply = { ...window.agent, [field]: target };
+            window.release = null;
+            window.refreshRelease = null;
+          },
+          { field, target },
+        );
+        const model = page.getByLabel("Main agent model", { exact: true });
+        const toggle = page.getByRole("button", {
+          name: field === "fastMode" ? "Fast mode" : "Daybreak",
+          exact: true,
+        });
+        if (field === "model") await selectModel(model, target);
+        else await toggle.click();
+        await page.waitForFunction(() => !!window.release);
+        if (field === "model")
+          assert.equal(await modelValue(model), "gpt-6-astra");
+        else await expect(toggle).toHaveAttribute("aria-pressed", "false");
+        assert.equal(await page.evaluate(() => window.refreshCount), 0);
+        await page.evaluate(() => window.release());
+        await page.waitForFunction(() => !!window.refreshRelease);
+        if (field === "model")
+          await expect(model).toHaveAttribute("data-value", target);
+        else await expect(toggle).toHaveAttribute("aria-pressed", "true");
+        await expect(model).not.toHaveAttribute("aria-disabled", "true");
+        assert.equal(await effort().isDisabled(), false);
+        await page.evaluate(() => window.refreshRelease());
+      }
+    });
+    await check("review-and-permissions-confirmation-required", async () => {
+      await reset({ defaults: true });
+      await page.getByRole("button", { name: "Review", exact: true }).click();
+      await page.evaluate(() => {
+        window.hold = true;
+        window.refreshHold = true;
+        window.release = null;
+        window.refreshRelease = null;
+        window.reply = {
+          ...window.agent,
+          reviewDefaults: { model: "gpt-5.6-sol", effort: "high" },
+        };
+      });
+      const reviewModel = page.getByLabel("Default review model", {
+        exact: true,
+      });
+      await selectModel(reviewModel, "gpt-5.6-luna");
+      await page.waitForFunction(() => !!window.release);
+      assert.equal(await modelValue(reviewModel), "__model_default__");
+      await page.evaluate(() => window.release());
+      await page.waitForFunction(() => !!window.refreshRelease);
+      await expect(reviewModel).toHaveAttribute("data-value", "gpt-5.6-sol");
+      await expect(reviewModel).not.toHaveAttribute("aria-disabled", "true");
+      await page.evaluate(() => window.refreshRelease());
+      await reset();
+      await page.keyboard.press("Escape");
+      await page.getByText("Permissions", { exact: true }).click();
+      await page.evaluate(() => {
+        window.hold = true;
+        window.refreshHold = true;
+        window.release = null;
+        window.refreshRelease = null;
+        window.reply = { ...window.agent, yoloMode: true };
+      });
+      const permission = page.getByRole("switch", {
+        name: "Full access without approval",
+        exact: true,
+      });
+      await permission.click();
+      await page.waitForFunction(() => !!window.release);
+      await expect(permission).not.toBeChecked();
+      await expect(permission).toBeDisabled();
+      await page.evaluate(() => window.release());
+      await page.waitForFunction(() => !!window.refreshRelease);
+      await expect(permission).toBeChecked();
+      await expect(permission).toBeEnabled();
+      await page.evaluate(() => window.refreshRelease());
+    });
+    await check("account-default-transfer-confirmation", async () => {
+      await reset({ defaults: true });
+      const account = setupControl(
+        page.getByLabel("Subagent account", { exact: true }),
+      );
+      await page.evaluate(() => {
+        window.transferHold = true;
+        window.refreshHold = true;
+        window.transferRelease = null;
+        window.refreshRelease = null;
+      });
+      await account.selectOption("second");
+      await page.waitForFunction(() => !!window.transferRelease);
+      assert.equal(await account.inputValue(), "");
+      assert.equal(await account.isDisabled(), true);
+      await page.evaluate(() => {
+        window.transferReply = {
+          id: window.transfers[0].request_id,
+          leadId: "first",
+          targetAccountKey: "second",
+          scope: "subagents",
+          status: "pending",
+          total: 2,
+          completed: 0,
+          moved: 0,
+          waitingCount: 2,
+        };
+        window.transferRelease();
+      });
+      await page.waitForFunction(() => !!window.refreshRelease);
+      assert.equal(await account.inputValue(), "");
+      assert.equal(await account.isDisabled(), false);
+      await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
+      assert.equal(
+        await page.getByText(/Account transfer complete/).count(),
+        0,
+      );
+      await page.evaluate(() => window.refreshRelease());
+      await page.evaluate(() =>
+        window.setAgent({
+          ...window.agent,
+          workerDefaults: { accountKey: "second" },
+        }),
+      );
+      await expect(
+        page.getByLabel("Subagent account", { exact: true }),
+      ).toHaveAttribute("data-value", "second");
+      // Replay confirms the old operation, not a later default account.
+      await reset({
+        defaults: true,
+        agent: {
+          workerDefaults: { accountKey: "claude", model: "claude-opus-4-6" },
+        },
+      });
+      await page.evaluate(() => {
+        localStorage.setItem(
+          'subagent-account-transfer:["first","second"]',
+          JSON.stringify({ target: "second", request_id: "previous-request" }),
+        );
+        window.transferHold = true;
+      });
+      await account.selectOption("second");
+      await page.waitForFunction(() => !!window.transferRelease);
+      await page.evaluate(() => {
+        const requestId = window.transfers[0].request_id;
+        window.transferReply = {
+          id: "existing-operation",
+          leadId: "first",
+          targetAccountKey: "second",
+          scope: "subagents",
+          status: "completed",
+          requests: {
+            [requestId]: {
+              leadId: "first",
+              targetAccountKey: "second",
+              scope: "subagents",
+            },
+          },
+        };
+        window.transferRelease();
+      });
+      await expect(
+        page.getByText("Account transfer accepted.", { exact: true }),
+      ).toBeVisible();
+      await expect(
+        page.getByLabel("Subagent account", { exact: true }),
+      ).toHaveAttribute("data-value", "claude");
+      assert.equal(
+        await page.evaluate(() => window.transfers[0].request_id),
+        "previous-request",
+      );
+      await reset({ defaults: true });
+      await page.evaluate(() => (window.transferHold = true));
+      await account.selectOption("second");
+      await page.waitForFunction(() => !!window.transferRelease);
+      await page.evaluate(() => {
+        window.transferReply = {
+          id: window.transfers[0].request_id,
+          leadId: "first",
+          targetAccountKey: "second",
+          scope: "team",
+          status: "completed",
+        };
+        window.transferRelease();
+      });
+      await expect(page.getByRole("alert")).toContainText(
+        "The server did not confirm this account transfer.",
+      );
+      assert.equal(await account.inputValue(), "");
+      assert.equal(await page.evaluate(() => window.refreshCount), 0);
+      await expect(
+        page.getByRole("button", { name: "Retry", exact: true }),
+      ).toBeVisible();
+    });
+    await check("transfer-response-before-old-summary", async () => {
+      await reset({
+        defaults: true,
+        agent: {
+          workerDefaults: { accountKey: "second" },
+          accountTransfer: {
+            id: "pending-transfer",
+            scope: "subagents",
+            targetAccountKey: "second",
+            status: "pending",
+            updated: 1,
+            waitingCount: 2,
+          },
+        },
+      });
+      await page.evaluate(() => {
+        window.transferHold = true;
+        window.refreshHold = true;
+        window.transferReply = {
+          id: "pending-transfer",
+          leadId: "first",
+          targetAccountKey: "second",
+          scope: "subagents",
+          status: "cancelled",
+          updated: 2,
+        };
+      });
+      await page
+        .getByRole("button", { name: "Cancel remaining", exact: true })
+        .click();
+      await page.waitForFunction(() => !!window.transferRelease);
+      await expect(page.getByText("2 waiting", { exact: true })).toBeVisible();
+      await page.evaluate(() => window.transferRelease());
+      await page.waitForFunction(() => !!window.refreshRelease);
+      await expect(
+        page.getByRole("button", { name: "Cancel remaining", exact: true }),
+      ).toHaveCount(0);
+      await expect(page.getByText("2 waiting", { exact: true })).toHaveCount(0);
+      assert.equal(await effort(true).isDisabled(), false);
+      await page.evaluate(() => {
+        window.setAgent({
+          ...window.agent,
+          accountTransfer: { ...window.agent.accountTransfer, waitingCount: 9 },
+        });
+      });
+      await expect(page.getByText("9 waiting", { exact: true })).toHaveCount(0);
+      await page.evaluate(() => {
+        window.setAgent({
+          ...window.agent,
+          accountTransfer: {
+            ...window.agent.accountTransfer,
+            updated: 3,
+            waitingCount: 1,
+          },
+        });
+      });
+      await expect(page.getByText("1 waiting", { exact: true })).toBeVisible();
+      await page.evaluate(() => window.refreshRelease());
+    });
     await check("replay", async () => {
       await reset({ agent: { status: "running" } });
       await page.evaluate(() => (window.fail = "network"));
@@ -257,7 +559,7 @@ test("execution settings canonical browser", async ({ page }) => {
       if ((await button.getAttribute("aria-expanded")) === "false")
         await button.click();
       await page.getByRole("button", { name: "Check settings save" }).waitFor();
-      await value("high");
+      await value("low");
     });
     await check("late-scope-response", async () => {
       await reset();
@@ -326,13 +628,12 @@ test("execution settings canonical browser", async ({ page }) => {
       await dialog
         .getByRole("status")
         .filter({
-          hasText:
-            "Moving 1 subagent to Claude. 2 subagents stay on codex: Codex worker, Second codex worker.",
+          hasText: "Moved 2 subagents to Claude.",
         })
         .waitFor();
       await dialog
         .getByRole("status")
-        .filter({ hasText: /^Saved/ })
+        .filter({ hasText: "Account transfer accepted." })
         .waitFor();
       assert.deepEqual(
         await page.evaluate(() =>
@@ -432,7 +733,7 @@ test("execution settings canonical browser", async ({ page }) => {
       await dialog.getByRole("button", { name: "Retry", exact: true }).click();
       await dialog
         .getByRole("status")
-        .filter({ hasText: /^Saved/ })
+        .filter({ hasText: "Account transfer accepted." })
         .waitFor();
       const ids = await page.evaluate(() =>
         window.transfers.map((row) => row.request_id),
