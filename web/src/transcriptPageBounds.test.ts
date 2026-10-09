@@ -30,39 +30,126 @@ it("keeps both paging cursors on the held window boundary", () => {
   assert.equal(earlier.items[0]?.id, "m0");
   assert.equal(earlier.items.at(-1)?.id, "m239");
   assert.equal(earlier.after, "m239");
+  assert.equal(
+    earlier.after,
+    earlier.items.at(-1)?.id,
+    "the first forward request starts after the held edge rather than an old server cursor",
+  );
+  const heldIds = new Set(earlier.items.map((message) => message.id));
+  const firstForwardResponse = all.slice(
+    all.findIndex((message) => message.id === earlier.after) + 1,
+  );
+  assert.equal(firstForwardResponse[0]?.id, "m240");
+  assert.equal(
+    firstForwardResponse.some((message) => heldIds.has(message.id)),
+    false,
+    "the first forward response contains rows beyond the held edge, not duplicates",
+  );
 
-  const duplicateOnly = boundTranscriptPage(
-    merge(earlier.items, all.slice(60, 160)),
+  const forward = boundTranscriptPage(
+    merge(earlier.items, firstForwardResponse),
     sizeOf,
     "newer",
     {
       before: earlier.before,
       after: earlier.after,
       nextBefore: null,
-      nextAfter: "m159",
-    },
-    "m120",
-  );
-  assert.equal(duplicateOnly.items[0]?.id, "m0");
-  assert.equal(duplicateOnly.items.at(-1)?.id, "m239");
-  assert.equal(duplicateOnly.after, "m239");
-
-  const forward = boundTranscriptPage(
-    merge(duplicateOnly.items, all.slice(240)),
-    sizeOf,
-    "newer",
-    {
-      before: duplicateOnly.before,
-      after: duplicateOnly.after,
-      nextBefore: null,
       nextAfter: null,
     },
     "m120",
   );
+  assert.equal(forward.items[0]?.id, "m61");
   assert.equal(forward.items.at(-1)?.id, "m300");
   assert.equal(forward.after, null, "an exhausted page hides Later messages");
+  assert.equal(
+    forward.before,
+    forward.items[0]?.id,
+    "the older cursor follows the first row retained after the forward bound",
+  );
   assert.ok(forward.items.length <= 240);
   assert.ok(forward.bytes <= 4_000_000);
+});
+
+it("only offers Later when the held window omits newer rows", () => {
+  const all = Array.from({ length: 250 }, (_, index) => item(index));
+  const page = boundTranscriptPage(
+    merge(all.slice(30, 130), all.slice(130)),
+    sizeOf,
+    "older",
+    {
+      before: null,
+      after: null,
+      nextBefore: "m30",
+      nextAfter: "m129",
+    },
+  );
+  assert.equal(page.items.length, 220);
+  assert.equal(page.after, null);
+
+  const newestOnly = Array.from({ length: 100 }, (_, index) => item(index));
+  const newerWithoutOldHistory = boundTranscriptPage(
+    newestOnly,
+    sizeOf,
+    "newer",
+    {
+      before: null,
+      after: "m99",
+      nextBefore: null,
+      nextAfter: null,
+    },
+  );
+  assert.equal(newerWithoutOldHistory.items.length, 100);
+  assert.equal(newerWithoutOldHistory.before, null);
+
+  const olderAndClipped = boundTranscriptPage(
+    Array.from({ length: 260 }, (_, index) => item(index)),
+    sizeOf,
+    "older",
+    {
+      before: null,
+      after: null,
+      nextBefore: null,
+      nextAfter: "m259",
+    },
+  );
+  assert.equal(olderAndClipped.items.at(-1)?.id, "m239");
+  assert.equal(olderAndClipped.after, "m239");
+});
+
+it("keeps focused-around forward cursors on a locally clipped edge", () => {
+  const all = Array.from({ length: 301 }, (_, index) => item(index));
+  const around = boundTranscriptPage(
+    all,
+    sizeOf,
+    "around",
+    {
+      before: null,
+      after: null,
+      nextBefore: "m0",
+      nextAfter: "m300",
+    },
+    "m150",
+  );
+  assert.equal(around.items[0]?.id, "m30");
+  assert.equal(around.items.at(-1)?.id, "m269");
+  assert.equal(around.before, "m30");
+  assert.equal(around.after, "m269");
+});
+
+it("aligns the byte-bounded forward page cursors with its retained edges", () => {
+  const all = Array.from({ length: 40 }, (_, index) => item(index));
+  const byteBounded = boundTranscriptPage(all, () => 200_000, "newer", {
+    before: "m0",
+    after: "m19",
+    nextBefore: null,
+    nextAfter: "m39",
+  });
+  assert.equal(byteBounded.items.length, 20);
+  assert.equal(byteBounded.items[0]?.id, "m20");
+  assert.equal(byteBounded.items.at(-1)?.id, "m39");
+  assert.equal(byteBounded.before, "m20");
+  assert.equal(byteBounded.after, "m39");
+  assert.equal(byteBounded.bytes, 4_000_000);
 });
 
 it("advances the held window through several forward pages", () => {

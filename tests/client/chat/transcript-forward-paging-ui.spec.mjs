@@ -152,9 +152,29 @@ test("transcript paging returns from the oldest row to the newest", async ({
     const later = page.locator("#newer-messages");
     let forwardPages = 0;
     for (let attempt = 0; (await later.count()) && attempt < 10; attempt++) {
-      await page.locator("#messages").evaluate((root) => {
-        root.scrollTop = root.scrollHeight;
-        root.dispatchEvent(new Event("scroll"));
+      await later.scrollIntoViewIfNeeded();
+      await page.evaluate(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() => requestAnimationFrame(resolve)),
+          ),
+      );
+      const anchor = await page.locator("#messages").evaluate((root) => {
+        const bounds = root.getBoundingClientRect();
+        const visible = Array.from(
+          root.querySelectorAll("[data-message]"),
+        ).filter((row) => {
+          const box = row.getBoundingClientRect();
+          return (
+            box.height > 0 && box.bottom > bounds.top && box.top < bounds.bottom
+          );
+        });
+        const row = visible.at(-1);
+        if (!row) throw new Error("no transcript row is visible before paging");
+        return {
+          id: row.dataset.message,
+          offset: row.getBoundingClientRect().top - bounds.top,
+        };
       });
       const response = page.waitForResponse(
         (value) =>
@@ -171,9 +191,39 @@ test("transcript paging returns from the oldest row to the newest", async ({
       await page.evaluate(
         () => new Promise((resolve) => requestAnimationFrame(resolve)),
       );
+      await page.waitForFunction(
+        ({ id, offset }) => {
+          const root = document.querySelector("#messages");
+          const row = Array.from(
+            root?.querySelectorAll("[data-message]") || [],
+          ).find((candidate) => candidate.dataset.message === id);
+          if (!root || !row) return false;
+          const bounds = root.getBoundingClientRect();
+          const box = row.getBoundingClientRect();
+          const top = box.top - bounds.top;
+          return (
+            box.bottom >= bounds.top - 32 &&
+            box.top < bounds.bottom &&
+            Math.abs(top - offset) <= 32
+          );
+        },
+        anchor,
+        { timeout: 10_000 },
+      );
       forwardPages++;
     }
     await later.waitFor({ state: "detached" });
+    await page.locator("#messages").evaluate((root) => {
+      root.scrollTop = root.scrollHeight;
+      root.dispatchEvent(new Event("scroll"));
+    });
+    await page.evaluate(
+      () =>
+        new Promise((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(resolve)),
+        ),
+    );
+    await page.locator('[data-message="message-599"]').waitFor();
     assert.equal(
       await page.locator('[data-message="message-599"]').count(),
       1,

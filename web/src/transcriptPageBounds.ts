@@ -28,11 +28,17 @@ export function boundTranscriptPage(
   if (bounded.droppedOldest) before = bounded.items[0]?.id || before;
   if (direction === "older")
     after =
-      cursors.nextAfter || cursors.after
+      bounded.droppedNewest || cursors.after
         ? bounded.items.at(-1)?.id || null
         : null;
-  else if (direction === "newer")
-    after = cursors.nextAfter ? bounded.items.at(-1)?.id || null : null;
+  else if (direction === "newer") {
+    if (cursors.nextAfter) after = bounded.items.at(-1)?.id || null;
+    before =
+      bounded.droppedOldest || cursors.before
+        ? bounded.items[0]?.id || null
+        : null;
+  } else if (direction === "around" && bounded.droppedNewest)
+    after = bounded.items.at(-1)?.id || null;
   return { ...bounded, before, after };
 }
 
