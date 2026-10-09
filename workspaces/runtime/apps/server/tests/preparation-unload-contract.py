@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Delayed native unload callbacks cannot invalidate the next preparation."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 

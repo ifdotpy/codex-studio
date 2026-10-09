@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Real local command exit and cancellation through Studio, without model calls."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import importlib.util
 import json
 from pathlib import Path

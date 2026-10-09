@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Submitted task results have stable Markdown archives and bounded event delivery."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 

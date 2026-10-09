@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Read installed native history protocols in isolated state, with no model turn."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import CLAUDE_BRIDGE_ROOT, REPOSITORY_ROOT
 
 import importlib.util

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Agent entities omit internal recovery fields and lead-only overviews."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
