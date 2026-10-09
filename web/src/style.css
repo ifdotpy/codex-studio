@@ -577,6 +577,8 @@ p {
   line-height: 1.65;
   font-size: 14px;
   color: var(--text);
+  overflow-y: auto;
+  resize: none;
 }
 #message::placeholder {
   color: light-dark(#515a6c, #9696a5);
@@ -840,9 +842,15 @@ p {
 }
 /* Structured tasks and dialogs use Mantine controls and focus management. */
 #requests {
-  flex-shrink: 0;
-  max-height: 32%;
+  flex: 0 1 auto;
+  min-height: 0;
+  --requests-visible-limit: 50dvh;
+  max-height: min(
+    var(--requests-visible-limit),
+    var(--requests-visible-max-height, var(--requests-visible-limit))
+  );
   overflow: auto;
+  overscroll-behavior: contain;
   padding: 0 max(32px, calc((100% - 736px) / 2));
 }
 #requests:empty {

@@ -474,7 +474,6 @@ export default function Conversation(p: {
     setFollow,
     onScroll,
     remember,
-    revealRequest,
     getAnchorId,
   } = useConversationScroll(`${p.data.stateDir}:${kind}:${p.id}`, loaded);
   const input = useRef<HTMLTextAreaElement>(null);
@@ -1629,7 +1628,6 @@ export default function Conversation(p: {
           )}
           <Requests
             onAnswerOpen={() => setFollow(false)}
-            onAnswerPosition={revealRequest}
             mainAgentId={
               !p.room && agent?.isLead === false
                 ? agent.rootId || undefined
