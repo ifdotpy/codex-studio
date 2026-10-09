@@ -2255,6 +2255,8 @@ export interface components {
       origin: string | null;
       /** Publickey */
       publicKey: string;
+      /** Reachability */
+      reachability?: ("reachable" | "unreachable" | "unknown") | null;
       /** Revoked */
       revoked: number | null;
       /** Serverid */

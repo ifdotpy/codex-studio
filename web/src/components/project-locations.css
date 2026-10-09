@@ -49,3 +49,20 @@
 .project-location-row small {
   color: var(--muted);
 }
+
+.picker .project-location-actions {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.project-location-actions svg {
+  flex-shrink: 0;
+}
+.project-server-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

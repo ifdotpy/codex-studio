@@ -8,6 +8,7 @@ export type ServerAccessPeer = {
   publicKey: string;
   tailscaleUser: string;
   status: "discovered" | "paired" | "revoked" | "unreachable";
+  reachability?: "reachable" | "unreachable" | "unknown" | null;
   created: number;
   lastSeen: number | null;
   autoPair: boolean | null;

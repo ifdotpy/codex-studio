@@ -194,6 +194,19 @@ class ProjectLocationTests(unittest.TestCase):
             key = settings_key(self.home, db, chat['cwd'], chat)
         self.assertEqual(select(self.home, {}, chat['cwd'], project_key=key), 'linux')
 
+    def test_logical_folder_with_a_bound_chat_cannot_be_removed(self) -> None:
+        import uuid
+        project_id = self.abstract_with_local_location('occupied-logical-folder')
+        folder_id = str(uuid.uuid4())
+        self.home.projects({'action': 'add_folder', 'path': project_id, 'name': 'Notes',
+                            'folder_id': folder_id, 'expected_revision': 0})
+        self.bound_chat(project_id, project_folder=folder_id)
+        with self.assertRaisesRegex(ValueError, 'still contains chats'):
+            self.home.projects({'action': 'remove_folder', 'path': project_id,
+                                'folder_id': folder_id, 'expected_revision': 1})
+        current = next(row for row in self.home.projects()['items'] if row['id'] == project_id)
+        self.assertEqual(current['folders'][0]['id'], folder_id)
+
     def test_chat_creation_uses_registered_destination_binding(self) -> None:
         import uuid
         self.home.projects(self.args)
@@ -327,6 +340,18 @@ class SignedProjectLocationTests(unittest.TestCase):
         self.assertEqual(browse.status_code, 200, browse.text)
         self.assertIn({'name': self.folder.name, 'path': str(self.folder)}, browse.json()['directories'])
 
+    def test_browser_reads_a_definite_refusal_receipt(self) -> None:
+        args = {**self.args, 'path': str(self.folder / 'missing')}
+        response = self.a.client.post('/api/projects', json=args, headers={'X-Canvas-Token': 'test-token'})
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()['outcome'], 'not_applied')
+        before = len(self.case.actions('add_location'))
+        retried = self.a.client.post('/api/projects', json=args, headers={'X-Canvas-Token': 'test-token'})
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertEqual(retried.json(), response.json())
+        self.assertEqual(len(self.case.actions('add_location')), before)
+        self.assertEqual(len(self.a.runtime.projects()['items'][0]['locations']), 1)
+
     def test_browser_creates_remote_only_project_and_destination_chat(self) -> None:
         import uuid
         response = self.a.client.post('/api/projects', json={'server': self.b.server_id,
@@ -360,6 +385,21 @@ class SignedProjectLocationTests(unittest.TestCase):
                     self.b.runtime.new_lead(args)
                 with self.b.runtime.read_db() as db:
                     self.assertIsNone(db.execute('SELECT 1 FROM runtime_agents WHERE id=?', (args['id'],)).fetchone())
+
+    def test_paired_server_exposes_unreachable_discovery_separately(self) -> None:
+        service = self.a.runtime.paired_access()
+        discovery = service.discovery()
+        with self.a.runtime.db() as db:
+            db.execute('INSERT OR REPLACE INTO runtime_access_discovered(id,record) VALUES(?,?)',
+                       (self.b.server_id, json.dumps({'id': self.b.server_id, 'status': 'unreachable'})))
+        peer = next(row for row in service.servers() if row['id'] == self.b.server_id)
+        self.assertEqual(peer['status'], 'paired')
+        self.assertEqual(peer.get('reachability'), 'unreachable')
+        response = self.a.client.get('/api/multi-server', headers={'X-Canvas-Token': 'test-token'})
+        self.assertEqual(response.status_code, 200, response.text)
+        public = next(row for row in response.json()['servers'] if row['id'] == self.b.server_id)
+        self.assertEqual(public['reachability'], 'unreachable')
+        discovery._unreachable(str(peer['origin']))
 
     def test_wrong_owner_is_refused_before_project_registration(self) -> None:
         self.b.runtime.paired_access().identity_cache.clear()

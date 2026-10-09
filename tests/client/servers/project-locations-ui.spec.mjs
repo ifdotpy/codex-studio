@@ -1,11 +1,9 @@
 import { test, expect } from "../playwright.mjs";
 import { fixture } from "./multi-server-fixture.mjs";
 
-test("project folders, remote browse, and New chat server choice", async ({
-  page,
-  context,
-}, testInfo) => {
-  test.setTimeout(180000);
+test.setTimeout(180000);
+
+async function projectFixtures(offline = false) {
   const leads = [];
   const browses = [];
   const registrations = [];
@@ -42,7 +40,23 @@ test("project folders, remote browse, and New chat server choice", async ({
     },
   });
   const local = await fixture("Local", false, {
-    handle({ url, body, json, snapshot }) {
+    handle({ url, body, request, json, snapshot }) {
+      if (url.pathname === "/api/leads") {
+        leads.push({
+          ...body,
+          server: "local",
+          token: request.headers["x-canvas-token"],
+        });
+        json({
+          ...snapshot.threads[0],
+          id: body.id,
+          cwd: body.cwd,
+          accountKey: "logical-account",
+          projectId: body.project_id,
+          projectServerId: body.project_server_id,
+        });
+        return true;
+      }
       if (url.pathname === "/api/projects") {
         if (body.path) {
           registrations.push(body);
@@ -74,7 +88,27 @@ test("project folders, remote browse, and New chat server choice", async ({
       return true;
     },
   });
-  local.snapshot.runtime.projects = [project];
+  project.accountKey = "logical-account";
+  local.snapshot.runtime.projects = [
+    project,
+    {
+      id: "/Projects/chrompile",
+      path: "/Projects/chrompile",
+      name: "attar",
+      accountKey: "default",
+      homeServerId: "local",
+      locations: [
+        {
+          serverId: "local",
+          path: "/Projects/chrompile",
+          projectId: "/Projects/chrompile",
+        },
+      ],
+      projectAliases: [
+        { serverId: "local", projectId: project.id, name: "attar" },
+      ],
+    },
+  ];
   Object.assign(local.snapshot.threads[0], {
     cwd: "/Projects/chrompile",
     projectId: project.id,
@@ -105,31 +139,45 @@ test("project folders, remote browse, and New chat server choice", async ({
     projectServerId: "local",
     updated: Date.now() / 1000,
   });
-  local.discoverPeer(remote);
+  local.discoverPeer(remote, "paired", offline ? "unreachable" : "reachable");
+  return { leads, browses, registrations, project, local, remote };
+}
+
+async function openFixtures(page, context, local, remote) {
+  await context.addInitScript(
+    ({ destination, source }) => {
+      const native = window.fetch.bind(window);
+      window.fetch = async (input, init) => {
+        const request = new Request(input, init);
+        const url = new URL(request.url);
+        if (url.origin !== source) return native(request);
+        const bytes = await request.clone().arrayBuffer();
+        return native(destination + url.pathname + url.search, {
+          method: request.method,
+          headers: request.headers,
+          ...(bytes.byteLength ? { body: bytes } : {}),
+          signal: request.signal,
+          redirect: "error",
+          credentials: "omit",
+        });
+      };
+    },
+    { destination: remote.origin, source: remote.invitation.origin },
+  );
+  await page.goto(local.origin);
+}
+
+test("project folders, remote browse, and New chat server choice", async ({
+  page,
+  context,
+}, testInfo) => {
+  test.setTimeout(180000);
+  const { leads, browses, registrations, project, local, remote } =
+    await projectFixtures();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
   try {
-    await context.addInitScript(
-      ({ destination, source }) => {
-        const native = window.fetch.bind(window);
-        window.fetch = async (input, init) => {
-          const request = new Request(input, init);
-          const url = new URL(request.url);
-          if (url.origin !== source) return native(request);
-          const bytes = await request.clone().arrayBuffer();
-          return native(destination + url.pathname + url.search, {
-            method: request.method,
-            headers: request.headers,
-            ...(bytes.byteLength ? { body: bytes } : {}),
-            signal: request.signal,
-            redirect: "error",
-            credentials: "omit",
-          });
-        };
-      },
-      { destination: remote.origin, source: remote.invitation.origin },
-    );
-    await page.goto(local.origin);
+    await openFixtures(page, context, local, remote);
     const group = page.locator(
       '.server-sidebar [data-project-path="project:logical"]',
     );
@@ -141,6 +189,15 @@ test("project folders, remote browse, and New chat server choice", async ({
       .getByRole("button", { name: "New chat in attar", exact: true })
       .click();
     const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(leads).toHaveLength(0);
+    await group
+      .getByRole("button", { name: "New chat in attar", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("button", { name: "Start chat", exact: true }),
+    ).toHaveAttribute("data-variant", "filled");
     const remoteCard = dialog.getByRole("button", {
       name: /Remote.*Active.*\/Projects\/attar/,
     });
@@ -154,10 +211,11 @@ test("project folders, remote browse, and New chat server choice", async ({
     await remoteCard.click();
     await expect(remoteCard).toHaveAttribute("aria-pressed", "true");
     await page.screenshot({
+      animations: "disabled",
       path: testInfo.outputPath("new-chat-server-cards.png"),
     });
     await dialog
-      .getByRole("button", { name: "Create chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await expect.poll(() => leads.length).toBe(1);
     expect(leads[0].cwd).toBe("/Projects/attar");
@@ -180,7 +238,10 @@ test("project folders, remote browse, and New chat server choice", async ({
       folders.getByText("/Projects/attar", { exact: true }),
     ).toBeVisible();
     await expect(folders.getByText("HEAD 12345678")).toHaveCount(2);
-    await page.screenshot({ path: testInfo.outputPath("project-folders.png") });
+    await page.screenshot({
+      animations: "disabled",
+      path: testInfo.outputPath("project-folders.png"),
+    });
     await folders.getByRole("button", { name: "Close", exact: true }).click();
     await page
       .locator(".server-sidebar")
@@ -193,6 +254,7 @@ test("project folders, remote browse, and New chat server choice", async ({
       "/remote/home",
     );
     await page.screenshot({
+      animations: "disabled",
       path: testInfo.outputPath("remote-folder-browser.png"),
     });
     await add.getByRole("button", { name: /attar/ }).click();
@@ -214,8 +276,126 @@ test("project folders, remote browse, and New chat server choice", async ({
     );
     expect(errors).toEqual([]);
     await page.screenshot({
+      animations: "disabled",
       path: testInfo.outputPath("project-locations.png"),
     });
+  } finally {
+    await local.close();
+    await remote.close();
+  }
+});
+
+test("bound local New chat lets the logical project choose its account", async ({
+  page,
+  context,
+}) => {
+  const { local, remote, leads } = await projectFixtures();
+  try {
+    await openFixtures(page, context, local, remote);
+    const group = page.locator(
+      '.server-sidebar [data-project-path="project:logical"]',
+    );
+    await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
+      timeout: 20000,
+    });
+    await group
+      .getByRole("button", { name: "New chat in attar", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+    await dialog
+      .getByRole("button", { name: /This Mac.*Active.*chrompile/ })
+      .click();
+    await dialog
+      .getByRole("button", { name: "Start chat", exact: true })
+      .click();
+    await expect.poll(() => leads.length).toBe(1);
+    expect(leads[0].project_id).toBe("project:logical");
+    expect(leads[0].account_key).toBeUndefined();
+  } finally {
+    await local.close();
+    await remote.close();
+  }
+});
+
+test("project folder menu keeps the SidebarRow icon size", async ({
+  page,
+  context,
+}) => {
+  const { local, remote } = await projectFixtures();
+  try {
+    await openFixtures(page, context, local, remote);
+    const group = page.locator(
+      '.server-sidebar [data-project-path="project:logical"]',
+    );
+    await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
+      timeout: 20000,
+    });
+    await group
+      .getByRole("button", { name: "Options for project attar", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
+    const frame = page.frameLocator('iframe[title="Studio on This computer"]');
+    const button = frame.getByRole("button", {
+      name: "Options for folder /Projects/chrompile",
+      exact: true,
+    });
+    await expect(button).toBeVisible();
+    const icon = await button.locator("svg").boundingBox();
+    expect(icon.width).toBe(16);
+    expect(icon.height).toBe(16);
+  } finally {
+    await local.close();
+    await remote.close();
+  }
+});
+
+test("offline paired server is disabled in all project choices", async ({
+  page,
+  context,
+}) => {
+  const { local, remote } = await projectFixtures(true);
+  try {
+    await openFixtures(page, context, local, remote);
+    const group = page.locator(
+      '.server-sidebar [data-project-path="project:logical"]',
+    );
+    await expect(group.getByText("Remote chat", { exact: true })).toBeVisible({
+      timeout: 20000,
+    });
+    await group
+      .getByRole("button", { name: "New chat in attar", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", { name: "New chat", exact: true });
+    await expect(
+      dialog.getByRole("button", { name: /Remote.*Offline.*attar/ }),
+    ).toBeDisabled();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await page
+      .locator(".server-sidebar")
+      .getByRole("button", { name: "Add project", exact: true })
+      .click();
+    const frame = page.frameLocator('iframe[title="Studio on This computer"]');
+    const add = frame.getByRole("dialog", { name: "Add project", exact: true });
+    await add.getByLabel("Server", { exact: true }).click();
+    await expect(
+      frame.getByRole("option", { name: "Remote (Offline)", exact: true }),
+    ).toHaveAttribute("data-combobox-disabled", "true");
+    await add.getByRole("button", { name: "Close", exact: true }).click();
+    await group
+      .getByRole("button", { name: "Options for project attar", exact: true })
+      .click();
+    await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
+    const folders = frame.getByRole("dialog", {
+      name: "Project settings",
+      exact: true,
+    });
+    await folders
+      .getByRole("button", { name: "Add folder", exact: true })
+      .click();
+    await folders.getByLabel("Server", { exact: true }).click();
+    await expect(
+      frame.getByRole("option", { name: "Remote (Offline)", exact: true }),
+    ).toHaveAttribute("data-combobox-disabled", "true");
   } finally {
     await local.close();
     await remote.close();

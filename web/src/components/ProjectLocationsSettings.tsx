@@ -1,9 +1,10 @@
 import { ActionIcon, Button, Menu } from "@mantine/core";
 import { MoreHorizontal } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
-import { ApiError, errorText, get } from "../api";
+import { errorText, get } from "../api";
 import {
   saveProjectLocation,
+  ProjectReceiptRefused,
   type LocationProject,
   type ProjectServerChoice,
 } from "../servers/projectLocations";
@@ -70,12 +71,7 @@ export default function ProjectLocationsSettings({
       project: project.id,
       request_id: request.current.id,
     }).catch((error: unknown) => {
-      if (
-        !old &&
-        error instanceof ApiError &&
-        [400, 403, 404, 422].includes(error.status)
-      )
-        request.current = null;
+      if (error instanceof ProjectReceiptRefused) request.current = null;
       throw error;
     });
     request.current = null;
@@ -102,6 +98,8 @@ export default function ProjectLocationsSettings({
           <Menu withinPortal>
             <Menu.Target>
               <ActionIcon
+                className="project-location-actions"
+                size={28}
                 aria-label={`Options for folder ${location.path}`}
                 disabled={busy}
               >

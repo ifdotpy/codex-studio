@@ -612,6 +612,12 @@ export default function MultiServerApp() {
           navigation={navigation}
           servers={servers}
           statuses={status}
+          reachability={Object.fromEntries(
+            (discovery.snapshot?.servers || []).map((server) => [
+              server.id,
+              server.reachability,
+            ]),
+          )}
           current={current}
           query={query}
           send={send}

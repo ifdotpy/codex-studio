@@ -45,6 +45,7 @@ class AccessClient(ContractModel):
     created: float
     lastAccess: float | None
     revoked: float | None
+    reachability: Literal["reachable", "unreachable", "unknown"] | None = None
     lastSeen: float | None = None
     autoPair: bool | None = None
 

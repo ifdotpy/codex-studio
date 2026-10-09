@@ -14,12 +14,14 @@ export default function ProjectServerCards({
   lastServer,
   onChoose,
   onAdd,
+  onCancel,
 }: {
   project: LocationProject;
   servers: ProjectServerChoice[];
   lastServer?: string;
   onChoose: (location: ProjectLocation) => void;
   onAdd: (server: string) => void;
+  onCancel: () => void;
 }) {
   const [selected, setSelected] = useState(() => {
     const available = (id: string) => {
@@ -74,16 +76,21 @@ export default function ProjectServerCards({
           );
         })}
       </div>
-      <Button
-        disabled={
-          !location || !!servers.find((row) => row.id === selected)?.disabled
-        }
-        onClick={() =>
-          location && onChoose({ ...location, serverId: selected })
-        }
-      >
-        Create chat
-      </Button>
+      <div className="project-server-actions">
+        <Button onClick={onCancel}>Cancel</Button>
+        <Button
+          variant="filled"
+          color="indigo"
+          disabled={
+            !location || !!servers.find((row) => row.id === selected)?.disabled
+          }
+          onClick={() =>
+            location && onChoose({ ...location, serverId: selected })
+          }
+        >
+          Start chat
+        </Button>
+      </div>
     </div>
   );
 }

@@ -1298,6 +1298,7 @@ export default function App() {
                   );
               }}
               onAdd={(server) => openProjectFolders(project.id, server)}
+              onCancel={() => setModal(null)}
             />
           ),
         });
@@ -1378,7 +1379,8 @@ export default function App() {
           }
         : {}),
       ...(projectFolder ? { project_folder: projectFolder } : {}),
-      ...(cwd &&
+      ...(!projectBinding &&
+      cwd &&
       data?.runtime?.projects?.find((project) => project.path === cwd)
         ?.accountKey
         ? {

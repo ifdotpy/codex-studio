@@ -109,7 +109,7 @@ def organize_project(runtime, data):
                 folders.append({'id': folder_id, 'name': name, 'parentId': parent})
         else:
             occupied = any(folder.get('parentId') == folder_id for folder in folders)
-            occupied = occupied or db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.cwd')=? AND json_extract(record,'$.projectFolder')=? AND json_extract(record,'$.deletedAt') IS NULL LIMIT 1", (path, folder_id)).fetchone()
+            occupied = occupied or db.execute("SELECT 1 FROM runtime_agents WHERE (json_extract(record,'$.cwd')=? OR json_extract(record,'$.projectId')=?) AND json_extract(record,'$.projectFolder')=? AND json_extract(record,'$.deletedAt') IS NULL LIMIT 1", (path, path, folder_id)).fetchone()
             if occupied:
                 raise ValueError('This folder still contains chats or subfolders')
             folders = [folder for folder in folders if folder['id'] != folder_id]

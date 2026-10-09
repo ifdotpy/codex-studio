@@ -1,4 +1,4 @@
-import { ApiError, get, post, refreshSession } from "../api";
+import { get, post, refreshSession } from "../api";
 import { serverLocalStorage } from "./storage";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 import type { StudioServer } from "./registry";
@@ -31,13 +31,16 @@ export type ProjectServerChoice = {
 export function projectServerChoices(
   servers: StudioServer[],
   statuses: Record<string, ResourceConnectionState>,
+  reachability: Record<string, string | null | undefined> = {},
 ): ProjectServerChoice[] {
   return servers.map((server) => ({
     id: server.id,
     label: server.id === "local" ? "This Mac" : server.label,
-    disabled: ["offline", "degraded", "schema-mismatch"].includes(
-      statuses[server.id] || "",
-    ),
+    disabled:
+      reachability[server.id] === "unreachable" ||
+      ["offline", "degraded", "schema-mismatch"].includes(
+        statuses[server.id] || "",
+      ),
   }));
 }
 export async function readProjectServers(): Promise<ProjectServerChoice[]> {
@@ -52,7 +55,9 @@ export async function readProjectServers(): Promise<ProjectServerChoice[]> {
       .map((server) => ({
         id: server.id,
         label: server.label,
-        disabled: server.status === "unreachable",
+        disabled:
+          server.status === "unreachable" ||
+          server.reachability === "unreachable",
       })),
   ];
 }
@@ -74,16 +79,14 @@ export function durableProjectRequest(
   return {
     id,
     finish,
-    reject(error: unknown) {
-      if (
-        !existing &&
-        error instanceof ApiError &&
-        [400, 403, 404, 422].includes(error.status)
-      )
-        finish();
+    // An HTTP error cannot prove whether the destination applied the effect.
+    reject(_error: unknown) {
+      return id;
     },
   };
 }
+export class ProjectReceiptRefused extends Error {}
+
 export async function saveProjectLocation(body: {
   action: "add_location" | "remove_location";
   project: string;
@@ -102,6 +105,12 @@ export async function saveProjectLocation(body: {
     request.reject(error);
     throw error;
   });
+  if ("outcome" in result && result.outcome === "not_applied") {
+    request.finish();
+    throw new ProjectReceiptRefused(
+      result.error || "The location change was refused.",
+    );
+  }
   if (!("outcome" in result) || result.outcome !== "applied")
     throw new Error(
       "The location change is pending. Retry this request to read its result.",
@@ -128,6 +137,12 @@ export async function registerProject(
     request.reject(error);
     throw error;
   });
+  if ("outcome" in result && result.outcome === "not_applied") {
+    request.finish();
+    throw new ProjectReceiptRefused(
+      result.error || "The project request was refused.",
+    );
+  }
   if ("outcome" in result && result.outcome !== "applied")
     throw new Error(
       "The project request is pending. Retry this request to read its result.",

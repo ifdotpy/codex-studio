@@ -4,6 +4,7 @@ export type DiscoveredServer = {
   label: string;
   origin: string;
   status: "discovered" | "paired" | "revoked" | "unreachable";
+  reachability?: "reachable" | "unreachable" | "unknown" | null;
   lastSeen: number | null;
   paired: boolean;
   publicKey: string;
@@ -44,6 +45,7 @@ export function discoverySnapshot(
         label: peer.label,
         origin: serveOrigin(peer.origin!),
         status: peer.status,
+        reachability: peer.reachability,
         lastSeen: peer.lastSeen ?? null,
         paired: peer.status === "paired",
         publicKey: peer.publicKey,

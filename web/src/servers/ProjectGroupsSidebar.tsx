@@ -14,6 +14,7 @@ export default function ProjectGroupsSidebar({
   navigation,
   servers,
   statuses,
+  reachability,
   current,
   query,
   send,
@@ -21,6 +22,7 @@ export default function ProjectGroupsSidebar({
   navigation: Record<string, ServerNavigation>;
   servers: StudioServer[];
   statuses: Record<string, ResourceConnectionState>;
+  reachability?: Record<string, string | null | undefined>;
   current: string;
   query: string;
   send: (server: string, command: ServerCommand) => void;
@@ -33,7 +35,7 @@ export default function ProjectGroupsSidebar({
   const [compact, setCompact] = useState<Record<string, boolean>>(() =>
     saved("studio-logical-project-compact", {}),
   );
-  const choices = projectServerChoices(servers, statuses);
+  const choices = projectServerChoices(servers, statuses, reachability);
   const aliases = Object.fromEntries(
     servers.map((server) => [
       server.id,
@@ -185,6 +187,7 @@ export default function ProjectGroupsSidebar({
               });
               setChoosing(null);
             }}
+            onCancel={() => setChoosing(null)}
             onAdd={(server) => {
               send(choosing.owner, {
                 action: "project-folders",

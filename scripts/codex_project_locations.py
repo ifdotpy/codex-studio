@@ -136,8 +136,6 @@ def request(runtime: Any, data: dict[str, Any], *, actor: dict[str, Any] | None 
                 payload['location'] = location
             service.queue(db, server, action, payload, key)
     result = service.deliver(key)
-    if result['outcome'] == 'not_applied':
-        raise ValueError(result['error'])
     return cast(dict[str, Any], result)
 
 
