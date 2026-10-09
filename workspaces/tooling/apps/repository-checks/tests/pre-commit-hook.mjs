@@ -17,10 +17,13 @@ import { spawnSync } from "node:child_process";
 
 const repositoryRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
-  "..",
+  "../../../../..",
 );
 const hookSource = path.join(repositoryRoot, ".githooks", "pre-commit");
-const checkSource = path.join(repositoryRoot, "scripts", "check-code.mjs");
+const checkSource = path.join(
+  repositoryRoot,
+  "workspaces/tooling/apps/repository-checks/check-code.mjs",
+);
 const temporaryRoots = [];
 
 function command(program, args, cwd, options = {}) {
@@ -43,11 +46,16 @@ function fixture() {
   const root = mkdtempSync(path.join(os.tmpdir(), "codex-hook-fixture-"));
   temporaryRoots.push(root);
   mkdirSync(path.join(root, ".githooks"), { recursive: true });
-  mkdirSync(path.join(root, "scripts"), { recursive: true });
+  const checkerPath = path.join(
+    root,
+    "workspaces/tooling/apps/repository-checks/check-code.mjs",
+  );
+  mkdirSync(path.dirname(checkerPath), { recursive: true });
+  mkdirSync(path.join(root, "node_modules", ".bin"), { recursive: true });
   mkdirSync(path.join(root, "node_modules"), { recursive: true });
   copyFileSync(hookSource, path.join(root, ".githooks", "pre-commit"));
   chmodSync(path.join(root, ".githooks", "pre-commit"), 0o755);
-  copyFileSync(checkSource, path.join(root, "scripts", "check-code.mjs"));
+  copyFileSync(checkSource, checkerPath);
   for (const config of [".oxlintrc.json", ".oxfmtrc.json"]) {
     copyFileSync(path.join(repositoryRoot, config), path.join(root, config));
   }
@@ -55,6 +63,11 @@ function fixture() {
     symlinkSync(
       path.join(repositoryRoot, "node_modules", dependency),
       path.join(root, "node_modules", dependency),
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    symlinkSync(
+      path.join(repositoryRoot, "node_modules", ".bin", dependency),
+      path.join(root, "node_modules", ".bin", dependency),
       process.platform === "win32" ? "junction" : "dir",
     );
   }
@@ -244,8 +257,8 @@ try {
 
   {
     const root = fixture();
-    unlinkSync(path.join(root, "node_modules", "oxlint"));
-    unlinkSync(path.join(root, "node_modules", "oxfmt"));
+    unlinkSync(path.join(root, "node_modules", ".bin", "oxlint"));
+    unlinkSync(path.join(root, "node_modules", ".bin", "oxfmt"));
     stage(root, "web/src/no-tools.js", "export const value = 1;\n");
     const result = runHook(root);
     assert.notEqual(
@@ -253,7 +266,10 @@ try {
       0,
       "missing local dependencies should reject a commit",
     );
-    assert.match(result.stderr + result.stdout, /missing.*npm ci/i);
+    assert.match(
+      result.stderr + result.stdout,
+      /missing.*pnpm install --frozen-lockfile/i,
+    );
   }
 
   console.log("Pre-commit staged-content fixtures passed.");
