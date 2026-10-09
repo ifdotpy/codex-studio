@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import { createRequire } from "node:module";
-import { serverFrameHost } from "./frameOrigin";
+import { frameURL, serverFrameHost } from "./frameOrigin";
 const native = createRequire(import.meta.url)(
   "../../../desktop/frame-owner.cjs",
 );
@@ -32,3 +32,30 @@ it("uses distinct DNS-valid frame hosts for case-sensitive IDs, UUIDs and maximu
     ).toBeUndefined();
   }
 });
+it.each(["classic", "combined"])(
+  "accepts the renderer's %s frame URL at the native boundary",
+  (navigation) => {
+    const shell = "http://127.0.0.1:4620";
+    const assets = "http://127.0.0.1:4621";
+    const url = frameURL(
+      { id: "local", label: "This computer", origin: shell },
+      `${shell}/?studio-navigation=${navigation}`,
+      assets,
+    );
+    expect(native.frameOwner(url, assets, shell)).toBe("local");
+    for (const query of [
+      "studio-navigation=invalid",
+      "studio-navigation=classic&studio-navigation=combined",
+      "unknown=classic",
+      "studio-parent=http://other.localhost:4620",
+      "studio-server=remote",
+    ]) {
+      const invalid = new URL(url);
+      const keys = new Set(new URLSearchParams(query).keys());
+      for (const key of keys) invalid.searchParams.delete(key);
+      for (const [key, value] of new URLSearchParams(query))
+        invalid.searchParams.append(key, value);
+      expect(native.frameOwner(invalid.href, assets, shell)).toBeUndefined();
+    }
+  },
+);

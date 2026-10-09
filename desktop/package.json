@@ -13,6 +13,7 @@
     "start:ui": "electron . --ui-only",
     "test": "node ../web/node_modules/vitest/vitest.mjs run --config vitest.config.mjs && python3 -B recovery-test.py",
     "test:native": "node test.mjs",
+    "test:server-frames": "node server-frames-native.mjs",
     "test:package": "node package-test.mjs"
   },
   "devDependencies": {
