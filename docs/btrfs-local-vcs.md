@@ -20,6 +20,16 @@ implements the commands on btrfs states and has equal convenience.
    ([Linux VM workspaces](linux-vm-workspaces.md)). APFS (macOS projects such as Xcode) is
    deferred. Windows is not supported.
 3. Snapshot rules and metadata design: as in this document.
+4. The workflow is fully agentic: the user does not read code or open an IDE. The main line of a
+   project belongs to the lead. The lead accepts a worker result after its own review, merges it
+   into the main line and resolves conflicts.
+5. Export: one commit per task. The lead decides when a task goes to the remote.
+6. For Linux projects on macOS, the folder on the Mac is the source of truth. The VM keeps a
+   synchronized copy (see "Main line on macOS").
+7. The current work continues: the image workspace engine ([image workspaces](workspace-images.md),
+   overlayfs on Linux) and [Linux VM workspaces](linux-vm-workspaces.md) (git status change
+   detector). The utility later replaces their internals behind the same public API.
+8. No staged rollout: all parts of the utility are built together.
 
 ## Data model
 
@@ -122,6 +132,25 @@ Each record also stores the line pointers before and after the operation. States
 undo of any operation only restores the previous pointers: O(1). Undo is itself a new record, so
 it can be undone too.
 
+## Main line on macOS
+
+The lead and reviewers run on the Mac host. The main line is the project folder on the Mac. The VM
+holds a mirror line of it on btrfs, and worker lines start from states of that mirror.
+
+- Mac to VM: FSEvents on the project folder gives the changed paths since the last event id. Only
+  those files go to the mirror line, then a state is saved. Cost O(changes). `MustScanSubDirs`
+  falls back to a scan of that folder.
+- VM to Mac: when the lead merges a worker line, the merge runs against the mirror line. The base
+  versions come from the worker's base state, and the main-line side comes from the mirror. Only
+  the changed files are written back to the Mac folder, each with an atomic rename.
+- No echo loop: the writer records a token (path, size, modification time, content hash) for each
+  file it writes to the Mac. FSEvents events that match a token are not sent back to the VM.
+- Concurrent edits: if a Mac file changed after the merge read it, the write-back stops for that
+  path and the merge records a conflict instead of a silent overwrite.
+- The lead's `git` on the Mac is the drop-in utility. Commands for this project are forwarded to the
+  VM utility over the existing guest channel. They run on the mirror line, and their results are
+  written back as above.
+
 ## Merge engine
 
 1. Find the common ancestor state in the graph.
@@ -221,8 +250,7 @@ replication between machines.
 - Which git porcelain and plumbing commands the utility implements first, and which use passthrough.
 - The passthrough repository needs an index for the current state; build it on demand and cache it
   per state.
-- How the user's macOS folder syncs with its VM copy in both directions (FSEvents to the VM, changed
-  files back).
+- Measure the two-way Mac and VM sync at chromium scale, including the echo tokens.
 - Directory-level merge cases listed above.
 - Replace overlayfs with writable snapshots for Linux workspaces
   ([image workspaces](workspace-images.md) uses overlayfs today).
