@@ -59,3 +59,14 @@ it.each(["classic", "combined"])(
     }
   },
 );
+it.each(["", "?studio-navigation=combined", "?studio-navigation=invalid"])(
+  "uses combined frames for the default and harmless diagnostic URLs (%s)",
+  (query) => {
+    const url = frameURL(
+      { id: "local", label: "This computer", origin: "http://127.0.0.1:4620" },
+      "http://127.0.0.1:4620/" + query,
+      "http://127.0.0.1:4621",
+    );
+    expect(new URL(url).searchParams.get("studio-navigation")).toBe("combined");
+  },
+);

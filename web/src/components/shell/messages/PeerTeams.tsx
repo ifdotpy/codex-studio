@@ -14,11 +14,13 @@ import {
   type HTMLAttributes,
   type ReactNode,
 } from "react";
-import { post, ApiError, errorText, save, saved } from "../../../api";
+import { ApiError, errorText } from "../../../api";
+import { useSidebarBackend, type SidebarBackend } from "../../sidebar/services";
 import type { paths } from "../../../generated/api";
 import type { Agent, PeerTeam } from "../../../types";
 import type { Project } from "../../ProjectOrganization";
 import "./peer-teams.css";
+import { ChatServerLine } from "../../../servers/ProjectChatRows";
 
 type PeerTeamRequest =
   paths["/api/peer-teams"]["post"]["requestBody"]["content"]["application/json"];
@@ -42,12 +44,16 @@ export function PeerTeamGroup({
   openRoom,
   refresh,
   scope,
+  disabled = false,
+  serverAlias,
 }: {
   itemId?: string;
   roomId?: string;
   openRoom: (id: string) => void;
   refresh?: () => Promise<void>;
   scope: string;
+  disabled?: boolean;
+  serverAlias?: string;
   team: PeerTeam;
   closed: boolean;
   toggle: () => void;
@@ -57,6 +63,8 @@ export function PeerTeamGroup({
   reorder?: HTMLAttributes<HTMLElement>;
   drop?: HTMLAttributes<HTMLElement> & { "data-folder-drop"?: string };
 }) {
+  const backend = useRef(useSidebarBackend()).current;
+  const { post, saved, save } = backend;
   const requestKey = `studio-radio-open:${scope}:${team.id}`;
   const [request, setRequest] = useState<RadioRequest | null>(() =>
     saved<RadioRequest | null>(requestKey, null),
@@ -140,7 +148,10 @@ export function PeerTeamGroup({
           onClick={toggle}
         >
           <ChevronDown size={14} />
-          <span>{team.name}</span>
+          <span>
+            {team.name}
+            {serverAlias && <ChatServerLine alias={serverAlias} />}
+          </span>
         </UnstyledButton>
         <Menu withinPortal position="bottom-end">
           <Menu.Target>
@@ -153,12 +164,19 @@ export function PeerTeamGroup({
           </Menu.Target>
           <Menu.Dropdown>
             {((team.members ?? []).length === 2 || roomId) && (
-              <Menu.Item disabled={pending} onClick={() => void openShared()}>
+              <Menu.Item
+                disabled={pending || disabled}
+                onClick={() => void openShared()}
+              >
                 Open shared chat
               </Menu.Item>
             )}
-            <Menu.Item onClick={edit}>Edit team</Menu.Item>
-            <Menu.Item onClick={dissolve}>Dissolve team</Menu.Item>
+            <Menu.Item disabled={disabled} onClick={edit}>
+              Edit team
+            </Menu.Item>
+            <Menu.Item disabled={disabled} onClick={dissolve}>
+              Dissolve team
+            </Menu.Item>
           </Menu.Dropdown>
         </Menu>
       </div>
@@ -201,6 +219,8 @@ export function PeerTeamForm({
   refresh?: () => Promise<void>;
   close: () => void;
 }) {
+  const backend = useRef(useSidebarBackend()).current;
+  const { post } = backend;
   const [name, setName] = useState(team?.name || "");
   const [members, setMembers] = useState(team?.members || []);
   const [error, setError] = useState("");
@@ -381,7 +401,14 @@ export function PeerTeamForm({
 export function usePeerTeamMove(
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
+  ownerForProject?: (
+    path: string,
+    member: string,
+    teamId: string | null,
+  ) => SidebarBackend,
 ) {
+  const defaultBackend = useSidebarBackend();
+  const requestBackend = useRef<SidebarBackend | null>(null);
   const request = useRef<PeerTeamRequest | null>(null);
   const committed = useRef(false);
   const running = useRef(false);
@@ -390,6 +417,7 @@ export function usePeerTeamMove(
   const [rejected, setRejected] = useState(false);
   const clear = () => {
     request.current = null;
+    requestBackend.current = null;
     committed.current = false;
     setError("");
     setRejected(false);
@@ -401,7 +429,11 @@ export function usePeerTeamMove(
     setError("");
     try {
       if (!committed.current) {
-        await post("/api/peer-teams", request.current, { timeoutMs: 15000 });
+        const backend = requestBackend.current;
+        if (!backend) throw new Error("The team server is unavailable.");
+        await backend.post("/api/peer-teams", request.current, {
+          timeoutMs: 15000,
+        });
         committed.current = true;
       }
       await refresh?.();
@@ -423,6 +455,8 @@ export function usePeerTeamMove(
   const move = (project: Project, member: string, teamId: string | null) => {
     if (request.current) return;
     if (typeof project.path !== "string") return;
+    requestBackend.current =
+      ownerForProject?.(project.path, member, teamId) || defaultBackend;
     request.current = {
       action: "move",
       path: project.path,
