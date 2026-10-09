@@ -1014,9 +1014,14 @@ operation with a new request ID. `maintenance_report` includes VM disk and
 memory data. Set VM limits in Studio Settings, Linux VM, while the VM is stopped.
 See [Linux VM workspaces](docs/linux-vm-workspaces.md) for the protocol and limits.
 
-### Move your execution to another server
+### Teleport your execution to another server
 
-`orchestration_move` moves the caller, whether it is a lead or a worker.
+`orchestration_teleport` teleports the caller, whether it is a lead or a worker.
+New native sessions use this name. Existing sessions keep `orchestration_move`
+with its byte-identical definition and role text. Studio saves the name before
+native creation and retains it through teleports and lost replies.
+`orchestration_request` reads receipts under either name.
+This change does not cause a prompt cache miss for an existing session.
 Prepare the target folder first with Git and server command tools.
 Supply `server` (a paired server ID or `local`), an absolute `cwd`, and a stable
 `request_id`. You can also supply `account_key` and a short `note`.

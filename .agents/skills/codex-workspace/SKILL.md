@@ -336,16 +336,19 @@ Archive retains the guest snapshot. Restore returns the worker paused.
 A VM disconnect does not prove that a native operation failed.
 Preserve its request ID and inspect the result before another operation.
 
-## Move your own execution
+## Teleport your own execution
 
-Use `orchestration_move` only when another server is needed.
+Use `orchestration_teleport` only when another server is needed.
+Older sessions keep `orchestration_move` and its exact definition and role text.
+Studio saves the tool name when it creates the native session.
+The name stays the same after a teleport. Existing sessions keep their prompt cache.
 Prepare the target folder with Git and server command tools first.
 Supply the paired server ID (or `local`), absolute `cwd`, and stable `request_id`.
 Finish the current turn after acceptance. The next turn runs on the target.
 Studio keeps the old workspace and transfers native history without credentials.
 The Studio transcript stays on the source. Running children stay on their servers.
 Finish other tools, background commands, monitors, and pending spawns first.
-Read an uncertain move with `orchestration_request action=get` and the same request ID.
+Read an uncertain teleport with `orchestration_request action=get` and the same request ID.
 Do not repeat it with another identity.
 
 Use the same provider account and organization to keep the prompt cache.

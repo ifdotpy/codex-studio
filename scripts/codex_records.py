@@ -1261,6 +1261,8 @@ class AgentRecord(TypedDict):
     movedTo: NotRequired[JsonObject]
     movedFrom: NotRequired[JsonObject]
     frozenNativeParams: NotRequired[JsonObject]
+    nativeTeleportTool: NotRequired[str]
+    nativeRoleGuidance: NotRequired[str]
     remoteOrigin: NotRequired[RemoteParentLinkRecord]
     remoteAnchor: NotRequired[RemoteParentLinkRecord]
     remoteEpoch: NotRequired[int]

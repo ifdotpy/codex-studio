@@ -5333,6 +5333,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         federation_enabled = self.federation().enabled()
         definitions = []
         for definition in TOOLS:
+            if definition['name'] == 'orchestration_move':
+                from codex_session_tools import session_tool_name, TELEPORT
+                if session_tool_name(actor) == TELEPORT:
+                    from codex_agent_move import teleport_definition
+                    definition = teleport_definition(definition)
             if actor.get("provider") == "claude" and definition["name"] in {
                 "orchestration_speak", "orchestration_review"
             }:
@@ -5373,10 +5378,15 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @staticmethod
     def role_guidance(actor):
+        if actor.get('nativeRoleGuidance'):
+            return actor['nativeRoleGuidance']
         name = "codex-orchestrator" if actor.get("isLead") else "codex-subagent"
         path = Path(__file__).resolve().parent.parent / ".agents" / "skills" / name / "SKILL.md"
+        from codex_session_tools import session_tool_name, LEGACY_MOVE
+        content_path = (path.parent / 'references' / 'legacy-move-role.md'
+                        if actor.get('isLead') and session_tool_name(actor) == LEGACY_MOVE else path)
         try:
-            content = path.read_text(encoding="utf-8").strip()
+            content = content_path.read_text(encoding="utf-8").strip()
         except OSError as error:
             raise ValueError(f"Studio role skill {name} is missing. Update the installed Studio workspace") from error
         if not content:
@@ -5756,8 +5766,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return None
 
     def new_thread_params(self, a):
+        from codex_session_tools import session_tool_name
+        a.setdefault('nativeTeleportTool', session_tool_name(a))
         progress = self.progress_file(a) if a.get("isLead") else None
-        role_text = self.role_guidance(a)
+        role_text = a.get('nativeRoleGuidance') or self.role_guidance(a)
+        a.setdefault('nativeRoleGuidance', role_text)
         if a.get("isLead"):
             from codex_progress import progress_context
             progress_text = progress_context(self.root, a["id"])
@@ -6115,6 +6128,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if release_id is not None:
                     operation["nativeReleaseId"] = release_id
                 latest["prepareAttempt"] = operation["id"]
+                # Save the name and role text before the native creation can
+                # take effect, including when its reply is lost.
+                latest['nativeTeleportTool'] = a['nativeTeleportTool']
+                latest['nativeRoleGuidance'] = a['nativeRoleGuidance']
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
                 db.commit()
@@ -8605,7 +8622,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if isinstance(args, str):
                     args = json.loads(args)
                 name = p.get("tool")
-                if a.get('executionMove') and name not in {'orchestration_move', 'orchestration_request'}:
+                if a.get('executionMove') and name not in {'orchestration_move', 'orchestration_teleport', 'orchestration_request'}:
                     request_outcome = 'not_applied'
                     raise ValueError('The move is accepted. Finish this turn before the next task')
                 if name in {"orchestration_agent_manage", "orchestration_interrupt", "orchestration_send"} \
@@ -8643,7 +8660,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
                 elif name == "orchestration_servers":
                     value = self.multi_server().tools(a, args, key)
-                elif name == 'orchestration_move':
+                elif name in {'orchestration_move', 'orchestration_teleport'}:
                     try:
                         value = self.multi_server().moves().start(a, args, key)
                     except (ValueError, PermissionError):
