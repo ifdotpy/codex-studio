@@ -66,9 +66,11 @@ export function query({prompt,options}){
  let abort=new AbortController();
  let outputTotal=0;
  if(options.env?.TMPDIR)fs.writeFileSync(options.cwd+'/.probe-options',JSON.stringify({permissionMode:options.permissionMode,tmpdir:options.env.TMPDIR}));
- if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt,tools:options.tools,settingSources:options.settingSources,strictMcpConfig:options.strictMcpConfig,effort:options.effort,settings:options.settings})+'\n');
+ if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.queries',JSON.stringify({resume:options.resume||null,sessionId:options.sessionId||null,permissionMode:options.permissionMode,systemPrompt:options.systemPrompt,tools:options.tools,settingSources:options.settingSources,strictMcpConfig:options.strictMcpConfig,mcpServers:Object.keys(options.mcpServers||{}),effort:options.effort,settings:options.settings})+'\n');
  if(options.systemPrompt)fs.appendFileSync(options.cwd+'/.thinking-flags',JSON.stringify({phase:'initial',model:options.model,settings:options.settings})+'\n');
  return {
+  mcpServerStatus:async()=>fs.existsSync(options.cwd+'/.mcp-status.json')?JSON.parse(fs.readFileSync(options.cwd+'/.mcp-status.json','utf8')):[],
+  reconnectMcpServer:async()=>{},
   supportedModels:async()=>[
    {value:'default',displayName:'Default',resolvedModel:'claude-opus-5-5',supportsEffort:true,supportedEffortLevels:['low','medium','high']},
    {value:'opus[1m]',resolvedModel:'claude-opus-5-5'},
@@ -241,6 +243,64 @@ class Bridge(unittest.TestCase):
         self.question_answers = ['A']
         self.thread = self.call('thread/start', {'cwd':str(root),'dynamicTools':[{'name':'echo','description':'Echo',
             'inputSchema':{'type':'object','properties':{'text':{'type':'string'}},'required':['text']}}]})['thread']['id']
+
+    def test_native_snapshot_deferred_and_external_catalog_move_through_the_bridge(self):
+        self.turn('hello', 'native-format-source')
+        self.completed()
+        server = self.root / 'catalog-server.mjs'
+        marker = self.root / 'changed-catalog'
+        requests = self.root / 'mcp-requests'
+        server.write_text("import fs from 'node:fs';import {createInterface} from 'node:readline';"
+            "for await(const line of createInterface({input:process.stdin})){const r=JSON.parse(line);"
+            "fs.appendFileSync(" + json.dumps(str(requests)) + ",r.method+'\\n');if(!('id'in r))continue;"
+            "const changed=fs.existsSync(" + json.dumps(str(marker)) + ");"
+            "const result=r.method==='initialize'?{protocolVersion:r.params.protocolVersion,capabilities:{tools:{}},"
+            "serverInfo:{name:'fixture',version:'1'}}:{tools:[{name:'read',description:changed?'Changed':'Read',"
+            "inputSchema:{type:'object',properties:{cwd:{type:'string'}}}}]};"
+            "process.stdout.write(JSON.stringify({jsonrpc:'2.0',id:r.id,result})+'\\n');}")
+        config = {'type': 'stdio', 'command': shutil.which('node'), 'args': [str(server)],
+                  'env': {'PRIVATE_TOKEN': 'source-private-token'}}
+        (self.root / '.mcp.json').write_text(json.dumps({'mcpServers': {'anarlog': config}}))
+        (self.root / '.mcp-status.json').write_text(json.dumps([{'name': 'anarlog', 'source': 'project',
+            'status': 'connected', 'config': {key: value for key, value in config.items() if key != 'env'}}]))
+        projects = self.root / 'native-config' / 'projects' / 'source'
+        projects.mkdir(parents=True)
+        native = projects / (self.thread + '.jsonl')
+        rows = [{'type': 'attachment', 'sessionId': self.thread, 'attachment': attachment} for attachment in [
+            {'type': 'deferred_tools_record', 'entries': [{'name': 'mcp__studio__echo',
+                'description': 'Old definition stays in history', 'input_schema': {'type': 'object'}}]},
+            {'type': 'deferred_tools_delta', 'addedNames': ['mcp__anarlog__read'], 'removedNames': []},
+            {'type': 'prompt_snapshot', 'systemPrompt': ['Redacted original'], 'inlineTools': False,
+                'tools': [{'name': 'Bash', 'description': 'Run', 'schema': {'type': 'object'}}]}]]
+        native.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        before = native.read_bytes()
+        proof = self.call('claude/moveProof', {'threadId': self.thread})
+        self.assertEqual(proof['proofMethod'], 'saved_snapshot_and_current_ordered_mcp_catalogs')
+        self.assertNotIn('source-private-token', json.dumps(proof))
+        self.assertEqual(len(proof['compiledTools']), 1)
+        target = self.root / 'target'
+        target.mkdir()
+        # Unrelated target configuration must not start or affect the proof.
+        (target / '.mcp.json').write_text(json.dumps({'mcpServers': {'anarlog': config,
+            'unrelated': {'type': 'stdio', 'command': 'must-not-start'}}}))
+        preflight = self.call('claude/movePreflight', {'proof': proof, 'model': 'default', 'cwd': str(target)})
+        self.assertEqual(preflight['optionsHash'], proof['optionsHash'])
+        marker.touch()
+        with self.assertRaisesRegex(ValueError, 'external MCP catalog.*differs'):
+            self.call('claude/movePreflight', {'proof': proof, 'model': 'default', 'cwd': str(target)})
+        marker.unlink()
+        exported = self.call('claude/moveExport', {'threadId': self.thread})
+        self.call('claude/moveImport', {'session': exported['session'], 'cwd': str(target), 'path': str(native)})
+        self.assertEqual(native.read_bytes(), before)
+        self.assertFalse((target / '.queries').exists())
+        self.turn('hello', 'external-target')
+        self.completed()
+        query = json.loads((target / '.queries').read_text().splitlines()[-1])
+        self.assertEqual(query['resume'], self.thread)
+        self.assertEqual(query['settingSources'], [])
+        self.assertTrue(query['strictMcpConfig'])
+        self.assertEqual(query['mcpServers'], ['anarlog', 'studio'])
+        self.assertEqual(set(requests.read_text().splitlines()), {'initialize', 'notifications/initialized', 'tools/list'})
 
     def moved_permission(self, source_mode):
         self.thread = self.call('thread/start', {'cwd': str(self.root), 'model': 'default',

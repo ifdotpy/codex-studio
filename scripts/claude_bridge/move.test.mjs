@@ -338,3 +338,46 @@ test("native prompt snapshots use schema and keep deferred records separate", as
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("deferred schemas stay historical while the current ordered catalog is frozen", () => {
+  const current = [
+    {
+      name: "mcp__studio__new",
+      description: "Current",
+      input_schema: { type: "object" },
+    },
+  ];
+  const proof = {
+    inlineTools: false,
+    tools: [{ name: "Bash", input_schema: { type: "object" } }],
+    deferredTools: [
+      { name: "mcp__studio__old", input_schema: { type: "object" } },
+    ],
+  };
+  assert.deepEqual(verifyToolProof(proof, current), ["Bash"]);
+  assert.deepEqual(
+    verifyToolProof({ ...proof, compiledTools: current }, current),
+    ["Bash"],
+  );
+  assert.throws(
+    () => verifyToolProof({ ...proof, compiledTools: current }, []),
+    /tool definitions differ/,
+  );
+  assert.deepEqual(
+    verifyToolProof(
+      {
+        ...proof,
+        activeDeferredNames: ["Monitor", "Bash", "mcp__studio__old"],
+      },
+      current,
+    ),
+    ["Bash", "Monitor"],
+  );
+  assert.throws(
+    () =>
+      verifyToolProof({ ...proof, activeDeferredNames: ["Monitor"] }, current, [
+        "Bash",
+      ]),
+    /does not offer.*Monitor/,
+  );
+});
