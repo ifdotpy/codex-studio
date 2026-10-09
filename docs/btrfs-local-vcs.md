@@ -30,6 +30,11 @@ implements the commands on btrfs states and has equal convenience.
 | Operation    | One recorded action: save, merge, restore, import, export, delete. Every operation can be undone.                                                           |
 | Project root | The project folder is a btrfs subvolume. Its git object store, if any, is a nested subvolume, so project snapshots and `btrfs send` never include git data. |
 
+A project can have more separate layers: nested subvolumes for data that must be included or
+excluded as a unit. The git object store is one. Regenerable data (for example `target/`,
+`node_modules/`, `.venv/`) is another, so a policy can include it for a live agent move and
+exclude it from long-term replication. A state records the snapshot of each layer.
+
 A state is a browsable folder. Reading an old file, or searching old code with `rg`, needs no
 checkout.
 
@@ -106,10 +111,16 @@ Replication between machines uses the paired server channel
   missing records by per-machine sequence numbers. The union of all records is the full log.
 - Data: for each state that the peer lacks, `btrfs send -p <latest common state>`. btrfs records
   `received_uuid` on the peer. The index maps that UUID to the state id.
+- Regenerable layers: sent for a live agent move to another machine (warm builds). Not sent for
+  backup or long-term replication; the peer rebuilds them.
 - Divergence: when two machines continue one line, the graph gets two heads. The merge engine joins
   them, and the result is a normal merge operation in the log.
 
 The log can only grow, so merging logs cannot corrupt them. The index can be rebuilt at any time.
+
+Each record also stores the line pointers before and after the operation. States never change, so
+undo of any operation only restores the previous pointers: O(1). Undo is itself a new record, so
+it can be undone too.
 
 ## Merge engine
 
@@ -119,11 +130,23 @@ The log can only grow, so merging logs cannot corrupt them. The index can be reb
 3. A path changed on one side only: take that side. A file is a reflink copy, so no data is copied.
 4. A path changed on both sides: three-way content merge of text files (`merge-file` algorithm).
 5. Conflicts: same region in both text versions, delete against change, and binary files changed on
-   both sides. They go to the user.
+   both sides. A merge never stops on a conflict. The result is a normal state that contains the
+   conflicts: text files get conflict markers, and the state metadata lists each conflicted path
+   with the ids of the base, ours and theirs versions. `git status` shows these paths as unmerged.
+   A later state that resolves them clears the list. Work can continue on top of a state with
+   conflicts.
 6. The git object store is never merged as blocks. History goes through the remote bridge.
 
 Cases still to handle: rename against change, folder delete against a new file inside, symlinks,
 file modes, case-insensitive paths from macOS users.
+
+## Exploration groups
+
+Several agents can try the same task in parallel lines with a common base state. The group has an
+epoch counter. When the user or the lead accepts one result, that line is merged and the epoch
+increments. The other lines of the group become stale: the utility refuses to merge them and
+offers to archive them. This is an optional policy for "best of N" work. Normal lines use the merge
+engine.
 
 ## Remote bridge
 
@@ -178,6 +201,19 @@ Git object store as a nested subvolume:
 | `btrfs send` of the agent layer                  | no operation under `.git`                                                                                                                  |
 | incremental stream                               | 10 MiB (132 MiB with git data inside)                                                                                                      |
 | machine B                                        | no `.git` placeholder at all; history by `git fetch` into a new repository and index from HEAD: 9.67 s; worktree equal to the agent commit |
+
+## Prior art and what this design takes from it
+
+| Project                                                                                         | What it does                                                                                              | Taken                                                                          |
+| ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| Jujutsu (jj)                                                                                    | git-compatible; the working copy is always a commit; operation log with undo; conflicts stored in commits | undo by line pointers; conflicts as part of a state; snapshot before commands  |
+| [BranchFS, branch context](https://arxiv.org/html/2602.08199) (March 2026)                      | FUSE copy-on-write branches for agents; first commit wins; epochs invalidate siblings                     | exploration groups with an epoch. Not taken: FUSE and file-level copy-on-write |
+| [Pulumi Neo with Kopia](https://www.pulumi.com/blog/neo-kopia-workspace-snapshots/) (Sept 2026) | workspace snapshots instead of git for agents; regenerable caches are not saved                           | regenerable data as a separate layer with its own replication policy           |
+| [BtrFsGit](https://github.com/koo5/BtrFsGit), [btrbk](https://github.com/digint/btrbk)          | git-like commands and incremental replication for btrfs subvolumes, for backups                           | finding the common parent by subvolume UUIDs for `send -p`                     |
+| [Morph Infinibranch](https://cloud.morph.so/web/product/devboxes)                               | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
+
+No project found on 2026-10-09 combines a drop-in `git` replacement, btrfs states, a real merge and
+replication between machines.
 
 ## Open items
 
