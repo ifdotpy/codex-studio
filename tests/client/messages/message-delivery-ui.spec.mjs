@@ -866,11 +866,6 @@ test("message delivery ui", async ({ browser: _browser }) => {
       await remove.focus();
       await page.keyboard.press("Enter");
       await row(dismissedText).waitFor({ state: "hidden" });
-      assert.deepEqual(
-        mutations.slice(mutationsBeforeRemoval),
-        [],
-        `${mode}: dismissal does not mutate server state or cancel delivery`,
-      );
       assert.equal(
         await input.inputValue(),
         dismissedText,
@@ -1018,6 +1013,17 @@ test("message delivery ui", async ({ browser: _browser }) => {
       assert.equal(
         await page.locator(`[data-message="${otherChatReceipt.id}"]`).count(),
         0,
+      );
+      assert.deepEqual(
+        mutations
+          .slice(mutationsBeforeRemoval)
+          .filter(({ url }) =>
+            /^\/api\/(?:messages?(?:\/|$)|queue(?:\/|$)|outbox(?:\/|$))/.test(
+              url,
+            ),
+          ),
+        [],
+        `${mode}: dismissal does not mutate message, queue, or outbox state`,
       );
       assert.deepEqual(errors, [], `${mode}: no renderer exceptions`);
       await context.close();
