@@ -1,3 +1,4 @@
+import { accountCanStart } from "../../accountName";
 import {
   Button,
   Popover,
@@ -401,9 +402,8 @@ function ScopedExecutionSettings({
     !effectiveAccount,
   );
   const catalog = teamDefaults ? accountCatalog : parentCatalog;
-  const connectedAccounts = accounts.filter(
-    (account) =>
-      !account.disconnected && !account.deleted && account.status === "ready",
+  const connectedAccounts = accounts.filter((account) =>
+    accountCanStart(account),
   );
   const activeAccount = accounts.find(
     (account) => account.id === (effectiveAccount || accountOf(agent)),

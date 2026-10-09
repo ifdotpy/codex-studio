@@ -1,3 +1,4 @@
+import { accountCanStart } from "../accountName";
 import { NativeSelect, TextInput } from "@mantine/core";
 import { AccountTiles } from "./AccountTiles";
 import { ActionButton, SettingsRow } from "./ui/primitives";
@@ -34,7 +35,7 @@ export default function ProjectAccount({
   );
   const selectableKeys = keys.filter((accountKey) => {
     const account = accounts.accounts.find((item) => item.id === accountKey);
-    return account?.status === "ready" && !account.disconnected;
+    return accountCanStart(account);
   });
   const displayedKey = selectableKeys.includes(key) ? key : "";
   const save = useProjectSave("/api/projects", saved);
@@ -45,7 +46,7 @@ export default function ProjectAccount({
     (account) => keys.includes(account.id),
   );
   const selected = accounts.accounts.find((account) => account.id === key);
-  const ready = selected?.status === "ready" && !selected.disconnected;
+  const ready = accountCanStart(selected);
   const revision = useRef(project?.accountRevision || 0);
   const workerBaseRevision = useRef(project?.workerBaseRevision || 0);
   const environmentRevision = useRef(project?.workerEnvironmentRevision || 0);
@@ -87,9 +88,7 @@ export default function ProjectAccount({
             )}
             value={displayedKey}
             disabled={save.pending || save.frozen}
-            accountDisabled={(account) =>
-              account.status !== "ready" || !!account.disconnected
-            }
+            accountDisabled={(account) => !accountCanStart(account)}
             onChange={setKey}
           />
         </SettingsRow>
@@ -118,7 +117,7 @@ export default function ProjectAccount({
             value={keys}
             disabled={save.pending || save.frozen}
             accountDisabled={(account) =>
-              account.status !== "ready" && !keys.includes(account.id)
+              !accountCanStart(account) && !keys.includes(account.id)
             }
             onChange={(next) => {
               setKeys(next);

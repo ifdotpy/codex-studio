@@ -6,12 +6,55 @@ import shutil
 import shlex
 import re
 import subprocess
+import signal
+import sys
 import threading
 import time
 
 _lock = threading.Lock()
 _cache = {}
 _inflight = {}
+
+
+def _auth_status(executable, env, *, interactive=False):
+    passive = sys.platform == 'darwin' and not interactive
+    if passive:
+        command = [sys.executable, '-B', str(Path(__file__).with_name('codex_claude_passive_auth.py'))]
+    else:
+        command = [executable, 'auth', 'status', '--json']
+    # The CLI can spawn credential readers. Own their group, including on timeout.
+    process = subprocess.Popen(command, env=env, stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               text=True, start_new_session=os.name != 'nt')
+    try:
+        stdout, _ = process.communicate(timeout=8)
+        if len(stdout) > 1024 * 1024:
+            raise ValueError('Claude sign-in metadata exceeds its limit')
+        data = json.loads(stdout)
+        if not isinstance(data, dict):
+            raise ValueError('Invalid Claude sign-in metadata')
+        if passive and process.returncode != 0:
+            raise ValueError('Claude sign-in metadata reader failed')
+        if passive:
+            return data
+        result = {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
+        if process.returncode == 0 and data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
+            identity = data.get('email')
+            if not isinstance(identity, str) or not identity:
+                raise ValueError('Missing account identity')
+            result.update(status='ready', accountId='claude:' + identity,
+                          email=identity, plan=data.get('subscriptionType'),
+                          _credentialIdentity='claude:' + identity)
+        return result
+    finally:
+        if os.name != 'nt':
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+        elif process.poll() is None:
+            process.kill()
+        process.communicate(timeout=2)
 
 
 def profile_options(profile=None):
@@ -116,7 +159,7 @@ def subscription_env(profile=None):
     return env
 
 
-def auth_metadata(profile=None, force=False):
+def auth_metadata(profile=None, force=False, *, interactive=False):
     requested_at = time.monotonic()
     executable = installed(profile)
     env = subscription_env(profile)
@@ -129,13 +172,16 @@ def auth_metadata(profile=None, force=False):
             if pending is None and not force and cached and time.monotonic() - cached[0] < 15:
                 return dict(cached[1])
             if pending is None:
-                pending = {'done': threading.Event(), 'started': time.monotonic()}
+                pending = {'done': threading.Event(), 'started': time.monotonic(),
+                           'interactive': interactive}
                 _inflight[key] = pending
                 break
         if not pending['done'].wait(max(0, requested_at + 9 - time.monotonic())):
             result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
             return result
         if not force or pending['started'] >= requested_at:
+            if interactive and not pending.get('interactive'):
+                continue
             return dict(pending['result'])
         if time.monotonic() >= requested_at + 9:
             result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
@@ -143,16 +189,7 @@ def auth_metadata(profile=None, force=False):
     try:
         if executable:
             try:
-                completed = subprocess.run([executable, 'auth', 'status', '--json'],
-                    env=env, capture_output=True, text=True, timeout=8)
-                data = json.loads(completed.stdout)
-                if completed.returncode == 0 and data.get('loggedIn') and data.get('authMethod') == 'claude.ai':
-                    identity = data.get('email')
-                    if not isinstance(identity, str) or not identity:
-                        raise ValueError('Missing account identity')
-                    result.update(status='ready', accountId='claude:' + identity,
-                                  email=identity, plan=data.get('subscriptionType'),
-                                  _credentialIdentity='claude:' + identity)
+                result = _auth_status(executable, env, interactive=interactive)
             except subprocess.TimeoutExpired:
                 result.update(status='error', error='Cannot read Claude Code sign-in status', _authErrorKind='timeout')
             except OSError:
@@ -205,14 +242,22 @@ def transport(root, profile=None):
     if not (bridge.parent / 'node_modules/@anthropic-ai/claude-agent-sdk/package.json').is_file():
         raise ValueError('Claude support is missing. Run npm ci in scripts/claude_bridge')
     env = subscription_env(profile)
-    metadata = auth_metadata(profile)
-    if metadata.get('status') != 'ready':
-        raise ValueError('Sign in to Claude Code with a Claude subscription')
     expected = (profile or {}).get('accountId')
-    if expected and metadata.get('accountId') != expected:
-        raise ValueError('This Claude profile account changed. Restore its original login')
+    if (profile or {}).get('_nativeAuthPending') is True:
+        identity = (profile or {}).get('email')
+        if (not isinstance(identity, str) or not identity
+                or expected != 'claude:' + identity or (profile or {}).get('status') != 'error'):
+            raise ValueError('Cannot verify the pinned Claude account')
+        # The bridge checks this exact identity/provider/subscription before input.
+    else:
+        metadata = auth_metadata(profile)
+        if metadata.get('status') != 'ready':
+            raise ValueError('Sign in to Claude Code with a Claude subscription')
+        if expected and metadata.get('accountId') != expected:
+            raise ValueError('This Claude profile account changed. Restore its original login')
+        identity = metadata['email']
     env['STUDIO_CLAUDE_OPTIONS'] = json.dumps(bridge_options(profile))
-    env['STUDIO_CLAUDE_ACCOUNT'] = metadata['email']
+    env['STUDIO_CLAUDE_ACCOUNT'] = identity
     env['PATH'] = str(Path(node).parent) + os.pathsep + env.get('PATH', '')
     env['STUDIO_CLAUDE_BIN'] = executable
     return [node, str(bridge), str(root)], env

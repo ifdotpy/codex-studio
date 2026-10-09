@@ -183,18 +183,19 @@ class LockContract(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         calls = []
-        def native(argv, **kwargs):
+        def native(executable, env, **_kwargs):
+            argv = [executable, "auth", "status", "--json"]
+            kwargs = {"env": env, "timeout": 8}
             config = kwargs["env"]["CLAUDE_CONFIG_DIR"]
             calls.append(config)
             if config.endswith("/a"):
                 entered.set()
                 self.assertTrue(release.wait(2))
-            return subprocess.CompletedProcess(argv, 0, json.dumps({
-                "loggedIn": True, "authMethod": "claude.ai", "email": config}))
+            return metadata(config)
         def get(name):
             return codex_claude.auth_metadata({"configDir": str(self.root / name)})
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", side_effect=native):
+             patch.object(codex_claude, "_auth_status", side_effect=native):
             cached = get("cached")
             first = self.start("a", lambda: get("a"))
             self.assertTrue(entered.wait(.5))
@@ -238,18 +239,51 @@ class LockContract(unittest.TestCase):
         self.assertEqual(self.store.data["deleteReceipts"][request], receipt)
         self.assertIn("claude-one", [row["id"] for row in result["accounts"]])
 
+    def test_postlogin_force_does_not_reuse_a_newer_passive_probe(self):
+        resolving, resolution, reading, release = [threading.Event() for _ in range(4)]
+        self.releases.extend((resolution, release))
+        modes = []
+        def installed(_profile=None):
+            if threading.current_thread().name == 'private-auth-login':
+                resolving.set()
+                self.assertTrue(resolution.wait(2))
+            return '/private/fake-claude'
+        def native(_executable, _env, *, interactive=False):
+            modes.append(interactive)
+            if interactive:
+                return metadata('after-login')
+            reading.set()
+            self.assertTrue(release.wait(2))
+            return {'status': 'error', 'accountId': None, '_authErrorKind': 'keychain'}
+        with patch.object(codex_claude, 'installed', side_effect=installed), \
+                patch.object(codex_claude, '_auth_status', side_effect=native):
+            login = self.start('login', lambda: codex_claude.auth_metadata(force=True, interactive=True))
+            self.assertTrue(resolving.wait(.5))
+            passive = self.start('passive', codex_claude.auth_metadata)
+            self.assertTrue(reading.wait(.5))
+            resolution.set()
+            release.set()
+            self.assertTrue(login.wait(.5))
+            self.assertTrue(passive.wait(.5))
+            self.assertEqual(self.results['passive']['_authErrorKind'], 'keychain')
+            self.assertEqual(self.results['login'], metadata('after-login'))
+            self.assertEqual(codex_claude.auth_metadata(), metadata('after-login'))
+        self.assertEqual(modes, [False, True])
+        self.assertEqual(self.errors, [])
+
     def test_force_probe_error_keeps_error_cache_and_can_refresh_again(self):
         calls = []
-        def native(argv, **kwargs):
+        def native(executable, env, **_kwargs):
+            argv = [executable, "auth", "status", "--json"]
+            kwargs = {"env": env, "timeout": 8}
             self.assertEqual(argv[1:], ["auth", "status", "--json"])
             self.assertEqual(kwargs["timeout"], 8)
             calls.append(argv)
             if len(calls) == 2:
                 raise subprocess.TimeoutExpired(argv, 8)
-            return subprocess.CompletedProcess(argv, 0, json.dumps({
-                "loggedIn": True, "authMethod": "claude.ai", "email": "one"}))
+            return metadata()
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", side_effect=native):
+             patch.object(codex_claude, "_auth_status", side_effect=native):
             self.assertEqual(codex_claude.auth_metadata()["status"], "ready")
             failed = codex_claude.auth_metadata(force=True)
             self.assertEqual(failed["status"], "error")
@@ -279,16 +313,17 @@ class LockContract(unittest.TestCase):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
         calls = []
-        def native(argv, **kwargs):
+        def native(executable, env, **_kwargs):
+            argv = [executable, "auth", "status", "--json"]
+            kwargs = {"env": env, "timeout": 8}
             calls.append(argv)
             if len(calls) == 1:
-                return subprocess.CompletedProcess(argv, 0, json.dumps({
-                    "loggedIn": True, "authMethod": "claude.ai", "email": "one"}))
+                return metadata()
             entered.set()
             self.assertTrue(release.wait(2))
-            return subprocess.CompletedProcess(argv, 0, '{"loggedIn": false}')
+            return {'status': 'signedOut', 'accountId': None, 'email': None, 'plan': None}
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", side_effect=native):
+             patch.object(codex_claude, "_auth_status", side_effect=native):
             self.assertEqual(codex_claude.auth_metadata()["status"], "ready")
             force_done = self.start("forced", lambda: codex_claude.auth_metadata(force=True))
             self.assertTrue(entered.wait(.5))
@@ -307,12 +342,14 @@ class LockContract(unittest.TestCase):
     def test_unexpected_probe_failure_does_not_publish_signed_out_to_waiter(self):
         entered, release = threading.Event(), threading.Event()
         self.releases.append(release)
-        def native(argv, **kwargs):
+        def native(executable, env, **_kwargs):
+            argv = [executable, "auth", "status", "--json"]
+            kwargs = {"env": env, "timeout": 8}
             entered.set()
             self.assertTrue(release.wait(2))
             raise RuntimeError("private fixture failure")
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", side_effect=native):
+             patch.object(codex_claude, "_auth_status", side_effect=native):
             owner_done = self.start("owner", codex_claude.auth_metadata)
             self.assertTrue(entered.wait(.5))
             waiter_done = self.start("waiter", codex_claude.auth_metadata)
@@ -361,17 +398,18 @@ class LockContract(unittest.TestCase):
         observed, release = threading.Event(), threading.Event()
         self.releases.append(release)
         calls = []
-        def native(argv, **kwargs):
+        def native(executable, env, **_kwargs):
+            argv = [executable, "auth", "status", "--json"]
+            kwargs = {"env": env, "timeout": 8}
             calls.append(argv)
             identity = "one" if len(calls) == 1 else "foreign"
             if len(calls) == 1:
                 observed.set()
                 self.assertTrue(release.wait(2))
-            return subprocess.CompletedProcess(argv, 0, json.dumps({
-                "loggedIn": True, "authMethod": "claude.ai", "email": identity}))
+            return metadata(identity)
         profile = self.store.data["accounts"]["claude-one"]
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", side_effect=native):
+             patch.object(codex_claude, "_auth_status", side_effect=native):
             old = self.start("before-login", lambda: codex_claude.auth_metadata(profile))
             self.assertTrue(observed.wait(.5))
             # LoginManager._run uses force=True after its native login process exits.
@@ -413,8 +451,7 @@ class LockContract(unittest.TestCase):
 
     def test_force_rechecks_even_when_cached_account_stays_the_same(self):
         with patch.object(codex_claude, "installed", return_value="/private/fake-claude"), \
-             patch.object(codex_claude.subprocess, "run", return_value=subprocess.CompletedProcess(
-                 [], 0, json.dumps({"loggedIn": True, "authMethod": "claude.ai", "email": "one"}))) as native:
+             patch.object(codex_claude, "_auth_status", return_value=metadata()) as native:
             initial = codex_claude.auth_metadata()
             self.assertEqual(codex_claude.auth_metadata(), initial)
             self.assertEqual(native.call_count, 1)

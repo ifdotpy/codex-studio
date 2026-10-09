@@ -33,7 +33,7 @@ export function createCatalogCache({
         )
           return;
         attempted = confirmed;
-        void refresh().catch(() => {});
+        void refresh(true).catch(() => {});
       },
       Math.max(0, confirmed.startedAt + refreshMs - now()),
     );
@@ -41,11 +41,11 @@ export function createCatalogCache({
     timer?.unref?.();
   }
 
-  function refresh() {
+  function refresh(background = false) {
     if (pending) return pending;
     const startedAt = now();
     const result = Promise.resolve()
-      .then(load)
+      .then(() => load(background))
       .then(
         (value) => {
           if (!closed) confirmed = { value, startedAt };
@@ -68,6 +68,11 @@ export function createCatalogCache({
   }
 
   return {
+    peek() {
+      if (closed || !fresh())
+        throw new Error("Fresh Claude account proof is unavailable");
+      return confirmed.value;
+    },
     read() {
       if (closed)
         return Promise.reject(new Error("Claude metadata cache closed"));

@@ -8,7 +8,7 @@ def account_order(runtime, parent_account):
     preferred = [parent_account, runtime.accounts.default(), *rows]
     return list(dict.fromkeys(key for key in preferred if key in rows and
                 not rows[key].get('disconnected') and not rows[key].get('deleted') and not rows[key].get('duplicateOf') and
-                (key == parent_account or rows[key].get('status') == 'ready')))
+                (key == parent_account or rows[key].get('status') == 'ready' or rows[key].get('canAttemptNativeProof') is True)))
 
 
 def resolve(runtime, parent, data, *, catalogs=None):
@@ -45,7 +45,7 @@ def resolve(runtime, parent, data, *, catalogs=None):
         if project_accounts and explicit not in project_accounts:
             raise ValueError('Select a worker account of this project')
         row = runtime.accounts.get(explicit)
-        if row.get('disconnected') or row.get('deleted') or (explicit != parent_account and row.get('status') != 'ready'):
+        if row.get('disconnected') or row.get('deleted') or (explicit != parent_account and row.get('status') != 'ready' and not runtime.accounts.allow_native_auth_attempt(explicit, row)):
             raise ValueError('Sign in to the worker account before creating a worker')
         candidates = [explicit]
     else:
@@ -132,7 +132,7 @@ def selected_account(runtime, value):
     if not isinstance(key, str) or not key:
         raise ValueError('Select an available subagent account')
     account = runtime.accounts.get(key)
-    if account.get('disconnected') or account.get('deleted') or account.get('status') != 'ready':
+    if account.get('disconnected') or account.get('deleted') or (account.get('status') != 'ready' and not runtime.accounts.allow_native_auth_attempt(key, account)):
         raise ValueError('Sign in to the subagent account before selecting it')
     return key
 

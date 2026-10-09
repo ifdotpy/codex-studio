@@ -1,5 +1,5 @@
 import { serverLocalStorage as localStorage } from "../servers/storage";
-import { accountDisplayName } from "../accountName";
+import { accountDisplayName, accountCanStart } from "../accountName";
 import { ProviderMark, remainingLimit } from "./AccountTiles";
 import { ActionButton } from "./ui/primitives";
 import { localDateTime } from "../local-time";
@@ -783,8 +783,7 @@ export default function Accounts({
       !account ||
       actionLock.current ||
       pending ||
-      account.status !== "ready" ||
-      account.disconnected ||
+      !accountCanStart(account) ||
       (pinned && !owner) ||
       (transferring && account.id !== teamTransfer?.targetAccountKey)
     )
@@ -903,8 +902,7 @@ export default function Accounts({
                   key={account.id}
                   disabled={
                     !!pending ||
-                    account.status !== "ready" ||
-                    !!account.disconnected ||
+                    !accountCanStart(account) ||
                     (pinned && !owner) ||
                     (transferring &&
                       account.id !== teamTransfer?.targetAccountKey)
@@ -1093,9 +1091,7 @@ export default function Accounts({
                                     state.data.defaultAccountKey && (
                                     <Menu.Item
                                       disabled={
-                                        !!pending ||
-                                        account.status !== "ready" ||
-                                        !!account.disconnected
+                                        !!pending || !accountCanStart(account)
                                       }
                                       aria-label={`Use ${account.email || account.label} by default`}
                                       onClick={() =>

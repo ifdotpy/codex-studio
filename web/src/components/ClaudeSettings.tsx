@@ -1,3 +1,4 @@
+import { accountCanStart } from "../accountName";
 import { createPortal } from "react-dom";
 import { serverLocalStorage as localStorage } from "../servers/storage";
 import { SettingsSection, SettingsRow } from "./ui/primitives";
@@ -91,7 +92,7 @@ export function ClaudeSettings({
     : null;
   const catalog = useWorkerModels(
     agent.accountKey || "default",
-    !account || account.status === "ready",
+    !account || accountCanStart(account),
   );
   const thinkingRequired = requiresThinking(agent.model || "", catalog.models);
   const [state, setState] = useState<ClaudeSessionState>({
@@ -251,7 +252,7 @@ export function ClaudeSettings({
   }, [state, turn]);
   const locked =
     !stateLoaded ||
-    (!!account && account.status !== "ready") ||
+    (!!account && !accountCanStart(account)) ||
     (typeof agent.status === "string" && busy.has(agent.status)) ||
     busyAction ||
     !!savingField;

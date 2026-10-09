@@ -11,3 +11,15 @@ export function accountDisplayName(
 export function accountTooltip(account: Pick<Account, "email">): string {
   return account.email || "";
 }
+
+export function accountCanStart(account: Account | undefined): boolean {
+  return (
+    !!account &&
+    !account.deleted &&
+    !account.disconnected &&
+    (account.status === "ready" ||
+      (account.provider === "claude" &&
+        account.status === "error" &&
+        account.canAttemptNativeProof === true))
+  );
+}

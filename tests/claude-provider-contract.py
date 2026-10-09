@@ -46,6 +46,62 @@ class ClaudeProvider(unittest.TestCase):
         self.runtime=f.ControlledRuntime(self.root/'state',MonitorServer);self.addCleanup(self.runtime.close)
         self.runtime.accounts.discover()
 
+    def test_pinned_keychain_denial_uses_native_account_proof_before_input(self):
+        denied = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  '_authErrorKind': 'keychain', 'error': 'Keychain interaction is unavailable'}
+        self.auth.stop()
+        denied_probe = patch('codex_claude.auth_metadata', return_value=denied)
+        native = denied_probe.start()
+        self.addCleanup(denied_probe.stop)
+        account = self.runtime.accounts.get('claude-local')
+        self.assertEqual(account['status'], 'error')
+        self.assertTrue(account['canAttemptNativeProof'])
+        self.assertNotIn('claude-local', self.runtime.servers)
+        proof = {'account': {'type': 'claude', 'email': AUTH['email'], 'planType': 'max'}}
+        original = MonitorServer.call
+        def call(server, method, params, timeout=60):
+            if method == 'account/read':
+                self.assertGreaterEqual(timeout, 60 if not params.get('passive') else 10)
+                server.calls.append((method, params))
+                return proof
+            return original(server, method, params, timeout)
+        with patch.object(MonitorServer, 'call', call):
+            server = self.runtime.connect('claude-local')
+            self.assertEqual(self.runtime.accounts.get('claude-local')['status'], 'error')
+            server.initialize_result = {'capabilities': {'passiveAccountRead': True}}
+            self.assertEqual(self.runtime.accounts.get('claude-local')['status'], 'ready')
+            agent = self.runtime.new_lead({'cwd': str(self.root), 'account_key': 'claude-local'})
+            self.runtime.prepare(agent)
+            self.assertEqual(server.calls[0][0], 'account/read')
+            self.assertTrue(any(method == 'thread/start' for method, _ in server.calls))
+            self.assertFalse(any(method == 'turn/start' for method, _ in server.calls))
+            proof['account']['email'] = 'foreign@example.test'
+            self.assertEqual(self.runtime.accounts.get('claude-local')['status'], 'error')
+            with self.assertRaisesRegex(ValueError, 'original Claude subscription'):
+                self.runtime.connect('claude-local')
+            proof['account']['email'] = AUTH['email']
+            generation = self.runtime.connection_ids['claude-local']
+            def changed(server, method, params, timeout=60):
+                if method == 'account/read':
+                    self.runtime.connection_ids['claude-local'] += '-next'
+                    return proof
+                return original(server, method, params, timeout)
+            with patch.object(MonitorServer, 'call', changed):
+                with self.assertRaisesRegex(ValueError, 'connection changed'):
+                    self.runtime.connect('claude-local')
+            self.runtime.connection_ids['claude-local'] = generation
+            for kind in ('parser', 'spawn', 'timeout'):
+                native.return_value = {**denied, '_authErrorKind': kind}
+                self.assertNotIn('canAttemptNativeProof', self.runtime.accounts.get('claude-local'))
+                with self.assertRaisesRegex(ValueError, 'Keychain interaction'):
+                    self.runtime.connect('claude-local')
+            native.return_value = denied
+            with self.runtime.accounts.lock:
+                self.runtime.accounts.data['accounts']['claude-local'].pop('_credentialIdentity')
+            self.assertNotIn('canAttemptNativeProof', self.runtime.accounts.get('claude-local'))
+            with self.assertRaisesRegex(ValueError, 'Keychain interaction'):
+                self.runtime.connect('claude-local')
+
     def busy_resume(self, *, message='Claude is still working', code=-32000,
                     read_thread=None, read_gate=None, stale=False, read_error=None):
         agent = self.runtime.new_lead({'cwd': str(self.root), 'account_key': 'claude-local'})

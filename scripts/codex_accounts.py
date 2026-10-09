@@ -199,7 +199,16 @@ class AccountStore:
                                 if v or k not in {"accountId", "_credentialIdentity", "email", "plan"}})
                     if metadata["status"] != "error":
                         row.pop("error", None)
-                return {k: v for k, v in row.items() if not k.startswith("_")}
+                result = self._public(row)
+            verifier = self.__dict__.get('native_auth_proof')
+            if result.get('canAttemptNativeProof') and verifier:
+                try:
+                    verified = verifier(key, result)
+                except (RuntimeError, ValueError, TimeoutError):
+                    verified = None
+                if verified is not None:
+                    return verified
+            return result
         with self.lock:
             row = self._row(key)
             row.update(status="error", error="This profile changed during authentication. Check its settings and try again.")
@@ -207,6 +216,46 @@ class AccountStore:
 
     def get(self, key):
         return self.refresh(key)
+
+    def _public(self, row):
+        import copy
+        result = {k: v for k, v in row.items() if not k.startswith('_')}
+        if 'claudeOptions' in result:
+            result['claudeOptions'] = copy.deepcopy(result['claudeOptions'])
+        if self.allow_native_auth_attempt(row['id'], result):
+            result['canAttemptNativeProof'] = True
+        return result
+
+    def confirm_native_auth(self, key, observed, proof):
+        with self.lock:
+            if not self.allow_native_auth_attempt(key, observed):
+                raise ValueError('The Claude profile changed during account verification')
+            account = proof.get('account') if isinstance(proof, dict) else None
+            if (not isinstance(account, dict) or account.get('type') != 'claude'
+                    or account.get('email') != observed.get('email')
+                    or not isinstance(account.get('planType'), str) or not account['planType']):
+                raise ValueError('Cannot verify the original Claude subscription account')
+            row = self._row(key)
+            row.update(status='ready', plan=account['planType'])
+            row.pop('error', None)
+            row.pop('_authErrorKind', None)
+            return self._public(row)
+
+    def allow_native_auth_attempt(self, key, observed):
+        """A denied passive read is not proof of logout or permission to send input."""
+        with self.lock:
+            row = self._row(key)
+            return bool(
+                row.get('provider') == 'claude' and row.get('status') == 'error'
+                and row.get('_authErrorKind') == 'keychain'
+                and not any(row.get(field) for field in ('deleted', 'disconnected', 'duplicateOf'))
+                and isinstance(row.get('email'), str) and row['email']
+                and row.get('accountId') == 'claude:' + row['email']
+                and row.get('_credentialIdentity') == row['accountId']
+                and all(row.get(field) == observed.get(field) for field in (
+                    'id', 'provider', 'accountId', 'email', 'claudeOptions', 'status',
+                ))
+            )
 
     def home(self, key, *, for_login=False):
         row = self.get(key)
@@ -226,7 +275,7 @@ class AccountStore:
         for key in keys:
             self.refresh(key)
         with self.lock:
-            return [{k: v for k, v in row.items() if not k.startswith("_")}
+            return [self._public(row)
                     for key in keys if not (row := self._row(key)).get("deleted")
                     and (not key.startswith("login-") or row.get("status") == "ready")]
 
@@ -247,7 +296,7 @@ class AccountStore:
                 logins = [{"requestId": request, **receipt}
                           for request, receipt in self.data.get("logins", {}).items()]
             snapshot = {
-                "accounts": [{k: v for k, v in row.items() if not k.startswith("_")}
+                "accounts": [self._public(row)
                              for key in keys if not (row := self._row(key)).get("deleted")
                              and (not key.startswith("login-") or row.get("status") == "ready")],
                 "archivedAccounts": [{k: v for k, v in row.items() if not k.startswith("_")}
@@ -265,7 +314,7 @@ class AccountStore:
         with self.lock:
             if key is not None:
                 row = self._row(key)
-                if row["status"] != "ready" or row.get("disconnected") or row.get("deleted"):
+                if (row["status"] != "ready" and not self.allow_native_auth_attempt(key, self._public(row))) or row.get("disconnected") or row.get("deleted"):
                     raise ValueError("Sign in to this account first")
                 self.data["defaultAccountKey"] = key
                 self._save()

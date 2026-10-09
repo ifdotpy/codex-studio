@@ -36,20 +36,32 @@ function validate(identity) {
       "Configure a persistent Studio signing certificate. Ad hoc signing loses macOS permissions after updates.",
     );
 }
+function privateArgument(value) {
+  if (typeof value !== "string" || /[\0\r\n]/.test(value))
+    throw new Error("Invalid dedicated Studio signing input.");
+  return `"${value.replace(/[\\"]/g, "\\$&")}"`;
+}
 export function signingIdentity(env = process.env) {
   const config = configuration(env);
   validate(config.identity);
   if (config.keychain && config.passwordFile) {
-    const result = spawnSync(
-      "security",
-      [
-        "unlock-keychain",
-        "-p",
-        readFileSync(config.passwordFile, "utf8").trim(),
-        config.keychain,
-      ],
-      { stdio: "pipe" },
-    );
+    const input = `unlock-keychain -p ${privateArgument(readFileSync(config.passwordFile, "utf8").trim())} ${privateArgument(config.keychain)}\n`;
+    // security has a 4096-byte line buffer. Never allow a second parsed command.
+    if (Buffer.byteLength(input, "utf8") > 4095)
+      throw new Error("Invalid dedicated Studio signing input.");
+    let result;
+    try {
+      result = spawnSync("/usr/bin/security", ["-i"], {
+        input,
+        encoding: "utf8",
+        stdio: "pipe",
+        timeout: 10_000,
+      });
+    } catch {
+      throw new Error(
+        "Could not unlock the dedicated Studio signing keychain.",
+      );
+    }
     if (result.status !== 0)
       throw new Error(
         "Could not unlock the dedicated Studio signing keychain.",

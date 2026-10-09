@@ -38,11 +38,11 @@ class Profiles(unittest.TestCase):
         self.assertNotIn('CLAUDE_CODE_OAUTH_TOKEN', env)
 
     def test_cache_separates_config_and_binary(self):
-        def run(argv, **kwargs):
-            email = kwargs['env'].get('CLAUDE_CONFIG_DIR', '') + argv[0]
-            return subprocess.CompletedProcess(argv, 0, json.dumps({'loggedIn': True,
-                'authMethod': 'claude.ai', 'email': email, 'subscriptionType': 'max'}))
-        with patch.object(c, 'installed', side_effect=lambda p=None: (p or {}).get('binaryPath', '/bin/a')), patch.object(c.subprocess, 'run', side_effect=run) as native:
+        def run(executable, env, **kwargs):
+            email = env.get('CLAUDE_CONFIG_DIR', '') + executable
+            return {**AUTH, 'accountId': 'claude:' + email, 'email': email,
+                    '_credentialIdentity': 'claude:' + email}
+        with patch.object(c, 'installed', side_effect=lambda p=None: (p or {}).get('binaryPath', '/bin/a')), patch.object(c, '_auth_status', side_effect=run) as native:
             a = c.auth_metadata({'configDir': '/tmp/a'})
             b = c.auth_metadata({'configDir': '/tmp/b'})
             d = c.auth_metadata({'configDir': '/tmp/a', 'binaryPath': '/bin/b'})
