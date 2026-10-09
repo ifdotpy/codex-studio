@@ -6,6 +6,11 @@ Only the HTTPS exchange uses an ASGI adapter. It preserves signed body bytes.
 Native HTTP/TLS has a separate suite in studio_api.multi_server.test_transport.
 The controlled scheduler permits deterministic dispatch through the real runtime.
 """
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 from test_isolation import isolate_supervisor_environment

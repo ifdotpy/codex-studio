@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Regression tests for the five workspace review findings. All state is isolated."""
 
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 import importlib.util
 import json
 from pathlib import Path

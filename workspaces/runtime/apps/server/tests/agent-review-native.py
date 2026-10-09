@@ -4,6 +4,11 @@
 No cloud calls or user state. The native parent calls the actual dynamic tool.
 Its second response remains open while the managed native review completes.
 """
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import copy
 import importlib.util
 import json

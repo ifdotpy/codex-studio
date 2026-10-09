@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Installed native Codex: paginated context, tools and repeated profile handoff."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import importlib.util
 import json
 from pathlib import Path

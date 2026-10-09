@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Project account defaults at real runtime boundaries. No paid model requests."""
 
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 import importlib.util
 from pathlib import Path
 import unittest

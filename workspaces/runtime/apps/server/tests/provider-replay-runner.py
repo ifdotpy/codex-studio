@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Replay provider transcripts through the real Runtime and AppServer."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import CLAUDE_BRIDGE_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 import json

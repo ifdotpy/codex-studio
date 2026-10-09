@@ -7,6 +7,11 @@ The test does not read or write the live Studio database. It creates two new
 native sessions in that account's ordinary Codex history. No credentials are
 copied. Only the test's AppServer processes are closed during cleanup.
 """
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import argparse

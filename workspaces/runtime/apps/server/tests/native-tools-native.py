@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Installed Codex retains a native thread and its full context after tool refresh."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import importlib.util
 import json
 from pathlib import Path

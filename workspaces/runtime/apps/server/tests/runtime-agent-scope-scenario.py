@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 """Run one scenario against the Runtime of the checkout given as argv[1]; print room entities JSON."""
+
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 import sys, json, tempfile, importlib.util
 from pathlib import Path
 from codex_layout import SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT

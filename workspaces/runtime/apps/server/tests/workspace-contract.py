@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
 """Workspace behavior contracts. All state, Git repositories, and providers are isolated."""
 
+# Support direct execution without runner-provided PYTHONPATH.
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
+
 import base64
 from concurrent.futures import ThreadPoolExecutor
 import importlib.util
