@@ -124,6 +124,7 @@ let workspace = "";
 const schemaMismatchListeners = new Set<() => void>();
 const matchingSchemaListeners = new Set<() => void>();
 let schemaMismatch = false;
+let mismatchedServerSchema: string | undefined;
 let matchingSchemaResponseGeneration = 0;
 const SCHEMA_UPDATE_ATTEMPT_KEY = "studio-api-schema-update-attempted";
 const SERVICE_WORKER_UPDATE_TIMEOUT_MS = 20_000;
@@ -169,15 +170,18 @@ export function onApiSchemaMismatch(listener: () => void) {
   };
 }
 
-export function markApiSchemaMismatch() {
+export function markApiSchemaMismatch(serverHash?: unknown) {
   if (schemaMismatch) return;
+  if (typeof serverHash === "string" && /^[a-f0-9]{64}$/.test(serverHash))
+    mismatchedServerSchema = serverHash;
   schemaMismatch = true;
   for (const listener of schemaMismatchListeners) listener();
 }
 
 export function schemaUpdateFailedAfterReload() {
   try {
-    return sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === "1";
+    const attempt = sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY);
+    return attempt === "1" || !!attempt?.startsWith("auto:");
   } catch {
     return false;
   }
@@ -191,14 +195,19 @@ export function clearSchemaUpdateAttemptAfterMatch() {
   }
 }
 
-export async function updateRendererAndReload() {
+export async function updateRendererAndReload(
+  attempt = "1",
+  canReload = () => true,
+) {
   try {
     if (
       (window as Window & { codexDesktop?: unknown }).codexDesktop ||
       !navigator.serviceWorker
     ) {
-      sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
-      return window.location.reload();
+      if (!canReload()) return false;
+      sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, attempt);
+      window.location.reload();
+      return true;
     }
     const registration = await navigator.serviceWorker.getRegistration("/");
     if (!registration)
@@ -233,10 +242,12 @@ export async function updateRendererAndReload() {
         changed();
       });
     }
-    sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, "1");
+    if (!canReload()) return false;
+    sessionStorage.setItem(SCHEMA_UPDATE_ATTEMPT_KEY, attempt);
     const url = new URL(window.location.href);
     url.searchParams.set("studio-update", String(Date.now()));
     window.location.assign(url.href);
+    return true;
   } catch (error) {
     try {
       sessionStorage.removeItem(SCHEMA_UPDATE_ATTEMPT_KEY);
@@ -245,6 +256,44 @@ export async function updateRendererAndReload() {
     }
     throw error;
   }
+}
+
+export async function automaticallyUpdateRenderer(
+  canReload: () => boolean,
+  signal: AbortSignal,
+) {
+  if (!schemaMismatch || !mismatchedServerSchema || !canReload()) return false;
+  // Read the renderer origin, which can differ from the selected API server.
+  // This file is generated with the assets and never enters the offline cache.
+  const response = await fetch(
+    new URL("./studio-renderer.json", window.location.href),
+    {
+      cache: "no-store",
+      redirect: "error",
+      signal: AbortSignal.any([signal, AbortSignal.timeout(5000)]),
+    },
+  );
+  if (!response.ok) return false;
+  const manifest: unknown = await response.json();
+  if (!manifest || typeof manifest !== "object") return false;
+  const { version, build, apiSchema } = manifest as Record<string, unknown>;
+  if (
+    version !== 1 ||
+    typeof build !== "string" ||
+    !/^[a-f0-9]{16}$/.test(build) ||
+    apiSchema !== mismatchedServerSchema ||
+    apiSchema === API_SCHEMA_HASH ||
+    build ===
+      document
+        .querySelector('meta[name="studio-build"]')
+        ?.getAttribute("content")
+  )
+    return false;
+  const attempt = `auto:${apiSchema}:${build}`;
+  // One attempt per target build. A broken deployment must not reload forever.
+  if (sessionStorage.getItem(SCHEMA_UPDATE_ATTEMPT_KEY) === attempt)
+    return false;
+  return updateRendererAndReload(attempt, () => !signal.aborted && canReload());
 }
 
 const fetchApiRequest = async (request: Request) => {
@@ -260,7 +309,7 @@ const fetchApiRequest = async (request: Request) => {
       new URL(request.url).pathname === "/api/sync/identity" &&
       !serverHash)
   ) {
-    markApiSchemaMismatch();
+    markApiSchemaMismatch(serverHash);
     // Do not let a response from another contract reach a projection or
     // mutation persister. The update gate is still raised before rejection.
     throw new ApiSchemaMismatchError(true);

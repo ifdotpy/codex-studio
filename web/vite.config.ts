@@ -1,6 +1,7 @@
 import { defineConfig } from "vite";
 import { readFile } from "node:fs/promises";
 import { createHash } from "node:crypto";
+import { API_SCHEMA_HASH } from "./src/generated/apiSchema.ts";
 const target = "http://127.0.0.1:4620";
 export default defineConfig({
   base: "./",
@@ -44,6 +45,15 @@ export default defineConfig({
             "</head>",
             `<meta name="studio-build" content="${build}" /></head>`,
           );
+        this.emitFile({
+          type: "asset",
+          fileName: "studio-renderer.json",
+          source: JSON.stringify({
+            version: 1,
+            build,
+            apiSchema: API_SCHEMA_HASH,
+          }),
+        });
         const initial = new Set<string>([
           "/",
           "/manifest.webmanifest",

@@ -1,6 +1,7 @@
 """FastAPI application assembly and shared API error mapping."""
 from __future__ import annotations
 
+import json
 import logging
 import mimetypes
 import sqlite3
@@ -18,7 +19,7 @@ from studio_api.models import ErrorResponse, JsonValue
 from studio_api.responses import error_response, install_error_response_docs
 
 STATIC_ALLOWLIST = frozenset({
-    "index.html", "studio-sw.js", "manifest.webmanifest", "apple-touch-icon.png",
+    "index.html", "studio-sw.js", "studio-renderer.json", "manifest.webmanifest", "apple-touch-icon.png",
     "icon.svg", "icon-192.png", "icon-512.png",
 })
 
@@ -71,6 +72,10 @@ def create_app(context: ApiContext) -> FastAPI:
     def root(request: Request) -> object:
         return static_file(request, "index.html")
 
+    @app.get("/studio-renderer.json", response_model=JsonValue, include_in_schema=False)
+    def renderer_manifest(request: Request) -> object:
+        return static_file(request, "studio-renderer.json")
+
     @app.get("/{relative:path}", include_in_schema=False)
     def static_path(request: Request, relative: str) -> object:
         if relative == "" or relative.startswith("api/") or relative == "api":
@@ -102,6 +107,8 @@ def create_app(context: ApiContext) -> FastAPI:
             return context.send(request, data, content_type=mime, compressed=compressed,
                                 cache_control="private, max-age=31536000, immutable")
         data = asset.read_bytes()
+        if relative == "studio-renderer.json":
+            return context.send(request, json.loads(data), cache_control="no-store")
         return context.send(request, data, content_type=mime,
                             cache_control="no-cache" if relative == "studio-sw.js" else "no-store")
 

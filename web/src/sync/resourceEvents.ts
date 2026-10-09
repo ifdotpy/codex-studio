@@ -846,7 +846,7 @@ function openSource() {
           (payload as Record<string, unknown>)[API_SCHEMA_MISMATCH_FIELD] ===
             true
         ) {
-          markApiSchemaMismatch();
+          markApiSchemaMismatch((payload as { hash?: unknown } | null)?.hash);
           return;
         }
         schemaHandshakeReceived = true;

@@ -153,6 +153,26 @@ class CoreResponseTests(unittest.TestCase):
         self.assertEqual(response.headers["content-type"], "text/html; charset=utf-8")
         self.assert_security_headers(response)
 
+    def test_renderer_manifest_is_json_and_is_not_cached(self) -> None:
+        from studio_api.app import create_app
+
+        manifest = {"version": 1, "build": "a" * 16, "apiSchema": "b" * 64}
+        with tempfile.TemporaryDirectory(prefix="studio-renderer-manifest-test-") as directory:
+            web_root = Path(directory)
+            (web_root / "studio-renderer.json").write_text(json.dumps(manifest), encoding="utf-8")
+            context = ApiContext.for_schema()
+            context.remote = SimpleNamespace(
+                request_origin=lambda _headers, _peer, _port: "http://testserver",
+            )
+            with patch("codex_canvas.WEB", web_root), TestClient(create_app(context)) as client:
+                response = client.get("/studio-renderer.json")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json(), manifest)
+        self.assertEqual(response.headers["content-type"], "application/json")
+        self.assertEqual(response.headers["cache-control"], "no-store")
+        self.assert_security_headers(response)
+
     def test_gzipped_validation_error_has_consistent_headers(self) -> None:
         message = "x" * 4096
         response = self.context.send(
@@ -290,7 +310,7 @@ class CoreResponseTests(unittest.TestCase):
         boundary = RequestBoundary(lambda *_args: None, context)
         base = {"type": "http", "method": "GET", "path": "/", "client": ("127.0.0.1", 50000), "server": ("127.0.0.1", 46000)}
         headers = HeaderView([(b"host", b"studio-ojsw233umu.localhost:46000")])
-        for path in ("/", "/index.html", "/studio-sw.js", "/assets/index-12345678.js"):
+        for path in ("/", "/index.html", "/studio-sw.js", "/studio-renderer.json", "/assets/index-12345678.js"):
             self.assertTrue(boundary._trusted({**base, "path": path}, headers, write=False, federation=False))
         for path in ("/api/session", "/api/sync/pull", "/api/messages", "/private.txt", "/assets/../api/session"):
             self.assertFalse(boundary._trusted({**base, "path": path}, headers, write=False, federation=False))

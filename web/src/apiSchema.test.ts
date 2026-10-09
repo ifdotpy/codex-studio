@@ -26,6 +26,120 @@ function stubBrowser() {
   vi.stubGlobal("navigator", { onLine: true });
 }
 
+function stubRendererUpdate() {
+  stubBrowser();
+  const entries = new Map<string, string>();
+  const reload = vi.fn();
+  vi.stubGlobal("sessionStorage", {
+    getItem: (key: string) => entries.get(key) ?? null,
+    setItem: (key: string, value: string) => entries.set(key, value),
+    removeItem: (key: string) => entries.delete(key),
+  });
+  Object.assign(window, {
+    codexDesktop: {},
+    location: { href: "http://studio.test/?studio-server=local", reload },
+  });
+  Object.assign(document, {
+    querySelector: () => ({ getAttribute: () => "0".repeat(16) }),
+  });
+  return { reload, entries };
+}
+
+it("automatically loads a verified new renderer once and permits a later deployment", async () => {
+  const { reload } = stubRendererUpdate();
+  let hash = "a".repeat(64);
+  let build = "b".repeat(16);
+  const fetch = vi.fn(async () =>
+    Response.json({ version: 1, build, apiSchema: hash }),
+  );
+  vi.stubGlobal("fetch", fetch);
+  let api = await import("./api");
+  api.markApiSchemaMismatch(hash);
+  const signal = new AbortController().signal;
+  expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(true);
+  expect(reload).toHaveBeenCalledOnce();
+  expect(fetch.mock.calls[0]).toMatchObject([
+    new URL("http://studio.test/studio-renderer.json"),
+    { cache: "no-store", redirect: "error" },
+  ]);
+  vi.resetModules();
+  api = await import("./api");
+  api.markApiSchemaMismatch(hash);
+  expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(false);
+  expect(reload).toHaveBeenCalledOnce();
+  hash = "c".repeat(64);
+  build = "d".repeat(16);
+  vi.resetModules();
+  api = await import("./api");
+  api.markApiSchemaMismatch(hash);
+  expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(true);
+  expect(reload).toHaveBeenCalledTimes(2);
+});
+
+it("retains the gate for unknown, unavailable or incompatible renderer metadata", async () => {
+  const { reload } = stubRendererUpdate();
+  let api = await import("./api");
+  const signal = new AbortController().signal;
+  const fetch = vi.fn();
+  vi.stubGlobal("fetch", fetch);
+  api.markApiSchemaMismatch();
+  expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(false);
+  expect(fetch).not.toHaveBeenCalled();
+  for (const manifest of [
+    { version: 1, build: "b".repeat(16), apiSchema: "c".repeat(64) },
+    { version: 1, build: "invalid", apiSchema: "a".repeat(64) },
+    { version: 2, build: "b".repeat(16), apiSchema: "a".repeat(64) },
+    { version: 1, build: "0".repeat(16), apiSchema: "a".repeat(64) },
+    null,
+  ]) {
+    vi.resetModules();
+    api = await import("./api");
+    api.markApiSchemaMismatch("a".repeat(64));
+    fetch.mockResolvedValue(Response.json(manifest));
+    expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(
+      false,
+    );
+  }
+  fetch.mockResolvedValue(new Response("", { status: 404 }));
+  expect(await api.automaticallyUpdateRenderer(() => true, signal)).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
+  await expect(api.get("/api/session")).rejects.toBeInstanceOf(
+    api.ApiSchemaMismatchError,
+  );
+});
+
+it("checks local activity again after fetching metadata and preserves cancellation", async () => {
+  const { reload } = stubRendererUpdate();
+  let safe = true;
+  vi.stubGlobal("fetch", async () => {
+    safe = false;
+    return Response.json({
+      version: 1,
+      build: "b".repeat(16),
+      apiSchema: "a".repeat(64),
+    });
+  });
+  const api = await import("./api");
+  api.markApiSchemaMismatch("a".repeat(64));
+  const controller = new AbortController();
+  expect(
+    await api.automaticallyUpdateRenderer(() => safe, controller.signal),
+  ).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
+  vi.stubGlobal("fetch", async () => {
+    controller.abort();
+    return Response.json({
+      version: 1,
+      build: "b".repeat(16),
+      apiSchema: "a".repeat(64),
+    });
+  });
+  expect(
+    await api.automaticallyUpdateRenderer(() => true, controller.signal),
+  ).toBe(false);
+  expect(reload).not.toHaveBeenCalled();
+});
+
 it("accepts a matching server schema hash without entering mismatch state", async () => {
   stubBrowser();
   vi.stubGlobal(

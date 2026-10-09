@@ -415,7 +415,7 @@ class RequestBoundary:
             static_path = scope.get("path", "")
             static_alias = (
                 not write and not federation and scope.get("method") in {"GET", "HEAD"}
-                and (static_path in {"/", "/index.html", "/studio-sw.js", "/studio-startup.js", "/manifest.webmanifest", "/apple-touch-icon.png"}
+                and (static_path in {"/", "/index.html", "/studio-sw.js", "/studio-startup.js", "/studio-renderer.json", "/manifest.webmanifest", "/apple-touch-icon.png"}
                      or re.fullmatch(r"/assets/[a-zA-Z0-9_.-]+", static_path) is not None)
                 and len(headers.get_all("host")) == 1
                 and re.fullmatch(rf"studio-[a-z2-7]{{1,50}}(?:\.[a-z2-7]{{1,50}})*\.localhost:{port}", headers.get("host", "") or "") is not None

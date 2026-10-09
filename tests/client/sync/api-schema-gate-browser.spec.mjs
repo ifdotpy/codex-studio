@@ -138,6 +138,100 @@ test("matching cold renderer loads normally", async ({ page }) => {
   await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
 });
 
+test("a deployed schema automatically replaces the old renderer and retains its draft", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const { fixture, url } = await startColdGateFixture();
+  const hash = readApiSchemaHash();
+  const oldHash = "9".repeat(64);
+  let deployed = false;
+  let navigations = 0;
+  let mutationRequests = 0;
+  await page.addInitScript(() => {
+    // Desktop renderers do not have an offline service worker.
+    delete Object.getPrototypeOf(navigator).serviceWorker;
+  });
+  await page.route("**/*", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    if (request.isNavigationRequest()) navigations++;
+    if (path === "/api/messages" && request.method() !== "GET")
+      mutationRequests++;
+    if (path === "/api/sync/stream")
+      return route.fulfill({
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+        body: apiSchemaHandshakeSse("", { hash: deployed ? hash : oldHash }),
+      });
+    if (
+      !deployed &&
+      (path === "/" || path.endsWith(".js") || path.startsWith("/api/"))
+    ) {
+      const response = await route.fetch({
+        headers: {
+          ...request.headers(),
+          [API_SCHEMA_HASH_HEADER]: hash,
+        },
+      });
+      const headers = { ...response.headers() };
+      if (path.startsWith("/api/"))
+        headers[API_SCHEMA_HASH_HEADER.toLowerCase()] = oldHash;
+      let body = (await response.text()).replaceAll(hash, oldHash);
+      if (path === "/")
+        body = body.replace(
+          /name="studio-build" content="[a-f0-9]{16}"/,
+          `name="studio-build" content="${"0".repeat(16)}"`,
+        );
+      return route.fulfill({ response, headers, body });
+    }
+    return route.continue();
+  });
+  try {
+    await page.goto(url);
+    await expect(page.locator("#message")).toBeVisible({ timeout: 15_000 });
+    await page
+      .locator("#message")
+      .fill("Keep this draft through the automatic Studio update");
+    await page.waitForFunction(() =>
+      Object.keys(localStorage).some((key) =>
+        localStorage
+          .getItem(key)
+          ?.includes("Keep this draft through the automatic Studio update"),
+      ),
+    );
+    const reload = page.waitForEvent("load", { timeout: 20_000 });
+    deployed = true;
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await reload;
+    await expect(page.locator("#message")).toHaveValue(
+      "Keep this draft through the automatic Studio update",
+      { timeout: 15_000 },
+    );
+    await expect(
+      page.getByText(
+        "Studio has been updated. Update this tab to continue syncing and sending.",
+      ),
+    ).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Update" })).toHaveCount(0);
+    assert.equal(
+      navigations,
+      2,
+      "one automatic reload replaces the old contract",
+    );
+    assert.equal(
+      mutationRequests,
+      0,
+      "an update does not send the unsent draft",
+    );
+    await page.screenshot({
+      path: join(tmpdir(), "studio-automatic-schema-update.png"),
+    });
+  } finally {
+    fixture.kill();
+  }
+});
+
 test("a rollback without a schema header shows Update instead of stale chat data", async ({
   page,
 }) => {

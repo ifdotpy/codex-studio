@@ -4,7 +4,11 @@ import StudioSettingsTabs, {
   type StudioSettingsTab,
 } from "./components/StudioSettingsTabs";
 import { useServerSettings } from "./servers/ServerSettingsContext";
-import { useServerActivity } from "./servers/activity";
+import {
+  useServerActivity,
+  serverActivityActive,
+  subscribeServerActivity,
+} from "./servers/activity";
 import ServerAccessSettings from "./servers/ServerAccessSettings";
 import { useServerFrame } from "./servers/frameBridge";
 import {
@@ -105,6 +109,7 @@ import {
   onApiSchemaMismatch,
   schemaUpdateFailedAfterReload,
   updateRendererAndReload,
+  automaticallyUpdateRenderer,
 } from "./api";
 import {
   useSnapshot,
@@ -634,6 +639,38 @@ export default function App() {
     draftConflicts.filter((version) => version.session === (opened || "new")),
   );
   useServerActivity(localPersistenceFailed || sending);
+  const rendererBusy = useSyncExternalStore(
+    subscribeServerActivity,
+    serverActivityActive,
+  );
+  const canUpdateRenderer =
+    !localPersistenceFailed &&
+    !sending &&
+    !creating &&
+    !modal &&
+    !sharedCreate &&
+    !studioSettingsOpen;
+  const rendererUpdateSafe = useRef(canUpdateRenderer);
+  rendererUpdateSafe.current = canUpdateRenderer;
+  useEffect(() => {
+    if (!schemaMismatch || rendererBusy || !canUpdateRenderer) return;
+    const controller = new AbortController();
+    void automaticallyUpdateRenderer(
+      () =>
+        rendererUpdateSafe.current &&
+        !serverActivityActive() &&
+        !Array.from(document.querySelectorAll('[role="dialog"]')).some(
+          (dialog) =>
+            !dialog.closest(
+              '[role="alertdialog"][aria-label="Studio update required"]',
+            ),
+        ),
+      controller.signal,
+    ).catch((error: unknown) => {
+      if (!controller.signal.aborted) setSchemaUpdateError(errorText(error));
+    });
+    return () => controller.abort();
+  }, [schemaMismatch, rendererBusy, canUpdateRenderer]);
   const [pendingCreations, setPendingCreations] = useState<Json[]>([]);
   const creationKey = `codex-pending-creation:${data?.stateDir || ""}`;
   const creation = useRef<LeadCreateRequest | null>(null),
