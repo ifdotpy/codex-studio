@@ -549,7 +549,7 @@ export async function sidebarParityFixture(
     prefs,
     async open(page, { combined = true, owner = "local" } = {}) {
       await page.goto(
-        local.origin + (combined ? "/?studio-navigation=combined" : "/"),
+        local.origin + (combined ? "/" : "/?studio-navigation=classic"),
       );
       if (!combined && paired && owner === "remote")
         await page.getByLabel("Studio server").selectOption("remote");
@@ -557,7 +557,7 @@ export async function sidebarParityFixture(
         !combined && paired
           ? page
               .frameLocator(
-                `iframe[title="Studio on ${owner === "local" ? "This computer" : "Remote"}"]`,
+                `iframe[title="Studio on ${owner === "local" ? "Local" : "Remote"}"]`,
               )
               .locator("#sidebar")
           : page.locator("#sidebar");
@@ -569,7 +569,7 @@ export async function sidebarParityFixture(
         else {
           const surface = paired
             ? page.frameLocator(
-                `iframe[title="Studio on ${owner === "local" ? "This computer" : "Remote"}"]`,
+                `iframe[title="Studio on ${owner === "local" ? "Local" : "Remote"}"]`,
               )
             : page;
           await surface

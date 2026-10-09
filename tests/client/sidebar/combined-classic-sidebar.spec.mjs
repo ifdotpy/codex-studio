@@ -125,7 +125,7 @@ for (const [theme, viewport] of [
         },
         { origin: remote.invitation.origin, destination: remote.origin },
       );
-      await page.goto(local.origin + "/?studio-navigation=combined");
+      await page.goto(local.origin);
       if (viewport.width < 760)
         await page
           .getByRole("button", { name: "Servers and chats", exact: true })
@@ -381,7 +381,7 @@ test("offline folder expansion does not change the saved source state after reco
         saved,
       },
     );
-    await page.goto(local.origin + "/?studio-navigation=combined");
+    await page.goto(local.origin);
     const sidebar = page.locator("#sidebar");
     const folder = sidebar.getByRole("button", {
       name: "Saved closed folder",

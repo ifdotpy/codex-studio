@@ -59,7 +59,7 @@ import "./servers.css";
 const uiOnly =
   new URLSearchParams(location.search).get("studio-ui-only") === "1";
 const combinedNavigation =
-  new URLSearchParams(location.search).get("studio-navigation") === "combined";
+  new URLSearchParams(location.search).get("studio-navigation") !== "classic";
 export default function MultiServerApp() {
   const [failure, setFailure] = useState("");
   const load = () => {

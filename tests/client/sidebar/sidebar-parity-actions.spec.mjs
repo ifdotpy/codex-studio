@@ -408,7 +408,7 @@ test("project rename, compact, folders, account, new chats, shared chats and dir
     await button(sidebar, "Home Renamed").hover();
     await button(sidebar, "Options for project Home Renamed").click();
     await page.getByRole("menuitem", { name: "Folders", exact: true }).click();
-    const local = page.frameLocator('iframe[title="Studio on This computer"]');
+    const local = page.frameLocator('iframe[title="Studio on Local"]');
     await expect(
       local.getByRole("dialog", { name: "Project settings", exact: true }),
     ).toBeVisible();
@@ -729,13 +729,17 @@ test("project and pin keyboard order persist on the home server without changing
           ),
       )
       .toEqual(["Other project", "Home project"]);
-    const pins = await restored
-      .locator(".sidebar-row")
-      .filter({ has: page.locator(".chat-pin") })
-      .allTextContents();
-    expect(
-      pins.findIndex((text) => text.includes("Local Root A")),
-    ).toBeLessThan(pins.findIndex((text) => text.includes("Local Saved pin")));
+    await expect(async () => {
+      const pins = await restored
+        .locator(".sidebar-row")
+        .filter({ has: page.locator(".chat-pin") })
+        .allTextContents();
+      expect(
+        pins.findIndex((text) => text.includes("Local Root A")),
+      ).toBeLessThan(
+        pins.findIndex((text) => text.includes("Local Saved pin")),
+      );
+    }).toPass({ timeout: 5000 });
   } finally {
     await fixture.close();
   }

@@ -200,7 +200,7 @@ test("combined frames do not mount sidebars or migrate null groups", async ({
   f.remote.snapshot.runtime.sidebarOrder = { revision: 0, groups: null };
   try {
     await f.open(page);
-    for (const title of ["This computer", "Remote"])
+    for (const title of ["Local", "Remote"])
       await expect(
         page
           .frameLocator(`iframe[title="Studio on ${title}"]`)

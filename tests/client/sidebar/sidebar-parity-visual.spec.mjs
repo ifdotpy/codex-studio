@@ -268,7 +268,7 @@ test.describe("sidebar visible parity", () => {
             const sidebar = await fixture.open(page, { combined });
             const surface =
               !combined && paired
-                ? page.frameLocator('iframe[title="Studio on This computer"]')
+                ? page.frameLocator('iframe[title="Studio on Local"]')
                 : page;
             await expect(sidebar).toBeVisible();
             await expect(sidebar.locator("[data-chat]")).toHaveCount(7);

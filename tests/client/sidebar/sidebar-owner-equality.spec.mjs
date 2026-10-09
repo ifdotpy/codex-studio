@@ -204,7 +204,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
         destination: remote.origin,
       },
     );
-    await page.goto(local.origin);
+    await page.goto(local.origin + "/?studio-navigation=classic");
     const standalone = page.locator("#sidebar");
     await expect(standalone.locator(".chat-pin")).toBeVisible();
     await expect(
@@ -242,9 +242,7 @@ test("the owner adapter preserves saved organization in standalone and classic s
       "local",
     );
     await expect(page.locator(".server-sidebar")).toHaveCount(0);
-    const localFrame = page.frameLocator(
-      'iframe[title="Studio on This computer"]',
-    );
+    const localFrame = page.frameLocator('iframe[title="Studio on Local"]');
     const classic = localFrame.locator("#sidebar");
     await expect(classic.locator(".chat-pin")).toBeVisible();
     await expect(
