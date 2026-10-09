@@ -11,6 +11,7 @@ import time
 from urllib.parse import parse_qs, urlsplit
 
 from codex_sqlite_traces import _frames
+from codex_private_paths import ensure_private_dir, protect_temp_file
 
 SLOW_MS = 1000
 ACTIVE_LIMIT = 128
@@ -145,12 +146,12 @@ def watchdog(root):
                  "at": time.time(), "thresholdMs": SLOW_MS, "active": active,
                  "recent": recent, "untrackedStarts": untracked}
         path = Path(root) / "diagnostics" / "http-requests.json"
-        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        ensure_private_dir(path.parent)
         _archive_previous(path)
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".http-requests-",
+        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".http-requests-",
                                          delete=False) as output:
             temporary = output.name
-            os.fchmod(output.fileno(), 0o600)
+            protect_temp_file(temporary)
             json.dump(value, output, separators=(",", ":"))
             output.write("\n")
         os.replace(temporary, path)

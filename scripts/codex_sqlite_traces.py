@@ -9,6 +9,8 @@ import threading
 import time
 import weakref
 
+from codex_private_paths import ensure_private_dir, protect_temp_file
+
 _clock = time.monotonic
 _wall_clock = time.time
 _LOCK = threading.Lock()
@@ -193,7 +195,7 @@ def _archive_previous(path):
                 with tempfile.NamedTemporaryFile(mode="wb", dir=path.parent,
                                                  prefix=".sqlite-transactions-archive-", delete=False) as output:
                     temporary = output.name
-                    os.fchmod(output.fileno(), 0o600)
+                    protect_temp_file(temporary)
                     output.write(saved_raw)
                     output.flush()
                     os.fsync(output.fileno())
@@ -266,12 +268,12 @@ def transaction_watchdog(root):
         path = root / "diagnostics" / "sqlite-transactions.json"
         temporary = None
         try:
-            path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            ensure_private_dir(path.parent)
             _archive_previous(path)
-            with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=".sqlite-transactions-",
+            with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".sqlite-transactions-",
                                              delete=False) as output:
                 temporary = output.name
-                os.fchmod(output.fileno(), 0o600)
+                protect_temp_file(temporary)
                 json.dump(value, output, separators=(",", ":"))
                 output.write("\n")
                 output.flush()

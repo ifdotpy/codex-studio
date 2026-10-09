@@ -104,6 +104,79 @@ def _control_request_path(state: Path, request_id: str) -> Path:
     return state / f"windows-server-control-request-{request_id}.json"
 
 
+def _write_private_json(path: Path, value: dict[str, Any]) -> None:
+    fd, temporary_name = tempfile.mkstemp(prefix="windows-server-", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        protect_temp_file(temporary)
+        stream = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+        fd = -1
+        with stream:
+            json.dump(value, stream, separators=(",", ":"))
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        temporary.unlink(missing_ok=True)
+
+
+def _runner_control_protocol(state: Path) -> int:
+    from codex_process_supervisor import process_start_time
+
+    path = state / "windows-server-runner.json"
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return 1
+    if (not isinstance(value, dict) or value.get("controlProtocol") != 2
+            or type(value.get("pid")) is not int or not isinstance(value.get("startTime"), str)
+            or value.get("stateDir") != str(state.resolve())
+            or process_start_time(value["pid"]) != value["startTime"]):
+        raise RuntimeError("The Windows runner identity is not valid; control was not submitted")
+    return 2
+
+
+def _advertise_control_protocol(state: Path) -> None:
+    from codex_process_supervisor import process_start_time
+
+    started = process_start_time(os.getpid())
+    if not started:
+        raise RuntimeError("Cannot verify the Windows runner process identity")
+    _write_private_json(state / "windows-server-runner.json", {
+        "controlProtocol": 2, "pid": os.getpid(), "startTime": started,
+        "stateDir": str(state.resolve()),
+    })
+
+
+def _legacy_control_available(state: Path) -> None:
+    # Keep the ID after an old runner removes its claim. Absence of a claim
+    # alone cannot prove that the old runner finished or did not act.
+    pending = state / "windows-server-control-legacy-pending.json"
+    try:
+        value = json.loads(pending.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        pass
+    else:
+        request_id = value.get("requestId") if isinstance(value, dict) else None
+        if not isinstance(request_id, str) or not request_id or not request_id.isalnum():
+            raise RuntimeError("The legacy control request identity is not valid")
+        receipt = state / f"windows-server-control-{request_id}.json"
+        try:
+            result = json.loads(receipt.read_text(encoding="utf-8"))
+        except FileNotFoundError as error:
+            raise RuntimeError(f"Legacy control request {request_id} has no receipt; action was not repeated") from error
+        if (not isinstance(result, dict) or result.get("requestId") != request_id
+                or result.get("result") not in {"backend-stopped", "backend-restarted", "stopped-all"}):
+            raise RuntimeError(f"Legacy control request {request_id} has no confirmed outcome")
+    if ((state / "windows-server-control.json").exists()
+            or (state / "windows-server-control-claim.json").exists()):
+        raise RuntimeError("A legacy control request is pending; control was not submitted")
+
+
 def _write_control_request(state: Path, action: str, source_root: str | None = None) -> str:
     if action not in {"stop-backend", "restart-backend", "stop-all"}:
         raise ValueError("Unknown Windows server control action")
@@ -117,12 +190,22 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
     try:
         protect_temp_file(temporary)
         with _control_sequence_lock(state):
+            protocol = _runner_control_protocol(state)
+            if protocol == 1:
+                _legacy_control_available(state)
             payload["sequence"] = _next_control_sequence_unlocked(state)
-            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            stream = os.fdopen(fd, "w", encoding="utf-8", newline="\n")
+            fd = -1
+            with stream:
                 json.dump(payload, stream, separators=(",", ":"))
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, _control_request_path(state, request_id))
+            if protocol == 1:
+                _write_private_json(state / "windows-server-control-legacy-pending.json", payload)
+                destination = state / "windows-server-control.json"
+            else:
+                destination = _control_request_path(state, request_id)
+            os.replace(temporary, destination)
     except BaseException:
         try:
             os.close(fd)
@@ -177,17 +260,10 @@ def _read_control_request(state: Path, previous_request: str | None) -> dict[str
 
 def _write_control_result(state: Path, request_id: str, result: str, detail: str | None = None) -> None:
     path = state / f"windows-server-control-{request_id}.json"
-    fd, temporary_name = tempfile.mkstemp(prefix="windows-server-result-", suffix=".tmp", dir=state)
-    temporary = Path(temporary_name)
-    protect_temp_file(temporary)
-    with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-        receipt = {"requestId": request_id, "result": result}
-        if detail is not None:
-            receipt["detail"] = detail
-        json.dump(receipt, stream, separators=(",", ":"))
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    receipt = {"requestId": request_id, "result": result}
+    if detail is not None:
+        receipt["detail"] = detail
+    _write_private_json(path, receipt)
 
 
 def _recover_control_claims(state: Path) -> None:
@@ -278,6 +354,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
             if not _wait_supervisor(state, supervisor):
                 raise RuntimeError("The native process supervisor did not become ready")
 
+        _advertise_control_protocol(state)
         delay = 2.0
         while not stopping.is_set():
             request = pending_request or _read_control_request(state, handled_request)
