@@ -8,8 +8,8 @@ The original license is retained without new permissions.
 
 The server app owns its Python source, runtime prompts, and server tests. The
 client workspace owns `workspaces/client/apps/web/` and
-`workspaces/client/apps/desktop/`; repository-level `scripts/` is reserved for
-compatibility launchers. The repository also owns its product documentation. The full command guide moved to `docs/cli.md`. The application
+`workspaces/client/apps/desktop/`; the repository root temporarily provides compatibility launchers for
+installed commands. The repository also owns its product documentation. The full command guide moved to `docs/cli.md`. The application
 does not need the skill checkout to import modules, build, run, or start workers.
 Runtime worker prompts remain with their launcher.
 
@@ -45,9 +45,8 @@ reset credits. Historical delivery documents retain their original evidence.
 
 ## Local transition
 
-At the 2026-09-06 verification, the live server started from the former
-`/Users/igor/Projects/codex-agents/scripts/codex-canvas` checkout (PID `37912`).
-That absolute path records the historical installation, not the current layout.
+At the 2026-09-06 verification, the live server started from the extracted
+checkout through its then-current `codex-canvas` launcher (PID `37912`).
 Its URL and state directory remain unchanged. Both existing agents remain.
 The database backup is `/Users/igor/.local/state/codex-agents/backups/canvas-before-source-extraction-20260906-104252.sqlite3`.
 

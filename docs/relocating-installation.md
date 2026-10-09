@@ -17,7 +17,9 @@ pnpm install --frozen-lockfile
 
 Keep the existing state-directory path unchanged. Update service and installed
 command references to the launchers in the new layout, while retaining the
-compatibility launchers needed by existing installed links or service units.
+temporary root `scripts/<installed command>` compatibility launchers needed
+by existing installed links or service units. M-02.11 removes these shims; use
+installed command names on `PATH` for new invocations.
 New supervisor units should reference
 `workspaces/runtime/apps/server/src/codex-supervisor`. Confirm launcher paths
 and service configuration on the target platform before changing them; this

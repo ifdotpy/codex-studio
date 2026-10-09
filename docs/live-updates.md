@@ -32,13 +32,13 @@ callbacks, reject unknown implementations, and make a repeated call safe.
 The patch must not send messages, restart agents, or repeat external work.
 
 Copy the patch and the exact current production sources into the release
-scripts directory in the release artifact’s `scripts/` directory while holding its `.studio-update.lock` exclusively.
+scripts directory in the release artifact’s selected release directory while holding `.studio-update.lock` exclusively.
 Release that lock, then publish the manifest with the Python 3.14 environment
 used by the backend:
 
 ```sh
 python3 workspaces/runtime/apps/server/src/codex-publish-update \
-  --scripts /path/to/release/scripts \
+  --scripts /path/to/release-source-directory \
   --patch codex_release_update.py \
   --id current-release \
   --scope 'Exact methods and behavior changed by this release'

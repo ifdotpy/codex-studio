@@ -5,7 +5,7 @@ Use `codex app-server` for a separate process, durable workers, or a host withou
 Delegate only when the user or applicable instructions authorize delegation.
 This skill does not itself require extra workers for every task.
 
-Run examples from this project root, or use the installed commands without the `scripts/` prefix.
+Run examples from this project root or through the installed command names on `PATH`.
 The protocol uses JSON Lines on stdio, without Content-Length framing.
 Keep runtime state outside the project checkout.
 The scripts require Node.js and Python 3.11 or later on macOS or Linux.
@@ -13,10 +13,10 @@ The scripts require Node.js and Python 3.11 or later on macOS or Linux.
 ## Managed teams
 
 For a lead that must resume after worker or command completion, use the managed
-canvas runtime. Run `scripts/codex-canvas`, open the local page, and create a lead.
+canvas runtime. Run `codex-canvas`, open the local page, and create a lead.
 The lead uses `orchestration_spawn` and `orchestration_monitor`. The server owns
 queues, concurrency limits, command waits and automatic parent continuation.
-Use `scripts/codex-control` for terminal access to the same runtime.
+Use `codex-control` for terminal access to the same runtime.
 Recover an uncertain tool result with `codex-control requests AGENT_ID REQUEST_ID`.
 Omit `REQUEST_ID` to list recent requests. This command only reads receipts.
 The CLI requires the current Studio HTTP protocol. Missing receipts remain `unknown`.
@@ -53,7 +53,7 @@ The remaining sections describe app-server mode unless they explicitly mention n
 ## Model
 
 Honor an explicit model request. Native agents inherit the parent model unless the task requires an authorized override.
-`scripts/codex-models` lists available app-server models and efforts.
+`codex-models` lists available app-server models and efforts.
 The app-server wave default is `CODEX_MODEL=gpt-5.6-luna`, `CODEX_EFFORT=max`.
 Check availability instead of guessing from a local config file.
 
@@ -95,8 +95,8 @@ Write `codex-tasks.<wave>.json` in the state dir (or set `CODEX_TASKS`). Unique 
 
 ```bash
 export CODEX_MODEL=gpt-5.6-luna CODEX_EFFORT=max CODEX_BUDGET=1000000
-scripts/codex-daemon start --wave parser    # detached, portable (macOS/Linux), logs to codex-daemon.<wave>.log
-scripts/codex-daemon status --wave parser
+codex-daemon start --wave parser    # detached, portable (macOS/Linux), logs to codex-daemon.<wave>.log
+codex-daemon status --wave parser
 ```
 
 - The daemon inherits the caller's environment; it refuses to start without the task file (no fallback) and surfaces an immediate launcher death with its cause.
@@ -107,8 +107,8 @@ scripts/codex-daemon status --wave parser
 ## Monitor
 
 ```bash
-scripts/codex-watch --wave parser
-scripts/codex-report --wave parser [worker --answers]
+codex-watch --wave parser
+codex-report --wave parser [worker --answers]
 ```
 
 - The watcher pins the first run id, waits for the launch-complete marker, and exits nonzero on failed, blocked, interrupted, abandoned, paused, stalled, or replaced runs.
@@ -119,7 +119,7 @@ scripts/codex-report --wave parser [worker --answers]
 ## Studio, chats, and creator connections
 
 Install dependencies from the repository root with `pnpm install --frozen-lockfile`; build the interface from the web app with `pnpm run build`.
-Run `scripts/codex-canvas` and open `http://127.0.0.1:4620`.
+Run `codex-canvas` and open `http://127.0.0.1:4620`.
 Use `--port PORT` to select another port. The server uses Python's standard library and listens only on the local machine.
 Keep its terminal session alive while Studio is in use.
 
@@ -155,10 +155,10 @@ Update the same record after host notifications change its status.
 Only attach `--thread` when the host provides a real local Codex thread identity.
 
 ```bash
-scripts/codex-graph agent --id HOST_PARENT_ID --name "Lead" --status running
-scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status running
-scripts/codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status completed
-scripts/codex-graph list
+codex-graph agent --id HOST_PARENT_ID --name "Lead" --status running
+codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status running
+codex-graph agent --id HOST_CHILD_ID --name "Parser" --parent HOST_PARENT_ID --status completed
+codex-graph list
 ```
 
 Reuse the same parent and thread values on updates. They are part of the identity.
@@ -174,13 +174,13 @@ The same commands work while the web server is closed.
 Use the exact agent IDs from `codex-graph list` for connections.
 
 ```bash
-scripts/codex-chat create "Runtime discussion"
-scripts/codex-chat connect CHAT_ID --agent AGENT_ID
-scripts/codex-chat disconnect CHAT_ID --agent AGENT_ID
-scripts/codex-chat list
-scripts/codex-chat read CHAT_ID
-scripts/codex-chat post CHAT_ID "Result or question" --owner "$CODEX_AGENT_OWNER"
-scripts/codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
+codex-chat create "Runtime discussion"
+codex-chat connect CHAT_ID --agent AGENT_ID
+codex-chat disconnect CHAT_ID --agent AGENT_ID
+codex-chat list
+codex-chat read CHAT_ID
+codex-chat post CHAT_ID "Result or question" --owner "$CODEX_AGENT_OWNER"
+codex-chat post CHAT_ID "Native agent reply" --agent HOST_CHILD_ID
 ```
 
 Use `--id UUID` on create or post to reuse an operation identity after a lost response.
@@ -198,7 +198,7 @@ The canvas creates managed leads and their workers. Legacy waves still use the l
 ## Steer a worker
 
 ```bash
-scripts/codex-steer --wave parser parser-fix "Limit the change to the parser module."
+codex-steer --wave parser parser-fix "Limit the change to the parser module."
 ```
 
 - One message enters the run inbox. The launcher uses `turn/steer` on an active turn and `turn/start` on a terminal turn.

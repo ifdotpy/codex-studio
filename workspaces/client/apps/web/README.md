@@ -23,7 +23,7 @@ Run package commands from this directory:
 pnpm run build
 ```
 
-From the repository root, start the installed backend with `scripts/codex-canvas`
+From the repository root, start the installed backend with `codex-canvas`
 and open <http://127.0.0.1:4620>. The server serves this app's `dist/`.
 Build output is local and ignored by Git. Rebuild it after a frontend change.
 The server reports a missing build instead of serving an older client.

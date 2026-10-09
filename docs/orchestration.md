@@ -1,6 +1,6 @@
 # Managed Codex teams
 
-Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `scripts/codex-canvas`, and open <http://127.0.0.1:4620>.
+Use the [Electron desktop app](../workspaces/client/apps/desktop/README.md), or build the [React interface](../workspaces/client/apps/web/README.md), start `codex-canvas`, and open <http://127.0.0.1:4620>.
 Use the new-chat action inside a project. The server creates an empty lead conversation immediately.
 If the current lead chat is empty, it reuses that chat and preserves the draft.
 Write the task in the conversation. The lead generates its title with `orchestration_title`.
@@ -769,16 +769,16 @@ parallelism; the queue reports their blockers.
 app-server process. Set `CODEX_CANVAS_URL` or pass `--url` for another local port.
 
 ```bash
-scripts/codex-control models
-scripts/codex-control create 'Review the project and delegate independent checks' \
+codex-control models
+codex-control create 'Review the project and delegate independent checks' \
   --cwd /absolute/project --name Lead --concurrency 32 --max-agents 64
-scripts/codex-control list
-scripts/codex-control send AGENT_ID 'Inspect the worker results and continue'
-scripts/codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
-scripts/codex-control transcript AGENT_ID
-scripts/codex-control stop LEAD_ID
-scripts/codex-control configure LEAD_ID --concurrency 12
-scripts/codex-control configure LEAD_ID --token-budget 2000000
+codex-control list
+codex-control send AGENT_ID 'Inspect the worker results and continue'
+codex-control monitor AGENT_ID 'your-command' --timeout-minutes 60
+codex-control transcript AGENT_ID
+codex-control stop LEAD_ID
+codex-control configure LEAD_ID --concurrency 12
+codex-control configure LEAD_ID --token-budget 2000000
 ```
 
 Change concurrency separately from the stored-team and token limits. The command

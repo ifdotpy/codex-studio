@@ -17,7 +17,7 @@ to resolve or forward conversational questions, complaints, and requests.
 
 In a managed session, use the advertised `orchestration_*` tools. The application
 owns their queue, permissions, state, and worker lifecycle.
-From a terminal, use this project's `scripts/codex-control --help` to find commands
+From a terminal, use this project's `codex-control --help` to find commands
 for the existing server. Do not start another server to control the same state.
 
 Read [managed orchestration](../../../docs/orchestration.md) for tool contracts,

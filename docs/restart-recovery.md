@@ -194,7 +194,7 @@ backend. `codex-supervisor status --state <path>` reads supervisor health.
    backend starts but never takes ownership of its lifecycle. Verify that
    `/api/desktop` reports protocol 1 and an empty supervisor handle list.
 4. At the planned idle boundary, run
-   `scripts/restart-backend-v2.sh --initial-cutover` with the same state directory
+   `restart-backend-v2.sh --initial-cutover` with the same state directory
    and mode. This one-time option requires an empty supervisor handle journal,
    signals only the old backend, and waits for a supervisor-mode replacement.
    For later backend-only restarts, omit `--initial-cutover`. Do not unload the
