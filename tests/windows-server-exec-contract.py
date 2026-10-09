@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Caller-level native Windows server exec contract."""
 import importlib.util
+import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -85,6 +86,69 @@ class WindowsExecContract(unittest.TestCase):
         self.assertTrue(accepted['value']['accepted'])
         self.assertEqual(self.finish(handle)['status'], 'cancelled')
 
+    def test_backend_restart_reattaches_read_input_and_cancel(self):
+        marker = self.b.folder / 'reattach-count'
+        source = ('from pathlib import Path;import sys,time;'
+                  f'path=Path({str(marker)!r});path.write_text(path.read_text()+"x" if path.exists() else "x");'
+                  'print("REATTACH_READY",flush=True);'
+                  'value=sys.stdin.readline();print("REATTACH_INPUT="+value.strip(),flush=True);time.sleep(60)')
+        response = self.start([sys.executable, '-u', '-c', source], timeout=120)
+        handle = response['value']['handle']
+        self.wait_for_output(handle, 'REATTACH_READY')
+        from codex_process_supervisor import status
+        adapter_handle = 'server-command:' + hashlib.sha256(handle.encode()).hexdigest()
+        before = next(row for row in status(self.b.state)['handles'] if row['id'] == adapter_handle)
+
+        self.b.restart()
+
+        after = next(row for row in status(self.b.state)['handles'] if row['id'] == adapter_handle)
+        self.assertEqual(after['pid'], before['pid'])
+        self.assertIn('REATTACH_READY', self.read(handle)['stdout'])
+        accepted = self.call('exec_input', 'reattach-input', server=self.b.server_id,
+                             handle=handle, input='continued\n')
+        self.assertTrue(accepted['value']['accepted'], accepted)
+        self.wait_for_output(handle, 'REATTACH_INPUT=continued')
+        stopped = self.call('exec_cancel', 'reattach-cancel', server=self.b.server_id, handle=handle)
+        self.assertTrue(stopped['value']['accepted'], stopped)
+        self.assertEqual(self.finish(handle)['status'], 'cancelled')
+        self.assertEqual(marker.read_text(encoding='ascii'), 'x')
+
+    def test_powershell_string_command(self):
+        response = self.start('Write-Output "WINDOWS_STRING_COMMAND"', timeout=20)
+        value = self.finish(response['value']['handle'])
+        self.assertEqual(value['status'], 'completed', value)
+        self.assertIn('WINDOWS_STRING_COMMAND', value['stdout'])
+
+    def test_batch_shims_quote_shell_metacharacters_and_reject_unsafe_values(self):
+        shim = self.b.folder / 'npm.cmd'
+        shim.write_text('@echo off\r\necho SAFE_BATCH\r\n', encoding='ascii')
+        response = self.start([str(shim), '--version', '&echo', 'WINDOWS_ARGV_INJECTION'],
+                              key='batch-injection-check', timeout=20)
+        value = self.finish(response['value']['handle'])
+        self.assertEqual(value['stdout'], 'SAFE_BATCH\n', value)
+
+        safe_args = ['left&right', 'pipe|value', 'less<value', 'greater>value', 'caret^value', 'space value']
+        response = self.start([str(shim), *safe_args], key='batch-meta-check', timeout=20)
+        value = self.finish(response['value']['handle'])
+        self.assertEqual(value['stdout'], 'SAFE_BATCH\n', value)
+
+        for index, unsafe in enumerate(('percent%value', 'bang!value', 'quote"value', 'line\nbreak')):
+            with self.subTest(argument=unsafe):
+                refused = self.start([str(shim), unsafe], key='batch-unsafe-' + str(index), timeout=20)
+                self.assertEqual(refused['outcome'], 'not_applied', refused)
+                self.assertIn('Batch command arguments cannot contain', refused['error'])
+
+    def test_output_saturation_drains_pipes_and_stops_reader_threads(self):
+        source = ('import os;data=b"x"*2097152;os.write(1,data);os.write(2,data)')
+        response = self.start([sys.executable, '-u', '-c', source], timeout=45, output_limit=4096)
+        value = self.finish(response['value']['handle'], timeout=55)
+        self.assertEqual(value['status'], 'completed', value)
+        self.assertEqual(value['stdoutBytes'], 2097152)
+        self.assertEqual(value['stderrBytes'], 2097152)
+        self.assertTrue(value['stdoutTruncated'])
+        self.assertTrue(value['stderrTruncated'])
+        self.assertTrue(value['readerThreadsStopped'], value)
+
     def test_timeout_kills_job_tree_including_grandchild(self):
         marker = self.b.folder / 'windows-grandchild.pid'
         source = ('import subprocess,sys,time;'
@@ -104,6 +168,7 @@ class WindowsExecContract(unittest.TestCase):
             value = self.finish(handle, timeout=20)
         self.assertTrue(value['timedOut'], value)
         self.assertEqual(value['status'], 'completed')
+        self.assertGreaterEqual(value['stoppedDescendants'], 1, value)
         pid = int(marker.read_text(encoding='ascii'))
         deadline = time.monotonic() + 5
         while self.process_active(pid) and time.monotonic() < deadline:

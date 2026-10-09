@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import re
 import queue
+import shutil
 import sys
 import uuid
 import selectors
@@ -84,6 +85,23 @@ def validate(payload: dict[str, Any], *, allow_foreign_windows_path: bool = Fals
         raise ValueError('Supply output_limit bytes from 2 to 4194304')
     return {**payload, 'cwd': cwd, 'command': command, 'env': environment,
             'timeout': timeout, 'output_limit': limit}
+
+
+def windows_batch_argv(command: list[str], environment: dict[str, str]) -> list[str]:
+    """Run a batch shim through cmd.exe with arguments protected from shell syntax."""
+    if os.name != 'nt':
+        return command
+    target = shutil.which(command[0], path=environment.get('PATH')) or command[0]
+    if PureWindowsPath(target).suffix.casefold() not in {'.cmd', '.bat'}:
+        return command
+    if any(any(ord(char) < 32 or char in '"%!\r\n' for char in value) for value in command):
+        raise ValueError('Batch command arguments cannot contain quotes, %, !, or control characters')
+    comspec = environment.get('COMSPEC')
+    if not comspec:
+        root = environment.get('SystemRoot', r'C:\Windows')
+        comspec = str(Path(root) / 'System32' / 'cmd.exe')
+    quoted = ' '.join('"' + value + '"' for value in [target, *command[1:]])
+    return [comspec, '/d', '/s', '/c', '"' + quoted + '"']
 
 
 @dataclass
@@ -554,6 +572,8 @@ class ServerExec:
         argv = (monitor_command(None, p['command'], p['cwd'], config={
             'shell_environment_policy': {'set': p['env']}})
             if isinstance(p['command'], str) else p['command'])
+        if os.name == 'nt':
+            argv = windows_batch_argv(argv, {**os.environ, **p['env']})
         record = {'handle': key, 'serverId': self.service.server_id, 'status': 'starting',
                   'startedAt': time.time(), 'finishedAt': None, 'exitCode': None, 'signal': None,
                   'duration': None, 'timedOut': False, 'outputLimit': p['output_limit']}
@@ -749,6 +769,19 @@ def child(config_path: Path) -> None:
     secret = config.get('markerSecret') or secrets.token_hex(32)
     tree = Descendants(key, record['startedAt'], secret)
     redactors = {name: MarkerRedactor(secret) for name in ('stdout', 'stderr')}
+    reader_stop: threading.Event | None = None
+    readers: list[threading.Thread] = []
+    writer: threading.Thread | None = None
+
+    def stop_descendants() -> int:
+        count = tree.stop()
+        previous = int(record.get('stoppedDescendants', 0))
+        if os.name == 'nt':
+            record['stoppedDescendants'] = previous + count
+        else:
+            record['stoppedDescendants'] = max(previous, count)
+        return int(record['stoppedDescendants'])
+
     try:
         marker = job_path(folder, key, '.started')
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -844,7 +877,7 @@ def child(config_path: Path) -> None:
                 if killed_at is None and (cancelled or now >= began + p['timeout'] or process.poll() is not None):
                     timed_out = not cancelled and now >= began + p['timeout']
                     record['timedOut'] = timed_out
-                    record['stoppedDescendants'] = tree.stop()
+                    stop_descendants()
                     killed_at = now
                     close_input = True
                 while not win_pending.empty() and not writer_queue.full():
@@ -872,6 +905,7 @@ def child(config_path: Path) -> None:
             code = process.wait(timeout=3)
             record.update(status='cancelled' if cancelled else 'completed', exitCode=code,
                           signal=None)
+            reader_stop.set()
             for child_stream in (process.stdin, process.stdout, process.stderr):
                 try:
                     if child_stream is not None:
@@ -880,7 +914,7 @@ def child(config_path: Path) -> None:
                     pass
             for thread in (*readers, writer):
                 thread.join(timeout=1)
-            reader_stop.set()
+            record['readerThreadsStopped'] = all(not thread.is_alive() for thread in readers)
         else:
             process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--command', str(config_path)],
                 cwd=p['cwd'], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -935,7 +969,7 @@ def child(config_path: Path) -> None:
                     cancelled |= shutdown.is_set() or cancel.is_set()
                     if killed_at is None and (cancelled or now >= began + p['timeout'] or process.poll() is not None):
                         record['timedOut'] = not cancelled and now >= began + p['timeout']
-                        record['stoppedDescendants'] = tree.stop()
+                        stop_descendants()
                         killed_at = now
                     if killed_at is not None and now - killed_at > 2:
                         break
@@ -970,13 +1004,14 @@ def child(config_path: Path) -> None:
     finally:
         if process is not None:
             try:
-                record['stoppedDescendants'] = tree.stop()
+                stop_descendants()
                 record['cleanupUnknownForks'] = tree.unknown_forks()
                 if record['cleanupUnknownForks']:
                     record.update(status='unknown', error='A descendant fork lost its ancestry; inspect the target server')
             except Exception:
                 record.update(status='unknown', error='Descendant cleanup is incomplete; inspect the target server',
-                              stoppedDescendants=len(tree.stopped - {tree.root}),
+                              stoppedDescendants=max(int(record.get('stoppedDescendants', 0)),
+                                                     len(tree.stopped - {tree.root})),
                               cleanupUnknownForks=max(1, tree.unknown_forks()))
             try:
                 process.wait(timeout=2)
@@ -985,7 +1020,16 @@ def child(config_path: Path) -> None:
                               cleanupUnknownForks=max(1, tree.unknown_forks()))
             for stream in (process.stdin, process.stdout, process.stderr):
                 if stream is not None:
-                    stream.close()
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+        if reader_stop is not None:
+            reader_stop.set()
+            for thread in readers:
+                thread.join(timeout=1)
+            if os.name == 'nt':
+                record['readerThreadsStopped'] = all(not thread.is_alive() for thread in readers)
         tree.close()
         record.update(duration=time.monotonic() - began, finishedAt=time.time())
         publish()

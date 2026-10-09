@@ -1246,7 +1246,8 @@ def supervisor_launch_snapshot(root, handle):
     db.row_factory = sqlite3.Row
     try:
         row = db.execute('SELECT h.signature,h.pid,h.generation,h.closed_at,h.init_result,'
-                         'h.sequence,h.acknowledged,c.pid AS identity_pid,c.start_time '
+                         'h.sequence,h.acknowledged,c.pid AS identity_pid,c.start_time,'
+                         'c.job_name,c.job_kill_on_close '
                          'FROM handles h LEFT JOIN child_identities c ON c.handle=h.id '
                          'WHERE h.id=?', (handle,)).fetchone()
         return dict(row) if row else None
@@ -1259,13 +1260,34 @@ def retained_native_launch(root, handle, command, env, cwd=None):
     saved = supervisor_launch_snapshot(root, handle)
     if not saved or saved['closed_at'] is not None:
         return None
-    if os.name == 'nt':
-        raise RuntimeError('Windows retained native launch verification is unavailable; refusing to reattach')
     pid, started = saved['pid'], saved['start_time']
     if started and pid == saved['identity_pid'] and process_start_time(pid) is None:
         return None
     if not started or pid != saved['identity_pid'] or not process_start_matches(pid, started, allow_legacy=True):
         raise RuntimeError('Cannot verify the existing supervisor child; native outcome remains unknown')
+    if os.name == 'nt':
+        if Supervisor.signature(command, env, cwd) != saved['signature']:
+            raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
+        job_name = saved.get('job_name')
+        if not job_name or not saved.get('job_kill_on_close'):
+            raise RuntimeError('Cannot verify the retained supervisor Job Object; native outcome remains unknown')
+        from codex_windows_supervisor import membership_for_pid, open_job
+        job = open_job(job_name)
+        if job is None:
+            raise RuntimeError('Cannot open the retained supervisor Job Object; native outcome remains unknown')
+        try:
+            if job.identity != job_name or membership_for_pid(job, pid) is not True:
+                raise RuntimeError('Cannot verify retained supervisor Job Object membership')
+        finally:
+            job.close()
+        current = supervisor_launch_snapshot(root, handle)
+        keys = ('signature', 'pid', 'identity_pid', 'start_time', 'generation', 'closed_at',
+                'job_name', 'job_kill_on_close')
+        if (current is None or any(current[key] != saved[key] for key in keys)
+                or not process_start_matches(pid, started)):
+            raise RuntimeError('Cannot verify the retained supervisor child; native outcome remains unknown')
+        return {'command': command, 'handle': handle,
+                **{key: current[key] for key in keys}}
     actual = process_launch_command(pid)
     if actual[1:] != command[1:]:
         raise RuntimeError('Supervisor native launch settings changed; existing work was preserved')
@@ -1282,11 +1304,37 @@ def retained_open_receipt(proxy, expected, command, env, cwd):
     """Use the existing status action, which cannot create a native process."""
     if expected.get('handle') != proxy.handle:
         raise RuntimeError('Cannot verify the retained supervisor handle')
-    if os.name == 'nt':
-        raise RuntimeError('Windows retained native launch verification is unavailable; refusing to reattach')
     status = proxy.call('status')
     saved = supervisor_launch_snapshot(proxy.root, proxy.handle)
     keys = ('signature', 'pid', 'identity_pid', 'start_time', 'generation', 'closed_at')
+    if os.name == 'nt':
+        keys += ('job_name', 'job_kill_on_close')
+        if (saved is None or any(saved[key] != expected.get(key) for key in keys)
+                or saved['closed_at'] is not None or status.get('pid') != saved['pid']
+                or status.get('returnCode') is not None
+                or Supervisor.signature(command, env, cwd) != saved['signature']
+                or not process_start_matches(saved['pid'], saved['start_time'])):
+            raise RuntimeError('Cannot verify the retained supervisor child; native outcome remains unknown')
+        job_name = saved['job_name']
+        if not job_name or not saved['job_kill_on_close']:
+            raise RuntimeError('Cannot verify the retained supervisor Job Object; native outcome remains unknown')
+        from codex_windows_supervisor import membership_for_pid, open_job
+        job = open_job(job_name)
+        if job is None:
+            raise RuntimeError('Cannot open the retained supervisor Job Object; native outcome remains unknown')
+        try:
+            if job.identity != job_name or membership_for_pid(job, saved['pid']) is not True:
+                raise RuntimeError('Cannot verify retained supervisor Job Object membership')
+        finally:
+            job.close()
+        try:
+            initialized = json.loads(saved['init_result'])
+        except (TypeError, ValueError):
+            initialized = None
+        if not isinstance(initialized, dict):
+            raise RuntimeError('The retained native initialization receipt is unavailable; native outcome remains unknown')
+        return {'resumed': True, 'initResult': initialized, 'generation': saved['generation'],
+                'acknowledged': saved['acknowledged'], 'sequence': saved['sequence']}
     if (saved is None or any(saved[key] != expected.get(key) for key in keys)
             or saved['closed_at'] is not None or status.get('pid') != saved['pid']
             or status.get('returnCode') is not None
