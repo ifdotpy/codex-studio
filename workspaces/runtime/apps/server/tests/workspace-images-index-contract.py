@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Index refresh and sparse staged-entry delta contracts for image workspaces."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -14,8 +16,8 @@ import threading
 import unittest
 from unittest import mock
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 spec = importlib.util.spec_from_file_location(
     'workspace_images_prefix_fixture', Path(__file__).with_name('workspace-images-prefix.py'))

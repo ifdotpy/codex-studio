@@ -1,4 +1,6 @@
 """Managed chat reads avoid global discovery and full task-history scans."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,11 +12,11 @@ import tempfile
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / 'scripts'))
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas
 
-spec = importlib.util.spec_from_file_location('runtime_fixture', root / 'tests/runtime-contract.py')
+spec = importlib.util.spec_from_file_location('runtime_fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

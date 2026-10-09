@@ -1,4 +1,6 @@
 """Exercise the real HTTP adapter in an isolated runtime fixture."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,13 +13,13 @@ import tempfile
 import time
 import urllib.error
 import urllib.request
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_test_state
 
-root = Path(__file__).resolve().parents[1]
+root = REPOSITORY_ROOT
 with tempfile.TemporaryDirectory() as directory:
     process = subprocess.Popen(
-        ['python3', '-B', str(root / 'tests/simple-ui-fixture.py'), directory],
+        ['python3', '-B', str(SERVER_TESTS_ROOT / 'simple-ui-fixture.py'), directory],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
         env={**os.environ, 'CODEX_BOARD_STATE_DIR': directory + '/board'},
     )

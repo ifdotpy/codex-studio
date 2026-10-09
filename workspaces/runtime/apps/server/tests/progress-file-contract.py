@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Plain progress reads preserve agent identity, file data, and legacy state."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import unittest
 from contextlib import nullcontext
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_panel import PanelMixin
 from codex_progress import MAX_PROGRESS_BYTES, progress_context, progress_path, provision_progress, read_progress
 from codex_work import WorkMixin

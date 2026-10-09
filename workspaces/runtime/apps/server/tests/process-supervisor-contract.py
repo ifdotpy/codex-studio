@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Private-state process-supervisor contracts with a deterministic fake model."""
+from codex_layout import DESKTOP_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import json
 import importlib.util
 import os
@@ -21,15 +23,15 @@ from unittest.mock import patch
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT / "desktop"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+sys.path.insert(0, str(DESKTOP_ROOT))
 from codex_runtime import AppServer, ResponseTimeout, Runtime
 from codex_process_supervisor import finish_fallback, process_start_time, status
 import codex_process_supervisor as process_supervisor
 import recover_backend
 
-rotation_spec = importlib.util.spec_from_file_location('runtime_rotation_fixture', ROOT / 'tests/native-runtime-updates-contract.py')
+rotation_spec = importlib.util.spec_from_file_location('runtime_rotation_fixture', SERVER_TESTS_ROOT / 'native-runtime-updates-contract.py')
 rotation_fixture = importlib.util.module_from_spec(rotation_spec)
 rotation_spec.loader.exec_module(rotation_fixture)
 
@@ -114,7 +116,7 @@ if os.environ.get('FAKE_STAY_ALIVE')=='1':
 
 BACKEND_HARNESS = r'''import os,sys,time
 from pathlib import Path
-sys.path.insert(0,sys.argv[1]+'/scripts')
+sys.path.insert(0,sys.argv[1])
 from codex_runtime import AppServer,ResponseTimeout
 root=Path(os.environ['CODEX_AGENTS_STATE_DIR'])
 target=os.environ['FAKE_TARGET_METHOD']
@@ -676,7 +678,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.env_patch.start()
         self.supervisor_log=self.root/'supervisor.stderr'
         self.supervisor_log_stream=self.supervisor_log.open('w')
-        self.supervisor=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/codex_process_supervisor.py'),
+        self.supervisor=subprocess.Popen([sys.executable,'-B',str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
             '--state',str(self.root)],stdout=subprocess.DEVNULL,stderr=self.supervisor_log_stream)
         self.extra_supervisors=[]
         self.addCleanup(self.cleanup)
@@ -1350,7 +1352,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         crash = "\n".join([
             "import os,sys",
             "from pathlib import Path",
-            "sys.path.insert(0,sys.argv[1]+'/scripts')",
+            "sys.path.insert(0,sys.argv[1])",
             "from codex_runtime import AppServer",
             "original=AppServer.write",
             "def crash_before_initialized(self,value,operation_id=None):",
@@ -1360,7 +1362,7 @@ class ProcessSupervisorContract(unittest.TestCase):
             "AppServer(Path(sys.argv[2]),lambda _:None,lambda _:None,lambda:None,",
             "          executable=os.environ['CODEX_BIN'],supervisor_handle='account:default')",
         ])
-        crashed = subprocess.run([sys.executable, '-B', '-c', crash, str(ROOT), str(self.root)],
+        crashed = subprocess.run([sys.executable, '-B', '-c', crash, str(SERVER_SOURCE_ROOT), str(self.root)],
                                  env=os.environ.copy(), timeout=10, check=False)
         self.assertEqual(crashed.returncode, 73)
         wait_for(self._initialize_result_saved)
@@ -1423,7 +1425,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         self.supervisor.wait(timeout=5)
         self.supervisor_log_stream.close()
         self.supervisor_log_stream = self.supervisor_log.open('a')
-        self.supervisor = subprocess.Popen([sys.executable, '-B', str(ROOT/'scripts/codex_process_supervisor.py'),
+        self.supervisor = subprocess.Popen([sys.executable, '-B', str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
             '--state', str(self.root)], stdout=subprocess.DEVNULL, stderr=self.supervisor_log_stream)
         wait_for(lambda: status(self.root))
 
@@ -2110,7 +2112,7 @@ class ProcessSupervisorContract(unittest.TestCase):
                 os.environ['FAKE_HANDLE']=handle
                 marker=self.root/'callback-blocked'
                 marker.unlink(missing_ok=True)
-                backend=subprocess.Popen([sys.executable,'-B','-c',BACKEND_HARNESS,str(ROOT)],
+                backend=subprocess.Popen([sys.executable,'-B','-c',BACKEND_HARNESS,str(SERVER_SOURCE_ROOT)],
                     env=os.environ.copy(),stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)
                 wait_for(lambda: marker.exists())
                 native_pid=int(self.pid_file.read_text())
@@ -2179,7 +2181,7 @@ class ProcessSupervisorContract(unittest.TestCase):
     def restart_supervisor_after_kill(self):
         self.supervisor.kill()
         self.supervisor.wait(timeout=5)
-        self.supervisor=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/codex_process_supervisor.py'),
+        self.supervisor=subprocess.Popen([sys.executable,'-B',str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
             '--state',str(self.root)],stdout=subprocess.DEVNULL,stderr=self.supervisor_log_stream)
         if self.supervisor.poll() is not None:
             raise AssertionError(self.supervisor_log.read_text())
@@ -2225,7 +2227,7 @@ class ProcessSupervisorContract(unittest.TestCase):
         child_pid=int(self.pid_file.read_text())
         legacy_owner=self.supervisor
         legacy_pid=legacy_owner.pid
-        waiter=subprocess.Popen([sys.executable,'-B',str(ROOT/'scripts/codex_process_supervisor.py'),
+        waiter=subprocess.Popen([sys.executable,'-B',str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
             '--state',str(self.root),'--wait-for-lease'],stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,text=True)
         self.extra_supervisors.append(waiter)

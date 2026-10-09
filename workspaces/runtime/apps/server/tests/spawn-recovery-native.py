@@ -7,6 +7,7 @@ The test does not read or write the live Studio database. It creates two new
 native sessions in that account's ordinary Codex history. No credentials are
 copied. Only the test's AppServer processes are closed during cleanup.
 """
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import argparse
 import copy
@@ -24,8 +25,8 @@ from unittest.mock import patch
 import uuid
 
 sys.dont_write_bytecode = True
-PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT / "scripts"))
+PROJECT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import AppServer, Runtime
 
 
@@ -137,7 +138,11 @@ def run(args):
     evidence = {"status": "failed", "model": MODEL, "maxModelTurns": 2,
                 "codexVersion": subprocess.check_output([os.environ.get("CODEX_BIN", "codex"), "--version"], text=True, timeout=10).strip(),
                 "source": {name: hashlib.sha256((PROJECT / name).read_bytes()).hexdigest()
-                           for name in ("scripts/codex_runtime.py", "scripts/codex_catalog.py", "scripts/codex_tool_requests.py")}}
+                           for name in (
+                               "workspaces/runtime/apps/server/src/codex_runtime.py",
+                               "workspaces/runtime/apps/server/src/codex_catalog.py",
+                               "workspaces/runtime/apps/server/src/codex_tool_requests.py",
+                           )}}
 
     def timeout_handler(_signum, _frame):
         raise TimeoutError("Native canary exceeded its deadline")

@@ -2,16 +2,17 @@
 """Run one scenario against the Runtime of the checkout given as argv[1]; print room entities JSON."""
 import sys, json, tempfile, importlib.util
 from pathlib import Path
-src = Path(sys.argv[1]); scenario = sys.argv[2]
+from codex_layout import SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+scenario = sys.argv[1]
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(src / "tests"))
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
-sys.path.insert(0, str(src / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import Runtime
 from codex_canvas import Canvas
 from codex_sync_entities import put as sync_entity_put, upgrade_agent_organization
-spec = importlib.util.spec_from_file_location("runtime_contract_fixture", src / "tests" / "runtime-contract.py")
+spec = importlib.util.spec_from_file_location("runtime_contract_fixture", SERVER_TESTS_ROOT / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture)
 
 P = "/fixture/project"

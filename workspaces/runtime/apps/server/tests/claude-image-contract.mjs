@@ -7,7 +7,7 @@ import zlib from "node:zlib";
 import {
   claudeImage,
   MAX_IMAGE_SIDE,
-} from "../scripts/claude_bridge/images.mjs";
+} from "../../../../providers/apps/claude-bridge/images.mjs";
 
 // Write an uncompressed RGB PNG with noise so its size stays realistic.
 function png(width, height) {

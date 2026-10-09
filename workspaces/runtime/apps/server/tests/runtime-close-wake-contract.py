@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Runtime shutdown wakes migration workers paused for disk space."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,7 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-sys_path = str(Path(__file__).resolve().parents[1] / 'scripts')
+sys_path = str(SERVER_SOURCE_ROOT)
 import sys
 sys.path.insert(0, sys_path)
 

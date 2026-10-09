@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Isolated 40-worker UI fixture. No model calls or user state."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import importlib.util
 from pathlib import Path
 import sys
@@ -11,13 +13,13 @@ isolate_supervisor_environment()
 isolate_api_schema_cache()
 
 sys.dont_write_bytecode = True
-skill = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(skill / 'scripts'))
+skill = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
 from studio_api.testing import read_runtime_state
 
-spec = importlib.util.spec_from_file_location('fixture', skill / 'tests/runtime-contract.py')
+spec = importlib.util.spec_from_file_location('fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
 c = Canvas(Path(sys.argv[1]))

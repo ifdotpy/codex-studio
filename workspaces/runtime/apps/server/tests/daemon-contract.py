@@ -1,4 +1,6 @@
 """No processes launched: verify the daemon's environment boundary."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = SERVER_SOURCE_ROOT
 sys.path.insert(0, str(SCRIPTS))
 loader = importlib.machinery.SourceFileLoader("daemon", str(SCRIPTS / "codex-daemon"))
 spec = importlib.util.spec_from_loader(loader.name, loader)

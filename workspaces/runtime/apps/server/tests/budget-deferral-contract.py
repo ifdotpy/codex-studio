@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exact unsubmitted budget waits. No server or model calls."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,7 +15,7 @@ import tempfile
 import threading
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_budget import budget_admission, defer_budget_start, claim_budget_wait
 from codex_native_action_receipts import find, reserve, outcome
 from runtime_scoped_agent_fixture import install_scoped_agent_reads

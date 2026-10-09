@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Entity sync keeps work details on the dedicated work resource."""
+from codex_layout import REPOSITORY_ROOT, WEB_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -107,8 +109,7 @@ class MobileStateHttpContract(unittest.TestCase):
         self.canvas.runtime = self.runtime
         self.static = self.root / "web"
         self.static.mkdir()
-        self.worker = (Path(__file__).resolve().parents[1]
-                       / "web/public/studio-sw.js").read_bytes()
+        self.worker = (WEB_ROOT / "public/studio-sw.js").read_bytes()
         (self.static / "studio-sw.js").write_bytes(self.worker)
         (self.static / "private.js").write_text("This file must stay unavailable.")
         self.web_patch = patch("codex_canvas.WEB", self.static)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Windows process-supervisor named-pipe, Job Object, and reattach contracts."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -15,8 +17,8 @@ import time
 import unittest
 from unittest.mock import Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 import codex_process_supervisor as supervisor
 from codex_process_supervisor import process_start_time
@@ -94,7 +96,7 @@ class WindowsSupervisorContract(unittest.TestCase):
         self.backend_file.write_text(BACKEND, encoding="utf-8")
         self.supervisor_log = (self.root / "supervisor.log").open("w", encoding="utf-8")
         self.server = subprocess.Popen(
-            [sys.executable, "-B", str(ROOT / "scripts" / "codex_process_supervisor.py"),
+            [sys.executable, "-B", str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
              "--state", str(self.root)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.supervisor_log,
         )
@@ -218,7 +220,7 @@ class WindowsSupervisorContract(unittest.TestCase):
         connection.close()
         reader.close()
         worker = subprocess.Popen(
-            [sys.executable, "-u", str(self.backend_file), str(ROOT / "scripts"),
+            [sys.executable, "-u", str(self.backend_file), str(SERVER_SOURCE_ROOT),
              str(self.root), str(self.child_file), str(self.backend_marker), str(self.descendant_file)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
         )
@@ -451,7 +453,7 @@ class WindowsSupervisorContract(unittest.TestCase):
         self.server.kill()
         self.server.wait(timeout=5)
         self.server = subprocess.Popen(
-            [sys.executable, "-B", str(ROOT / "scripts" / "codex_process_supervisor.py"),
+            [sys.executable, "-B", str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
              "--state", str(self.root)],
             cwd=ROOT, stdout=subprocess.DEVNULL, stderr=self.supervisor_log,
         )
@@ -544,7 +546,7 @@ class WindowsSupervisorContract(unittest.TestCase):
         server = None
         try:
             server = subprocess.Popen(
-                [sys.executable, "-B", str(ROOT / "scripts" / "codex_process_supervisor.py"),
+                [sys.executable, "-B", str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
                  "--state", str(root)],
                 cwd=ROOT, stdout=subprocess.DEVNULL, stderr=log,
             )

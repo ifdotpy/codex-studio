@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Windows-only contracts for Studio's server platform layer."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,8 +15,8 @@ import threading
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_executables import command, tailscale, which
 from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_SH, LOCK_UN
@@ -89,7 +91,7 @@ with open(sys.argv[1], 'r+') as handle:
     time.sleep(60)
 """
             process = subprocess.Popen([getattr(sys, "_base_executable", sys.executable),
-                                        "-c", worker, str(path), str(ROOT / "scripts")],
+                                        "-c", worker, str(path), str(SERVER_SOURCE_ROOT)],
                                        stdout=subprocess.PIPE, text=True)
             try:
                 self.assertEqual(process.stdout.readline().strip(), "locked")
@@ -133,7 +135,7 @@ flock(handle, LOCK_EX)
 print('locked', flush=True)
 time.sleep(60)
 """
-            process = subprocess.Popen([sys.executable, "-c", worker, str(path), str(ROOT / "scripts")],
+            process = subprocess.Popen([sys.executable, "-c", worker, str(path), str(SERVER_SOURCE_ROOT)],
                                        stdout=subprocess.PIPE, text=True)
             try:
                 self.assertEqual(process.stdout.readline().strip(), "locked")
@@ -200,7 +202,7 @@ time.sleep(60)
                "assert not {'fcntl', 'pwd', 'resource'} & sys.modules.keys(); " \
                "print('server-import-ok')"
         environment = os.environ.copy()
-        environment["PYTHONPATH"] = str(ROOT / "scripts")
+        environment["PYTHONPATH"] = str(SERVER_SOURCE_ROOT)
         result = subprocess.run([sys.executable, "-B", "-c", code], env=environment,
                                 capture_output=True, text=True, timeout=30)
         self.assertEqual(result.returncode, 0, result.stderr)

@@ -1,4 +1,6 @@
 """Add a recorded transcript to the existing isolated mobile UI fixture."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import json
 import os
 from pathlib import Path
@@ -6,11 +8,11 @@ import runpy
 import sys
 
 sys.dont_write_bytecode = True
-repo = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo / "tests"))
+repo = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
-sys.path.insert(0, str(repo / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_canvas
 
 if os.environ.get("MOBILE_UI_DIST"):
@@ -38,4 +40,4 @@ def audit_server(canvas, *args, **kwargs):
 
 
 codex_canvas.make_server = audit_server
-runpy.run_path(str(repo / "tests/simple-ui-fixture.py"), run_name="__main__")
+runpy.run_path(str(SERVER_TESTS_ROOT / "simple-ui-fixture.py"), run_name="__main__")

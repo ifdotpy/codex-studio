@@ -1,4 +1,6 @@
 """Entity DTO, bounded tracking and shared sequence-space contract."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, WEB_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,8 +13,8 @@ import sqlite3
 import sys
 import tempfile
 
-root = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(root / "scripts"))
+root = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_sync import SyncStore
 from codex_sync_entities import (AGENT_FIELDS, ensure_tables, project, put,
                                 sync_task_agent_change, sync_task_window, sync_task_write,
@@ -70,10 +72,10 @@ with tempfile.TemporaryDirectory() as directory:
     assert task == {"id": "task-1", "status": "failed", "command": "echo ok"}
 
     # Renderer fields used by the worker cards and team panel must stay on wire.
-    renderer = (root / "web/src/components/agents/WorkerCard.tsx").read_text() + (root / "web/src/components/agents/WorkerOverview.tsx").read_text() + (
-        root / "web/src/App.tsx"
-    ).read_text() + (root / "web/src/types.ts").read_text() + (
-        root / "web/src/nativeErrors.ts"
+    renderer = (WEB_ROOT / "src/components/agents/WorkerCard.tsx").read_text() + (WEB_ROOT / "src/components/agents/WorkerOverview.tsx").read_text() + (
+        WEB_ROOT / "src/App.tsx"
+    ).read_text() + (WEB_ROOT / "src/types.ts").read_text() + (
+        WEB_ROOT / "src/nativeErrors.ts"
     ).read_text()
     for field in ("name", "status", "error", "overview", "nativeRelease", "nativeThreadBlock"):
         assert field in AGENT_FIELDS, f"renderer field {field} is missing from the agent DTO"

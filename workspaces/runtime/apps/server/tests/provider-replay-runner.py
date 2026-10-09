@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Replay provider transcripts through the real Runtime and AppServer."""
+from codex_layout import CLAUDE_BRIDGE_ROOT, REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import json
 import os
 from pathlib import Path
@@ -15,9 +17,9 @@ from unittest.mock import patch
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-sys.path.insert(0, str(ROOT / "tests" / "server"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+sys.path.insert(0, str(SERVER_TESTS_ROOT / "server"))
 from rpc_replay_contract import EMPTY_RESULT_METHODS
 from codex_runtime import AppServer, Runtime
 
@@ -35,7 +37,7 @@ def eventually(check, timeout=8):
 
 class ProviderReplay(unittest.TestCase):
     def claude_transport(self, root, fixture_path):
-        source = ROOT / "scripts" / "claude_bridge"
+        source = CLAUDE_BRIDGE_ROOT
         bridge_root = root / "claude-bridge"
         bridge_root.mkdir()
         for module in source.glob("*.mjs"):
@@ -96,7 +98,7 @@ class ProviderReplay(unittest.TestCase):
                 patch("codex_native_runtime.executable_for", return_value={"path": str(executable)}):
             try:
                 supervisor = subprocess.Popen([sys.executable, "-B",
-                    str(ROOT / "scripts" / "codex_process_supervisor.py"), "--state", str(state)],
+                    str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"), "--state", str(state)],
                     stdout=subprocess.DEVNULL, stderr=supervisor_log)
                 eventually(lambda: (state / "supervisor.sock").exists())
                 eventually(lambda: status(state) is not None)
@@ -146,14 +148,14 @@ class ProviderReplay(unittest.TestCase):
                 supervisor_log.close()
 
     def run_fixture(self, name):
-        fixture_path = ROOT / "tests" / "fixtures" / "provider-replay" / f"{name}.json"
+        fixture_path = SERVER_TESTS_ROOT / "fixtures" / "provider-replay" / f"{name}.json"
         fixture = json.loads(fixture_path.read_text())
         replies_path = fixture_path.parent / "codex-rpc-replies.json"
         with tempfile.TemporaryDirectory(prefix="provider-replay-") as temp:
             root = Path(temp)
             executable = root / "provider"
             executable.write_text("#!/bin/sh\nexec '" + sys.executable + "' '" +
-                str(ROOT / "tests" / "provider-replay-server.py") + "' '" +
+                str(SERVER_TESTS_ROOT / "provider-replay-server.py") + "' '" +
                 str(fixture_path) + "' '" + str(replies_path) + "'\n")
             executable.chmod(0o700)
 
@@ -483,7 +485,7 @@ class ProviderReplay(unittest.TestCase):
             self.assertEqual(missing, [], "every outbound RPC requires exactly one reply")
 
     def test_all_recorded_fixtures(self):
-        fixture_dir = ROOT / "tests" / "fixtures" / "provider-replay"
+        fixture_dir = SERVER_TESTS_ROOT / "fixtures" / "provider-replay"
         names = sorted(path.stem for path in fixture_dir.glob("*.json")
                        if path.name != "codex-rpc-replies.json")
         self.assertGreaterEqual(len(names), 6)

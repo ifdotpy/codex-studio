@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """A backend update must read the handle table of a supervisor that still runs the old schema."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import sqlite3
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_process_supervisor import supervisor_launch_snapshot  # noqa: E402
 
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Measure cold and warm session cost requests against a large local fixture."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,14 +15,14 @@ import sys
 import tempfile
 import time
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 COUNT = 300_000
 LIMIT_BYTES = 128 * 1024 * 1024
 
 
 def worker(db_path, state_root, name, expected_samples):
-    sys.path.insert(0, os.environ.get("CODEX_SESSION_COSTS_PATH", str(ROOT / "scripts")))
-    sys.path.insert(1, str(ROOT / "scripts"))
+    sys.path.insert(0, os.environ.get("CODEX_SESSION_COSTS_PATH", str(SERVER_SOURCE_ROOT)))
+    sys.path.insert(1, str(SERVER_SOURCE_ROOT))
     from codex_session_costs import SessionCostReader
 
     class FixedPricing:

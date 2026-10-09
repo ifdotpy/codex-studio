@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """State paths and launcher owner fields use the current names."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
+SCRIPTS = SERVER_SOURCE_ROOT
 sys.path.insert(0, str(SCRIPTS))
 from codex_state import read_threads, state_dir
 

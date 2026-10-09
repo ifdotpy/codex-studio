@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """Absolute working directory syntax for local and remote Windows servers."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from pathlib import Path
 import os
 import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 
 from codex_server_exec import validate
 

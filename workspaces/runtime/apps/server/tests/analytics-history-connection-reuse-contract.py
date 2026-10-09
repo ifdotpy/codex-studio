@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """History phases reuse one connection and retain separate transaction boundaries."""
+from codex_layout import REPOSITORY_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -208,7 +210,7 @@ class HistoryConnectionReuse(unittest.TestCase):
 
     def test_an_old_active_step_finishes_before_the_next_reused_step(self):
         from codex_source import source_function
-        root = Path(__file__).resolve().parents[1]
+        root = REPOSITORY_ROOT
         source = subprocess.check_output(
             ['git', 'show', '641753ec:scripts/codex_analytics_history.py'], cwd=root)
         old_step, _ = source_function(source,

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Retry a fresh Claude turn despite an earlier busy Studio reservation."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,11 +12,11 @@ from pathlib import Path
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 
 
 def fixture(name, filename):
-    spec = importlib.util.spec_from_file_location(name, ROOT / 'tests' / filename)
+    spec = importlib.util.spec_from_file_location(name, SERVER_TESTS_ROOT / filename)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Keep the owner of a real slow writer after commit and process restart."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -19,8 +21,8 @@ import unittest
 from unittest.mock import patch
 import weakref
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_sqlite
 import codex_sqlite_traces as traces
 
@@ -141,7 +143,7 @@ traces.transaction_watchdog(root)
 print(json.dumps(traces.history()["recent"][-1]))
 """
         result = subprocess.run([sys.executable, "-B", "-c", code, str(self.root), str(seconds)],
-                                check=True, env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")},
+                                check=True, env={**os.environ, "PYTHONPATH": str(SERVER_SOURCE_ROOT)},
                                 timeout=5, capture_output=True)
         return json.loads(result.stdout)
 
@@ -268,7 +270,7 @@ print(json.dumps(traces.history()["recent"][-1]))
     def restart_watchdog(self):
         code = "from pathlib import Path; import sys; from codex_sqlite_traces import transaction_watchdog; transaction_watchdog(Path(sys.argv[1]))"
         subprocess.run([sys.executable, "-B", "-c", code, str(self.root)], check=True,
-                       env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")}, timeout=5, capture_output=True)
+                       env={**os.environ, "PYTHONPATH": str(SERVER_SOURCE_ROOT)}, timeout=5, capture_output=True)
 
     def test_bounded_history_rollbacks_and_no_retained_connection(self):
         now = [1000.0]

@@ -12,12 +12,11 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const TEST_DIR = dirname(fileURLToPath(import.meta.url));
-const PROJECT_DIR = dirname(TEST_DIR);
-const SCRIPTS = join(PROJECT_DIR, "scripts");
+const PROJECT_DIR = fileURLToPath(new URL("../../../../../", import.meta.url));
+const SCRIPTS = join(PROJECT_DIR, "workspaces/runtime/apps/server/src");
 const ROOT = mkdtempSync(join(tmpdir(), "codex-agents-smoke-"));
 const STATE = join(ROOT, "state");
 mkdirSync(STATE);

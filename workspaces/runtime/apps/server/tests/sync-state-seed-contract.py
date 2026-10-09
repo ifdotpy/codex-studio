@@ -1,4 +1,6 @@
 """A Canvas chat node is seeded only as a chat entity."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,8 +14,8 @@ import time
 import unittest
 import uuid
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas
 from codex_runtime import Runtime
 from codex_sync import SyncStore

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Bounded runtime collections match their entity-sync materialization."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -11,11 +13,11 @@ import sys
 import tempfile
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
-sys.path.insert(0, str(ROOT / "tests"))
-spec = importlib.util.spec_from_file_location("runtime_fixture", ROOT / "tests/runtime-contract.py")
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
+spec = importlib.util.spec_from_file_location("runtime_fixture", SERVER_TESTS_ROOT / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_sync_entities import (COLLECTION_FIELDS, ensure_tables, project, sync_event_window,

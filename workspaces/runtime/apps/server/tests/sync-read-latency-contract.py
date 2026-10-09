@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Independent entity pulls do not wait in a transcript or writer queue."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -18,8 +20,8 @@ from urllib.parse import urlencode
 import zlib
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 import codex_sync
 from codex_sync import SCOPE_STRIPES

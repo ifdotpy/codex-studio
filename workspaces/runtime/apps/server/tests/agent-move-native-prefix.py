@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Compare native request prefixes across isolated Codex app-servers."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import importlib.util
 import json
 import os
@@ -9,10 +11,10 @@ import sys
 import tempfile
 import threading
 
-repo = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo / 'scripts'))
-sys.path.insert(0, str(repo / 'tests'))
-spec = importlib.util.spec_from_file_location('native_move_probe', repo / 'tests/native-primitives-integration.py')
+repo = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
+spec = importlib.util.spec_from_file_location('native_move_probe', SERVER_TESTS_ROOT / 'native-primitives-integration.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

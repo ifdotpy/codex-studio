@@ -3,6 +3,7 @@
 
 The provider emits fixed tool calls. No cloud model requests or user state.
 """
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 import importlib.util
 import json
@@ -16,7 +17,7 @@ import time
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_shell import monitor_command
 
 spec = importlib.util.spec_from_file_location("native_fixture", Path(__file__).with_name("workspace-native-turn.py"))

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Keep shared persisted-value fixtures aligned with their strict DTOs."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -9,7 +11,7 @@ import unittest
 from pathlib import Path
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from entity_test_support import capacity_retry, context_repair_wait, usage_resume
 from studio_api.sync.models import AgentEntityContextRepairWaitDto, CapacityRetryDto, UsageResumeDto
 

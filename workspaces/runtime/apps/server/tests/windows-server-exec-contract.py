@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Caller-level native Windows server exec contract."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import importlib.util
 import hashlib
 import os
@@ -12,8 +14,8 @@ import unittest
 if os.name != 'nt':
     raise SystemExit('This contract runs on Windows')
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 spec = importlib.util.spec_from_file_location(
     'server_exec_fixture', Path(__file__).with_name('server-exec-signed-integration.py'))
 fixture = importlib.util.module_from_spec(spec)
