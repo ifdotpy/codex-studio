@@ -61,6 +61,9 @@ const specialProjects =
     : [];
 
 export default defineConfig({
+  globalSetup: fileURLToPath(
+    new URL("./playwright-global-setup.mjs", import.meta.url),
+  ),
   globalTeardown: fileURLToPath(
     new URL("./playwright-memory-teardown.mjs", import.meta.url),
   ),

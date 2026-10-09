@@ -56,13 +56,19 @@ process.once("exit", () => {
   for (const cacheDir of fixtureViteCaches)
     rmSync(cacheDir, { recursive: true, force: true });
 });
-// Resolve the fixture interpreter once so every shared fixture launch uses the
-// same dependency-equipped runtime, regardless of legacy caller spellings.
-const fixturePythonCommand =
-  process.env.PYTHON_BIN ||
-  process.env.PYTHON ||
-  process.env.CODEX_AGENTS_PYTHON ||
-  "python3";
+// Playwright global setup resolves this once through scripts/codex_python.py
+// before any test runs and places the selected interpreter in the environment.
+export function getFixturePythonCommand() {
+  const command =
+    process.env.CODEX_AGENTS_PYTHON ||
+    process.env.PYTHON_BIN ||
+    process.env.PYTHON;
+  if (!command)
+    throw new Error(
+      "Playwright fixture Python was not resolved; check the configured global setup.",
+    );
+  return command;
+}
 
 function isPythonCommand(command) {
   return (
@@ -732,7 +738,7 @@ export function spawnFixture(command, args, options) {
       }),
     );
   const child = spawn(
-    isPythonCommand(command) ? fixturePythonCommand : command,
+    isPythonCommand(command) ? getFixturePythonCommand() : command,
     args,
     {
       ...options,

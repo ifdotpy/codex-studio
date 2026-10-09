@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { playwrightScratchRoot, spawnFixture, test } from "./playwright.mjs";
+import {
+  getFixturePythonCommand,
+  playwrightScratchRoot,
+  spawnFixture,
+  test,
+} from "./playwright.mjs";
 
 const repositoryRoot = dirname(
   dirname(dirname(fileURLToPath(import.meta.url))),
@@ -39,4 +45,15 @@ test("spawnFixture defaults to a synthetic account and supports signed-out opt-o
     await fixtureAccountStatus({ CODEX_PLAYWRIGHT_SIGNED_OUT: "1" }),
     "signedOut",
   );
+});
+
+test("global setup resolves an equipped fixture Python without caller variables", () => {
+  const python = getFixturePythonCommand();
+  assert.equal(python.startsWith("/"), true);
+  const result = spawnSync(
+    python,
+    ["-c", "import fastapi, httpx, pydantic, uvicorn, watchdog"],
+    { encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr);
 });
