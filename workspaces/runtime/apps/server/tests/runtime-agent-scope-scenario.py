@@ -63,6 +63,7 @@ def seed(runtime):
     with runtime.db() as db:
         db.execute("DELETE FROM runtime_agents")
         for r in recs:
+            r["kind"] = "agent"
             db.execute("INSERT OR REPLACE INTO runtime_agents(id,record) VALUES (?,?)", (r["id"], json.dumps(r)))
         for room in rooms:
             db.execute("INSERT INTO runtime_rooms(id,record) VALUES (?,?)", (room["id"], json.dumps(room)))
