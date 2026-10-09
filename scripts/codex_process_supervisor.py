@@ -1245,10 +1245,14 @@ def supervisor_launch_snapshot(root, handle):
     db = sqlite3.connect(path.absolute().as_uri() + '?mode=ro', uri=True, timeout=.25)
     db.row_factory = sqlite3.Row
     try:
+        # A supervisor that started before the Job Object columns existed keeps
+        # its old schema until it restarts; a backend update must still read it.
+        columns = {item[1] for item in db.execute('PRAGMA table_info(child_identities)')}
+        job = ('c.job_name,c.job_kill_on_close' if {'job_name', 'job_kill_on_close'} <= columns
+               else "'' AS job_name,0 AS job_kill_on_close")
         row = db.execute('SELECT h.signature,h.pid,h.generation,h.closed_at,h.init_result,'
                          'h.sequence,h.acknowledged,c.pid AS identity_pid,c.start_time,'
-                         'c.job_name,c.job_kill_on_close '
-                         'FROM handles h LEFT JOIN child_identities c ON c.handle=h.id '
+                         + job + ' FROM handles h LEFT JOIN child_identities c ON c.handle=h.id '
                          'WHERE h.id=?', (handle,)).fetchone()
         return dict(row) if row else None
     finally:
