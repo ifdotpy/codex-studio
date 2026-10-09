@@ -422,6 +422,11 @@ class ProvisionTests(unittest.TestCase):
 
     def test_runtime_payload_imports_without_host_source_modules(self):
         config = vm._cloud_config(Path(__file__).resolve().parents[1] / 'vm/guest', '0.160.1', '2.1.291')
+        for name in ('codex-orchestrator', 'codex-subagent', 'codex-workspace'):
+            entry = next(row for row in config['write_files']
+                         if row['path'] == '/opt/codex-studio/.agents/skills/' + name + '/SKILL.md')
+            source = Path(__file__).resolve().parents[1] / '.agents/skills' / name / 'SKILL.md'
+            self.assertEqual(gzip.decompress(base64.b64decode(entry['content'])), source.read_bytes())
         payload = self.root / 'scripts'
         payload.mkdir()
         for entry in config['write_files']:

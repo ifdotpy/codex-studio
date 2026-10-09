@@ -13,8 +13,8 @@ from common import GuestError, atomic_bytes, atomic_json, require
 
 
 def project_id(value):
-    require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9_-]{1,100}", value),
-            "projectId must contain ASCII letters, digits, hyphens, or underscores")
+    require(isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,99}", value),
+            "projectId must start with an ASCII letter or digit and contain letters, digits, hyphens, or underscores")
     return value
 
 
@@ -132,4 +132,3 @@ class Share:
         return {"state": state, "protocol": "smb", "readOnly": True, **network,
                 "port": 445, "user": "studio-view", "projects": sorted(
                     json.loads(record.read_text())["projectId"] for record in self.state.glob("export-*.json"))}
-

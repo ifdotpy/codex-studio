@@ -106,7 +106,7 @@ class Projects:
                     await command(["rsync", "-a", "--delete", "--exclude=.git", private_source.as_posix() + "/", cwd.as_posix() + "/"], timeout=1800)
                     await command(["chown", "-R", owner["owner"] + ":" + owner["owner"], cwd], timeout=1800)
                     await self.layr(["add", "-A"], cwd=cwd, owner=owner["owner"])
-                    await self.layr(["commit", "-m", "Explicit Mac re-import"], cwd=cwd, owner=owner["owner"])
+                    await self.layr(["commit", "--allow-empty", "-m", "Explicit Mac re-import"], cwd=cwd, owner=owner["owner"])
                     state = await self.layr(["rev-parse", "HEAD"], cwd=cwd)
                     atomic_json(marker, {"line": line, "stateId": state})
                     return {**previous, "imported": True, "importLine": line,

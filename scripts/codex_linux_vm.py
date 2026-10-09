@@ -371,6 +371,14 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
                       'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(data)).decode()})
     files.append({'path': '/opt/codex-studio/vm/layr/manifest.json', 'permissions': '0644',
                   'content': json.dumps(manifest)})
+    skills = guest_dir.parents[1] / '.agents/skills'
+    for name in ('codex-orchestrator/SKILL.md', 'codex-subagent/SKILL.md',
+                 'codex-workspace/SKILL.md', 'codex-workspace/references/layr.md'):
+        source = skills / name
+        if source.is_file() and not source.is_symlink():
+            files.append({'path': '/opt/codex-studio/.agents/skills/' + name,
+                          'permissions': '0644', 'encoding': 'gz+b64',
+                          'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
     scripts = guest_dir.parents[1] / 'scripts'
     for name in ['codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',

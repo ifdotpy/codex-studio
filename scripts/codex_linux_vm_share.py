@@ -19,8 +19,8 @@ if TYPE_CHECKING:
 
 
 def _id(value: str) -> str:
-    if not re.fullmatch(r'[A-Za-z0-9_-]{1,100}', value):
-        raise ValueError('projectId must contain ASCII letters, digits, hyphens, or underscores.')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_-]{0,99}', value):
+        raise ValueError('projectId must start with an ASCII letter or digit and contain letters, digits, hyphens, or underscores.')
     return value
 
 
