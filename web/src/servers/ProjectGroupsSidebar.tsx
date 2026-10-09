@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Menu, Modal, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Button, Menu, Modal } from "@mantine/core";
 import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { saved, save } from "../api";
@@ -8,6 +8,7 @@ import { logicalProjects, type LogicalProject } from "./logicalProjects";
 import { projectServerChoices } from "./projectLocations";
 import type { ServerCommand, ServerNavigation } from "./navigation";
 import type { StudioServer } from "./registry";
+import { DEFAULT_LOCAL_SERVER_ALIAS } from "./serverAliases";
 import type { ResourceConnectionState } from "../sync/resourceEvents";
 
 export default function ProjectGroupsSidebar({
@@ -19,6 +20,7 @@ export default function ProjectGroupsSidebar({
   current,
   query,
   send,
+  hideOldChatsThreshold,
 }: {
   navigation: Record<string, ServerNavigation>;
   servers: StudioServer[];
@@ -28,11 +30,9 @@ export default function ProjectGroupsSidebar({
   current: string;
   query: string;
   send: (server: string, command: ServerCommand) => void;
+  hideOldChatsThreshold: number;
 }) {
   const groups = useMemo(() => logicalProjects(navigation), [navigation]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
-    saved("studio-logical-project-collapsed", {}),
-  );
   const [choosing, setChoosing] = useState<LogicalProject | null>(null);
   const [compact, setCompact] = useState<Record<string, boolean>>(() =>
     saved("studio-logical-project-compact", {}),
@@ -47,7 +47,7 @@ export default function ProjectGroupsSidebar({
       serverAliases[server.id] ||
         server.alias ||
         (server.id === "local"
-          ? "MAC"
+          ? DEFAULT_LOCAL_SERVER_ALIAS
           : server.label
               .replace(/[^a-z]/gi, "")
               .slice(0, 3)
@@ -84,22 +84,10 @@ export default function ProjectGroupsSidebar({
             data-project-path={project.path}
           >
             <div className="project-tree-heading">
-              <UnstyledButton
-                className="project-tree-toggle"
-                title={project.name}
-                aria-expanded={!collapsed[project.key]}
-                onClick={() => {
-                  const next = {
-                    ...collapsed,
-                    [project.key]: !collapsed[project.key],
-                  };
-                  setCollapsed(next);
-                  save("studio-logical-project-collapsed", next);
-                }}
-              >
+              <div className="project-tree-toggle" title={project.name}>
                 <FolderOpen size={18} />
                 <span>{project.name}</span>
-              </UnstyledButton>
+              </div>
               <ActionIcon
                 className="project-tree-action"
                 aria-label={`New chat in ${project.name}`}
@@ -131,42 +119,39 @@ export default function ProjectGroupsSidebar({
                 </Menu.Dropdown>
               </Menu>
             </div>
-            {!collapsed[project.key] && (
-              <ProjectChatRows
-                chats={chats.map((chat) => ({
-                  ...chat,
-                  provider: chat.provider || undefined,
-                  updated: chat.updated || undefined,
-                  created: chat.created || undefined,
-                }))}
-                aliases={aliases}
-                selected={{
-                  id: navigation[current]?.opened || "",
-                  serverId: current,
-                }}
-                compact={
-                  compact[project.key] ??
-                  legacyCompact[
-                    JSON.stringify([project.owner, project.path])
-                  ] ??
-                  project.compact ??
-                  true
-                }
-                query={query}
-                setCompact={(value) => {
-                  const next = { ...compact, [project.key]: value };
-                  setCompact(next);
-                  save("studio-logical-project-compact", next);
-                }}
-                open={(chat) =>
-                  send(chat.serverId || project.owner, {
-                    action: "open",
-                    id: chat.id,
-                  })
-                }
-              />
-            )}
-            {!collapsed[project.key] && !chats.length && (
+            <ProjectChatRows
+              chats={chats.map((chat) => ({
+                ...chat,
+                provider: chat.provider || undefined,
+                updated: chat.updated || undefined,
+                created: chat.created || undefined,
+              }))}
+              aliases={aliases}
+              selected={{
+                id: navigation[current]?.opened || "",
+                serverId: current,
+              }}
+              compact={
+                compact[project.key] ??
+                legacyCompact[JSON.stringify([project.owner, project.path])] ??
+                project.compact ??
+                true
+              }
+              hideOldChatsThreshold={hideOldChatsThreshold}
+              query={query}
+              setCompact={(value) => {
+                const next = { ...compact, [project.key]: value };
+                setCompact(next);
+                save("studio-logical-project-compact", next);
+              }}
+              open={(chat) =>
+                send(chat.serverId || project.owner, {
+                  action: "open",
+                  id: chat.id,
+                })
+              }
+            />
+            {!chats.length && (
               <Button
                 size="xs"
                 variant="subtle"

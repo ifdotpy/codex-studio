@@ -31,6 +31,18 @@ export function isVisibleSidebarAgent(
     !agent.sharedRoomId
   );
 }
+export function countProjectChats(
+  agents: Pick<Agent, "cwd" | "archived">[],
+  archived: boolean,
+) {
+  const counts = new Map<string, number>();
+  for (const agent of agents)
+    if (!!agent.archived === archived) {
+      const path = agent.cwd || "";
+      counts.set(path, (counts.get(path) || 0) + 1);
+    }
+  return counts;
+}
 export function itemGroup(path: string, parent: string | null = null) {
   return JSON.stringify(["items", path, parent]);
 }

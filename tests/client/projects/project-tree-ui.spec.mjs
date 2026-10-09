@@ -178,12 +178,24 @@ test("project tree ui", async ({ page: runnerPage }) => {
       cwd: folders["Newcrom Case"],
     });
     await post("/api/rename", { id: legal.id, name: "Review evidence" });
+    const stateDir = (await readTestState(url)).stateDir;
+    await page.evaluate(
+      ({ stateDir, path }) =>
+        localStorage.setItem(
+          `codex-project-tree:${stateDir}`,
+          JSON.stringify({ [path]: true }),
+        ),
+      { stateDir, path: folders.assistant },
+    );
     await page.reload();
     const group = (name) =>
       page.locator(".sidebar-project").filter({
         has: page.locator(".project-tree-toggle", { hasText: name }),
       });
     await group("assistant").waitFor();
+    const projectsHeading = page.locator(".projects-heading-label");
+    assert.equal(await projectsHeading.textContent(), "Projects");
+    assert.equal(await projectsHeading.getAttribute("aria-expanded"), null);
     await waitFor(
       async () =>
         (await group("assistant").locator("[data-chat]").count()) >= 5,
@@ -411,10 +423,17 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await waitFor(
       async () => !(await state()).find((a) => a.id === pinnedId).pinned,
     );
-    await group("assistant").locator(".project-tree-toggle").click();
-    assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
-    // A project with the selected chat expands again after reload (e4ef04aa).
-    // Select another project before reload to test collapsed-state persistence.
+    const assistantProject = group("assistant").locator(".project-tree-toggle");
+    assert.equal(await assistantProject.getAttribute("aria-expanded"), null);
+    const assistantChatCount = await group("assistant")
+      .locator("[data-chat]")
+      .count();
+    await assistantProject.click();
+    assert.equal(
+      await group("assistant").locator("[data-chat]").count(),
+      assistantChatCount,
+      "Clicking a project name leaves its chats visible",
+    );
     await page.locator(`[data-chat="${legal.id}"]`).click();
     await page.reload();
     await group("assistant").waitFor();
@@ -422,9 +441,12 @@ test("project tree ui", async ({ page: runnerPage }) => {
       await group("assistant")
         .locator(".project-tree-toggle")
         .getAttribute("aria-expanded"),
-      "false",
+      null,
     );
-    assert.equal(await group("assistant").locator("[data-chat]").count(), 0);
+    assert.equal(
+      await group("assistant").locator("[data-chat]").count(),
+      assistantChatCount,
+    );
     await page
       .getByLabel("Filter projects and chats")
       .fill("Review component 2");
@@ -438,7 +460,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
       exact: true,
     });
     await expect(
-      chatDialog.getByRole("button", { name: /This Mac.*Active.*litos/ }),
+      chatDialog.getByRole("button", { name: /This computer.*Active.*litos/ }),
     ).toHaveAttribute("aria-pressed", "true");
     await chatDialog
       .getByRole("button", { name: "Start chat", exact: true })
@@ -571,6 +593,17 @@ test("project tree ui", async ({ page: runnerPage }) => {
     assert.equal(movedChat.accountKey, sourceChat.accountKey);
     const folderHeading = (id) =>
       page.locator(`[data-folder-id="${id}"] > .project-tree-heading`);
+    const workFolderToggle = folderHeading(workFolder).locator(
+      ".project-tree-toggle",
+    );
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
+    await workFolderToggle.click();
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "false");
+    await page
+      .locator(`[data-folder-id="${workFolder}"] [data-chat]`)
+      .waitFor({ state: "detached" });
+    await workFolderToggle.click();
+    assert.equal(await workFolderToggle.getAttribute("aria-expanded"), "true");
     const moveSource = () => page.locator(`[data-chat="${sourceChat.id}"]`);
     const currentSource = async () =>
       (await state()).find((a) => a.id === sourceChat.id);

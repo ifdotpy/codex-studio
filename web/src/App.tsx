@@ -121,6 +121,8 @@ import { removeAllSendingMessages } from "./components/removeSendingMessages";
 import type { Attachment } from "./components/ComposerAttachments";
 import {
   defaultStudioPreferences,
+  MAX_HIDE_OLD_CHATS_THRESHOLD,
+  MIN_HIDE_OLD_CHATS_THRESHOLD,
   fontFamilies,
   formatSidebarShortcut,
   parseSidebarShortcut,
@@ -385,6 +387,14 @@ export default function App() {
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
+  const [hideOldChatsThresholdDraft, setHideOldChatsThresholdDraft] = useState(
+    () => String(preferenceLoad.value.hideOldChatsThreshold),
+  );
+  useEffect(() => {
+    setHideOldChatsThresholdDraft(
+      String(studioPreferences.hideOldChatsThreshold),
+    );
+  }, [studioPreferences.hideOldChatsThreshold]);
   const [studioPreferencesError, setStudioPreferencesError] = useState(
     preferenceLoad.error,
   );
@@ -1879,7 +1889,7 @@ export default function App() {
       body: (
         <ProjectDirectoryPicker
           initialPath={target.cwd ?? undefined}
-          serverChoices={[{ id: "local", label: "This Mac" }]}
+          serverChoices={[{ id: "local", label: "This computer" }]}
           showServerSelector={false}
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
@@ -2259,6 +2269,7 @@ export default function App() {
         indicators={indicators}
         markUnread={(a) => void readState.markUnread(a)}
         markingRead={readState.marking}
+        hideOldChatsThreshold={studioPreferences.hideOldChatsThreshold}
         rename={rename}
         remove={remove}
         mobile={sidebar}
@@ -3027,6 +3038,39 @@ export default function App() {
                       </label>
                     ))}
                   </div>
+                </SettingsRow>
+                <SettingsRow
+                  label="Hide old chats"
+                  help="Projects with fewer chats always show all of them."
+                >
+                  <TextInput
+                    aria-label="Hide old chats"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={hideOldChatsThresholdDraft}
+                    onChange={(event) =>
+                      setHideOldChatsThresholdDraft(event.currentTarget.value)
+                    }
+                    onBlur={() => {
+                      const value = Number(hideOldChatsThresholdDraft);
+                      if (
+                        /^\d+$/.test(hideOldChatsThresholdDraft) &&
+                        Number.isInteger(value) &&
+                        value >= MIN_HIDE_OLD_CHATS_THRESHOLD &&
+                        value <= MAX_HIDE_OLD_CHATS_THRESHOLD
+                      ) {
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          hideOldChatsThreshold: value,
+                        });
+                        setHideOldChatsThresholdDraft(String(value));
+                      } else {
+                        setHideOldChatsThresholdDraft(
+                          String(studioPreferences.hideOldChatsThreshold),
+                        );
+                      }
+                    }}
+                  />
                 </SettingsRow>
                 <details className="studio-appearance-more">
                   <summary>More</summary>

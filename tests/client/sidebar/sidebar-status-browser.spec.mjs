@@ -54,7 +54,7 @@ test("sidebar status, alias validation, and compact choices", async ({
     const group = page.locator(`[data-project-path="${project.path}"]`);
     const chat = (name) => sidebar.locator(`[data-chat="${chats[name].id}"]`);
     await expect(
-      group.getByRole("button", { name: /^Show more \(\d+\)$/ }),
+      group.getByRole("button", { name: /^Show old \(\d+\)$/ }),
     ).toBeVisible();
     await expect(chat("Old hidden")).toHaveCount(0);
     await expect(chat("Old folder hidden")).toHaveCount(0);
@@ -68,11 +68,11 @@ test("sidebar status, alias validation, and compact choices", async ({
     ])
       await expect(chat(name)).toBeVisible();
     const line = chat("Running").locator(".chat-server-line");
-    await expect(line).toHaveText("MAC");
+    await expect(line).toHaveText("LOC");
     await expect(line.locator("svg")).toHaveCount(1);
     await expect(chat("Recent").locator(".chat-server-line")).toHaveAttribute(
       "aria-label",
-      "Claude, MAC",
+      "Claude, LOC",
     );
     expect(await line.evaluate((node) => getComputedStyle(node).fontSize)).toBe(
       "11px",
@@ -89,27 +89,66 @@ test("sidebar status, alias validation, and compact choices", async ({
       group.locator(":scope > .project-tree-heading .chat-server-line"),
     ).toHaveCount(0);
     const hiddenCount = await group
-      .getByRole("button", { name: /^Show more \(\d+\)$/ })
+      .getByRole("button", { name: /^Show old \(\d+\)$/ })
       .innerText();
-    expect(hiddenCount).toBe("Show more (3)");
+    expect(hiddenCount).toBe("Show old (3)");
     await group.getByRole("button", { name: hiddenCount, exact: true }).click();
     await expect(chat("Old hidden")).toBeVisible();
     await expect(chat("Old folder hidden")).toBeVisible();
     await expect(
-      group.getByRole("button", { name: "Show less", exact: true }),
+      group.getByRole("button", { name: "Hide old", exact: true }),
     ).toBeVisible();
     await page.reload();
     await expect(chat("Old hidden")).toBeVisible();
-    await group.getByRole("button", { name: "Show less", exact: true }).click();
+    await group.getByRole("button", { name: "Hide old", exact: true }).click();
     await expect(chat("Old hidden")).toHaveCount(0);
     await page.reload();
     await expect(chat("Old hidden")).toHaveCount(0);
     await page
       .getByRole("button", { name: "Studio settings", exact: true })
       .click();
+    const settings = page.getByRole("dialog", { name: "Studio settings" });
+    await settings
+      .getByRole("tab", { name: "Appearance", exact: true })
+      .click();
+    const threshold = settings.getByRole("textbox", {
+      name: "Hide old chats",
+    });
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.press("Backspace");
+    await expect(threshold).toHaveValue("");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("3");
+    await expect(chat("Old hidden")).toHaveCount(0);
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.press("Backspace");
+    await threshold.pressSequentially("10");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("10");
+    await expect(chat("Old hidden")).toBeVisible();
+    await expect(group.getByRole("button", { name: /Show old/ })).toHaveCount(
+      0,
+    );
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.pressSequentially("51");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("10");
+    await expect(chat("Old hidden")).toBeVisible();
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.pressSequentially("3");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("3");
+    await expect(chat("Old hidden")).toHaveCount(0);
+    await expect(
+      group.getByRole("button", { name: "Show old (3)" }),
+    ).toBeVisible();
     await page.getByRole("tab", { name: "Servers", exact: true }).click();
     const card = page.locator('[data-settings-server="local"]');
-    await card.getByLabel("Server alias", { exact: true }).fill("MBP");
+    await card.getByLabel("Server alias", { exact: true }).fill("OFF");
     await card.getByRole("button", { name: "Save alias", exact: true }).click();
     await expect(
       card.getByText("This alias belongs to another server."),

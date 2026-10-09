@@ -50,7 +50,7 @@ final class Host: NSObject, VZVirtualMachineDelegate {
 
     init(directory: URL) { self.directory = directory }
     func boot() throws {
-        guard VZVirtualMachine.isSupported else { try fail("Virtualization.framework is unavailable on this Mac.") }
+        guard VZVirtualMachine.isSupported else { try fail("Virtualization.framework is unavailable on this computer.") }
         lease = open(directory.appendingPathComponent("host.lock").path, O_CREAT | O_RDWR, 0o600)
         guard lease >= 0, flock(lease, LOCK_EX | LOCK_NB) == 0 else {
             try fail("Another VM helper owns this state directory.")

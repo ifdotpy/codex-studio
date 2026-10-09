@@ -4,6 +4,7 @@ import {
   createAppCatalogSelector,
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
+  countProjectChats,
   isVisibleSidebarAgent,
   type SidebarOrder,
   type SidebarOverrides,
@@ -62,6 +63,18 @@ function reference(rows: Agent[], orders: SidebarOrder, peerTeams: PeerTeam[]) {
 }
 
 describe("incremental sidebar catalog", () => {
+  it("counts only listed chats in the current active or archived view", () => {
+    const select = createSidebarCatalogSelector();
+    const rows = [
+      agent("active"),
+      agent("archived", { archived: true }),
+      agent("worker", { isLead: false }),
+      agent("deleted", { deletedAt: 1 }),
+    ];
+    const listed = select(rows, overrides, teams, order).agents;
+    expect([...countProjectChats(listed, false)]).toEqual([["/work", 1]]);
+    expect([...countProjectChats(listed, true)]).toEqual([["/work", 1]]);
+  });
   it("retains all visible indexes when a hidden worker changes", () => {
     const select = createSidebarCatalogSelector();
     const rows = [

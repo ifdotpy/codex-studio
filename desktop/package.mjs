@@ -114,7 +114,7 @@ try {
       NSMicrophoneUsageDescription:
         "Record dictation that you can review and convert to text.",
       NSSpeechRecognitionUsageDescription:
-        "Convert your saved dictation to text on this Mac.",
+        "Convert your saved dictation to text on this computer.",
     },
     ignore: [
       /^\/assets($|\/)/,

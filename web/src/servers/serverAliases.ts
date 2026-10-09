@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 export const LOCAL_ALIAS_KEY = "studio-local-server-alias-v1";
+export const DEFAULT_LOCAL_SERVER_ALIAS = "LOC";
 export const ALIASES_EVENT = "studio-server-aliases";
 
 export function validateServerAlias(
@@ -20,21 +21,14 @@ export function defaultServerAlias(
 ) {
   const taken = new Set(used);
   const host = new URL(server.origin).hostname.split(".")[0];
-  const name = `${server.label} ${host}`.toLowerCase();
   const preferred =
     server.id === "local"
-      ? "MAC"
-      : name.includes("igor-mbp")
-        ? "MBP"
-        : name.includes("kukuka-win")
-          ? new URL(server.origin).port === "8443"
-            ? "WIN"
-            : "WSL"
-          : (
-              host.replace(/[^a-z]/gi, "").slice(0, 3) ||
-              server.label.replace(/[^a-z]/gi, "").slice(0, 3) ||
-              "SRV"
-            ).toUpperCase();
+      ? DEFAULT_LOCAL_SERVER_ALIAS
+      : (
+          host.replace(/[^a-z]/gi, "").slice(0, 3) ||
+          server.label.replace(/[^a-z]/gi, "").slice(0, 3) ||
+          "SRV"
+        ).toUpperCase();
   if (!taken.has(preferred)) return preferred;
   for (let i = 0; i < 26 ** 3; i++) {
     const candidate = [Math.floor(i / 676), Math.floor(i / 26) % 26, i % 26]
