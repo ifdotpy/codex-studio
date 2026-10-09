@@ -1,7 +1,7 @@
 import type { Agent } from "../../types";
 
 export type WorkspaceBadgeInfo = {
-  label: "LAYR" | "ASIF" | "VM" | "WT" | "SHARED";
+  label: "LAYR" | "ASIF" | "WT" | "SHARED";
   title: string;
 };
 
@@ -30,15 +30,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
         }
       : null;
   }
-  if (
-    agent.remoteWorker &&
-    (!agent.cwd ||
-      !agent.workspaceMode ||
-      (agent.workspaceMode === "image" &&
-        !agent.workspaceBackend &&
-        !agent.environment))
-  )
-    return null;
+  if (agent.remoteWorker && (!agent.cwd || !agent.workspaceMode)) return null;
   const mode: string | undefined =
     agent.workspaceMode ??
     (agent.imageWorkspace
@@ -54,9 +46,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
     mode === "layr"
       ? "LAYR"
       : mode === "image"
-        ? agent.workspaceBackend === "vm" || agent.environment === "linux"
-          ? "VM"
-          : "ASIF"
+        ? "ASIF"
         : mode === "worktree"
           ? "WT"
           : "SHARED";
@@ -65,11 +55,9 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
       ? "Linux VM with layr"
       : label === "ASIF"
         ? "Apple Sparse Image Format workspace"
-        : label === "VM"
-          ? "Linux virtual machine workspace"
-          : label === "WT"
-            ? "Git worktree"
-            : "Shared folder";
+        : label === "WT"
+          ? "Git worktree"
+          : "Shared folder";
   const path =
     agent.imageWorkspace && !agent.imageWorkspaceReady
       ? agent.imageWorkspaceRepo || agent.cwd
