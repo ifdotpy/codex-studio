@@ -55,6 +55,7 @@ import {
 import { serverViewId } from "../servers/environment";
 import { ChatServerLine, keepCompactChat } from "../servers/ProjectChatRows";
 import {
+  countProjectChats,
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
   itemGroup,
@@ -471,21 +472,16 @@ export default function Sidebar(p: Props) {
       updated: a.updated || undefined,
       created: a.created || undefined,
     });
-  const activeChatCounts = useMemo(() => {
-    const counts = new Map<string, number>();
-    for (const agent of agents)
-      if (!agent.archived) {
-        const path = agent.cwd || "";
-        counts.set(path, (counts.get(path) || 0) + 1);
-      }
-    return counts;
-  }, [agents]);
+  const viewChatCounts = useMemo(() => {
+    return countProjectChats(agents, archive);
+  }, [agents, archive]);
   const isCompactProject = (path: string) =>
     compactProjects[path] !== false &&
-    (activeChatCounts.get(path) || 0) >= hideOldChatsThreshold;
+    (viewChatCounts.get(path) || 0) >= hideOldChatsThreshold;
   const compactIndicatorKey = agents
     .filter(
       (agent) =>
+        !!agent.archived === archive &&
         isCompactProject(agent.cwd || "") &&
         p.indicators.get(agent.id)?.kind === "unread",
     )
@@ -552,7 +548,7 @@ export default function Sidebar(p: Props) {
     filtered,
     query,
     compactProjects,
-    activeChatCounts,
+    viewChatCounts,
     hideOldChatsThreshold,
     compactIndicatorKey,
     p.opened,
@@ -1115,7 +1111,7 @@ export default function Sidebar(p: Props) {
                       )}
                       <Menu.Divider />
                       <Menu.Label>View</Menu.Label>
-                      {(activeChatCounts.get(group.path) || 0) >=
+                      {(viewChatCounts.get(group.path) || 0) >=
                         hideOldChatsThreshold && (
                         <Menu.Item
                           title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
@@ -1229,7 +1225,7 @@ export default function Sidebar(p: Props) {
                   ))}
                 {renderProjectChats(group)}
                 {!query &&
-                  (activeChatCounts.get(group.path) || 0) >=
+                  (viewChatCounts.get(group.path) || 0) >=
                     hideOldChatsThreshold &&
                   (isCompactProject(group.path)
                     ? filtered.filter((a) => a.cwd === group.path).length >

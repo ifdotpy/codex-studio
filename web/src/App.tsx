@@ -387,6 +387,14 @@ export default function App() {
   const [studioPreferences, setStudioPreferences] = useState<StudioPreferences>(
     preferenceLoad.value,
   );
+  const [hideOldChatsThresholdDraft, setHideOldChatsThresholdDraft] = useState(
+    () => String(preferenceLoad.value.hideOldChatsThreshold),
+  );
+  useEffect(() => {
+    setHideOldChatsThresholdDraft(
+      String(studioPreferences.hideOldChatsThreshold),
+    );
+  }, [studioPreferences.hideOldChatsThreshold]);
   const [studioPreferencesError, setStudioPreferencesError] = useState(
     preferenceLoad.error,
   );
@@ -3031,6 +3039,39 @@ export default function App() {
                     ))}
                   </div>
                 </SettingsRow>
+                <SettingsRow
+                  label="Hide old chats"
+                  help="Projects with fewer chats always show all of them."
+                >
+                  <TextInput
+                    aria-label="Hide old chats"
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={hideOldChatsThresholdDraft}
+                    onChange={(event) =>
+                      setHideOldChatsThresholdDraft(event.currentTarget.value)
+                    }
+                    onBlur={() => {
+                      const value = Number(hideOldChatsThresholdDraft);
+                      if (
+                        /^\d+$/.test(hideOldChatsThresholdDraft) &&
+                        Number.isInteger(value) &&
+                        value >= MIN_HIDE_OLD_CHATS_THRESHOLD &&
+                        value <= MAX_HIDE_OLD_CHATS_THRESHOLD
+                      ) {
+                        updateStudioPreferences({
+                          ...studioPreferences,
+                          hideOldChatsThreshold: value,
+                        });
+                        setHideOldChatsThresholdDraft(String(value));
+                      } else {
+                        setHideOldChatsThresholdDraft(
+                          String(studioPreferences.hideOldChatsThreshold),
+                        );
+                      }
+                    }}
+                  />
+                </SettingsRow>
                 <details className="studio-appearance-more">
                   <summary>More</summary>
                   <div className="studio-appearance-more-content">
@@ -3192,33 +3233,6 @@ export default function App() {
                     </section>
                     <section className="settings-group" aria-label="Messages">
                       <h2>Messages</h2>
-                      <label className="settings-field studio-preference-toggle">
-                        <span className="settings-label">
-                          Hide old chats from{" "}
-                          {studioPreferences.hideOldChatsThreshold} chats per
-                          project
-                        </span>
-                        <TextInput
-                          aria-label="Hide old chats from N chats per project"
-                          type="number"
-                          min={MIN_HIDE_OLD_CHATS_THRESHOLD}
-                          max={MAX_HIDE_OLD_CHATS_THRESHOLD}
-                          step={1}
-                          value={studioPreferences.hideOldChatsThreshold}
-                          onChange={(event) => {
-                            const value = Number(event.currentTarget.value);
-                            if (
-                              Number.isInteger(value) &&
-                              value >= MIN_HIDE_OLD_CHATS_THRESHOLD &&
-                              value <= MAX_HIDE_OLD_CHATS_THRESHOLD
-                            )
-                              updateStudioPreferences({
-                                ...studioPreferences,
-                                hideOldChatsThreshold: value,
-                              });
-                          }}
-                        />
-                      </label>
                       <label className="settings-field studio-preference-toggle">
                         <span className="settings-label">
                           Show message avatars

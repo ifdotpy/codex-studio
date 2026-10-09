@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Menu, Modal, UnstyledButton } from "@mantine/core";
+import { ActionIcon, Button, Menu, Modal } from "@mantine/core";
 import { FolderOpen, MoreHorizontal, Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { saved, save } from "../api";
@@ -84,13 +84,10 @@ export default function ProjectGroupsSidebar({
             data-project-path={project.path}
           >
             <div className="project-tree-heading">
-              <UnstyledButton
-                className="project-tree-toggle"
-                title={project.name}
-              >
+              <div className="project-tree-toggle" title={project.name}>
                 <FolderOpen size={18} />
                 <span>{project.name}</span>
-              </UnstyledButton>
+              </div>
               <ActionIcon
                 className="project-tree-action"
                 aria-label={`New chat in ${project.name}`}

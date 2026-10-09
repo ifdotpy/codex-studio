@@ -111,16 +111,37 @@ test("sidebar status, alias validation, and compact choices", async ({
     await settings
       .getByRole("tab", { name: "Appearance", exact: true })
       .click();
-    await settings.locator(".studio-appearance-more summary").click();
-    const threshold = settings.getByRole("spinbutton", {
-      name: "Hide old chats from N chats per project",
+    const threshold = settings.getByRole("textbox", {
+      name: "Hide old chats",
     });
-    await threshold.fill("50");
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.press("Backspace");
+    await expect(threshold).toHaveValue("");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("3");
+    await expect(chat("Old hidden")).toHaveCount(0);
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.press("Backspace");
+    await threshold.pressSequentially("10");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("10");
     await expect(chat("Old hidden")).toBeVisible();
     await expect(group.getByRole("button", { name: /Show old/ })).toHaveCount(
       0,
     );
-    await threshold.fill("3");
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.pressSequentially("51");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("10");
+    await expect(chat("Old hidden")).toBeVisible();
+    await threshold.focus();
+    await threshold.press("Control+A");
+    await threshold.pressSequentially("3");
+    await threshold.blur();
+    await expect(threshold).toHaveValue("3");
     await expect(chat("Old hidden")).toHaveCount(0);
     await expect(
       group.getByRole("button", { name: "Show old (3)" }),

@@ -71,6 +71,10 @@ test("paired sidebar shows the chat provider and server alias", async ({
     const group = page
       .locator(".server-sidebar .sidebar-project")
       .filter({ has: page.locator('[data-chat="recent"]') });
+    const projectName = group.locator(".project-tree-toggle");
+    expect(await projectName.evaluate((element) => element.tagName)).toBe(
+      "DIV",
+    );
     const chat = group.locator('[data-chat="recent"]');
     await expect(chat.locator(".chat-server-line")).toHaveText("REM");
     await expect(chat.locator(".chat-server-line")).toHaveAttribute(
