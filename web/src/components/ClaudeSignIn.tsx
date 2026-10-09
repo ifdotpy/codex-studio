@@ -1,7 +1,11 @@
-import { Button, Group, Modal, Stack, TextInput } from "@mantine/core";
+import { Button, Modal, TextInput } from "@mantine/core";
+import { CircleCheck, ExternalLink } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { errorText, get, post, save, saved, type PostResult } from "../api";
 import type { Account } from "./Accounts";
+import { ProviderMark } from "./AccountTiles";
+import { ActionButton } from "./ui/primitives";
+import "./claude-sign-in.css";
 import { watchResourceReads } from "./watchResourceReads";
 
 type Receipt = PostResult<"/api/accounts/claude/login">;
@@ -128,103 +132,147 @@ export default function ClaudeSignIn({
   };
   const url = authUrl(receipt?.verificationUrl);
   const pending = !!requestId && active(receipt);
+  const signedIn = receipt?.status === "ready";
+  // A lost start reply leaves a request without a receipt; let the user ask again.
+  const canCheck = pending && !receipt;
+  const problem = error || (receipt?.error ? errorText(receipt.error) : "");
   return (
-    <Modal opened onClose={onClose} title="Sign in to Claude" centered>
-      <Stack gap="sm">
-        <p>
-          Use your Claude subscription for{" "}
-          <strong>{account.email || account.label}</strong>.
-        </p>
-        {receipt?.status === "ready" ? (
-          <p role="status">
-            Signed in{receipt.email ? ` as ${receipt.email}` : ""}. You can
-            retry the message.
+    <Modal
+      opened
+      onClose={onClose}
+      title="Sign in to Claude"
+      centered
+      classNames={{ body: "claude-sign-in" }}
+    >
+      <div className="claude-sign-in-account">
+        <span className="claude-sign-in-mark">
+          <ProviderMark provider="claude" />
+        </span>
+        <span className="claude-sign-in-identity">
+          <strong>{account.email || account.label}</strong>
+          <small>Claude subscription</small>
+        </span>
+      </div>
+      {signedIn ? (
+        <>
+          <p className="claude-sign-in-done" role="status">
+            <CircleCheck size={18} aria-hidden="true" />
+            <span>
+              Signed in{receipt.email ? ` as ${receipt.email}` : ""}. You can
+              retry the message.
+            </span>
           </p>
-        ) : (
-          <>
-            {pending && (
-              <p role="status">
-                {receipt?.status === "pending"
-                  ? "Complete sign-in in your browser."
-                  : "Waiting for the sign-in request."}
-              </p>
-            )}
-            {url && (
-              <Button
-                component="a"
-                href={url}
-                target="_blank"
-                rel="noopener noreferrer"
+          <div className="claude-sign-in-footer">
+            <ActionButton
+              disabled={!!busy}
+              loading={busy === "start"}
+              onClick={() => void run("start")}
+            >
+              Start new sign-in
+            </ActionButton>
+            <ActionButton actionRole="primary" onClick={onClose}>
+              Done
+            </ActionButton>
+          </div>
+        </>
+      ) : pending ? (
+        <>
+          <p className="claude-sign-in-status" role="status">
+            {receipt?.status === "pending"
+              ? "Complete sign-in in your browser."
+              : "Waiting for the sign-in request."}
+          </p>
+          {url && (
+            <Button
+              variant="filled"
+              color="indigo"
+              component="a"
+              href={url}
+              target="_blank"
+              rel="noopener noreferrer"
+              rightSection={<ExternalLink size={15} aria-hidden="true" />}
+              fullWidth
+            >
+              Open Claude sign-in
+            </Button>
+          )}
+          {receipt?.verificationUrl && !url && (
+            <p className="claude-sign-in-error" role="alert">
+              Claude returned an unsupported sign-in URL.
+            </p>
+          )}
+          {receipt?.status === "pending" && (
+            <form
+              className="claude-sign-in-code"
+              onSubmit={(event) => {
+                event.preventDefault();
+                void run("code");
+              }}
+            >
+              <TextInput
+                label="Authorization code"
+                description="Paste it here if Claude shows a code."
+                placeholder="Code"
+                type="password"
+                autoComplete="off"
+                value={code}
+                onChange={(event) => setCode(event.currentTarget.value)}
+                disabled={!!busy}
+              />
+              <ActionButton
+                actionRole="secondary"
+                type="submit"
+                disabled={!code.trim() || !!busy}
+                loading={busy === "code"}
               >
-                Open Claude sign-in
-              </Button>
-            )}
-            {receipt?.verificationUrl && !url && (
-              <p role="alert">Claude returned an unsupported sign-in URL.</p>
-            )}
-            {receipt?.status === "pending" && (
-              <form
-                onSubmit={(event) => {
-                  event.preventDefault();
-                  void run("code");
-                }}
-              >
-                <Stack gap="sm">
-                  <TextInput
-                    label="Authorization code"
-                    description="Paste the code if Claude asks you to return it here."
-                    type="password"
-                    autoComplete="off"
-                    value={code}
-                    onChange={(event) => setCode(event.currentTarget.value)}
-                    disabled={!!busy}
-                  />
-                  <Button
-                    type="submit"
-                    disabled={!code.trim() || !!busy}
-                    loading={busy === "code"}
-                  >
-                    Submit code
-                  </Button>
-                </Stack>
-              </form>
-            )}
-            {receipt?.status === "cancelled" && (
-              <p role="status">Sign-in cancelled.</p>
-            )}
-            <Group>
-              <Button
-                onClick={() => void run("start")}
-                disabled={!!busy || (!!receipt && active(receipt))}
+                Submit code
+              </ActionButton>
+            </form>
+          )}
+          <div className="claude-sign-in-footer">
+            <ActionButton
+              disabled={!!busy}
+              onClick={() => void run("cancel")}
+              loading={busy === "cancel"}
+            >
+              Cancel sign-in
+            </ActionButton>
+            {canCheck && (
+              <ActionButton
+                actionRole="secondary"
+                disabled={!!busy}
                 loading={busy === "start"}
+                onClick={() => void run("start")}
               >
-                {pending ? "Check sign-in request" : "Start sign-in"}
-              </Button>
-              {pending && (
-                <Button
-                  variant="subtle"
-                  disabled={!!busy}
-                  onClick={() => void run("cancel")}
-                  loading={busy === "cancel"}
-                >
-                  Cancel sign-in
-                </Button>
-              )}
-            </Group>
-          </>
-        )}
-        {Boolean(error || receipt?.error) && (
-          <p role="alert">{error || errorText(receipt?.error)}</p>
-        )}
-        {receipt?.status === "ready" && (
-          <Button disabled={!!busy} onClick={() => void run("start")}>
-            Start new sign-in
-          </Button>
-        )}
-        <Button variant="subtle" onClick={onClose}>
-          Close
-        </Button>
-      </Stack>
+                Check sign-in request
+              </ActionButton>
+            )}
+          </div>
+        </>
+      ) : (
+        <>
+          {receipt?.status === "cancelled" && (
+            <p className="claude-sign-in-status" role="status">
+              Sign-in cancelled.
+            </p>
+          )}
+          <ActionButton
+            actionRole="primary"
+            fullWidth
+            data-autofocus
+            onClick={() => void run("start")}
+            disabled={!!busy}
+            loading={busy === "start"}
+          >
+            Start sign-in
+          </ActionButton>
+        </>
+      )}
+      {problem && (
+        <p className="claude-sign-in-error" role="alert">
+          {problem}
+        </p>
+      )}
     </Modal>
   );
 }

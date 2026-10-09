@@ -46,6 +46,7 @@ export async function savedPromptProof(file, session) {
       [
         "model",
         "dynamicTools",
+        "developerInstructions",
         "approvalPolicy",
         "sandbox",
         "claude",

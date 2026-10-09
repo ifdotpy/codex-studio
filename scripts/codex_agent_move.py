@@ -108,7 +108,7 @@ class AgentMoves:
         server = self.runtime.connect_agent(agent)
         if agent.get('provider') == 'claude':
             versions = server.call('claude/moveVersions', {}, timeout=20)
-            return {'provider': 'claude', 'cli': versions['cli'], 'sdk': versions['sdk']}
+            return {'provider': 'claude', 'cli': versions['cli'], 'sdk': versions['sdk'], 'platform': platform.system()}
         native = getattr(server, 'native_binary', None) or {}
         # MCP (Model Context Protocol) tool definitions can alter the prefix even
         # when Studio's dynamic tools and native history have identical bytes.
@@ -312,7 +312,8 @@ class AgentMoves:
 
     def capture_cache(self, db: Any, agent: dict[str, Any], notification: dict[str, Any]) -> None:
         moved = agent.get('movedFrom')
-        if not moved or not agent.get('inFlight'):
+        if (not moved or not agent.get('inFlight')
+                or notification.get('turnId') and notification['turnId'] != agent.get('turnId')):
             return
         operation = self._get(db, identity(moved['move'], 'target'))
         if not operation or operation['phase'] != 'active' or operation.get('firstTurnCache'):
@@ -656,6 +657,8 @@ class AgentMoves:
                 self._native_owner(db, payload['agentId'], payload['nativeThread'], account['id'], payload['provider'])
             temporary = {'provider': payload['provider'], 'accountKey': account['id'], 'id': 'move-preflight'}
             capabilities = self._capabilities(temporary)
+            if capabilities.get('platform') != payload['capabilities'].get('platform'):
+                raise ValueError('The source and target OS differ. The builtin tool catalog cannot be proved identical')
             if capabilities != payload['capabilities'] and payload['provider'] == 'claude':
                 source = payload['capabilities']
                 raise ValueError(f"Claude versions differ. Source CLI {source['cli']}, SDK {source['sdk']}; target CLI {capabilities['cli']}, SDK {capabilities['sdk']}. Update the CLI and SDK on the target to the source versions before a move")

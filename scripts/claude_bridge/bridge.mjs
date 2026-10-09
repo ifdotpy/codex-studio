@@ -547,6 +547,12 @@ async function proofOptions(s, proof) {
     permissionMode: permissionMode(s, {}),
     settings: await flags(s, { model: s.model, ...s.moveTurnOptions }),
     effort: s.moveTurnOptions?.effort || null,
+    systemPrompt: {
+      type: "preset",
+      preset: "claude_code",
+      append: s.developerInstructions || "",
+      ...movePrompt,
+    },
     extraArgs: providerOptions.extraArgs || {},
   };
   return {
@@ -852,7 +858,7 @@ async function startSession(s, active, p) {
         ...(s.started
           ? { resume: s.nativeId || s.id }
           : { sessionId: s.nativeId || s.id }),
-        systemPrompt: {
+        systemPrompt: s.moveProof?.options.systemPrompt || {
           type: "preset",
           preset: "claude_code",
           append: s.developerInstructions || "",
@@ -1573,16 +1579,14 @@ async function handle(method, p) {
     const active = queries.get(p.session.id);
     if (active?.turn || active?.tasks.size)
       throw new Error("The destination Claude session is active");
+    const owner = existing && (await session(p.session.id));
     if (
-      existing &&
-      (await session(p.session.id)).nativeId !== p.session.nativeId
+      owner &&
+      (owner.nativeId || owner.id) !== (p.session.nativeId || p.session.id)
     )
       throw new Error(
         "The destination Claude session has a different native identity",
       );
-    active?.input.close();
-    active?.q?.close();
-    queries.delete(p.session.id);
     let s = { ...p.session, cwd: p.cwd };
     const saved = await savedPromptProof(p.path, s);
     if (saved.snapshotHash !== s.moveProof?.snapshotHash)
@@ -1594,6 +1598,9 @@ async function handle(method, p) {
       throw new Error(
         "The effective target tool options changed before import",
       );
+    active?.input.close();
+    active?.q?.close();
+    queries.delete(p.session.id);
     await publishNative(
       p.path,
       nativeDestination(s.nativeId || s.id, p.cwd),

@@ -293,7 +293,7 @@ class Moves(f.SignedIntegration):
         params = {'threadId': moved['threadId'], 'turnId': moved['turnId'],
                   'tokenUsage': {'last': {'inputTokens': 100, 'cachedInputTokens': 900,
                                          'cacheWriteInputTokens': 30, 'outputTokens': 5, 'totalTokens': 1035}}}
-        self.b.runtime.notification('thread/tokenUsage/updated', params)
+        self.b.runtime.notification({'method': 'thread/tokenUsage/updated', 'params': params})
         status = self.a.runtime.multi_server().moves().status(moved['id'], 'move-one')
         self.assertEqual(status['firstTurnCache']['cachedInputTokens'], 900)
         self.assertEqual(status['firstTurnCache']['cacheWriteInputTokens'], 30)

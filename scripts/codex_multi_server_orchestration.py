@@ -634,6 +634,8 @@ class MultiServerService:
                              'threadId': None, 'turnId': None, 'epoch': 0, 'turnEpoch': 0,
                              'status': 'starting', 'inFlight': True, 'created': time.time(),
                              'worktree': False, 'imageWorkspace': False,
+                             'workspaceMode': spec.get('workspace'),
+                             'workspaceBackend': None,
                              'remoteWorker': {'server': server, 'link': link_id}, 'remoteReservation': True, 'error': None}
                     for field in ('startAttempt', 'workerDefaults', 'reviewDefaults', 'quickCreate', 'needsTitle',
                                   'executionMove', 'movedTo', 'movedFrom', 'frozenNativeParams', 'executionArchives', 'executionRouteAliases', 'moveReviewPending', 'moveImportPending'):
@@ -659,6 +661,9 @@ class MultiServerService:
             if not proxy['autoWake'] or proxy.get('remoteStateSequence'):
                 continue
             proxy.update(cwd=summary['cwd'], branch=summary.get('branch'),
+                         environment=summary.get('environment', proxy.get('environment')),
+                         workspaceMode=summary.get('workspace', proxy.get('workspaceMode')),
+                         workspaceBackend=summary.get('workspaceBackend', proxy.get('workspaceBackend')),
                          workerBaseCommit=summary.get('baseCommit'), status='starting')
             self.runtime.put(db, 'agents', proxy)
 
@@ -719,7 +724,7 @@ class MultiServerService:
         if origin and agent.get('remoteAdmission') and agent.get('status') in {'completed', 'failed', 'paused', 'interrupted'} and not agent.get('inFlight'):
             agent.pop('remoteAdmission', None)
             self.runtime.put(db, 'agents', agent)
-        fields = ('status', 'cwd', 'branch', 'workerBaseCommit', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
+        fields = ('status', 'cwd', 'branch', 'environment', 'workspaceMode', 'workspaceBackend', 'workerBaseCommit', 'autoWake', 'epoch', 'inFlight', 'tokensUsed', 'error')
         if origin and not agent.get('movedTo') and (previous is None or any(agent.get(k) != previous.get(k) for k in fields)
                        or agent.get('startAttempt') != previous.get('startAttempt')):
             key = identity(agent['id'], 'state', uuid.uuid4().hex)

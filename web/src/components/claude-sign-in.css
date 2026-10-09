@@ -1,0 +1,75 @@
+.claude-sign-in {
+  display: grid;
+  gap: 16px;
+}
+
+.claude-sign-in p {
+  margin: 0;
+}
+
+.claude-sign-in-account {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+
+.claude-sign-in-mark {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  background: var(--mantine-color-default-hover);
+  color: #d97757;
+}
+
+.claude-sign-in-identity {
+  display: grid;
+  min-width: 0;
+}
+
+.claude-sign-in-identity strong {
+  overflow: hidden;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.claude-sign-in-identity small,
+.claude-sign-in-status {
+  color: var(--muted);
+  font-size: var(--studio-text-meta);
+}
+
+.claude-sign-in-code {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 8px;
+}
+
+.claude-sign-in-done {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.claude-sign-in-done svg {
+  flex: none;
+  margin-top: 1px;
+  color: var(--mantine-color-green-text);
+}
+
+.claude-sign-in-error {
+  color: var(--mantine-color-red-text);
+  font-size: var(--studio-text-meta);
+}
+
+.claude-sign-in-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}

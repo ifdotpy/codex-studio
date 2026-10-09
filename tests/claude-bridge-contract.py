@@ -270,7 +270,7 @@ class Bridge(unittest.TestCase):
         self.assertTrue(query['systemPrompt']['snapshot'])
         self.assertTrue(query['systemPrompt']['excludeDynamicSections'])
         exported = self.call('claude/moveExport', {'threadId': self.thread})
-        self.assertEqual(exported['session']['nativeId'], self.thread)
+        self.assertEqual(exported['session'].get('nativeId', exported['session']['id']), self.thread)
         self.assertEqual(exported['session']['turns'], [])
         self.assertEqual(Path(exported['path']).read_bytes(), incoming.read_bytes())
 

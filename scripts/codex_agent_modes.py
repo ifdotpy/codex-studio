@@ -84,10 +84,15 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
         raise ValueError('A nonnegative expected mode revision is required')
     if not isinstance(request, str) or not 1 <= len(request) <= 200:
         raise ValueError('A subagent concurrency request id is required')
+    expected_account = data.get('expected_account_key')
+    if 'expected_account_key' in data and (not isinstance(expected_account, str) or not expected_account):
+        raise ValueError('Expected account identity must be a non-empty string')
     with runtime.lock, runtime.db() as db:
         agent = runtime.checked_actor(db, key)
         if not agent.get('isLead') or agent['rootId'] != key:
             raise ValueError('Change agent mode on the lead chat')
+        if expected_account is not None and agent.get('accountKey', 'default') != expected_account:
+            raise ValueError('The account changed. Read the current settings before saving')
         body = ({'operation': 'subagent_concurrency', 'agent': key, 'concurrency': limit,
                  'expectedRevision': revision} if new_request else
                 {'operation': 'agent_mode', 'agent': key, 'mode': mode, 'expectedRevision': revision})
@@ -115,40 +120,8 @@ def change_mode(runtime: "Runtime", key: str, data: dict[str, object]) -> AgentR
                               'agentMode': canonical['agentMode'],
                               'agentModeRevision': canonical.get('agentModeRevision', 0)})
         runtime.changed.set()
-    if limit > 0:
-        from codex_runtime import git_toplevel
-        repo = git_toplevel(canonical.get('cwd', ''))
-        if repo:
-            supported, reason = runtime.image_workspace_support(repo)
-            if supported:
-                with runtime.lock, runtime.db() as db:
-                    current_agent = runtime.agent(key, db)
-                    if concurrency(current_agent) > 0:
-                        current_agent['imageWorkspaceBaseRepo'] = repo
-                        runtime.put(db, 'agents', current_agent)
-                if concurrency(current_agent) > 0:
-                    canonical['imageWorkspaceBaseRepo'] = repo
-                    error_text = None
-                    try:
-                        runtime.start_image_base(repo, retry_failed=True)
-                    except Exception as error:
-                        error_text = str(error)[:1200]
-                    with runtime.lock, runtime.db() as db:
-                        latest = runtime.agent(key, db)
-                        if latest.get('imageWorkspaceBaseRepo') == repo:
-                            if error_text:
-                                latest['imageWorkspaceBaseError'] = error_text
-                                canonical['imageWorkspaceBaseError'] = error_text
-                            else:
-                                latest.pop('imageWorkspaceBaseError', None)
-                                canonical.pop('imageWorkspaceBaseError', None)
-                            runtime.put(db, 'agents', latest)
-            else:
-                canonical['imageWorkspaceBaseError'] = reason
-                with runtime.lock, runtime.db() as db:
-                    latest = runtime.agent(key, db)
-                    latest['imageWorkspaceBaseError'] = reason
-                    runtime.put(db, 'agents', latest)
+    # Worker creation and preparation own workspace readiness. A committed
+    # concurrency setting must not wait for Git or an optional base build.
     runtime.changed.set()
     return canonical
 

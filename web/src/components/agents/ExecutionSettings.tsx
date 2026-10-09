@@ -65,8 +65,6 @@ type SettingsAgent = Pick<
 >;
 const DEFAULT = "__model_default__";
 const title = (value: string) => value.charAt(0).toUpperCase() + value.slice(1);
-const plural = (count: number, noun: string) =>
-  `${count} ${noun}${count === 1 ? "" : "s"}`;
 const infoFor = (catalog: Catalog, model: string) =>
   catalog.models.find(
     (row) => row.model === model || row.resolvedModel === model,
@@ -159,17 +157,6 @@ const settingsFor = (
     daybreak_enabled: !!(queued?.daybreakEnabled ?? agent.daybreakEnabled),
   };
 };
-const settingsFromUnconfirmed = (request: ConversationBody): SettingsValue => {
-  const defaults = request.worker_defaults;
-  return {
-    account_key: defaults?.account_key ?? null,
-    model: request.model ?? defaults?.model ?? null,
-    effort: request.effort ?? defaults?.effort ?? null,
-    fast_mode: request.fast_mode ?? defaults?.fast_mode ?? false,
-    daybreak_enabled:
-      request.daybreak_enabled ?? defaults?.daybreak_enabled ?? false,
-  };
-};
 const sameSettings = (left: SettingsValue, right: SettingsValue) =>
   left.account_key === right.account_key &&
   left.model === right.model &&
@@ -197,6 +184,30 @@ const jsonObject = (value: unknown): Json | null => {
     result[key] = item;
   }
   return result;
+};
+const confirmedTransfer = (
+  value: unknown,
+  requestId: string,
+  leadId: string,
+  target: string,
+): Json => {
+  const operation = jsonObject(value);
+  const receipt = jsonObject(jsonObject(operation?.requests)?.[requestId]);
+  if (
+    !operation ||
+    typeof operation.id !== "string" ||
+    operation.leadId !== leadId ||
+    operation.targetAccountKey !== target ||
+    operation.scope !== "subagents" ||
+    !["pending", "completed", "cancelled"].includes(String(operation.status)) ||
+    (operation.id !== requestId &&
+      (!receipt ||
+        receipt.leadId !== leadId ||
+        receipt.targetAccountKey !== target ||
+        receipt.scope !== "subagents"))
+  )
+    throw new Error("The server did not confirm this account transfer.");
+  return operation;
 };
 
 export function ExecutionSettings(props: SettingsProps) {
@@ -236,7 +247,6 @@ function ScopedExecutionSettings({
   agent,
   catalog: parentCatalog,
   accounts = [],
-  team = [],
   refresh,
   teamDefaults = false,
   nextTurnSupported,
@@ -307,6 +317,7 @@ function ScopedExecutionSettings({
   }, [opened]);
   const [saving, setSaving] = useState(false);
   const saveLock = useRef(false);
+  const refreshGeneration = useRef(0);
   const receiptKey = `next-turn-settings:${JSON.stringify([agent.id, accountOf(agent)])}`;
   const [unconfirmed, setUnconfirmed] = useState<ConversationBody | null>(
     () => {
@@ -340,11 +351,14 @@ function ScopedExecutionSettings({
     target: string;
     baseline: string | null;
   } | null>(null);
-  const [transfer, setTransfer] = useState<Json | null>(null);
+  const [transfer, setTransfer] = useState<{
+    value: Json;
+    baseline: string;
+  } | null>(null);
   const [retryTarget, setRetryTarget] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [status, setStatus] = useState<{
-    kind: "saving" | "saved";
+    kind: "saving" | "saved" | "accepted";
     text: string;
   } | null>(null);
   const label =
@@ -367,13 +381,18 @@ function ScopedExecutionSettings({
     effort: agent.reviewDefaults?.effort ?? null,
   };
   const reviewCurrent = reviewPending?.values || reviewStored;
-  const settled =
-    (unconfirmed ? settingsFromUnconfirmed(unconfirmed) : null) ||
-    pending?.values ||
-    stored;
-  const current = accountPending
-    ? { ...settled, account_key: accountPending.target }
-    : settled;
+  const current = pending?.values || stored;
+  const refreshConfirmed = (
+    generation: number,
+    confirmation = "Settings saved.",
+  ) => {
+    void Promise.resolve()
+      .then(refresh)
+      .catch((failure) => {
+        if (mounted.current && generation === refreshGeneration.current)
+          setError(`${confirmation} ${errorText(failure)}`);
+      });
+  };
   const effectiveAccount =
     role === "review" ? agent.workerDefaults?.accountKey : current.account_key;
   const accountCatalog = useWorkerModels(
@@ -409,7 +428,7 @@ function ScopedExecutionSettings({
     else if (key) onAccountChange?.(key);
   };
   useEffect(() => {
-    // The optimistic account stays until the snapshot carries the change.
+    // Keep the confirmed default until the snapshot carries the change.
     if (
       !saving &&
       accountPending &&
@@ -523,19 +542,15 @@ function ScopedExecutionSettings({
       label: shortModel(reviewCurrent.model),
       disabled: true,
     });
-  const submit = async (
-    request: ConversationBody,
-    next: SettingsValue,
-    notice = "",
-  ) => {
+  const submit = async (request: ConversationBody, notice = "") => {
     if (saveLock.current) return;
     saveLock.current = true;
     request = { ...request, expected_account_key: accountOf(agent) };
-    const previousPending = unconfirmed ? null : pending;
-    setPending({ values: next, baseline: stored });
+    const previousPending = pending;
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
+    const generation = ++refreshGeneration.current;
     if (request.next_turn) {
       save(receiptKey, request);
       setUnconfirmed(request);
@@ -574,7 +589,7 @@ function ScopedExecutionSettings({
         baseline: stored,
       });
       setStatus({ kind: "saved", text: notice });
-      await refresh();
+      refreshConfirmed(generation);
     } catch (failure) {
       const rejected =
         failure instanceof ApiError &&
@@ -601,10 +616,10 @@ function ScopedExecutionSettings({
   const changeAccount = async (target: string | null) => {
     if (saveLock.current || target === current.account_key) return;
     if (!target) {
-      await submit(
-        { id: agent.id, worker_defaults: { ...current, account_key: null } },
-        { ...current, account_key: null },
-      );
+      await submit({
+        id: agent.id,
+        worker_defaults: { ...current, account_key: null },
+      });
       return;
     }
     // A lost response is retried with the same request id.
@@ -619,10 +634,11 @@ function ScopedExecutionSettings({
         : crypto.randomUUID();
     save(subagentTransferReceiptKey, { target, request_id: requestId });
     saveLock.current = true;
-    setAccountPending({ target, baseline: stored.account_key ?? null });
+    const previousPending = accountPending;
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
+    const generation = ++refreshGeneration.current;
     try {
       const op = await post(
         "/api/agents/account-transfer",
@@ -634,16 +650,18 @@ function ScopedExecutionSettings({
         },
         { timeoutMs: 30000 },
       );
+      const transferResult = confirmedTransfer(op, requestId, agent.id, target);
       save(subagentTransferReceiptKey, null);
       if (!mounted.current) return;
-      const transferResult = jsonObject(op);
-      setTransfer(
-        transferResult ? { scope: "subagents", ...transferResult } : null,
-      );
-      setStatus({ kind: "saved", text: "" });
+      setAccountPending({ target, baseline: stored.account_key ?? null });
+      setTransfer({
+        value: transferResult,
+        baseline: JSON.stringify(snapshotTransfer),
+      });
+      setStatus({ kind: "accepted", text: "Account transfer accepted." });
     } catch (failure) {
       if (!mounted.current) return;
-      setAccountPending(null);
+      setAccountPending(previousPending);
       setStatus(null);
       setError(errorText(failure));
       setRetryTarget(target);
@@ -653,21 +671,8 @@ function ScopedExecutionSettings({
       if (mounted.current) setSaving(false);
     }
     setRetryTarget(null);
-    void refresh().catch(() => {});
+    refreshConfirmed(generation, "Account transfer accepted.");
   };
-  const targetProvider =
-    accounts.find((account) => account.id === accountPending?.target)
-      ?.provider || "codex";
-  const members = team.filter(
-    (member) =>
-      member.id !== agent.id && member.rootId === agent.id && !member.deletedAt,
-  );
-  const moving = members.filter(
-    (member) => (member.provider || "codex") === targetProvider,
-  );
-  const staying = members.filter(
-    (member) => (member.provider || "codex") !== targetProvider,
-  );
   const checkedModel = useRef("");
   useEffect(() => {
     if (
@@ -701,35 +706,57 @@ function ScopedExecutionSettings({
     };
     void submit(
       { id: agent.id, worker_defaults: next },
-      next,
       `${shortModel(wanted)} is not available on ${setupAccountName(accounts.find((account) => account.id === stored.account_key))}. Using ${replacement.displayName || shortModel(replacement.model)}, the account default.`,
     );
   });
   const storedTransfer = jsonObject(agent.accountTransfer);
   const snapshotTransfer =
     storedTransfer?.scope === "subagents" ? storedTransfer : null;
-  // The snapshot summary is newer than the local response once it arrives.
-  const shownTransfer = snapshotTransfer || transfer;
+  // Keep the confirmed response until replication changes its old summary.
+  const responseIsNewer =
+    transfer?.value.id === snapshotTransfer?.id &&
+    typeof transfer?.value.updated === "number" &&
+    typeof snapshotTransfer?.updated === "number" &&
+    transfer.value.updated > snapshotTransfer.updated;
+  const shownTransfer =
+    transfer &&
+    (responseIsNewer || transfer.baseline === JSON.stringify(snapshotTransfer))
+      ? transfer.value
+      : snapshotTransfer || transfer?.value;
   const runTeamTransferAction = async (action: "retry" | "cancel") => {
-    if (saveLock.current || typeof shownTransfer?.id !== "string") return;
+    if (
+      saveLock.current ||
+      typeof shownTransfer?.id !== "string" ||
+      typeof shownTransfer.targetAccountKey !== "string"
+    )
+      return;
     saveLock.current = true;
     setSaving(true);
     setError("");
+    const generation = ++refreshGeneration.current;
     try {
       const op = await post("/api/agents/account-transfer", {
         action,
         scope: "subagents",
         request_id: shownTransfer.id,
       });
-      const transferResult = jsonObject(op);
-      if (mounted.current && transferResult)
-        setTransfer({ scope: "subagents", ...transferResult });
-      await refresh();
+      const transferResult = confirmedTransfer(
+        op,
+        shownTransfer.id,
+        agent.id,
+        shownTransfer.targetAccountKey,
+      );
+      if (mounted.current)
+        setTransfer({
+          value: transferResult,
+          baseline: JSON.stringify(snapshotTransfer),
+        });
+      refreshConfirmed(generation, "Transfer updated.");
     } catch (failure) {
-      setError(errorText(failure));
+      if (mounted.current) setError(errorText(failure));
     } finally {
       saveLock.current = false;
-      setSaving(false);
+      if (mounted.current) setSaving(false);
     }
   };
   const change = async (patch: Partial<SettingsValue>) => {
@@ -808,17 +835,18 @@ function ScopedExecutionSettings({
             ? { next_turn: true, request_id: crypto.randomUUID() }
             : {}),
         };
-    await submit(request, next, adjustments.join(" "));
+    await submit(request, adjustments.join(" "));
   };
   const changeReview = async (patch: Partial<ReviewSettings>) => {
     if (disabled || saveLock.current) return;
     const next = { ...reviewCurrent, ...patch };
     if ("model" in patch) next.effort = null;
     saveLock.current = true;
-    setReviewPending({ values: next, baseline: reviewStored });
+    const previousPending = reviewPending;
     setSaving(true);
     setError("");
     setStatus({ kind: "saving", text: "" });
+    const generation = ++refreshGeneration.current;
     try {
       const canonical = await post(
         "/api/conversation",
@@ -846,10 +874,10 @@ function ScopedExecutionSettings({
         baseline: reviewStored,
       });
       setStatus({ kind: "saved", text: "" });
-      await refresh();
+      refreshConfirmed(generation);
     } catch (failure) {
       if (!mounted.current) return;
-      setReviewPending(null);
+      setReviewPending(previousPending);
       setStatus(null);
       setError(errorText(failure));
     } finally {
@@ -861,9 +889,9 @@ function ScopedExecutionSettings({
     if (saveLock.current) return;
     saveLock.current = true;
     const previousPending = pendingYolo;
-    setPendingYolo({ value: enabled, baseline: agent.yoloMode === true });
     setSaving(true);
     setError("");
+    const generation = ++refreshGeneration.current;
     let confirmed = false;
     try {
       const canonical = await post("/api/conversation", {
@@ -885,7 +913,7 @@ function ScopedExecutionSettings({
         value: canonical.yoloMode === true,
         baseline: agent.yoloMode === true,
       });
-      await refresh();
+      refreshConfirmed(generation);
     } catch (failure) {
       if (!mounted.current) return;
       if (!confirmed) setPendingYolo(previousPending);
@@ -1004,15 +1032,6 @@ function ScopedExecutionSettings({
           For new subagents. An account change also moves existing ones.
         </p>
       )}
-      {role === "worker" && accountPending && (
-        <p className="notice" role="status">
-          {moving.length
-            ? `Moving ${plural(moving.length, "subagent")} to ${setupAccountName(accounts.find((account) => account.id === accountPending.target))}.`
-            : "No subagents to move."}
-          {staying.length > 0 &&
-            ` ${plural(staying.length, "subagent")} ${staying.length === 1 ? "stays" : "stay"} on ${staying[0].provider || "codex"}: ${staying.map((member) => member.name).join(", ")}.`}
-        </p>
-      )}
       {teamDefaults && shownTransfer && (
         <AccountTransferStatus
           transfer={shownTransfer}
@@ -1030,7 +1049,9 @@ function ScopedExecutionSettings({
         <p role="status" className="notice execution-status">
           {status.kind === "saving"
             ? "Saving…"
-            : `Saved${status.text ? ` · ${status.text}` : ""}`}
+            : status.kind === "accepted"
+              ? status.text
+              : `Saved${status.text ? ` · ${status.text}` : ""}`}
         </p>
       )}
       {((!teamDefaults && queued) || (active && canQueueSettings)) && (
@@ -1062,9 +1083,7 @@ function ScopedExecutionSettings({
           <Button
             disabled={saving}
             loading={saving}
-            onClick={() =>
-              void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
-            }
+            onClick={() => void submit(unconfirmed)}
           >
             Check settings save
           </Button>
@@ -1273,12 +1292,7 @@ function ScopedExecutionSettings({
       />
       {error && <p role="alert">{error}</p>}
       {unconfirmed && (
-        <Button
-          disabled={saving}
-          onClick={() =>
-            void submit(unconfirmed, settingsFromUnconfirmed(unconfirmed))
-          }
-        >
+        <Button disabled={saving} onClick={() => void submit(unconfirmed)}>
           Check settings save
         </Button>
       )}

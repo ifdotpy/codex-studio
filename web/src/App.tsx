@@ -1204,7 +1204,7 @@ export default function App() {
   const run = async (fn: () => Promise<unknown>) => {
     try {
       await fn();
-      await refresh();
+      void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
       notify(errorText(e));
     }
@@ -1593,7 +1593,7 @@ export default function App() {
   const rename = async (id: string, name: string) => {
     try {
       await post("/api/rename", { id, name, request_id: crypto.randomUUID() });
-      await refresh();
+      void refresh().catch((error) => notify(errorText(error)));
     } catch (e) {
       notify(errorText(e));
       throw e;
@@ -1654,7 +1654,7 @@ export default function App() {
           onSelect={async (cwd) => {
             await post("/api/conversation", { id: target.id, cwd });
             setModal(null);
-            await refresh();
+            void refresh().catch((error) => notify(errorText(error)));
           }}
         />
       ),
@@ -2006,8 +2006,8 @@ export default function App() {
                     )[0]?.accountKey || accounts.data.defaultAccountKey
                 }
                 saved={async () => {
-                  await refresh();
                   setModal(null);
+                  void refresh().catch((error) => notify(errorText(error)));
                 }}
               />
             ),
