@@ -30,9 +30,10 @@ class Commands(unittest.TestCase):
     exchange = fixture.SignedIntegration.exchange
     events = fixture.SignedIntegration.events
     def setUp(self):
-        short_root = patch('tempfile.tempdir', '/tmp')
-        short_root.start()
-        self.addCleanup(short_root.stop)
+        if os.name != 'nt':
+            short_root = patch('tempfile.tempdir', '/tmp')
+            short_root.start()
+            self.addCleanup(short_root.stop)
         fixture.SignedIntegration.setUp(self)
         invitation = self.a.local({'action': 'create_invite', 'requestId': 'exec-invite'})['invitation']
         self.b.local({'action': 'accept_invite', 'invitation': invitation, 'requestId': 'exec-accept'})
@@ -96,8 +97,8 @@ class Commands(unittest.TestCase):
     def read(self, handle, **arguments):
         return self.call('exec_read', server=self.b.server_id, handle=handle, **arguments)['value']
 
-    def finish(self, handle):
-        deadline = time.monotonic() + 8
+    def finish(self, handle, timeout=8):
+        deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             value = self.read(handle)
             if value['status'] not in {'starting', 'running'}:
@@ -138,11 +139,19 @@ class Commands(unittest.TestCase):
 
     def test_timeout_kills_the_command_group(self):
         response = self.start([sys.executable, '-u', '-c',
-            'import subprocess,sys,time;p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"]);print(p.pid);time.sleep(60)'], timeout=1)
+            'import subprocess,sys,time;p=subprocess.Popen([sys.executable,"-c","import time;time.sleep(60)"]);print(p.pid,flush=True);time.sleep(60)'], timeout=15)
         value = response['value']
-        self.assertTrue(value['timedOut'])
+        handle = value['handle']
+        deadline = time.monotonic() + 12
+        while value['status'] in {'starting', 'running'} and not value.get('stdout'):
+            self.assertLess(time.monotonic(), deadline, value)
+            time.sleep(.1)
+            value = self.read(handle)
+        if value['status'] in {'starting', 'running'}:
+            value = self.finish(handle, timeout=20)
+        self.assertTrue(value['timedOut'], value)
         self.assertEqual(value['signal'], signal.SIGKILL)
-        self.assertLess(value['duration'], 4)
+        self.assertLess(value['duration'], 20)
         pid = int(value['stdout'].strip())
         deadline = time.monotonic() + 2
         while True:

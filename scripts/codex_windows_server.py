@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 from typing import Iterator
+from typing import Any
 import uuid
 
 _configured_root = os.environ.get("CODEX_STUDIO_SOURCE_DIR")
@@ -37,23 +38,27 @@ def _control_sequence_lock(state: Path) -> Iterator[None]:
             flock(stream, LOCK_UN)
 
 
-def _next_control_sequence(state: Path) -> int:
+def _next_control_sequence_unlocked(state: Path) -> int:
     path = state / "windows-server-control-sequence"
+    try:
+        current = int(path.read_text(encoding="ascii"))
+    except FileNotFoundError:
+        current = 0
+    if current < 0:
+        raise ValueError("Invalid Windows server control sequence")
+    sequence = current + 1
+    temporary = path.with_suffix(".tmp")
+    with temporary.open("w", encoding="ascii", newline="\n") as stream:
+        stream.write(str(sequence))
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    return sequence
+
+
+def _next_control_sequence(state: Path) -> int:
     with _control_sequence_lock(state):
-        try:
-            current = int(path.read_text(encoding="ascii"))
-        except FileNotFoundError:
-            current = 0
-        if current < 0:
-            raise ValueError("Invalid Windows server control sequence")
-        sequence = current + 1
-        temporary = path.with_suffix(".tmp")
-        with temporary.open("w", encoding="ascii", newline="\n") as stream:
-            stream.write(str(sequence))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-        return sequence
+        return _next_control_sequence_unlocked(state)
 
 
 def _source_root(configured: str | None) -> Path:
@@ -104,19 +109,20 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
         raise ValueError("Unknown Windows server control action")
     ensure_private_dir(state)
     request_id = uuid.uuid4().hex
-    payload = {"requestId": request_id, "action": action,
-               "sequence": _next_control_sequence(state)}
+    payload: dict[str, Any] = {"requestId": request_id, "action": action}
     if source_root is not None:
         payload["sourceRoot"] = str(_source_root(source_root))
     fd, temporary_name = tempfile.mkstemp(prefix="windows-server-control-", suffix=".tmp", dir=state)
     temporary = Path(temporary_name)
     try:
         protect_temp_file(temporary)
-        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
-            json.dump(payload, stream, separators=(",", ":"))
-            stream.flush()
-            os.fsync(stream.fileno())
-        os.replace(temporary, _control_request_path(state, request_id))
+        with _control_sequence_lock(state):
+            payload["sequence"] = _next_control_sequence_unlocked(state)
+            with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+                json.dump(payload, stream, separators=(",", ":"))
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, _control_request_path(state, request_id))
     except BaseException:
         try:
             os.close(fd)
@@ -127,7 +133,7 @@ def _write_control_request(state: Path, action: str, source_root: str | None = N
     return request_id
 
 
-def _read_control_request(state: Path, previous_request: str | None) -> dict[str, str] | None:
+def _read_control_request(state: Path, previous_request: str | None) -> dict[str, Any] | None:
     candidates = []
     for request_path in state.glob("windows-server-control-request-*.json"):
         try:

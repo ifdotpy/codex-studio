@@ -11,6 +11,7 @@ import threading
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -27,6 +28,53 @@ if WINDOWS:
 
 
 class ControlRequestPosixContract(unittest.TestCase):
+    def test_sequence_lock_covers_request_publication(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            state = Path(temporary)
+            reached_publish = threading.Event()
+            allow_publish = threading.Event()
+            original_replace = os.replace
+            published = []
+            errors = []
+
+            def replace(source, destination):
+                if Path(destination).name.startswith("windows-server-control-request-"):
+                    if not reached_publish.is_set():
+                        reached_publish.set()
+                        if not allow_publish.wait(3):
+                            raise TimeoutError("publication barrier timed out")
+                    published.append(Path(destination).name)
+                original_replace(source, destination)
+
+            def submit(action):
+                try:
+                    _write_control_request(state, action)
+                except BaseException as error:
+                    errors.append(error)
+
+            with patch("codex_windows_server.os.replace", side_effect=replace):
+                first = threading.Thread(target=submit, args=("stop-backend",))
+                second = threading.Thread(target=submit, args=("restart-backend",))
+                first.start()
+                self.assertTrue(reached_publish.wait(2), "first request did not reach publication")
+                second.start()
+                second.join(.1)
+                self.assertTrue(second.is_alive(), "second request passed the sequence lock")
+                allow_publish.set()
+                first.join(2)
+                second.join(2)
+            self.assertFalse(first.is_alive())
+            self.assertFalse(second.is_alive())
+            self.assertEqual(errors, [])
+            requests = [_read_control_request(state, None)]
+            requests.append(_read_control_request(state, requests[0]["requestId"]))
+            self.assertEqual([int(row["sequence"]) for row in requests], [1, 2])
+            self.assertEqual([row["action"] for row in requests], ["stop-backend", "restart-backend"])
+
+    def test_manager_wait_exceeds_backend_stop_deadline(self):
+        script = (ROOT / "scripts" / "manage-windows-server.ps1").read_text(encoding="utf-8")
+        self.assertIn("AddSeconds(90)", script)
+
     def test_claim_remains_until_receipt_and_unreceipted_claim_recovers_as_unknown(self):
         with tempfile.TemporaryDirectory() as temporary:
             state = Path(temporary)

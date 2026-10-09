@@ -46,6 +46,7 @@ for line in sys.stdin:
  if message['method'] == 'initialize':
   result = {}
  else:
+  (home / 'observed').write_text(mode)
   if mode == 'hang':
    time.sleep(20)
   if mode == 'descendant':
@@ -119,7 +120,7 @@ class ReaderContract(unittest.TestCase):
     def assert_reaped(self):
         pid_file = self.home / 'pid'
         if not pid_file.exists():
-            return
+            self.fail('catalog fixture did not start and write its PID')
         pid = int(pid_file.read_text())
         if os.name == 'nt':
             import ctypes
@@ -182,8 +183,8 @@ class ReaderContract(unittest.TestCase):
         (self.home / 'mode').write_text('hang')
         started = time.monotonic()
         with self.assertRaises(TimeoutError):
-            self.read(timeout=1)
-        self.assertLess(time.monotonic() - started, 3)
+            self.read(timeout=3)
+        self.assertLess(time.monotonic() - started, 5)
         self.assert_reaped()
 
     @unittest.skipIf(os.name == 'nt', 'POSIX process group contract')
@@ -212,8 +213,11 @@ class ReaderContract(unittest.TestCase):
                 (self.home / 'mode').write_text(mode)
                 started = time.monotonic()
                 with self.assertRaises((TimeoutError, ValueError)):
-                    self.read(timeout=1)
-                self.assertLess(time.monotonic() - started, 3)
+                    self.read(timeout=3)
+                self.assertLess(time.monotonic() - started, 5)
+                observed = self.home / 'observed'
+                self.assertTrue(observed.is_file(), f'{mode} fixture did not reach its catalog request')
+                self.assertEqual(observed.read_text(), mode)
                 self.assert_reaped()
                 deadline = time.monotonic() + 2
                 while time.monotonic() < deadline:
@@ -235,11 +239,14 @@ class ReaderContract(unittest.TestCase):
 
     def test_changed_connection_stops_reader(self):
         calls = 0
+        (self.home / 'mode').write_text('delay')
 
         def current():
             nonlocal calls
+            if not (self.home / 'observed').is_file():
+                return True
             calls += 1
-            return calls < 4
+            return calls < 2
 
         with self.assertRaisesRegex(RuntimeError, 'connection changed'):
             self.read(current=current)

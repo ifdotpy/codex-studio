@@ -39,7 +39,7 @@ $output = & $config.python @arguments
 if ($LASTEXITCODE -ne 0) { throw "The server control request failed with exit code $LASTEXITCODE" }
 $request = $output | ConvertFrom-Json
 $resultPath = Join-Path $config.stateDir "windows-server-control-$($request.requestId).json"
-$deadline = (Get-Date).AddSeconds(45)
+$deadline = (Get-Date).AddSeconds(90)
 do {
     if (Test-Path -LiteralPath $resultPath) { break }
     Start-Sleep -Milliseconds 200

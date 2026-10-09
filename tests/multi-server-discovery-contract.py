@@ -47,8 +47,9 @@ class DiscoveryContract(unittest.TestCase):
         self.identity_overrides = {}
         self.probes = []
         self.drop_once = None
-        executable = self.folder / "bin" / "tailscale"
-        executable.write_text(f'''#!{sys.executable}
+        executable = self.folder / "bin" / ("tailscale.cmd" if os.name == "nt" else "tailscale")
+        stub = self.folder / "bin" / "tailscale_stub.py" if os.name == "nt" else executable
+        stub.write_text(f'''#!{sys.executable}
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["SIGNED_TEST_TAILSCALE_LOG"], "a") as log:
@@ -61,6 +62,11 @@ else:
     sys.exit("The isolated stub refuses this command")
 print(json.dumps(value))
 ''')
+        if os.name == "nt":
+            executable.write_text(
+                f'@echo off\r\n"{sys.executable}" "%~dp0tailscale_stub.py" %*\r\n',
+                encoding="utf-8",
+            )
 
     def save_identity(self):
         self.status_file.write_text(json.dumps(self.status))
@@ -116,8 +122,12 @@ print(json.dumps(value))
         outside = self.folder / "credential-outside"
         outside.mkdir()
         directory.rename(saved)
+        junction_command = (
+            "New-Item -ItemType Junction -Path '" + str(directory).replace("'", "''")
+            + "' -Target '" + str(outside).replace("'", "''") + "' | Out-Null"
+        )
         result = subprocess.run(
-            ["cmd.exe", "/c", f'mklink /J "{directory}" "{outside}"'],
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", junction_command],
             capture_output=True, text=True, timeout=15,
         )
         if result.returncode:

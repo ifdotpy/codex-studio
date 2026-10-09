@@ -1155,7 +1155,7 @@ class MultiServerService:
                    'handle', 'input', 'close_stdin', 'stdout_offset', 'stderr_offset') if k in args}
         payload['actor'] = actor['id']
         if action == 'exec':
-            payload = validate(payload)
+            payload = validate(payload, allow_foreign_windows_path=server != self.server_id)
         key = identity(actor['id'], action, key)
         if len(encoded({'requestId': key, 'action': action, 'payload': payload}).encode()) > 256 * 1024:
             raise ValueError('The encoded command request exceeds 256 KiB')

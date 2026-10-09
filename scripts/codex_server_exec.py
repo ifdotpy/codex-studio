@@ -20,6 +20,8 @@ import threading
 import time
 from typing import Any
 
+from codex_private_paths import protect_temp_file
+
 # The kqueue API exists only in the BSD and macOS builds of select.
 KQUEUE: Any = select
 
@@ -52,11 +54,16 @@ def expire_tool_output(result: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def validate(payload: dict[str, Any]) -> dict[str, Any]:
+def validate(payload: dict[str, Any], *, allow_foreign_windows_path: bool = False) -> dict[str, Any]:
     cwd, command = payload.get('cwd'), payload.get('command')
-    if (not isinstance(cwd, str) or '\0' in cwd
-            or not (Path(cwd).is_absolute() or PureWindowsPath(cwd).is_absolute())):
+    if not isinstance(cwd, str) or '\0' in cwd:
         raise ValueError('Supply an absolute cwd on the selected server')
+    native_absolute = Path(cwd).is_absolute()
+    foreign_absolute = allow_foreign_windows_path and PureWindowsPath(cwd).is_absolute()
+    if not (native_absolute or foreign_absolute):
+        raise ValueError('Supply an absolute cwd on the selected server')
+    if '..' in Path(cwd).parts or '..' in PureWindowsPath(cwd).parts:
+        raise ValueError('The cwd must not contain parent traversal')
     if isinstance(command, str):
         if not command or '\0' in command or len(command.encode()) > 128 * 1024:
             raise ValueError('Supply a command of 1 to 128 KiB without NUL')
@@ -145,16 +152,25 @@ def atomic_json(path: Path, value: dict[str, Any]) -> None:
     temporary = path.with_name(path.name + '.' + uuid.uuid4().hex)
     try:
         fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-        with os.fdopen(fd, 'w') as output:
-            json.dump(value, output, ensure_ascii=False)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-        directory = os.open(path.parent, os.O_RDONLY)
         try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+            protect_temp_file(temporary)
+            with os.fdopen(fd, 'w', encoding='utf-8') as output:
+                json.dump(value, output, ensure_ascii=False)
+                output.flush()
+                os.fsync(output.fileno())
+        except BaseException:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+            raise
+        os.replace(temporary, path)
+        if os.name != 'nt':
+            directory = os.open(path.parent, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -194,7 +210,11 @@ class Descendants:
         self.unproved: set[int] = set()
         self.forks: dict[int, int] = {}
         self.parents: dict[int, int] = {}
-        if sys.platform.startswith('linux'):
+        self.job = None
+        if os.name == 'nt':
+            from codex_windows_supervisor import create_job
+            self.job = create_job()
+        elif sys.platform.startswith('linux'):
             import ctypes
             # Orphans remain children of this adapter after their parent exits.
             if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0):
@@ -207,19 +227,35 @@ class Descendants:
         else:
             raise ValueError('Command descendant cleanup is unavailable on this platform')
 
-    def bind(self, pid: int) -> None:
+    def bind(self, process: subprocess.Popen[bytes]) -> None:
         process_start_time = descendant_birth
+        pid = process.pid
         self.root = pid
         started = process_start_time(pid)
         if not started:
+            process.kill()
+            process.wait(timeout=2)
             raise RuntimeError('Cannot prove command process identity')
         self.known[pid] = started
+        if self.job is not None:
+            from codex_windows_supervisor import assign_process, resume_process
+            try:
+                assign_process(process, self.job)
+                resume_process(process)
+            except BaseException:
+                try:
+                    process.kill()
+                except OSError:
+                    pass
+                raise
         if self.kqueue is not None:
             self.kqueue.control([KQUEUE.kevent(pid, filter=KQUEUE.KQ_FILTER_PROC,
                 flags=KQUEUE.KQ_EV_ADD | KQUEUE.KQ_EV_ENABLE,
                 fflags=KQUEUE.KQ_NOTE_FORK | KQUEUE.KQ_NOTE_EXIT)], 0, 0)
 
     def collect(self, *, force: bool = False) -> None:
+        if self.job is not None:
+            return
         process_start_time, process_start_matches = descendant_birth, descendant_matches
         events = self.kqueue.control(None, 4096, 0) if self.kqueue is not None else []
         now = time.monotonic()
@@ -290,6 +326,8 @@ class Descendants:
             roots.update(added)
 
     def unknown_forks(self) -> int:
+        if self.job is not None:
+            return 0
         unresolved = len(self.unproved)
         for parent, count in self.forks.items():
             stopped = 0
@@ -317,6 +355,14 @@ class Descendants:
         return False
 
     def stop(self) -> int:
+        if self.job is not None:
+            active = self.job.active_processes()
+            if active:
+                self.job.terminate()
+                if not self.job.wait_empty(timeout=3):
+                    raise RuntimeError('The Windows command job did not stop before the cleanup deadline')
+            self.stopped.update(self.known)
+            return max(0, active - 1)
         process_start_matches = descendant_matches
         deadline = time.monotonic() + 3
         while True:
@@ -370,6 +416,9 @@ class Descendants:
                 continue
 
     def close(self) -> None:
+        if self.job is not None:
+            self.job.close()
+            self.job = None
         if self.kqueue is not None:
             self.kqueue.close()
 
@@ -438,7 +487,7 @@ class ServerExec:
 
     def _snapshot(self, key: str) -> dict[str, Any] | None:
         path = job_path(self.folder, key, '.output.json')
-        return json.loads(path.read_text()) if path.exists() else None
+        return json.loads(path.read_text(encoding='utf-8')) if path.exists() else None
 
     def _attach(self, principal: str, actor: str, key: str, config: dict[str, Any], *, restore: bool) -> Any:
         from codex_process_supervisor import ProcessProxy, retained_native_launch
@@ -468,7 +517,7 @@ class ServerExec:
                 self._save(principal, actor, key, snapshot['record'])
                 self._retire(key)
                 return
-            config = json.loads(job_path(self.folder, key, '.config.json').read_text())
+            config = json.loads(job_path(self.folder, key, '.config.json').read_text(encoding='utf-8'))
             self._attach(principal, actor, key, config, restore=True)
         except Exception as error:
             self.service._unknown_diagnostic(key, 'exec_restore', error)
@@ -666,7 +715,7 @@ class ServerExec:
 
 
 def child(config_path: Path) -> None:
-    config = json.loads(config_path.read_text())
+    config = json.loads(config_path.read_text(encoding='utf-8'))
     p, record = config['payload'], config['record']
     key = record['handle']
     folder = config_path.parent
@@ -705,90 +754,213 @@ def child(config_path: Path) -> None:
         fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         os.fsync(fd)
         os.close(fd)
-        directory = os.open(folder, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        if os.name != 'nt':
+            directory = os.open(folder, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
         publish()
         threading.Thread(target=inputs, daemon=True).start()
-        process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--command', str(config_path)],
-            cwd=p['cwd'], env={**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': secret},
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
-        # The bootstrap stops before exec. Register kernel fork tracking before
-        # the command can create and orphan a child in another process group.
-        tree.bind(process.pid)
-        last_publish = time.monotonic()
-        while True:
-            waited, state = os.waitpid(process.pid, os.WUNTRACED | os.WNOHANG)
-            if waited:
-                if not os.WIFSTOPPED(state):
-                    raise RuntimeError('The command bootstrap did not stop before execution')
-                break
-            cancelled = shutdown.is_set() or cancel.is_set()
-            now = time.monotonic()
-            if cancelled or now >= began + p['timeout']:
-                record.update(status='cancelled' if cancelled else 'completed',
-                              timedOut=not cancelled, signal=signal.SIGKILL)
-                tree.stop()
-                return
-            tree.collect()
-            if now - last_publish >= .5:
-                publish()
-                last_publish = now
-            time.sleep(.02)
-        os.kill(process.pid, signal.SIGCONT)
-        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-        os.set_blocking(process.stdin.fileno(), False)
-        record['status'] = 'running'
-        publish()
-        pending = bytearray()
-        close_input = False
-        cancelled = False
-        killed_at = None
-        last_publish = time.monotonic()
-        with selectors.DefaultSelector() as selector:
-            selector.register(process.stdout, selectors.EVENT_READ, (stdout, redactors['stdout']))
-            selector.register(process.stderr, selectors.EVENT_READ, (stderr, redactors['stderr']))
-            while selector.get_map() or process.poll() is None:
-                tree.collect()
+        environment = {**config['launchEnv'], **p['env'], 'STUDIO_EXEC_ID': secret}
+        if os.name == 'nt':
+            process = subprocess.Popen(config['argv'], cwd=p['cwd'], env=environment,
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                creationflags=int(getattr(subprocess, 'CREATE_SUSPENDED', 0x4))
+                | int(getattr(subprocess, 'CREATE_NEW_PROCESS_GROUP', 0x200)))
+            tree.bind(process)
+            assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            stdin_stream = process.stdin
+            stdout_stream = process.stdout
+            stderr_stream = process.stderr
+            record['status'] = 'running'
+            publish()
+            output_events: queue.Queue[tuple[str, bytes | None]] = queue.Queue(64)
+            reader_stop = threading.Event()
+            writer_queue: queue.Queue[bytes | None] = queue.Queue(32)
+
+            def emit_output(event: tuple[str, bytes | None]) -> bool:
+                while not reader_stop.is_set():
+                    try:
+                        output_events.put(event, timeout=.1)
+                        return True
+                    except queue.Full:
+                        continue
+                return False
+
+            def read_pipe(name: str, stream: Any) -> None:
+                try:
+                    while True:
+                        data = os.read(stream.fileno(), 8192)
+                        if not emit_output((name, data or None)) or not data:
+                            return
+                except (OSError, ValueError):
+                    emit_output((name, None))
+
+            def write_pipe() -> None:
+                try:
+                    while True:
+                        data = writer_queue.get()
+                        if data is None:
+                            break
+                        stdin_stream.write(data)
+                        stdin_stream.flush()
+                except (OSError, ValueError):
+                    pass
+                finally:
+                    try:
+                        stdin_stream.close()
+                    except OSError:
+                        pass
+
+            readers = [threading.Thread(target=read_pipe, args=('stdout', stdout_stream),
+                                        daemon=True, name='server-exec-stdout'),
+                       threading.Thread(target=read_pipe, args=('stderr', stderr_stream),
+                                        daemon=True, name='server-exec-stderr')]
+            writer = threading.Thread(target=write_pipe, daemon=True, name='server-exec-stdin')
+            for thread in (*readers, writer):
+                thread.start()
+            ended: set[str] = set()
+            close_input = False
+            cancelled = False
+            killed_at: float | None = None
+            win_pending: queue.Queue[bytes] = queue.Queue(32)
+            last_publish = time.monotonic()
+            while len(ended) < 2 or process.poll() is None:
                 now = time.monotonic()
-                while len(pending) < 64 * 1024 and not controls.empty():
+                while not controls.empty():
                     control = controls.get_nowait()
                     if control['method'] == 'exec_cancel':
                         cancelled = True
                     elif control['method'] == 'exec_input':
-                        pending.extend(control['params']['input'].encode())
+                        value = control['params'].get('input', '').encode()
+                        try:
+                            win_pending.put_nowait(value)
+                        except queue.Full:
+                            record.update(status='unknown', error='Command input queue is full')
+                            cancelled = True
                         close_input |= control['params'].get('close_stdin', False)
                 cancelled |= shutdown.is_set() or cancel.is_set()
                 if killed_at is None and (cancelled or now >= began + p['timeout'] or process.poll() is not None):
-                    record['timedOut'] = not cancelled and now >= began + p['timeout']
+                    timed_out = not cancelled and now >= began + p['timeout']
+                    record['timedOut'] = timed_out
                     record['stoppedDescendants'] = tree.stop()
                     killed_at = now
-                if killed_at is not None and now - killed_at > 2:
-                    break
-                if pending and not process.stdin.closed:
+                    close_input = True
+                while not win_pending.empty() and not writer_queue.full():
+                    writer_queue.put_nowait(win_pending.get_nowait())
+                if close_input and win_pending.empty() and writer_queue.empty():
                     try:
-                        count = os.write(process.stdin.fileno(), pending[:8192])
-                        del pending[:count]
-                    except BlockingIOError:
+                        writer_queue.put_nowait(None)
+                    except queue.Full:
                         pass
-                    except BrokenPipeError:
-                        pending.clear()
-                if close_input and not pending and not process.stdin.closed:
-                    process.stdin.close()
-                for selected, _ in selector.select(.05):
-                    data = os.read(selected.fd, 8192)
-                    buffer, redactor = selected.data
-                    buffer.append(redactor.feed(data, final=not data))
-                    if not data:
-                        selector.unregister(selected.fileobj)
+                    close_input = False
+                try:
+                    name, data = output_events.get(timeout=.05)
+                    buffer = stdout if name == 'stdout' else stderr
+                    redactor = redactors[name]
+                    buffer.append(redactor.feed(data or b'', final=data is None))
+                    if data is None:
+                        ended.add(name)
+                except queue.Empty:
+                    pass
                 if now - last_publish >= .5:
                     publish()
                     last_publish = now
-        code = process.wait(timeout=2)
-        record.update(status='cancelled' if cancelled else 'completed', exitCode=code if code >= 0 else None,
-                      signal=-code if code < 0 else None)
+                if killed_at is not None and now - killed_at > 2:
+                    break
+            code = process.wait(timeout=3)
+            record.update(status='cancelled' if cancelled else 'completed', exitCode=code,
+                          signal=None)
+            for child_stream in (process.stdin, process.stdout, process.stderr):
+                try:
+                    if child_stream is not None:
+                        child_stream.close()
+                except OSError:
+                    pass
+            for thread in (*readers, writer):
+                thread.join(timeout=1)
+            reader_stop.set()
+        else:
+            process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve()), '--command', str(config_path)],
+                cwd=p['cwd'], env=environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, start_new_session=True)
+            # The bootstrap stops before exec. Register kernel fork tracking before
+            # the command can create and orphan a child in another process group.
+            tree.bind(process)
+        assert process is not None
+        if os.name != 'nt':
+            last_publish = time.monotonic()
+            while True:
+                waited, state = os.waitpid(process.pid, os.WUNTRACED | os.WNOHANG)
+                if waited:
+                    if not os.WIFSTOPPED(state):
+                        raise RuntimeError('The command bootstrap did not stop before execution')
+                    break
+                cancelled = shutdown.is_set() or cancel.is_set()
+                now = time.monotonic()
+                if cancelled or now >= began + p['timeout']:
+                    record.update(status='cancelled' if cancelled else 'completed',
+                                  timedOut=not cancelled, signal=signal.SIGKILL)
+                    tree.stop()
+                    return
+                tree.collect()
+                if now - last_publish >= .5:
+                    publish()
+                    last_publish = now
+                time.sleep(.02)
+            os.kill(process.pid, signal.SIGCONT)
+            assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+            os.set_blocking(process.stdin.fileno(), False)
+            record['status'] = 'running'
+            publish()
+            pending_bytes = bytearray()
+            close_input = False
+            cancelled = False
+            killed_at = None
+            last_publish = time.monotonic()
+            with selectors.DefaultSelector() as selector:
+                selector.register(process.stdout, selectors.EVENT_READ, (stdout, redactors['stdout']))
+                selector.register(process.stderr, selectors.EVENT_READ, (stderr, redactors['stderr']))
+                while selector.get_map() or process.poll() is None:
+                    tree.collect()
+                    now = time.monotonic()
+                    while len(pending_bytes) < 64 * 1024 and not controls.empty():
+                        control = controls.get_nowait()
+                        if control['method'] == 'exec_cancel':
+                            cancelled = True
+                        elif control['method'] == 'exec_input':
+                            pending_bytes.extend(control['params']['input'].encode())
+                            close_input |= control['params'].get('close_stdin', False)
+                    cancelled |= shutdown.is_set() or cancel.is_set()
+                    if killed_at is None and (cancelled or now >= began + p['timeout'] or process.poll() is not None):
+                        record['timedOut'] = not cancelled and now >= began + p['timeout']
+                        record['stoppedDescendants'] = tree.stop()
+                        killed_at = now
+                    if killed_at is not None and now - killed_at > 2:
+                        break
+                    if pending_bytes and not process.stdin.closed:
+                        try:
+                            count = os.write(process.stdin.fileno(), pending_bytes[:8192])
+                            del pending_bytes[:count]
+                        except BlockingIOError:
+                            pass
+                        except BrokenPipeError:
+                            pending_bytes.clear()
+                    if close_input and not pending_bytes and not process.stdin.closed:
+                        process.stdin.close()
+                    for selected, _ in selector.select(.05):
+                        data = os.read(selected.fd, 8192)
+                        buffer, redactor = selected.data
+                        buffer.append(redactor.feed(data, final=not data))
+                        if not data:
+                            selector.unregister(selected.fileobj)
+                    if now - last_publish >= .5:
+                        publish()
+                        last_publish = now
+            code = process.wait(timeout=2)
+            record.update(status='cancelled' if cancelled else 'completed', exitCode=code if code >= 0 else None,
+                          signal=-code if code < 0 else None)
     except FileExistsError:
         record.update(status='unknown', error='A prior command start exists. The command was not run again.')
     except OSError as error:
@@ -821,7 +993,7 @@ def child(config_path: Path) -> None:
 
 if __name__ == '__main__':
     if len(sys.argv) == 3 and sys.argv[1] == '--command':
-        config = json.loads(Path(sys.argv[2]).read_text())
+        config = json.loads(Path(sys.argv[2]).read_text(encoding='utf-8'))
         os.kill(os.getpid(), signal.SIGSTOP)
         os.execvpe(config['argv'][0], config['argv'], os.environ)
     if len(sys.argv) != 3 or sys.argv[1] != '--child':
