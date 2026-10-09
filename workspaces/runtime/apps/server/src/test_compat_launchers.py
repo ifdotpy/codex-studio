@@ -13,6 +13,7 @@ from typing import Any
 import unittest
 from unittest.mock import patch
 
+from codex_diagnostics import _kind
 from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 
 
@@ -27,6 +28,40 @@ def load_installer() -> Any:
 
 
 class CompatibilityLauncherTests(unittest.TestCase):
+    def test_bridge_process_classification_accepts_both_layouts(
+        self: CompatibilityLauncherTests,
+    ) -> None:
+        self.assertEqual(
+            _kind("node /checkout/scripts/claude_bridge/bridge.mjs"),
+            "claude_bridge",
+        )
+        self.assertEqual(
+            _kind(
+                "node /checkout/workspaces/providers/apps/claude-bridge/bridge.mjs"
+            ),
+            "claude_bridge",
+        )
+
+    def test_packaged_layout_keeps_desktop_resource_paths(
+        self: CompatibilityLauncherTests,
+    ) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "Resources/workspace"
+            scripts = workspace / "scripts"
+            scripts.mkdir(parents=True)
+            packaged_layout = scripts / "codex_layout.py"
+            packaged_layout.write_bytes((SERVER_SOURCE_ROOT / "codex_layout.py").read_bytes())
+            spec = importlib.util.spec_from_file_location("packaged_codex_layout", packaged_layout)
+            if spec is None or spec.loader is None:
+                self.fail("Could not load packaged codex_layout")
+            module = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(module)
+            self.assertEqual(module.REPOSITORY_ROOT, workspace)
+            self.assertEqual(module.CLAUDE_BRIDGE_ROOT, scripts / "claude_bridge")
+            self.assertEqual(module.WEB_ROOT, workspace / "web")
+            self.assertEqual(module.PROMPTS_ROOT, workspace / "prompts")
+            self.assertEqual(module.VM_GUEST_ROOT, workspace / "vm/guest")
+
     def test_python_shim_resolves_symlink_and_execs_with_original_interpreter(
         self: CompatibilityLauncherTests,
     ) -> None:
