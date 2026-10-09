@@ -134,7 +134,7 @@ class LoginManager:
         binary = codex_claude.installed(profile)
         if not binary:
             return {'status': 'error', 'accountId': None, 'email': None, 'plan': None}
-        deadline = min(self.deadline, 8)
+        deadline = min(self.deadline, 15)
         process = subprocess.Popen(
             [sys.executable, '-B', str(Path(__file__).resolve()), '--supervise',
              str(deadline), binary, 'auth', 'status', '--json'],
