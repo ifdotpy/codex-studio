@@ -14,31 +14,31 @@ from codex_source_inventory import source_files
 from codex_layout import SERVER_SOURCE_ROOT
 
 
-def publish(source_root, patch, release, scope):
-    source_root = Path(source_root).resolve()
+def publish(scripts, patch, release, scope):
+    scripts = Path(scripts).resolve()
     if sys.version_info[:2] != (3, 14):
         raise ValueError("This live update publisher requires Python 3.14")
     if not re.fullmatch(r"codex_[a-z0-9_]+_update\.py", patch):
         raise ValueError("Choose a reviewed codex_*_update.py patch")
     if not release.strip() or len(release) > 200 or not scope.strip():
         raise ValueError("The release identity and patch scope are required")
-    with (source_root / '.studio-update.lock').open('a') as lease:
+    with (scripts / '.studio-update.lock').open('a') as lease:
         fcntl.flock(lease, fcntl.LOCK_EX)
-        paths = source_files(source_root)
+        paths = source_files(scripts)
         inputs = {name: hashlib.sha256(path.read_bytes()).hexdigest() for name, path in paths}
         if patch not in inputs or 'codex-canvas' not in inputs:
             raise ValueError("The patch or backend entry point is missing")
         manifest = {'version': 1, 'id': release, 'scope': scope,
                     'python': list(sys.version_info[:2]), 'patch': patch, 'inputs': inputs}
-        descriptor, temporary = tempfile.mkstemp(prefix='.studio-update-', suffix='.tmp', dir=source_root)
+        descriptor, temporary = tempfile.mkstemp(prefix='.studio-update-', suffix='.tmp', dir=scripts)
         try:
             with os.fdopen(descriptor, 'w') as output:
                 json.dump(manifest, output, indent=2, sort_keys=True)
                 output.write('\n')
                 output.flush()
                 os.fsync(output.fileno())
-            os.replace(temporary, source_root / 'studio-live-update.json')
-            directory = os.open(source_root, os.O_RDONLY)
+            os.replace(temporary, scripts / 'studio-live-update.json')
+            directory = os.open(scripts, os.O_RDONLY)
             try:
                 os.fsync(directory)
             finally:
@@ -51,12 +51,12 @@ def publish(source_root, patch, release, scope):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--source-root', '--scripts', dest='source_root', type=Path, default=SERVER_SOURCE_ROOT)
+    parser.add_argument('--source-root', '--scripts', dest='scripts', type=Path, default=SERVER_SOURCE_ROOT)
     parser.add_argument('--patch', required=True)
     parser.add_argument('--id', required=True)
     parser.add_argument('--scope', required=True)
     args = parser.parse_args()
     try:
-        print(json.dumps(publish(args.source_root, args.patch, args.id, args.scope)))
+        print(json.dumps(publish(args.scripts, args.patch, args.id, args.scope)))
     except (OSError, ValueError) as error:
         parser.exit(1, str(error) + '\n')
