@@ -19,7 +19,7 @@ import unittest
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).parent))
-from common import GuestError, MAX_LINE, process_identity
+from common import GuestError, MAX_LINE, process_identity, runtime_source_dir
 from service import Service
 
 
@@ -69,7 +69,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         lease = self.service.native.root / "supervisor.lock"
         if lease.exists():
             record = json.loads(lease.read_text())
-            sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+            sys.path.insert(0, str(runtime_source_dir()))
             from codex_process_supervisor import process_start_time
             if process_start_time(record["pid"]) == record["startTime"]:
                 try:
@@ -221,7 +221,7 @@ class GuestTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(record["pid"], self.service.native.process.pid)
 
     async def test_native_never_replaces_unresponsive_live_or_unproven_owner(self):
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        sys.path.insert(0, str(runtime_source_dir()))
         from codex_process_supervisor import process_start_time
         # A bound socket without listen refuses connections. The lease owns this
         # test process, so recovery must not create or replace a supervisor.

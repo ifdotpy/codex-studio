@@ -26,6 +26,8 @@ from typing import Any, Iterator
 import uuid
 import zlib
 
+from codex_layout import (CLAUDE_BRIDGE_ROOT, DESKTOP_ROOT, PROVIDERS_ROOT,
+                         REPOSITORY_ROOT, SERVER_SOURCE_ROOT, VM_GUEST_ROOT)
 from codex_state import state_dir as studio_state_dir
 
 _GIB = 1024 ** 3
@@ -208,11 +210,22 @@ def _provision_info(console: Path) -> dict[str, Any]:
     return result
 
 
-def _provision_script(codex_version: str, claude_version: str) -> str:
+def _pnpm_version(root: Path = REPOSITORY_ROOT) -> str:
+    try:
+        package_manager = json.loads((root / 'package.json').read_text()).get('packageManager', '')
+    except (OSError, json.JSONDecodeError) as exc:
+        raise LinuxVMError('The root package-manager version is unavailable.') from exc
+    match = re.fullmatch(r'pnpm@(\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)', package_manager)
+    if not match:
+        raise LinuxVMError('The root packageManager must pin pnpm to an exact version.')
+    return match[1]
+
+
+def _provision_script(codex_version: str, claude_version: str, pnpm_version: str) -> str:
     # Versions become shell tokens only after validation, including during recovery.
-    for version in (codex_version, claude_version):
+    for version in (codex_version, claude_version, pnpm_version):
         if not re.fullmatch(r'\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?', version):
-            raise LinuxVMError('The saved provider version is invalid.')
+            raise LinuxVMError('A saved package version is invalid.')
     return r'''#!/bin/bash
 set -Eeuo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -264,6 +277,42 @@ retry_npm() {
   done
   return "$code"
 }
+retry_pnpm() {
+  local limit=$1 attempt code
+  shift
+  for attempt in 1 2; do
+    code=0
+    timeout --kill-after=5 "$limit" pnpm "$@" || code=$?
+    echo "STUDIO_INSTALL: $stage attempt=$attempt seconds=$((SECONDS-stage_start)) exit=$code"
+    if [ "$code" = 0 ]; then return 0; fi
+    if [ "$attempt" = 1 ]; then echo "STUDIO_PROVISION_RETRY: $stage in 10 seconds"; sleep 10; fi
+  done
+  return "$code"
+}
+publish_bridge() {
+  local bridge_next="${bridge}.next.$$"
+  ln -sfn "$bridge_workspace" "$bridge_next"
+  if [ -d "$bridge" ] && [ ! -L "$bridge" ]; then
+    # Exchange names atomically: an already-running bridge keeps its old tree,
+    # while new callers see the completely installed workspace at the stable path.
+    python3 - "$bridge" "$bridge_next" <<'PY'
+import ctypes
+import os
+import sys
+
+renameat2 = ctypes.CDLL(None, use_errno=True).renameat2
+renameat2.argtypes = (ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint)
+if renameat2(-100, os.fsencode(sys.argv[1]), -100, os.fsencode(sys.argv[2]), 2) != 0:
+    error = ctypes.get_errno()
+    raise OSError(error, os.strerror(error))
+PY
+    local legacy="${bridge}.legacy.$(date +%s).$$"
+    mv -- "$bridge_next" "$legacy"
+    echo "STUDIO_BRIDGE_LEGACY_PRESERVED: $legacy"
+  else
+    mv -Tf -- "$bridge_next" "$bridge"
+  fi
+}
 mkdir -p /var/lib/codex-studio
 stage clock
 timeout --kill-after=5 15 timedatectl set-ntp true
@@ -299,10 +348,30 @@ export npm_config_fetch_retry_mintimeout=1000 npm_config_fetch_retry_maxtimeout=
 export npm_config_update_notifier=false
 stage claude-bridge
 bridge=/opt/codex-studio/claude_bridge
-bridge_sum=$(sha256sum "$bridge/package-lock.json" | cut -d' ' -f1)
-if [ ! -d "$bridge/node_modules" ] || [ "$(cat /var/lib/codex-studio/bridge-ready 2>/dev/null || true)" != "$bridge_sum" ]; then
-  retry_npm 300 --prefix "$bridge" ci --ignore-scripts --omit=optional --no-audit --no-fund
-  echo "$bridge_sum" > /var/lib/codex-studio/bridge-ready
+bridge_workspace=/opt/codex-studio/workspaces/providers/apps/claude-bridge
+bridge_ready=/var/lib/codex-studio/bridge-ready
+bridge_sum=$(
+  {
+    sha256sum /opt/codex-studio/package.json /opt/codex-studio/pnpm-lock.yaml \
+      "$bridge_workspace/package.json"
+    find /opt/codex-studio/patches -type f -print0 | sort -z | xargs -0 -r sha256sum
+  } | sha256sum | cut -d' ' -f1
+)
+if [ ! -d "$bridge_workspace/node_modules" ] || [ "$(cat "$bridge_ready" 2>/dev/null || true)" != "$bridge_sum" ] \
+    || [ ! -L "$bridge" ] || [ "$(readlink -f "$bridge" 2>/dev/null || true)" != "$bridge_workspace" ]; then
+  if [ "$(pnpm --version 2>/dev/null || true)" != '@PNPM@' ]; then
+    retry_npm 300 install -g --no-audit --no-fund pnpm@@PNPM@
+  fi
+  test "$(pnpm --version)" = '@PNPM@'
+  cd /opt/codex-studio
+  retry_pnpm 600 install --frozen-lockfile --prod --ignore-scripts --no-optional \
+    --config.bin-links=false \
+    --filter studio-claude-bridge
+  find /opt/codex-studio/node_modules -type d -name .bin -prune -exec rm -rf {} +
+  cd /
+  publish_bridge
+  printf '%s\n' "$bridge_sum" > "$bridge_ready.tmp"
+  mv -f -- "$bridge_ready.tmp" "$bridge_ready"
 fi
 stage codex
 echo STUDIO_PROVISION_CODEX
@@ -342,10 +411,12 @@ claude --version >> /var/lib/codex-studio/provider-versions
 touch /var/lib/codex-studio/provision-ready
 rm -f /var/lib/codex-studio/provision-error
 echo STUDIO_PROVISION_READY
-'''.replace('@CODEX@', codex_version).replace('@CLAUDE@', claude_version)
+'''.replace('@CODEX@', codex_version).replace('@CLAUDE@', claude_version).replace('@PNPM@', pnpm_version)
 
 
-def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> dict[str, Any]:
+def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str, *,
+                  runtime_source: Path = SERVER_SOURCE_ROOT,
+                  bridge_source: Path | None = None) -> dict[str, Any]:
     """Return cloud-init data. Guest service installation is a reviewed guest contract."""
     files = []
     for path in sorted(guest_dir.rglob('*')):
@@ -356,7 +427,7 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
                           'content': base64.b64encode(gzip.compress(path.read_bytes())).decode()})
     if not (guest_dir / 'install.sh').is_file():
         raise LinuxVMError('The Linux VM guest install.sh payload is unavailable.')
-    scripts = guest_dir.parents[1] / 'scripts'
+    scripts = runtime_source
     for name in ['codex_workspace_images.py', 'codex_workspace_linux.py', 'codex_process_supervisor.py',
                  'codex_open_file_limit.py', 'codex_records.py', 'codex_file_lock.py',
                  'codex_private_paths.py']:
@@ -365,16 +436,30 @@ def _cloud_config(guest_dir: Path, codex_version: str, claude_version: str) -> d
             raise LinuxVMError(f'The Linux VM runtime payload is unavailable: {name}.')
         files.append({'path': '/opt/codex-studio/scripts/' + name, 'permissions': '0644',
                       'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
-    bridge = scripts / 'claude_bridge'
-    for source in sorted(bridge.iterdir()):
-        if source.is_file() and (source.name in {'package.json', 'package-lock.json'} or
-                                 (source.suffix == '.mjs' and not source.name.endswith('.test.mjs') and
-                                  source.name != 'vitest.config.mjs')):
-            files.append({'path': '/opt/codex-studio/claude_bridge/' + source.name, 'permissions': '0644',
-                          'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
-    if not any(entry['path'].endswith('/claude_bridge/package-lock.json') for entry in files):
-        raise LinuxVMError('The pinned Claude bridge dependency manifest is unavailable.')
-    script = _provision_script(codex_version, claude_version)
+    root_payloads = ['package.json', 'pnpm-workspace.yaml', 'pnpm-lock.yaml']
+    root_payloads.extend(str(path.relative_to(REPOSITORY_ROOT)) for path in
+                         sorted((REPOSITORY_ROOT / 'patches').rglob('*')) if path.is_file())
+    for relative in root_payloads:
+        source = REPOSITORY_ROOT / relative
+        if not source.is_file():
+            raise LinuxVMError(f'The Linux VM package-manager payload is unavailable: {relative}.')
+        files.append({'path': '/opt/codex-studio/' + relative, 'permissions': '0644',
+                      'encoding': 'gz+b64', 'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
+    bridge = bridge_source or (PROVIDERS_ROOT / 'apps/claude-bridge')
+    if not bridge.is_dir():
+        raise LinuxVMError('The Claude bridge source directory is unavailable.')
+    bridge_files = sorted(path for path in bridge.iterdir() if path.is_file() and not path.is_symlink()
+                          and (path.name == 'package.json' or
+                               (path.suffix == '.mjs' and not path.name.endswith('.test.mjs')
+                                and path.name != 'vitest.config.mjs')))
+    for source in bridge_files:
+        relative = source.relative_to(bridge)
+        files.append({'path': '/opt/codex-studio/workspaces/providers/apps/claude-bridge/' + relative.as_posix(),
+                      'permissions': '0644', 'encoding': 'gz+b64',
+                      'content': base64.b64encode(gzip.compress(source.read_bytes())).decode()})
+    if not any(entry['path'].endswith('/claude-bridge/package.json') for entry in files):
+        raise LinuxVMError('The Claude bridge package manifest is unavailable.')
+    script = _provision_script(codex_version, claude_version, _pnpm_version())
     files.append({'path': '/opt/codex-studio/provision.sh', 'permissions': '0700', 'content': script})
     files.append({'path': '/etc/systemd/system/codex-studio-provision.service', 'permissions': '0644', 'content': '''[Unit]
 Description=Provision the Codex Studio Linux VM
@@ -407,11 +492,11 @@ class Client:
     def __init__(self, state_dir: str | Path | None = None, *, helper: str | Path | None = None):
         state = studio_state_dir()
         self.state_dir = Path(state_dir or os.environ.get('CODEX_LINUX_VM_STATE_DIR') or state / 'linux-vm').expanduser().resolve()
-        root = Path(__file__).resolve().parents[1]
-        packaged = root.parent / 'studio-linux-vm'
+        packaged = REPOSITORY_ROOT.parent / 'studio-linux-vm'
         self.helper = Path(helper or os.environ.get('CODEX_LINUX_VM_HELPER') or
-                           (packaged if packaged.is_file() else root / 'desktop/native/linux-vm/studio-linux-vm'))
-        self.guest_dir = root / 'vm/guest'
+                           (packaged if packaged.is_file() else
+                            DESKTOP_ROOT / 'native/linux-vm/studio-linux-vm'))
+        self.guest_dir = VM_GUEST_ROOT
         self.socket_path = self.state_dir / 'control.sock'
         if len(os.fsencode(self.socket_path)) >= 104:
             raise LinuxVMError('VM socket path exceeds the macOS limit. Use a shorter state directory.')

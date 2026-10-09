@@ -17,9 +17,30 @@ from typing import Any
 import uuid
 
 _configured_root = os.environ.get("CODEX_STUDIO_SOURCE_DIR")
-_default_root = Path(__file__).resolve().parents[1]
+
+
+def _checkout_root(source: Path) -> Path:
+    for candidate in (source, *source.parents):
+        if (candidate / "workspaces/runtime/apps/server/src/codex_layout.py").is_file():
+            return candidate
+    return source
+
+
+_default_root = _checkout_root(Path(__file__).resolve().parent)
 _module_root = Path(_configured_root).expanduser() if _configured_root else _default_root
-sys.path.insert(0, str(_module_root / "scripts"))
+
+
+def _source_directory(root: Path) -> Path:
+    source = root / "workspaces/runtime/apps/server/src"
+    if (source / "codex_canvas.py").is_file():
+        return source
+    legacy = root / "scripts"
+    if (legacy / "codex_canvas.py").is_file():
+        return legacy
+    return source
+
+
+sys.path.insert(0, str(_source_directory(_module_root)))
 
 from codex_private_paths import ensure_private_dir, protect_temp_file
 from codex_state import state_dir
@@ -65,10 +86,10 @@ def _source_root(configured: str | None) -> Path:
     if configured:
         root = Path(configured).expanduser().resolve()
     else:
-        root = Path(__file__).resolve().parents[1]
-    scripts = root / "scripts"
-    if not (scripts / "codex_canvas.py").is_file():
-        raise ValueError("The source folder must contain scripts/codex_canvas.py")
+        root = _default_root
+    source = _source_directory(root)
+    if not (source / "codex_canvas.py").is_file():
+        raise ValueError("The source folder must contain the relocated server entrypoint")
     return root
 
 
@@ -323,13 +344,14 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
     ensure_private_dir(state)
     _recover_control_claims(state)
     os.environ.update(_child_env(root, state, origin))
-    sys.path.insert(0, str(root / "scripts"))
+    source = _source_directory(root)
+    sys.path.insert(0, str(source))
     from codex_process_supervisor import status
 
     env = _child_env(root, state, origin)
     supervisor_log_path = state / "supervisor.log"
     backend_log_path = state / "backend.log"
-    supervisor_script = root / "scripts" / "codex_process_supervisor.py"
+    supervisor_script = source / "codex_process_supervisor.py"
     stopping = threading.Event()
     previous_handlers = {sig: signal.getsignal(sig) for sig in (signal.SIGINT, signal.SIGTERM)}
     for sig in previous_handlers:
@@ -369,7 +391,9 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                     root = _source_root(request["sourceRoot"])
                     env = _child_env(root, state, origin)
                     os.environ.update(env)
-                    sys.path.insert(0, str(root / "scripts"))
+                    source = _source_directory(root)
+                    sys.path.insert(0, str(source))
+                    supervisor_script = source / "codex_process_supervisor.py"
                 if backend is not None and backend.poll() is None:
                     _stop_backend(backend)
                 if backend is not None:
@@ -389,7 +413,7 @@ def run(root: Path, state: Path, port: int, origin: str) -> int:
                 raise RuntimeError("The native process supervisor exited")
             env["CODEX_AGENTS_BACKEND_ID"] = str(uuid.uuid4())
             with backend_log_path.open("ab", buffering=0) as output:
-                backend_script = root / "scripts" / "codex_windows_backend.py"
+                backend_script = source / "codex_windows_backend.py"
                 command = [sys.executable, "-B", str(backend_script), "--port", str(port)]
                 output.write((json.dumps({"event": "backend_start", "command": command}, ensure_ascii=True)
                               + "\n").encode("utf-8"))

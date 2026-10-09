@@ -14,7 +14,9 @@ from the repository root.
 The service runs as `studio`. It listens on vsock port 4050. The protocol is in
 [linux-vm-workspaces.md](../../../../docs/linux-vm-workspaces.md).
 
-Copy this folder to `/opt/codex-studio/vm/guest`. Copy these runtime files to
+The host sources are `workspaces/runtime/apps/vm-guest` and
+`workspaces/runtime/apps/server/src`. Provisioning copies the guest files to
+`/opt/codex-studio/vm/guest` and the selected runtime files to
 `/opt/codex-studio/scripts`:
 
 - `codex_workspace_images.py`
@@ -22,6 +24,11 @@ Copy this folder to `/opt/codex-studio/vm/guest`. Copy these runtime files to
 - `codex_process_supervisor.py`
 - `codex_open_file_limit.py`
 - `codex_records.py`
+
+Provisioning also stages the Claude bridge workspace and the pinned pnpm
+workspace metadata under `/opt/codex-studio`. The guest installs the same
+non-optional production dependency set from the frozen lockfile, while
+`/opt/codex-studio/claude_bridge/bridge.mjs` remains the stable entrypoint.
 
 Install Python 3.11 or later, rsync 3 or later, btrfs-progs, git, util-linux, procps,
 and lsof.

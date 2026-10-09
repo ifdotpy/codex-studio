@@ -73,7 +73,8 @@ class Native:
                     pid, started = record["pid"], record["startTime"]
                     if type(pid) is not int or pid <= 0 or not isinstance(started, str) or not started:
                         raise ValueError("Invalid supervisor lease")
-                    sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+                    from common import runtime_source_dir
+                    sys.path.insert(0, str(runtime_source_dir()))
                     from codex_process_supervisor import process_start_time
                     current = await asyncio.to_thread(process_start_time, pid)
                 except (OSError, ValueError, KeyError, TypeError, RuntimeError) as exc:
@@ -84,7 +85,8 @@ class Native:
                 raise GuestError("outcome_unknown", "The native supervisor socket has no proven owner")
             # The maintained supervisor takes the exclusive lease and checks the old
             # process identity again before it replaces the dead owner's socket.
-            script = Path(__file__).resolve().parents[2] / "scripts" / "codex_process_supervisor.py"
+            from common import runtime_source_dir
+            script = runtime_source_dir() / "codex_process_supervisor.py"
             self.process = subprocess.Popen(
                 [sys.executable, str(script), "--state", str(self.root)],
                 stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
@@ -122,7 +124,8 @@ class Native:
                 identity = db.execute("SELECT start_time FROM child_identities WHERE handle=? AND pid=?", (handle, row[0])).fetchone()
                 event = db.execute("SELECT payload FROM events WHERE handle=? AND generation=? AND kind='exit' ORDER BY sequence DESC LIMIT 1",
                                    (handle, row[3])).fetchone()
-            sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+            from common import runtime_source_dir
+            sys.path.insert(0, str(runtime_source_dir()))
             from codex_process_supervisor import process_start_time
             if not identity or process_start_time(row[0]) != identity[0]:
                 state = "lost"

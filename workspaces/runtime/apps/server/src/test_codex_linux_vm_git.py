@@ -13,9 +13,10 @@ import unittest
 from typing import Any, cast
 from unittest.mock import patch
 
+from codex_layout import VM_GUEST_ROOT
 from codex_linux_vm_credentials import sync_credentials
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'vm/guest'))
+sys.path.insert(0, str(VM_GUEST_ROOT))
 Service = importlib.import_module("service").Service
 
 

@@ -19,6 +19,49 @@ from urllib.error import URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener
 
+from codex_layout import REPOSITORY_ROOT
+
+
+def _resource_path(resources: Path, relocated: str, legacy: str) -> Path:
+    current = resources / relocated
+    return current if current.exists() else resources / legacy
+
+
+def _runtime_source(resources: Path) -> Path:
+    return _resource_path(resources, 'workspaces/runtime/apps/server/src', 'scripts')
+
+
+def _supervisor_script(resources: Path) -> Path:
+    return _runtime_source(resources) / 'codex_process_supervisor.py'
+
+
+def _canvas_launcher(resources: Path) -> Path:
+    return _runtime_source(resources) / 'codex-canvas'
+
+
+def _supervisor_launcher(resources: Path) -> Path:
+    return _runtime_source(resources) / 'codex-supervisor'
+
+
+def _recovery_script(resources: Path) -> Path:
+    relocated = resources / 'workspaces/client/apps/desktop/recover_backend.py'
+    if relocated.is_file():
+        return relocated
+    packaged = resources.parent / 'recover_backend.py'
+    if packaged.is_file():
+        return packaged
+    return resources / 'desktop/recover_backend.py'
+
+
+def _default_resources() -> Path:
+    source = Path(__file__).resolve().parent
+    for candidate in (source, *source.parents):
+        if (candidate / 'workspaces/runtime/apps/server/src/codex_layout.py').is_file():
+            return candidate
+    if source.name == 'scripts':
+        return source.parent
+    return REPOSITORY_ROOT
+
 
 def atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -147,7 +190,7 @@ Description=Codex Studio process supervisor
 [Service]
 Type=exec
 {environment}
-ExecStart={command(python, '-B', str(resources / 'scripts/codex_process_supervisor.py'), '--state', str(state), '--wait-for-lease')}
+ExecStart={command(python, '-B', str(_supervisor_script(resources)), '--state', str(state), '--wait-for-lease')}
 Restart=always
 RestartSec=2
 KillMode=process
@@ -166,8 +209,8 @@ After=network-online.target codex-studio-supervisor.service
 Type=exec
 WorkingDirectory={working_directory}
 {environment}
-ExecStartPre={command(python, '-B', str(resources / 'scripts/codex-supervisor'), 'wait', '--state', str(state))}
-ExecStart={command(python, '-B', str(resources / 'scripts/codex-canvas'), '--port', str(port))}
+ExecStartPre={command(python, '-B', str(_supervisor_launcher(resources)), 'wait', '--state', str(state))}
+ExecStart={command(python, '-B', str(_canvas_launcher(resources)), '--port', str(port))}
 Restart=always
 RestartSec=5
 KillMode=process
@@ -185,8 +228,8 @@ def install_macos(resources: Path, state: Path, python: str, config: dict[str, A
     domain = 'gui/' + str(os.getuid())
     agents = Path.home() / 'Library/LaunchAgents'
     jobs = {
-        'supervisor': [python, '-B', str(resources / 'scripts/codex_process_supervisor.py'), '--state', str(state), '--wait-for-lease'],
-        'recovery': [python, '-B', str(resources / 'desktop/recover_backend.py'), '--config', str(state / 'background-recovery.json')],
+        'supervisor': [python, '-B', str(_supervisor_script(resources)), '--state', str(state), '--wait-for-lease'],
+        'recovery': [python, '-B', str(_recovery_script(resources)), '--config', str(state / 'background-recovery.json')],
     }
     # Save the next backend's mode without replacing its existing launch paths.
     atomic_write(state / 'background-recovery.json', (json.dumps(config, indent=2) + '\n').encode())
@@ -233,7 +276,7 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
     birth = cast(Callable[[int], str | None], process_start_time)
     arguments = cast(Callable[[int], list[str]], process_launch_command)
     started = birth(before['pid']) if before else None
-    if before and (started is None or not any(Path(arg).resolve() == resources / 'scripts/codex-canvas' for arg in arguments(before['pid']))):
+    if before and (started is None or not any(Path(arg).resolve() == _canvas_launcher(resources) for arg in arguments(before['pid']))):
         raise RuntimeError('Cannot prove the backend process identity; no process was signaled.')
     if before and sys.platform == 'linux':
         main_pid = int(run(['systemctl', '--user', 'show', 'codex-studio.service', '--property=MainPID', '--value']).stdout.strip())
@@ -246,9 +289,11 @@ def _enable(resources: Path, state: Path, port: int) -> dict[str, Any]:
                 fcntl.flock(lease, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if (state / 'supervisor.sock').exists() and health(state).get('handles'):
             raise RuntimeError('The first cutover requires an empty supervisor handle journal.')
-    for script in ('scripts/codex_process_supervisor.py', 'scripts/codex-canvas', 'scripts/codex-supervisor'):
-        if not (resources / script).is_file():
-            raise ValueError('The installed resources are missing ' + script)
+    for script in (_supervisor_script(resources), _canvas_launcher(resources), _supervisor_launcher(resources)):
+        if not script.is_file():
+            raise ValueError('The installed resources are missing ' + str(script))
+    if sys.platform == 'darwin' and not _recovery_script(resources).is_file():
+        raise ValueError('The installed resources are missing ' + str(_recovery_script(resources)))
     if sys.platform == 'darwin':
         if not config:
             codex = shutil.which('codex')
@@ -302,7 +347,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('action', choices=('enable', 'wait', 'status'))
     parser.add_argument('--state', type=Path, default=Path(os.environ.get('CODEX_AGENTS_STATE_DIR', '~/.local/state/codex-agents')))
-    parser.add_argument('--resources', type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument('--resources', type=Path, default=_default_resources())
     parser.add_argument('--port', type=int, default=int(os.environ.get('CODEX_DESKTOP_PORT', '4620')))
     args = parser.parse_args()
     if not 1024 <= args.port <= 65535:

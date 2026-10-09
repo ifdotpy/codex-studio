@@ -213,7 +213,8 @@ class Service:
         directory = self.providers / (str(uuid.uuid5(uuid.NAMESPACE_URL, "native:" + handle)) if native else handle)
         if directory.exists() and not native:
             raise GuestError("outcome_unknown", "The provider launch directory already exists")
-        sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "scripts"))
+        from common import runtime_source_dir
+        sys.path.insert(0, str(runtime_source_dir()))
         import codex_workspace_images as images
         floor = images._minimum_free_bytes(images._AGENT_MIN_FREE_ENV, images._DEFAULT_AGENT_MIN_FREE_BYTES)
         if shutil.disk_usage(self.state).free < floor + 80 * 1024**2:
