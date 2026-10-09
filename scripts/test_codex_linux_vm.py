@@ -339,6 +339,14 @@ class ClientTests(unittest.TestCase):
         self.assertEqual(paths[0], '/opt/codex-studio/vm/guest/install.sh')
         self.assertEqual(len(paths), 10)
         self.assertNotIn('credentials', json.dumps(config))
+        unit = next(row['content'] for row in config['write_files'] if row['path'].endswith('/codex-studio-provision.service'))
+        ready = next(line.split('=!',1)[1] for line in unit.splitlines() if line.startswith('ConditionPathExists='))
+        self.assertRegex(ready, r'^/var/lib/codex-studio/provision-ready-[a-f0-9]{64}$')
+        script = next(row['content'] for row in config['write_files'] if row['path'].endswith('/provision.sh'))
+        self.assertIn('touch ' + ready + '\n', script)
+        self.assertEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6'))
+        (guest / 'install.sh').write_text('# new installation payload')
+        self.assertNotEqual(config, vm._cloud_config(guest, '1.2.3', '4.5.6'))
 
 
 
