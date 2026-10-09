@@ -133,7 +133,13 @@ test("claude login ui", async ({ page: runnerPage }) => {
       await page.getByRole("button", { name: "me@example.com" }).click();
       await page.getByRole("menuitem", { name: /Manage accounts/ }).click();
       await page
-        .getByRole("button", { name: "Sign in again", exact: true })
+        .getByRole("button", {
+          name: "Actions for me@example.com",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("menuitem", { name: "Sign in again", exact: true })
         .click();
     };
     await page.goto(

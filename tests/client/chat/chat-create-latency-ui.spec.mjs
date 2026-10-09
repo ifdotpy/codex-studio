@@ -2,6 +2,8 @@
 import {
   syncIdentityFixture,
   entityPullFixtureForRequest,
+  API_SCHEMA_HASH_HEADER,
+  readApiSchemaHash,
   test,
   expect,
   spawnFixture as spawn,
@@ -90,7 +92,10 @@ test("Chat Create Latency Ui @performance", async ({
     const identityResponse = syncIdentityFixture(backendIdentity.workspaceId);
     const workspaceId = identityResponse.workspaceId;
     await page.route("**/api/sync/identity", (route) =>
-      route.fulfill({ json: identityResponse }),
+      route.fulfill({
+        json: identityResponse,
+        headers: { [API_SCHEMA_HASH_HEADER]: readApiSchemaHash() },
+      }),
     );
     const accountChanges = [];
     const transfers = [];
@@ -152,14 +157,46 @@ test("Chat Create Latency Ui @performance", async ({
       .click();
     await page.locator("#message").fill("Keep the previous draft");
     await page.locator(".project-tree-heading").first().hover();
+    const creationResponse = page.waitForResponse((response) =>
+      response.url().endsWith("/api/leads"),
+    );
     await page
       .getByRole("button", { name: /^New chat in / })
       .first()
       .click();
-    await page
-      .locator("#conversation-title")
-      .getByText("New chat", { exact: true })
-      .waitFor({ timeout: 2000 });
+    const creationReceipt = await creationResponse;
+    assert.equal(creationReceipt.ok(), true);
+    assert.ok(
+      confirmed?.id,
+      "creation response supplies the confirmed chat id",
+    );
+    const selectionKey = `codex-desktop-opened:${initial.stateDir}`;
+    await page.waitForFunction(
+      ({ chatId, selectionKey }) => {
+        const selected = JSON.parse(
+          localStorage.getItem(selectionKey) || "null",
+        );
+        const selectedRow = document.querySelector(`[data-chat="${chatId}"]`);
+        return (
+          selected === chatId &&
+          selectedRow?.getAttribute("aria-current") === "true" &&
+          document.querySelector("#conversation-title")?.textContent?.trim() ===
+            "New chat"
+        );
+      },
+      { chatId: confirmed.id, selectionKey },
+      { timeout: 2000 },
+    );
+    assert.equal(
+      JSON.parse(
+        await page.evaluate(
+          (selectionKey) => localStorage.getItem(selectionKey),
+          `codex-desktop-opened:${initial.stateDir}`,
+        ),
+      ),
+      confirmed.id,
+      "the confirmed chat is selected",
+    );
     const openedAfterMs = Date.now() - repliedAt;
     assert.ok(
       openedAfterMs < 1500,
@@ -172,9 +209,20 @@ test("Chat Create Latency Ui @performance", async ({
     await page
       .getByRole("button", { name: "Chat settings", exact: true })
       .click();
-    await page.locator(".account-picker").click();
     await page
-      .getByText("Account for this conversation", { exact: true })
+      .getByRole("dialog", { name: "Chat settings" })
+      .getByRole("button", { name: "Main agent settings", exact: true })
+      .click();
+    const mainAgentSettings = page.getByRole("dialog", {
+      name: "Main agent settings",
+      exact: true,
+    });
+    const destinationAccount = mainAgentSettings.getByRole("button", {
+      name: `Select account ${destination.label}`,
+      exact: true,
+    });
+    await mainAgentSettings
+      .getByRole("group", { name: "Main agent account", exact: true })
       .waitFor();
     assert.equal(
       await page.getByText("Transfer chat to account", { exact: true }).count(),
@@ -184,20 +232,14 @@ test("Chat Create Latency Ui @performance", async ({
       response.url().endsWith("/api/agents/account"),
     );
     const accountStartedAt = Date.now();
-    await page
-      .getByRole("menuitem")
-      .filter({ hasText: destination.email || destination.label })
-      .click();
+    await destinationAccount.click();
     const selectedResponse = await accountResponse;
     assert.equal(selectedResponse.ok(), true);
     const selected = await selectedResponse.json();
     assert.equal(selected.empty, true);
     assert.equal(selected.threadId, null);
     const accountChangeMs = Date.now() - accountStartedAt;
-    await page
-      .locator(".account-picker")
-      .getByText(destination.email || destination.label, { exact: true })
-      .waitFor();
+    await expect(destinationAccount).toHaveAttribute("aria-pressed", "true");
     assert.equal(accountChanges.length, 1);
     assert.equal(accountChanges[0].id, confirmed.id);
     assert.equal(
@@ -231,7 +273,7 @@ test("Chat Create Latency Ui @performance", async ({
     );
     // A reload can read the same old snapshot before replication reaches this chat.
     await page.reload();
-    await page.locator(`#chat-list [data-chat="${confirmed.id}"]`).waitFor();
+    await page.locator(`[data-chat="${confirmed.id}"]`).waitFor();
     assert.equal(
       await page.locator("#conversation-title").innerText(),
       "New chat",

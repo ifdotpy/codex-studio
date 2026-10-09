@@ -2,6 +2,7 @@ import {
   readTestState,
   stubEntityState,
   readFixtureSyncContract,
+  readApiSchemaHash,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -46,36 +47,26 @@ test(
       page.on("pageerror", (e) => errors.push(e.message));
       await page.addInitScript(() => {
         window.__chatSwitchStartedAt = undefined;
+        window.__chatSwitchFirstRowsPaintAt = undefined;
         window.__chatSwitchPaintAt = undefined;
-        window.testStreams = [];
-        window.createdStreams = [];
-        const NativeEventSource = window.EventSource;
-        window.EventSource = new Proxy(NativeEventSource, {
-          construct(target, args) {
-            const url = String(args[0]);
-            if (new URL(url, location.href).pathname === "/api/sync/stream")
-              return Reflect.construct(target, args);
-            class TranscriptFixtureStream extends EventTarget {
-              constructor() {
-                super();
-                this.url = url;
-                window.testStreams.push(this);
-                window.createdStreams.push(url);
-              }
-              close() {
-                window.testStreams = window.testStreams.filter(
-                  (stream) => stream !== this,
-                );
-              }
-            }
-            return new TranscriptFixtureStream();
-          },
+        window.__chatSwitchScrollStartedAt = undefined;
+        window.__chatSwitchLongTasks = [];
+        window.__firstSidebarRowVisibleAt = undefined;
+        const sidebarObserver = new MutationObserver(() => {
+          const row = document.querySelector("[data-chat]");
+          if (row?.getClientRects().length) {
+            window.__firstSidebarRowVisibleAt = performance.now();
+            sidebarObserver.disconnect();
+          }
         });
-        window.emitTranscript = (id, data) =>
-          window.testStreams.forEach((s) => {
-            if (new URL(s.url, location.href).searchParams.get("id") === id)
-              s.onmessage?.({ data: JSON.stringify(data) });
-          });
+        sidebarObserver.observe(document, { childList: true, subtree: true });
+        new PerformanceObserver((list) => {
+          for (const entry of list.getEntries())
+            window.__chatSwitchLongTasks.push({
+              startTime: entry.startTime,
+              duration: entry.duration,
+            });
+        }).observe({ type: "longtask", buffered: true });
       });
       const snapshot = {
         ...state,
@@ -87,11 +78,8 @@ test(
         })),
         runtime: { ...state.runtime, requests: [] },
       };
-      await stubEntityState(
-        page,
-        snapshot,
-        await readFixtureSyncContract(origin),
-      );
+      const syncContract = await readFixtureSyncContract(origin);
+      const entitySync = await stubEntityState(page, snapshot, syncContract);
       const payload = (agent, tag) => ({
         agent: { ...agent, status: "completed", inFlight: false, turnId: null },
         items: Array.from({ length: 30 }, (_, i) => ({
@@ -102,59 +90,271 @@ test(
         replace: true,
       });
       const requests = [];
+      const visited = new Set();
       let hold = false;
+      let coldSwitchArmed = false;
       let resolveNextA;
       let resolveHeldB;
-      await page.route("**/api/transcript?*", async (r) => {
-        const id = new URL(r.request().url()).searchParams.get("id");
+      let latestA = payload(a, "a");
+      let latestASequence = 10;
+      const responseFor = (id, data, seq, after = 0) => ({
+        ...syncContract.identity,
+        documents:
+          after < seq
+            ? [
+                {
+                  id: `transcript:${id}`,
+                  payload: JSON.stringify(data),
+                  seq,
+                  _deleted: false,
+                },
+              ]
+            : [],
+        checkpoint: { seq: Math.max(after, seq) },
+      });
+      await page.route("**/api/sync/pull?*", async (r) => {
+        const url = new URL(r.request().url());
+        const scope = url.searchParams.get("scope");
+        if (!scope?.startsWith("transcript:")) return r.fallback();
+        const id = scope.slice("transcript:".length);
         requests.push({ id, at: Date.now(), route: r });
         if (id === a.id && resolveNextA) {
-          resolveNextA(r);
+          const resolve = resolveNextA;
           resolveNextA = undefined;
+          resolve(r);
+          return;
         }
         if (hold && id === b.id && resolveHeldB) {
           resolveHeldB(r);
           resolveHeldB = undefined;
           return;
         }
-        if (!hold)
+        if (id === a.id && !coldSwitchArmed) {
           await r.fulfill({
-            json: payload(id === a.id ? a : b, id === a.id ? "a" : "b"),
+            json: responseFor(a.id, latestA, latestASequence, latestASequence),
+          });
+          return;
+        }
+        if (!hold || id === a.id)
+          await r.fulfill({
+            json: responseFor(
+              id,
+              id === a.id ? latestA : payload(b, "b"),
+              id === a.id ? latestASequence : 20,
+              Number(url.searchParams.get("after") || 0),
+            ),
           });
       });
       await page.goto(origin);
+      await page.waitForFunction(() =>
+        performance.getEntriesByType("resource").some((entry) => {
+          const url = new URL(entry.name);
+          return url.pathname === "/api/session" && entry.responseEnd > 0;
+        }),
+      );
+      await page.locator("#conversation-title").waitFor();
+      await page.locator(`[data-chat="${b.id}"]`).waitFor();
+      await page.locator(`[data-chat="${b.id}"]`).click();
+      await page
+        .locator("#conversation-title")
+        .getByText("Release lead", { exact: true })
+        .waitFor();
+      await page.locator("#messages [data-message^='b-']").first().waitFor();
+      console.log(
+        "chat-switch startup readiness",
+        JSON.stringify(
+          await page.evaluate(() => {
+            const resources = performance
+              .getEntriesByType("resource")
+              .filter((entry) =>
+                new URL(entry.name).pathname.startsWith("/api/"),
+              );
+            const identity = resources.find(
+              (entry) => new URL(entry.name).pathname === "/api/sync/identity",
+            );
+            const session = resources.find(
+              (entry) => new URL(entry.name).pathname === "/api/session",
+            );
+            return {
+              navigationStart: 0,
+              firstSidebarRowAt: window.__firstSidebarRowVisibleAt,
+              sessionRequestStartAt: session?.startTime ?? null,
+              sessionResponseAt: session?.responseEnd ?? null,
+              identityRequestStartAt: identity?.startTime ?? null,
+              identityResponseAt: identity?.responseEnd ?? null,
+              dbOpenAfterIdentityMs:
+                identity && session
+                  ? session.startTime - identity.responseEnd
+                  : null,
+              initialTitle: document.querySelector("#conversation-title")
+                ?.textContent,
+              initialTranscriptRows: document.querySelectorAll(
+                "#messages [data-message]",
+              ).length,
+              requests: resources.map((entry) => ({
+                path: new URL(entry.name).pathname,
+                startAt: entry.startTime,
+                durationMs: entry.duration,
+              })),
+            };
+          }),
+        ),
+      );
       const open = async (id, message) => {
         const chat = page.locator(`[data-chat="${id}"]`);
         const selector = `[data-message="${message}"]`;
+        const prefix = message.split("-")[0];
         await chat.evaluate((element, target) => {
           window.__chatSwitchStartedAt = undefined;
+          window.__chatSwitchFirstRowsPaintAt = undefined;
           window.__chatSwitchPaintAt = undefined;
+          window.__chatSwitchScrollStartedAt = undefined;
           element.addEventListener(
             "pointerdown",
             () => {
               window.__chatSwitchStartedAt = performance.now();
+              const messages = document.querySelector("#messages");
+              const messageBounds = messages?.getBoundingClientRect();
+              const targetPrefix = target;
+              const recordFirstRows = () => {
+                const row = Array.from(
+                  document.querySelectorAll("#messages [data-message]"),
+                ).find((node) => {
+                  if (
+                    !node
+                      .getAttribute("data-message")
+                      ?.startsWith(`${targetPrefix}-`)
+                  )
+                    return false;
+                  const bounds = node.getBoundingClientRect();
+                  return (
+                    bounds.bottom > (messageBounds?.top || 0) &&
+                    bounds.top < (messageBounds?.bottom || 0)
+                  );
+                });
+                if (row?.isConnected) {
+                  window.__chatSwitchFirstRowsPaintAt = performance.now();
+                  return;
+                }
+                requestAnimationFrame(recordFirstRows);
+              };
               const recordVisibleTarget = () => {
                 const node = document.querySelector(target);
-                if (node?.isConnected && node.getClientRects().length) {
+                const bounds = node?.getBoundingClientRect();
+                const viewport = document
+                  .querySelector("#messages")
+                  ?.getBoundingClientRect();
+                if (
+                  node?.isConnected &&
+                  bounds &&
+                  viewport &&
+                  bounds.bottom > viewport.top &&
+                  bounds.top < viewport.bottom
+                ) {
                   window.__chatSwitchPaintAt = performance.now();
                   return;
                 }
                 requestAnimationFrame(recordVisibleTarget);
               };
+              requestAnimationFrame(recordFirstRows);
               requestAnimationFrame(recordVisibleTarget);
             },
             { once: true },
           );
-        }, selector);
+        }, prefix);
+        if (id === a.id && !visited.has(id)) coldSwitchArmed = true;
         await chat.click();
-        await page.locator(selector).waitFor({ state: "visible" });
         await page.waitForFunction(
-          () => typeof window.__chatSwitchPaintAt === "number",
+          () => typeof window.__chatSwitchFirstRowsPaintAt === "number",
         );
-        return page.evaluate(
-          () => window.__chatSwitchPaintAt - window.__chatSwitchStartedAt,
+        const firstRowsTiming = await page.evaluate((id) => {
+          const startedAt = window.__chatSwitchStartedAt;
+          const firstRowsAt = window.__chatSwitchFirstRowsPaintAt;
+          const resource = performance
+            .getEntriesByType("resource")
+            .filter((entry) => {
+              const url = new URL(entry.name);
+              return (
+                url.pathname === "/api/sync/pull" &&
+                url.searchParams.get("scope") === `transcript:${id}` &&
+                entry.startTime >= startedAt &&
+                entry.startTime <= firstRowsAt
+              );
+            })
+            .sort((left, right) => left.startTime - right.startTime)[0];
+          return {
+            clickToFirstRowsMs: firstRowsAt - startedAt,
+            fixturePullStartAfterClickMs: resource
+              ? resource.startTime - startedAt
+              : null,
+            fixturePullResponseMs: resource?.duration ?? null,
+            firstRowsAfterPullResponseMs: resource
+              ? Math.max(0, firstRowsAt - resource.responseEnd)
+              : null,
+            pullStillPendingAtFirstRowsMs: resource
+              ? Math.max(0, resource.responseEnd - firstRowsAt)
+              : null,
+            precedingRequests: performance
+              .getEntriesByType("resource")
+              .filter((entry) => {
+                const url = new URL(entry.name);
+                return (
+                  url.pathname.startsWith("/api/") &&
+                  entry.startTime >= startedAt &&
+                  entry.startTime <= firstRowsAt
+                );
+              })
+              .map((entry) => ({
+                path: new URL(entry.name).pathname,
+                startAfterClickMs: entry.startTime - startedAt,
+                durationMs: entry.duration,
+              })),
+            longTasks: window.__chatSwitchLongTasks
+              .filter(
+                (entry) =>
+                  entry.startTime >= startedAt &&
+                  entry.startTime <= firstRowsAt,
+              )
+              .map((entry) => ({
+                startAfterClickMs: entry.startTime - startedAt,
+                durationMs: entry.duration,
+              })),
+          };
+        }, id);
+        if (!visited.has(id)) {
+          await page.locator("#messages").evaluate((messages) => {
+            window.__chatSwitchScrollStartedAt = performance.now();
+            messages.scrollTop = messages.scrollHeight;
+            messages.dispatchEvent(new Event("scroll"));
+          });
+          visited.add(id);
+        }
+        await page.locator(selector).waitFor({ state: "visible" });
+        const targetMountAfterScrollMs = await page.evaluate(() =>
+          typeof window.__chatSwitchScrollStartedAt === "number"
+            ? performance.now() - window.__chatSwitchScrollStartedAt
+            : null,
         );
+        const timing = {
+          id,
+          ...firstRowsTiming,
+          scrollAndTargetMountMs: targetMountAfterScrollMs,
+        };
+        console.log("chat-switch timing", JSON.stringify(timing));
+        return firstRowsTiming.clickToFirstRowsMs;
       };
+      await page
+        .locator("#conversation-title")
+        .getByText("Release lead", { exact: true })
+        .waitFor();
+      await page.locator("#messages [data-message^='b-']").first().waitFor();
+      await page.waitForFunction(() => {
+        const entries = performance.getEntriesByType("resource");
+        return entries.some((entry) => {
+          const url = new URL(entry.name);
+          return url.pathname === "/api/session" && entry.responseEnd > 0;
+        });
+      });
       const cold = await open(a.id, "a-29");
       assert.ok(
         cold < 1500,
@@ -195,12 +395,37 @@ test(
       );
       const fresh = payload(a, "fresh");
       fresh.order = fresh.items.map((x) => x.id);
-      await page.evaluate(({ id, data }) => window.emitTranscript(id, data), {
-        id: a.id,
-        data: fresh,
+      latestA = fresh;
+      latestASequence = 30;
+      const freshPull = page.waitForResponse((response) => {
+        const url = new URL(response.url());
+        return (
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${a.id}` &&
+          Number(url.searchParams.get("after") || 0) < latestASequence
+        );
+      });
+      await entitySync.update(snapshot, {
+        origin,
+        token: state.token,
+        resources: [{ kind: "transcript", agentId: a.id }],
+      });
+      await pending.fulfill({
+        json: responseFor(
+          a.id,
+          payload(a, "obsolete"),
+          20,
+          Number(
+            new URL(pending.request().url()).searchParams.get("after") || 0,
+          ),
+        ),
+      });
+      await freshPull;
+      await page.locator("#messages").evaluate((messages) => {
+        messages.scrollTop = messages.scrollHeight;
+        messages.dispatchEvent(new Event("scroll"));
       });
       await page.locator('[data-message="fresh-29"]').waitFor();
-      await pending.fulfill({ json: payload(a, "obsolete") });
       await page.evaluate(
         () =>
           new Promise((resolve) =>
@@ -216,8 +441,8 @@ test(
       const lateRequest = page.waitForRequest((request) => {
         const url = new URL(request.url());
         return (
-          url.pathname === "/api/transcript" &&
-          url.searchParams.get("id") === b.id
+          url.pathname === "/api/sync/pull" &&
+          url.searchParams.get("scope") === `transcript:${b.id}`
         );
       });
       await open(b.id, "b-29");
@@ -275,7 +500,7 @@ test(
             return matches.some(Boolean);
           },
           {
-            databaseName: `rxdb-dexie-studio${identity.workspaceId}--0--projections`,
+            databaseName: `rxdb-dexie-studio-entity-projection-${identity.workspaceId}-${readApiSchemaHash()}--0--projections`,
             documentId: `transcript:${id}`,
             sequence,
           },
@@ -349,26 +574,20 @@ test(
       hold = false;
       await page.reload();
       await open(a.id, "sync-a-29");
-      const streamCount = () =>
-        page.evaluate(
-          (id) =>
-            window.createdStreams.filter(
-              (url) =>
-                new URL(url, location.href).searchParams.get("id") === id,
-            ).length,
-          a.id,
-        );
-      const beforeQuickReturn = await streamCount();
       projectionDelay = 1000;
       await page.locator(`[data-chat="${b.id}"]`).click();
       await page.locator('[data-message="sync-b-29"]').waitFor();
       await waitForProjection(a.id, 100);
       await waitForProjection(b.id, 101);
-      await open(a.id, "sync-a-29");
-      assert.equal(
-        await streamCount(),
-        beforeQuickReturn,
-        "A prefetched return uses the shared projection transport without another chat stream",
+      const pullsBeforeQuickReturn = syncPulls;
+      const quickProjectionReturn = await open(a.id, "sync-a-29");
+      assert.ok(
+        quickProjectionReturn < 500,
+        `A prefetched projection renders before its delayed refresh: ${quickProjectionReturn}ms`,
+      );
+      assert.ok(
+        syncPulls > pullsBeforeQuickReturn,
+        "The fast cached return still starts its background refresh",
       );
       projectionDelay = 0;
       await open(b.id, "sync-b-29");

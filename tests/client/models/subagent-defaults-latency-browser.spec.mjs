@@ -1,4 +1,9 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  expect,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
@@ -132,12 +137,15 @@ test("Subagent defaults latency @performance", async ({ context }) => {
     await button.click();
   };
   await openDefaults();
-  const dialog = page.getByRole("region", {
+  const dialog = page.getByRole("dialog", {
     name: "Subagent defaults",
     exact: true,
   });
   await dialog.waitFor();
-  const account = dialog.getByLabel(/account/i).first();
+  const account = dialog.getByRole("button", {
+    name: `Select account ${second.label}`,
+    exact: true,
+  });
   const legacy =
     (await dialog
       .getByRole("button", { name: "Save subagent settings" })
@@ -153,7 +161,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
       .workerDefaults;
   // 1. Account change on a 40-worker team.
   const accountStart = performance.now();
-  await account.selectOption(second.id);
+  await account.click();
   timings.accountShownMs = Math.round(performance.now() - accountStart);
   if (legacy) {
     const save = dialog.getByRole("button", {
@@ -192,7 +200,7 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   // Entity sync carries workerDefaults.accountKey and the transfer summary.
   const transferStatus = dialog
     .getByRole("status")
-    .filter({ hasText: "moved to second-account" });
+    .filter({ hasText: /Moved \d+ subagents to second-account/ });
   if (legacy) {
     timings.transferStatusShown = await transferStatus
       .waitFor({ timeout: 3000 })
@@ -253,13 +261,18 @@ test("Subagent defaults latency @performance", async ({ context }) => {
       .click();
     await openDefaults();
     await dialog.waitFor();
-    await page.waitForFunction(
-      (id) =>
-        [...document.querySelectorAll('[role="dialog"] select')].some(
-          (node) => node.value === id,
-        ),
-      second.id,
-    );
+    await dialog
+      .getByRole("button", {
+        name: `Select account ${second.label}`,
+        exact: true,
+      })
+      .waitFor();
+    await expect(
+      dialog.getByRole("button", {
+        name: `Select account ${second.label}`,
+        exact: true,
+      }),
+    ).toHaveAttribute("aria-pressed", "true");
     await transferStatus.waitFor();
     assert.equal(
       await modelValue(dialog.getByLabel(/model/i).first()),

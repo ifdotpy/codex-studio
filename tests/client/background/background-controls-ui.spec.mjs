@@ -155,6 +155,22 @@ test("Background controls", async ({ context }) => {
             "X-Log-Truncated": "true",
           },
         });
+      else if (path === "/api/multi-server")
+        value = {
+          protocol: 1,
+          identity: {
+            serverId: "fixture-server",
+            label: "Studio server",
+            origin: null,
+            publicKey:
+              "-----BEGIN PUBLIC KEY-----\nMCowBQYDK2VwAyEA03Gf93BzL6we9QAue5E1GRzfNBfEMRLv97mjj9pUqPU=\n-----END PUBLIC KEY-----\n",
+            tailscaleUser: null,
+          },
+          clients: [],
+          servers: [],
+          invites: [],
+          settings: { autoPair: true },
+        };
       else if (path === "/api/monitor/cancel") {
         return route.continue();
       } else if (path === "/api/monitor/input" && failInput) {
@@ -329,7 +345,10 @@ test("Background controls", async ({ context }) => {
     state.runtime.agents.push(failedWorker);
     await page.setViewportSize({ width: 1440, height: 980 });
     await page.reload();
-    await page.locator('[data-chat="lead"]').click();
+    await page
+      .locator("#conversation-title")
+      .getByText("Release lead", { exact: true })
+      .waitFor();
     await page.locator('.agent-phase[data-phase="acknowledgement"]').waitFor();
     await page.getByRole("button", { name: "Team", exact: true }).click();
     await page
