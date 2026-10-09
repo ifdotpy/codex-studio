@@ -118,7 +118,7 @@ async function proxyToken() {
     throw new Error("The local Claude proxy credential is unavailable");
   return token.accessToken;
 }
-export async function listExternalTools(config) {
+async function readExternalServer(config, initializeOnly = false) {
   const client = new Client({ name: "studio-teleport-catalog", version: "1" });
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
@@ -130,6 +130,7 @@ export async function listExternalTools(config) {
         command: config.command,
         args: config.args || [],
         env: { ...process.env, ...config.env },
+        cwd: config.cwd,
         stderr: "ignore",
       });
     } else {
@@ -172,7 +173,9 @@ export async function listExternalTools(config) {
       timeout: 10000,
       signal: controller.signal,
     });
-    if (!client.getServerCapabilities()?.tools) return [];
+    const instructions = client.getInstructions() ?? null;
+    if (initializeOnly || !client.getServerCapabilities()?.tools)
+      return { tools: [], instructions };
     const tools = [];
     let cursor;
     let pages = 0;
@@ -191,12 +194,18 @@ export async function listExternalTools(config) {
         throw new Error("MCP catalog cursor did not advance");
       cursor = result.nextCursor;
     } while (cursor);
-    return tools;
+    return { tools, instructions };
   } finally {
     clearTimeout(timer);
     await client.close();
     await transport?.close();
   }
+}
+export async function listExternalTools(config) {
+  return (await readExternalServer(config)).tools;
+}
+export async function readExternalInstructions(config) {
+  return (await readExternalServer(config, true)).instructions;
 }
 export async function externalCatalog(
   statuses,

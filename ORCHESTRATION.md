@@ -1068,6 +1068,23 @@ and organization to retain the prompt cache.
 Codex retains the native session ID, full history, instructions, model,
 reasoning settings, and ordered tool definitions.
 Codex preflight requires the same native version, OS, and MCP tool catalog.
+The catalog proof compares tool names, descriptions, input and output schemas, titles, and Codex Apps connector metadata.
+It also compares server information (name and version).
+Resource lists, resource template lists, authentication status, and runtime status do not define the prompt catalog.
+Studio does not include these fields in the catalog hash.
+Codex preflight reads MCP initialization instructions without model input or tool calls.
+If both servers expose these instructions, their hashes must match.
+The result records `mcpProofLevels` for each server:
+
+- `initialize_instructions`: both servers supplied matching initialization instructions.
+- `server_info_fallback`: a reader cannot reach one server with its available credentials or configuration.
+  Tool definitions and server information still must match. This fallback does not refuse a teleport by itself.
+  This level does not prove that server instructions match.
+
+The first target turn's cache counters show actual provider cache reuse.
+The field selection follows Codex 0.162.0 [tool conversion](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/tools/src/mcp_tool.rs),
+[namespace construction](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/core/src/tools/handlers/mcp.rs),
+and [MCP initialization](https://github.com/openai/codex/blob/rust-v0.162.0/codex-rs/codex-mcp/src/rmcp_client.rs).
 A different or unknown Codex account identity refuses by default.
 Only explicit `accept_cache_loss=true` approves cache loss for that move.
 The result records this approval and its cache-loss warning.

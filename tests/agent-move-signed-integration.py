@@ -793,6 +793,7 @@ class Moves(f.SignedIntegration):
         self.assertNotIn('source-only-secret', message)
         self.assertNotIn('target-only-secret', message)
         self.assertNotIn('CLI version differs', message)
+        self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
 
     def test_external_catalog_refusal_names_missing_target_server_through_signed_caller(self):
         self.claude_source()
@@ -812,7 +813,68 @@ class Moves(f.SignedIntegration):
         self.assertIn('changed definitions [claude.ai Claude Docs]', str(refused.exception))
         self.assertNotIn('raw-credential-secret', str(refused.exception))
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_resource_data_and_auth_status_do_not_change_teleport_capabilities(self):
+        source, target = self.a.runtime.server, self.b.runtime.server
+        source_call, target_call = source.call, target.call
+        def status(original, side, method, params, timeout=60):
+            if method == 'mcpServerStatus/list':
+                return {'data': [{'name': 'anarlog', 'serverInfo': {'name': 'anarlog', 'version': '1'},
+                    'tools': {'read': {'name': 'read', 'description': 'Read', 'inputSchema': {'type': 'object'}}},
+                    'resources': [{'uri': 'private-meeting'}] if side == 'source' else [],
+                    'resourceTemplates': [{'uriTemplate': 'private/{id}'}] if side == 'source' else [],
+                    'authStatus': side, 'runtimeStatus': side}]}
+            return original(method, params, timeout)
+        with patch.object(source, 'call', side_effect=lambda m, p, timeout=60: status(source_call, 'source', m, p, timeout)), \
+             patch.object(target, 'call', side_effect=lambda m, p, timeout=60: status(target_call, 'target', m, p, timeout)):
+            result = self.a.runtime.multi_server().moves().start(self.lead,
+                {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'resource-only'}, 'resource-only')
+        self.assertEqual(result['status'], 'accepted')
+        self.assertIsNone(result['warning'])
+        self.assertNotIn('private-meeting', json.dumps(result))
+        self.assertEqual(result['mcpProofLevels'], [{'name': 'anarlog', 'proofLevel': 'server_info_fallback'}])
+
+    def instruction_preflight(self, different=False, fallback=False):
+        script = self.a.folder / 'instruction-server.py'
+        log = self.a.folder / 'instruction-requests'
+        script.write_text("import json,sys,os,pathlib\nassert pathlib.Path.cwd()==pathlib.Path(os.environ['EXPECTED_CWD']).resolve()\nfor line in sys.stdin:\n r=json.loads(line)\n"
+            " with open(" + repr(str(log)) + ", 'a') as f:f.write(r['method']+'\\n')\n"
+            " if 'id' not in r:continue\n"
+            " print(json.dumps({'jsonrpc':'2.0','id':r['id'],'result':{'protocolVersion':r['params']['protocolVersion'],"
+            "'capabilities':{},'serverInfo':{'name':'fixture','version':'1'},'instructions':os.environ['PROOF_TEXT']}}),flush=True)\n")
+        source, target = self.a.runtime.server, self.b.runtime.server
+        source_call, target_call = source.call, target.call
+        def reply(original, is_target, method, params, timeout=60):
+            if method == 'config/read':
+                if is_target and fallback:
+                    return {'config': {'mcp_servers': {}}}
+                return {'config': {'mcp_servers': {'fixture': {'command': sys.executable, 'args': [str(script)], 'cwd': str(self.a.folder),
+                    'env': {'EXPECTED_CWD': str(self.a.folder), 'PROOF_TEXT': 'target-private-instructions' if is_target and different else 'source-private-instructions'}}}}}
+            if method == 'mcpServerStatus/list':
+                return {'data': [{'name': 'fixture', 'serverInfo': {'name': 'fixture', 'version': '1'},
+                    'tools': {'read': {'name': 'read', 'description': 'Read', 'inputSchema': {'type': 'object'}}}}]}
+            return original(method, params, timeout)
+        with patch.object(source, 'call', side_effect=lambda m, p, timeout=60: reply(source_call, False, m, p, timeout)), \
+             patch.object(target, 'call', side_effect=lambda m, p, timeout=60: reply(target_call, True, m, p, timeout)):
+            result = self.a.runtime.multi_server().moves().start(self.lead,
+                {'server': self.b.server_id, 'cwd': str(self.b.folder), 'request_id': 'instruction-proof'}, 'instruction-proof')
+        self.assertEqual(set(log.read_text().splitlines()), {'initialize', 'notifications/initialized'})
+        return result
+
+    def test_verified_mcp_initialization_instruction_difference_refuses(self):
+        with self.assertRaisesRegex(ValueError, 'MCP server fixture initialization instructions differ') as refused:
+            self.instruction_preflight(different=True)
+        self.assertNotIn('private-instructions', str(refused.exception))
         self.assertFalse(self.a.runtime.agent(self.lead['id']).get('executionMove'))
+
+    def test_matching_mcp_initialization_instructions_record_strong_proof(self):
+        result = self.instruction_preflight()
+        self.assertEqual(result['mcpProofLevels'], [{'name': 'fixture', 'proofLevel': 'initialize_instructions'}])
+        self.assertNotIn('private-instructions', json.dumps(result))
+
+    def test_unavailable_target_mcp_instructions_use_visible_server_info_fallback(self):
+        result = self.instruction_preflight(fallback=True)
+        self.assertEqual(result['mcpProofLevels'], [{'name': 'fixture', 'proofLevel': 'server_info_fallback'}])
 
     def test_refusal_keeps_unstructured_claude_native_errors_unknown(self):
         self.claude_source()
