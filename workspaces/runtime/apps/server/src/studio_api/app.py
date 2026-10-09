@@ -89,7 +89,13 @@ def create_app(context: ApiContext) -> FastAPI:
 
         if not WEB.is_dir():
             if relative == "index.html":
-                raise StarletteHTTPException(status_code=503, detail="Build the interface: cd web && npm ci && npm run build")
+                raise StarletteHTTPException(
+                    status_code=503,
+                    detail=(
+                        "Build the interface from the repository root with "
+                        "`pnpm --filter codex-agents-web run build`."
+                    ),
+                )
             raise StarletteHTTPException(status_code=404, detail="Not found")
         asset = (WEB / relative).resolve()
         if not asset.is_relative_to(WEB.resolve()) or not asset.is_file():
