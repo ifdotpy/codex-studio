@@ -3,6 +3,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  installApiSchemaFixtureHeaders,
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
@@ -94,6 +95,7 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       page.setDefaultTimeout(10000);
       const errors = [];
       page.on("pageerror", (e) => errors.push(e.message));
+      installApiSchemaFixtureHeaders(page);
       await page.addInitScript(() => {
         window.motionStreams = [];
         window.motionScrollTrace = [];
@@ -166,6 +168,14 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
 
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
+      await page.waitForFunction(
+        (id) =>
+          window.motionStreams.some(
+            (stream) =>
+              new URL(stream.url, location.href).searchParams.get("id") === id,
+          ),
+        lead.id,
+      );
       const emit = async () => {
         await page.evaluate(({ id, data }) => window.motionEmit(id, data), {
           id: lead.id,
@@ -173,6 +183,16 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         });
       };
       await emit();
+      // Long histories mount only the viewport window. Use the same reveal
+      // event as Conversation navigation before measuring the target row.
+      await page.waitForFunction((id) => {
+        const root = document.querySelector("#messages");
+        if (!root) return false;
+        root.dispatchEvent(
+          new CustomEvent("studio-history-reveal", { detail: id }),
+        );
+        return !!root.querySelector(`[data-message="${CSS.escape(id)}"]`);
+      }, "note35");
       const rootSelector = `#messages[data-motion-root="${width}"]`;
       const markTranscriptRoot = async () => {
         const visibleRoot = page.locator(

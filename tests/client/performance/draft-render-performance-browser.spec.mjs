@@ -1,6 +1,11 @@
 // Real draft hook, local durability, and consumer commits with 500 saved chats.
 import { fileURLToPath } from "node:url";
-import { apiSchemaHandshakeSse, test, expect } from "../playwright.mjs";
+import {
+  apiSchemaHandshakeSse,
+  installApiSchemaFixtureHeaders,
+  test,
+  expect,
+} from "../playwright.mjs";
 
 test("Draft Render Performance Browser @performance", async ({
   browser: testBrowser,
@@ -40,6 +45,7 @@ test("Draft Render Performance Browser @performance", async ({
     for (const count of [500]) {
       context = await browser.newContext();
       const page = await context.newPage();
+      installApiSchemaFixtureHeaders(page);
       const errors = [];
       page.on("pageerror", (error) => errors.push(error.message));
       const workspaceId = "d".repeat(32);
@@ -67,9 +73,6 @@ test("Draft Render Performance Browser @performance", async ({
       await page.goto(
         `http://127.0.0.1:${server.httpServer.address().port}/check`,
       );
-      // The first development request starts Vite's dependency optimizer. Do
-      // not import app modules until that one-time scan/build has settled.
-      await page.waitForTimeout(5000);
       await page.evaluate(
         async ({ count, workspaceId }) => {
           const importWithRetry = async (url) => {
@@ -209,9 +212,23 @@ test("Draft Render Performance Browser @performance", async ({
         { count, workspaceId },
       );
       await page.waitForFunction(
-        () => window.draft?.drafts["chat-0"] === "x".repeat(2000),
+        () =>
+          window.draft?.drafts["chat-0"] === "x".repeat(2000) &&
+          window.draft?.drafts["chat-499"] === "x".repeat(2000),
       );
-      await page.waitForTimeout(1200);
+      await page.waitForFunction(
+        () =>
+          new Promise((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() =>
+                resolve(
+                  window.draft?.drafts["chat-0"] === "x".repeat(2000) &&
+                    window.draft?.drafts["chat-499"] === "x".repeat(2000),
+                ),
+              ),
+            ),
+          ),
+      );
       if (browser.browserType().name() === "chromium") {
         const cdp = await context.newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
@@ -366,13 +383,30 @@ test("Draft Render Performance Browser @performance", async ({
       // Current behavior keeps the local edit and presents the remote branch
       // through DraftVersions. Conversation's Replace text action calls
       // setDraft with the selected version, so exercise that public hook path.
-      await page.waitForFunction(
-        () =>
-          draft.drafts["chat-0"] === "typed 19" &&
-          draft.conflicts.some(
-            (version) => version.text === "Concurrent remote text",
-          ),
-      );
+      try {
+        await page.waitForFunction(
+          () =>
+            draft.drafts["chat-0"] === "typed 19" &&
+            draft.conflicts.some(
+              (version) => version.text === "Concurrent remote text",
+            ),
+          undefined,
+          { timeout: 5000 },
+        );
+      } catch (error) {
+        const diagnostic = await page.evaluate(async () => ({
+          draft: window.draft && {
+            current: window.draft.drafts["chat-0"],
+            conflicts: window.draft.conflicts,
+          },
+          records: (await window.db.drafts.find().exec())
+            .map((doc) => JSON.parse(doc.payload))
+            .filter((version) => version.session === "chat-0"),
+        }));
+        throw new Error(
+          `${error.message}; draft conflict diagnostic: ${JSON.stringify(diagnostic)}`,
+        );
+      }
       const remote = await page.evaluate(
         () =>
           draft.conflicts.find(
@@ -396,6 +430,7 @@ test("Draft Render Performance Browser @performance", async ({
         "Unrelated drafts remain exact",
       );
       const other = await context.newPage();
+      installApiSchemaFixtureHeaders(other);
       other.on("pageerror", (error) => errors.push(error.message));
       await other.route("**/check", (route) =>
         route.fulfill({

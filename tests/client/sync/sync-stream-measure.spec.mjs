@@ -164,7 +164,7 @@ test("Sync stream measure @performance", async () => {
       `http://127.0.0.1:${server.httpServer.address().port}/sync-measure`,
     );
     await page.evaluate(
-      async ({ leadId, beforeMode }) => {
+      async ({ leadId }) => {
         const client = await import("/src/sync/client.ts");
         const { db } = await client.syncDatabase();
         const response = await fetch(
@@ -183,8 +183,10 @@ test("Sync stream measure @performance", async () => {
         });
         window.syncClient = client;
         window.syncDb = db;
+        window.leadId = leadId;
         window.syncCursor = baseline.checkpoint.seq;
-        window.__beforeMode = beforeMode;
+        window.invalidationEvents = [];
+        window.connectionStates = [];
         window.renderedStatus = JSON.parse(row.payload).value.status;
         db.projections
           .findOne(`entity:agent:${leadId}`)
@@ -192,33 +194,45 @@ test("Sync stream measure @performance", async () => {
             if (document)
               window.renderedStatus = JSON.parse(document.payload).value.status;
           });
-        window.stopSync = client.watchSyncInvalidations(async () => {
-          if (window.__beforeMode) {
-            const next = await (
-              await fetch(
-                `/api/sync/pull?scope=state%3Aentities%3Av1&after=${window.syncCursor}&limit=500`,
-              )
-            ).json();
-            for (const document of next.documents)
-              await client.persistProjection(db.projections, document);
-            window.syncCursor = next.checkpoint.seq;
-            await client.persistProjection(db.projections, {
-              id: "state:entities:checkpoint",
-              payload: "{}",
-              seq: window.syncCursor,
-            });
-          }
+        window.stopConnection = client.watchResourceConnection((status) =>
+          window.connectionStates.push(status),
+        );
+        window.stopSync = client.watchSyncInvalidations(async (version) => {
+          window.invalidationEvents.push({ at: Date.now(), version });
+          // The stream event carries an entity sequence, not entity rows.
+          // Model the subscribed renderer consumer by pulling the current
+          // checkpoint after every remote invalidation in both renderer modes.
+          const next = await (
+            await fetch(
+              `/api/sync/pull?scope=state%3Aentities%3Av1&after=${window.syncCursor}&limit=500`,
+            )
+          ).json();
+          for (const document of next.documents)
+            await client.persistProjection(db.projections, document);
+          window.syncCursor = next.checkpoint.seq;
+          await client.persistProjection(db.projections, {
+            id: "state:entities:checkpoint",
+            payload: "{}",
+            seq: window.syncCursor,
+          });
           window.lastAppliedAt = Date.now();
         }, "entities");
       },
-      { leadId: lead.id, beforeMode: process.env.OLD_RENDERER_MODE === "1" },
+      { leadId: lead.id },
     );
-    // The pure-base callback re-syncs by pull after its invalidation event.
+    // Wait for the actual stream subscription and its initial state baseline
+    // before taking the idle sample or issuing remote writes.
     await waitFor(
       () => apiRequests.some((path) => path === "/api/sync/stream"),
       "change stream open",
     );
-    await delay(1000);
+    await page.waitForFunction(
+      () =>
+        window.connectionStates.includes("live") &&
+        window.invalidationEvents.length > 0,
+      null,
+      { timeout: 15000 },
+    );
     apiRequests.length = 0;
     const idleStart = Date.now();
     await delay(10000);
@@ -240,12 +254,31 @@ test("Sync stream measure @performance", async () => {
         window.lastAppliedAt = 0;
       });
       const result = await sendWrite(lead.id, status, writeId);
-      await page.waitForFunction(
-        (expected) =>
-          window.renderedStatus === expected && window.lastAppliedAt > 0,
-        status,
-        { timeout: 15000 },
-      );
+      try {
+        await page.waitForFunction(
+          (expected) =>
+            window.renderedStatus === expected && window.lastAppliedAt > 0,
+          status,
+          { timeout: 15000 },
+        );
+      } catch (error) {
+        const diagnostic = await page.evaluate(async () => {
+          const row = await window.syncDb.projections
+            .findOne("entity:agent:" + window.leadId)
+            .exec();
+          return {
+            renderedStatus: window.renderedStatus,
+            persistedStatus: row && JSON.parse(row.payload).value.status,
+            lastAppliedAt: window.lastAppliedAt,
+            cursor: window.syncCursor,
+            invalidations: window.invalidationEvents,
+            connectionStates: window.connectionStates,
+          };
+        });
+        throw new Error(
+          `${error.message}; sync stream delivery diagnostic: ${JSON.stringify({ status, writeId, result, diagnostic, requests: apiRequests.slice(-12) })}`,
+        );
+      }
       const appliedAt = await page.evaluate(() => window.lastAppliedAt);
       latenciesMs.push(Math.round(appliedAt - result.committedAt * 1000));
       if (index < 4) await delay(500);

@@ -1,4 +1,11 @@
-import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
+import {
+  readTestState,
+  readFixtureSyncContract,
+  stubEntityState,
+  installApiSchemaFixtureHeaders,
+  test,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { fileURLToPath } from "node:url";
 import { mkdtemp } from "node:fs/promises";
@@ -74,6 +81,7 @@ test("Large history @performance", async ({ context }) => {
   page.setDefaultTimeout(30000);
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
+  installApiSchemaFixtureHeaders(page);
   await page.addInitScript(() => {
     window.EventSource = class extends EventTarget {
       close() {}
@@ -112,12 +120,7 @@ test("Large history @performance", async ({ context }) => {
       ids: items.filter((item) => item.role === "tool").map((item) => item.id),
     },
   );
-  await page.route("**/api/sync/**", (r) =>
-    r.fulfill({
-      status: 404,
-      json: { error: "Isolated transcript transport" },
-    }),
-  );
+  await stubEntityState(page, state, await readFixtureSyncContract(origin));
   const deliveries = [];
   let pageRequests = 0;
   const pageRequestUrls = [];
@@ -160,6 +163,17 @@ test("Large history @performance", async ({ context }) => {
   );
   const start = Date.now();
   await page.locator(`[data-chat="${lead.id}"]`).click();
+  await page.waitForFunction(
+    (id) => {
+      const root = document.querySelector("#messages");
+      if (!root?.querySelector("[data-history-row]")) return false;
+      root.dispatchEvent(
+        new CustomEvent("studio-history-reveal", { detail: id }),
+      );
+      return !!root.querySelector(`[data-message="${CSS.escape(id)}"]`);
+    },
+    `result-${turns - 1}`,
+  );
   await page.locator(`[data-message="result-${turns - 1}"]`).waitFor();
   const clickedAt = await page.evaluate(() => window.largeHistoryClickAt);
   const painted = Date.now();

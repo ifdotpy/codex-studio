@@ -2,6 +2,7 @@ import {
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
+  installApiSchemaFixtureHeaders,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -157,6 +158,7 @@ test(
         page.setDefaultTimeout(30000);
         const errors = [];
         page.on("pageerror", (error) => errors.push(error.message));
+        installApiSchemaFixtureHeaders(page);
         const cdp = await context.newCDPSession(page);
         await cdp.send("Emulation.setCPUThrottlingRate", { rate: 4 });
         await page.addInitScript(
@@ -368,6 +370,18 @@ test(
             await page.getByLabel("Toggle conversations").click();
           await page.locator(`[data-chat="${a.id}"]`).click();
         }
+        // HistoryWindow retains only rows around the viewport. Reveal the
+        // measured target through the same event used by message navigation.
+        await page.waitForFunction(() => {
+          const root = document.querySelector("#messages");
+          if (!root?.querySelector("[data-history-row]")) return false;
+          root.dispatchEvent(
+            new CustomEvent("studio-history-reveal", {
+              detail: "a-result-29",
+            }),
+          );
+          return !!root.querySelector('[data-message="a-result-29"]');
+        });
         await page.locator('[data-message="a-result-29"]').waitFor();
         await page.waitForTimeout(500);
         const setPhase = (phase) =>

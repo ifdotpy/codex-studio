@@ -3,6 +3,7 @@ import {
   test,
   expect,
   spawnFixture as spawn,
+  installApiSchemaFixtureHeaders,
 } from "../playwright.mjs";
 // Production UI and isolated HTTP fixture. Requests deliberately finish out of order.
 import assert from "node:assert/strict";
@@ -32,7 +33,8 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   fixture.stderr.on("data", (data) => (log += data));
   const waitFor = async (condition, label) => {
     for (let index = 0; index < 120; index++) {
-      if (condition()) return;
+      const result = await condition();
+      if (result) return result;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw Error(label);
@@ -92,6 +94,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
   const page = fixturePage;
   await fixturePage.setViewportSize({ width: 1440, height: 960 });
   page.setDefaultTimeout(12000);
+  installApiSchemaFixtureHeaders(page);
   const errors = [],
     requests = [],
     entityPulls = [];
@@ -101,6 +104,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     oldRequest,
     currentFailure = false,
     pendingAnswer;
+  const mutationSequences = new Map();
   await page.route("**/api/sync/pull?*", async (route) => {
     const url = new URL(route.request().url());
     if (url.searchParams.get("scope") !== "state:entities:v1")
@@ -140,6 +144,7 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
       Number.isSafeInteger(committed.seq),
       "commit has a real sequence",
     );
+    mutationSequences.set(revision, committed.seq);
     return route.fulfill({
       json: { id: route.request().postDataJSON().id, status: "sent" },
     });
@@ -248,67 +253,44 @@ test("snapshot-order-ui", async ({ page: fixturePage }) => {
     );
     await page.locator("#message").fill(`Snapshot refresh ${revision}`);
     await page.locator("#send").click();
-    try {
-      await workerButton
-        .getByText(`Worker revision ${revision}`, { exact: true })
-        .waitFor();
-    } catch (error) {
-      const resourceFrames = await page.evaluate(
-        () => window.__snapshotOrderResourceFrames,
-      );
-      const workerPulls = entityPulls.map((pull) => ({
-        url: pull.url,
-        checkpoint: pull.checkpoint,
-        workerRows: pull.documents.flatMap((document) => {
-          if (document.id !== `entity:agent:${worker.id}`) return [];
-          const envelope = JSON.parse(document.payload);
-          return [
-            {
-              seq: document.seq,
-              deleted: document._deleted,
-              name: envelope.value.name,
-              status: envelope.value.status,
-            },
-          ];
-        }),
-      }));
-      console.error(
-        "SNAPSHOT_ORDER_SYNC",
-        JSON.stringify({ revision, resourceFrames, workerPulls }),
-      );
-      throw error;
-    }
-    await waitFor(
+    await workerButton
+      .getByText(`Worker revision ${revision}`, { exact: true })
+      .waitFor();
+    const committedFrame = await waitFor(
       () =>
-        entityPulls.some((pull) =>
-          pull.documents.some((document) => {
-            if (document.id !== `entity:agent:${worker.id}`) return false;
-            return (
-              JSON.parse(document.payload).value.name ===
-              `Worker revision ${revision}`
-            );
-          }),
+        page.evaluate(
+          ({ workerId, expectedName }) =>
+            window.__snapshotOrderResourceFrames.find(({ frame }) =>
+              frame.resourceVersions?.some((version) =>
+                version.entityChanges?.documents?.some((document) => {
+                  if (document.id !== `entity:agent:${workerId}`) return false;
+                  return (
+                    JSON.parse(document.payload).value.name === expectedName
+                  );
+                }),
+              ),
+            ),
+          { workerId: worker.id, expectedName: `Worker revision ${revision}` },
         ),
-      "A real entity pull returns the committed worker revision",
+      "A real resource frame pushes the committed worker revision",
     );
-    const workerRows = entityPulls.flatMap((pull) =>
-      pull.documents.flatMap((document) => {
-        if (document.id !== `entity:agent:${worker.id}`) return [];
-        const value = JSON.parse(document.payload).value;
-        return [{ seq: document.seq, name: value.name }];
-      }),
+    const workerRows = committedFrame.frame.resourceVersions.flatMap(
+      (version) =>
+        (version.entityChanges?.documents ?? []).flatMap((document) => {
+          if (document.id !== `entity:agent:${worker.id}`) return [];
+          const value = JSON.parse(document.payload).value;
+          return [{ seq: document.seq, name: value.name }];
+        }),
     );
-    const initialWorkerSequence = workerRows.find(
-      (row) => row.name === "Worker revision 0",
-    )?.seq;
-    const committedWorkerSequence = workerRows.findLast(
+    const committedWorkerSequence = workerRows.find(
       (row) => row.name === `Worker revision ${revision}`,
     )?.seq;
+    const committedMutationSequence = mutationSequences.get(revision);
     assert.ok(
-      Number.isSafeInteger(initialWorkerSequence) &&
-        Number.isSafeInteger(committedWorkerSequence) &&
-        committedWorkerSequence > initialWorkerSequence,
-      "The fixture write advances the real worker entity sequence",
+      Number.isSafeInteger(committedWorkerSequence) &&
+        committedWorkerSequence === committedMutationSequence &&
+        committedWorkerSequence > seededWorker.seq,
+      "The pushed worker entity matches the committed mutation sequence and advances the seeded entity",
     );
     await newerSession;
     await waitFor(

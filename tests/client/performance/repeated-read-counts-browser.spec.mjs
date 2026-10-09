@@ -4,8 +4,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test } from "../playwright.mjs";
-import { spawnFixture as spawn } from "../playwright.mjs";
+import {
+  test,
+  installApiSchemaFixtureHeaders,
+  spawnFixture as spawn,
+} from "../playwright.mjs";
 
 const measured = new Set([
   "/api/models",
@@ -69,6 +72,7 @@ test("repeated read counts across chat navigation @performance", async ({
   try {
     const page = await context.newPage();
     page.setDefaultTimeout(10000);
+    installApiSchemaFixtureHeaders(page);
     const counts = new Map();
     const resourceEvents = [];
     let observedEventCount = 0;
@@ -261,13 +265,19 @@ test("repeated read counts across chat navigation @performance", async ({
 
     // Verify a real resource event updates the catalog rendered by the model picker.
     await page.locator("#chat-settings-toggle").click();
-    const subagentsMenu = page
-      .locator(".execution-menu")
-      .filter({ hasText: "Subagents" });
+    const subagentsMenu = page.getByRole("button", {
+      name: "Subagent defaults",
+      exact: true,
+    });
     await subagentsMenu.click();
-    const modelPicker = page
-      .locator(".execution-dropdown button:has(.model-picker-value)")
-      .first();
+    const settingsDialog = page.getByRole("dialog", {
+      name: "Subagent defaults",
+    });
+    await settingsDialog.waitFor({ state: "visible" });
+    const modelPicker = settingsDialog.getByRole("button", {
+      name: "Default subagent model",
+      exact: true,
+    });
     await modelPicker.waitFor();
     await modelPicker.click();
     await page.getByRole("option", { name: "Fixture model old" }).waitFor();
