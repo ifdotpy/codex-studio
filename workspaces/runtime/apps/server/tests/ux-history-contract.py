@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Isolated history navigation, branch, and deferred settings contracts."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import unittest
 import uuid
 from unittest.mock import patch
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 spec = importlib.util.spec_from_file_location('fixture', Path(__file__).with_name('workspace-contract.py'))
 f = importlib.util.module_from_spec(spec)

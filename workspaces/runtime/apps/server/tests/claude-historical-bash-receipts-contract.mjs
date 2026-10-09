@@ -10,11 +10,11 @@ import { fileURLToPath } from "node:url";
 import {
   HISTORICAL_BASH_TAIL_BYTES,
   reconcileHistoricalBash,
-} from "../scripts/claude_bridge/historical-bash-receipts.mjs";
-import { createSessionStore } from "../scripts/claude_bridge/session-store.mjs";
+} from "../../../../providers/apps/claude-bridge/historical-bash-receipts.mjs";
+import { createSessionStore } from "../../../../providers/apps/claude-bridge/session-store.mjs";
 
 const bridgeDirectory = fileURLToPath(
-  new URL("../scripts/claude_bridge/", import.meta.url),
+  new URL("../../../../providers/apps/claude-bridge/", import.meta.url),
 );
 const threadId = "11111111-1111-4111-8111-111111111111";
 const assistantId = "22222222-2222-4222-8222-222222222222";

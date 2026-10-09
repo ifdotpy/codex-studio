@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Measure read-path runtime lock holds with 625 agents and CPU load."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
 
 import importlib.util
 import json
@@ -12,11 +13,11 @@ import threading
 import time
 
 sys.dont_write_bytecode = True
-repo = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo / "tests"))
+repo = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
-sys.path.insert(0, str(repo / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_canvas import Canvas, make_server
 from codex_native_sweep import _account_busy, _protected

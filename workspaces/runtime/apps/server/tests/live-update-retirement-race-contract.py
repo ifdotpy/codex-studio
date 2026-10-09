@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Publisher retirement preserves proven application receipts without caching absence."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -15,8 +17,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_live_updates import LiveUpdates
 from codex_source_inventory import source_files
 

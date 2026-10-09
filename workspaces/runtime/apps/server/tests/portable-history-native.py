@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Read installed native history protocols in isolated state, with no model turn."""
+from codex_layout import CLAUDE_BRIDGE_ROOT, REPOSITORY_ROOT
+
 import importlib.util
 from concurrent.futures import Future
 import json
@@ -24,7 +26,7 @@ f = fixture('portable_account_fixture', 'runtime-accounts-contract.py')
 from codex_portable_history import export_history, history_context
 from codex_runtime import AppServer
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 
 
 class PortableNative(unittest.TestCase):
@@ -120,7 +122,7 @@ class PortableNative(unittest.TestCase):
                                STUDIO_CLAUDE_ACCOUNT='fixture@example.test', STUDIO_CLAUDE_OPTIONS='{}')
             for name in ('ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDE_CODE_OAUTH_TOKEN'):
                 environment.pop(name, None)
-            command = [shutil.which('node'), str(ROOT / 'scripts/claude_bridge/bridge.mjs'), str(native_root)]
+            command = [shutil.which('node'), str(CLAUDE_BRIDGE_ROOT / "bridge.mjs"), str(native_root)]
             with patch('codex_claude.transport', return_value=(command, environment)):
                 source = AppServer(native_root, lambda _: None, lambda _: None, lambda: None, provider='claude')
             try:

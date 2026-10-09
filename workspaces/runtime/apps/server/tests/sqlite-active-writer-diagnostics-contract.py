@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Inspect held SQLite transactions without SQL or arbitrary frame data."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,8 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_sqlite
 from codex_sqlite import connect, diagnostics, scope
 

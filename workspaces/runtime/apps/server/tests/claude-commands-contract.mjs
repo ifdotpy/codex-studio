@@ -8,7 +8,7 @@ import { readFileSync } from "node:fs";
 import {
   createCommandTransport,
   commandEnvironment,
-} from "../scripts/claude_bridge/commands.mjs";
+} from "../../../../providers/apps/claude-bridge/commands.mjs";
 
 const root = await fs.mkdtemp(
   path.join(os.tmpdir(), "studio-claude-commands-"),
@@ -253,7 +253,7 @@ try {
   await fs.writeFile(
     runner,
     `
-import {createCommandTransport} from ${JSON.stringify(new URL("../scripts/claude_bridge/commands.mjs", import.meta.url).href)};
+import {createCommandTransport} from ${JSON.stringify(new URL("../../../../providers/apps/claude-bridge/commands.mjs", import.meta.url).href)};
 const t = createCommandTransport({root:process.argv[2],emit:(method,p)=>process.stdout.write(Buffer.from(p.deltaBase64,"base64"))});
 let stopping;
 function stop() { stopping ||= t.close().then(()=>process.exit(0)); }

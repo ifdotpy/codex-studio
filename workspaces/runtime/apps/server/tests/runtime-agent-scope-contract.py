@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Compare scoped runtime outputs with snapshots captured from base ca123f6."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import tempfile
 import unittest
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 RUNNER = Path(__file__).with_name("runtime-agent-scope-scenario.py")
 SCENARIOS = (
     "tree-delete", "repeat-tree-delete", "lead-rename", "worker-rename", "lead-cwd",
@@ -36,7 +38,7 @@ class RuntimeAgentRoomScope(unittest.TestCase):
             for scenario in SCENARIOS:
                 with self.subTest(scenario=scenario):
                     result = subprocess.run(
-                        [sys.executable, str(RUNNER), str(ROOT), scenario],
+                        [sys.executable, str(RUNNER), scenario],
                         cwd=ROOT, env=env, capture_output=True, text=True, check=True, timeout=60)
                     actual = json.loads(result.stdout.strip().splitlines()[-1])
                     if scenario == "legacy-workspace-operation-recovery":
@@ -51,7 +53,7 @@ class RuntimeAgentRoomScope(unittest.TestCase):
 
     def test_scope_query_plans_on_populated_analyzed_roster(self):
         from test_isolation import isolate_supervisor_environment
-        sys.path.insert(0, str(ROOT / "scripts"))
+        sys.path.insert(0, str(SERVER_SOURCE_ROOT))
         from codex_runtime import Runtime
         import importlib.util
         spec = importlib.util.spec_from_file_location(

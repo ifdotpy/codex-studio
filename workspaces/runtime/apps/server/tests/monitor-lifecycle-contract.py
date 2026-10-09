@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Monitor outcomes retain their workspace lease until the native command exits."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,9 +18,9 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / "scripts"))
-spec = importlib.util.spec_from_file_location("runtime_fixture", ROOT / "tests/runtime-contract.py")
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+spec = importlib.util.spec_from_file_location("runtime_fixture", SERVER_TESTS_ROOT / "runtime-contract.py")
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_runtime import ResponseTimeout, Runtime

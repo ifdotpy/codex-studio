@@ -4,12 +4,14 @@
 Use an already provisioned test VM. No request reaches a provider endpoint.
 The host refresh query has no model prompt. Remove only the fixture profiles.
 """
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import argparse
 import os, sys, json, tempfile, ssl, subprocess, threading, http.server, time, base64, io, uuid
 from types import SimpleNamespace
 from unittest.mock import patch
 from pathlib import Path
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_linux_vm import connect
 from codex_linux_vm_exec import execute
 from codex_linux_vm_auth import refresh_claude, raw_claude

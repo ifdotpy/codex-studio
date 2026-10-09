@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Checkpoint history format, restore, and lock contracts."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,9 +14,9 @@ import threading
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 spec = importlib.util.spec_from_file_location(
-    "workspace_fixture", ROOT / "tests/workspace-contract.py"
+    "workspace_fixture", SERVER_TESTS_ROOT / "workspace-contract.py"
 )
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """A local auth probe timeout can continue exact unsubmitted input, without replay."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,8 +15,8 @@ import time
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('claude_auth_fixture', ROOT / 'tests/claude-provider-contract.py')
+ROOT = REPOSITORY_ROOT
+spec = importlib.util.spec_from_file_location('claude_auth_fixture', SERVER_TESTS_ROOT / 'claude-provider-contract.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 import codex_claude_auth_wait as auth_wait

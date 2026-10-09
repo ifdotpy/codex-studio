@@ -1,4 +1,6 @@
 """Exercise real backend shutdown with idle, unread, and active clients."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 
 isolate_supervisor_environment()
@@ -21,7 +23,7 @@ import urllib.error
 import urllib.request
 from urllib.parse import urlencode
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 NORMAL_SHUTDOWN_BOUND_SECONDS = 1.5
 SECOND_SIGNAL_BOUND_SECONDS = 6.5
 PROCESS_CLEANUP_BOUND_SECONDS = 45
@@ -59,7 +61,7 @@ class BackendShutdownContract(unittest.TestCase):
         bootstrap = f"""
 import sys, time
 from pathlib import Path
-sys.path.insert(0, {str(ROOT / 'scripts')!r})
+sys.path.insert(0, {str(SERVER_SOURCE_ROOT)!r})
 if {handler_delay!r}:
     from codex_sync import SyncStore
     original_push_drafts = SyncStore.push_drafts
@@ -113,7 +115,7 @@ if {interrupt_cleanup_before_step!r}:
             raise KeyboardInterrupt
         return original_cleanup(*args, **kwargs)
     codex_canvas._close_shutdown_resources = interrupt_before_cleanup_step
-sys.argv = [{str(ROOT / 'scripts/codex-canvas')!r}, '--port', {str(port)!r}]
+sys.argv = [{str(SERVER_SOURCE_ROOT / "codex-canvas")!r}, '--port', {str(port)!r}]
 from codex_canvas import main
 main()
 """

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """A rule tick shares unchanged owners only within its current SQL phase."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -17,7 +19,7 @@ import time
 import unittest
 
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_rules import RulesMixin
 from codex_runtime import Runtime
 

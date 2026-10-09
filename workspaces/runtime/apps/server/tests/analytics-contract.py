@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Analytics capture uses isolated real Runtime state and a deterministic native server."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -18,9 +20,9 @@ from urllib.request import urlopen
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
-spec = importlib.util.spec_from_file_location('runtime_contract', ROOT / 'tests/runtime-contract.py')
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+spec = importlib.util.spec_from_file_location('runtime_contract', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 from codex_runtime import Runtime

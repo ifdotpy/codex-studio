@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Regressions for transport stalls, receipt truth, and transaction boundaries."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -19,7 +21,7 @@ import types
 import unittest
 from unittest.mock import patch
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_runtime import AppServer, PreparationPending, Runtime
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Monitor results survive a database rollback and an independent process restart."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,11 +18,11 @@ import unittest
 from unittest.mock import patch
 
 sys.dont_write_bytecode = True
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_monitor_recovery import (persist_monitor_result, acknowledge_monitor_result,
                                     recover_monitor_results, _path)
-spec = importlib.util.spec_from_file_location('monitor_fixture', ROOT / 'tests/monitor-lifecycle-contract.py')
+spec = importlib.util.spec_from_file_location('monitor_fixture', SERVER_TESTS_ROOT / 'monitor-lifecycle-contract.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 
@@ -106,7 +108,7 @@ class MonitorRestart(unittest.TestCase):
             'import sys,json; sys.path.insert(0,sys.argv[1]); '
             'from codex_monitor_recovery import persist_monitor_result; '
             'persist_monitor_result(sys.argv[2],sys.argv[3],json.loads(sys.argv[4]))',
-            str(ROOT / 'scripts'), str(self.runtime.root), m['id'], json.dumps(receipt)], check=True)
+            str(SERVER_SOURCE_ROOT), str(self.runtime.root), m['id'], json.dumps(receipt)], check=True)
         with self.runtime.lock:
             with self.assertRaisesRegex(sqlite3.OperationalError, 'injected rollback'):
                 with self.runtime.db() as db:

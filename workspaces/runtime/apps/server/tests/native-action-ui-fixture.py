@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
 """Native action HTTP fixture. All native requests remain in this process."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import importlib.util
 import json
 from pathlib import Path
 import sys
 
 sys.dont_write_bytecode = True
-repo = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(repo / 'tests'))
+repo = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_TESTS_ROOT))
 from test_isolation import isolate_api_schema_cache
 isolate_api_schema_cache()
-sys.path.insert(0, str(repo / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_canvas import Canvas, make_server
 from codex_runtime import Runtime
-spec = importlib.util.spec_from_file_location('fixture', repo / 'tests/runtime-contract.py')
+spec = importlib.util.spec_from_file_location('fixture', SERVER_TESTS_ROOT / 'runtime-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 root = Path(sys.argv[1])

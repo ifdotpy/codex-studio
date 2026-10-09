@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Receipt repair preserves ownership, failed mutations, and archive evidence."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -10,8 +12,8 @@ import sqlite3
 import sys
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_tool_requests import RequestMixin
 from codex_efficiency import EfficiencyMixin
 from codex_agent_management import manage_agent
@@ -20,7 +22,7 @@ from current_cleanup_receipts import migrate_receipts
 
 
 def fixture(name):
-    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), ROOT / 'tests' / (name + '.py'))
+    spec = importlib.util.spec_from_file_location(name.replace('-', '_'), SERVER_TESTS_ROOT / (name + '.py'))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

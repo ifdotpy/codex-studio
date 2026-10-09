@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Exact Claude pre-input rejection retries one batch without repeating unknown work."""
+from codex_layout import REPOSITORY_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,8 +15,8 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location('claude_input_workspace_fixture', ROOT / 'tests/workspace-contract.py')
+ROOT = REPOSITORY_ROOT
+spec = importlib.util.spec_from_file_location('claude_input_workspace_fixture', SERVER_TESTS_ROOT / 'workspace-contract.py')
 f = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(f)
 from codex_native_errors import NativeRpcError

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Capture real Codex tool manifests with a local model fixture. No inference."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 import json
 import re
 import os
@@ -11,7 +13,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from codex_runtime import AppServer, Runtime, TOOLS, THREAD_CONFIG
 
 captures=[]

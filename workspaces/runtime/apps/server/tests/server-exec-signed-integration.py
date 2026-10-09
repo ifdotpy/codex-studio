@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Lead server commands through two signed runtimes and real supervisors."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -40,7 +42,7 @@ class Commands(unittest.TestCase):
         self.supervisors = []
         self.addCleanup(self.stop_supervisors)
         for endpoint in (self.a, self.b):
-            process = subprocess.Popen([sys.executable, '-B', str(Path(__file__).resolve().parents[1] / 'scripts/codex_process_supervisor.py'),
+            process = subprocess.Popen([sys.executable, '-B', str(SERVER_SOURCE_ROOT / "codex_process_supervisor.py"),
                                         '--state', str(endpoint.state)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             self.supervisors.append(process)
             deadline = time.monotonic() + 5

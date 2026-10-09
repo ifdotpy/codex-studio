@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Two-server federation contract tests. All state and HTTP listeners are private."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -17,10 +19,10 @@ import urllib.request
 import unittest
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = REPOSITORY_ROOT
 sys.dont_write_bytecode = True
-sys.path.insert(0, str(ROOT / "scripts"))
-spec = importlib.util.spec_from_file_location("runtime_contract", ROOT / "tests" / "runtime-contract.py")
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
+spec = importlib.util.spec_from_file_location("runtime_contract", SERVER_TESTS_ROOT / "runtime-contract.py")
 runtime_contract = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runtime_contract)
 from codex_runtime import Runtime

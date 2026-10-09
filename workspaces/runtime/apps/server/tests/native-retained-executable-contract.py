@@ -1,4 +1,6 @@
 """Restore an exact supervised native child without starting an older binary."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT, SERVER_TESTS_ROOT
+
 import copy
 import hashlib
 import importlib.util
@@ -16,14 +18,14 @@ from unittest.mock import patch
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
-ROOT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(ROOT / 'scripts'))
+ROOT = REPOSITORY_ROOT
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_native_runtime as native
 import codex_process_supervisor as supervisor
 from codex_native_binary import REQUIRED_COMPANIONS, bundle_digest
 from codex_runtime import AppServer, Runtime
 
-spec = importlib.util.spec_from_file_location('retained_supervisor_fixture', ROOT / 'tests/process-supervisor-contract.py')
+spec = importlib.util.spec_from_file_location('retained_supervisor_fixture', SERVER_TESTS_ROOT / 'process-supervisor-contract.py')
 fixture = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(fixture)
 

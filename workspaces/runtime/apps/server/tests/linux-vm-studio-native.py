@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Opt-in Studio caller proof against an already provisioned, isolated VM.
 
-Run with scripts/codex_python.py --exec. This test does not start a backend,
+Run with workspaces/runtime/apps/server/src/codex_python.py --exec. This test does not start a backend,
 stop the VM, or change the host account credentials. It deletes its guest workers.
 """
 import argparse

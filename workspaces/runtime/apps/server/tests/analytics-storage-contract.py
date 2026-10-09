@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Online analytics-file copy fixture. All databases are temporary."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -12,7 +14,7 @@ import unittest
 from unittest.mock import patch
 from contextlib import contextmanager
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 import codex_analytics_storage as storage
 
 

@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Run the real dynamic dispatch against isolated databases and fake app-server IO."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -13,7 +15,7 @@ import threading
 import time
 import unittest
 import sys
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_records
 from unittest.mock import patch
 

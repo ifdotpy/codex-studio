@@ -2,6 +2,8 @@
 """Focused tests for the isolated native Codex cost scanner."""
 
 from __future__ import annotations
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -17,8 +19,8 @@ import tempfile
 import unittest
 
 
-ROOT = Path(__file__).resolve().parents[1]
-BUILDER = ROOT / "scripts" / "cost-scanner" / "build.py"
+ROOT = REPOSITORY_ROOT
+BUILDER = SERVER_SOURCE_ROOT / "cost-scanner" / "build.py"
 REQUESTED_BINARY = None
 
 

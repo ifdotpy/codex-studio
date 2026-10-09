@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Team cleanup boundaries with isolated SQLite and no native mutations."""
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
+
 from test_isolation import isolate_supervisor_environment
 isolate_supervisor_environment()
 
@@ -16,7 +18,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
+sys.path.insert(0, str(SERVER_SOURCE_ROOT))
 from studio_api.testing import read_runtime_state
 from codex_agent_management import manage_agent, _missing_transferred_history, _finished
 from codex_efficiency import EfficiencyMixin, digest, finished_worktree_ids, remember_context_manifest
