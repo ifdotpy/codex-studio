@@ -8,6 +8,7 @@ import { saved } from "../api";
 import type { LocationProject } from "./projectLocations";
 import { chatIndicators } from "../components/chat-status/chatStatusModel";
 import type { ChatIndicator } from "../components/chat-status/chatStatusModel";
+import { sidebarSnapshot, type ServerSidebarSnapshot } from "./sidebarSnapshot";
 export type ServerAccount = {
   provider: "codex" | "claude";
   email: string | null;
@@ -17,6 +18,7 @@ export type ServerAccount = {
   isDefault: boolean;
 };
 export type ServerNavigation = {
+  sidebar?: ServerSidebarSnapshot;
   projects: (Omit<LocationProject, "id"> & { id?: string })[];
   chats: {
     id: string;
@@ -164,6 +166,7 @@ export function navigationSnapshot(
     });
   }
   return {
+    ...(data ? { sidebar: sidebarSnapshot(data, unread, indicators) } : {}),
     ready: !!data,
     busy: !!data?.threads.some((agent) => agent.inFlight),
     alerts,

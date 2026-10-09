@@ -15,6 +15,8 @@ import {
 } from "./navigation";
 import type { Snapshot } from "../types";
 import { watchResourceConnection } from "../sync/resourceEvents";
+import { preferenceEvent } from "../sync/uiPreferenceMerge";
+import { serverStorageEventKey } from "./storage";
 export function useServerFrame(
   data: Snapshot | null,
   opened: string | null,
@@ -107,20 +109,44 @@ export function useServerFrame(
   }, []);
   useEffect(() => {
     if (!serverViewId || window.parent === window) return;
-    window.parent.postMessage(
-      {
-        kind: "studio-server-navigation",
-        serverId: serverViewId,
-        navigation: navigationSnapshot(
-          data,
-          opened,
-          error,
-          unread,
-          data ? desktopAlerts(data) : [],
-        ),
-      },
-      serverParentOrigin,
-    );
+    const publish = () =>
+      window.parent.postMessage(
+        {
+          kind: "studio-server-navigation",
+          serverId: serverViewId,
+          navigation: navigationSnapshot(
+            data,
+            opened,
+            error,
+            unread,
+            data ? desktopAlerts(data) : [],
+          ),
+        },
+        serverParentOrigin,
+      );
+    publish();
+    const keys = new Set([
+      `codex-project-compact:${data?.stateDir}`,
+      `codex-project-tree:${data?.stateDir}`,
+      `codex-sidebar-order:${data?.stateDir}`,
+    ]);
+    const preferencesChanged = (event: Event) => {
+      if (!data) return;
+      if (event instanceof CustomEvent && keys.has(event.detail)) publish();
+      if (
+        event instanceof StorageEvent &&
+        (event.key === null ||
+          keys.has(event.key) ||
+          keys.has(serverStorageEventKey(event) || ""))
+      )
+        publish();
+    };
+    window.addEventListener(preferenceEvent, preferencesChanged);
+    window.addEventListener("storage", preferencesChanged);
+    return () => {
+      window.removeEventListener(preferenceEvent, preferencesChanged);
+      window.removeEventListener("storage", preferencesChanged);
+    };
   }, [data, opened, error, [...unread].join(":")]);
   useEffect(() => {
     if (!serverViewId || window.parent === window) return;
