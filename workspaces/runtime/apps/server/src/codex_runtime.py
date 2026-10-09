@@ -3264,7 +3264,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         # Preserve renderer-facing source and team fields on every entity write.
         view = dict(record)
         remote = record.get("remoteWorker") or {}
-        view["serverId"] = remote.get("server") or getattr(self, "_project_server_id", None)
+        project_server_id = getattr(self, "_project_server_id", None)
+        if project_server_id is None and not remote.get("server"):
+            row = db.execute(
+                "SELECT payload FROM sync_entities WHERE collection='agent' AND id=?",
+                (record["id"],),
+            ).fetchone()
+            if row and row[0]:
+                try:
+                    current_value = json.loads(row[0]).get("value")
+                except (TypeError, ValueError):
+                    current_value = None
+                if isinstance(current_value, dict):
+                    project_server_id = current_value.get("serverId")
+        view["serverId"] = remote.get("server") or project_server_id
         block = native_thread_block(record)  # type: ignore[no-untyped-call]
         view.update(kind="agent", source="managed", canSend=not bool(block) and not bool(record.get("movedTo")) and not bool(record.get('moveImportPending')),
                     launcherAlive=not self.closed,
