@@ -10,12 +10,14 @@ Everything local moves into a Studio utility built on btrfs: workspaces, history
 undo, merge into the user's folder, and transfer between machines. Local branches and worktrees are
 no longer used.
 
-The utility is a drop-in replacement for `git`. Agents and tools keep calling `git`. The utility
-implements the commands on btrfs states and has equal convenience.
+The utility is called `layr`. Its commands follow the git verbs (`status`, `diff`, `merge`, `log`),
+so models learn it quickly, and it has equal convenience. It does not take the name `git`.
 
 ## Decisions (2026-10-09)
 
-1. The utility is a drop-in `git` replacement with its own implementation.
+1. The utility is `layr`, with git-like commands and its own implementation. It is not installed as
+   `git` (changed on 2026-10-09 from a drop-in `git` replacement). Real git stays available for the
+   remote bridge and for tools that call it.
 2. Platform: btrfs on Linux, and the Studio Linux VM on macOS
    ([Linux VM workspaces](linux-vm-workspaces.md)). APFS (macOS projects such as Xcode) is
    deferred. Windows is not supported.
@@ -49,25 +51,27 @@ exclude it from long-term replication. A state records the snapshot of each laye
 A state is a browsable folder. Reading an old file, or searching old code with `rg`, needs no
 checkout.
 
-## Command line: drop-in `git`
+## Command line: `layr`
 
-Agents get the utility as `git` in `PATH`. Output uses git formats, so existing tools and model
-habits work.
+The agent skill and instructions teach `layr`. Its output uses git formats where a format exists, so
+model habits carry over. Real git stays in each line: the git object store is a nested subvolume,
+so tools that call `git rev-parse` or `git describe` keep working. A local commit made with real git
+is harmless, because `layr` keeps the states.
 
-| git command                              | Utility behavior                                                                                                                                        | Cost               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| `status`                                 | Snapshot the line, then `btrfs send --no-data -p <base state>`. Filter ignored paths with the `.gitignore` rules.                                       | O(changes), 0.03 s |
-| `diff`                                   | Unified diff only for paths in the change list.                                                                                                         | O(changes)         |
-| `add`, `commit`                          | `add` records paths in a staged set. `commit` saves a state: the full line, or the parent state plus staged paths as reflink copies.                    | O(1) or O(staged)  |
-| `log`, `show`                            | Read the state graph. `show <state>:<path>` reads the file from the state folder.                                                                       | O(1) per record    |
-| `checkout`, `switch`, `restore`, `reset` | A whole line: a new writable snapshot of the target state. One path: a reflink copy from the state. Save the line first (snapshot rule 2).              | O(1) per path      |
-| `stash`                                  | Save a state and restore the line.                                                                                                                      | O(1)               |
-| `branch`, `tag`                          | Create, list or delete lines. A tag is a named state.                                                                                                   | O(1)               |
-| `merge`, `cherry-pick`, `rebase`         | The merge engine (below) applies change lists onto the target line.                                                                                     | O(changes)         |
-| `blame`                                  | Walk the versions of one file through the state graph, on request.                                                                                      | O(history of file) |
-| `clean`                                  | Delete untracked, not ignored paths from the change list.                                                                                               | O(changes)         |
-| `fetch`, `pull`, `push`, `remote`        | The remote bridge (below).                                                                                                                              | O(changes)         |
-| any other command                        | Passthrough to real git on the hidden git mirror of the project, with a log entry. This keeps tools such as `git rev-parse` and `git describe` working. | as git             |
+| git verb                                 | Utility behavior                                                                                                                           | Cost               |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ | ------------------ |
+| `status`                                 | Snapshot the line, then `btrfs send --no-data -p <base state>`. Filter ignored paths with the `.gitignore` rules.                          | O(changes), 0.03 s |
+| `diff`                                   | Unified diff only for paths in the change list.                                                                                            | O(changes)         |
+| `add`, `commit`                          | `add` records paths in a staged set. `commit` saves a state: the full line, or the parent state plus staged paths as reflink copies.       | O(1) or O(staged)  |
+| `log`, `show`                            | Read the state graph. `show <state>:<path>` reads the file from the state folder.                                                          | O(1) per record    |
+| `checkout`, `switch`, `restore`, `reset` | A whole line: a new writable snapshot of the target state. One path: a reflink copy from the state. Save the line first (snapshot rule 2). | O(1) per path      |
+| `stash`                                  | Save a state and restore the line.                                                                                                         | O(1)               |
+| `branch`, `tag`                          | Create, list or delete lines. A tag is a named state.                                                                                      | O(1)               |
+| `merge`, `cherry-pick`, `rebase`         | The merge engine (below) applies change lists onto the target line.                                                                        | O(changes)         |
+| `blame`                                  | Walk the versions of one file through the state graph, on request.                                                                         | O(history of file) |
+| `clean`                                  | Delete untracked, not ignored paths from the change list.                                                                                  | O(changes)         |
+| `fetch`, `pull`, `push`, `remote`        | The remote bridge (below).                                                                                                                 | O(changes)         |
+| other verbs                              | Not provided by `layr`. Real git keeps working in the line for tools that need it.                                                         | as git             |
 
 A switch of a line replaces the working subvolume with a rename. Processes that are already
 running keep the old one.
@@ -135,9 +139,24 @@ it can be undone too.
 
 ## Main line on macOS
 
-The main line of a Linux project lives on btrfs in the Studio VM. The lead and reviewers run on the
-Mac host and use the drop-in `git`, which forwards project commands to the VM utility over the
-existing guest channel.
+The main line of a Linux project lives on btrfs in the Studio VM. For now the lead and reviewers run
+on the Mac host (decision 2026-10-09):
+
+- The lead's working folder is the mirror of the main line. The lead reads code there. Its sandbox
+  does not allow writes to the mirror: Codex uses `workspaceWrite` with writable roots for its own
+  build and temporary folders only, and Claude uses permission rules that deny `Edit` and `Write`
+  for the mirror path.
+- The lead writes only through one general tool: command execution in the VM. It is the existing
+  `orchestration_servers` action `exec` with the VM as a server, backed by the guest `exec` call
+  (`scripts/codex_linux_vm_exec.py`). Studio does not know what the command does.
+- Through it the lead runs `layr apply-patch` (the `apply_patch` format on stdin), `layr diff`,
+  `layr show`, `layr merge`, `layr log`, `layr restore`, and Linux builds and tests.
+- Builds for macOS run on the Mac: Xcode reads the mirror and writes only to the lead's own folders,
+  with a fixed `DerivedData` path so the build stays warm.
+
+Changes needed in the guest `exec`: a longer or background mode than the 300 s timeout, a target
+line (main line, a worker line or a temporary snapshot) instead of an agent folder, and a reply
+only after the mirror has applied a change of the main line.
 
 One-way mirror, VM to Mac:
 
@@ -172,6 +191,19 @@ Mirror rules for differences between btrfs and APFS:
   The mirror reports them and writes neither, instead of losing one of them silently.
 - The executable bit and symbolic links are mirrored. Hard links become copies. Linux extended
   attributes are not mirrored.
+
+## Review
+
+| Step             | How                                                                                                                                                    |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| see the diff     | `layr diff <worker base>..<worker line>` in the VM: the btrfs change list plus a unified diff of those files                                           |
+| read whole files | a review copy on the Mac: a clone of the mirror plus the worker's changed files, read-only, removed after the decision; or `layr show <line>:<path>`   |
+| run tests        | Linux: in a temporary writable snapshot of the worker line, deleted afterwards, so the worker line does not change. macOS: in the review copy          |
+| decide           | accept: `layr merge <worker line>` into the main line. Return: a message to the worker through the existing Studio messages                            |
+| conflicts        | the merge result is a state with conflict markers and a conflict list. The lead fixes them with `layr apply-patch`, and the next state clears the list |
+
+Reviewer agents use the same steps with read-only access. No branches, fetches or worktrees are
+used for review.
 
 ## Merge engine
 
@@ -318,7 +350,7 @@ Git object store as a nested subvolume:
 | [BtrFsGit](https://github.com/koo5/BtrFsGit), [btrbk](https://github.com/digint/btrbk)          | git-like commands and incremental replication for btrfs subvolumes, for backups                           | finding the common parent by subvolume UUIDs for `send -p`                     |
 | [Morph Infinibranch](https://cloud.morph.so/web/product/devboxes)                               | snapshot and branch of whole running VMs                                                                  | not taken: this design branches files, not processes                           |
 
-No project found on 2026-10-09 combines a drop-in `git` replacement, btrfs states, a real merge and
+No project found on 2026-10-09 combines a git-like local tool, btrfs states, a real merge and
 replication between machines.
 
 ## Open items
