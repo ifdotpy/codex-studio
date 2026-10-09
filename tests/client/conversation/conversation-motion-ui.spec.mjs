@@ -641,6 +641,33 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       );
       const latest = page.locator(`${conversationSelector} #jump-latest`);
       const idle = await latest.boundingBox();
+      const hitTarget = await latest.evaluate((button) => {
+        const rect = button.getBoundingClientRect();
+        window.motionLatestEvents = [];
+        for (const type of ["pointerdown", "pointerup", "click"])
+          button.addEventListener(type, (event) => {
+            window.motionLatestEvents.push({
+              type,
+              target: event.target?.outerHTML?.slice(0, 160),
+              x: event.clientX,
+              y: event.clientY,
+            });
+          });
+        const hit = document.elementFromPoint(
+          rect.x + rect.width / 2,
+          rect.y + rect.height / 2,
+        );
+        return {
+          rect: {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+          },
+          hit: hit?.outerHTML.slice(0, 200),
+        };
+      });
+      console.log(`MOTION_LATEST_HIT_TARGET ${JSON.stringify(hitTarget)}`);
       await page.mouse.move(idle.x + idle.width / 2, idle.y + idle.height / 2);
       await page.mouse.down();
       const pressed = await latest.boundingBox();
@@ -659,6 +686,7 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
           gap: root.scrollHeight - root.scrollTop - root.clientHeight,
           buttonVisible: !!button && button.getBoundingClientRect().height > 0,
           buttonText: button?.textContent,
+          events: window.motionLatestEvents,
         };
       });
       console.log(`MOTION_LATEST_STATE ${JSON.stringify(latestState)}`);
