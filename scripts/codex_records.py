@@ -263,6 +263,7 @@ class NativeReleaseRecord(TypedDict):
     accountKey: NotRequired[str]
     threadId: NotRequired[str]
     connectionId: NotRequired[str]
+    supervisorIdentity: NotRequired[SupervisorIdentityRecord | None]
     at: NotRequired[float]
     submittedAt: NotRequired[float]
     releasedAt: NotRequired[float]

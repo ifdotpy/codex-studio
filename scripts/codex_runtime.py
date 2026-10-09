@@ -6004,11 +6004,10 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                              "contextVersions": context_versions,
                              "toolCatalog": params.get("dynamicTools"),
                              "future": concurrent.futures.Future()}
-                release = latest.get("nativeRelease") or {}
-                if (release.get("phase") == "released" and release.get("threadId") == latest.get("threadId")
-                        and release.get("connectionId") == operation["connectionId"]
-                        and not release.get("closedAt")):
-                    operation["nativeReleaseId"] = release.get("id")
+                from codex_native_release import preparation_release_id
+                release_id = preparation_release_id(self, latest, operation["connectionId"], server)
+                if release_id is not None:
+                    operation["nativeReleaseId"] = release_id
                 latest["prepareAttempt"] = operation["id"]
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
