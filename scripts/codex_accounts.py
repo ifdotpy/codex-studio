@@ -200,14 +200,23 @@ class AccountStore:
                     if metadata["status"] != "error":
                         row.pop("error", None)
                 result = self._public(row)
+                auth_source = (provider, home, claude_options, row.get('accountId'),
+                               row.get('_credentialIdentity'))
             verifier = self.__dict__.get('native_auth_proof')
             if result.get('canAttemptNativeProof') and verifier:
                 try:
-                    verified = verifier(key, result)
+                    verifier(key, result)
                 except (RuntimeError, ValueError, TimeoutError):
-                    verified = None
-                if verified is not None:
-                    return verified
+                    pass
+                # The runtime confirms native proof in this store. Another
+                # refresh can complete or change the profile while it waits.
+                with self.lock:
+                    row = self._row(key)
+                    current_source = (row.get('provider'), row.get('home'), row.get('claudeOptions'),
+                                      row.get('accountId'), row.get('_credentialIdentity'))
+                    if current_source != auth_source:
+                        continue
+                    return self._public(row)
             return result
         with self.lock:
             row = self._row(key)

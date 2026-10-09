@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 import uuid
 from unittest.mock import patch
@@ -110,6 +111,81 @@ class Profiles(unittest.TestCase):
         with patch.object(c, 'auth_metadata', return_value={
                 **AUTH, 'accountId': 'claude:other', '_credentialIdentity': 'claude:other'}):
             self.assertEqual(store.get(key)['status'], 'changed')
+
+    def test_concurrent_native_confirmation_does_not_return_old_keychain_error(self):
+        store = AccountStore(self.root / 'state')
+        with patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            key = store.register_claude({'configDir': str(self.root / 'claude')}, 'Work')
+        denied = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  '_authErrorKind': 'keychain', 'error': 'Keychain interaction is unavailable'}
+        entered, release = threading.Event(), threading.Event()
+        results = []
+        errors = []
+
+        def proof(account_key, observed):
+            if threading.current_thread() is worker:
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('Concurrent refresh did not finish')
+                # The runtime skips its read if another refresh already confirmed the account.
+                if not store.allow_native_auth_attempt(account_key, observed):
+                    return None
+            return store.confirm_native_auth(account_key, observed, {
+                'account': {'type': 'claude', 'email': AUTH['email'], 'planType': AUTH['plan']},
+            })
+
+        def refresh():
+            try:
+                results.append(store.get(key))
+            except Exception as error:
+                errors.append(error)
+
+        worker = threading.Thread(target=refresh)
+        store.native_auth_proof = proof
+        with patch.object(c, 'auth_metadata', return_value=denied):
+            worker.start()
+            try:
+                self.assertTrue(entered.wait(5))
+                current = store.get(key)
+                self.assertEqual(current['status'], 'ready')
+            finally:
+                release.set()
+                worker.join(5)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(results[0]['status'], 'ready')
+        self.assertNotIn('error', results[0])
+        self.assertEqual(results[0]['accountId'], AUTH['accountId'])
+
+    def test_profile_change_during_native_confirmation_does_not_return_old_proof(self):
+        store = AccountStore(self.root / 'state')
+        with patch.object(c, 'installed', return_value='/bin/claude'), \
+             patch.object(c, 'auth_metadata', return_value=AUTH):
+            key = store.register_claude({'configDir': str(self.root / 'claude')}, 'Work')
+        denied = {'status': 'error', 'accountId': None, 'email': None, 'plan': None,
+                  '_authErrorKind': 'keychain', 'error': 'Keychain interaction is unavailable'}
+        next_options = c.profile_options({'configDir': str(self.root / 'other')})
+
+        def proof(account_key, observed):
+            old_proof = store.confirm_native_auth(account_key, observed, {
+                'account': {'type': 'claude', 'email': AUTH['email'], 'planType': AUTH['plan']},
+            })
+            with store.lock:
+                store.data['accounts'][key]['claudeOptions'] = next_options
+                store.data['accounts'][key].update(status='error', _authErrorKind='parser',
+                                                 error='The new profile cannot be verified')
+            return old_proof
+
+        store.native_auth_proof = proof
+        with patch.object(c, 'auth_metadata', side_effect=[denied, {
+                **denied, '_authErrorKind': 'parser', 'error': 'The new profile cannot be verified',
+        }]) as native:
+            current = store.get(key)
+        self.assertEqual(native.call_count, 2)
+        self.assertEqual(current['status'], 'error')
+        self.assertEqual(current['claudeOptions'], next_options)
+        self.assertNotIn('canAttemptNativeProof', current)
 
     def test_ready_without_pinned_identity_fails_closed(self):
         store = AccountStore(self.root / 'state')
