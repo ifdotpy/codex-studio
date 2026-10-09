@@ -922,6 +922,26 @@ const runSyncCrossTabScenario = async (fixtureBrowser, checkResumeRace) => {
       } catch (error) {
         duplicateWaitError = error;
       }
+      const resumedOwnerConvergence = {
+        waitPassed: !duplicateWaitError,
+        streams: [...streamResources.values()],
+        resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
+          window.__syncDiagnostics.sources.map((source) => ({
+            readyState: source.readyState,
+            url: source.url,
+          })),
+        ),
+      };
+      process.stderr.write(
+        `RESUMED_OWNER_CONVERGENCE ${JSON.stringify(resumedOwnerConvergence)}\n`,
+      );
+      if (!duplicateWaitError) {
+        assert.deepEqual(
+          [...streamResources.values()],
+          [[{ kind: "transcript", agentId: "session-one" }, { kind: "state" }]],
+          "the converged resumed-owner stream retains its expected transcript and state resources",
+        );
+      }
       if (duplicateWaitError && streams.size > 1) {
         const duplicateStreamCount = streams.size;
         const resourcesDuringOverlap = [...streamResources.values()];
@@ -943,6 +963,12 @@ const runSyncCrossTabScenario = async (fixtureBrowser, checkResumeRace) => {
             resourcesDuringOverlap,
             streamsAfterTenSeconds,
             resources: [...streamResources.values()],
+            resumedOwnerSources: await pages[initialOwnerIndex].evaluate(() =>
+              window.__syncDiagnostics.sources.map((source) => ({
+                readyState: source.readyState,
+                url: source.url,
+              })),
+            ),
             callbacksBefore,
             callbacksAfterChange,
             pullDeltaDuringOverlap: pullsAfterChange - pullsBeforeChange,

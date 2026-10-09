@@ -274,8 +274,7 @@ test("repeated read counts across chat navigation @performance", async ({
       name: "Subagent defaults",
     });
     await settingsDialog.waitFor({ state: "visible" });
-    const modelPicker = settingsDialog.getByRole("button", {
-      name: "Default subagent model",
+    const modelPicker = settingsDialog.getByLabel("Default subagent model", {
       exact: true,
     });
     await modelPicker.waitFor();

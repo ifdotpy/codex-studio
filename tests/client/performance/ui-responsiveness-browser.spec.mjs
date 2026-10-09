@@ -3,6 +3,8 @@ import {
   readFixtureSyncContract,
   stubEntityState,
   installApiSchemaFixtureHeaders,
+  entityPullFixtureForRequest,
+  apiSchemaHeaders,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -13,7 +15,7 @@ import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 test(
   "Ui responsiveness browser",
   { tag: "@performance" },
@@ -182,28 +184,6 @@ test(
                   ),
                 ),
               );
-            window.fixtureStreams = [];
-            const NativeEventSource = window.EventSource;
-            window.EventSource = new Proxy(NativeEventSource, {
-              construct(target, args) {
-                const url = String(args[0]);
-                if (new URL(url, location.href).pathname === "/api/sync/stream")
-                  return Reflect.construct(target, args);
-                class TranscriptFixtureStream extends EventTarget {
-                  constructor() {
-                    super();
-                    this.url = url;
-                    window.fixtureStreams.push(this);
-                  }
-                  close() {
-                    window.fixtureStreams = window.fixtureStreams.filter(
-                      (stream) => stream !== this,
-                    );
-                  }
-                }
-                return new TranscriptFixtureStream();
-              },
-            });
             window.metrics = {
               phase: "startup",
               inputSequence: 0,
@@ -297,33 +277,6 @@ test(
               },
               true,
             );
-            window.emitFixture = (id, packet, revision) => {
-              const stream = window.fixtureStreams.find(
-                (stream) =>
-                  new URL(stream.url, location.href).searchParams.get("id") ===
-                  id,
-              );
-              if (!stream)
-                throw new Error("The selected transcript stream is missing");
-              const started = performance.now();
-              const inspect = () => {
-                if (
-                  !document
-                    .querySelector('[data-message="a-live"]')
-                    ?.textContent.includes(`Stream revision ${revision}.`)
-                )
-                  return requestAnimationFrame(inspect);
-                requestAnimationFrame(() =>
-                  window.metrics.stream.push({
-                    phase: window.metrics.phase,
-                    revision,
-                    duration: performance.now() - started,
-                  }),
-                );
-              };
-              requestAnimationFrame(inspect);
-              stream.onmessage({ data: JSON.stringify(packet) });
-            };
           },
           { stateDir: original.stateDir, id: a.id, rows: [...histories] },
         );
@@ -359,11 +312,38 @@ test(
           }
           return route.fallback();
         });
-        await stubEntityState(
-          page,
-          state,
-          await readFixtureSyncContract(origin),
-        );
+        const syncContract = await readFixtureSyncContract(origin);
+        await stubEntityState(page, state, syncContract);
+        let transcriptSeq = 1;
+        await page.route("**/api/sync/pull?*", (route) => {
+          const requestUrl = route.request().url();
+          const scope = new URL(requestUrl).searchParams.get("scope");
+          const transcriptId = scope?.startsWith("transcript:")
+            ? scope.slice("transcript:".length)
+            : undefined;
+          return route.fulfill({
+            json: {
+              workspaceId: syncContract.identity.workspaceId,
+              ...entityPullFixtureForRequest(state, requestUrl, {
+                transcriptSeq,
+                ...(transcriptId
+                  ? {
+                      transcript: {
+                        agent: agents.find(
+                          (agent) => agent.id === transcriptId,
+                        ),
+                        items: histories.get(transcriptId) || [],
+                        historyVersion: "fixed-history",
+                        truncated: false,
+                        nextAfterCursor: null,
+                        nextCursor: null,
+                      },
+                    }
+                  : {}),
+              }),
+            },
+          });
+        });
         await page.goto(origin);
         if (!(await page.locator('[data-message="a-result-29"]').count())) {
           if (name === "mobile")
@@ -373,8 +353,13 @@ test(
         // HistoryWindow retains only rows around the viewport. Reveal the
         // measured target through the same event used by message navigation.
         await page.waitForFunction(() => {
-          const root = document.querySelector("#messages");
-          if (!root?.querySelector("[data-history-row]")) return false;
+          const root = [...document.querySelectorAll("#messages")].find(
+            (node) => {
+              const bounds = node.getBoundingClientRect();
+              return bounds.width > 0 && bounds.height > 0;
+            },
+          );
+          if (!root) return false;
           root.dispatchEvent(
             new CustomEvent("studio-history-reveal", {
               detail: "a-result-29",
@@ -437,6 +422,60 @@ test(
           element.setSelectionRange(element.value.length, element.value.length),
         );
         const suffix = " Input while the answer streams.";
+        const emitTranscriptRevision = async (revision, items) => {
+          histories.set(a.id, items);
+          transcriptSeq++;
+          const startedAt = await page.evaluate(() => performance.now());
+          const pull = page.waitForResponse((response) => {
+            const url = new URL(response.url());
+            return (
+              url.pathname === "/api/sync/pull" &&
+              url.searchParams.get("scope") === `transcript:${a.id}` &&
+              Number(url.searchParams.get("after") || 0) < transcriptSeq
+            );
+          });
+          const notification = await fetch(
+            new URL("/api/sync/notify", origin),
+            {
+              method: "POST",
+              headers: {
+                Origin: origin,
+                "Content-Type": "application/json",
+                "X-Canvas-Token": original.token,
+                ...apiSchemaHeaders(),
+              },
+              body: JSON.stringify({
+                requestId: randomUUID(),
+                resources: [{ kind: "transcript", agentId: a.id }],
+              }),
+            },
+          );
+          assert.equal(notification.status, 200, await notification.text());
+          await pull;
+          await page.waitForFunction(
+            (revision) =>
+              document
+                .querySelector('[data-message="a-live"]')
+                ?.textContent.includes(`Stream revision ${revision}.`),
+            revision,
+          );
+          await page.evaluate(
+            ({ startedAt, revision }) =>
+              new Promise((resolve) =>
+                requestAnimationFrame(() =>
+                  requestAnimationFrame(() => {
+                    window.metrics.stream.push({
+                      phase: window.metrics.phase,
+                      revision,
+                      duration: performance.now() - startedAt,
+                    });
+                    resolve();
+                  }),
+                ),
+              ),
+            { startedAt, revision },
+          );
+        };
         const streaming = (async () => {
           for (let revision = 1; revision <= 12; revision++) {
             const items = [...histories.get(a.id)];
@@ -444,21 +483,7 @@ test(
               ...items.at(-1),
               text: `Stream revision ${revision}. ${"Current response text. ".repeat(revision)}`,
             };
-            await page.evaluate(
-              ({ id, packet, revision }) =>
-                window.emitFixture(id, packet, revision),
-              {
-                id: a.id,
-                revision,
-                packet: {
-                  agent: agents[0],
-                  items,
-                  replace: true,
-                  order: items.map((item) => item.id),
-                  historyVersion: "fixed-history",
-                },
-              },
-            );
+            await emitTranscriptRevision(revision, items);
             await page.waitForTimeout(100);
           }
         })();

@@ -4,6 +4,8 @@ import {
   expect,
   spawnFixture as spawn,
   installApiSchemaFixtureHeaders,
+  entityPullFixtureForRequest,
+  apiSchemaHeaders,
   readTestState,
   readFixtureSyncContract,
   stubEntityState,
@@ -90,7 +92,8 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
     for (const width of [1440, 390]) {
       items = structuredClone(initialItems);
       agent = structuredClone(initialAgent);
-      const page = runnerPage;
+      const page =
+        width === 1440 ? runnerPage : await runnerPage.context().newPage();
       await page.setViewportSize({ width, height: 960 });
       page.setDefaultTimeout(10000);
       const errors = [];
@@ -115,28 +118,20 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         window.EventSource = new Proxy(NativeEventSource, {
           construct(target, args) {
             const url = String(args[0]);
-            if (new URL(url, location.href).pathname === "/api/sync/stream")
-              return Reflect.construct(target, args);
-            class TranscriptFixtureStream extends EventTarget {
-              constructor() {
-                super();
-                this.url = url;
-                window.motionStreams.push(this);
-              }
-              close() {
+            const source = Reflect.construct(target, args);
+            if (new URL(url, location.href).pathname === "/api/sync/stream") {
+              window.motionStreams.push(source);
+              const close = source.close.bind(source);
+              source.close = () => {
                 window.motionStreams = window.motionStreams.filter(
-                  (stream) => stream !== this,
+                  (stream) => stream !== source,
                 );
-              }
+                close();
+              };
             }
-            return new TranscriptFixtureStream();
+            return source;
           },
         });
-        window.motionEmit = (id, data) => {
-          for (const s of window.motionStreams)
-            if (new URL(s.url, location.href).searchParams.get("id") === id)
-              s.onmessage?.({ data: JSON.stringify(data) });
-        };
       });
       await stubEntityState(
         page,
@@ -147,6 +142,29 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         },
         syncContract,
       );
+      let transcriptSeq = 1;
+      const transcriptByAgent = new Map([
+        [lead.id, transcript()],
+        [other.id, { agent: other, items: [], order: [], replace: true }],
+      ]);
+      await page.route("**/api/sync/pull?*", (route) => {
+        const requestUrl = route.request().url();
+        const scope = new URL(requestUrl).searchParams.get("scope");
+        const transcriptId = scope?.startsWith("transcript:")
+          ? scope.slice("transcript:".length)
+          : undefined;
+        return route.fulfill({
+          json: {
+            workspaceId: syncIdentity.workspaceId,
+            ...entityPullFixtureForRequest(state, requestUrl, {
+              transcriptSeq,
+              ...(transcriptId
+                ? { transcript: transcriptByAgent.get(transcriptId) }
+                : {}),
+            }),
+          },
+        });
+      });
       await page.route("**/api/transcript?*", (r) =>
         r.fulfill({
           json:
@@ -170,18 +188,45 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       await page.locator(`[data-chat="${lead.id}"]`).click();
       await page.waitForFunction(
         (id) =>
-          window.motionStreams.some(
-            (stream) =>
-              new URL(stream.url, location.href).searchParams.get("id") === id,
-          ),
+          window.motionStreams.some((stream) => {
+            const resources = JSON.parse(
+              new URL(stream.url).searchParams.get("resources") || "[]",
+            );
+            return resources.some(
+              (resource) =>
+                resource.kind === "transcript" && resource.agentId === id,
+            );
+          }),
         lead.id,
       );
-      const emit = async () => {
-        await page.evaluate(({ id, data }) => window.motionEmit(id, data), {
-          id: lead.id,
-          data: transcript(),
+      const emitTranscript = async (id, nextTranscript) => {
+        transcriptByAgent.set(id, nextTranscript);
+        transcriptSeq++;
+        const updatedTranscript = page.waitForResponse((response) => {
+          const url = new URL(response.url());
+          return (
+            url.pathname === "/api/sync/pull" &&
+            url.searchParams.get("scope") === `transcript:${id}` &&
+            Number(url.searchParams.get("after") || 0) < transcriptSeq
+          );
         });
+        const notification = await fetch(new URL("/api/sync/notify", origin), {
+          method: "POST",
+          headers: {
+            Origin: origin,
+            "Content-Type": "application/json",
+            "X-Canvas-Token": state.token,
+            ...apiSchemaHeaders(),
+          },
+          body: JSON.stringify({
+            requestId: crypto.randomUUID(),
+            resources: [{ kind: "transcript", agentId: id }],
+          }),
+        });
+        assert.equal(notification.status, 200, await notification.text());
+        await updatedTranscript;
       };
+      const emit = () => emitTranscript(lead.id, transcript());
       await emit();
       // Long histories mount only the viewport window. Use the same reveal
       // event as Conversation navigation before measuring the target row.
@@ -532,11 +577,12 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${other.id}"]`).click();
-      await page.evaluate(
-        ({ id }) =>
-          window.motionEmit(id, { items: [], order: [], replace: true }),
-        { id: other.id },
-      );
+      await emitTranscript(other.id, {
+        agent: other,
+        items: [],
+        order: [],
+        replace: true,
+      });
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
       await emit();
@@ -572,11 +618,12 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       await transcriptRoot.evaluate((root) => delete root.dataset.motionRoot);
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${other.id}"]`).click();
-      await page.evaluate(
-        ({ id }) =>
-          window.motionEmit(id, { items: [], order: [], replace: true }),
-        { id: other.id },
-      );
+      await emitTranscript(other.id, {
+        agent: other,
+        items: [],
+        order: [],
+        replace: true,
+      });
       if (width < 700) await page.locator("#sidebar-toggle").click();
       await page.locator(`[data-chat="${lead.id}"]`).click();
       await emit();

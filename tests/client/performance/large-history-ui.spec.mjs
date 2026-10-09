@@ -3,6 +3,7 @@ import {
   readFixtureSyncContract,
   stubEntityState,
   installApiSchemaFixtureHeaders,
+  entityPullFixtureForRequest,
   test,
   spawnFixture as spawn,
 } from "../playwright.mjs";
@@ -83,9 +84,6 @@ test("Large history @performance", async ({ context }) => {
   page.on("pageerror", (e) => errors.push(e.message));
   installApiSchemaFixtureHeaders(page);
   await page.addInitScript(() => {
-    window.EventSource = class extends EventTarget {
-      close() {}
-    };
     window.largeHistoryClickAt = 0;
     document.addEventListener(
       "pointerdown",
@@ -120,8 +118,34 @@ test("Large history @performance", async ({ context }) => {
       ids: items.filter((item) => item.role === "tool").map((item) => item.id),
     },
   );
-  await stubEntityState(page, state, await readFixtureSyncContract(origin));
+  const syncContract = await readFixtureSyncContract(origin);
+  await stubEntityState(page, state, syncContract);
+  const transcript = {
+    items,
+    agent: lead,
+    historyVersion: "large-history-fixture",
+    truncated: false,
+    nextAfterCursor: null,
+    nextCursor: null,
+    tail: null,
+    unavailable: null,
+  };
   const deliveries = [];
+  await page.route("**/api/sync/pull?*", (route) => {
+    const requestUrl = route.request().url();
+    const url = new URL(requestUrl);
+    const scope = url.searchParams.get("scope");
+    if (scope === `transcript:${lead.id}`) deliveries.push(Date.now());
+    return route.fulfill({
+      json: {
+        workspaceId: syncContract.identity.workspaceId,
+        ...entityPullFixtureForRequest(state, requestUrl, {
+          transcriptSeq: 1,
+          ...(scope === `transcript:${lead.id}` ? { transcript } : {}),
+        }),
+      },
+    });
+  });
   let pageRequests = 0;
   const pageRequestUrls = [];
   await page.route("**/api/transcript?*", async (r) => {
@@ -165,8 +189,11 @@ test("Large history @performance", async ({ context }) => {
   await page.locator(`[data-chat="${lead.id}"]`).click();
   await page.waitForFunction(
     (id) => {
-      const root = document.querySelector("#messages");
-      if (!root?.querySelector("[data-history-row]")) return false;
+      const root = [...document.querySelectorAll("#messages")].find((node) => {
+        const bounds = node.getBoundingClientRect();
+        return bounds.width > 0 && bounds.height > 0;
+      });
+      if (!root) return false;
       root.dispatchEvent(
         new CustomEvent("studio-history-reveal", { detail: id }),
       );
