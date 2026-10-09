@@ -9,6 +9,7 @@ import ClaudeSignIn from "./ClaudeSignIn";
 import CodexSignIn from "./CodexSignIn";
 import NativeRuntimeStatus from "./NativeRuntimeStatus";
 import { watchResourceReads } from "./watchResourceReads";
+import { useAccountLimits } from "../usage/useAccountLimits";
 import { accountLimits } from "../usage/accountUsage";
 import { Button, Menu, Modal, TextInput } from "@mantine/core";
 import {
@@ -253,36 +254,12 @@ function AccountCapacity({
   compact?: boolean;
   card?: boolean;
 }) {
-  const [limits, setLimits] = useState<GetResult<"/api/limits"> | null>(null);
-  const [limitsError, setLimitsError] = useState<unknown>(null);
-  useEffect(() => {
-    if (!opened || account.status !== "ready") return;
-    let live = true;
-    setLimits(null);
-    setLimitsError(null);
-    const stop = watchResourceReads(
-      { kind: "limits", accountKey: account.id },
-      async () => {
-        const result = await get("/api/limits", {
-          query: { account_key: account.id },
-          timeoutMs: 25000,
-        });
-        if (!accountLimits(result, account.id, account.accountId))
-          throw new Error("Limits belong to another account.");
-        if (live) {
-          setLimits(result);
-          setLimitsError(null);
-        }
-      },
-      (error) => {
-        if (live) setLimitsError(error);
-      },
-    );
-    return () => {
-      live = false;
-      stop();
-    };
-  }, [account.id, account.accountId, account.status, account.provider, opened]);
+  const limits = useAccountLimits(
+    account.id,
+    account.accountId,
+    opened && account.status === "ready",
+  );
+  const limitsError = limits?.data ? null : limits?.error;
   if (account.status !== "ready" && !card) return null;
   const buckets = readBuckets(
     accountLimits(limits, account.id, account.accountId),
@@ -299,7 +276,10 @@ function AccountCapacity({
     const label =
       !limits && !limitsError
         ? "Weekly: loading…"
-        : limitsError || limits?.error || !weekly || weekly.remaining === null
+        : limitsError ||
+            (!limits?.data && limits?.error) ||
+            !weekly ||
+            weekly.remaining === null
           ? "Weekly: unavailable"
           : weekly.expired
             ? "Weekly: awaiting update"
@@ -308,17 +288,19 @@ function AccountCapacity({
   }
 
   const remaining =
-    account.status !== "ready" || limitsError || limits?.error
+    account.status !== "ready" ||
+    limitsError ||
+    (!limits?.data && limits?.error)
       ? null
       : remainingLimit(buckets.flatMap((bucket) => bucket.windows));
   const details = (
     <>
       {!limits && !limitsError && <small>Reading limits…</small>}
-      {(limitsError || limits?.error) && (
+      {(limitsError || (!limits?.data && limits?.error)) && (
         <ErrorDescription
           className="account-action-error"
           role="status"
-          value={limitsError || limits?.error}
+          value={limitsError || (!limits?.data && limits?.error)}
         />
       )}
       {buckets.map((bucket) => (
@@ -398,7 +380,8 @@ function AccountCapacity({
               />
             )}
           </span>
-          {account.status !== "ready" ? null : limitsError || limits?.error ? (
+          {account.status !== "ready" ? null : limitsError ||
+            (!limits?.data && limits?.error) ? (
             details
           ) : (
             <details className="account-limit-details">

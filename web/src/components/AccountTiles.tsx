@@ -2,11 +2,9 @@ import { SegmentedControl, Tooltip } from "@mantine/core";
 import { Check } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 import { ActionButton } from "./ui/primitives";
-import { get } from "../api";
+import { useAccountLimits } from "../usage/useAccountLimits";
 import { accountDisplayName, accountTooltip } from "../accountName";
-import { accountLimits } from "../usage/accountUsage";
 import { readBuckets } from "./Usage";
-import { watchResourceReads } from "./watchResourceReads";
 import type { Account } from "./Accounts";
 import "./account-tiles.css";
 export function setupAccountName(account?: Account) {
@@ -128,29 +126,12 @@ function AccountTile({
   onSelect: () => void;
   multiple?: boolean;
 }) {
-  const [remaining, setRemaining] = useState<number | null>(null);
-  useEffect(() => {
-    setRemaining(null);
-    return watchResourceReads(
-      { kind: "limits", accountKey: account.id },
-      async () => {
-        const result = await get("/api/limits", {
-          query: { account_key: account.id },
-          timeoutMs: 25000,
-        });
-        const snapshot = accountLimits(result, account.id, account.accountId);
-        if (!snapshot || snapshot.error) {
-          setRemaining(null);
-          return;
-        }
-        const buckets = readBuckets(snapshot, Date.now() / 1000);
-        setRemaining(
-          remainingLimit(buckets.flatMap((bucket) => bucket.windows)),
-        );
-      },
-      () => setRemaining(null),
-    );
-  }, [account.id, account.accountId]);
+  const snapshot = useAccountLimits(account.id, account.accountId);
+  const remaining = remainingLimit(
+    readBuckets(snapshot, Date.now() / 1000).flatMap(
+      (bucket) => bucket.windows,
+    ),
+  );
   return (
     <Tooltip label={accountTooltip(account)}>
       <ActionButton

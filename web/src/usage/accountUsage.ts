@@ -1,3 +1,4 @@
+import { serverLocalStorage } from "../servers/storage";
 import type { JsonValue } from "../types";
 import type { GetResult } from "../api";
 import type { components } from "../generated/api";
@@ -108,4 +109,53 @@ export function limitsSnapshotIsFresh(
     Number.isFinite(snapshot.at) &&
     now - snapshot.at < 60
   );
+}
+
+// The same server-scoped record is used by App and account controls.
+let cacheScope: string | undefined;
+let cache: Record<string, AccountLimitsSnapshot> = {};
+const cacheListeners = new Set<() => void>();
+export function configureLimitsCache(scope: string) {
+  if (scope === cacheScope) return;
+  cacheScope = scope;
+  cache = {};
+  try {
+    const stored = JSON.parse(
+      serverLocalStorage.getItem(`codex-limits:${scope}`) || "{}",
+    );
+    for (const [key, value] of Object.entries(stored)) {
+      const snapshot = accountLimits(value as JsonValue, key);
+      if (snapshot) cache[key] = snapshot;
+    }
+  } catch {
+    /* Storage can be unavailable. */
+  }
+}
+export function cachedAccountLimits(key: string, accountId?: string | null) {
+  return accountLimits(cache[key], key, accountId);
+}
+export function subscribeLimitsCache(listener: () => void) {
+  cacheListeners.add(listener);
+  return () => {
+    cacheListeners.delete(listener);
+  };
+}
+export function cacheAccountLimits(snapshot: AccountLimitsSnapshot) {
+  if (cacheScope === undefined) configureLimitsCache("");
+  const previous = cache[snapshot.accountKey];
+  if (previous === snapshot) return;
+  if (!shouldReplaceLimitsSnapshot(previous, snapshot)) return;
+  cache = { ...cache, [snapshot.accountKey]: snapshot };
+  try {
+    serverLocalStorage.setItem(
+      `codex-limits:${cacheScope}`,
+      JSON.stringify(cache),
+    );
+  } catch {
+    /* Keep the session cache when storage is unavailable. */
+  }
+  for (const listener of cacheListeners) listener();
+}
+export function cachedLimitsByAccount() {
+  return cache;
 }

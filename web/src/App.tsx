@@ -25,6 +25,10 @@ import { useChatPrefetch } from "./hooks/chatPrefetch";
 import { useTeamTokenRateStream } from "./hooks/useTeamTokenRateStream";
 import {
   accountLimits,
+  configureLimitsCache,
+  cachedLimitsByAccount,
+  cacheAccountLimits,
+  subscribeLimitsCache,
   limitsReadSucceeded,
   limitsSnapshotIsFresh,
   shouldReplaceLimitsSnapshot,
@@ -81,6 +85,7 @@ import {
   lazy,
   useRef,
   useState,
+  useSyncExternalStore,
   memo,
   Suspense,
   type ReactNode,
@@ -516,31 +521,33 @@ export default function App() {
     [toast, setToast] = useState(""),
     [modal, setModal] = useState<{ title: string; body: ReactNode } | null>(
       null,
-    ),
-    [limitsByAccount, setLimitsByAccount] = useState<
-      Record<string, AccountLimitsSnapshot>
-    >({}),
-    [limitsCacheScope, setLimitsCacheScope] = useState<string | null>(null);
+    );
+  if (data?.stateDir) configureLimitsCache(data.stateDir);
+  const limitsByAccount = useSyncExternalStore(
+    subscribeLimitsCache,
+    cachedLimitsByAccount,
+    cachedLimitsByAccount,
+  );
+  const setLimitsByAccount = useCallback(
+    (
+      update:
+        | Record<string, AccountLimitsSnapshot>
+        | ((
+            old: Record<string, AccountLimitsSnapshot>,
+          ) => Record<string, AccountLimitsSnapshot>),
+    ) => {
+      const next =
+        typeof update === "function" ? update(cachedLimitsByAccount()) : update;
+      for (const snapshot of Object.values(next)) cacheAccountLimits(snapshot);
+    },
+    [],
+  );
   useEffect(() => {
     if (mobileClient || !data?.stateDir) return;
     // Include terminals in the first typed subscription set; TerminalDock can
     // mount later, and its watcher then shares this resource without a reopen.
     return watchResourceChanges({ kind: "terminals" }, () => {});
   }, [mobileClient, data?.stateDir]);
-  useEffect(() => {
-    if (!data?.stateDir) return;
-    setLimitsByAccount(saved(`codex-limits:${data.stateDir}`, {}));
-    setLimitsCacheScope(data.stateDir);
-  }, [data?.stateDir]);
-  useEffect(() => {
-    if (!limitsCacheScope || limitsCacheScope !== data?.stateDir) return;
-    const good = Object.fromEntries(
-      Object.entries(limitsByAccount).filter(
-        ([, value]) => value?.data && value?.at,
-      ),
-    );
-    save(`codex-limits:${limitsCacheScope}`, good);
-  }, [limitsByAccount, limitsCacheScope, data?.stateDir]);
   useEffect(() => {
     if (data?.stateDir && saved(sharedCreationKey(data.stateDir), null))
       setSharedCreate({});

@@ -92,6 +92,8 @@ class RuntimePort(Protocol):
 
     def limits(self, account_key: str) -> dict[str, JsonValue]: ...
 
+    def refresh_limits_background(self, account_key: str) -> None: ...
+
     def catalog(self, account_key: str) -> JsonValue: ...
 
 
@@ -205,6 +207,9 @@ def create_router(context: ApiContext) -> APIRouter:
         cached = [value for value in request.query_params.getlist("cached") if value]
         current = runtime.rate_limits_for(account_key)
         if cached == ["1"] and (current.get("data") is not None or current.get("error")):
+            return context.send(request, current)
+        if current.get("data") is not None:
+            runtime.refresh_limits_background(account_key)
             return context.send(request, current)
         return context.send(request, runtime.limits(account_key))
 

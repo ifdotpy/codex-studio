@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from contextlib import contextmanager
 from codex_file_lock import flock, LOCK_EX, LOCK_NB, LOCK_UN
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -1696,6 +1697,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                                              install_bypass_triggers, register_functions)
             register_functions(db)
             ensure_sync_entity_tables(db)
+            self.restore_rate_limits(db)
             install_bypass_triggers(db)
             startup_memory_mark("entity-schema-indexes")
             from codex_sync_entities import retire_closed_requests
@@ -8864,6 +8866,45 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.put(db, "rooms", room)
             return {"deleted": [key]}
 
+    def restore_rate_limits(self, db):
+        """Restore the existing workspace snapshot before startup publishes state."""
+        row = db.execute("SELECT payload FROM sync_entities WHERE collection='workspace' AND id='current' AND deleted=0").fetchone()
+        if not row:
+            return
+        try:
+            payload = json.loads(row[0])["value"]
+            snapshots = payload.get("rateLimitsByAccount") or {}
+            if payload.get("rateLimits") and "default" not in snapshots:
+                snapshots["default"] = payload["rateLimits"]
+            from studio_api.accounts.models import UsageLimitsResponse
+            for key, value in snapshots.items():
+                snapshot = UsageLimitsResponse.model_validate(value).model_dump(exclude_unset=True)
+                if snapshot.get("accountKey") == key and snapshot.get("data") is not None:
+                    self.rate_limits_by_account[key] = snapshot
+            if "default" in self.rate_limits_by_account:
+                self.rate_limits = self.rate_limits_by_account["default"]
+        except (ValueError, TypeError, AttributeError, KeyError):
+            logging.exception("Could not restore account limits snapshot")
+
+    def refresh_limits_background(self, account_key):
+        """Coalesce route refreshes while the last snapshot remains available."""
+        with self.lock:
+            pending = self.__dict__.setdefault("_limits_background", set())
+            if self.closed or account_key in pending:
+                return
+            pending.add(account_key)
+        def refresh():
+            try:
+                self.limits(account_key)
+            finally:
+                with self.lock:
+                    pending.discard(account_key)
+        try:
+            self.pool.submit(refresh)
+        except RuntimeError:
+            with self.lock:
+                pending.discard(account_key)
+
     def rate_limits_for(self, account_key="default"):
         if account_key == "default":
             return self.rate_limits
@@ -8905,12 +8946,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             self.rate_limits_by_account[account_key] = value
             if account_key == "default":
                 self.rate_limits = value
+            from codex_sync_entities import patch as sync_entity_patch
+            if not sync_entity_patch(db, "workspace", "current", {
+                "rateLimits": self.rate_limits,
+                "rateLimitsByAccount": self.rate_limits_by_account.copy(),
+            }):
+                from codex_sync_entities import put as sync_entity_put
+                sync_entity_put(db, "workspace", "current", self.workspace_entity_view(db))
             if changed:
-                from codex_sync_entities import patch as sync_entity_patch
-                sync_entity_patch(db, "workspace", "current", {
-                    "rateLimits": self.rate_limits,
-                    "rateLimitsByAccount": self.rate_limits_by_account.copy(),
-                })
                 from studio_api.sync.resources.models import LimitsResource, ResourceRef
 
                 self._stage_resource_change(
