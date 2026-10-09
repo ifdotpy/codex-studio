@@ -131,6 +131,7 @@ export default function Sidebar(p: Props) {
     runtime?.sidebarOrder ?? undefined,
     p.refresh,
     p.notify,
+    p.data.token,
   );
   const [organizing, setOrganizing] = useState<string | null>(null);
   const organizationLock = useRef(false);

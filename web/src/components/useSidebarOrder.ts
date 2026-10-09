@@ -21,6 +21,7 @@ export function useSidebarOrder(
   server: ServerOrder | undefined,
   refresh?: () => Promise<void>,
   notify?: (text: string) => void,
+  sessionToken?: string,
 ) {
   const [order, setOrder] = useState<Order>(
     () => server?.groups || saved(key, {}),
@@ -39,7 +40,7 @@ export function useSidebarOrder(
     setOrder(saved(key, {}));
   }, [key]);
   useEffect(() => {
-    if (!server) return;
+    if (!server || !sessionToken) return;
     if (server.revision > revision.current) {
       revision.current = server.revision;
       if (server.groups !== null) setOrder(server.groups);
@@ -61,7 +62,7 @@ export function useSidebarOrder(
     }
     // The server revision controls this effect. The request keeps its exact body.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, server?.revision, server?.groups]);
+  }, [key, server?.revision, server?.groups, sessionToken]);
   const send = async (request: Pending, optimistic?: Order) => {
     if (busy.current) return false;
     busy.current = true;
@@ -70,6 +71,7 @@ export function useSidebarOrder(
       if (optimistic) setOrder(optimistic);
       const result = await post("/api/projects", request.body, {
         timeoutMs: 15000,
+        ...(sessionToken ? { sessionToken } : {}),
       });
       if (!("revision" in result))
         throw new Error("Invalid sidebar order response");
@@ -125,7 +127,8 @@ export function useSidebarOrder(
     if (from === to || !ids.includes(from) || !ids.includes(to)) return;
     const next = ids.filter((id) => id !== from);
     next.splice(next.indexOf(to) + Number(after), 0, from);
-    if (!server || server.groups === null || busy.current) return;
+    if (!sessionToken || !server || server.groups === null || busy.current)
+      return;
     if (saved<Pending | null>(pendingKey, null)) {
       notify?.(
         "Retry the saved sidebar order request before moving another item.",

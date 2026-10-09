@@ -120,7 +120,24 @@ test("project tree ui", async ({ page: runnerPage }) => {
       );
     }
     const errors = [];
+    const sidebarMigrations = [];
     page.on("pageerror", (e) => errors.push(e.message));
+    page.on("request", (request) => {
+      if (
+        request.method() !== "POST" ||
+        new URL(request.url()).pathname !== "/api/projects"
+      )
+        return;
+      try {
+        const body = request.postDataJSON();
+        if (body.action === "reorder" && body.migration)
+          sidebarMigrations.push({
+            token: request.headers()["x-canvas-token"],
+          });
+      } catch {
+        // Other project requests need not contain JSON migration bodies.
+      }
+    });
     if (process.env.CODEX_TEST_DESKTOP) {
       await page.waitForURL(url + "/");
       await page.locator("#message").waitFor();
@@ -237,6 +254,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await waitFor(
       async () =>
         (await readTestState(url)).runtime.sidebarOrder?.groups !== null,
+    );
+    assert.ok(sidebarMigrations.length > 0, "Sidebar migration was sent");
+    assert.ok(
+      sidebarMigrations.every(({ token }) => token),
+      "Sidebar migration waits for the session token",
     );
     if (!process.env.CODEX_TEST_DESKTOP) {
       const migrated = (await readTestState(url)).runtime.sidebarOrder;
