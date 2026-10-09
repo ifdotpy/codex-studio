@@ -4634,6 +4634,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "worktree": bool(p and role == "implementer") and data.get("_worktree", True),
                 "workspaceMode": data.get("_workspaceMode", "shared" if p and role == "reviewer" else None),
                 "workspaceBackend": data.get("_workspaceBackend"),
+                "workspaceModeExplicit": bool(data.get("_workspaceExplicit", "workspace" in data)),
+                "workspaceInGit": bool(data.get("_workspaceInGit")),
                 "worktreeReady": False,
                 "environment": data.get("environment", "host"),
                 "imageWorkspace": bool(p and role == "implementer") and data.get("_imageWorkspace", False),
@@ -4647,6 +4649,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "imageWorkspaceError": data.get("_imageWorkspaceError"),
                 "worktreeWarning": (None if not (p and role == "implementer")
                                     or data.get("_worktree", True) or data.get("_imageWorkspace")
+                                    or data.get("_workspaceInGit")
                                     else no_worktree_warning(cwd)),
                 **({"remoteOrigin": data["_remoteOrigin"]} if data.get("_remoteOrigin") else {}),
                 "workerBaseRef": data.get("_workerBaseRef"),
@@ -5472,6 +5475,26 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         except Exception as error:
             self.image_base_completed(agent_id, {"state": "failed", "error": str(error)})
 
+    def hold_failed_explicit_image(self, db, agent, message):
+        if (not agent.get("workspaceModeExplicit") or agent.get("workspaceMode") != "image"):
+            return False
+        error = str(message)[:1200]
+        notice_text = ("[Studio workspace error] The requested image workspace failed: "
+                       + error + ". The worker remains read-only in the selected folder. "
+                       "Studio will not switch it to a worktree or shared folder.")
+        agent.update(workspaceMode="image", workspaceModeExplicit=True,
+                     imageWorkspace=True, imageWorkspaceReady=False,
+                     imageWorkspacePhase="failed", imageWorkspaceBaseState="failed",
+                     imageWorkspaceError=error, worktree=False, worktreeWarning=None,
+                     status="paused", autoWake=False, error=notice_text)
+        self.loaded.discard(agent["id"])
+        self.put(db, "agents", agent)
+        self.parent_event(db, agent, "image-workspace-error", notice_text, recovery=True)
+        self.pool.submit(self._send_image_workspace_notice, agent["id"], notice_text,
+                         "image-workspace-error:" + agent["id"])
+        self.changed.set()
+        return True
+
     def complete_image_workspace(self, agent_id, status):
         workspace = None
         workspace_attempted = False
@@ -5489,10 +5512,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     message = status.get("error") or "Image workspace base build failed"
                     if self._linux_host_image_fallback(db, agent, message):
                         return
+                    if self.hold_failed_explicit_image(db, agent, message):
+                        return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  workspaceBackend=None,
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(message)[:1200],
+                                 workspaceMode=("worktree" if agent.get("imageWorkspaceHasGit") else "shared"),
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
                                  worktreeWarning=None, error=None)
                     self.loaded.discard(agent_id)
@@ -5560,10 +5586,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if not agent.get("deletedAt") and agent.get("imageWorkspace"):
                     if self._linux_host_image_fallback(db, agent, error):
                         return
+                    if self.hold_failed_explicit_image(db, agent, error):
+                        return
                     agent.update(environment="host", imageWorkspace=False, imageWorkspacePhase="fallback",
                                  workspaceBackend=None,
                                  imageWorkspaceBaseState="failed",
                                  imageWorkspaceError=str(error)[:1200],
+                                 workspaceMode=("worktree" if agent.get("imageWorkspaceHasGit") else "shared"),
                                  worktree=bool(agent.get("imageWorkspaceHasGit")),
                                  worktreeWarning=None, error=None)
                     self.loaded.discard(agent_id)
@@ -5939,10 +5968,16 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 prefix = self.workspace_exec_prefix(a)
             repo = git_toplevel(a["cwd"], prefix=prefix)
             if repo is None:
-                # The folder left git after spawn. Work in place and say so; do not fail the agent.
+                if (a.get("workspaceModeExplicit")
+                        and a.get("workspaceMode") == "worktree"):
+                    raise ValueError(
+                        "The requested Git worktree is unavailable because the source folder is no longer in Git"
+                    )
+                # A default worktree can keep the old in-place behavior if its folder leaves Git.
                 with self.lock, self.db() as db:
                     latest = self.agent(a["id"], db)
-                    latest.update(worktree=False, worktreeWarning=no_worktree_warning(latest["cwd"]))
+                    latest.update(worktree=False, workspaceMode="shared", workspaceInGit=False,
+                                  worktreeWarning=no_worktree_warning(latest["cwd"]))
                     self.put(db, "agents", latest)
                     a = latest
         if a["worktree"] and not a["worktreeReady"] and not a.get("imageWorkspace"):
@@ -7209,16 +7244,21 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
     @staticmethod
     def image_workspace_summary(agent):
         phase = agent.get("imageWorkspacePhase")
-        if not agent.get("imageWorkspace") and phase != "fallback":
-            return None
+        mode = agent.get("workspaceMode") or (
+            "image" if agent.get("imageWorkspace") else
+            "worktree" if agent.get("worktree") else "shared")
+        result = {"mode": mode, "path": agent.get("cwd")}
+        if not agent.get("imageWorkspace") and phase != "fallback" and mode != "image":
+            return result
         created = agent.get("imageWorkspaceCreatedAt")
         taken_at = (time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(created))
                     if created else None)
-        result = {"path": agent.get("cwd"), "source": agent.get("imageWorkspaceRepo"),
-                  "state": (agent.get("imageWorkspaceBaseState")
-                            or ("ready" if agent.get("imageWorkspaceReady")
-                                else "building" if phase == "read_only" else phase)),
-                  "takenAt": taken_at, "includesUncommittedChanges": True}
+        result.update(source=agent.get("imageWorkspaceRepo"),
+                      state=(agent.get("imageWorkspaceBaseState")
+                             or ("ready" if agent.get("imageWorkspaceReady")
+                                 else "building" if phase == "read_only" else phase)),
+                      takenAt=taken_at,
+                      includesUncommittedChanges=mode in {"image", "shared"})
         if agent.get("environment") == "linux":
             import shlex
             result["environment"] = "linux"
@@ -8263,6 +8303,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             resolved.append({**spec, "cwd": directory, "environment": environment,
                              "_workspaceMode": workspace_mode,
                              "_workspaceBackend": workspace_backend,
+                             "_workspaceExplicit": "workspace" in spec,
+                             "_workspaceInGit": git_repo is not None,
                              "_worktree": workspace_mode == "worktree",
                              "_imageWorkspace": use_image,
                              "_imageWorkspaceRepo": workspace_root if use_image else None,

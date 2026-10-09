@@ -151,6 +151,10 @@ class SpawnTask(unittest.TestCase):
         reviewer = self.spawn('reviewer', cwd=str(Path(self.tmp.name) / 'repo'), role='reviewer')
         self.assertFalse(reviewer['worktree'])
         self.assertNotIn('warning', reviewer)
+        shared = self.spawn('shared-in-git', cwd=str(repo), workspace='shared')
+        self.assertEqual(shared['workspace'], 'shared')
+        self.assertNotIn('warning', shared)
+        self.assertIsNone(self.rt.agent(shared['id'])['worktreeWarning'])
 
     def test_explicit_workspace_modes_are_saved_and_returned(self):
         repo = Path(self.tmp.name) / 'modes'
@@ -279,8 +283,24 @@ class SpawnTask(unittest.TestCase):
         stored = self.rt.agent(value['id'])
         self.assertTrue(prepared)
         self.assertFalse(stored['worktree'])
+        self.assertEqual(stored['workspaceMode'], 'shared')
         self.assertEqual(stored['cwd'], str(repo.resolve()))
         self.assertIn('not in a git repository', stored['worktreeWarning'])
+
+    def test_explicit_worktree_fails_if_source_leaves_git_before_preparation(self):
+        repo = Path(self.tmp.name) / 'gone-explicit'
+        repo.mkdir()
+        self.init_git(repo)
+        value = self.spawn('gone-explicit', cwd=str(repo), workspace='worktree')
+        self.assertTrue(value['worktree'])
+        subprocess.run(['rm', '-rf', str(repo / '.git')], check=True)
+        with self.assertRaisesRegex(ValueError, 'requested Git worktree is unavailable'):
+            self.rt.prepare_locked(self.rt.agent(value['id']))
+        stored = self.rt.agent(value['id'])
+        self.assertTrue(stored['worktree'])
+        self.assertEqual(stored['workspaceMode'], 'worktree')
+        self.assertEqual(stored['cwd'], str(repo.resolve()))
+        self.assertIsNone(stored['worktreeWarning'])
 
 
     def test_new_teams_store_the_32_worker_limit_on_the_lead_only(self):

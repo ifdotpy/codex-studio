@@ -11,16 +11,20 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
     agent.remoteWorker &&
     (!agent.cwd ||
       !agent.workspaceMode ||
-      (agent.workspaceMode === "image" && !agent.workspaceBackend))
+      (agent.workspaceMode === "image" &&
+        !agent.workspaceBackend &&
+        !agent.environment))
   )
     return null;
-  const mode = agent.imageWorkspace
-    ? "image"
-    : agent.worktree === true
-      ? "worktree"
-      : agent.role === "reviewer" || agent.worktree === false
-        ? "shared"
-        : agent.workspaceMode;
+  const mode =
+    agent.workspaceMode ??
+    (agent.imageWorkspace
+      ? "image"
+      : agent.worktree === true
+        ? "worktree"
+        : agent.role === "reviewer" || agent.worktree === false
+          ? "shared"
+          : undefined);
   if (!mode) return null;
 
   const label =

@@ -54,3 +54,24 @@ test("hides the badge for leads and unknown remote workspaces", () => {
     ),
   ).toBeNull();
 });
+
+test.each([
+  ["image", "ASIF", "Apple Sparse Image Format workspace"],
+  ["worktree", "WT", "Git worktree"],
+] as const)(
+  "shows remote %s mode even when local workspace flags are false",
+  (workspaceMode, label, name) => {
+    expect(
+      workspaceBadgeInfo(
+        agent({
+          cwd: "/remote/repo",
+          remoteWorker: { server: "remote", link: "link" },
+          workspaceMode,
+          workspaceBackend: workspaceMode === "image" ? "asif" : null,
+          imageWorkspace: false,
+          worktree: false,
+        }),
+      ),
+    ).toEqual({ label, title: `${name} · /remote/repo` });
+  },
+);
