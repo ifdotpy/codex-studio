@@ -59,25 +59,77 @@ export async function savedPromptProof(file, session) {
 }
 
 export function verifyToolProof(proof, studio, offered) {
+  const safeNames = (entries) =>
+    entries.map((entry) =>
+      /^[A-Za-z0-9_.:+ -]{1,128}$/.test(entry.name)
+        ? entry.name
+        : "<unavailable>",
+    );
+  const names = (entries) => safeNames(entries).join(", ") || "(none)";
+  const refusal = (message, kind, source, target = [], changed = []) =>
+    Object.assign(new Error(message), {
+      data: {
+        moveRefusal: {
+          kind,
+          sourceNames: safeNames(source),
+          targetNames: safeNames(target),
+          changedNames: safeNames(changed),
+        },
+      },
+    });
   const builtin = proof.tools.filter(
     (entry) => !entry.name.startsWith("mcp__"),
   );
   const mcp = proof.tools.filter((entry) => entry.name.startsWith("mcp__"));
   if (mcp.some((entry) => !entry.name.startsWith("mcp__studio__")))
-    throw new Error(
-      "External MCP tool snapshots are not supported yet. Their target schemas cannot be verified without a server catalog proof",
+    throw refusal(
+      "External MCP tool snapshots are not supported yet. Source tools [" +
+        names(mcp.filter((entry) => !entry.name.startsWith("mcp__studio__"))) +
+        "]. Their target schemas cannot be verified without a server catalog proof",
+      "external_tools",
+      mcp.filter((entry) => !entry.name.startsWith("mcp__studio__")),
     );
   const shape = (entry) => ({
     name: entry.name,
     description: entry.description || "",
     input_schema: entry.input_schema,
   });
-  if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape)))
-    throw new Error(
-      "The effective target Studio tool definitions differ in names, schemas, or order",
+  if (JSON.stringify(mcp.map(shape)) !== JSON.stringify(studio.map(shape))) {
+    const before = new Map(
+      mcp.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
     );
+    const after = new Map(
+      studio.map((entry) => [entry.name, JSON.stringify(shape(entry))]),
+    );
+    const changed = mcp.filter(
+      (entry) =>
+        after.has(entry.name) &&
+        before.get(entry.name) !== after.get(entry.name),
+    );
+    throw refusal(
+      "The effective target Studio tool definitions differ in names, schemas, or order. Source tools [" +
+        names(mcp) +
+        "]; target tools [" +
+        names(studio) +
+        "]; changed definitions [" +
+        names(changed) +
+        "]",
+      "studio_tools",
+      mcp,
+      studio,
+      changed,
+    );
+  }
   if (offered && builtin.some((entry) => !offered.includes(entry.name)))
-    throw new Error("The target CLI does not offer a saved builtin tool");
+    throw refusal(
+      "The target CLI does not offer saved builtin tools [" +
+        names(builtin.filter((entry) => !offered.includes(entry.name))) +
+        "]",
+      "builtin_tools",
+      builtin,
+      offered.map((name) => ({ name })),
+      builtin.filter((entry) => !offered.includes(entry.name)),
+    );
   return builtin.map((entry) => entry.name);
 }
 
