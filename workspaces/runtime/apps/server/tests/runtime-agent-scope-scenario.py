@@ -23,6 +23,16 @@ fixture = importlib.util.module_from_spec(spec); spec.loader.exec_module(fixture
 P = "/fixture/project"
 NOW = 1700000000.0
 
+def make_runtime(root):
+    if scenario != "legacy-workspace-operation-recovery":
+        return Runtime(root, fixture.FakeServer)
+    schedule = Runtime.schedule
+    Runtime.schedule = lambda self: None
+    try:
+        return Runtime(root, fixture.FakeServer)
+    finally:
+        Runtime.schedule = schedule
+
 def seed(runtime):
     leads = [runtime.create({"name": n, "cwd": str(runtime.root), "prompt": n}, defer=True) for n in "ABC"]
     for i, lead in enumerate(leads):
@@ -94,6 +104,8 @@ def seed(runtime):
         # This synthetic database starts with already-current entity rows, so
         # use the production marker path before measuring recovery writes.
         upgrade_agent_organization(db, runtime, canvas)
+        db.execute("INSERT INTO sync_entity_meta(key,value) VALUES('seeded','1') "
+                   "ON CONFLICT(key) DO UPDATE SET value='1'")
     return {r["id"]: r for r in recs}
 
 def get(db, key):
@@ -108,7 +120,7 @@ def change(runtime, key, **fields):
         runtime.put(db, "agents", rec)
 
 temp = tempfile.TemporaryDirectory()
-runtime = Runtime(Path(temp.name), fixture.FakeServer)
+runtime = make_runtime(Path(temp.name))
 runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
 runtime.stop = lambda *a, **k: None
 out = {"scenario": scenario}
@@ -158,7 +170,7 @@ try:
                     if record.get("workspaceOperation")
                 ]
                 workspace_operation_rows = runtime.records(db, "workspace_operations")
-            runtime = Runtime(Path(temp.name), fixture.FakeServer)
+            runtime = make_runtime(Path(temp.name))
             runtime.voice = lambda: type("Voice", (), {"delete_agent": staticmethod(lambda *_: None)})()
             runtime.stop = lambda *a, **k: None
             recovered = {agent_id: runtime.agent(agent_id) for agent_id in (
