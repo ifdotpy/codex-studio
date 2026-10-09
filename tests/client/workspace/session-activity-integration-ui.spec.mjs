@@ -5,6 +5,7 @@ import {
   syncProtocolFixture,
   stubEntityState,
   test,
+  expect,
   spawnFixture as spawn,
 } from "../playwright.mjs";
 import assert from "node:assert/strict";
