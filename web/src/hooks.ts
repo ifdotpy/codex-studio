@@ -1,5 +1,6 @@
 import { retainTranscriptItems } from "./conversation/transcriptIdentity";
 import {
+  boundTranscriptPage,
   boundTranscriptItems,
   trimTranscriptPageCache,
 } from "./transcriptPageBounds";
@@ -955,7 +956,7 @@ export function useMessages(
         version: result.historyVersion ?? undefined,
         latest: live,
       };
-      const bounded = boundTranscriptItems(
+      const bounded = boundTranscriptPage(
         next.items,
         (item) => {
           let size = messageSizes.current.get(item);
@@ -965,15 +966,25 @@ export function useMessages(
           }
           return size;
         },
-        query.before ? "oldest" : "newest",
+        query.before
+          ? "older"
+          : query.after
+            ? "newer"
+            : query.around
+              ? "around"
+              : "latest",
+        {
+          before: prior?.before || null,
+          after: prior?.after || null,
+          nextBefore: result.nextCursor || null,
+          nextAfter: result.nextAfterCursor || null,
+        },
         next.anchorId,
       );
       next.items = bounded.items;
       next.size = bounded.bytes;
-      if (bounded.droppedOldest)
-        next.before = bounded.items[0]?.id || next.before;
-      if (bounded.droppedNewest && result.nextAfterCursor)
-        next.after = result.nextAfterCursor;
+      next.before = bounded.before;
+      next.after = bounded.after;
       pages.current.delete(scope);
       pages.current.set(scope, next);
       trimTranscriptPageCache(pages.current, scope);
