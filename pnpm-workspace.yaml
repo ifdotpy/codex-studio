@@ -11,3 +11,8 @@ allowBuilds:
   electron: true
   esbuild: true
   playwright: true
+
+patchedDependencies:
+  # Weak event-bulk caching releases payloads; projection pulls retain 409
+  # conflicts for server-sequence comparison. Recheck on every RxDB upgrade.
+  rxdb@17.5.0: patches/rxdb@17.5.0.patch
