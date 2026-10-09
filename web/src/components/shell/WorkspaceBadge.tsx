@@ -39,7 +39,7 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
         !agent.environment))
   )
     return null;
-  const mode =
+  const mode: string | undefined =
     agent.workspaceMode ??
     (agent.imageWorkspace
       ? "image"
@@ -51,21 +51,25 @@ export function workspaceBadgeInfo(agent?: Agent): WorkspaceBadgeInfo | null {
   if (!mode) return null;
 
   const label =
-    mode === "image"
-      ? agent.workspaceBackend === "vm" || agent.environment === "linux"
-        ? "VM"
-        : "ASIF"
-      : mode === "worktree"
-        ? "WT"
-        : "SHARED";
+    mode === "layr"
+      ? "LAYR"
+      : mode === "image"
+        ? agent.workspaceBackend === "vm" || agent.environment === "linux"
+          ? "VM"
+          : "ASIF"
+        : mode === "worktree"
+          ? "WT"
+          : "SHARED";
   const name =
-    label === "ASIF"
-      ? "Apple Sparse Image Format workspace"
-      : label === "VM"
-        ? "Linux virtual machine workspace"
-        : label === "WT"
-          ? "Git worktree"
-          : "Shared folder";
+    label === "LAYR"
+      ? "Linux VM with layr"
+      : label === "ASIF"
+        ? "Apple Sparse Image Format workspace"
+        : label === "VM"
+          ? "Linux virtual machine workspace"
+          : label === "WT"
+            ? "Git worktree"
+            : "Shared folder";
   const path =
     agent.imageWorkspace && !agent.imageWorkspaceReady
       ? agent.imageWorkspaceRepo || agent.cwd

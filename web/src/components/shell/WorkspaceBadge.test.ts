@@ -88,3 +88,16 @@ test.each([
   expect(workspaceBadgeInfo(current)?.label).toBe(label);
   expect(markup).toContain(`>${label}</span>`);
 });
+
+test.each([false, true])("shows the layr worker badge, remote=%s", (remote) => {
+  const current = {
+    ...agent(
+      remote ? { remoteWorker: { server: "remote", link: "link" } } : {},
+    ),
+    workspaceMode: "layr",
+  } as unknown as Agent;
+  expect(workspaceBadgeInfo(current)).toEqual({
+    label: "LAYR",
+    title: "Linux VM with layr · /projects/example",
+  });
+});
