@@ -1,6 +1,8 @@
 import {
   API_SCHEMA_HASH_HEADER,
+  entityPullFixtureForRequest,
   readApiSchemaHash,
+  readFixtureSyncContract,
   readTestState,
   test,
   spawnFixture,
@@ -39,6 +41,7 @@ test("transcript paging returns from the oldest row to the newest", async ({
     });
     const origin = `http://127.0.0.1:${port}`;
     const state = await readTestState(origin);
+    const syncContract = await readFixtureSyncContract(origin);
     const lead = state.threads.find((agent) => agent.name === "Release lead");
     const other = state.threads.find((agent) => agent.name === "Other project");
     assert.ok(lead && other, "fixture has a managed lead chat");
@@ -54,38 +57,52 @@ test("transcript paging returns from the oldest row to the newest", async ({
     const schemaHeaders = {
       [API_SCHEMA_HASH_HEADER]: readApiSchemaHash(),
     };
-    await page.addInitScript(() => {
-      window.EventSource = class extends EventTarget {
-        close() {}
-      };
+    const transcriptSyncPulls = [];
+    const transcriptRestReads = [];
+    const pageRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/api/transcript")
+        transcriptRestReads.push(request.url());
     });
     await page.addInitScript(({ key, id }) => localStorage.setItem(key, id), {
       key: `codex-desktop-opened:${state.stateDir}`,
-      id: other.id,
+      id: JSON.stringify(other.id),
     });
-    await page.route("**/api/sync/**", (route) =>
-      route.fulfill({
-        status: 404,
-        headers: schemaHeaders,
-        json: { error: "Fixture transcript" },
-      }),
-    );
-    await page.route("**/api/transcript?*", async (route) => {
-      const selected =
-        new URL(route.request().url()).searchParams.get("id") === lead.id;
+    const initialTranscript = {
+      agent: { ...lead, status: "completed", inFlight: false, turnId: null },
+      items: items.slice(-240),
+      truncated: true,
+      nextCursor: items.at(-240).id,
+      nextAfterCursor: null,
+      historyVersion: "forward-paging-fixture",
+      tail: items.at(-1).id,
+    };
+    await page.route("**/api/sync/pull**", async (route) => {
+      const url = new URL(route.request().url());
+      const scope = url.searchParams.get("scope");
+      if (scope !== `transcript:${lead.id}`) return route.continue();
+      transcriptSyncPulls.push({
+        scope,
+        after: url.searchParams.get("after") || "0",
+      });
+      const projection = entityPullFixtureForRequest(state, url, {
+        transcript: initialTranscript,
+      });
       await route.fulfill({
         headers: schemaHeaders,
         json: {
-          agent: selected ? lead : null,
-          items: selected ? items.slice(-240) : [],
-          truncated: selected,
-          nextCursor: selected ? items.at(-240).id : null,
-          historyVersion: "forward-paging-fixture",
+          workspaceId: syncContract.identity.workspaceId,
+          ...projection,
         },
       });
     });
     await page.route("**/api/transcript/page?*", async (route) => {
       const url = new URL(route.request().url());
+      pageRequests.push({
+        id: url.searchParams.get("id"),
+        before: url.searchParams.get("before"),
+        after: url.searchParams.get("after"),
+      });
       const before = url.searchParams.get("before");
       const after = url.searchParams.get("after");
       const boundary = before || after;
@@ -139,11 +156,6 @@ test("transcript paging returns from the oldest row to the newest", async ({
         root.scrollTop = root.scrollHeight;
         root.dispatchEvent(new Event("scroll"));
       });
-      const newestHeld = await page
-        .locator("#messages [data-message]")
-        .last()
-        .getAttribute("data-message");
-      assert.ok(newestHeld, "the held window has a newest message");
       const response = page.waitForResponse(
         (value) =>
           value.url().includes("/api/transcript/page?") &&
@@ -153,10 +165,12 @@ test("transcript paging returns from the oldest row to the newest", async ({
       const pageResponse = await response;
       assert.equal(
         new URL(pageResponse.url()).searchParams.get("after"),
-        newestHeld,
+        `message-${239 + forwardPages * 120}`,
         "each forward request starts at the held window's newest message",
       );
-      await page.locator(`[data-message="${newestHeld}"]`).waitFor();
+      await page.evaluate(
+        () => new Promise((resolve) => requestAnimationFrame(resolve)),
+      );
       forwardPages++;
     }
     await later.waitFor({ state: "detached" });
@@ -171,6 +185,32 @@ test("transcript paging returns from the oldest row to the newest", async ({
       "Later messages ends at the newest row",
     );
     assert.equal(forwardPages, 3, "the held window advances through all pages");
+    assert.ok(
+      transcriptSyncPulls.some(
+        (pull) => pull.scope === `transcript:${lead.id}` && pull.after === "0",
+      ),
+      "the initial transcript arrives through the active transcript sync pull",
+    );
+    assert.equal(
+      transcriptRestReads.length,
+      0,
+      "the initial transcript does not fall back to REST",
+    );
+    assert.equal(
+      pageRequests.length,
+      pageRequests.filter((request) => request.before !== null).length + 3,
+      "all history pages use the page API",
+    );
+    assert.equal(
+      pageRequests.filter((request) => request.before !== null).length >= 3,
+      true,
+      "older pages use before= requests through the oldest row",
+    );
+    assert.equal(
+      pageRequests.filter((request) => request.after !== null).length,
+      3,
+      "newer pages use after= requests",
+    );
   } finally {
     fixture.kill("SIGTERM");
   }
