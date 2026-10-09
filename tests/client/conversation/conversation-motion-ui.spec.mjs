@@ -89,6 +89,9 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
     const initialItems = structuredClone(items);
     const initialAgent = structuredClone(agent);
     const records = [];
+    // Both viewport pages share this context's persisted transcript cursor.
+    // Keep fixture revisions monotonic across the desktop and mobile passes.
+    let transcriptSeq = 1;
     for (const width of [1440, 390]) {
       items = structuredClone(initialItems);
       agent = structuredClone(initialAgent);
@@ -142,7 +145,6 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
         },
         syncContract,
       );
-      let transcriptSeq = 1;
       const transcriptByAgent = new Map([
         [lead.id, transcript()],
         [other.id, { agent: other, items: [], order: [], replace: true }],

@@ -18,7 +18,7 @@ const measured = new Set([
   "/api/costs",
 ]);
 
-async function repeatedReadCountsScenario(browser) {
+async function repeatedReadCountsScenario(browser, { modelOnly = false } = {}) {
   const repo = dirname(
     dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
   );
@@ -314,40 +314,43 @@ async function repeatedReadCountsScenario(browser) {
     console.log(
       `REPEATED_READ_COUNTS ${JSON.stringify({ load, toOther, back, settings: settingsCounts, firstContentMs: { load: loadFirstContentMs, openOther: openOtherFirstContentMs, backToLead: openLeadFirstContentMs }, readTimeline: requestTimeline, streamOpens: { load: streamSummary(loadStreams), toOther: streamSummary(otherStreams), back: streamSummary(backStreams) }, resourceEvents: resourceEvents.map(({ at, event: { reason, resources } }) => ({ at, reason, resourceCounts: resources.reduce((result, resource) => ((result[resource.kind] = (result[resource.kind] || 0) + 1), result), {}) })), sendFlow: { streamOpens: streamSummary(sendStreams), duplicateUrls: repeatedSendStreamUrls.length, readsWithin700ms: sendRequests } })}`,
     );
-    assert.deepEqual(
-      repeatedSendStreamUrls,
-      [],
-      "sending a message must not reopen a sync stream URL that was already active on this chat",
-    );
+    if (!modelOnly)
+      assert.deepEqual(
+        repeatedSendStreamUrls,
+        [],
+        "sending a message must not reopen a sync stream URL that was already active on this chat",
+      );
     // Stage one unlocks state/drafts, stage two adds typed resources (including terminals) and the foreground transcript,
     // and stage three adds prefetched transcripts once the chat list is available.
-    assert.ok(
-      loadStreams.length <= 3,
-      "startup should use at most three stream configurations",
-    );
-    assert.equal(
-      new Set(loadStreams.map(({ url }) => url)).size,
-      loadStreams.length,
-      "load must not reopen an identical stream URL",
-    );
-    assert.ok(
-      otherStreams.length <= 2,
-      "opening another chat should use at most two distinct subscription stages",
-    );
-    assert.equal(
-      new Set(otherStreams.map(({ url }) => url)).size,
-      otherStreams.length,
-      "chat navigation must not reopen an identical stream URL",
-    );
-    assert.ok(
-      backStreams.length <= 2,
-      "returning to the chat should use at most two distinct subscription stages",
-    );
-    assert.equal(
-      new Set(backStreams.map(({ url }) => url)).size,
-      backStreams.length,
-      "return navigation must not reopen an identical stream URL",
-    );
+    if (!modelOnly) {
+      assert.ok(
+        loadStreams.length <= 3,
+        "startup should use at most three stream configurations",
+      );
+      assert.equal(
+        new Set(loadStreams.map(({ url }) => url)).size,
+        loadStreams.length,
+        "load must not reopen an identical stream URL",
+      );
+      assert.ok(
+        otherStreams.length <= 2,
+        "opening another chat should use at most two distinct subscription stages",
+      );
+      assert.equal(
+        new Set(otherStreams.map(({ url }) => url)).size,
+        otherStreams.length,
+        "chat navigation must not reopen an identical stream URL",
+      );
+      assert.ok(
+        backStreams.length <= 2,
+        "returning to the chat should use at most two distinct subscription stages",
+      );
+      assert.equal(
+        new Set(backStreams.map(({ url }) => url)).size,
+        backStreams.length,
+        "return navigation must not reopen an identical stream URL",
+      );
+    }
     const routeKind = (key) =>
       key.startsWith("/api/models?")
         ? "models"
@@ -387,19 +390,20 @@ async function repeatedReadCountsScenario(browser) {
           : 0;
         const check = { phase, key, count, invalidations };
         if (kind === "models") modelChecks.push(check);
-        else
+        else if (!modelOnly)
           assert.ok(
             count <= 1 + invalidations,
             `${phase} repeated ${key} ${count} times with ${invalidations} matching resource changes`,
           );
       }
-    assert.deepEqual(
-      await page
-        .locator("[data-chat]")
-        .filter({ hasText: "Release lead" })
-        .count(),
-      1,
-    );
+    if (!modelOnly)
+      assert.deepEqual(
+        await page
+          .locator("[data-chat]")
+          .filter({ hasText: "Release lead" })
+          .count(),
+        1,
+      );
     return modelChecks;
   } finally {
     await context.close();
@@ -418,13 +422,15 @@ test("model catalog reads stay within invalidation counts @performance", async (
   browser,
 }) => {
   test.setTimeout(180_000);
-  const modelChecks = await repeatedReadCountsScenario(browser);
+  const modelChecks = await repeatedReadCountsScenario(browser, {
+    modelOnly: true,
+  });
   assert.ok(modelChecks.length > 0, "model catalog reads were measured");
-  test.fail(
-    true,
-    "model catalog hooks issue duplicate identical reads; see tests/client/KNOWN-FAILURES.md",
-  );
   for (const check of modelChecks) {
+    test.fail(
+      true,
+      "model catalog hooks issue duplicate identical reads; see tests/client/KNOWN-FAILURES.md",
+    );
     assert.ok(
       check.count <= 1 + check.invalidations,
       `model catalog reads exceeded 1 + matching invalidations: ${JSON.stringify(check)}`,
