@@ -8,7 +8,6 @@ overrides:
   "typed-rest-client>qs": 6.16.0
 
 allowBuilds:
-  electron: true
   esbuild: true
   playwright: true
 
