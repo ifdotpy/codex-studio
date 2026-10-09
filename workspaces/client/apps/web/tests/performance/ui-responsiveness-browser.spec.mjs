@@ -18,11 +18,12 @@ test(
   { tag: "@performance" },
   async ({ browser: testBrowser, context: runnerContext }) => {
     test.setTimeout(300_000);
-    const repo = fileURLToPath(new URL("../../../", import.meta.url));
+    const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const dir = await mkdtemp(join(tmpdir(), "studio-ui-responsiveness-"));
     const staticDir = join(dir, "dist");
     await cp(
-      process.env.RESPONSIVENESS_DIST || join(repo, "web/dist"),
+      process.env.RESPONSIVENESS_DIST ||
+        join(repo, "workspaces/client/apps/web/dist"),
       staticDir,
       {
         recursive: true,
@@ -40,7 +41,11 @@ test(
     };
     const fixture = spawn(
       "python3",
-      ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
+      [
+        "-B",
+        join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+        dir,
+      ],
       {
         stdio: ["ignore", "pipe", "pipe"],
         env: { ...process.env, CODEX_BOARD_STATE_DIR: join(dir, "board") },

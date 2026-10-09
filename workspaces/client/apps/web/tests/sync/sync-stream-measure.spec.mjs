@@ -15,20 +15,22 @@ import http from "node:http";
 import { setTimeout as delay } from "node:timers/promises";
 test("Sync stream measure @performance", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Private fake-runtime measurement: fixture write commit -> persisted renderer row.
 
   const root = testRepo;
   const fixturePath =
-    process.env.SYNC_FIXTURE_PATH || join(root, "tests/simple-ui-fixture.py");
-  const requireWeb = createRequire(join(root, "web/package.json"));
+    process.env.SYNC_FIXTURE_PATH ||
+    join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py");
+  const requireWeb = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
+  );
   const { chromium } = requireWeb("playwright-core");
   const typescript = requireWeb("typescript");
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const directory = await mkdtemp(join(tmpdir(), "sync-stream-measure-"));
   const fixture = spawn("python3", ["-B", fixturePath, directory], {

@@ -17,15 +17,15 @@ test("transcript paging returns from the oldest row to the newest", async ({
   page,
 }) => {
   test.setTimeout(120_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "studio-transcript-forward-"));
   const fixture = spawnFixture(
     "python3",
     [
-      join(repo, "scripts/codex_python.py"),
+      join(repo, "workspaces/runtime/apps/server/src/codex_python.py"),
       "--exec",
       "-B",
-      join(repo, "tests/simple-ui-fixture.py"),
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
       root,
     ],
     { stdio: ["ignore", "pipe", "pipe"] },

@@ -9,13 +9,13 @@ import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 
 const require = createRequire(
-  fileURLToPath(new URL("../../web/package.json", import.meta.url)),
+  fileURLToPath(new URL("../package.json", import.meta.url)),
 );
 const { test: baseTest, expect } = require("@playwright/test");
 const { chromium } = require("playwright");
 
 const generatedApiSchema = readFileSync(
-  new URL("../../web/src/generated/apiSchema.ts", import.meta.url),
+  new URL("../src/generated/apiSchema.ts", import.meta.url),
   "utf8",
 );
 
@@ -185,34 +185,34 @@ export function spawnFixture(command, args, options) {
 
 export const browserExecutablePath =
   process.env.CHROME_BIN?.trim() || chromium.executablePath();
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncPullResetResponse"]} SyncPullResetResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceChangeEvent"]} ResourceChangeEvent */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceTokenRatesEvent"]} ResourceTokenRatesEvent */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceRef"]} ResourceRef */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyRequest"]} ResourceNotifyRequest */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ResourceNotifyAck"]} ResourceNotifyAck */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["AgentEntityDto"]} AgentEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ChatEntityDto"]} ChatEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ComplaintEntityDto"]} ComplaintEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["EdgeEntityDto"]} EdgeEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["ProjectEntityDto"]} ProjectEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["RoomEntityDto"]} RoomEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["RuleEntityDto"]} RuleEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["TaskEntityDto"]} TaskEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkspaceEntityDto"]} WorkspaceEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["WorkEntityDto"]} WorkEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["EventEntityDto"]} EventEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["MonitorEntityDto"]} MonitorEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["PeerTeamEntityDto"]} PeerTeamEntityDto */
-/** @typedef {import("../../web/src/generated/api").components["schemas"]["RequestEntityDto"]} RequestEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["JsonValue"]} JsonValue */
+/** @typedef {import("../src/generated/api").components["schemas"]["SessionResponse"]} SessionResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResponse"]} SyncPullResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["SyncPullResetResponse"]} SyncPullResetResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["SyncEntity"]} SyncEntity */
+/** @typedef {import("../src/generated/api").components["schemas"]["TranscriptPageResponse"]} TranscriptPageResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["SyncIdentityResponse"]} SyncIdentityResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["SyncProtocolResponse"]} SyncProtocolResponse */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceChangeEvent"]} ResourceChangeEvent */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceHeartbeatEvent"]} ResourceHeartbeatEvent */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceTokenRatesEvent"]} ResourceTokenRatesEvent */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceRef"]} ResourceRef */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceNotifyRequest"]} ResourceNotifyRequest */
+/** @typedef {import("../src/generated/api").components["schemas"]["ResourceNotifyAck"]} ResourceNotifyAck */
+/** @typedef {import("../src/generated/api").components["schemas"]["AgentEntityDto"]} AgentEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["ChatEntityDto"]} ChatEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["ComplaintEntityDto"]} ComplaintEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["EdgeEntityDto"]} EdgeEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["ProjectEntityDto"]} ProjectEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["RoomEntityDto"]} RoomEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["RuleEntityDto"]} RuleEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["TaskEntityDto"]} TaskEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["WorkspaceEntityDto"]} WorkspaceEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["WorkEntityDto"]} WorkEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["EventEntityDto"]} EventEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["MonitorEntityDto"]} MonitorEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["PeerTeamEntityDto"]} PeerTeamEntityDto */
+/** @typedef {import("../src/generated/api").components["schemas"]["RequestEntityDto"]} RequestEntityDto */
 
 /**
  * Keep this view limited to fields in AgentEntityDto.

@@ -3,7 +3,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { expect, test, spawnFixture as spawn } from "../playwright.mjs";
 
@@ -23,13 +23,15 @@ for (const [platform, userAgent] of mobileBrowsers) {
     browser: runnerBrowser,
     browserName,
   }) => {
-    const root = dirname(
-      dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-    );
+    const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
     const state = await mkdtemp(join(tmpdir(), "codex-mobile-keyboard-"));
     const fixture = spawn(
       "python3",
-      ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+      [
+        "-B",
+        join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+        state,
+      ],
       { stdio: ["pipe", "pipe", "pipe"] },
     );
     let context,

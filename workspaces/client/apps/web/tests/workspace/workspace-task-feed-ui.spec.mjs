@@ -3,16 +3,17 @@ import { test, spawnFixture as spawn, readTestState } from "../playwright.mjs";
 // Verify the visible task drawer follows the cursor feed while it is open.
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("workspace task feed ui", async ({ page: runnerPage }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const stateDir = await mkdtemp(join(tmpdir(), "codex-task-feed-ui-"));
   const proc = spawn(
     "python3",
-    [join(repo, "tests/simple-ui-fixture.py"), stateDir],
+    [
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      stateDir,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "";

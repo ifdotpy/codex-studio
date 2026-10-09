@@ -6,13 +6,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Message info", async ({ browser: testBrowser }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production renderer and metadata HTTP reads, temp state, headless Chrome only.
   const repo = testRepo;
   const root = await mkdtemp(join(tmpdir(), "studio-message-info-"));
   const proc = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let browser, browserContext;

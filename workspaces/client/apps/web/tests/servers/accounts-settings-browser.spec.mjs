@@ -147,7 +147,7 @@ test("accounts settings show per-server state and provider choices", async ({
   ).toBeVisible();
 
   const screenshots = fileURLToPath(
-    new URL("../../../docs/screenshots/", import.meta.url),
+    new URL("../../../../../../docs/screenshots/", import.meta.url),
   );
   mkdirSync(screenshots, { recursive: true });
   await settings.screenshot({

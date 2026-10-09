@@ -3,7 +3,7 @@ import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const browserContextsByTest = new WeakMap();
@@ -22,13 +22,15 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("draft idle poll browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-draft-idle-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), directory],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      directory,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let browser;

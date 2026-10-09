@@ -8,18 +8,20 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 test("ux-navigation-ui", async ({ browser, page: fixturePage }) => {
   test.setTimeout(120_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-ux-navigation-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

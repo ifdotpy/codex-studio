@@ -10,7 +10,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 test("sidebar drag browser", async ({ page: runnerPage }) => {
   test.setTimeout(600000);
-  const root = resolve(import.meta.dirname, "../../..");
+  const root = resolve(import.meta.dirname, "../../../../../../");
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sidebar-drag-"));
   console.log("Sidebar fixture state retained after worker cleanup:", stateDir);
   const proc = spawn(

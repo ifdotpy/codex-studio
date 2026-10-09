@@ -11,11 +11,15 @@ test("Live chat ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(300_000);
-  const skill = fileURLToPath(new URL("../../../", import.meta.url));
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-stream-ui-"));
   const proc = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "",

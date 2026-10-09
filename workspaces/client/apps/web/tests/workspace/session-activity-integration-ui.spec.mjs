@@ -16,18 +16,24 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 test("Session activity integration", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
-  const repo = testRepo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
   );
+  const repo = testRepo;
+  const { chromium, webkit } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const engine = process.env.BROWSER === "webkit" ? webkit : chromium;
   const root = await mkdtemp(
     join(tmpdir(), "studio-session-activity-integration-"),
   );
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },

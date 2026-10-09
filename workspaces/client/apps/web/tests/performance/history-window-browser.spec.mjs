@@ -9,7 +9,7 @@ test("long history mounts a bounded viewport and preserves navigation and anchor
   browser,
 }) => {
   test.setTimeout(90000);
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-history-window-vite-"));

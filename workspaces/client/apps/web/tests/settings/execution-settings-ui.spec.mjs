@@ -3,14 +3,18 @@ import {
   setupControl,
   setupToggle,
   chooseSetupValue,
-} from "../../setup-controls.mjs";
+} from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 // Production client with an isolated runtime. No model service or user state.
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { modelValue, openModelList, selectModel } from "../../model-picker.mjs";
+import {
+  modelValue,
+  openModelList,
+  selectModel,
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 
 const browserContextsByTest = new WeakMap();
 test.beforeEach(async ({ browser }, testInfo) => {
@@ -28,9 +32,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("execution settings ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const skill = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const skill = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "codex-execution-settings-ui-"));
   const models = [
     {
@@ -78,7 +80,11 @@ test("execution settings ui", async ({ browser: _browser }) => {
   }));
   const proc = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

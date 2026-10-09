@@ -20,11 +20,14 @@ test("Message receipt pagination browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(repo, "web/package.json"));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const python = process.env.PYTHON || process.env.PYTHON_BIN || "python3";
-  const dist = process.env.RECEIPTS_DIST || join(repo, "web/dist");
+  const dist =
+    process.env.RECEIPTS_DIST || join(repo, "workspaces/client/apps/web/dist");
   const index = await readFile(join(dist, "index.html"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-message-receipts-"));
   const id = randomUUID();
@@ -35,7 +38,11 @@ test("Message receipt pagination browser", async ({
   const missingText = "An absent receipt does not confirm delivery";
   const fixture = spawn(
     python,
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), temporary],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      temporary,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: {

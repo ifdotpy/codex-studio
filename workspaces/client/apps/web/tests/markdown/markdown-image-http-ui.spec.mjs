@@ -5,11 +5,11 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("markdown image http ui", async ({ page: runnerPage }) => {
-  const repo = new URL("../../../", import.meta.url).pathname;
+  const repo = new URL("../../../../../../", import.meta.url).pathname;
   const root = await mkdtemp(join(tmpdir(), "studio-image-http-"));
   const fixture = spawn("python3", [
     "-B",
-    join(repo, "tests/simple-ui-fixture.py"),
+    join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
     root,
   ]);
   let log = "";

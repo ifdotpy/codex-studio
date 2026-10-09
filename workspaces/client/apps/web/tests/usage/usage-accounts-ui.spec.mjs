@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
@@ -28,13 +28,16 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("usage accounts ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "usage-accounts-vite-"));
-  const entry = join(repo, "web/__usage-accounts-fixture.jsx");
+  const entry = join(
+    repo,
+    "workspaces/client/apps/web/__usage-accounts-fixture.jsx",
+  );
   const now = Math.floor(Date.now() / 1000);
   const workspaceId = "abcdef0123456789abcdef0123456789";
   const epoch = "usage-accounts-fixture";

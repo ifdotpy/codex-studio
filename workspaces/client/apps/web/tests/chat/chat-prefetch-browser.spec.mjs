@@ -8,16 +8,13 @@ test("Chat prefetch browser", async ({
 }) => {
   test.setTimeout(300_000);
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const streams = new Set();
   const server = await createServer({
     configFile: false,
     optimizeDeps: { force: true },
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {

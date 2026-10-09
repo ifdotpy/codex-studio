@@ -8,13 +8,15 @@ import { join, relative } from "node:path";
 import { createRequire } from "node:module";
 test("Mobile usability", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Headless WebKit audit of the production UI. Only temporary fixture state is used.
 
   const repo = testRepo;
-  const { webkit, devices } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
+  const { webkit, devices } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const webkitPath = webkit.executablePath();
   test.skip(
     !existsSync(webkitPath),

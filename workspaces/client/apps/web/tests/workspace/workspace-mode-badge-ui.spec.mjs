@@ -10,11 +10,15 @@ test("worker workspace badge fits light, dark, and mobile chat headers", async (
   page,
 }, testInfo) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-workspace-badge-"));
   const proc = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     {
       env: { WORKSPACE_BADGE_FIXTURE: "1" },
       stdio: ["pipe", "pipe", "pipe"],

@@ -1,4 +1,4 @@
-import { readTestState } from "../../../../tests/client/playwright.mjs";
+import { readTestState } from "../../../tests/playwright.mjs";
 import {
   access,
   mkdir,
@@ -11,18 +11,17 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import {
-  test,
-  expect,
-  spawnFixture,
-} from "../../../../tests/client/playwright.mjs";
+import { test, expect, spawnFixture } from "../../../tests/playwright.mjs";
 
 test("an active AgentPanel follows native progress changes without polling", async ({
   browser,
 }) => {
   test.setTimeout(210_000);
-  const repo = join(import.meta.dirname, "../../../..");
-  const builtIndex = await readFile(join(repo, "web/dist/index.html"), "utf8");
+  const repo = join(import.meta.dirname, "../../../../../../../");
+  const builtIndex = await readFile(
+    join(repo, "workspaces/client/apps/web/dist/index.html"),
+    "utf8",
+  );
   const builtEntry = builtIndex.match(/src="\.\/(assets\/index-[^"]+\.js)"/);
   expect(builtEntry, "built entrypoint in web/dist/index.html").not.toBeNull();
   const expectedEntry = builtEntry[1];
@@ -39,7 +38,11 @@ test("an active AgentPanel follows native progress changes without polling", asy
   );
   const proc = spawnFixture(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

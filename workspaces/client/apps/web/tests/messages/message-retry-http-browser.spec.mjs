@@ -9,22 +9,21 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("message retry http browser", async ({ page: runnerPage }) => {
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const state = await mkdtemp(join(tmpdir(), "studio-retry-http-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let server,

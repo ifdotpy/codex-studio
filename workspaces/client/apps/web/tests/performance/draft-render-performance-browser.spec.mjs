@@ -24,13 +24,13 @@ test("Draft Render Performance Browser @performance", async ({
     },
   };
 
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const { createServer } = await import(
-    root + "/web/node_modules/vite/dist/node/index.js"
+    root + "/workspaces/client/apps/web/node_modules/vite/dist/node/index.js"
   );
   const server = await createServer({
     configFile: false,
-    root: root + "/web",
+    root: root + "/workspaces/client/apps/web",
     server: { host: "127.0.0.1", port: 0 },
   });
   await server.listen();
