@@ -14,12 +14,13 @@ import uuid
 
 from codex_source_inventory import source_files
 from codex_private_paths import ensure_private_dir, protect_temp_file
+from codex_layout import SERVER_SOURCE_ROOT
 
 
 class LiveUpdates:
     def __init__(self, runtime, scripts=None, interval=2):
         self.runtime = runtime
-        self.scripts = Path(scripts or Path(__file__).parent).resolve()
+        self.scripts = Path(scripts or SERVER_SOURCE_ROOT).resolve()
         self.interval = interval
         self._state = {"status": "idle"}
         self._state_lock = threading.Lock()

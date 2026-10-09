@@ -8,6 +8,7 @@ import subprocess
 from typing import Any
 from codex_claude import node_executable
 from codex_native_errors import NativeRpcError
+from codex_layout import CLAUDE_BRIDGE_ROOT
 
 
 def prompt_catalog(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -62,7 +63,7 @@ def instruction_proofs(server: Any, agent: dict[str, Any], rows: list[dict[str, 
         node = node_executable()
         if not servers or not node:
             return fallback
-        reader = Path(__file__).with_name('claude_bridge') / 'codex-catalog-proof.mjs'
+        reader = CLAUDE_BRIDGE_ROOT / 'codex-catalog-proof.mjs'
         response = subprocess.run([node, str(reader)], input=json.dumps({'servers': servers}),
             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=20, check=True)
         proofs = json.loads(response.stdout)

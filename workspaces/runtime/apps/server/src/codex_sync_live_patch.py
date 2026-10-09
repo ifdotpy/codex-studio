@@ -10,6 +10,7 @@ import ast
 from types import CodeType, FunctionType
 
 from codex_source import signature
+from codex_layout import SERVER_SOURCE_ROOT
 
 
 def _literal(value):
@@ -81,7 +82,7 @@ def _owner(module, path):
 
 
 def apply(runtime):
-    scripts = Path(__file__).resolve().parent
+    scripts = SERVER_SOURCE_ROOT
     modules = {name: _module(name, scripts) for name in MANIFEST["shas"]}
     cls = sys.modules["codex_runtime"].Runtime
     work, adds = [], []

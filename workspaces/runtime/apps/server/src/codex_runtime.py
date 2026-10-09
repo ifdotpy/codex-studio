@@ -48,6 +48,7 @@ from codex_agent_modes import (DEFAULT_MAX_TEAM_AGENTS, DEFAULT_SUBAGENT_CONCURR
                                MAX_SUBAGENT_CONCURRENCY, MAX_TEAM_AGENTS,
                                global_concurrency_limit)
 from codex_startup_memory import mark as startup_memory_mark
+from codex_layout import REPOSITORY_ROOT, SERVER_SOURCE_ROOT
 from codex_sqlite import connect as sqlite_connect, assert_clean as sqlite_assert_clean, scope as sqlite_scope
 from codex_lock_metrics import runtime_lock
 from codex_usage_resume import UsageResumeMixin, _auth_error
@@ -5381,7 +5382,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if actor.get('nativeRoleGuidance'):
             return actor['nativeRoleGuidance']
         name = "codex-orchestrator" if actor.get("isLead") else "codex-subagent"
-        path = Path(__file__).resolve().parent.parent / ".agents" / "skills" / name / "SKILL.md"
+        path = REPOSITORY_ROOT / ".agents" / "skills" / name / "SKILL.md"
         from codex_session_tools import session_tool_name, LEGACY_MOVE
         content_path = (path.parent / 'references' / 'legacy-move-role.md'
                         if actor.get('isLead') and session_tool_name(actor) == LEGACY_MOVE else path)
@@ -5747,7 +5748,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @staticmethod
     def panel_guidance():
-        guide = Path(__file__).resolve().parent.parent / ".agents/skills/codex-workspace/references/panel.md"
+        guide = REPOSITORY_ROOT / ".agents/skills/codex-workspace/references/panel.md"
         try:
             content = guide.read_text(encoding="utf-8").strip()
         except OSError as error:
@@ -7348,8 +7349,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if agent.get("environment") == "linux":
             import shlex
             result["environment"] = "linux"
-            result["fetchCommand"] = "python3 scripts/codex_linux_vm_fetch.py " + " ".join(
-                shlex.quote(str(value)) for value in (agent["id"], agent.get("cwd", ""), "BRANCH", "--cwd", agent.get("imageWorkspaceRepo", "")))
+            result["fetchCommand"] = shlex.join(
+                [
+                    "python3",
+                    str(SERVER_SOURCE_ROOT / "codex_linux_vm_fetch.py"),
+                    str(agent["id"]),
+                    str(agent.get("cwd", "")),
+                    "BRANCH",
+                    "--cwd",
+                    str(agent.get("imageWorkspaceRepo", "")),
+                ]
+            )
         if agent.get("imageWorkspaceError"):
             result["error"] = agent["imageWorkspaceError"]
         return result

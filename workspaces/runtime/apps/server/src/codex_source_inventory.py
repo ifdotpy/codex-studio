@@ -1,5 +1,6 @@
 """Inventory production backend sources shared by identity and live updates."""
 from pathlib import Path, PurePosixPath
+from codex_layout import SERVER_SOURCE_ROOT
 
 
 _EXCLUDED_DIRS = {
@@ -21,7 +22,7 @@ def _safe_relative(path: Path, root: Path) -> str:
     return relative
 
 
-def source_files(scripts: str | Path) -> tuple[tuple[str, Path], ...]:
+def source_files(scripts: str | Path = SERVER_SOURCE_ROOT) -> tuple[tuple[str, Path], ...]:
     """Return (stable relative path, Path) pairs for the production source tree.
 
     Top-level Python files and codex-canvas retain their historical identity.
@@ -29,7 +30,7 @@ def source_files(scripts: str | Path) -> tuple[tuple[str, Path], ...]:
     """
     root = Path(scripts).resolve(strict=True)
     if not root.is_dir():
-        raise ValueError("The backend scripts directory is missing")
+        raise ValueError("The backend source directory is missing")
     found: dict[str, Path] = {}
 
     def add(path: Path) -> None:
