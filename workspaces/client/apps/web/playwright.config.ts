@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import { defineConfig } from "@playwright/test";
-import { delimiter, dirname } from "node:path";
+import { delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
 import { browserExecutablePath } from "./tests/playwright.mjs";
 
@@ -8,25 +7,6 @@ const serverSource = fileURLToPath(
   new URL("../../../../workspaces/runtime/apps/server/src/", import.meta.url),
 );
 process.env.PYTHONPATH = [serverSource, process.env.PYTHONPATH]
-  .filter(Boolean)
-  .join(delimiter);
-const pythonLauncher = fileURLToPath(
-  new URL(
-    "../../../../workspaces/runtime/apps/server/src/codex_python.py",
-    import.meta.url,
-  ),
-);
-const configuredPython =
-  process.env.CODEX_AGENTS_PYTHON ||
-  process.env.PYTHON ||
-  process.env.PYTHON_BIN;
-const python =
-  configuredPython ||
-  execFileSync("python3", [pythonLauncher], { encoding: "utf8" }).trim();
-process.env.CODEX_AGENTS_PYTHON = python;
-process.env.PYTHON = python;
-process.env.PYTHON_BIN = python;
-process.env.PATH = [dirname(python), process.env.PATH]
   .filter(Boolean)
   .join(delimiter);
 
