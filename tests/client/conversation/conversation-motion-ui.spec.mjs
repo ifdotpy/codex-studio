@@ -309,7 +309,9 @@ test("conversation motion ui @performance", async ({ page: runnerPage }) => {
       );
       await afterPaint(page, rootSelector);
       assert.ok((await gap()) < 2, "send and composer shrink retain bottom");
-      await page.waitForLoadState("networkidle");
+      // The shared EventSource stays open for the lifetime of this tab, so
+      // networkidle is not a meaningful settling signal. emit() above already
+      // waited for the transcript pull that applies the latest fixture state.
       const scrollBefore = await page.locator(rootSelector).evaluate(
         (root) =>
           new Promise((resolve, reject) => {

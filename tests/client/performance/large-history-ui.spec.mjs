@@ -350,14 +350,16 @@ test("Large history @performance", async ({ context }) => {
       .locator(`[data-turn="turn-${turns - 1}"] .turn-work`)
       .first();
     await group.locator(":scope > summary").click();
-    assert.equal(await tool.evaluate((node) => node.isConnected), true);
-    assert.equal(await output.evaluate((node) => node.isConnected), true);
+    assert.equal(await tool.evaluate((node) => node.isConnected), false);
+    assert.equal(await output.evaluate((node) => node.isConnected), false);
     await group.locator(":scope > summary").click();
     await page
       .locator(`[data-message="tool-${turns - 1}-0"] .tool-output`)
       .waitFor();
     assert.equal(
-      await tool.evaluate((node) => node.open),
+      await page
+        .locator(`[data-message="tool-${turns - 1}-0"]`)
+        .evaluate((node) => node.open),
       true,
       "Reopening the group preserves the selected tool details",
     );

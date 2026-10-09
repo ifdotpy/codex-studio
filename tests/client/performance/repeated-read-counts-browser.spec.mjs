@@ -424,8 +424,10 @@ test("model catalog reads stay within invalidation counts @performance", async (
     true,
     "model catalog hooks issue duplicate identical reads; see tests/client/KNOWN-FAILURES.md",
   );
-  assert.ok(
-    modelChecks.every(({ count, invalidations }) => count <= 1 + invalidations),
-    `model catalog reads exceeded 1 + matching invalidations: ${JSON.stringify(modelChecks.filter(({ count, invalidations }) => count > 1 + invalidations))}`,
-  );
+  for (const check of modelChecks) {
+    assert.ok(
+      check.count <= 1 + check.invalidations,
+      `model catalog reads exceeded 1 + matching invalidations: ${JSON.stringify(check)}`,
+    );
+  }
 });

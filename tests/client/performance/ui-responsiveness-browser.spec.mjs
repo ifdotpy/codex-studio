@@ -497,34 +497,32 @@ test(
           firstText + suffix,
           "Streaming does not lose typed characters",
         );
-        const revealedCommentary = await page.evaluate(async () => {
-          const root = [...document.querySelectorAll("#messages")].find(
-            (node) => {
-              const bounds = node.getBoundingClientRect();
-              return bounds.width > 0 && bounds.height > 0;
-            },
-          );
-          if (!root) return 0;
-          let count = 0;
-          for (let turn = 0; turn < 30; turn++) {
-            for (let step = 0; step < 4; step++) {
-              const id = `a-text-${turn}-${step}`;
+        let revealedCommentary = 0;
+        const visibleTranscript = page.locator("#messages:visible").first();
+        for (let turn = 0; turn < 30; turn++) {
+          for (let step = 0; step < 4; step++) {
+            const id = `a-text-${turn}-${step}`;
+            await visibleTranscript.evaluate((root, messageId) => {
               root.dispatchEvent(
-                new CustomEvent("studio-history-reveal", { detail: id }),
+                new CustomEvent("studio-history-reveal", {
+                  detail: messageId,
+                }),
               );
-              await new Promise((resolve) =>
-                requestAnimationFrame(() => requestAnimationFrame(resolve)),
+            }, id);
+            await page.waitForFunction((messageId) => {
+              const root = [...document.querySelectorAll("#messages")].find(
+                (node) => {
+                  const bounds = node.getBoundingClientRect();
+                  return bounds.width > 0 && bounds.height > 0;
+                },
               );
-              if (
-                root.querySelector(
-                  `[data-message="${CSS.escape(id)}"]:not([data-lazy-message])`,
-                )
-              )
-                count++;
-            }
+              return !!root?.querySelector(
+                `[data-message="${CSS.escape(messageId)}"]:not([data-lazy-message])`,
+              );
+            }, id);
+            revealedCommentary++;
           }
-          return count;
-        });
+        }
         assert.equal(
           revealedCommentary,
           120,
