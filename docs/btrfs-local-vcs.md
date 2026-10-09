@@ -198,6 +198,60 @@ engine.
 `btrfs send` and `receive` need `CAP_SYS_ADMIN`. The Studio VM has it. A bare Linux server needs a
 privileged helper.
 
+## Linux hosts without btrfs
+
+| Option                               | How                                                                            | Root                                       | Capabilities                                |
+| ------------------------------------ | ------------------------------------------------------------------------------ | ------------------------------------------ | ------------------------------------------- |
+| **btrfs on a loop file**             | a sparse file in the Studio store, `mkfs.btrfs`, mounted through a loop device | once, at setup (a systemd mount unit)      | all btrfs functions                         |
+| btrfs partition or disk              | a separate partition for the Studio store                                      | at setup                                   | all btrfs functions, no extra layer         |
+| VM, as on macOS                      | KVM with QEMU, Firecracker or cloud-hypervisor                                 | no, but access to `/dev/kvm` (group `kvm`) | all, like macOS                             |
+| ZFS host                             | ZFS snapshot, clone and `zfs send`                                             | delegation with `zfs allow`                | the same as btrfs, as a second backend      |
+| ext4 or XFS without any of the above | overlayfs, as in the current workspace engine                                  | no                                         | layers only: no state history and no `send` |
+
+Containers do not add btrfs. Docker and Podman on ext4 store layers with overlay2. A rootless
+container cannot mount btrfs: the kernel allows only some file systems in a user namespace (for
+example tmpfs, overlay and FUSE). A privileged container is the loop option with the rights of the
+container engine.
+
+With the loop option, the user's folder on ext4 or XFS stays the source of truth, as the Mac folder
+does on macOS. The same two-way sync applies. Linux has no persistent change journal like FSEvents,
+so the folder to store direction uses inotify while Studio runs and one `rsync` comparison after a
+restart (200,000 files: 1.2 s, measured in the Linux readiness checks of the research document).
+
+Measurement, 2026-10-09: throwaway OrbStack machine (17 vCPU, 15 GB RAM), btrfs-progs 6.17.1, one
+run, `drop_caches` before each cold case. The loop file lived on the machine's own btrfs root
+(`nodatacow`), not on ext4.
+
+| Operation (200,000 small files)             |  Native btrfs | Loop, direct I/O off | Loop, direct I/O on |
+| ------------------------------------------- | ------------: | -------------------: | ------------------: |
+| create files + `sync`                       |       19.63 s |               9.51 s |             12.28 s |
+| walk with `stat`, cold / warm               | 1.30 / 0.45 s |        2.27 / 0.51 s |       5.10 / 0.59 s |
+| `git init` + `add` + `commit`               |       18.25 s |              14.80 s |             16.32 s |
+| `git status`, cold / warm                   | 0.56 / 0.15 s |        1.08 / 0.13 s |       0.89 / 0.14 s |
+| `rg` over all files, cold                   |        1.45 s |               3.05 s |              2.40 s |
+| read-only snapshot, first / after 100 edits | 0.11 / 0.18 s |        0.85 / 0.20 s |       0.81 / 0.16 s |
+| change list (`send --no-data`)              |        0.01 s |               0.01 s |              0.01 s |
+| writable snapshot                           |        0.11 s |               0.03 s |              0.10 s |
+| write 1 GiB sequential + `fsync`            |        1.25 s |               3.52 s |              1.45 s |
+| read 1 GiB sequential, cold                 |        0.50 s |               0.93 s |              0.70 s |
+| reflink copy 1 GiB                          |        0.00 s |               0.00 s |              0.00 s |
+| full `send` of the snapshot                 |       16.86 s |              14.36 s |             14.88 s |
+
+Findings:
+
+- The btrfs functions that the utility depends on (snapshots, change lists, reflink, `send`) cost
+  the same on a loop file.
+- Warm work costs the same.
+- Cold reads cost about 1.7 to 2 times more on a loop file (walk, `git status`, `rg`). With direct
+  I/O the cold walk is about 4 times slower, because small reads lose the host page cache.
+- Direct I/O helps large sequential writes (1.45 s against 3.52 s).
+- The faster file creation on a loop file is buffering in the host page cache, not faster storage.
+- Default: direct I/O off, because cold metadata reads matter more for git and search than large
+  writes. Measure again on a real ext4 host before release.
+
+Recommendation: the loop file by default; the VM when root is not allowed but KVM is; overlayfs as
+the reduced mode; a ZFS backend only when users on ZFS appear.
+
 ## Prototype results (2026-10-09)
 
 Throwaway OrbStack machine, Ubuntu 26.04, kernel 7.0, btrfs-progs 6.17.1, root. Project: 200,000

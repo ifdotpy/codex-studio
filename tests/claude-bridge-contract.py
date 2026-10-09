@@ -218,6 +218,11 @@ class Bridge(unittest.TestCase):
                                     str(getattr(self, 'initialization_timeout_ms', self.preparation_timeout_ms)) + ';')
             if hasattr(self, 'catalog_refresh_ms'):
                 source = source.replace('refreshMs = 240000', 'refreshMs = ' + str(self.catalog_refresh_ms))
+            if hasattr(self, 'catalog_ttl_ms'):
+                source = source.replace('ttlMs = 300000', 'ttlMs = ' + str(self.catalog_ttl_ms))
+            if hasattr(self, 'passive_timeout_ms'):
+                source = source.replace('const PASSIVE_ACCOUNT_TIMEOUT_MS = 8_000;',
+                                        'const PASSIVE_ACCOUNT_TIMEOUT_MS = ' + str(self.passive_timeout_ms) + ';')
             (root / helper.name).write_text(source)
         (root / 'fake.mjs').write_text(SDK)
         dependency_modules = ROOT / 'scripts/claude_bridge/node_modules'
@@ -880,7 +885,7 @@ class Bridge(unittest.TestCase):
         self.assertEqual([i['id'] for i in users],['initial','33333333-3333-4333-8333-333333333333'])
 
     def test_turn_start_steers_active_turn_and_deduplicates_client_id(self):
-        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 22)
+        self.assertEqual(self.call('initialize', {})['capabilities']['claudeVersion'], 23)
         first = self.turn('steer', 'start-initial')['turn']['id']
         params = {'threadId': self.thread, 'clientUserMessageId': 'start-followup',
                   'input': [{'type': 'text', 'text': 'replacement'}]}
