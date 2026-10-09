@@ -6,13 +6,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Question history", async ({ context }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Real isolated HTTP runtime, no model or user state.
   const project = testRepo;
   const root = await mkdtemp(join(tmpdir(), "studio-question-history-"));
   const proc = spawn(
     "python3",
-    ["-B", join(project, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(
+        project,
+        "workspaces/runtime/apps/server/tests/simple-ui-fixture.py",
+      ),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: { ...process.env, CODEX_BOARD_STATE_DIR: join(root, "board") },

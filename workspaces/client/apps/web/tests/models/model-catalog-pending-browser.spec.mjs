@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
@@ -30,15 +30,18 @@ test("Model Catalog Pending Browser", async ({
     },
   };
 
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(
     join(tmpdir(), "studio-model-catalog-pending-"),
   );
-  const picker = join(root, "web/src/components/agents/WorkerModelPicker.tsx");
+  const picker = join(
+    root,
+    "workspaces/client/apps/web/src/components/agents/WorkerModelPicker.tsx",
+  );
   const server = await createServer({
     configFile: false,
     root: join(root, "web"),

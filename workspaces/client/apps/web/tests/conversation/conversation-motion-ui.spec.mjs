@@ -11,16 +11,18 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("conversation motion ui @performance", async ({ page: runnerPage }) => {
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const dir = await mkdtemp(join(tmpdir(), "studio-conversation-motion-"));
   const proc = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), dir],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      dir,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

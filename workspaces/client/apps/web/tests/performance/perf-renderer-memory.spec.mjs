@@ -2,20 +2,22 @@ import { readTestState, test, spawnFixture as spawn } from "../playwright.mjs";
 // Headless production renderer with a large synthetic entity feed.
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { gzipSync } from "node:zlib";
 test("perf renderer memory @performance", async ({
   browser: runnerBrowser,
 }) => {
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const directory = await mkdtemp(join(tmpdir(), "studio-renderer-memory-"));
   const contexts = new Set();
   const fixture = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), join(directory, "state")],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      join(directory, "state"),
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

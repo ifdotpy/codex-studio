@@ -12,14 +12,14 @@ test("Http error diagnostics browser", async ({
 }) => {
   test.setTimeout(180_000);
   const require = createRequire(
-    new URL("../../../web/package.json", import.meta.url),
+    new URL("../..//package.json", import.meta.url),
   );
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "studio-http-errors-"));
   const server = await createServer({
     configFile: false,
     cacheDir: cache,
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
   try {

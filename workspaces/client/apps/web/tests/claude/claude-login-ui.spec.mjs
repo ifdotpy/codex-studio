@@ -6,7 +6,7 @@ import { resolve, join } from "node:path";
 import { test } from "../playwright.mjs";
 
 test("claude login ui", async ({ page: runnerPage }) => {
-  const root = resolve(import.meta.dirname, "../../../web");
+  const root = resolve(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "claude-login-ui-"));

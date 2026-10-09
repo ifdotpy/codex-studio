@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 test("subagent concurrency uses the confirmed response", async ({ page }) => {
   test.setTimeout(60000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(

@@ -13,10 +13,10 @@ import { fileURLToPath } from "node:url";
 import { createRequire } from "node:module";
 test("Native action retry browser", async () => {
   test.setTimeout(180_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const { chromium, webkit } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const evidence = await mkdtemp(join(tmpdir(), "studio-action-retry-"));
   const fixture = spawn(
     process.env.PYTHON || "python3",

@@ -4,7 +4,7 @@
 import { createRequire } from "node:module";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
@@ -30,13 +30,16 @@ test("Limit Recovery State Ui", async ({
     },
   };
 
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(repo, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "limit-recovery-state-vite-"));
-  const entry = join(repo, "web/__limit-recovery-fixture.jsx");
+  const entry = join(
+    repo,
+    "workspaces/client/apps/web/__limit-recovery-fixture.jsx",
+  );
   const now = Math.floor(Date.now() / 1000);
   const source = `
 import React, {useState} from 'react';

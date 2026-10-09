@@ -8,18 +8,20 @@ import {
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 test("account limit dots ui", async ({ browser: runnerBrowser }) => {
   // Four viewport and color scheme passes share one fixture backend.
   test.setTimeout(420_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const root = await mkdtemp(join(tmpdir(), "account-limit-dots-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "",

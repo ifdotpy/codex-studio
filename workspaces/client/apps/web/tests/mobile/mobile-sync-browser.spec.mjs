@@ -12,10 +12,7 @@ import {
 
 test("mobile sync browser", async ({ page }) => {
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const streams = new Set();
   const streamResources = new Map();
@@ -25,7 +22,7 @@ test("mobile sync browser", async ({ page }) => {
   const streamScopes = [];
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
     plugins: [
       {

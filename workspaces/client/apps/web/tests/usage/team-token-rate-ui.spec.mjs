@@ -3,7 +3,7 @@ import { readTestState, spawnFixture as spawn, test } from "../playwright.mjs";
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const browserContextsByTest = new WeakMap();
@@ -22,9 +22,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("team token rate ui", async ({ browser }) => {
   test.setTimeout(240_000);
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   for (const [size, width] of [
     [3, 390],
     [8, 1200],
@@ -32,7 +30,11 @@ test("team token rate ui", async ({ browser }) => {
     const root = await mkdtemp(join(tmpdir(), "studio-team-token-rate-"));
     const proc = spawn(
       "python3",
-      ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+      [
+        "-B",
+        join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+        root,
+      ],
       {
         stdio: ["pipe", "pipe", "pipe"],
         env: { ...process.env, TOKEN_RATE_WORKER_COUNT: String(size) },

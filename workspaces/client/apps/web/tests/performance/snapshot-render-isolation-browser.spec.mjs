@@ -8,11 +8,15 @@ test("snapshot updates isolate the conversation and unchanged rows", async ({
   browser,
 }) => {
   test.setTimeout(120_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-snapshot-renders-"));
   const fixture = spawnFixture(
     process.env.CODEX_AGENTS_PYTHON || "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     {
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "3" },
       stdio: ["pipe", "pipe", "pipe"],

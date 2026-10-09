@@ -9,7 +9,7 @@ import { test, browserExecutablePath } from "../playwright.mjs";
 test("Progress cache", async () => {
   test.setTimeout(180_000);
   // Cache boundaries use the actual module and isolated browser storage.
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { chromium, webkit } = require("playwright-core");
   const { createServer } = await import(require.resolve("vite"));

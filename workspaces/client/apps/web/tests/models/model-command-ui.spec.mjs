@@ -4,18 +4,21 @@ import {
   expect,
   spawnFixture as spawn,
 } from "../playwright.mjs";
-import { chooseSetupValue } from "../../setup-controls.mjs";
+import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 // Production renderer, isolated runtime, real settings and message endpoints.
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelValue, selectModel } from "../../model-picker.mjs";
+import {
+  modelValue,
+  selectModel,
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 
 test("model-command-ui", async ({ browser }) => {
   test.setTimeout(120_000);
-  const repo = join(import.meta.dirname, "../../../");
+  const repo = join(import.meta.dirname, "../../../../../../");
   const root = await mkdtemp(join(tmpdir(), "studio-model-command-ui-"));
   const models = ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"].map(
     (model) => ({
@@ -30,7 +33,11 @@ test("model-command-ui", async ({ browser }) => {
   );
   const proc = spawn(
     process.env.PYTHON || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

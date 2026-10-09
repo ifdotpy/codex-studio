@@ -10,19 +10,29 @@ import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRequire } from "node:module";
-import { modelOptions, modelValue, selectModel } from "../../model-picker.mjs";
+import {
+  modelOptions,
+  modelValue,
+  selectModel,
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 test("Worker model", async () => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Production client with an isolated runtime. No model service or user state.
   const skill = testRepo;
   const { chromium, _electron } = createRequire(
-    join(skill, "web/package.json"),
+    join(skill, "workspaces/client/apps/web/package.json"),
   )("playwright-core");
   const root = await mkdtemp(join(tmpdir(), "codex-worker-model-ui-"));
   const proc = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let browser,

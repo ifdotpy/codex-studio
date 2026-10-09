@@ -7,7 +7,7 @@ import { test, apiSchemaHandshakeSse } from "../playwright.mjs";
 test("Realtime voice ux", async ({ context }, testInfo) => {
   test.setTimeout(180_000);
   // React fixture: no microphone, native account, or model request.
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(root + "/package.json");
   const { createServer } = await import(require.resolve("vite"));
   const entryPath = join(root, "audit-entry.tsx");

@@ -4,10 +4,15 @@ import { fileURLToPath } from "node:url";
 import { mkdtemp, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { modelValue, selectModel } from "../../model-picker.mjs";
+import {
+  modelValue,
+  selectModel,
+} from "../../../../../runtime/apps/server/tests/model-picker.mjs";
 test("Subagent defaults latency @performance", async ({ context }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Click-to-Saved latency of the subagent defaults control on the 40-worker
   // fixture with a real second account. No model calls or user state.
   // The target account catalog is delayed by CATALOG_DELAY_MS (default 900,
@@ -51,7 +56,11 @@ test("Subagent defaults latency @performance", async ({ context }) => {
   }));
   const proc = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     {
       stdio: ["pipe", "pipe", "pipe"],
       env: {

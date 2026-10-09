@@ -9,7 +9,7 @@ test("Sidebar incremental rows and current callbacks @performance", async ({
   page,
 }) => {
   test.setTimeout(60_000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { build } = require("esbuild");
   const { createServer } = await import(require.resolve("vite"));

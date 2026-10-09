@@ -5,8 +5,10 @@ import { createRequire } from "node:module";
 import { join } from "node:path";
 import { test, browserExecutablePath } from "../playwright.mjs";
 
-const repo = fileURLToPath(new URL("../../../", import.meta.url));
-const require = createRequire(join(repo, "web/package.json"));
+const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+const require = createRequire(
+  join(repo, "workspaces/client/apps/web/package.json"),
+);
 const { chromium, webkit } = require("playwright-core");
 const webkitPath = webkit.executablePath();
 

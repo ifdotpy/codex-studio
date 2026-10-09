@@ -5,7 +5,7 @@ import { resolve } from "node:path";
 import { test, expect } from "../playwright.mjs";
 
 test("browser dictation ux", async ({ page: runnerPage }) => {
-  const root = resolve(import.meta.dirname, "../../../web");
+  const root = resolve(import.meta.dirname, "../../");
   const require = createRequire(root + "/package.json");
   const { createServer } = await import(require.resolve("vite"));
   const entry = `import React,{useState}from'react';import{createRoot}from'react-dom/client';import{MantineProvider}from'@mantine/core';import'@mantine/core/styles.css';import{Dictation}from'/src/components/Dictation.tsx';import'/src/components/realtime-voice.css';

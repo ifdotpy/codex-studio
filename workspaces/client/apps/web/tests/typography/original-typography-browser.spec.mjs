@@ -26,11 +26,15 @@ test("Original Typography Browser", async ({
     },
   };
 
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-original-typography-"));
   const fixture = spawn(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "1" },

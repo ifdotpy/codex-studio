@@ -10,7 +10,7 @@ test("Progress markdown panel browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-progress-panel-"));

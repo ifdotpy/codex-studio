@@ -1,6 +1,14 @@
 import { defineConfig } from "@playwright/test";
+import { delimiter } from "node:path";
 import { fileURLToPath } from "node:url";
-import { browserExecutablePath } from "../tests/client/playwright.mjs";
+import { browserExecutablePath } from "./tests/playwright.mjs";
+
+const serverSource = fileURLToPath(
+  new URL("../../../../workspaces/runtime/apps/server/src/", import.meta.url),
+);
+process.env.PYTHONPATH = [serverSource, process.env.PYTHONPATH]
+  .filter(Boolean)
+  .join(delimiter);
 
 const workerLimit = 2;
 const globalTimeoutMs = 15 * 60 * 1000;
@@ -28,12 +36,14 @@ const specialProjects =
     : [];
 
 export default defineConfig({
-  testDir: "..",
+  testDir: ".",
   testMatch: [
-    fileURLToPath(new URL("../tests/client/**/*.spec.mjs", import.meta.url)),
+    fileURLToPath(new URL("./tests/**/*.spec.mjs", import.meta.url)),
     fileURLToPath(new URL("./src/**/*.spec.mjs", import.meta.url)),
   ],
-  testIgnore: [fileURLToPath(new URL("../.worktrees/**", import.meta.url))],
+  testIgnore: [
+    fileURLToPath(new URL("../../../../.worktrees/**", import.meta.url)),
+  ],
   forbidOnly: Boolean(process.env.CI),
   retries: 0,
   workers: workerLimit,

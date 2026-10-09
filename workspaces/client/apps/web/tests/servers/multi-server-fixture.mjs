@@ -9,7 +9,7 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-const root = fileURLToPath(new URL("../../../", import.meta.url));
+const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
 const workspaceId = "b".repeat(32);
 export async function fixture(
   label,
@@ -527,7 +527,7 @@ export async function fixture(
     try {
       const filename = path.join(
         root,
-        "web/dist",
+        "workspaces/client/apps/web/dist",
         url.pathname === "/" ? "index.html" : url.pathname,
       );
       const file = await readFile(filename);

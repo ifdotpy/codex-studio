@@ -3,8 +3,8 @@ import { createRequire } from "node:module";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { modelValue } from "../../model-picker.mjs";
-import { chooseSetupValue } from "../../setup-controls.mjs";
+import { modelValue } from "../../../../../runtime/apps/server/tests/model-picker.mjs";
+import { chooseSetupValue } from "../../../../../runtime/apps/server/tests/setup-controls.mjs";
 import {
   handleEntitySyncFixtureRequest,
   test,
@@ -13,7 +13,7 @@ import {
 
 test("radio create browser", async ({ page: runnerPage }) => {
   test.setTimeout(90000);
-  const root = resolve(import.meta.dirname, "../../../web");
+  const root = resolve(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-radio-create-"));

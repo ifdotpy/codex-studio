@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "vite";
-import { expect, test } from "../../../../tests/client/playwright.mjs";
+import { expect, test } from "../../../tests/playwright.mjs";
 
 let cacheDir;
 let server;
