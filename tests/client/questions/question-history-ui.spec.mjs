@@ -118,9 +118,16 @@ test("Question history", async ({ context }) => {
     await page.reload();
     await selectLead();
     await deferred.locator("summary").click();
-    await card
-      .getByText("Deferred · Agent can continue", { exact: true })
-      .waitFor();
+    assert.match(await deferred.locator("summary").innerText(), /Later\s+1/);
+    const deferredStatus = card.getByText("Deferred · Agent can continue", {
+      exact: true,
+    });
+    await deferredStatus.waitFor({ state: "attached" });
+    assert.equal(
+      await deferredStatus.isVisible(),
+      false,
+      "the question form hides the redundant deferred status",
+    );
     await card.getByRole("button", { name: "Restore", exact: true }).click();
     await deferred.waitFor({ state: "hidden" });
     await card.getByRole("button", { name: "Answer", exact: true }).click();
