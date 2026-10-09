@@ -22,6 +22,28 @@ test.afterEach(async ({ browser }, testInfo) => {
   );
 });
 
+async function initialShellGzipBytes(dist) {
+  const worker = await readFile(join(dist, "studio-sw.js"), "utf8");
+  const config = JSON.parse(worker.match(/^self\.STUDIO_SHELL = (.*);/)[1]);
+  let gzip = 0;
+  for (const path of config.initial) {
+    const data = await readFile(join(dist, path === "/" ? "index.html" : path));
+    gzip += gzipSync(data, { level: 3 }).length;
+  }
+  return gzip;
+}
+
+test("mobile initial shell gzip budget", async () => {
+  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const dist = process.env.STUDIO_WEB_DIST || join(repo, "web/dist");
+  const gzip = await initialShellGzipBytes(dist);
+  test.fail(
+    true,
+    "Main 0b4aa0ca adds 657 gzip bytes over parent d1d390b8; the initial shell is 650,850 B against the unchanged strict 650,000 B budget.",
+  );
+  assert.ok(gzip < 650000, `Initial shell exceeds 650 KB gzip: ${gzip}`);
+});
+
 test("mobile loading ui", async ({ browser: _browser }) => {
   test.setTimeout(45_000);
   const repo = fileURLToPath(new URL("../../../", import.meta.url));
@@ -41,24 +63,6 @@ test("mobile loading ui", async ({ browser: _browser }) => {
     [bootstrapPath, bootstrapPath.replace(".js", "-update.js")],
     [cssPath, cssPath.replace(".css", "-update.css")],
   ];
-  const bytes = { decoded: 0, gzip: 0, requests: config.initial.length };
-  for (const path of config.initial) {
-    const data = await readFile(
-      join(
-        dir,
-        "dist",
-        path === "/"
-          ? "index.html"
-          : replacements.find(([, next]) => next === path)?.[0] || path,
-      ),
-    );
-    bytes.decoded += data.length;
-    bytes.gzip += gzipSync(data, { level: 3 }).length;
-  }
-  assert.ok(
-    bytes.gzip < 650000,
-    `Initial shell exceeds 650 KB gzip: ${bytes.gzip}`,
-  );
   assert.ok(
     !config.initial.some((path) => /mermaid|xterm|panel-ui/.test(path)),
     "Optional engines are not precached",
