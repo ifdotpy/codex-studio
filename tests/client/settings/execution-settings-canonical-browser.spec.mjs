@@ -968,7 +968,8 @@ test("execution settings canonical browser", async ({ page }) => {
         name: "Full access without approval",
         exact: true,
       });
-      await permission.check();
+      await permission.click();
+      await page.waitForFunction(() => window.calls.length === 1);
       await page
         .getByRole("alert")
         .filter({ hasText: "Settings saved." })

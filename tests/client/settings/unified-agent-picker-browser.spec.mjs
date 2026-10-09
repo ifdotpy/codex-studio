@@ -348,7 +348,7 @@ test("unified agent picker roles, accounts and project/shared flows", async ({
         if (scene === "project") {
           await expect(
             group.locator('[data-account-key="account-6"]'),
-          ).toBeDisabled();
+          ).toHaveAttribute("data-exhausted", "true");
           await group.locator('[data-account-key="account-4"]').click();
           await page
             .getByRole("button", { name: "Save accounts", exact: true })
