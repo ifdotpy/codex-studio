@@ -7,11 +7,15 @@ import { expect, spawnFixture, test } from "../playwright.mjs";
 test("another entry URL keeps one Studio tree after lazy modules load", async ({
   page,
 }) => {
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "studio-single-mount-"));
   const fixture = spawnFixture(
     process.env.PYTHON_BIN || "python3",
-    ["-B", join(repo, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(repo, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { ...process.env, TOKEN_RATE_WORKER_COUNT: "2" },

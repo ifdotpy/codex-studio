@@ -8,11 +8,11 @@
     "moduleResolution": "Bundler",
     "noEmit": true,
     "paths": {
-      "@playwright/test": ["../../web/node_modules/@playwright/test"],
-      "playwright": ["../../web/node_modules/playwright"]
+      "@playwright/test": ["../node_modules/@playwright/test"],
+      "playwright": ["../node_modules/playwright"]
     },
     "target": "ES2022",
-    "typeRoots": ["../../web/node_modules/@types"],
+    "typeRoots": ["../node_modules/@types"],
     "types": ["node"]
   },
   "files": ["playwright.mjs"]

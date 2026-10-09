@@ -10,11 +10,15 @@ test("Mobile client ui", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(300_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const state = await mkdtemp(join(tmpdir(), "codex-mobile-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), state],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      state,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "";

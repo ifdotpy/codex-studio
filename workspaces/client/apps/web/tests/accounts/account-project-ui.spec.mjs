@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { readFile, mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, extname } from "node:path";
+import { join, extname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const browserContextsByTest = new WeakMap();
@@ -28,10 +28,10 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("account project ui", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
-  const webDist = process.env.STUDIO_WEB_DIST || join(root, "web/dist");
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const webDist =
+    process.env.STUDIO_WEB_DIST ||
+    join(root, "workspaces/client/apps/web/dist");
   const evidence = await mkdtemp(join(tmpdir(), "codex-project-account-ui-"));
   const accounts = [
     {

@@ -9,7 +9,7 @@ import { test } from "../playwright.mjs";
 test("Native runtime status", async ({ context }) => {
   test.setTimeout(180_000);
 
-  const root = fileURLToPath(new URL("../../../web/", import.meta.url));
+  const root = fileURLToPath(new URL("../..//", import.meta.url));
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-native-runtime-ui-"));

@@ -22,7 +22,7 @@ test.afterEach(async ({ browser }, testInfo) => {
 
 test("session activity browser", async ({ browser: _browser }) => {
   test.setTimeout(120_000);
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const cacheDir = await mkdtemp(join(tmpdir(), "studio-session-activity-"));

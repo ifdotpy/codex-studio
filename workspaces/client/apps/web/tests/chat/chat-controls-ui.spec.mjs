@@ -6,13 +6,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 test("Chat controls", async ({ page }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Exercise production components against isolated HTTP and SQLite, with one transport failure.
   const skill = testRepo;
   const root = await mkdtemp(join(tmpdir(), "codex-chat-controls-ui-"));
   const fixture = spawn(
     "python3",
-    ["-B", join(skill, "tests/simple-ui-fixture.py"), root],
+    [
+      "-B",
+      join(skill, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      root,
+    ],
     { stdio: ["ignore", "pipe", "pipe"] },
   );
   let log = "";

@@ -4,7 +4,7 @@ import {
   API_SCHEMA_HASH_HEADER,
   readApiSchemaHash,
   test,
-} from "../../../tests/client/playwright.mjs";
+} from "../../tests/playwright.mjs";
 
 async function openProjection() {
   const { db } = await (await import("/src/sync/client.ts")).syncDatabase();

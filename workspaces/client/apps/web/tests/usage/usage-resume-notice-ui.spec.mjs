@@ -8,14 +8,21 @@ import { test } from "../playwright.mjs";
 
 test("Usage resume notice", async ({ context: testContext }) => {
   test.setTimeout(180_000);
-  const testRepo = fileURLToPath(new URL("../../../", import.meta.url));
+  const testRepo = fileURLToPath(
+    new URL("../../../../../../", import.meta.url),
+  );
   // Render the production limit notice and verify its schedule and opt-out action.
 
   const repo = testRepo;
-  const require = createRequire(join(repo, "web/package.json"));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const cache = await mkdtemp(join(tmpdir(), "usage-resume-notice-vite-"));
-  const entry = join(repo, "web/__usage-resume-fixture.jsx");
+  const entry = join(
+    repo,
+    "workspaces/client/apps/web/__usage-resume-fixture.jsx",
+  );
   const dueAt = Math.floor(Date.now() / 1000) + 3600;
   const source = `
   import React from 'react';

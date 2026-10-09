@@ -13,7 +13,7 @@ import {
 
 // Exercise the Accounts manager through its Studio settings host and native menus.
 async function fixture(page) {
-  const root = join(import.meta.dirname, "../../../web");
+  const root = join(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const evidence = await mkdtemp(join(tmpdir(), "studio-accounts-cards-"));

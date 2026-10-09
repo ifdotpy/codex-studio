@@ -4,15 +4,15 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { createRequire } from "node:module";
 import { writeFile, rm, mkdtemp } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
 
 test("rendering ux ui", async ({ page: runnerPage }) => {
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(root, "web/package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const name = `.rendering-check-${process.pid}`;
   const entry = join(root, "web", `${name}.tsx`);

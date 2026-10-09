@@ -31,8 +31,10 @@ test("Message Queue Drafts Ui", async ({
     },
   };
 
-  const repo = join(import.meta.dirname, "../../..");
-  const require = createRequire(join(repo, "web/package.json"));
+  const repo = join(import.meta.dirname, "../../../../../../");
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  );
   const { build } = await import(pathToFileURL(require.resolve("vite")));
   const root = await mkdtemp(join(tmpdir(), "studio-message-queue-drafts-"));
   const entry = join(root, "entry.tsx");
@@ -48,7 +50,7 @@ test("Message Queue Drafts Ui", async ({
       `
 import { useState } from ${JSON.stringify(require.resolve("react"))};
 import { createRoot } from ${JSON.stringify(require.resolve("react-dom/client"))};
-import MessageQueue from ${JSON.stringify(join(repo, "web/src/components/MessageQueue.tsx"))};
+import MessageQueue from ${JSON.stringify(join(repo, "workspaces/client/apps/web/src/components/MessageQueue.tsx"))};
 function App() {
   const [items, setItems] = useState([{ id: "q1", text: "Original message" }]);
   return <MessageQueue scope="journal-fixture" items={items} canReorder={true}

@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, dirname, extname } from "node:path";
+import { join, extname } from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "../playwright.mjs";
@@ -29,10 +29,10 @@ test("Ux Chat Ui", async ({
     },
   };
 
-  const repo = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
   );
-  const require = createRequire(join(repo, "web/package.json"));
   const { build } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-chat-ux-"));
   const entry = join(temporary, "index.html");

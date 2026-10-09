@@ -7,16 +7,13 @@ const specs = [
   "draft-render-performance-browser.spec.mjs",
   "ui-responsiveness-browser.spec.mjs",
 ];
-const repo = fileURLToPath(new URL("../../../../", import.meta.url));
-const web = join(repo, "web");
-const runner = join(web, "node_modules/@playwright/test/cli.js");
+const web = fileURLToPath(new URL("../../../", import.meta.url));
 const config = join(web, "playwright.config.ts");
 const benchmarkGlobalTimeoutMs = 360_000;
 const benchmarkCommandTimeoutMs = 390_000;
 const requiredPaths = [
-  runner,
   config,
-  ...specs.map((spec) => join(repo, "tests/client/performance", spec)),
+  ...specs.map((spec) => join(web, "tests/performance", spec)),
 ];
 const missingPaths = requiredPaths.filter((path) => !existsSync(path));
 if (missingPaths.length)
@@ -26,16 +23,17 @@ if (missingPaths.length)
 
 for (const spec of specs) {
   const result = spawnSync(
-    process.execPath,
+    "pnpm",
     [
-      runner,
+      "exec",
+      "playwright",
       "test",
       "--config",
       config,
       "--project=performance",
       "--global-timeout",
       String(benchmarkGlobalTimeoutMs),
-      join(repo, "tests/client/performance", spec),
+      join(web, "tests/performance", spec),
     ],
     {
       cwd: web,

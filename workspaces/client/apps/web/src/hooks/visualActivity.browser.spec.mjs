@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { test, expect } from "../../../tests/client/playwright.mjs";
+import { test, expect } from "../../tests/playwright.mjs";
 
 test("hidden visual rows stop timers and rate renders and resume current values", async ({
   browser,

@@ -22,17 +22,19 @@ import { createRequire } from "node:module";
 import { gzipSync } from "node:zlib";
 test("Mobile startup performance", { tag: "@performance" }, async () => {
   test.setTimeout(300_000);
-  const repo = fileURLToPath(new URL("../../../", import.meta.url));
+  const repo = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const fixtureRepo = process.env.MOBILE_PERF_BACKEND || repo;
-  const { chromium, webkit } = createRequire(join(repo, "web/package.json"))(
-    "playwright-core",
-  );
+  const { chromium, webkit } = createRequire(
+    join(repo, "workspaces/client/apps/web/package.json"),
+  )("playwright-core");
   const useWebKit = process.env.BROWSER === "webkit";
   const browserType = useWebKit ? webkit : chromium;
   const expectCurrentBudgets = process.env.MOBILE_PERF_EXPECT_CAP !== "0";
   const enforceCurrentBudgets = expectCurrentBudgets && !useWebKit;
   const dir = await mkdtemp(join(tmpdir(), "studio-mobile-performance-"));
-  const artifactDist = process.env.MOBILE_PERF_DIST || join(repo, "web/dist");
+  const artifactDist =
+    process.env.MOBILE_PERF_DIST ||
+    join(repo, "workspaces/client/apps/web/dist");
   await cp(artifactDist, join(dir, "dist"), { recursive: true });
   const artifactHtml = await readFile(join(dir, "dist/index.html"), "utf8");
   const artifactBuild = artifactHtml.match(

@@ -7,7 +7,7 @@ test("visual preferences update across contexts and seed a fresh first render", 
   page: runnerPage,
 }) => {
   test.setTimeout(180000);
-  const root = resolve(import.meta.dirname, "../../..");
+  const root = resolve(import.meta.dirname, "../../../../../../");
   const evidence = await mkdtemp(join(tmpdir(), "studio-preferences-sync-"));
   console.log("Preference evidence:", evidence);
   const proc = spawnFixture(

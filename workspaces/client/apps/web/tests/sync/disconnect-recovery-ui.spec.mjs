@@ -8,7 +8,7 @@ import { resolve, join } from "node:path";
 import { test, expect } from "../playwright.mjs";
 
 test("disconnect recovery ui", async ({ page: runnerPage }) => {
-  const root = resolve(import.meta.dirname, "../../../web");
+  const root = resolve(import.meta.dirname, "../../");
   const require = createRequire(join(root, "package.json"));
   const { createServer } = await import(require.resolve("vite"));
   const evidence = await mkdtemp(join(tmpdir(), "studio-disconnect-recovery-"));

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createServer } from "node:http";
 import {
@@ -19,13 +19,15 @@ import {
 } from "../playwright.mjs";
 
 test("entity fixture contract matches the real sync backend", async () => {
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sync-contract-"));
   const child = spawnFixture(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), stateDir],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      stateDir,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { TOKEN_RATE_WORKER_COUNT: "1" },
@@ -387,13 +389,15 @@ test("shared entity stub converges on one matching stream", async ({
   page,
 }) => {
   test.setTimeout(90000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const stateDir = await mkdtemp(join(tmpdir(), "studio-sync-stub-live-"));
   const child = spawnFixture(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), stateDir],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      stateDir,
+    ],
     {
       stdio: ["ignore", "pipe", "pipe"],
       env: { TOKEN_RATE_WORKER_COUNT: "1" },

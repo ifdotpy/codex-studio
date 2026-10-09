@@ -9,14 +9,11 @@ test("sync-cross-tab-browser @performance", async ({
 }) => {
   test.setTimeout(120_000);
   const { createServer } = await import(
-    new URL(
-      "../../../web/node_modules/vite/dist/node/index.js",
-      import.meta.url,
-    )
+    new URL("../../node_modules/vite/dist/node/index.js", import.meta.url)
   );
   const server = await createServer({
     configFile: false,
-    root: fileURLToPath(new URL("../../../web", import.meta.url)),
+    root: fileURLToPath(new URL("../../", import.meta.url)),
     server: { host: "127.0.0.1", port: 0 },
   });
   const workspaceId = "b".repeat(32);

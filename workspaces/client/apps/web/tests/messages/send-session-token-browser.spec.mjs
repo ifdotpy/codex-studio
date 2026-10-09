@@ -13,8 +13,10 @@ test("Send session token browser", async ({
   context: runnerContext,
 }) => {
   test.setTimeout(180_000);
-  const root = fileURLToPath(new URL("../../../", import.meta.url));
-  const require = createRequire(join(root, "web/package.json"));
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
+  const require = createRequire(
+    join(root, "workspaces/client/apps/web/package.json"),
+  );
   const { createServer } = await import(require.resolve("vite"));
   const temporary = await mkdtemp(join(tmpdir(), "studio-send-session-token-"));
   const workspaceId = "c".repeat(32);

@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { mkdtemp } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { test, expect } from "../playwright.mjs";
@@ -10,13 +10,15 @@ import { spawnFixture as spawn } from "../playwright.mjs";
 
 test("settings-ux-ui", async ({ page: fixturePage }) => {
   test.setTimeout(120_000);
-  const root = dirname(
-    dirname(dirname(dirname(fileURLToPath(import.meta.url)))),
-  );
+  const root = fileURLToPath(new URL("../../../../../../", import.meta.url));
   const evidence = await mkdtemp(join(tmpdir(), "studio-settings-ux-"));
   const proc = spawn(
     "python3",
-    ["-B", join(root, "tests/simple-ui-fixture.py"), evidence],
+    [
+      "-B",
+      join(root, "workspaces/runtime/apps/server/tests/simple-ui-fixture.py"),
+      evidence,
+    ],
     { stdio: ["pipe", "pipe", "pipe"] },
   );
   let log = "";
