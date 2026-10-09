@@ -35,6 +35,13 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
       value.searchParams.get("studio-parent") !== shellOrigin
     )
       return;
+    const navigation = value.searchParams.getAll("studio-navigation");
+    if (
+      navigation.length > 1 ||
+      (navigation.length === 1 &&
+        !["classic", "combined"].includes(navigation[0]))
+    )
+      return;
     if (
       [...value.searchParams.keys()].some(
         (key) =>
@@ -43,6 +50,7 @@ function frameOwner(url, assetsOrigin, shellOrigin) {
             "studio-parent",
             "studio-origin",
             "studio-credential",
+            "studio-navigation",
           ].includes(key),
       )
     )

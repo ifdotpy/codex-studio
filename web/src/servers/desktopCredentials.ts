@@ -1,10 +1,26 @@
-import type { ServerCredentialAdapter, PairAttemptIdentity } from "./transport";
+import type {
+  ServerCredentialAdapter,
+  PairAttemptIdentity,
+  AutomaticPairApproval,
+} from "./transport";
 import type { StudioServer } from "./registry";
-import { parseInvitation, requestIdentity } from "./pairing";
+import {
+  parseInvitation,
+  requestIdentity,
+  PairingNotAppliedError,
+} from "./pairing";
 import { serverViewId } from "./environment";
 import type { DesktopBridge } from "../desktop";
 export type CredentialRequest = {
-  action: "pair" | "request" | "summary" | "cancel" | "forget" | "pairAttempt";
+  action:
+    | "pair"
+    | "pairApproved"
+    | "request"
+    | "summary"
+    | "cancel"
+    | "forget"
+    | "pairAttempt";
+  approval?: AutomaticPairApproval;
   serverId?: string;
   credentialId?: string;
   origin?: string;
@@ -47,13 +63,23 @@ export class DesktopServerCredentials implements ServerCredentialAdapter {
     origin: string,
     code: string,
     requestId: string,
+    approval?: AutomaticPairApproval,
   ): Promise<StudioServer> {
-    return (await this.bridge.serverCredentialAction!({
-      action: "pair",
+    const result = await this.bridge.serverCredentialAction!({
+      action: approval ? "pairApproved" : "pair",
+      ...(approval ? { approval } : {}),
       origin,
       invitation: parseInvitation(code, origin),
       requestId,
-    })) as StudioServer;
+    });
+    if (
+      result &&
+      typeof result === "object" &&
+      "notApplied" in result &&
+      result.notApplied === "invite_unavailable"
+    )
+      throw new PairingNotAppliedError();
+    return result as StudioServer;
   }
   async fetch(server: StudioServer, request: Request): Promise<Response> {
     const streamId = crypto.randomUUID();

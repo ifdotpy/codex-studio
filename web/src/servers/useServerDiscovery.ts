@@ -23,6 +23,7 @@ export function useServerDiscovery(
 ) {
   const [snapshot, setSnapshot] = useState<DiscoverySnapshot | null>(null);
   const [error, setError] = useState("");
+  const [accessError, setAccessError] = useState("");
   const [busy, setBusy] = useState(false);
   const [checkedAt, setCheckedAt] = useState<number | null>(null);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
@@ -70,6 +71,8 @@ export function useServerDiscovery(
         if (active.current) addRef.current(server);
       },
       pair: (...args) => serverCredentialAdapter().pair(...args),
+      hasPairAttempt: (attempt) =>
+        serverCredentialAdapter().hasPairAttempt(attempt),
       invite: async (server, requestId) => {
         const session = await refreshSession();
         const value = await serverAccess(
@@ -137,9 +140,14 @@ export function useServerDiscovery(
     setCheckedAt(Date.now() / 1000);
     setExcluded(excludedServers());
     if (next)
-      void controller.current!.reconcile(next).catch((failure) => {
-        if (active.current) setError(errorText(failure));
-      });
+      void controller.current!.reconcile(next).then(
+        () => {
+          if (active.current) setAccessError("");
+        },
+        (failure) => {
+          if (active.current) setAccessError(errorText(failure));
+        },
+      );
   };
   const load = () => {
     if (loading.current) return loading.current;
@@ -243,7 +251,7 @@ export function useServerDiscovery(
   return {
     snapshot,
     checkedAt,
-    error,
+    error: [error, accessError].filter(Boolean).join("\n"),
     busy,
     excluded,
     actions: {

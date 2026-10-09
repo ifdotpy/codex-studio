@@ -26,6 +26,7 @@ const {
 const { loadWindowState, trackWindowState } = require("./window-state.cjs");
 const { createRendererRecovery } = require("./renderer-recovery.cjs");
 const { frameOwner } = require("./frame-owner.cjs");
+const { pairApproved } = require("./approved-pair.cjs");
 const { startUiHost } = require("./ui-host.cjs");
 const { uiOnlyInstallation } = require("./install-mode.cjs");
 const uiOnly = uiOnlyInstallation({ packaged: app.isPackaged });
@@ -296,6 +297,7 @@ async function nativeAction(event, request) {
         !value ||
         ![
           "pair",
+          "pairApproved",
           "request",
           "summary",
           "cancel",
@@ -311,8 +313,25 @@ async function nativeAction(event, request) {
           (value.frameOwner && value.frameOwner !== owner))
       )
         throw new Error("Invalid server frame owner.");
-      if (owner && ["pair", "forget", "pairAttempt"].includes(value.action))
+      if (
+        owner &&
+        ["pair", "pairApproved", "forget", "pairAttempt"].includes(value.action)
+      )
         throw new Error("Use the server manager.");
+      if (value.action === "pairApproved") {
+        if (uiOnly || value.frameOwner)
+          throw new Error("Use the local server for automatic access.");
+        return pairApproved({
+          origin: backend.origin,
+          value,
+          credentials: serverCredentials,
+          trusted: () => trusted(event),
+        }).catch((error) => {
+          if (error.code === "invite_unavailable")
+            return { notApplied: "invite_unavailable" };
+          throw error;
+        });
+      }
       if (value.action === "pairAttempt") {
         if (owner || value.frameOwner)
           throw new Error("Use the server manager.");
