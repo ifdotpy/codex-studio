@@ -1,3 +1,4 @@
+import { useSyncedVisualState } from "../../sync/useSyncedVisualState";
 import {
   ActionIcon,
   Button,
@@ -13,7 +14,7 @@ import {
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
-import { memo, useContext, useMemo, useState } from "react";
+import { memo, useContext, useMemo } from "react";
 import { useCommittedCallback } from "../../hooks";
 import { reportPromptComposerRender } from "../prompt-composer/renderProbe";
 import { save, saved } from "../../api";
@@ -49,9 +50,11 @@ function WorkerExcerpt({
 }) {
   const storageKey = "codex-worker-disclosures";
   const key = `${agentId}:${label}`;
-  const [expanded, setExpanded] = useState(
-    () => saved<Record<string, boolean>>(storageKey, {})[key] || false,
+  const [disclosures] = useSyncedVisualState<Record<string, boolean>>(
+    storageKey,
+    {},
   );
+  const expanded = disclosures[key] || false;
   return (
     <details
       className="worker-excerpt"
@@ -59,7 +62,6 @@ function WorkerExcerpt({
       onToggle={(event) => {
         if (event.target !== event.currentTarget) return;
         const value = event.currentTarget.open;
-        setExpanded(value);
         const prior = saved<Record<string, boolean>>(storageKey, {});
         save(
           storageKey,

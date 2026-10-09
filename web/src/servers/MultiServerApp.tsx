@@ -1,3 +1,6 @@
+import { orderPreferenceServers } from "./preferenceServerOrder";
+import { writePreferenceEdit } from "../sync/uiPreferenceStore";
+import { useUiPreferenceSync } from "./useUiPreferenceSync";
 import StudioSettingsTabs, {
   isStudioSettingsTab,
 } from "../components/StudioSettingsTabs";
@@ -56,9 +59,10 @@ export default function MultiServerApp() {
   };
   const [paired, setPaired] = useState<StudioServer[]>(load);
   const servers = useMemo(
-    () => (uiOnly ? paired : [localServer(), ...paired]),
+    () => orderPreferenceServers(uiOnly ? paired : [localServer(), ...paired]),
     [paired],
   );
+  useUiPreferenceSync(servers);
   const [selected, setSelected] = useState(
     () =>
       localStorage.getItem("studio-selected-server") || servers[0]?.id || "",
@@ -525,12 +529,13 @@ export default function MultiServerApp() {
           const value = parseStudioPreferences(
             JSON.stringify(event.data.preferences),
           );
-          localStorage.setItem(
+          const next = writePreferenceEdit(
             studioPreferencesStorageKey,
-            JSON.stringify(value),
+            { ...preferences },
+            { ...value },
           );
-          setPreferences(value);
-          publishPreferences(value);
+          setPreferences(next);
+          publishPreferences(next);
         } catch {}
       } else if (event.data.kind === "studio-server-toggle-sidebar") {
         toggleSidebar();

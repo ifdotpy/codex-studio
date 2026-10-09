@@ -1,3 +1,4 @@
+import { useSyncedVisualState } from "../../../sync/useSyncedVisualState";
 import { reportPromptComposerRender } from "../../prompt-composer/renderProbe";
 import {
   Fragment,
@@ -131,15 +132,14 @@ const WorkBlock = memo(function WorkBlock({
   const key = `${storageKey}:tools-v3`;
   const tools = items.filter((item) => ["tool", "output"].includes(item.role));
   const id = storageIds[0] || items[0].id;
-  const [open, setOpen] = useState(
-    () =>
-      saved<Record<string, boolean>>(key, {})[id] ??
-      (active || tools.length < 3),
-  );
+  const [disclosures, setDisclosures] = useSyncedVisualState<
+    Record<string, boolean>
+  >(key, {});
+  const open = disclosures[id] ?? (active || tools.length < 3);
   const summary = activitySummary(tools);
   const hasLimit = tools.some((item) => toolLimitNotice(item));
   const update = (value: boolean) => {
-    setOpen(value);
+    setDisclosures({ ...disclosures, [id]: value });
     save(
       key,
       Object.fromEntries([

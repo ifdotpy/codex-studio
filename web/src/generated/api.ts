@@ -1629,6 +1629,23 @@ export interface paths {
     patch?: never;
     trace?: never;
   };
+  "/api/sync/preferences": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    get?: never;
+    put?: never;
+    /** Push Preferences */
+    post: operations["push_preferences_api_sync_preferences_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
   "/api/sync/protocol": {
     parameters: {
       query?: never;
@@ -8162,6 +8179,37 @@ export interface components {
       /** Version */
       version: number;
     };
+    /** PreferenceField */
+    PreferenceField: {
+      /** Timestamp */
+      timestamp: number;
+      value: components["schemas"]["JsonValue"];
+      /** Writer */
+      writer: string;
+    };
+    /** PreferencePushRequest */
+    PreferencePushRequest: {
+      /** Fields */
+      fields?: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
+      /**
+       * Scope
+       * @enum {string}
+       */
+      scope: "user" | "server";
+    };
+    /** PreferencePushResponse */
+    PreferencePushResponse: {
+      /** Syncentities */
+      _syncEntities?: components["schemas"]["SyncEntity"][] | null;
+      /** Syncentitiesafter */
+      _syncEntitiesAfter?: number | null;
+      /** Fields */
+      fields: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
+    };
     /**
      * ProcessKind
      * @enum {string}
@@ -11283,7 +11331,8 @@ export interface components {
       | components["schemas"]["SyncEdgeEntityPayload"]
       | components["schemas"]["SyncEventEntityPayload"]
       | components["schemas"]["SyncWorkEntityPayload"]
-      | components["schemas"]["SyncWorkspaceEntityPayload"];
+      | components["schemas"]["SyncWorkspaceEntityPayload"]
+      | components["schemas"]["SyncUiPreferencesEntityPayload"];
     /** SyncEventEntityPayload */
     SyncEventEntityPayload: {
       /**
@@ -11463,6 +11512,17 @@ export interface components {
       /** Id */
       id: string;
       value: components["schemas"]["TaskEntityDto"];
+    };
+    /** SyncUiPreferencesEntityPayload */
+    SyncUiPreferencesEntityPayload: {
+      /**
+       * @description discriminator enum property added by openapi-typescript
+       * @enum {string}
+       */
+      collection: "uiPreferences";
+      /** Id */
+      id: string;
+      value: components["schemas"]["UiPreferencesDto"];
     };
     /** SyncWorkEntityPayload */
     SyncWorkEntityPayload: {
@@ -12435,6 +12495,13 @@ export interface components {
       requestId: string;
       /** Serverid */
       serverId: string;
+    };
+    /** UiPreferencesDto */
+    UiPreferencesDto: {
+      /** Fields */
+      fields?: {
+        [key: string]: components["schemas"]["PreferenceField"];
+      };
     };
     /** UiSummaryResponse */
     UiSummaryResponse: {
@@ -20986,6 +21053,111 @@ export interface operations {
       };
       /** @description Service Unavailable */
       503: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  push_preferences_api_sync_preferences_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PreferencePushRequest"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PreferencePushResponse"];
+        };
+      };
+      /** @description Bad Request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Forbidden */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Not Found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request body timed out */
+      408: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Content Too Large */
+      413: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Unsupported Media Type */
+      415: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Upgrade Required */
+      426: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal Server Error */
+      500: {
         headers: {
           [name: string]: unknown;
         };
