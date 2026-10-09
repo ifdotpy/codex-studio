@@ -22,9 +22,9 @@ class PanelRuntime(RecordStore, Protocol):
 
 class PanelMixin:
     def get_panel(self: "PanelRuntime", agent_id: str) -> dict[str, object]:
-        from codex_progress import read_progress
+        from codex_vm_agents import read_progress
         with self.lock, self.db() as db:
             agent = self.checked_actor(db, agent_id)
             identity = agent["id"]
         # File access must not hold the shared runtime or database lock.
-        return read_progress(self.root, identity)
+        return read_progress(self, agent)

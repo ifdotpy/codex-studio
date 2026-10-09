@@ -2813,6 +2813,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -2821,6 +2823,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -2861,6 +2865,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -2965,7 +2979,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -3161,6 +3175,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -3169,6 +3185,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -3209,6 +3227,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -3315,7 +3343,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -4586,6 +4614,8 @@ export interface components {
       epoch?: number | null;
       /** Error */
       error?: components["schemas"]["NativeProviderError"] | string | null;
+      /** Executionmode */
+      executionMode?: ("vm" | "native") | null;
       /** Fastmode */
       fastMode?: boolean | null;
       /** Hasapproval */
@@ -4594,6 +4624,8 @@ export interface components {
       hasQuestion?: boolean | null;
       /** Hasunread */
       hasUnread?: boolean | null;
+      /** Hostprojectpath */
+      hostProjectPath?: string | null;
       /** Id */
       id: string;
       /** Imageworkspace */
@@ -4634,6 +4666,16 @@ export interface components {
       lastReadAt?: number | null;
       /** Launcheralive */
       launcherAlive?: boolean | null;
+      /** Layrerror */
+      layrError?: string | null;
+      /** Layrline */
+      layrLine?: string | null;
+      /** Layrprojectid */
+      layrProjectId?: string | null;
+      /** Layrready */
+      layrReady?: boolean | null;
+      /** Layrstateid */
+      layrStateId?: string | null;
       /** Manualname */
       manualName?: boolean | null;
       /** Model */
@@ -4740,7 +4782,7 @@ export interface components {
       /** Workspacebackend */
       workspaceBackend?: ("asif" | "vm") | null;
       /** Workspacemode */
-      workspaceMode?: ("image" | "worktree" | "shared") | null;
+      workspaceMode?: ("layr" | "image" | "worktree" | "shared") | null;
       /** Workspaceoperation */
       workspaceOperation?: string | null;
       /** Worktree */
@@ -5738,6 +5780,8 @@ export interface components {
       /** Tokenbudget */
       tokenBudget?: number | null;
       worker_defaults?: components["schemas"]["WorkerDefaults"] | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };
@@ -5797,6 +5841,8 @@ export interface components {
       project_server_id?: string | null;
       /** Reuse Empty */
       reuse_empty?: boolean | null;
+      /** Workspacemode */
+      workspaceMode?: ("layr" | "image" | "worktree") | null;
       /** Yolo Mode */
       yolo_mode?: boolean | null;
     };

@@ -13,7 +13,7 @@ import unicodedata
 import uuid
 import shutil
 from pathlib import Path
-from typing import Protocol, TYPE_CHECKING, overload
+from typing import Protocol, TYPE_CHECKING, overload, cast
 
 from codex_records import RecordStore
 
@@ -54,7 +54,7 @@ class _WorkHost(RecordStore, Protocol):
     def asset_record(self: "_WorkHost", key: str, db: "sqlite3.Connection | None" = None) -> "JsonObject": ...
     def asset_view(self: "_WorkHost", asset: "JsonObject") -> "JsonObject": ...
     def _work_action(self: "_WorkHost", agent_id: str, data: "dict[str, Any]", key: str | None = None,
-                     actor: str | None = None, epoch: int | None = None) -> "dict[str, Any]": ...
+                     actor: str | None = None, epoch: int | None = None, reviewed_result_id: str | None = None) -> "dict[str, Any]": ...
     def _archive_work_result(self: "_WorkHost", task_id: str | None, result_id: str) -> str: ...
     def _finish_accepted_action(self: "_WorkHost", agent_id: str, result: "dict[str, Any]", key: str | None,
                                 epoch: int | None) -> "dict[str, Any]": ...
@@ -195,7 +195,31 @@ def work_tools(tool: "Callable[..., JsonObject]", text: "JsonObject") -> list["J
 
 class WorkMixin:
     def work_action(self: "_WorkHost", agent_id: "str", data: "dict[str, Any]", key: "str | None"=None, actor: "str | None"=None, epoch: "int | None"=None) -> "dict[str, Any]":
-        result = self._work_action(agent_id, data, key, actor, epoch)
+        reviewed_result_id = None
+        if data.get('action') == 'accept':
+            with self.lock, self.db() as db:
+                leader = self.checked_actor(db, agent_id, actor)
+                row = db.execute('SELECT record FROM runtime_work WHERE id=?', (data.get('task_id'),)).fetchone()
+                work = json.loads(row[0]) if row else None
+                vm_merge = leader.get('executionMode') == 'vm' and work and work.get('status') == 'review'
+                if vm_merge and work is not None:
+                    if not leader.get('isLead') or leader['id'] != work['rootId'] or (epoch is not None and leader['epoch'] != epoch):
+                        raise ValueError('Only the active lead can accept a layr result')
+                    text_field(data.get('result'), 'a review decision')
+                    if data.get('version') is not None and data['version'] != work['version']:
+                        raise ValueError('The work item changed before acceptance')
+                    owner = self.agent(work['owner'], db)
+                    latest = work['results'][-1]
+                    version = work['version']
+            if vm_merge and work is not None:
+                from codex_vm_agents import merge_result
+                merge_result(self, leader, owner, latest, latest['id'])
+                with self.lock, self.db() as db:
+                    current = json.loads(db.execute('SELECT record FROM runtime_work WHERE id=?', (work['id'],)).fetchone()[0])
+                    if current['version'] != version or current['results'][-1]['id'] != latest['id']:
+                        raise ValueError('The task changed after the layr merge; inspect the merge receipt')
+                reviewed_result_id = latest['id']
+        result = self._work_action(agent_id, data, key, actor, epoch, reviewed_result_id)
         if data.get('action') == 'submit' and result.get('results'):
             self._archive_work_result(data.get('task_id'), result['results'][-1]['id'])
         if data.get('action') != 'accept' or result.get('status') != 'accepted':
@@ -482,6 +506,14 @@ class WorkMixin:
             return {'status': 'kept', 'reason': 'The owner is already removed'}
         if work.get('owner') != owner_id or work.get('status') != 'accepted':
             return {'status': 'kept', 'reason': 'The accepted task owner changed'}
+        if owner.get('executionMode') == 'vm':
+            from codex_agent_management import manage_agent
+            archived = manage_agent(cast('Runtime', self), agent_id, {'action': 'archive', 'agent_id': owner_id,
+                'reason': 'Accepted task result is on main'}, epoch)
+            if archived.get('status') == 'archived':
+                return {'status': 'archived', 'workspace': archived.get('workspace')}
+            return {'status': 'kept', 'reason': 'The layr worker is still active',
+                    'blockers': archived.get('blockers', []), 'retryable': True}
         revision = work['results'][-1].get('revision', '')
         if not re.fullmatch(r'[0-9a-fA-F]{7,64}', revision):
             return {'status': 'kept', 'reason': 'The submitted revision is not a commit ID'}
@@ -987,7 +1019,7 @@ class WorkMixin:
             )
         return result
 
-    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None) : # type: (_WorkHost, str, dict[str, Any], str | None, str | None, int | None) -> dict[str, Any]
+    def _work_action(self, agent_id, data, key=None, actor=None, epoch=None, reviewed_result_id=None) : # type: (_WorkHost, str, dict[str, Any], str | None, str | None, int | None, str | None) -> dict[str, Any]
         with self.lock, self.db() as db:
             a = self.checked_actor(db, agent_id, actor)
             if epoch is not None and self.agent(actor, db)["epoch"] != epoch:  # type: ignore[arg-type]  # typed-suspect: epoch may be set without an actor
@@ -1134,6 +1166,13 @@ class WorkMixin:
                     "files": files,
                     "created": time.time(),
                 }
+                owner = self.agent(submitter, db)
+                if owner.get('executionMode') == 'vm':
+                    from codex_vm_agents import validate_submission
+                    evidence = validate_submission(self, owner, result['revision'])
+                    result['layrProjectId'] = evidence['layrProjectId']
+                    result['layrLine'] = evidence['layrLine']
+                    result['layrStateId'] = evidence['layrStateId']
                 from codex_execution import safe_record, submission_identity
                 result.update(safe_record(db, submission_identity, db, self.agent(submitter, db)) or {})  # type: ignore[typeddict-item]  # typed-narrowing: callback adds typed run metadata
                 result['resultFile'] = str(Path(self.root).absolute() / 'results' / w['id'] / (result['id'] + '.md'))
@@ -1189,6 +1228,8 @@ class WorkMixin:
                     reason = text_field(data.get("result"), "result")
                 except ValueError:
                     raise ValueError("Supply result with 1 to 32000 characters for accept or reject") from None
+                if action == "accept" and reviewed_result_id is not None and w["results"][-1]["id"] != reviewed_result_id:
+                    raise ValueError("The task changed after the layr merge; inspect the merge receipt")
                 w["decisions"].append(
                     {
                         "resultId": w["results"][-1]["id"],

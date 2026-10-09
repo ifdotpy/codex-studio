@@ -3542,13 +3542,13 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                          + (', '.join(candidates) if candidates else 'none'))
 
     def connect_agent(self, agent):
-        if agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"):
+        if agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")):
             from codex_linux_workspaces import connect_agent
             return connect_agent(self, agent)
         return self.connect(agent.get("accountKey", "default"))
 
     def agent_connection(self, agent):
-        if agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"):
+        if agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")):
             return self.__dict__.get("linux_connection_ids", {}).get(agent["id"])
         return self.connection_ids.get(agent.get("accountKey", "default"))
 
@@ -3569,7 +3569,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         if linux_id is not None:
             return [agent for agent in agents if agent["id"] == linux_id]
         return [agent for agent in agents if not (
-            agent.get("environment") == "linux" and agent.get("imageWorkspaceReady"))]
+            agent.get("environment") == "linux" and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))]
 
     def connect(self, account_key="default", *, for_login=False):
         if self.closed:
@@ -3918,7 +3918,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = mode_fields(json.loads(row[0]))
                 if ((agent_id is not None and agent["id"] != agent_id)
                         or (agent_id is None and agent.get("environment") == "linux"
-                            and agent.get("imageWorkspaceReady"))):
+                            and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))):
                     continue
                 if agent.get("deletedAt"):
                     continue
@@ -3970,7 +3970,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 owner = self.agent(record.get("agent"), db) if record.get("agent") else None
                 if owner and ((agent_id is not None and owner["id"] != agent_id)
                         or (agent_id is None and owner.get("environment") == "linux"
-                            and owner.get("imageWorkspaceReady"))):
+                            and (owner.get("imageWorkspaceReady") or owner.get("layrReady")))):
                     continue
                 if (not owner or owner.get("accountKey", "default") != account_key
                         or owner.get("epoch") != receipt.get("epoch")
@@ -4005,7 +4005,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 agent = mode_fields(json.loads(row[0]))
                 if ((agent_id is not None and agent["id"] != agent_id)
                         or (agent_id is None and agent.get("environment") == "linux"
-                            and agent.get("imageWorkspaceReady"))):
+                            and (agent.get("imageWorkspaceReady") or agent.get("layrReady")))):
                     continue
                 marker = agent.get("restartRecovery") or {}
                 if (agent.get("accountKey", "default") != account_key or agent.get("deletedAt")
@@ -4021,14 +4021,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         """Resolve restart receipts before the canvas API can expose interrupted state."""
         with self.db() as db:
             pending = [a for a in self.pending_restart_agents(db) if not a.get("deletedAt")]
-            linux = [a for a in pending if a.get("environment") == "linux" and a.get("imageWorkspaceReady")]
+            linux = [a for a in pending if a.get("environment") == "linux" and (a.get("imageWorkspaceReady") or a.get("layrReady"))]
             monitors = [json.loads(row[0]) for row in db.execute(
                 "SELECT record FROM runtime_monitors WHERE json_extract(record,'$.status')='lost' "
                 "AND json_extract(record,'$.reattachRecovery.status')='running' "
                 "AND json_type(record,'$.operation')='object'")]
         for monitor in monitors:
             owner = self.agent(monitor.get("agent"))
-            if (owner.get("environment") == "linux" and owner.get("imageWorkspaceReady")
+            if (owner.get("environment") == "linux" and (owner.get("imageWorkspaceReady") or owner.get("layrReady"))
                     and not owner.get("deletedAt") and owner not in linux):
                 linux.append(owner)
         for agent in linux:
@@ -4569,7 +4569,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("This conversation was deleted")
                 if a["name"] != name.strip() or a["prompt"] != prompt.strip() or ("account_key" in data and a.get("accountKey", "default") != data["account_key"]):
                     raise ValueError("This request id has different content")
-                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("daybreak_enabled", "daybreakEnabled"), ("yolo_mode", "yoloMode")):
+                for request_field, stored_field in (("model", "model"), ("effort", "effort"), ("fast_mode", "fastMode"), ("daybreak_enabled", "daybreakEnabled"), ("yolo_mode", "yoloMode"), ("workspaceMode", "workspaceMode")):
                     if request_field in data and data[request_field] != a.get(stored_field):
                         raise ValueError("This request id has different execution settings")
                 return a
@@ -4578,6 +4578,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             if root:
                 from codex_agent_modes import assert_delegation
                 assert_delegation(root)
+            from codex_vm_agents import workspace_mode
+            selected_workspace = workspace_mode(data, root)
+            vm_execution = selected_workspace == "layr"
             account_key = catalog_account
             account = self.accounts.get(account_key)
             if account.get("deleted") and not _accepted_provider_operation:
@@ -4618,7 +4621,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 if active >= root["maxAgents"]:
                     raise ValueError(f"Team active agent limit reached; {finished} finished agents. Use archive_finished to free stored records.")
             cwd = str(Path((data.get("cwd") or p["cwd"]) if p else data.get("cwd", "")).expanduser().resolve())
-            if not Path(cwd).is_dir() or (not p and not data.get("cwd")):
+            if (not (p and p.get("executionMode") == "vm") and not Path(cwd).is_dir()) or (not p and not data.get("cwd")):
                 raise ValueError("Select an existing project directory")
             concurrency = data.get("concurrency", DEFAULT_SUBAGENT_CONCURRENCY)
             max_agents = int(data.get("maxAgents", DEFAULT_MAX_TEAM_AGENTS))
@@ -4672,13 +4675,17 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 "profileId": data.get("profile_id"),
                 "profileInstructions": data.get("profileInstructions", ""),
                 "tail": "",
-                "worktree": bool(p and role == "implementer") and data.get("_worktree", True),
-                "workspaceMode": data.get("_workspaceMode", "shared" if p and role == "reviewer" else None),
+                "worktree": bool(p and role == "implementer") and not vm_execution and data.get("_worktree", True),
+                "workspaceMode": (selected_workspace if not p or vm_execution else data.get("_workspaceMode", "shared" if role == "reviewer" else selected_workspace)),
+                "executionMode": "vm" if vm_execution else "native",
+                "hostProjectPath": (root.get("hostProjectPath") or root["cwd"]) if root and vm_execution else cwd,
+                "layrReady": False,
+                **{k: data[k] for k in ("layrSubpath", "layrBaseState") if k in data},
                 "workspaceBackend": data.get("_workspaceBackend"),
                 "workspaceModeExplicit": bool(data.get("_workspaceExplicit", "workspace" in data)),
                 "workspaceInGit": bool(data.get("_workspaceInGit")),
                 "worktreeReady": False,
-                "environment": data.get("environment", "host"),
+                "environment": "linux" if vm_execution else data.get("environment", "host"),
                 "imageWorkspace": bool(p and role == "implementer") and data.get("_imageWorkspace", False),
                 "imageWorkspaceReady": False,
                 "imageWorkspacePhase": "read_only" if data.get("_imageWorkspace") else None,
@@ -4719,6 +4726,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return a
 
     def new_lead(self, data):
+        from codex_vm_agents import workspace_mode
+        selected_workspace = workspace_mode(data, creation=True)
         if "dangerously_skip_rules" in data:
             raise ValueError("Unsupported setting: dangerously_skip_rules")
         if "reuse_empty" in data and type(data["reuse_empty"]) is not bool:
@@ -4727,6 +4736,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             raise ValueError("yolo_mode must be a boolean")
         key = data.get("id")
         settings = {k: data.get(k) for k in ("model", "previous")}
+        if "workspaceMode" in data:
+            settings["workspaceMode"] = data["workspaceMode"]
         if "account_key" in data:
             settings["account_key"] = data["account_key"]
         if "reuse_empty" in data:
@@ -4760,7 +4771,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         raise ValueError("This creation id belongs to another agent")
                     return existing
                 prior = self.agent(data["previous"], db) if data.get("previous") else None
-                directory = requested_cwd or (prior["cwd"] if prior else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
+                directory = requested_cwd or ((prior.get("hostProjectPath") or prior["cwd"]) if prior else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
                 from codex_project_locations import chat_binding, settings_key
                 binding = chat_binding(self, db, directory, data.get('project_id'), data.get('project_server_id'))
                 project_key = settings_key(self, db, directory, binding)
@@ -4793,7 +4804,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Select a lead conversation")
                 if previous and previous.get("deletedAt"):
                     raise ValueError("This conversation was deleted")
-                cwd = requested_cwd or (previous["cwd"] if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
+                cwd = requested_cwd or ((previous.get("hostProjectPath") or previous["cwd"]) if previous else os.environ.get("CODEX_CANVAS_CWD", os.getcwd()))
                 from codex_project_locations import chat_binding, settings_key
                 binding = chat_binding(self, db, cwd, data.get('project_id'), data.get('project_server_id'))
                 project_key = settings_key(self, db, cwd, binding)
@@ -4811,7 +4822,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     raise ValueError("Reconnect this account before creating a chat")
                 from codex_project_folders import folder_for
                 project_folder = folder_for(self, db, project_key, data.get('project_folder'))
-                if previous and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
+                if previous and not previous.get("layrReady") and previous.get("workspaceMode", "worktree") == selected_workspace and data.get("reuse_empty", True) and self.empty_lead(db, previous) and previous.get("provider", "codex") == self.accounts.get(account_key).get("provider", "codex"):
                     if data.get("model"):
                         effort, native_effort = self.validate_execution(catalog, data["model"], previous.get("effort"),
                             previous.get("fastMode", False), fallback_effort=True)
@@ -4844,6 +4855,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             created = self.create({"id": key or uid(), "name": "New chat", "prompt": "", "cwd": cwd,
                                 "_projectFolder": project_folder,
                                 "_creationSignature": signature, "_projectBinding": binding, "account_key": account_key,
+                                "workspaceMode": selected_workspace,
                                 "yolo_mode": data.get("yolo_mode", previous.get("yoloMode") is not False if previous else True),
                                 **({"model": data["model"]} if data.get("model") else {})}, draft=True, _catalog=catalog)
             # Each new team starts with Studio defaults, independent of the previous chat.
@@ -4921,6 +4933,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             image_ids = [agent_id for agent_id in ids
                          if by_id[agent_id].get("imageWorkspace")
                          and by_id[agent_id].get("imageWorkspacePhase") != "removed"]
+            layr_ids = [agent_id for agent_id in reversed(ordered_ids)
+                        if by_id[agent_id].get("executionMode") == "vm" and by_id[agent_id].get("layrReady")]
             affected_rooms = set()
             for agent_id in reversed(ordered_ids):
                 before = by_id[agent_id]
@@ -4982,6 +4996,20 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     current = self.agent(agent_id, db)
                     current["imageWorkspaceError"] = (
                         "Image removal after deletion failed: " + str(error)[:1000])
+                    self.put(db, "agents", current)
+        for agent_id in layr_ids:
+            try:
+                from codex_linux_workspaces import dispose
+                dispose(self, agent_id, remove=True)
+                with self.lock, self.db() as db:
+                    current = self.agent(agent_id, db)
+                    current["layrReady"] = False
+                    current.pop("layrError", None)
+                    self.put(db, "agents", current)
+            except Exception as error:
+                with self.lock, self.db() as db:
+                    current = self.agent(agent_id, db)
+                    current["layrError"] = "Line cleanup after deletion failed: " + type(error).__name__
                     self.put(db, "agents", current)
         result = {"deleted": sorted(ids)}
         if cleanup_failures:
@@ -5327,6 +5355,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             return TOOLS
         if actor.get('frozenNativeParams'):
             return copy.deepcopy(actor['frozenNativeParams']['dynamicTools'])
+        if actor.get("nativeToolDefinitions") is not None:
+            return copy.deepcopy(actor["nativeToolDefinitions"])
         if actor.get("nativeReview"):
             return []
         lead = bool(actor.get("isLead"))
@@ -5374,6 +5404,24 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     definition = {**definition, "description": definition["description"] +
                         " Approved remote rooms appear only when you are an explicit local room member."}
             definitions.append(definition)
+        if actor.get("executionMode") == "vm":
+            definitions = copy.deepcopy(definitions)
+            for definition in definitions:
+                if definition["name"] == "orchestration_review":
+                    definition["description"] = (
+                        "Create a read-only layr reviewer in the VM. target commit.sha is the exact layr state ID. "
+                        "Use custom.instructions for review instructions. The result wakes the lead.")
+                elif definition["name"] == "orchestration_spawn":
+                    definition["description"] = (
+                        "Delegate a batch to VM agents on separate owned layr lines. "
+                        "Reviewers receive read-only lines. Each completion wakes you. "
+                        "base_ref selects a layr state ID. Use cwd within your line. "
+                        "Omit model and effort to use the team defaults.")
+                    fields = definition["inputSchema"]["properties"]["agents"]["items"]["properties"]
+                    fields["workspace"]["enum"] = ["layr"]
+                    fields["environment"]["enum"] = ["linux"]
+            import importlib
+            definitions.append(importlib.import_module("codex_host_exec").tool_definition())
         return definitions
 
     @staticmethod
@@ -5383,12 +5431,14 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         name = "codex-orchestrator" if actor.get("isLead") else "codex-subagent"
         path = Path(__file__).resolve().parent.parent / ".agents" / "skills" / name / "SKILL.md"
         from codex_session_tools import session_tool_name, LEGACY_MOVE
-        content_path = (path.parent / 'references' / 'legacy-move-role.md'
-                        if actor.get('isLead') and session_tool_name(actor) == LEGACY_MOVE else path)
+        content_path = (path.parent / 'references' / ('legacy-move-role.md' if actor.get('isLead') and session_tool_name(actor) == LEGACY_MOVE else 'native-role.md')
+                        if actor.get('threadId') else path)
         try:
             content = content_path.read_text(encoding="utf-8").strip()
         except OSError as error:
             raise ValueError(f"Studio role skill {name} is missing. Update the installed Studio workspace") from error
+        if actor.get("executionMode") == "vm":
+            content += "\n" + (path.parent.parent / "codex-workspace/references/layr.md").read_text()
         if not content:
             raise ValueError(f"Studio role skill {name} is empty. Update the installed Studio workspace")
         shared = path.parent.parent / "codex-workspace" / "SKILL.md"
@@ -5401,6 +5451,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 return {"approvalPolicy": "never", "sandboxPolicy": {
                     "type": "workspaceWrite", "writableRoots": [temp_dir],
                     "networkAccess": False}}
+            return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
+        if a.get("executionMode") == "vm" and a.get("role") == "reviewer":
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "readOnly"}}
         if a.get("yoloMode") is True:
             return {"approvalPolicy": "never", "sandboxPolicy": {"type": "dangerFullAccess"}}
@@ -5480,7 +5532,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 (agent.get("imageWorkspaceRepo"), agent["id"])
                 for agent in self.records(db, "agents")
                 if (not agent.get("deletedAt") and agent.get("imageWorkspace")
-                    and not agent.get("imageWorkspaceReady")
+                    and not (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
                     and agent.get("imageWorkspacePhase") == "read_only")
             ]
         for repo, agent_id in pending:
@@ -5572,7 +5624,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             with self.lock, self.db() as db:
                 agent = self.agent(agent_id, db)
                 if (agent.get("deletedAt") or not agent.get("imageWorkspace")
-                        or agent.get("imageWorkspaceReady")
+                        or (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
                         or agent.get("imageWorkspacePhase") != "read_only"):
                     return
                 repo = agent.get("imageWorkspaceRepo")
@@ -5757,6 +5809,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         return f"[Studio panel guidance: {guide}]\n{content}"
 
     def progress_file(self, a):
+        if a.get("executionMode") == "vm":
+            return Path(a["layrHome"]) / ".studio/progress" / a["id"] / "PROGRESS.md"
         from codex_progress import provision_progress
         try:
             return provision_progress(self.root, a["id"])
@@ -5772,8 +5826,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         role_text = a.get('nativeRoleGuidance') or self.role_guidance(a)
         a.setdefault('nativeRoleGuidance', role_text)
         if a.get("isLead"):
-            from codex_progress import progress_context
-            progress_text = progress_context(self.root, a["id"])
+            from codex_vm_agents import progress_context
+            progress_text = progress_context(self, a)
         else:
             progress_text = ""
         params = {
@@ -5810,6 +5864,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             else:
                 params.update(approvalPolicy="never", sandbox="workspace-write")
                 params["cwd"] = self.image_workspace_temp(a)
+        elif a.get("executionMode") == "vm" and a.get("role") == "reviewer":
+            params.update(approvalPolicy="never", sandbox="read-only")
         elif a.get("yoloMode") is True:
             params.update(approvalPolicy="never", sandbox="danger-full-access")
         elif a.get("yoloMode") is False:
@@ -5830,11 +5886,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 params["studioImageWorkspaceTempDir"] = (
                     self.image_workspace_temp(a) if not a.get("imageWorkspaceReady") else None)
         params["dynamicTools"] = self.tool_definitions(a)
+        a.setdefault("nativeToolDefinitions", copy.deepcopy(params["dynamicTools"]))
         if a.get("portableHistory"):
             from codex_portable_history import history_context
             params["developerInstructions"] += "\n" + history_context(self, a["portableHistory"])
         from codex_browser import configure_browser
-        if a.get("provider") != "claude":
+        if a.get("provider") != "claude" and a.get("executionMode") != "vm":
             configure_browser(self, a, params)
         if a.get('frozenNativeParams'):
             frozen = a['frozenNativeParams']
@@ -5992,6 +6049,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             timing["prepareChecksDoneAt"] = time.monotonic_ns()
         if a.get("accountTransferId") and not a.get("inFlight") and not a.get("lazyAccountTransfer"):
             raise ValueError("This agent is transferring accounts. New input remains queued.")
+        if a.get("executionMode") == "vm":
+            from codex_vm_agents import prepare
+            a = prepare(self, a)
         if a.get("environment") == "linux" and a.get("imageWorkspace") and not a.get("imageWorkspaceReady"):
             future = self.start_image_base(a["imageWorkspaceRepo"], a["id"])
             if future is None:
@@ -6132,6 +6192,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 # take effect, including when its reply is lost.
                 latest['nativeTeleportTool'] = a['nativeTeleportTool']
                 latest['nativeRoleGuidance'] = a['nativeRoleGuidance']
+                latest['nativeToolDefinitions'] = a['nativeToolDefinitions']
                 self.put(db, "agents", latest)
                 self.preparations[a["id"]] = operation
                 db.commit()
@@ -6329,6 +6390,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         queue_task_recovery(self)
         from codex_claude_auth_wait import tick as claude_auth_wait_tick
         claude_auth_wait_tick(self)
+        from codex_vm_agents import tick as layr_turn_tick
+        layr_turn_tick(self)
         from codex_linux_vm_credentials import tick as linux_credentials_tick
         linux_credentials_tick(self)
         from codex_native_runtime import tick as native_runtime_tick
@@ -7329,6 +7392,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
 
     @staticmethod
     def image_workspace_summary(agent):
+        if agent.get("executionMode") == "vm":
+            return {"workspace": "layr", "environment": "linux", "projectId": agent.get("layrProjectId"),
+                    "line": agent.get("layrLine"), "stateId": agent.get("layrStateId"), "path": agent["cwd"]}
         phase = agent.get("imageWorkspacePhase")
         mode = agent.get("workspaceMode") or (
             "image" if agent.get("imageWorkspace") else
@@ -7341,7 +7407,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     if created else None)
         result.update(source=agent.get("imageWorkspaceRepo"),
                       state=(agent.get("imageWorkspaceBaseState")
-                             or ("ready" if agent.get("imageWorkspaceReady")
+                             or ("ready" if (agent.get("imageWorkspaceReady") or agent.get("layrReady"))
                                  else "building" if phase == "read_only" else phase)),
                       takenAt=taken_at,
                       includesUncommittedChanges=mode in {"image", "shared"})
@@ -7983,6 +8049,9 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                         notice(self, db, a, "error:" + str(turn.get("id")), error_message(turn["error"]),
                                "error", turnId=turn.get("id"), threadId=tid, nativeError=turn["error"],
                                cyberAccessProgram=a.get("cyberAccessProgram"))
+                    from codex_vm_agents import queue_turn
+                    queue_turn(self, db, a, turn.get("id"))
+                    self.put(db, "agents", a)
                     db.execute("INSERT OR IGNORE INTO runtime_completed_turns VALUES (?)", (completion,))
                     from codex_turn_item_links import update_turn_status
                     update_turn_status(db, a["id"], turn.get("id"), turn.get("status") or "ended")
@@ -8102,6 +8171,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     a["status"] = "queued"
                 from codex_agent_management import parked_after_turn
                 parked_after_turn(a)
+                from codex_vm_agents import queue_turn
+                queue_turn(self, db, a, turn.get("id"))
                 if (a.get("worktreeReady")
                         and not (safety_retry_active(a) and a["nativeSafetyRetry"]["turnId"] == turn.get("id"))):
                     self.queue_checkpoint_after_turn(db, a, turn.get("id"))
@@ -8340,6 +8411,12 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
         resolved = []
         base_cache = {}
         for spec in specs:
+            if actor.get("executionMode") == "vm":
+                from codex_vm_agents import spawn_spec
+                resolved.append(spawn_spec(actor, spec))
+                continue
+            if spec.get("role", "implementer") == "implementer" and "workspace" not in spec and actor.get("workspaceMode") in {"image", "worktree"}:
+                spec = {**spec, "_defaultWorkspaceMode": actor["workspaceMode"]}
             directory = spawn_directory(actor["cwd"], spec.get("cwd"))
             from codex_worker_environment import select as select_environment
             from codex_project_locations import settings_key
@@ -8468,6 +8545,8 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     from codex_execution import record_spawn, safe_record
                     safe_record(db, record_spawn, db, current, child, key)
                     text = child["prompt"]
+                    if child.get("executionMode") == "vm":
+                        text += "\n\n[Studio layr workspace] Studio prepares your owned VM line before the first provider turn. Use layr for local history and commits. Submit the full layr state ID."
                     if child.get("imageWorkspace"):
                         text += ("\n\n[Studio Linux VM workspace] Studio starts this task after the Linux base is ready."
                                  if child.get("environment") == "linux" else
@@ -8660,6 +8739,11 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                     value = self.voice().speak(a["id"], args["text"], key, epoch=a["epoch"])
                 elif name == "orchestration_servers":
                     value = self.multi_server().tools(a, args, key)
+                elif name == "host_exec":
+                    if a.get("executionMode") != "vm":
+                        raise ValueError("host_exec is available only in a layr chat")
+                    import importlib
+                    value = importlib.import_module("codex_host_exec").run_tool(self, a, args, key)
                 elif name in {'orchestration_move', 'orchestration_teleport'}:
                     try:
                         value = self.multi_server().moves().start(a, args, key)
@@ -9748,7 +9832,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
                 shell_config = configuration["config"]
             if not isinstance(shell_config, dict):
                 raise ValueError("Monitor configuration is invalid; command was not submitted")
-            params = {"command": monitor_command(server, m["command"], a["cwd"], config=shell_config), "cwd": a["cwd"],
+            params = {"command": monitor_command(server, m["command"], a["cwd"], config=shell_config, **({"guest": True} if a.get("executionMode") == "vm" else {})), "cwd": a["cwd"],
                       "processId": key, "streamStdoutStderr": True, "timeoutMs": m["timeout_ms"]}
             if m.get("interactive"):
                 params.update(tty=True, streamStdin=True)
@@ -9932,7 +10016,7 @@ class Runtime(UsageResumeMixin, CapacityRetryMixin, TurnRecoveryMixin, Efficienc
             server = self.connect_agent(a)
             config = server.wait(self.submit_reserved(server, "config/read",
                 {"cwd": a["cwd"], "includeLayers": False}))
-            native_command = monitor_command(server, command, a["cwd"], config=config["config"])
+            native_command = monitor_command(server, command, a["cwd"], config=config["config"], **({"guest": True} if a.get("executionMode") == "vm" else {}))
             params = {"command": native_command, "cwd": a["cwd"],
                 "processId": f"liveness:{key}:{generation}", "streamStdoutStderr": True,
                 "timeoutMs": 60000}

@@ -85,6 +85,9 @@ def create(runtime, source, agent_id):
 
 
 def ensure(runtime, agent):
+    if agent.get("executionMode") == "vm":
+        from codex_vm_agents import ensure as ensure_layr
+        return ensure_layr(runtime, agent)
     result = client(runtime).request('workspace.status', {'agentId': agent['id']}, timeout=20)
     rows = result.get('workspaces', [])
     if len(rows) != 1:
@@ -103,6 +106,12 @@ def prefix(agent):
 def dispose(runtime, agent_id, *, remove=False):
     remote = client(runtime)
     agent = runtime.agent(agent_id)
+    if agent.get('executionMode') == 'vm':
+        from codex_vm_agents import dispose as dispose_layr
+        server = runtime.__dict__.get('linux_servers', {}).pop(agent_id, None)
+        if server is not None:
+            server.close()
+        return dispose_layr(runtime, agent)
     server = runtime.__dict__.get('linux_servers', {}).pop(agent_id, None)
     if server is not None:
         server.close()
@@ -146,12 +155,14 @@ def connect_agent(runtime, agent):
         account = account_snapshot(runtime, account_key)
         provider = account.get('provider', 'codex')
         runtime.__dict__.setdefault('linux_credential_hashes', {})[account_key] = digest
-        profile = '/home/studio/' + profile_path(account_key, provider)
+        profile_relative = profile_path(account_key, provider)
+        home = agent.get('layrHome', '/home/studio')
+        profile = home + '/' + profile_relative
         handle = 'linux-worker:' + agent_id
         if provider == 'claude':
             from codex_claude import bridge_options
             command = ['node', '/opt/codex-studio/claude_bridge/bridge.mjs',
-                       '/home/studio/.codex/studio-bridges/' + agent_id]
+                       home + '/.codex/studio-bridges/' + agent_id]
             environment = {'CLAUDE_CONFIG_DIR': profile, 'STUDIO_CLAUDE_BIN': 'claude',
                            'STUDIO_CLAUDE_OPTIONS': json.dumps(bridge_options(account)),
                            'STUDIO_CLAUDE_ACCOUNT': account.get('email', '')}
@@ -168,6 +179,8 @@ def connect_agent(runtime, agent):
         pending = _load(pending_path)
         params = {'transport': 'native', 'handle': handle, 'argv': command,
                   'cwd': agent['cwd'], 'env': environment, 'agentId': agent_id}
+        if agent.get('executionMode') == 'vm':
+            params.update(layr=True, provider=provider, profile=profile_relative)
         if pending and pending.get('params') != params:
             raise RuntimeError('The pending Linux provider launch has a different identity')
         if not pending:

@@ -123,7 +123,7 @@ def read_summary(
             unread.add(agent_id)
         if row.get("source") != "managed" or not row.get("isLead") or row.get("sharedRoomId") or row.get("remoteAnchor"):
             continue
-        path = str(row.get("cwd") or "")
+        path = str(row.get("hostProjectPath") or row.get("cwd") or "")
         if not any((project.id == row.get("projectId") and project.homeServerId == row.get("projectServerId") and project.id)
                    or any(location.path == path and location.serverId == row.get("serverId") for location in project.locations or [])
                    for project in projects.values()):

@@ -196,6 +196,7 @@ class TransferRequestReceipt(ResponseModel):
 
 
 class CreateLeadRequest(ContractModel):
+    workspaceMode: Literal["layr", "image", "worktree"] | None = None
     project_id: str | None = Field(default=None, min_length=1, max_length=4096)
     project_server_id: str | None = Field(default=None, min_length=1, max_length=128)
     id: str | None = Field(default=None, min_length=1, max_length=200)
@@ -243,6 +244,7 @@ class ReviewDefaults(ContractModel):
 
 
 class CreateAgentRequest(ContractModel):
+    workspaceMode: Literal["layr", "image", "worktree"] | None = None
     id: str | None = Field(default=None, min_length=1, max_length=200)
     parent: str | None = Field(default=None, min_length=1, max_length=200)
     cwd: str | None = None

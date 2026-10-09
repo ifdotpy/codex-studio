@@ -202,6 +202,8 @@ def _blockers(rt: "Runtime", db: "sqlite3.Connection", a: "AgentRecord", *, unas
     if a.get('parkedEvent'):
         add('parked_event', [a['parkedEvent']])
     if a.get('workspaceOperation'): add('workspace_operation', [key])
+    if a.get('executionMode') == 'vm':
+        add('turn_state', [turn for turn, saved in a.get('layrTurnSaves', {}).items() if saved.get('status') != 'saved'])
     preparation = rt.preparations.get(key)
     if preparation and not preparation['future'].done(): add('thread_preparation', [key])
     children = (json.loads(row[0]) for row in db.execute(
@@ -1107,6 +1109,8 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
                                           if cleaned_image else None)), 'worktree': worktree,
                         'unassignedWork': archived.get('unassignedWork', [])}
         if action == 'restore':
+            if target.get('executionMode') == 'vm' and archived:
+                return {'status': 'blocked', 'reason': 'The archived layr line was removed. Create a new worker from the saved state.'}
             if not archived:
                 return {'status': 'not_archived', 'agent': _brief(target)}
             if target.get('deletedAt') != archived['at'] or target['epoch'] != archived['epoch']:
@@ -1159,7 +1163,17 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             archived_agent = _archive_record(rt, db, target, actor_id, reason, cleanup_pending=True, unassign_work=unassign_work)
     if action == 'archive':
         image_archive = target.get('cleanedImageWorkspace') or {}
-        if target.get('imageWorkspaceReady') or image_archive.get('phase') == 'archiving':
+        if target.get('executionMode') == 'vm':
+            from codex_linux_workspaces import dispose
+            try:
+                cleanup = dispose(rt, target['id'], remove=True)
+                with rt.lock, rt.db() as db:
+                    current = rt.agent(target['id'], db)
+                    current['layrReady'] = False
+                    rt.put(db, 'agents', current)
+            except Exception as error:
+                cleanup = {'state': 'kept', 'reason': str(error)[:500]}
+        elif target.get('imageWorkspaceReady') or image_archive.get('phase') == 'archiving':
             cleanup = _cleanup_image_workspace(rt, target['id'])
         elif target.get('imageWorkspace'):
             cleanup = {'state': 'none', 'bytes': 0}
@@ -1171,20 +1185,22 @@ def manage_agent(rt: "Runtime", actor_id: str, args: dict[str, "Any"], epoch: in
             cleanup = _cleanup_worktree(rt, actor_id, target['id'], epoch)
         with rt.lock, rt.db() as db:
             current = rt.agent(target['id'], db)
-            if current.get('imageWorkspace'):
+            if current.get('imageWorkspace') or current.get('executionMode') == 'vm':
                 current['imageWorkspaceCleanupResult'] = cast(
                     ImageWorkspaceCleanupResultRecord, cleanup
                 )
-            cleanup_failed = current.get('imageWorkspace') and cleanup.get('state') == 'kept'
+            cleanup_failed = (current.get('imageWorkspace') or current.get('executionMode') == 'vm') and cleanup.get('state') == 'kept'
             if (current.get('agentArchive') and current['agentArchive'].get('cleanupPending')
                     and not current.get('worktreeCleanup') and not cleanup_failed):
                 current['agentArchive']['cleanupPending'] = False
                 rt.put(db, 'agents', current)
         return {'status': 'archived', 'agent': archived_agent,
-                'workspace': cleanup if target.get('imageWorkspace') else None,
-                'worktree': cleanup if not target.get('imageWorkspace') else None,
+                'workspace': cleanup if target.get('imageWorkspace') or target.get('executionMode') == 'vm' else None,
+                'worktree': cleanup if not target.get('imageWorkspace') and target.get('executionMode') != 'vm' else None,
                 'unassignedWork': archived_agent['agentArchive'].get('unassignedWork', [])}
     if action == 'restore':
+        if target.get('executionMode') == 'vm':
+            return {'status': 'blocked', 'reason': 'The archived layr line was removed. Create a new worker from the saved state.'}
         if restore_image:
             from codex_workspace_images import ensure_mounted
             try:

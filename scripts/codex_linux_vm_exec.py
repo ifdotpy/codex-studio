@@ -21,6 +21,12 @@ def execute(client, agent_id, cwd, command, *, stdin=b'', request_id=None, outpu
             target.flush()
         if 'result' in frame:
             result = frame['result']
+    if result is not None and 'stdout' in result:
+        output.write(base64.b64decode(result['stdout'], validate=True))
+        output.flush()
+    if result is not None and 'stderr' in result:
+        error.write(base64.b64decode(result['stderr'], validate=True))
+        error.flush()
     if result is None or result.get('exitCode') is None:
         raise RuntimeError('The guest command has no proven result; request ID: ' + identity)
     return result['exitCode']

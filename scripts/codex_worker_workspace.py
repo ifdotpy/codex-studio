@@ -46,6 +46,10 @@ def select(
             raise ValueError('workspace "worktree" requires a Git repository')
         return requested, None
 
+    if spec.get("_defaultWorkspaceMode") == "worktree":
+        if git_repo:
+            return "worktree", None
+        return "shared", "This folder has no Git repository; the worker uses the shared folder"
     supported, reason = runtime.image_workspace_support(workspace_root)
     if supported:
         return "image", None

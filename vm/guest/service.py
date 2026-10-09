@@ -28,6 +28,10 @@ READ_METHODS = {"health", "workspace.status", "provider.attach", "provider.list"
 METHODS = READ_METHODS | {"exec", "sync.push", "workspace.startBase", "workspace.create",
                           "workspace.archive", "workspace.remove", "provider.start", "provider.write",
                           "provider.stop", "credentials.put"}
+LAYR_READ_METHODS = {"agent.context", "line.status", "line.evidence", "agent.progress", "layr.provider.list", "layr.provider.rpc", "layr.file.stat", "layr.file.read"}
+LAYR_METHODS = LAYR_READ_METHODS | {"line.bind", "line.branch", "line.save", "line.merge", "line.remove", "agent.release", "layr.provider.start", "layr.provider.stop", "layr.credentials.sync", "layr.exec"}
+READ_METHODS |= LAYR_READ_METHODS
+METHODS |= LAYR_METHODS
 CLIENT_IDLE_SECONDS = 60
 
 
@@ -46,6 +50,8 @@ class Service:
         self.db = connect_db(self.state / "receipts.sqlite3")
         self.uploads = Uploads(self.state, self.projects, self.db)
         self.native = Native(self.state)
+        self.layr_path = self.state / "layr-associations.json"
+        self.layr_agents = json.loads(self.layr_path.read_text()) if self.layr_path.exists() else {}
         self.active = {}
         self.operations = set()
         self.root_locks = {}
@@ -420,6 +426,25 @@ class Service:
             return {"totalBytes": None, "availableBytes": None}
 
     async def dispatch(self, request_id, method, params, emit):
+        async def admin_request(request_id, method, params, emit=None):
+            from layr_admin_client import admin_request as forward
+            return await forward(request_id, method, params, emit=emit)
+        if method in LAYR_METHODS:
+            if method in {"line.bind", "line.branch"}:
+                self.layr_agents[params["agentId"]] = {"handle": "linux-worker:" + params["agentId"]}
+                atomic_json(self.layr_path, self.layr_agents)
+            return await admin_request(request_id, method, params, emit=emit)
+        layr_agent = params.get("agentId") in self.layr_agents
+        layr_handle = any(value["handle"] == params.get("handle") for value in self.layr_agents.values())
+        if method == "provider.start" and params.get("layr") is True:
+            require(layr_agent, "The layr agent association does not exist")
+            return await admin_request(request_id, "layr.provider.start", params, emit=emit)
+        if method in {"provider.rpc", "provider.stop"} and layr_handle:
+            return await admin_request(request_id, "layr." + method, params, emit=emit)
+        if method == "exec" and layr_agent:
+            return await admin_request(request_id, "layr.exec", params, emit=emit)
+        if method in {"file.stat", "file.read"} and layr_agent:
+            return await admin_request(request_id, "layr." + method, params, emit=emit)
         if method == "health":
             process = await asyncio.create_subprocess_exec("stat", "-f", "-c", "%T", str(self.store), stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.DEVNULL)
@@ -454,7 +479,10 @@ class Service:
         if method == "provider.start":
             return await self.start(request_id, params)
         if method == "provider.list":
-            return {"providers": self.list_providers()}
+            providers = self.list_providers()
+            if self.layr_agents:
+                providers += (await admin_request(request_id, "layr.provider.list", {}, emit=emit))["providers"]
+            return {"providers": providers}
         if method == "provider.attach":
             return await self.attach(params, emit)
         if method == "provider.rpc":
@@ -492,6 +520,8 @@ class Service:
         raise GuestError("invalid_request", "The method is not supported")
 
     async def replay_exec(self, result, emit):
+        if "stdout" in result:
+            return
         cursor = 0
         while cursor < result["lastSeq"]:
             replay = await self.attach({"handle": result["handle"], "afterSeq": cursor, "waitMs": 0}, emit)

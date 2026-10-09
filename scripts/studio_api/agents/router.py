@@ -152,6 +152,9 @@ def create_router(context: ApiContext) -> APIRouter:
     def create_agent(http_request: Request, body: CreateAgentRequest) -> Response:
         runtime = current_runtime()
         request = body_data(body)
+        if body.parent is None and "workspaceMode" not in request:
+            from codex_vm_agents import workspace_mode
+            request["workspaceMode"] = workspace_mode({}, creation=True)
         created = runtime.create(request, parent=body.parent)
         return context.send(http_request, agent_entity(runtime, created["id"]))
 

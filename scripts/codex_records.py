@@ -1263,6 +1263,21 @@ class AgentRecord(TypedDict):
     frozenNativeParams: NotRequired[JsonObject]
     nativeTeleportTool: NotRequired[str]
     nativeRoleGuidance: NotRequired[str]
+    nativeToolDefinitions: NotRequired[list[JsonObject]]
+    workspaceMode: NotRequired[Literal["layr", "image", "worktree", "shared"] | None]
+    executionMode: NotRequired[Literal["vm", "native"]]
+    hostProjectPath: NotRequired[str]
+    layrReady: NotRequired[bool]
+    layrTurnRetryAt: NotRequired[float]
+    layrProjectId: NotRequired[str]
+    layrLine: NotRequired[str]
+    layrOwner: NotRequired[str]
+    layrHome: NotRequired[str]
+    layrSubpath: NotRequired[str]
+    layrBaseState: NotRequired[str]
+    layrStateId: NotRequired[str]
+    layrTurnSaves: NotRequired[dict[str, JsonObject]]
+    layrError: NotRequired[str]
     remoteOrigin: NotRequired[RemoteParentLinkRecord]
     remoteAnchor: NotRequired[RemoteParentLinkRecord]
     remoteEpoch: NotRequired[int]
@@ -1457,6 +1472,9 @@ class WorkArchiveIntentRecord(TypedDict):
 
 
 class WorkResultRecord(TypedDict):
+    layrProjectId: NotRequired[str]
+    layrLine: NotRequired[str]
+    layrStateId: NotRequired[str]
     id: str
     agent: str
     text: str

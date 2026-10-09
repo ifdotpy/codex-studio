@@ -38,7 +38,7 @@ def default_shell():
     raise ValueError("No supported shell is available for the command")
 
 
-def monitor_command(server, command, cwd, *, config=None):
+def monitor_command(server, command, cwd, *, config=None, guest=False):
     """Use native config and the rc setup used by Codex shell snapshots.
 
     command/exec already applies the account's shell_environment_policy. Its
@@ -47,7 +47,7 @@ def monitor_command(server, command, cwd, *, config=None):
     """
     if config is None:
         config = server.call("config/read", {"cwd": cwd, "includeLayers": False})["config"]
-    shell = default_shell()
+    shell = "/bin/bash" if guest else default_shell()
     name = Path(shell).stem.casefold()
     login = config.get("allow_login_shell", True)
     if name in {"pwsh", "powershell"}:
@@ -66,7 +66,7 @@ def monitor_command(server, command, cwd, *, config=None):
         '    unset SDKROOT\n'
         '  fi\n'
         'fi\n'
-        if sys.platform == "darwin" else ""
+        if sys.platform == "darwin" and not guest else ""
     )
     if not login:
         return [shell, "-c", sdk_startup + command]

@@ -566,9 +566,9 @@ class EfficiencyMixin:
                 'It is not a user message. ' + source + '\n' + diff + '[End Studio role skill update]')
 
     def preparation_context_versions(self: "_EfficiencyHost", actor: "AgentRecord", params: dict[str, "Any"]) -> "JsonObject":
-        from codex_progress import progress_context
+        from codex_vm_agents import progress_context
         values = {'roleSkill': self.role_guidance(actor),
-                  'progressFile': progress_context(self.root, actor['id'])}
+                  'progressFile': progress_context(self, actor)}
         if values['roleSkill'] in params.get('developerInstructions', ''):
             self.remember_role_text(values['roleSkill'])
         # Guidance can change between construction and capture. Only acknowledge
@@ -649,11 +649,11 @@ class EfficiencyMixin:
                 if value is None or self.agent(value['agent'], db)['rootId'] != actor['rootId']:
                     raise ValueError('Unknown monitor in this team')
             elif topic == 'panel' and actor.get('isLead'):
-                from codex_progress import progress_context
-                value = progress_context(self.root, actor['id']) + '\n\n' + self.panel_guidance()
+                from codex_vm_agents import progress_context
+                value = progress_context(self, actor) + '\n\n' + self.panel_guidance()
             elif topic == 'background' and actor.get('isLead'):
-                from codex_progress import progress_context
-                value = {'workflow': progress_context(self.root, actor['id']),
+                from codex_vm_agents import progress_context
+                value = {'workflow': progress_context(self, actor),
                          'monitor': 'Use orchestration_monitor for commands needing a result. Every command exit wakes you regardless of wake_on. Quiet monitors wake after 1800 seconds by default; set stall_timeout_seconds to 0 to disable stall wakes.',
                          'polling': 'Let a script write PROGRESS.md when its facts change. Do not poll unchanged status through model calls.'}
             elif topic == 'tools':
@@ -671,8 +671,8 @@ class EfficiencyMixin:
         if known.get('agentMode') != versions['agentMode']:
             blocks.append(mode)
         if actor.get('isLead'):
-            from codex_progress import progress_context
-            progress = progress_context(self.root, actor['id'])
+            from codex_vm_agents import progress_context
+            progress = progress_context(self, actor)
             versions['progressFile'] = digest(progress)
             if known.get('progressFile') != versions['progressFile']:
                 self.progress_file(actor)
