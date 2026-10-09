@@ -13,6 +13,7 @@ import time
 import uuid
 
 from codex_progress import _directory, progress_path, read_progress
+from codex_private_paths import protect_temp_file, verify_handle_within_directory
 
 RENDERER = "progress-markdown-v2"
 LEGACY_RENDERER = "progress-markdown-v1"
@@ -32,9 +33,36 @@ def layout_path(state_dir, agent_id):
     return progress_path(state_dir, agent_id).with_name(LAYOUT_FILE)
 
 
-def _read_layout(directory):
+def _open_layout_file(directory: int | Path, name: str, flags: int, mode: int = 0o600) -> int:
+    if not isinstance(directory, Path):
+        return os.open(name, flags, mode, dir_fd=directory)
+    target = directory / name
     try:
-        descriptor = os.open(LAYOUT_FILE, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+        before = target.lstat()
+    except FileNotFoundError:
+        before = None
+    if before is not None and (not stat.S_ISREG(before.st_mode)
+                               or getattr(before, "st_file_attributes", 0) & 0x400):
+        raise ValueError("Progress layout file must be a regular file")
+    descriptor = os.open(target, flags | getattr(os, "O_BINARY", 0), mode)
+    try:
+        verify_handle_within_directory(descriptor, directory)
+        opened = os.fstat(descriptor)
+        after = target.lstat()
+        if (not stat.S_ISREG(opened.st_mode)
+                or getattr(after, "st_file_attributes", 0) & 0x400
+                or (opened.st_dev, opened.st_ino) != (after.st_dev, after.st_ino)):
+            raise ValueError("Progress layout file must be a stable regular file")
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _read_layout(directory: int | Path):
+    try:
+        flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        descriptor = _open_layout_file(directory, LAYOUT_FILE, flags)
     except FileNotFoundError:
         return {}
     with os.fdopen(descriptor, "rb") as stream:
@@ -133,8 +161,10 @@ def record_layout(runtime, body):
     with runtime.lock, runtime.db() as db:
         runtime.checked_actor(db, agent_id)
     with _directory(runtime.root, agent_id) as directory:
-        lock = os.open(".layout.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_NONBLOCK,
-                       0o600, dir_fd=directory)
+        flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
+        lock = _open_layout_file(directory, ".layout.lock", flags)
+        if isinstance(directory, Path):
+            protect_temp_file(directory / ".layout.lock")
         temporary = None
         try:
             if not stat.S_ISREG(os.fstat(lock).st_mode):
@@ -171,25 +201,41 @@ def record_layout(runtime, body):
             if len(data) > MAX_LAYOUT_BYTES:
                 raise ValueError("Progress layout feedback exceeds its size limit")
             temporary = ".layout-" + uuid.uuid4().hex + ".tmp"
-            descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-                                 0o444, dir_fd=directory)
+            descriptor = _open_layout_file(directory, temporary,
+                                           os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                           | getattr(os, "O_NOFOLLOW", 0), 0o444)
             with os.fdopen(descriptor, "wb") as stream:
                 # The mode argument is filtered by umask. Restore the exact
                 # read-only mode required by the renderer feedback contract.
-                os.fchmod(stream.fileno(), 0o444)
+                if isinstance(directory, Path):
+                    protect_temp_file(directory / temporary)
+                else:
+                    os.fchmod(stream.fileno(), 0o444)
                 stream.write(data)
                 stream.flush()
                 os.fsync(stream.fileno())
+            if isinstance(directory, Path):
+                os.chmod(directory / temporary, 0o444)
             # Never label a later direct file edit with the earlier measurement.
             if read_progress(runtime.root, agent_id)["revision"] != current["revision"]:
                 raise LayoutConflict("The progress file changed while saving its measurement")
-            os.replace(temporary, LAYOUT_FILE, src_dir_fd=directory, dst_dir_fd=directory)
+            if isinstance(directory, Path):
+                target = directory / LAYOUT_FILE
+                if target.exists():
+                    os.chmod(target, 0o600)
+                os.replace(directory / temporary, target)
+            else:
+                os.replace(temporary, LAYOUT_FILE, src_dir_fd=directory, dst_dir_fd=directory)
             temporary = None
-            os.fsync(directory)
+            if not isinstance(directory, Path):
+                os.fsync(directory)
             return result
         finally:
             if temporary is not None:
-                os.unlink(temporary, dir_fd=directory)
+                if isinstance(directory, Path):
+                    (directory / temporary).unlink(missing_ok=True)
+                else:
+                    os.unlink(temporary, dir_fd=directory)
             os.close(lock)
 
 

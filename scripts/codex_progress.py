@@ -6,6 +6,8 @@ from pathlib import Path
 import re
 import stat
 
+from codex_private_paths import protect, protect_temp_file, verify_handle_within_directory
+
 MAX_PROGRESS_BYTES = 128 * 1024
 _AGENT_ID = re.compile(r"[A-Za-z0-9_-]{1,200}\Z")
 
@@ -21,6 +23,24 @@ def _directory(state_dir, agent_id, *, create=False):
     # Open each untrusted component separately. A renamed directory or symlink
     # cannot redirect an already opened directory descriptor to another agent.
     progress_path(state_dir, agent_id)
+    if os.name == "nt":
+        root = Path(state_dir).absolute()
+        progress = root / "progress"
+        agent = progress / agent_id
+        for directory in (root, progress, agent):
+            try:
+                info = directory.lstat()
+            except FileNotFoundError:
+                if not create or directory == root:
+                    raise
+                directory.mkdir(mode=0o700)
+                protect(directory, directory=True)
+                info = directory.lstat()
+            if (not stat.S_ISDIR(info.st_mode)
+                    or getattr(info, "st_file_attributes", 0) & 0x400):
+                raise ValueError("Progress path must not contain a reparse point")
+        yield agent
+        return
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptors = [os.open(Path(state_dir), os.O_RDONLY | os.O_DIRECTORY)]
     try:
@@ -41,6 +61,23 @@ def provision_progress(state_dir, agent_id):
     """Create an empty file once. Never replace existing agent content."""
     path = progress_path(state_dir, agent_id)
     with _directory(state_dir, agent_id, create=True) as directory:
+        if isinstance(directory, Path):
+            target = directory / "PROGRESS.md"
+            try:
+                descriptor = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                                     | getattr(os, "O_BINARY", 0), 0o600)
+            except FileExistsError:
+                info = target.lstat()
+                if (not stat.S_ISREG(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & 0x400):
+                    raise ValueError("PROGRESS.md must be a regular file")
+            else:
+                try:
+                    verify_handle_within_directory(descriptor, directory)
+                finally:
+                    os.close(descriptor)
+                protect_temp_file(target)
+            return path
         try:
             descriptor = os.open("PROGRESS.md", os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
                                  0o600, dir_fd=directory)
@@ -75,7 +112,26 @@ def read_progress(state_dir: str | os.PathLike[str], agent_id: str) -> dict[str,
               "path": str(path), "revision": None, "updated": None, "exists": False, "error": None}
     try:
         with _directory(state_dir, agent_id) as directory:
-            descriptor = os.open("PROGRESS.md", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            if isinstance(directory, Path):
+                target = directory / "PROGRESS.md"
+                info = target.lstat()
+                if getattr(info, "st_file_attributes", 0) & 0x400:
+                    raise ValueError("PROGRESS.md must not be a reparse point")
+                descriptor = os.open(target, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+                try:
+                    verify_handle_within_directory(descriptor, directory)
+                except BaseException:
+                    os.close(descriptor)
+                    raise
+                opened = os.fstat(descriptor)
+                current = target.lstat()
+                if (not stat.S_ISREG(opened.st_mode)
+                        or getattr(current, "st_file_attributes", 0) & 0x400
+                        or (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)):
+                    os.close(descriptor)
+                    raise ValueError("PROGRESS.md must be a stable regular file")
+            else:
+                descriptor = os.open("PROGRESS.md", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=directory)
             with os.fdopen(descriptor, "rb") as stream:
                 result["exists"] = True
                 before = os.fstat(stream.fileno())

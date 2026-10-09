@@ -48,10 +48,12 @@ def monitor_command(server, command, cwd, *, config=None):
     if config is None:
         config = server.call("config/read", {"cwd": cwd, "includeLayers": False})["config"]
     shell = default_shell()
-    name = Path(shell).name
+    name = Path(shell).stem.casefold()
     login = config.get("allow_login_shell", True)
     if name in {"pwsh", "powershell"}:
-        return [shell, *([] if login else ["-NoProfile"]), "-Command", command]
+        return [shell, "-NoProfile", "-Command", command]
+    if name == "cmd":
+        return [shell, "/d", "/s", "/c", command]
     # Resolve in the child environment, after account policy and shell startup.
     # A compiler's implicit CLT SDK can differ from xcode-select's toolchain.
     # Preserve even an explicitly empty SDKROOT and command-local overrides.

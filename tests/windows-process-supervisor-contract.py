@@ -418,15 +418,22 @@ class WindowsSupervisorContract(unittest.TestCase):
         supervisor._close_stopped_job(job, "killed")
         job.close.assert_called_once()
 
-    def test_retained_launch_is_refused_with_clear_windows_error(self):
-        saved = {"closed_at": None, "pid": 10, "identity_pid": 10, "start_time": "10"}
-        with patch.object(supervisor, "supervisor_launch_snapshot", return_value=saved):
-            with self.assertRaisesRegex(RuntimeError, "Windows retained native launch verification is unavailable"):
-                supervisor.retained_native_launch(self.root, "test:retained", [], {}, None)
+    def test_retained_launch_reopens_only_the_saved_job_identity(self):
         connection, reader = self.connect("retained-environment")
-        self.open_tree(connection, reader, [0])
-        with self.assertRaisesRegex(RuntimeError, "Windows retained native launch verification is unavailable"):
-            supervisor.native_launch_environment(self.root, "test:tree", ["new.exe"], {}, None)
+        command = [sys.executable, "-u", str(self.child_file)]
+        env = {key: value for key, value in os.environ.items()
+               if key not in supervisor.BACKEND_ONLY_ENVIRONMENT}
+        env["DESCENDANT_PID_FILE"] = str(self.descendant_file)
+        cwd = str(self.root)
+        self.call(connection, reader, [0], "open", command=command, env=env, cwd=cwd)
+        pid = wait_for(lambda: next((h["pid"] for h in supervisor.status(self.root)["handles"]
+                                    if h["id"] == "test:tree"), None))
+        expected = supervisor.retained_native_launch(self.root, "test:tree", command, env, cwd)
+        self.assertIsNotNone(expected)
+        self.assertEqual(expected["pid"], pid)
+        self.assertTrue(supervisor.native_launch_environment(self.root, "test:tree", command, env, cwd))
+        with self.assertRaisesRegex(RuntimeError, "launch settings changed"):
+            supervisor.retained_native_launch(self.root, "test:tree", ["other.exe"], env, cwd)
         live = supervisor.status(self.root)["handles"][0]
         supervisor.admin_close_handle(self.root, "test:tree", live["pid"],
                                       live["startTime"], live["signature"])

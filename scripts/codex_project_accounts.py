@@ -10,7 +10,8 @@ if TYPE_CHECKING:
 
 
 def set_project_accounts(runtime: "Runtime", data: dict[str, object]) -> "ProjectRecord":
-    path = runtime.project_directory(data.get("path"), require_existing=True)
+    from codex_project_locations import project_key
+    path = project_key(runtime, data.get("path"), require_existing=True)
     keys = data.get("account_keys")
     if not isinstance(keys, list) or not keys or any(not isinstance(k, str) for k in keys):
         raise ValueError("Select at least one project account")

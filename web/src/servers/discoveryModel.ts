@@ -4,6 +4,7 @@ export type DiscoveredServer = {
   label: string;
   origin: string;
   status: "discovered" | "paired" | "revoked" | "unreachable";
+  reachability?: "reachable" | "unreachable" | "unknown" | null;
   lastSeen: number | null;
   paired: boolean;
   publicKey: string;
@@ -11,6 +12,7 @@ export type DiscoveredServer = {
 };
 export type DiscoverySnapshot = {
   localServerId: string;
+  aliases?: Record<string, string>;
   localLabel?: string;
   localOrigin?: string | null;
   autoPair: boolean;
@@ -32,6 +34,7 @@ export function discoverySnapshot(
     localLabel: state.identity.label,
     localOrigin: state.identity.origin,
     autoPair: state.settings.autoPair,
+    aliases: state.settings.aliases,
     servers: state.servers
       .filter(
         (peer) =>
@@ -44,6 +47,7 @@ export function discoverySnapshot(
         label: peer.label,
         origin: serveOrigin(peer.origin!),
         status: peer.status,
+        reachability: peer.reachability,
         lastSeen: peer.lastSeen ?? null,
         paired: peer.status === "paired",
         publicKey: peer.publicKey,

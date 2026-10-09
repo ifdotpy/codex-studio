@@ -8,9 +8,11 @@ export type ServerAccessPeer = {
   publicKey: string;
   tailscaleUser: string;
   status: "discovered" | "paired" | "revoked" | "unreachable";
+  reachability?: "reachable" | "unreachable" | "unknown" | null;
   created: number;
   lastSeen: number | null;
   autoPair: boolean | null;
+  alias?: string | null;
 };
 export type ServerAccessState = {
   protocol: 1;
@@ -28,7 +30,7 @@ export type ServerAccessState = {
     status: "paired" | "revoked";
     created?: number;
   }[];
-  settings?: { autoPair: boolean };
+  settings?: { autoPair: boolean; aliases?: Record<string, string> };
   servers: ServerAccessPeer[];
   invites: unknown[];
 };
@@ -38,7 +40,8 @@ export type ServerAccessRequest =
   | { action: "unrevoke"; clientId: string; requestId: string }
   | { action: "discover"; requestId: string }
   | { action: "ui_invite"; serverId: string; requestId: string }
-  | { action: "settings"; autoPair: boolean; requestId: string };
+  | { action: "settings"; autoPair: boolean; requestId: string }
+  | { action: "alias"; serverId: string; alias: string; requestId: string };
 export type ServerAccessResponse =
   | ServerAccessState
   | { invitation: PairInvitation; expires: number }

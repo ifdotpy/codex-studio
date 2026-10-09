@@ -64,14 +64,16 @@ def folder_for(runtime, db, path, folder_id):
 
 def organize_project(runtime, data):
     action = data['action']
-    path = runtime.project_directory(data.get('path'), require_existing=False)
+    from codex_project_locations import project_key
+    path = project_key(runtime, data.get('path'))
     revision = data.get('expected_revision')
     if type(revision) is not int or revision < 0:
         raise ValueError("Supply the current project revision")
     name = text_field(data.get('name'), 'a name', 255) if action != 'remove_folder' else None
     with runtime.lock, runtime.db() as db:
         db.execute('BEGIN IMMEDIATE')
-        project = runtime.ensure_project(path, runtime.project_account(path, db=db), db)
+        row = db.execute("SELECT record FROM runtime_projects WHERE id=?", (path,)).fetchone()
+        project = json.loads(row[0]) if row else runtime.ensure_project(path, runtime.project_account(path, db=db), db)
         current = project.get('organizationRevision', 0)
         folders = project.get('folders', [])
         target = None
@@ -107,7 +109,7 @@ def organize_project(runtime, data):
                 folders.append({'id': folder_id, 'name': name, 'parentId': parent})
         else:
             occupied = any(folder.get('parentId') == folder_id for folder in folders)
-            occupied = occupied or db.execute("SELECT 1 FROM runtime_agents WHERE json_extract(record,'$.cwd')=? AND json_extract(record,'$.projectFolder')=? AND json_extract(record,'$.deletedAt') IS NULL LIMIT 1", (path, folder_id)).fetchone()
+            occupied = occupied or db.execute("SELECT 1 FROM runtime_agents WHERE (json_extract(record,'$.cwd')=? OR json_extract(record,'$.projectId')=?) AND json_extract(record,'$.projectFolder')=? AND json_extract(record,'$.deletedAt') IS NULL LIMIT 1", (path, path, folder_id)).fetchone()
             if occupied:
                 raise ValueError('This folder still contains chats or subfolders')
             folders = [folder for folder in folders if folder['id'] != folder_id]

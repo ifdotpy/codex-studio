@@ -1,25 +1,23 @@
 # Windows server and worker environments
 
-Status: design for phase 1, 2026-10-08. This document defines a Windows server
-that runs workers natively or in Windows Subsystem for Linux 2 (WSL2). The
-Windows machine is `kukuka-win`. Phase 1 does not access it. Phase 2 requires
-separate approval and SSH access.
+Status: implementation record, 2026-10-08. The Windows machine is
+`kukuka-win`. It runs a native Windows Studio server beside a separate Studio
+Linux server inside Windows Subsystem for Linux 2 (WSL2).
 
 ## Decisions
 
 1. The Windows server runs without the desktop application. A paired Studio UI
    connects to its loopback API through Tailscale Serve and the existing pairing
    protocol in [multiple Studio servers](multi-server.md).
-2. `environment: "host"` selects native Windows on a Windows server. A new
-   `environment: "wsl"` selects a WSL2 distribution on that server. The
-   existing `host` default stays unchanged. Existing `linux` remains the Linux
-   VM choice on macOS.
+2. The selected Studio server determines the worker environment. The native
+   Windows server runs Windows workers. The separate WSL2 Studio server runs
+   Linux workers. The existing `host` default stays unchanged. Existing `linux`
+   remains the Linux VM choice on macOS.
 3. Native Windows workers use Git worktrees. Image workspaces remain unsupported
    on Windows. Linux VM workspaces remain unsupported on Windows.
-4. WSL2 workers use Linux builds of Codex and Claude Code. They use the existing
-   Linux workspace engine and the guest-service design where it fits. The
-   Windows server owns access-token refresh. It sends only short-lived access
-   credentials to WSL2, as it does for Linux VM workers.
+4. The WSL2 option runs as a separate Studio Linux server inside WSL2. It uses
+   the existing Linux server and worker code. Pair it with the native Windows
+   server like any other server. The selected server determines the worker OS.
 5. The server, its data, and service profiles use a stable per-install state
    identity. A code update must not move or recreate server state.
 6. Windows process, file, and IPC ownership must use Windows security
@@ -27,8 +25,8 @@ separate approval and SSH access.
 
 ## Server shape
 
-Install two Windows services under one dedicated, non-administrator Windows
-account:
+The target design uses two Windows services under one dedicated,
+non-administrator Windows account:
 
 | Service                 | Role                                                                                                                                                     |
 | ----------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -57,6 +55,35 @@ to run at boot and without an interactive logon is a fallback only if a tested
 service host cannot be packaged. It must use the same account and recovery
 rules. A task must not start a second backend when the existing state directory
 is occupied.
+
+## kukuka-win deployment
+
+The current deployment runs under the existing `IGOS3` account. A Scheduled
+Task starts the server at logon with a limited interactive token. It uses the
+Python environment and source checkout under `C:\Users\IGOS3\studio-dev`.
+Installer files and server state live under `%LOCALAPPDATA%\CodexStudio`.
+
+The Python entrypoint starts the process supervisor once, then starts the API
+on `127.0.0.1:4630`. It restarts the API after a process exit. The supervisor
+keeps native workers and reattaches them after each API restart. The task
+restarts the entrypoint after a failure. The API and supervisor use the same
+`%LOCALAPPDATA%\CodexStudio\state` directory.
+
+Use `manage-windows-server.ps1 -Action StopBackend` to stop only the API with
+the Windows console shutdown signal. The entrypoint and supervisor stay up;
+supervised workers stay attached. Use `-Action RestartBackend -SourceRoot
+`<path>`to stop the API, select a source tree, and start the API again. Use`-Action StopAll` only to stop the server tree and remove its logon task.
+
+Tailscale Serve keeps the WSL2 Studio server on HTTPS port 443, which proxies
+to `127.0.0.1:4720`. The native Windows server uses HTTPS port 8443, which
+proxies to `127.0.0.1:4630`. Its public origin is
+`https://kukuka-win.tailf00fa0.ts.net:8443`. Discovery probes same-owner
+Tailscale nodes on ports 443 and 8443. It records each origin with its port.
+
+The native server discovers Codex and Claude through Windows executable
+discovery, including `.cmd` shims. Native implementers use Git worktrees under
+the Windows repository. They do not use image workspaces or the WSL2 server's
+Linux workspace.
 
 ## POSIX dependencies and port plan
 
@@ -121,46 +148,22 @@ long-path support in the installer when policy allows it; otherwise fail with
 a direct path-length error. Never remove or reset a worktree that fails its
 saved branch, commit, index, or path identity checks.
 
-## WSL2 worker path
+## Separate WSL2 Studio server
 
-Add `wsl` to the validated environment choices in `orchestration_spawn` and
-project worker defaults. Require an installed, healthy WSL2 distribution with
-Codex/Claude Linux binaries and Git. Pin the distribution name in server
-settings. Run guest commands through `wsl.exe --distribution <name> --user
-<guest-user> --exec ...`; do not use an implicit login shell.
+Run the WSL2 option as a separate Studio Linux server inside WSL2. Use the
+existing Linux server and worker code. Do not add a `wsl` worker environment to
+the native Windows server.
 
-Keep each WSL workspace in the distribution's Linux filesystem, not under
-`/mnt/c`. Map the Windows project identity to a guest project root in a saved
-manifest. Use `wslpath` only at the explicit Windows-to-guest boundary. Give the
-Linux guest a Linux path for its working directory and report that path in the
-worker record. Reuse `codex_workspace_linux.py` for Linux workspace isolation
-and a small guest service for workspace and provider process control. Do not
-pass Windows paths into the Linux provider process.
+Pair the WSL2 server with the native Windows server through the existing
+multi-server discovery and pairing flow. Select the server to select its worker
+environment. The WSL2 server runs Linux workers. The native Windows server
+runs Windows workers. Keep their state directories, ports, process supervisors,
+and worker profiles separate.
 
-Use a guest service user with an owner-only home. The host obtains the selected
-account's current access token and validates its account identity. It passes
-only allowlisted access-token fields to the guest. Never copy the host's full
-Codex or Claude profile, refresh token, browser store, or Windows credentials.
-The host performs refresh, checks the account again, and sends a replacement
-access token over authenticated local IPC. The guest stores each token with
-mode `0600`, scopes it to that worker/account, and removes it at worker cleanup.
-For Claude, confirm that the Linux CLI can use the token-only flow before
-enabling the environment. If it needs a refresh token or full profile, fail the
-spawn with a clear unsupported-auth error.
-
-Expose WSL Git results through an explicit Git remote helper, such as
-`git-remote-wsl`, that invokes the selected distribution's `git-upload-pack`
-with a fixed repository path. The lead then uses ordinary `git fetch` for the
-worker branch. Restrict the helper to registered repository roots and refs;
-reject arbitrary guest paths and command arguments. Keep fetch read-only. Do
-not copy a checkout over the Windows project folder.
-
-WSL2 is not a Windows service dependency that can be assumed ready at boot.
-The server checks the configured distribution with a bounded health request,
-starts it when needed, and reports offline or setup-required status. It never
-falls back from `wsl` to `host` after a failed start. A restart or lost response
-uses the same workspace and operation identities. Unknown mutations stay
-unknown and are not replayed.
+On `kukuka-win`, keep the WSL2 server on loopback port 4720 and its Tailscale
+Serve mapping on HTTPS port 443. Expose the native Windows server on loopback
+port 4630 and HTTPS port 8443. Discovery must distinguish the two origins by
+port, even when both servers use the same Tailscale host name.
 
 ## Tailscale Serve and access
 
@@ -181,11 +184,10 @@ steps. Do not run the Python server as administrator.
 ## Work not supported on Windows
 
 - Image workspaces. Native Windows workers use Git worktrees.
-- The Apple Virtualization Framework Linux VM. WSL2 is the Linux worker option.
+- The Apple Virtualization Framework Linux VM. Use the separate WSL2 Studio
+  server for Linux workers on `kukuka-win`.
 - macOS Keychain, launchd, and Linux overlay mounts in the native host process.
   Keep them behind their platform adapters.
-- A WSL Claude worker until access-token-only authentication passes the guest
-  integration test.
 
 ## Effort estimate
 
@@ -199,7 +201,7 @@ the Windows provider and WSL token paths are the largest unknowns.
 | Process supervisor, named-pipe security, Job Objects, durable recovery, backend reattach            | 2 to 3 weeks | Restart tests prove child ownership and exact-once request behavior; uncertain identity fails closed.  |
 | Windows server install, service account, SCM recovery, state/log paths, operator update and removal | 1 to 2 weeks | Server starts at boot without desktop logon and recovers after backend failure without moving state.   |
 | Native Windows provider discovery, Codex/Claude launch, Git worktree and fetch                      | 1 to 2 weeks | Both providers run a worker that commits in its worktree and the lead fetches its branch.              |
-| WSL2 selection, guest service, workspace mapping, token-only auth, Git remote helper                | 2 to 3 weeks | WSL worker runs in Linux paths, refreshes through the host, commits, and the lead fetches its branch.  |
+| Separate WSL2 Studio server pairing and same-host discovery                                         | 2 to 3 weeks | Both servers pair on the same host, keep separate state, and expose their native worker environments.  |
 | Windows CI, end-to-end recovery and Tailscale pairing checks on `kukuka-win`                        |       1 week | Required native Windows checks pass on the target; no live model request is needed for fixture checks. |
 
 Some work can overlap after the Windows platform contracts are stable. The
@@ -224,18 +226,16 @@ the target's exact versions before implementation.
 5. Run a native Codex worker and a Claude worker with fixture credentials. Check
    model selection, permission checks, logs, file changes, commit, worktree
    cleanup, and lead-side `git fetch`. Do not require a paid model call.
-6. Run the server service at boot without an interactive logon. Restart the
-   backend and both services. Verify state ID, API port, worktree, supervisor
-   journal, and request receipts stay stable. Verify another backend cannot
-   claim an occupied state directory.
+6. Run the per-user scheduled task at logon. Restart the backend and task.
+   Verify state ID, API port, worktree, supervisor journal, and request receipts
+   stay stable. Verify another backend cannot claim an occupied state directory.
 7. On `kukuka-win`, configure Tailscale Serve, pair a separate UI, check API and
    stream access, revoke the pair, and verify access fails. Check
    `tailscale serve status --json`. Do not enable Funnel or change any other
    live server.
-8. Install one WSL2 distribution under the service account. Test cold start,
-   offline distribution, restart, token refresh, token revocation, guest file
-   mode, cross-account rejection, Unicode and space-containing paths, worker
-   commit, and lead-side `git fetch` through the helper.
+8. Start the separate WSL2 Studio server. Pair it with the native Windows
+   server on the same Tailscale host. Verify discovery keeps ports 443 and 8443
+   distinct, and verify each server starts workers in its own operating system.
 
 Run target-host checks over SSH only after phase 1 review and approval. Do not
 start the new server against an occupied state directory.

@@ -354,6 +354,7 @@ def fixture_events():
 threading.Thread(target=fixture_events, daemon=True).start()
 threading.Thread(target=server.unix_server.serve_forever, kwargs={'poll_interval': 0.5},
                  daemon=True, name='fixture-canvas-unix').start()
+server.context.start_api_schema_hash().result(timeout=120)
 print(server.server_port, flush=True)
 try:
     server.serve_forever()

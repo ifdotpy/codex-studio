@@ -219,7 +219,8 @@ export default function Usage({
   );
   const limitsData = jsonObject(limits?.data);
   const loadingLimits =
-    activeAccount?.loading ?? limitsLoading ?? !reportedLimits;
+    !limits?.data &&
+    (activeAccount?.loading ?? limitsLoading ?? !reportedLimits);
   const accountAgent = { ...agent, accountKey: selectedAccountKey };
   const [analyticsOpen, setAnalyticsOpen] = useState(false);
   const [contextOpen, setContextOpen] = useState(false);
@@ -716,7 +717,7 @@ export default function Usage({
                 <Button
                   size="compact-xs"
                   variant="subtle"
-                  loading={refreshing || loadingLimits}
+                  loading={!limits?.data && (refreshing || loadingLimits)}
                   onClick={() =>
                     void (activeAccount?.reload(true) ?? refreshLimits())
                   }
@@ -968,7 +969,7 @@ export default function Usage({
                     <Button
                       size="compact-xs"
                       variant="subtle"
-                      loading={refreshing || loadingLimits}
+                      loading={!limits?.data && (refreshing || loadingLimits)}
                       onClick={() => void refreshLimits()}
                     >
                       Refresh after reset

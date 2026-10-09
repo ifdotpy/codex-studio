@@ -48,6 +48,10 @@ import {
 } from "./shell/messages/PeerTeams";
 
 import SidebarRow from "./SidebarRow";
+import { readServerAliases } from "../servers/registry";
+import { useServerAliases } from "../servers/serverAliases";
+import { serverViewId } from "../servers/environment";
+import { ChatServerLine, keepCompactChat } from "../servers/ProjectChatRows";
 import {
   createSidebarCatalogSelector,
   createSidebarSearchSelector,
@@ -75,6 +79,7 @@ type Props = {
   addProject: () => void;
   changeProject: (agent: Agent) => void;
   projectAccount: (path: string) => void;
+  projectFolders?: (path: string) => void;
   creating: boolean;
   rename: (id: string, name: string) => Promise<void>;
   remove: (id: string, room: boolean) => void;
@@ -108,6 +113,7 @@ export function projectSearchLabel(
 export default function Sidebar(p: Props) {
   reportPromptComposerRender("sidebar");
   const runtime = p.data.runtime;
+  const aliases = useServerAliases(readServerAliases);
   const compact = useMediaQuery("(max-width: 760px)");
   const [query, setQuery] = useState(""),
     [renaming, setRenaming] = useState<string | null>(null),
@@ -224,9 +230,7 @@ export default function Sidebar(p: Props) {
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>(() =>
     saved(projectKey, {}),
   );
-  const [projectLimits, setProjectLimits] = useState<Record<string, number>>(
-    {},
-  );
+
   const toggleProject = (path: string) => {
     const next = { ...collapsed, [path]: !collapsed[path] };
     setCollapsed(next);
@@ -394,13 +398,7 @@ export default function Sidebar(p: Props) {
             save(projectKey, next);
             return next;
           });
-          const key = folder
-            ? folderKey(project.path, folder.id)
-            : project.path;
-          setProjectLimits((previous) => ({
-            ...previous,
-            [key]: agents.length,
-          }));
+          setCompactProject(project.path, false);
           sorting.announce(
             `Moved ${chat.name} to ${folder?.name || project.name}`,
           );
@@ -462,20 +460,22 @@ export default function Sidebar(p: Props) {
     [sharedRooms],
   );
   const keptInCompact = (a: Agent) =>
-    !!(
-      teamFor(a.id) ||
-      a.pinned ||
-      a.inFlight ||
-      ["running", "starting", "approval"].includes(a.status || "") ||
-      a.hasUnread ||
-      a.unreadCount ||
-      p.indicators.get(a.id)?.kind === "unread" ||
-      (a.updated || a.created || 0) >= Date.now() / 1000 - 86400
-    );
+    keepCompactChat({
+      id: a.id,
+      name: a.name || "",
+      team: !!teamFor(a.id),
+      pinned: !!a.pinned,
+      inFlight: !!a.inFlight,
+      status: a.status || "",
+      unread: !!(a.hasUnread || a.unreadCount),
+      indicator: p.indicators.get(a.id),
+      updated: a.updated || undefined,
+      created: a.created || undefined,
+    });
   const compactIndicatorKey = agents
     .filter(
       (agent) =>
-        compactProjects[agent.cwd || ""] &&
+        compactProjects[agent.cwd || ""] !== false &&
         p.indicators.get(agent.id)?.kind === "unread",
     )
     .map((agent) => agent.id)
@@ -524,7 +524,12 @@ export default function Sidebar(p: Props) {
         });
     }
     for (const a of filtered) {
-      if (query || !compactProjects[a.cwd || ""] || keptInCompact(a))
+      if (
+        query ||
+        compactProjects[a.cwd || ""] === false ||
+        a.id === p.opened ||
+        keptInCompact(a)
+      )
         groups.get(a.cwd || "")!.chats.push(a);
     }
     return groups;
@@ -537,6 +542,7 @@ export default function Sidebar(p: Props) {
     query,
     compactProjects,
     compactIndicatorKey,
+    p.opened,
   ]);
   const itemIds = (group: NavigableProject, parent: string | null = null) =>
     [
@@ -590,6 +596,15 @@ export default function Sidebar(p: Props) {
       key={row.id}
       row={row}
       selected={p.opened === row.id}
+      serverAlias={
+        aliases[
+          (row as Agent & { serverId?: string }).serverId ||
+            serverViewId ||
+            "local"
+        ] ||
+        aliases[serverViewId || "local"] ||
+        "MAC"
+      }
       indicator={p.indicators.get(row.id)}
       renaming={renaming === row.id}
       name={renaming === row.id ? name : ""}
@@ -750,7 +765,6 @@ export default function Sidebar(p: Props) {
     parent: ProjectFolder | null = null,
   ): ReactNode => {
     const folders = group.folders || [];
-    const key = parent ? folderKey(group.path, parent.id) : group.path;
     const assigned = group.chats
       .filter((chat) => !grouped.has(chat.id))
       .filter((chat) =>
@@ -758,24 +772,23 @@ export default function Sidebar(p: Props) {
           ? chat.projectFolder === parent.id
           : !folders.some((folder) => folder.id === chat.projectFolder),
       );
-    const shown =
-      compactProjects[group.path] !== undefined
-        ? assigned.length
-        : projectLimits[key] || 5;
-    const chats = assigned.slice(0, query ? assigned.length : shown);
-    const selected = assigned.find((chat) => chat.id === p.opened);
-    if (selected && !chats.includes(selected)) chats.push(selected);
+    const chats = [...assigned];
     const children = folders
       .filter((folder) => (folder.parentId || null) === (parent?.id || null))
       .filter((folder) => {
-        if (query || !compactProjects[group.path]) return true;
+        if (query || compactProjects[group.path] === false) return true;
         const contains = (id: string, seen = new Set<string>()): boolean => {
           if (seen.has(id)) return false;
           seen.add(id);
           return (
+            (!(byProject.get(group.path) || []).some(
+              (a) => a.projectFolder === id,
+            ) &&
+              !folders.some((f) => f.parentId === id)) ||
             group.chats.some(
               (a) => a.projectFolder === id && !grouped.has(a.id),
-            ) || folders.some((f) => f.parentId === id && contains(f.id, seen))
+            ) ||
+            folders.some((f) => f.parentId === id && contains(f.id, seen))
           );
         };
         return contains(folder.id);
@@ -926,16 +939,6 @@ export default function Sidebar(p: Props) {
             !peerTeams.some((team) => team.projectPath === group.path)) && (
             <p className="project-empty">No chats</p>
           )}
-        {!query && assigned.length > shown && (
-          <UnstyledButton
-            className="project-show-more"
-            onClick={() =>
-              setProjectLimits({ ...projectLimits, [key]: shown + 10 })
-            }
-          >
-            Show more
-          </UnstyledButton>
-        )}
       </>
     );
   };
@@ -1119,20 +1122,20 @@ export default function Sidebar(p: Props) {
                         <Menu.Item
                           title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
                           aria-label={
-                            compactProjects[group.path]
-                              ? "Show all chats"
-                              : "Compact project"
+                            compactProjects[group.path] !== false
+                              ? "Show more"
+                              : "Show less"
                           }
                           onClick={() =>
                             setCompactProject(
                               group.path,
-                              !compactProjects[group.path],
+                              compactProjects[group.path] === false,
                             )
                           }
                         >
-                          {compactProjects[group.path]
-                            ? "Show all chats"
-                            : "Compact project"}
+                          {compactProjects[group.path] !== false
+                            ? "Show more"
+                            : "Show less"}
                           <small className="menu-action-help">
                             Show recent and active chats. Keep pinned, unread,
                             and team chats.
@@ -1143,6 +1146,13 @@ export default function Sidebar(p: Props) {
                         <Menu.Item onClick={() => editProject(group)}>
                           Rename project
                         </Menu.Item>
+                        {p.projectFolders && (
+                          <Menu.Item
+                            onClick={() => p.projectFolders?.(group.path)}
+                          >
+                            Folders
+                          </Menu.Item>
+                        )}
                         <Menu.Item onClick={() => p.projectAccount(group.path)}>
                           Project account
                         </Menu.Item>
@@ -1206,22 +1216,38 @@ export default function Sidebar(p: Props) {
                           >
                             <span className="row-copy">
                               <strong>{room.name}</strong>
+                              <ChatServerLine
+                                provider={
+                                  p.data.threads.find((agent) =>
+                                    room.members?.includes(agent.id),
+                                  )?.provider || undefined
+                                }
+                                alias={
+                                  aliases[serverViewId || "local"] || "MAC"
+                                }
+                              />
                             </span>
                           </UnstyledButton>
                         </div>
                       ))}
                     {renderProjectChats(group)}
                     {!query &&
-                      compactProjects[group.path] &&
-                      filtered.filter((a) => a.cwd === group.path).length >
-                        group.chats.length && (
+                      (compactProjects[group.path] !== false
+                        ? filtered.filter((a) => a.cwd === group.path).length >
+                          group.chats.length
+                        : filtered.some((a) => a.cwd === group.path)) && (
                         <UnstyledButton
                           className="project-show-all"
-                          title="Keep peer team chats, pinned chats, running chats, unread chats, and chats active in the last 24 hours. Search finds all chats."
-                          onClick={() => setCompactProject(group.path, false)}
+                          onClick={() =>
+                            setCompactProject(
+                              group.path,
+                              compactProjects[group.path] === false,
+                            )
+                          }
                         >
-                          Show all{" "}
-                          {filtered.filter((a) => a.cwd === group.path).length}
+                          {compactProjects[group.path] !== false
+                            ? `Show more (${filtered.filter((a) => a.cwd === group.path).length - group.chats.length})`
+                            : "Show less"}
                         </UnstyledButton>
                       )}
                   </div>

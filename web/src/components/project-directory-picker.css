@@ -79,3 +79,7 @@
   height: 32px;
   font-size: 12px;
 }
+
+.directory-picker[data-server-selector="true"] .directory-list {
+  height: min(260px, 28vh);
+}

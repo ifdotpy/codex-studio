@@ -110,3 +110,61 @@ def protect_temp_file(path: str | Path) -> Path:
     target = Path(path)
     protect(target)
     return target
+
+
+def reject_reparse_path(root: str | Path, target: str | Path, *, allow_missing: bool = False) -> None:
+    """Reject reparse points in a path rooted at a private directory."""
+    base = Path(os.path.abspath(root))
+    path = Path(os.path.abspath(target))
+    try:
+        relative = path.relative_to(base)
+    except ValueError as error:
+        raise ValueError("Path is outside its private root") from error
+    components = [base]
+    current = base
+    for part in relative.parts:
+        current = current / part
+        components.append(current)
+    missing = False
+    for component in components:
+        if missing:
+            continue
+        try:
+            info = component.lstat()
+        except FileNotFoundError:
+            if not allow_missing:
+                raise
+            missing = True
+            continue
+        if getattr(info, "st_file_attributes", 0) & 0x400:
+            raise ValueError("Private path must not contain a reparse point")
+        if component != path and not component.is_dir():
+            raise ValueError("Private path parent must be a directory")
+
+
+def verify_handle_within_directory(descriptor: int, directory: str | Path) -> None:
+    """Verify the opened file handle resolves below the expected directory."""
+    if os.name != "nt":
+        return
+    import ctypes
+    import msvcrt
+
+    windows = cast(_WindowsCtypes, ctypes)
+    kernel32 = windows.WinDLL("kernel32", use_last_error=True)
+    function = getattr(kernel32, "GetFinalPathNameByHandleW")
+    function.argtypes = [ctypes.c_void_p, ctypes.c_wchar_p, ctypes.c_uint32, ctypes.c_uint32]
+    function.restype = ctypes.c_uint32
+    buffer = ctypes.create_unicode_buffer(32768)
+    handle = getattr(msvcrt, "get_osfhandle")(descriptor)
+    length = function(handle, buffer, len(buffer), 0)
+    if not length or length >= len(buffer):
+        raise windows.WinError(windows.get_last_error())
+    actual = buffer.value
+    if actual.startswith("\\\\?\\UNC\\"):
+        actual = "\\\\" + actual[8:]
+    elif actual.startswith("\\\\?\\"):
+        actual = actual[4:]
+    expected = os.path.normcase(os.path.abspath(directory)).rstrip("\\/")
+    actual = os.path.normcase(os.path.abspath(actual))
+    if not actual.startswith(expected + os.sep):
+        raise ValueError("Opened file is outside its private directory")

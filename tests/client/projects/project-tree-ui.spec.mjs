@@ -189,16 +189,11 @@ test("project tree ui", async ({ page: runnerPage }) => {
         (await group("assistant").locator("[data-chat]").count()) >= 5,
     );
     const initialChats = group("assistant").locator("[data-chat]");
-    const initialChatCount = await initialChats.count();
-    assert.ok(
-      initialChatCount === 5 ||
-        (initialChatCount === 6 &&
-          (await group("assistant")
-            .locator(".sidebar-row.selected [data-chat]")
-            .count()) === 1),
-      `five chats plus the selected chat when it is outside the default page, got ${initialChatCount}`,
+    assert.equal(
+      await initialChats.count(),
+      7,
+      "Compact projects keep all recent chats.",
     );
-    await group("assistant").getByText("Show more", { exact: true }).click();
     await waitFor(
       async () =>
         (await group("assistant").locator("[data-chat]").count()) === 7,
@@ -279,10 +274,6 @@ test("project tree ui", async ({ page: runnerPage }) => {
             .evaluateAll((rows) => rows.map((row) => row.dataset.projectPath)),
         )
         .toEqual(movedProjects);
-      await secondPage
-        .locator(`[data-project-path="${folders.assistant}"]`)
-        .getByText("Show more", { exact: true })
-        .click();
     }
     const beforeChats = await chatOrder();
     const chatButton = (id) => page.locator(`[data-chat="${id}"]`);
@@ -407,7 +398,7 @@ test("project tree ui", async ({ page: runnerPage }) => {
       movedProjects,
       "Project order survives reload",
     );
-    await group("assistant").getByText("Show more", { exact: true }).click();
+
     assert.deepEqual(
       await chatOrder(),
       savedChatOrder,
@@ -441,6 +432,16 @@ test("project tree ui", async ({ page: runnerPage }) => {
     await group("litos").locator(".project-tree-heading").hover();
     await page
       .getByRole("button", { name: "New chat in litos", exact: true })
+      .click();
+    const chatDialog = page.getByRole("dialog", {
+      name: "New chat",
+      exact: true,
+    });
+    await expect(
+      chatDialog.getByRole("button", { name: /This Mac.*Active.*litos/ }),
+    ).toHaveAttribute("aria-pressed", "true");
+    await chatDialog
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await waitFor(
       async () => (await state()).filter((a) => a.isLead).length === 11,
@@ -655,6 +656,10 @@ test("project tree ui", async ({ page: runnerPage }) => {
         name: "New chat in folder Interface",
         exact: true,
       })
+      .click();
+    await page
+      .getByRole("dialog", { name: "New chat", exact: true })
+      .getByRole("button", { name: "Start chat", exact: true })
       .click();
     await waitFor(async () =>
       (await state()).some(

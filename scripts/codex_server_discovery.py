@@ -24,6 +24,7 @@ PROBE_TIMEOUT = 5
 PASS_TIMEOUT = 90
 CONCURRENCY = 4
 MAX_CANDIDATES = 64
+DISCOVERY_PORTS = (443, 8443)
 
 
 class ServerDiscovery:
@@ -174,7 +175,11 @@ class ServerDiscovery:
             known = {row[0]: json.loads(row[1]) for row in db.execute("SELECT id,record FROM runtime_access_discovered")}
         for client in clients:
             discovered = known.get(client["id"], {})
-            known[client["id"]] = {**client, "lastSeen": discovered.get("lastSeen"), "autoPair": discovered.get("autoPair")}
+            known[client["id"]] = {**client, "lastSeen": discovered.get("lastSeen"), "autoPair": discovered.get("autoPair"),
+                "reachability": ("unreachable" if discovered.get("status") == "unreachable" else
+                                 "reachable" if discovered else "unknown")}
+        for peer in known.values():
+            peer.setdefault("reachability", "unreachable" if peer["status"] == "unreachable" else "reachable")
         return sorted(known.values(), key=lambda peer: peer["id"])
 
     def _candidate(self, origin: str, owner: str, deadline: float) -> None:
@@ -249,16 +254,22 @@ class ServerDiscovery:
                 raise access.AccessError(503, "identity_unavailable", "The Tailscale peers are unavailable")
             owner = access._owner_login()
             candidates = set()
-            for peer in peers.values():
-                if (not isinstance(peer, dict) or peer.get("Online") is not True or peer.get("Tags")
+            # Tailscale omits the local node from Peer. Add Self so two Studio
+            # servers on one device can discover each other on different ports.
+            nodes = [node, *peers.values()]
+            for peer in nodes:
+                if (not isinstance(peer, dict) or (peer is not node and peer.get("Online") is not True) or peer.get("Tags")
                         or peer.get("UserID") != node.get("UserID") or not isinstance(peer.get("DNSName"), str)):
                     continue
-                try:
-                    origin = access._origin("https://" + peer["DNSName"].rstrip(".").lower())
-                except access.AccessError:
-                    continue
-                if origin != self.service.public_origin:
-                    candidates.add(origin)
+                hostname = peer["DNSName"].rstrip(".").lower()
+                for port in DISCOVERY_PORTS:
+                    authority = hostname if port == 443 else f"{hostname}:{port}"
+                    try:
+                        origin = access._origin("https://" + authority)
+                    except access.AccessError:
+                        continue
+                    if origin != self.service.public_origin:
+                        candidates.add(origin)
             # Formerly known peers that disappeared or went offline retain their identity.
             with self.service.runtime.read_db() as db:
                 origins = [json.loads(row[0])["origin"] for row in db.execute("SELECT record FROM runtime_access_discovered")]

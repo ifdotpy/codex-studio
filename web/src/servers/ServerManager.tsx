@@ -17,7 +17,15 @@ import {
   Textarea,
 } from "@mantine/core";
 import { useRef, useState } from "react";
-import { serveOrigin, type StudioServer } from "./registry";
+import {
+  readServers,
+  writeServers,
+  localServer,
+  serveOrigin,
+  type StudioServer,
+} from "./registry";
+import { LOCAL_ALIAS_KEY, defaultServerAlias } from "./serverAliases";
+import ServerAliasEditor from "./ServerAliasEditor";
 import { serverCredentialAdapter } from "./transport";
 export default function ServerManager({
   servers,
@@ -198,7 +206,49 @@ export default function ServerManager({
                     </Group>
                   }
                 >
-                  {null}
+                  {(registered || server.id === "local" || peer?.paired) && (
+                    <ServerAliasEditor
+                      value={
+                        discovery.snapshot?.aliases?.[server.id] ||
+                        registered?.alias ||
+                        (server.id === "local"
+                          ? localServer().alias
+                          : undefined) ||
+                        defaultServerAlias(server)
+                      }
+                      used={[
+                        ...new Set([
+                          ...servers
+                            .filter((row) => row.id !== server.id)
+                            .map((row) => row.alias || defaultServerAlias(row)),
+                          ...Object.entries(discovery.snapshot?.aliases || {})
+                            .filter(
+                              ([id]) =>
+                                id !== server.id &&
+                                (server.id !== "local" ||
+                                  id !== discovery.snapshot?.localServerId),
+                            )
+                            .map(([, alias]) => alias),
+                        ]),
+                      ]}
+                      disabled={busy || discovery.busy}
+                      save={async (alias) => {
+                        if (
+                          localEnabled &&
+                          (server.id === "local" || peer?.paired)
+                        )
+                          return discovery.setAlias(server.id, alias);
+                        if (server.id === "local")
+                          localStorage.setItem(LOCAL_ALIAS_KEY, alias);
+                        writeServers(
+                          readServers().map((row) =>
+                            row.id === server.id ? { ...row, alias } : row,
+                          ),
+                        );
+                        return true;
+                      }}
+                    />
+                  )}
                 </SettingsSection>
               </div>
             );

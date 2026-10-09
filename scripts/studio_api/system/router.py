@@ -193,9 +193,26 @@ def create_router(context: ApiContext) -> APIRouter:
     @router.get(
         "/api/directories",
         response_model=DirectoriesResponse,
-        responses={400: {"model": ErrorResponse}},
+        responses={400: {"model": ErrorResponse}, 403: {"model": ErrorResponse}, 503: {"model": ErrorResponse}},
     )
     def directories(request: Request, query: DirectoriesQuery = Depends()) -> Response:
+        if query.server and query.server != "local":
+            runtime = context.runtime
+            if runtime is None:
+                raise HTTPException(status_code=503, detail="The server runtime is unavailable")
+            service = runtime.multi_server()
+            if query.server != service.server_id:
+                if query.server not in {row["id"] for row in service.transport.servers()}:
+                    raise HTTPException(status_code=403, detail="The server is not paired or is revoked")
+                from codex_multi_server_orchestration import identity
+                import uuid
+                key = identity("folder-browse", query.request_id or uuid.uuid4().hex)
+                with runtime.db() as db:
+                    service.queue(db, query.server, "folders", {"cwd": query.path}, key)
+                result = service.deliver(key)
+                if result["outcome"] != "applied":
+                    raise HTTPException(status_code=503, detail=result.get("error") or "The server is unavailable")
+                return context.send(request, {key: result["value"][key] for key in ("path", "parent", "directories")})
         paths = request.query_params.getlist("path")
         raw_path = next((value for value in paths if value), os.getcwd())
         directory = Path(raw_path).expanduser().resolve()

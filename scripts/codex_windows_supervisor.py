@@ -685,3 +685,42 @@ def graceful_stop_pid(
         raise RuntimeError("Refusing Job Object termination after job identity changed")
     job.terminate()
     return "killed" if job.wait_empty() else "termination-failed"
+
+
+def terminate_process_identity(pid: int, creation_time: str, *, wait: float = 10) -> None:
+    """Terminate one process only after checking its creation time on a pinned handle."""
+    kernel32, _ = _api()
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    handle = kernel32.OpenProcess(0x0001 | 0x00100000 | 0x1000, False, pid)
+    if not handle:
+        raise _error()
+
+    class _FileTime(ctypes.Structure):
+        _fields_ = [("low", wintypes.DWORD), ("high", wintypes.DWORD)]
+
+    try:
+        created, exited, kernel, user = _FileTime(), _FileTime(), _FileTime(), _FileTime()
+        kernel32.GetProcessTimes.argtypes = [
+            wintypes.HANDLE, ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
+            ctypes.POINTER(_FileTime), ctypes.POINTER(_FileTime),
+        ]
+        kernel32.GetProcessTimes.restype = wintypes.BOOL
+        if not kernel32.GetProcessTimes(handle, ctypes.byref(created), ctypes.byref(exited),
+                                        ctypes.byref(kernel), ctypes.byref(user)):
+            raise _error()
+        ticks = (created.high << 32) | created.low
+        actual = f"{ticks // 10_000_000}.{(ticks // 10) % 1_000_000:06d}"
+        if actual != creation_time or exited.high or exited.low:
+            raise RuntimeError("Supervisor process identity changed; refusing to stop it")
+        kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+        kernel32.TerminateProcess.restype = wintypes.BOOL
+        if not kernel32.TerminateProcess(handle, 1):
+            raise _error()
+        kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+        kernel32.WaitForSingleObject.restype = wintypes.DWORD
+        result = kernel32.WaitForSingleObject(handle, max(1, int(wait * 1000)))
+        if result != 0:
+            raise TimeoutError("The verified supervisor did not stop before the deadline")
+    finally:
+        kernel32.CloseHandle(handle)

@@ -85,11 +85,14 @@ class SignedIntegration(unittest.TestCase):
         self.addCleanup(self.stack.close)
         folder = self.stack.enter_context(tempfile.TemporaryDirectory(prefix="studio-signed-integration-"))
         self.folder = Path(folder)
+        test_codex_home = self.folder / "codex-home"
+        test_codex_home.mkdir()
         tools = self.folder / "bin"
         tools.mkdir()
         self.identity_log = self.folder / "tailscale-calls.jsonl"
-        executable = tools / "tailscale"
-        executable.write_text(f'''#!{sys.executable}
+        executable = tools / ("tailscale.cmd" if os.name == "nt" else "tailscale")
+        stub = tools / "tailscale_stub.py" if os.name == "nt" else executable
+        stub.write_text(f'''#!{sys.executable}
 import json, os, sys
 args = sys.argv[1:]
 with open(os.environ["SIGNED_TEST_TAILSCALE_LOG"], "a") as log:
@@ -102,10 +105,18 @@ else:
     sys.exit("The isolated stub refuses this command")
 print(json.dumps(value))
 ''')
-        executable.chmod(0o700)
+        if os.name == "nt":
+            executable.write_text(
+                f'@echo off\r\n"{sys.executable}" "%~dp0tailscale_stub.py" %*\r\n',
+                encoding="utf-8",
+            )
+        else:
+            executable.chmod(0o700)
         self.stack.enter_context(patch.dict(os.environ, {
             "PATH": str(tools) + os.pathsep + os.environ["PATH"],
             "SIGNED_TEST_TAILSCALE_LOG": str(self.identity_log),
+            "CODEX_HOME": str(test_codex_home),
+            "PYTHONIOENCODING": "utf-8",
             "CODEX_CANVAS_PUBLIC_ORIGIN": "",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
         }))

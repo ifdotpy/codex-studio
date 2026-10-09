@@ -43,6 +43,15 @@ class MonitorShellContract(unittest.TestCase):
                                  ["/bin/zsh", flag, "echo hello"])
                 self.assertEqual(server.calls, [("config/read", {"cwd": "/project", "includeLayers": False})])
 
+    def test_windows_shell_executable_suffix_uses_native_flags(self):
+        server = ConfigServer({})
+        with patch("codex_shell.default_shell", return_value="/Tools/PowerShell/powershell.EXE"):
+            self.assertEqual(monitor_command(server, "Write-Output ready", "/project"),
+                             ["/Tools/PowerShell/powershell.EXE", "-NoProfile", "-Command", "Write-Output ready"])
+        with patch("codex_shell.default_shell", return_value="/Windows/System32/cmd.exe"):
+            self.assertEqual(monitor_command(server, "echo ready", "/project"),
+                             ["/Windows/System32/cmd.exe", "/d", "/s", "/c", "echo ready"])
+
     def test_startup_and_explicit_environment_values(self):
         if not Path("/bin/zsh").exists():
             self.skipTest("zsh is unavailable")

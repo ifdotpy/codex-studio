@@ -1218,6 +1218,9 @@ class AgentRecord(TypedDict):
 
     id: str
     rootId: str
+    projectId: NotRequired[str]
+    projectServerId: NotRequired[str]
+    serverId: NotRequired[str]
     epoch: int
     status: AgentStatusValue
     name: NotRequired[str]
@@ -1586,6 +1589,13 @@ class ComplaintRecord(TypedDict):
     version: NotRequired[int]
 
 
+class ProjectLocationRecord(TypedDict):
+    serverId: str
+    path: str
+    projectId: str
+    gitOrigin: NotRequired[str | None]
+
+
 class ProjectRecord(TypedDict):
     id: str
     path: str
@@ -1593,6 +1603,10 @@ class ProjectRecord(TypedDict):
     accountKey: str
     accountRevision: int
     created: float
+    homeServerId: NotRequired[str]
+    locations: NotRequired[list[ProjectLocationRecord]]
+    locationsRevision: NotRequired[int]
+    projectAliases: NotRequired[list[JsonObject]]
     updated: NotRequired[float]
     accountKeys: NotRequired[list[str]]
     folders: NotRequired[list[JsonValue]]
